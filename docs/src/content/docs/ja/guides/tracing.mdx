@@ -13,7 +13,7 @@ Agents SDK には組み込みのトレーシング機能があり、エージェ
 トレーシングはデフォルトで有効になっています。無効化する方法は 2 つあります。
 
 1. 環境変数 `OPENAI_AGENTS_DISABLE_TRACING=1` を設定してグローバルに無効化する
-2. 1 回の実行だけ無効化したい場合は、[`RunConfig.tracingDisabled`](/openai/agents-core/type-aliases/runconfig/#tracingdisabled) を `true` に設定する
+2. 1 回の実行だけ無効化したい場合は、[`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) を `true` に設定する
 
 **_OpenAI の API を Zero Data Retention (ZDR) ポリシーで利用している組織では、トレーシングは利用できません。_**
 
@@ -85,12 +85,12 @@ Agents SDK には組み込みのトレーシング機能があり、エージェ
 トレーシングの高レベルアーキテクチャは次のとおりです。
 
 - 初期化時にグローバルな [`TraceProvider`](/openai/agents-core/classes/traceprovider) を生成し、[`getGlobalTraceProvider()`](/openai/agents-core/functions/getglobaltraceprovider/) からアクセスします
-- `TraceProvider` には [`BatchTraceProcessor`](/openai/agents-core/classes/batchtraceprocessor/) を設定し、これがトレース／スパンをバッチで [`OpenAITracingExporter`](/openai/agents-openai/classes/openaitracingexporter/) に送信します
+- `TraceProvider` には [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/) を設定し、これがトレース／スパンをバッチで [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/) に送信します
 - `OpenAITracingExporter` はバッチで OpenAI バックエンドへエクスポートします
 
 このデフォルト設定をカスタマイズし、別のバックエンドへ送信したりエクスポーターの動作を変更したりするには 2 つの方法があります。
 
-1. [`addTraceProcessor()`](/openai/agents-core/functions/addtraceprocessor)  
+1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor)  
    デフォルトの処理に **追加** して、準備が整ったトレースやスパンを受け取る独自のトレースプロセッサを追加します。これにより、OpenAI バックエンドに送信しつつ独自処理を行えます。
-2. [`setTraceProcessors()`](/openai/agents-core/functions/settraceprocessors)  
+2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors)  
    デフォルトのプロセッサを **置換** し、独自のトレースプロセッサのみを使用します。OpenAI バックエンドへは `TracingProcessor` を含めない限り送信されません。

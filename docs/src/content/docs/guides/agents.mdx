@@ -33,13 +33,13 @@ The rest of this page walks through every Agent feature in more detail.
 The `Agent` constructor takes a single configuration object. The most commonly‑used
 properties are shown below.
 
-| Property        | Required | Description                                                                                 |
-| --------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `name`          | yes      | A short human‑readable identifier.                                                          |
-| `instructions`  | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)). |
-| `model`         | no       | Model name **or** a custom [`Model`](/openai/agents/interfaces/model/) implementation.      |
-| `modelSettings` | no       | Tuning parameters (temperature, top_p, etc.).                                               |
-| `tools`         | no       | Array of [`Tool`](/openai/agents/type-aliases/tool/) instances the model can call.          |
+| Property        | Required | Description                                                                                             |
+| --------------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `name`          | yes      | A short human‑readable identifier.                                                                      |
+| `instructions`  | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).             |
+| `model`         | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation. |
+| `modelSettings` | no       | Tuning parameters (temperature, top_p, etc.).                                                           |
+| `tools`         | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.     |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -83,7 +83,7 @@ use a _triage agent_ that routes the conversation to a more specialised sub‑ag
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
 
-You can read more about this pattern in the [handoffs guide](/guides/handoffs).
+You can read more about this pattern in the [handoffs guide](/openai-agents-js/guides/handoffs).
 
 ---
 
@@ -118,7 +118,7 @@ For advanced use‑cases you can observe the Agent lifecycle by listening on eve
 
 Guardrails allow you to validate or transform user input and agent output. They are configured
 via the `inputGuardrails` and `outputGuardrails` arrays. See the
-[guardrails guide](/guides/guardrails) for details.
+[guardrails guide](/openai-agents-js/guides/guardrails) for details.
 
 ---
 
@@ -166,6 +166,6 @@ const agent = new Agent({
 
 ## Next steps
 
-- Learn how to [run agents](/guides/running-agents).
-- Dive into [tools](/guides/tools), [guardrails](/guides/guardrails), and [models](/guides/models).
+- Learn how to [run agents](/openai-agents-js/guides/running-agents).
+- Dive into [tools](/openai-agents-js/guides/tools), [guardrails](/openai-agents-js/guides/guardrails), and [models](/openai-agents-js/guides/models).
 - Explore the full TypeDoc reference under **@openai/agents** in the sidebar.

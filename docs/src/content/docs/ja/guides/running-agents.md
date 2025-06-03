@@ -48,7 +48,7 @@ config を指定しない場合は、OpenAI プロバイダーやトレーシン
 runner.run(agent, input, options?) → Promise<RunResult | StreamedRunResult>
 ```
 
-- `agent` – 開始 [`Agent`](/ja/guides/agents) インスタンス
+- `agent` – 開始 [`Agent`](/openai-agents-js/ja/guides/agents) インスタンス
 - `input` – プレーン文字列 **または** [`ResponseInputItem`](/openai/agents/type-aliases/modelrequest) オブジェクトの配列
 - `options` – 下表を参照
 
@@ -249,6 +249,6 @@ Math homework guardrail tripped
 
 ## 次のステップ
 
-- [モデルを設定](/ja/guides/models) する方法を学ぶ
-- エージェントに [tools](/ja/guides/tools) を提供する
-- 本番環境に向けて [guardrails](/ja/guides/guardrails) や [tracing](/ja/guides/tracing) を追加する
+- [モデルを設定](/openai-agents-js/ja/guides/models) する方法を学ぶ
+- エージェントに [tools](/openai-agents-js/ja/guides/tools) を提供する
+- 本番環境に向けて [guardrails](/openai-agents-js/ja/guides/guardrails) や [tracing](/openai-agents-js/ja/guides/tracing) を追加する

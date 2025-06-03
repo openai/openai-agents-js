@@ -38,14 +38,14 @@ handle session audio yourself:
 
 ## Session configuration
 
-You can configure your session by passing additional options to either the [`RealtimeSession`](/openai/agents-realtime/classes/realtimesession/) during construction or
+You can configure your session by passing additional options to either the [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) during construction or
 when you call `connect(...)`.
 
 <Code lang="typescript" code={configureSessionExample} />
 
 These transport layers allow you to pass any parameter that matches [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update).
 
-For parameters that are new and don't have a matching parameter in the [RealtimeSessionConfig](/openai/agents-realtime/type-aliases/realtimesessionconfig/) you can use `providerData`. Anything passed in `providerData` will be passed directly as part of the `session` object.
+For parameters that are new and don't have a matching parameter in the [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) you can use `providerData`. Anything passed in `providerData` will be passed directly as part of the `session` object.
 
 ## Handoffs
 

@@ -19,7 +19,7 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 
 <Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
 
-エージェントを実行すると、最終出力と実行の完全な履歴を含む [エージェントの実行結果](/ja/guides/results) オブジェクトが返されます。
+エージェントを実行すると、最終出力と実行の完全な履歴を含む [エージェントの実行結果](/openai-agents-js/ja/guides/results) オブジェクトが返されます。
 
 ## エージェントループ
 
@@ -32,7 +32,7 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
    - **最終出力** → 返却
    - **ハンドオフ** → 新しいエージェントに切り替え、これまでの会話履歴を保持して 1 へ
    - **ツール呼び出し** → ツールを実行し、その結果を会話に追加して 1 へ
-3. `maxTurns` に達すると [`MaxTurnsExceededError`](/openai/agents-core/classes/maxturnsexceedederror) をスロー
+3. `maxTurns` に達すると [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスロー
 
 <Aside type="note">
   LLM
@@ -47,16 +47,16 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 
 `run()` メソッドには、開始エージェント、実行入力、およびオプションを渡します。
 
-入力は文字列、[入力アイテム](/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop](/ja/guides/human-in-the-loop) エージェントを構築する場合の [`RunState`](/openai/agents-core/classes/runstate) オブジェクトのいずれかです。
+入力は文字列、[入力アイテム](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop](/openai-agents-js/ja/guides/human-in-the-loop) エージェントを構築する場合の [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) オブジェクトのいずれかです。
 
 追加オプションは次のとおりです。
 
-| Option     | Default | 説明                                                                                                                             |
-| ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`   | `false` | `true` の場合、`StreamedRunResult` が返り、モデルから届くイベントを随時受け取ります                                              |
-| `context`  | –       | すべてのツール / ガードレール / ハンドオフに転送されるコンテキスト オブジェクト。詳しくは [コンテキスト管理](/ja/guides/context) |
-| `maxTurns` | `10`    | セーフティ制限 — 到達時に [`MaxTurnsExceededError`](/openai/agents-core/classes/maxturnsexceedederror) をスロー                  |
-| `signal`   | –       | キャンセル用の `AbortSignal`                                                                                                     |
+| Option     | Default | 説明                                                                                                                                              |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`   | `false` | `true` の場合、`StreamedRunResult` が返り、モデルから届くイベントを随時受け取ります                                                               |
+| `context`  | –       | すべてのツール / ガードレール / ハンドオフに転送されるコンテキスト オブジェクト。詳しくは [コンテキスト管理](/openai-agents-js/ja/guides/context) |
+| `maxTurns` | `10`    | セーフティ制限 — 到達時に [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスロー                  |
+| `signal`   | –       | キャンセル用の `AbortSignal`                                                                                                                      |
 
 ## ストリーミング
 
@@ -97,12 +97,12 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 
 SDK は次の少数のエラーをスローします。必要に応じてキャッチしてください。
 
-- [`MaxTurnsExceededError`](/openai/agents-core/classes/maxturnsexceedederror) — `maxTurns` に到達
-- [`ModelBehaviorError`](/openai/agents-core/classes/modelbehaviorerror) — モデルが無効な出力を生成（例: JSON 形式不正、未知のツール）
-- [`InputGuardrailTripwireTriggered`](/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai/agents-core/classes/outputguardrailtripwiretriggered) — ガードレール違反
-- [`GuardrailExecutionError`](/openai/agents-core/classes/guardrailexecutionerror) — ガードレールの実行に失敗
-- [`ToolCallError`](/openai/agents-core/classes/toolcallerror) — 関数ツール呼び出しが失敗
-- [`UserError`](/openai/agents-core/classes/usererror) — 設定やユーザー入力に基づくエラー
+- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) — `maxTurns` に到達
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) — モデルが無効な出力を生成（例: JSON 形式不正、未知のツール）
+- [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) — ガードレール違反
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) — ガードレールの実行に失敗
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) — 関数ツール呼び出しが失敗
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) — 設定やユーザー入力に基づくエラー
 
 これらはすべて基底クラス `AgentsError` を継承しており、現在の実行状態にアクセスできる `state` プロパティを提供する場合があります。
 
@@ -125,6 +125,6 @@ Math homework guardrail tripped
 
 ## 次のステップ
 
-- [モデル](/ja/guides/models) の設定方法を学ぶ
-- エージェントに [ツール](/ja/guides/tools) を提供する
-- 本番環境に向けて [ガードレール](/ja/guides/guardrails) や [トレーシング](/ja/guides/tracing) を追加する
+- [モデル](/openai-agents-js/ja/guides/models) の設定方法を学ぶ
+- エージェントに [ツール](/openai-agents-js/ja/guides/tools) を提供する
+- 本番環境に向けて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加する

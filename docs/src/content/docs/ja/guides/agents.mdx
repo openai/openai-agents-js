@@ -30,13 +30,13 @@ OpenAI Agents SDK の主要な構成要素は **エージェント** です。**
 
 `Agent` コンストラクターは 1 つの設定オブジェクトを受け取ります。よく利用されるプロパティは次のとおりです。
 
-| Property        | Required | Description                                                                                     |
-| --------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `name`          | yes      | 人間が読みやすい短い識別子                                                                      |
-| `instructions`  | yes      | システムプロンプト (文字列 **または** 関数 – [動的 instructions](#dynamic-instructions) を参照) |
-| `model`         | no       | モデル名 **または** カスタム [`Model`](/openai/agents/interfaces/model/) 実装                   |
-| `modelSettings` | no       | チューニングパラメーター (temperature, top_p など)                                              |
-| `tools`         | no       | モデルが呼び出せる [`Tool`](/openai/agents/type-aliases/tool/) インスタンスの配列               |
+| Property        | Required | Description                                                                                        |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `name`          | yes      | 人間が読みやすい短い識別子                                                                         |
+| `instructions`  | yes      | システムプロンプト (文字列 **または** 関数 – [動的 instructions](#dynamic-instructions) を参照)    |
+| `model`         | no       | モデル名 **または** カスタム [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 実装     |
+| `modelSettings` | no       | チューニングパラメーター (temperature, top_p など)                                                 |
+| `tools`         | no       | モデルが呼び出せる [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) インスタンスの配列 |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -73,7 +73,7 @@ OpenAI Agents SDK の主要な構成要素は **エージェント** です。**
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
 
-このパターンの詳細は [ハンドオフ](/ja/guides/handoffs) を参照してください。
+このパターンの詳細は [ハンドオフ](/openai-agents-js/ja/guides/handoffs) を参照してください。
 
 ---
 
@@ -105,7 +105,7 @@ OpenAI Agents SDK の主要な構成要素は **エージェント** です。**
 
 ## ガードレール
 
-ガードレールを使用すると、ユーザー入力やエージェント出力の検証・変換が可能です。`inputGuardrails` と `outputGuardrails` 配列で設定します。詳細は [ガードレール](/ja/guides/guardrails) をご覧ください。
+ガードレールを使用すると、ユーザー入力やエージェント出力の検証・変換が可能です。`inputGuardrails` と `outputGuardrails` 配列で設定します。詳細は [ガードレール](/openai-agents-js/ja/guides/guardrails) をご覧ください。
 
 ---
 
@@ -148,6 +148,6 @@ const agent = new Agent({
 
 ## 次のステップ
 
-- [エージェントの実行](/ja/guides/running-agents) を学ぶ
-- [ツール](/ja/guides/tools)、[ガードレール](/ja/guides/guardrails)、[モデル](/ja/guides/models) をさらに深掘り
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を学ぶ
+- [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models) をさらに深掘り
 - サイドバーの **@openai/agents** で TypeDoc 全リファレンスを確認

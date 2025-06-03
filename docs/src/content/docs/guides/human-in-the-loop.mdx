@@ -29,7 +29,7 @@ You can define a tool that requires approval by setting the `needsApproval` opti
    - If approval has not been granted or rejected, the tool will return a static message to the agent that the tool call cannot be executed.
    - If approval / rejection is missing it will trigger a tool approval request.
 3. The agent will gather all tool approval requests and interrupt the execution.
-4. If there are any interruptions, the [result](/guides/result) will contain an `interruptions` array describing pending steps. A `ToolApprovalItem` with `type: "tool_approval_item"` appears when a tool call requires confirmation.
+4. If there are any interruptions, the [result](/openai-agents-js/guides/result) will contain an `interruptions` array describing pending steps. A `ToolApprovalItem` with `type: "tool_approval_item"` appears when a tool call requires confirmation.
 5. You can call `result.state.approve(interruption)` or `result.state.reject(interruption)` to approve or reject the tool call.
 6. After handling all interruptions, you can resume execution by passing the `result.state` back into `runner.run(agent, state)` where `agent` is the original agent that triggered the overall run.
 7. The flow starts again from step 1.

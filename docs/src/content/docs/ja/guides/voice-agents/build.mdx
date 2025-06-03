@@ -37,13 +37,13 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 ## セッション設定
 
-[`RealtimeSession`](/openai/agents-realtime/classes/realtimesession/) を生成するとき、または `connect(...)` を呼び出すときに追加オプションを渡すことでセッションを設定できます。
+[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) を生成するとき、または `connect(...)` を呼び出すときに追加オプションを渡すことでセッションを設定できます。
 
 <Code lang="typescript" code={configureSessionExample} />
 
 これらのトランスポートレイヤーでは、[session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) と一致する任意のパラメーターを渡せます。
 
-[RealtimeSessionConfig](/openai/agents-realtime/type-aliases/realtimesessionconfig/) に対応するパラメーターがまだ存在しない場合は `providerData` を使用してください。`providerData` に渡した内容は `session` オブジェクトの一部としてそのまま送信されます。
+[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) に対応するパラメーターがまだ存在しない場合は `providerData` を使用してください。`providerData` に渡した内容は `session` オブジェクトの一部としてそのまま送信されます。
 
 ## ハンドオフ
 

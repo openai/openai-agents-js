@@ -34,8 +34,6 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    npm create vite@latest my-project --template vanilla-ts
    ```
 
-   Alternatively, you can use [Stackblitz](https://stackblitz.com/github/openai/openai-agents-js/tree/examples/realtime-demo) to create a new project directly within your browser.
-
 1. **Install the Agents SDK**
 
    ```bash
@@ -61,7 +59,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 3. **Create your first Agent**
 
-   Creating a new [`RealtimeAgent`](/openai/agents-realtime/classes/realtimeagent/) is very similar to creating a regular [`Agent`](/docs/agents).
+   Creating a new [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) is very similar to creating a regular [`Agent`](/openai-agents-js/guides/agents).
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents-realtime';
@@ -94,7 +92,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    await session.connect({ apiKey: '<client-api-key>' });
    ```
 
-   This will connect to the Realtime API using WebRTC in the browser and automatically configure your microphone and speaker for audio input and output. If you are running your `RealtimeSession` on a backend server (like Node.js) the SDK will automatically use WebSocket as a connection. You can learn more about the different transport layers in the [Realtime Transport Layer](/guides/voice-agents/transport) guide.
+   This will connect to the Realtime API using WebRTC in the browser and automatically configure your microphone and speaker for audio input and output. If you are running your `RealtimeSession` on a backend server (like Node.js) the SDK will automatically use WebSocket as a connection. You can learn more about the different transport layers in the [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) guide.
 
 6. **Putting it all together**
 
@@ -116,14 +114,14 @@ From here you can start designing and building your own voice agent. Voice agent
 
 - Learn how to give your voice agent:
 
-  - [Tools](/guides/voice-agents/build#tools)
-  - [Handoffs](/guides/voice-agents/build#handoffs)
-  - [Guardrails](/guides/voice-agents/build#guardrails)
-  - [Handle audio interruptions](/guides/voice-agents/build#audio-interruptions)
-  - [Manage session history](/guides/voice-agents/build#session-history)
+  - [Tools](/openai-agents-js/guides/voice-agents/build#tools)
+  - [Handoffs](/openai-agents-js/guides/voice-agents/build#handoffs)
+  - [Guardrails](/openai-agents-js/guides/voice-agents/build#guardrails)
+  - [Handle audio interruptions](/openai-agents-js/guides/voice-agents/build#audio-interruptions)
+  - [Manage session history](/openai-agents-js/guides/voice-agents/build#session-history)
 
 - Learn more about the different transport layers.
 
-  - [WebRTC](/guides/voice-agents/transport#connecting-over-webrtc)
-  - [WebSocket](/guides/voice-agents/transport#connecting-over-websocket)
-  - [Building your own transport mechanism](/guides/voice-agents/transport#building-your-own-transport-mechanism)
+  - [WebRTC](/openai-agents-js/guides/voice-agents/transport#connecting-over-webrtc)
+  - [WebSocket](/openai-agents-js/guides/voice-agents/transport#connecting-over-websocket)
+  - [Building your own transport mechanism](/openai-agents-js/guides/voice-agents/transport#building-your-own-transport-mechanism)

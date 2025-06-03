@@ -19,8 +19,8 @@ import outputGuardrailExample from '../../../../../../examples/docs/guardrails/g
 Input guardrails は次の 3 ステップで実行されます。
 
 1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
-2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai/agents/interfaces/guardrailfunctionoutput) を [`InputGuardrailResult`](/openai/agents/interfaces/inputguardrailresult) にラップして返します
-3. `tripwireTriggered` が `true` の場合、[`InputGuardrailTripwireTriggered`](/openai/agents/classes/inputguardrailtripwiretriggered) エラーがスローされます
+2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) にラップして返します
+3. `tripwireTriggered` が `true` の場合、[`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) エラーがスローされます
 
 > **Note**  
 > Input guardrails はユーザー入力を対象としているため、ワークフローでエージェントが _最初_ のエージェントである場合にのみ実行されます。ガードレールはエージェントごとに設定します。異なるエージェントでは必要なガードレールが異なることが多いためです。
@@ -30,11 +30,11 @@ Input guardrails は次の 3 ステップで実行されます。
 Output guardrails も同じパターンで動作します。
 
 1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
-2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai/agents/interfaces/guardrailfunctionoutput) を [`OutputGuardrailResult`](/openai/agents/interfaces/outputguardrailresult) にラップして返します
-3. `tripwireTriggered` が `true` の場合、[`OutputGuardrailTripwireTriggered`](/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます
+2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) にラップして返します
+3. `tripwireTriggered` が `true` の場合、[`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます
 
 > **Note**  
-> Output guardrails はワークフローでエージェントが _最後_ のエージェントである場合にのみ実行されます。リアルタイム音声インタラクションについては [the voice agents guide](./voice-agents#guardrails) を参照してください。
+> Output guardrails はワークフローでエージェントが _最後_ のエージェントである場合にのみ実行されます。リアルタイム音声インタラクションについては [the voice agents guide](/openai-agents-js/ja/guides/voice-agents#guardrails) を参照してください。
 
 ## Tripwires
 

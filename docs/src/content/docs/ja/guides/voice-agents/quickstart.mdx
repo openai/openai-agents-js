@@ -34,8 +34,6 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    npm create vite@latest my-project --template vanilla-ts
    ```
 
-   あるいは、[Stackblitz](https://stackblitz.com/github/openai/openai-agents-js/tree/examples/realtime-demo) を使ってブラウザ上で直接新しいプロジェクトを作成することもできます。
-
 1. **Agents SDK をインストールする**
 
    ```bash
@@ -61,7 +59,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 3. **最初のエージェントを作成する**
 
-   新しい [`RealtimeAgent`](/openai/agents-realtime/classes/realtimeagent/) の作成方法は、通常の [`Agent`](/docs/agents) とほとんど同じです。
+   新しい [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) の作成方法は、通常の [`Agent`](/openai-agents-js/guides/agents) とほとんど同じです。
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents-realtime';
@@ -94,7 +92,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    await session.connect({ apiKey: '<client-api-key>' });
    ```
 
-   これによりブラウザで WebRTC を使用して Realtime API に接続し、マイクとスピーカーが自動的に設定されます。`RealtimeSession` をバックエンドサーバー（Node.js など）で実行している場合、SDK は自動的に WebSocket を利用します。さまざまなトランスポートレイヤーについては [リアルタイムトランスポート](/ja/guides/voice-agents/transport) ガイドを参照してください。
+   これによりブラウザで WebRTC を使用して Realtime API に接続し、マイクとスピーカーが自動的に設定されます。`RealtimeSession` をバックエンドサーバー（Node.js など）で実行している場合、SDK は自動的に WebSocket を利用します。さまざまなトランスポートレイヤーについては [リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport) ガイドを参照してください。
 
 6. **すべてをまとめる**
 
@@ -116,13 +114,13 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 - 音声エージェントに次の機能を追加する方法
 
-  - [ツール](/ja/guides/voice-agents/build#tools)
-  - [ハンドオフ](/ja/guides/voice-agents/build#handoffs)
-  - [ガードレール](/ja/guides/voice-agents/build#guardrails)
-  - [音声割り込みへの対応](/ja/guides/voice-agents/build#audio-interruptions)
-  - [セッション履歴の管理](/ja/guides/voice-agents/build#session-history)
+  - [ツール](/openai-agents-js/ja/guides/voice-agents/build#tools)
+  - [ハンドオフ](/openai-agents-js/ja/guides/voice-agents/build#handoffs)
+  - [ガードレール](/openai-agents-js/ja/guides/voice-agents/build#guardrails)
+  - [音声割り込みへの対応](/openai-agents-js/ja/guides/voice-agents/build#audio-interruptions)
+  - [セッション履歴の管理](/openai-agents-js/ja/guides/voice-agents/build#session-history)
 
 - さまざまなトランスポートレイヤーについて詳しく学ぶ
-  - [WebRTC](/ja/guides/voice-agents/transport#connecting-over-webrtc)
-  - [WebSocket](/ja/guides/voice-agents/transport#connecting-over-websocket)
-  - [独自のトランスポート機構を構築する](/ja/guides/voice-agents/transport#building-your-own-transport-mechanism)
+  - [WebRTC](/openai-agents-js/ja/guides/voice-agents/transport#connecting-over-webrtc)
+  - [WebSocket](/openai-agents-js/ja/guides/voice-agents/transport#connecting-over-websocket)
+  - [独自のトランスポート機構を構築する](/openai-agents-js/ja/guides/voice-agents/transport#building-your-own-transport-mechanism)

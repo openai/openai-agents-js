@@ -29,7 +29,7 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
    - まだ許可・拒否されていない場合、ツールは「ツール呼び出しを実行できない」という固定メッセージをエージェントに返します
    - 許可 / 拒否が未決の場合、ツール承認リクエストをトリガーします
 3. エージェントはすべてのツール承認リクエストを集め、実行を中断します
-4. 中断がある場合、[実行結果](/ja/guides/result) には保留中のステップを示す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは `type: "tool_approval_item"` の `ToolApprovalItem` が現れます
+4. 中断がある場合、[実行結果](/openai-agents-js/ja/guides/result) には保留中のステップを示す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは `type: "tool_approval_item"` の `ToolApprovalItem` が現れます
 5. `result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出してツール呼び出しを許可・拒否できます
 6. すべての中断を処理したら、`result.state` を `runner.run(agent, state)` に渡して実行を再開します。ここで `agent` は最初に実行を開始させたエージェントです
 7. フローは 1 に戻ります

@@ -9,7 +9,7 @@ import twilioServerExample from '../../../../../examples/realtime-twilio/index.t
 
 Twilio offers a [Media Streams API](https://www.twilio.com/docs/voice/media-streams) that sends the
 raw audio from a phone call to a WebSocket server. This set up can be used to connect your
-[voice agents](../guides/voice-agents) to Twilio. You can use the default Realtime Session transport
+[voice agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport
 in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However,
 this requires you to set the right audio format and adjust your own interruption timing as phone
 calls will naturally introduce more latency than a web-based converstaion.
@@ -63,7 +63,7 @@ connection to Twilio for you, including handling interruptions and audio forward
 </Steps>
 
 Any event and behavior that you would expect from a `RealtimeSession` will work as expected
-including tool calls, guardrails, and more. Read the [voice agents guide](/guides/voice-agents)
+including tool calls, guardrails, and more. Read the [voice agents guide](/openai-agents-js/guides/voice-agents)
 for more information on how to use the `RealtimeSession` with voice agents.
 
 ## Tips and Considerations
