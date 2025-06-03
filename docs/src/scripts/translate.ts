@@ -308,7 +308,10 @@ You must return **only** the translated markdown. Do not include any commentary,
 - Keep all placeholders such as \`CODE_BLOCK_*\` and \`CODE_LINE_PREFIX\` unchanged.
 - Don't add any tags before/after lines using astrojs items such as <Code> and their imports
 - Treat the **Do‑Not‑Translate list** and **Term‑Specific list** as case‑insensitive; preserve the original casing you see.
-- Convert the relative path starting with /guides/* to /${langCode}/guides/*
+- Convert path in the following rules:
+  - Replace /openai-agents-js/XXX/* with /openai-agents-js/${langCode}/XXX/*
+  - When the path starts with /openai-agents-js/openai/, don't change anything
+  - Don't change the first /openai-agents-js/ part in any case
 - Skip translation for:
   - Inline code surrounded by single back‑ticks ( \`like_this\` ).
   - Fenced code blocks delimited by \`\`\` or ~~~, including all comments inside them.
