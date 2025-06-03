@@ -1,6 +1,6 @@
 ---
 title: AI SDK で任意モデルを指定
-description: Connect your Agents SDK agents to any model through the Vercel AI SDK
+description: Connect your Agents SDK agents to any model through the Vercel's AI SDK
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
@@ -12,7 +12,7 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
   からご報告ください。迅速に対応します。
 </Aside>
 
-Agents SDK は、標準で Responses API または Chat Completions API を通じて OpenAI モデルと動作します。別のモデルを使用したい場合は、[Vercel AI SDK](https://sdk.vercel.ai/) がサポートするさまざまなモデルを、このアダプター経由で Agents SDK に組み込むことができます。
+Agents SDK は、標準で Responses API または Chat Completions API を通じて OpenAI モデルと動作します。別のモデルを使用したい場合は、[Vercel's AI SDK](https://sdk.vercel.ai/) がサポートするさまざまなモデルを、このアダプター経由で Agents SDK に組み込むことができます。
 
 ## セットアップ
 
@@ -24,10 +24,10 @@ Agents SDK は、標準で Responses API または Chat Completions API を通�
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel AI SDK](https://sdk.vercel.ai/docs/models/overview) から使用したいモデルパッケージを選択してインストールします:
+2. [Vercel's AI SDK](https://sdk.vercel.ai/docs/models/overview) から使用したいモデルパッケージを選択してインストールします:
 
    ```bash
-   npm install @vercel/ai
+   npm install @ai-sdk/openai
    ```
 
 3. エージェントに接続するためにアダプターとモデルをインポートします:
