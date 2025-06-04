@@ -25,7 +25,7 @@ export type OpenAIProviderOptions = {
  * The provider of OpenAI's models (or Chat Completions compatible ones)
  */
 export class OpenAIProvider implements ModelProvider {
-  #client: OpenAI;
+  #client?: OpenAI;
   #useResponses?: boolean;
   #options: OpenAIProviderOptions;
 
@@ -38,19 +38,8 @@ export class OpenAIProvider implements ModelProvider {
       if (this.#options.baseURL) {
         throw new Error('Cannot provide both baseURL and openAIClient');
       }
+      this.#client = this.#options.openAIClient;
     }
-    this.#client =
-      // If the constructor does not accept the OpenAI client,
-      this.#options.openAIClient ??
-      // this provider checks if there is the default client first,
-      getDefaultOpenAIClient() ??
-      // and then manually creates a new one.
-      new OpenAI({
-        apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),
-        baseURL: this.#options.baseURL,
-        organization: this.#options.organization,
-        project: this.#options.project,
-      });
     this.#useResponses = this.#options.useResponses;
   }
 
@@ -59,6 +48,19 @@ export class OpenAIProvider implements ModelProvider {
    * never actually use the client.
    */
   #getClient(): OpenAI {
+    // If the constructor does not accept the OpenAI client,
+    if (!this.#client) {
+      this.#client =
+        // this provider checks if there is the default client first,
+        getDefaultOpenAIClient() ??
+        // and then manually creates a new one.
+        new OpenAI({
+          apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),
+          baseURL: this.#options.baseURL,
+          organization: this.#options.organization,
+          project: this.#options.project,
+        });
+    }
     return this.#client;
   }
 
