@@ -126,7 +126,7 @@
     --openai-toc-highlight: #353740;
     --openai-code-background: var(--openai-gray-05);
     --openai-code-border-color: var(--openai-gray-1);
-    --openai-title-color: var(--sl-color-text);
+    --openai-title-color: #000000;
     --openai-code-highlight-color: var(--openai-gray-1);
     --openai-hero-background: var(--openai-gray-05);
     --sl-color-bg-sidebar: var(--openai-light-gray) !important;
@@ -142,6 +142,10 @@
     --sl-color-bg-inline-code: var(--openai-gray-05) !important;
     --sl-nav-gap: 1rem !important;
     --sl-content-width: 60rem !important;
+  }
+
+  .openai-logo {
+    color: var(--openai-title-color) !important;
   }
 
   .content-panel:first-of-type {
@@ -335,10 +339,6 @@
       @media (min-width: 72rem) {
         flex-direction: row;
       }
-    }
-
-    ul[role='tablist'] {
-      border-bottom: 1px solid var(--openai-gray-05);
     }
 
     .tab a {
