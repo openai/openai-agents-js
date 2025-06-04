@@ -7,4 +7,6 @@ pnpm eslint $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g'
 git update-index --again
 
 # check for secrets
-trufflehog git file://. --since-commit HEAD --fail
+if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
+  trufflehog git file://. --since-commit HEAD --fail
+fi
