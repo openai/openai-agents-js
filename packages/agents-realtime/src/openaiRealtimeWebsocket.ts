@@ -328,6 +328,7 @@ export class OpenAIRealtimeWebSocket
       this.sendEvent({
         type: 'response.cancel',
       });
+      this.#ongoingResponse = false;
     }
   }
 
@@ -360,11 +361,10 @@ export class OpenAIRealtimeWebSocket
    * based on an event in the client.
    */
   interrupt() {
+    this._cancelResponse();
     if (!this.#currentItemId || typeof this._firstAudioTimestamp !== 'number') {
       return;
     }
-
-    this._cancelResponse();
 
     const elapsedTime = Date.now() - this._firstAudioTimestamp;
     console.log(`Interrupting response after ${elapsedTime}ms`);
