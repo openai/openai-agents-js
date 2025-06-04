@@ -52,7 +52,7 @@ const cleanup = async () => {
   await getGlobalTraceProvider().shutdown();
 };
 
-if (typeof process !== 'undefined') {
+if (typeof process !== 'undefined' && typeof process.on === 'function') {
   // handling Node.js process termination
 
   // Handle normal termination
