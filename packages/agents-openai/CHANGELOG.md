@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.0.2
+
+### Patch Changes
+
+- b4942fa: Fix #5 setDefaultOpenAIClient issue in agents-openai package
+- Updated dependencies [a2979b6]
+  - @openai/agents-core@0.0.2
+
 ## 0.0.1
 
 ### Patch Changes
