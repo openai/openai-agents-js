@@ -13,7 +13,7 @@ env:
 
 jobs:
   version:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.repository_owner == 'openai' }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
