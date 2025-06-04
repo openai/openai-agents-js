@@ -315,10 +315,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'OpenAI Agents SDK',
-      logo: {
-        light: './src/assets/light-logo.svg',
-        dark: './src/assets/dark-logo.svg',
-        alt: 'OpenAI',
+      components: {
+        SiteTitle: './src/components/Title.astro',
       },
       //   defaultLocale: 'root',
       locales: {
