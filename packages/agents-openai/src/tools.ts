@@ -188,3 +188,47 @@ export function imageGenerationTool(
     },
   };
 }
+
+/**
+ * The built-in MCP (Model Context Protocol) tool
+ */
+export type HostedMCPTool = {
+  type: 'mcp';
+  name?: 'mcp' | string;
+  serverLabel: string;
+  serverUrl: string;
+  allowedTools?:
+    | Array<string>
+    | OpenAI.Responses.Tool.Mcp.McpAllowedToolsFilter
+    | null;
+  headers?: Record<string, string> | null;
+  requireApproval?:
+    | OpenAI.Responses.Tool.Mcp.McpToolApprovalFilter
+    | 'always'
+    | 'never'
+    | string
+    | null;
+};
+
+/**
+ * Adds MCP (Model Context Protocol) server access to your agent
+ * @param options Configuration for the MCP server
+ * @returns an MCP tool definition
+ */
+export function hostedMCPTool(
+  options: Partial<Omit<HostedMCPTool, 'type'>> = {},
+): HostedTool {
+  return {
+    type: 'hosted_tool',
+    name: options.name ?? 'mcp',
+    providerData: {
+      type: 'mcp',
+      name: options.name ?? 'mcp',
+      serverLabel: options.serverLabel,
+      serverUrl: options.serverUrl,
+      allowedTools: options.allowedTools,
+      headers: options.headers,
+      requireApproval: options.requireApproval,
+    },
+  };
+}

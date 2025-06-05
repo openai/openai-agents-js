@@ -37,6 +37,8 @@
     "examples:tools-computer-use": "pnpm -F tools start:computer-use",
     "examples:tools-file-search": "pnpm -F tools start:file-search",
     "examples:tools-web-search": "pnpm -F tools start:web-search",
+    "examples:hosted-mcp-simple": "pnpm -F hosted-mcp start:simple",
+    "examples:hosted-mcp-approvals": "pnpm -F hosted-mcp start:approvals",
     "ci:publish": "pnpm publish -r --no-git-checks",
     "prepare": "husky",
     "clear:deps": "rm -rf node_modules && pnpm -r exec rm -rf node_modules",

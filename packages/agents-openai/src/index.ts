@@ -17,4 +17,5 @@ export {
   fileSearchTool,
   codeInterpreterTool,
   imageGenerationTool,
+  hostedMCPTool,
 } from './tools';

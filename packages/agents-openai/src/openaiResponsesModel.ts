@@ -175,6 +175,18 @@ function converTool<_TContext = unknown>(
         },
         include: undefined,
       };
+    } else if (tool.providerData?.type === 'mcp') {
+      return {
+        tool: {
+          type: 'mcp',
+          server_label: tool.providerData.serverLabel,
+          server_url: tool.providerData.serverUrl,
+          allowed_tools: tool.providerData.allowedTools,
+          headers: tool.providerData.headers,
+          require_approval: tool.providerData.requireApproval,
+        },
+        include: undefined,
+      };
     }
   }
 
@@ -450,6 +462,19 @@ function getInputItems(
           id: item.id!,
           result: item.providerData?.result ?? null,
           status: ImageGenerationStatus.parse(item.status ?? 'failed'),
+          ...item.providerData,
+        };
+
+        return entry;
+      }
+
+      if (item.providerData?.type === 'mcp') {
+        const entry: OpenAI.Responses.ResponseInputItem.McpCall = {
+          type: 'mcp_call',
+          id: item.id!,
+          arguments: item.providerData?.arguments ?? {},
+          name: item.providerData?.name,
+          server_label: item.providerData?.serverLabel ?? '',
           ...item.providerData,
         };
 

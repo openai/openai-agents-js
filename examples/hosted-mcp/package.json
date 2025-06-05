@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "name": "hosted-mcp",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@openai/agents": "workspace:*"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start:simple": "tsx simple.ts",
+    "start:approvals": "tsx approvals.ts"
+  }
+}
