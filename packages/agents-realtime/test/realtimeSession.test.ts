@@ -171,8 +171,16 @@ describe('RealtimeSession', () => {
       outputGuardrailSettings: { debounceTextLength: 1 },
     });
     await s.connect({ apiKey: 'test' });
-    t.emit('audio_transcript_delta', { delta: 'a', itemId: '1' } as any);
-    t.emit('audio_transcript_delta', { delta: 'a', itemId: '2' } as any);
+    t.emit('audio_transcript_delta', {
+      delta: 'a',
+      itemId: '1',
+      responseId: 'z',
+    } as any);
+    t.emit('audio_transcript_delta', {
+      delta: 'a',
+      itemId: '2',
+      responseId: 'z',
+    } as any);
     await vi.waitFor(() => expect(runMock).toHaveBeenCalledTimes(2));
     vi.restoreAllMocks();
   });

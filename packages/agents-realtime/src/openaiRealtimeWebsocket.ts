@@ -361,14 +361,13 @@ export class OpenAIRealtimeWebSocket
    * based on an event in the client.
    */
   interrupt() {
-    this._cancelResponse();
     if (!this.#currentItemId || typeof this._firstAudioTimestamp !== 'number') {
       return;
     }
 
+    this._cancelResponse();
+
     const elapsedTime = Date.now() - this._firstAudioTimestamp;
-    console.log(`Interrupting response after ${elapsedTime}ms`);
-    console.log(`Audio length: ${this._audioLengthMs}ms`);
     if (elapsedTime >= 0 && elapsedTime < this._audioLengthMs) {
       this._interrupt(elapsedTime);
     }

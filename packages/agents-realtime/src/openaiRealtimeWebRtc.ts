@@ -196,6 +196,7 @@ export class OpenAIRealtimeWebRTC
           if (!parsed || isGeneric) {
             return;
           }
+
           if (parsed.type === 'response.created') {
             this.#ongoingResponse = true;
           } else if (parsed.type === 'response.done') {
@@ -334,6 +335,7 @@ export class OpenAIRealtimeWebRTC
       this.sendEvent({
         type: 'response.cancel',
       });
+      this.#ongoingResponse = false;
     }
 
     this.sendEvent({
