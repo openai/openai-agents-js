@@ -73,6 +73,13 @@ export type FunctionTool<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval: ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
+   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
+   * If the property is absent, it means false.
+   */
+  localAgentAsTool?: boolean;
 };
 
 /**
@@ -326,6 +333,13 @@ type StrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
+   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
+   * If the property is absent, it means false.
+   */
+  localAgentAsTool?: boolean;
 };
 
 /**
@@ -373,6 +387,13 @@ type NonStrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
+   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
+   * If the property is absent, it means false.
+   */
+  localAgentAsTool?: boolean;
 };
 
 /**
@@ -497,5 +518,6 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
+    localAgentAsTool: options.localAgentAsTool,
   };
 }

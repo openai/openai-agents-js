@@ -437,6 +437,7 @@ export class Agent<
         additionalProperties: false,
       },
       strict: true,
+      localAgentAsTool: true,
       execute: async (data, context) => {
         if (!isAgentToolInput(data)) {
           throw new ModelBehaviorError('Agent tool called with invalid input');

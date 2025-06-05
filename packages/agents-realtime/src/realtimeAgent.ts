@@ -4,8 +4,10 @@ import {
   Handoff,
   TextOutput,
   UnknownContext,
+  UserError,
 } from '@openai/agents-core';
 import { RealtimeContextData } from './realtimeSession';
+import { isBrowserEnvironment } from '@openai/agents-core/_shims';
 
 export type RealtimeAgentConfiguration<TContext = UnknownContext> = Partial<
   Omit<
@@ -72,6 +74,15 @@ export class RealtimeAgent<TContext = UnknownContext> extends Agent<
   readonly voice: string;
 
   constructor(config: RealtimeAgentConfiguration<TContext>) {
+    if (isBrowserEnvironment() && config.tools) {
+      for (const tool of config.tools) {
+        if (tool.type === 'function' && tool.localAgentAsTool === true) {
+          throw new UserError(
+            `Local agent as a tool detected: ${tool.name}. Please use a tool that makes requests to your server-side agent logic, rather than converting a locally running client-side agent into a tool.`,
+          );
+        }
+      }
+    }
     super(
       config as AgentConfiguration<RealtimeContextData<TContext>, TextOutput>,
     );
