@@ -28,7 +28,7 @@ describe('RealtimeAgent', () => {
         ],
       });
     }).toThrowError(
-      'Local agent as a tool detected: local_agent_tool. Please use a tool that makes requests to your server-side agent logic, rather than converting a locally running client-side agent into a tool.',
+      "Local agent as a tool detected: local_agent_tool. Please use a tool that makes requests to your server-side agent logic, rather than converting a locally running client-side agent into a tool. If the agent is safe to run with sufficient security measures (e.g., custom proxy / authentication for model requests), set the agent's safeToRunInBrowser option to true.",
     );
   });
 
