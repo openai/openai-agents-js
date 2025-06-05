@@ -467,10 +467,6 @@ export class RealtimeSession<
     if (firstTripwireTriggered) {
       // this ensures that if one guardrail already trips and we are in the middle of another
       // guardrail run, we don't trip again
-      console.log(
-        'interruptedByGuardrail',
-        this.#interruptedByGuardrail[responseId],
-      );
       if (this.#interruptedByGuardrail[responseId]) {
         return;
       }
