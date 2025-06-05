@@ -37,7 +37,7 @@ import { safeExecute } from './utils/safeExecute';
  * run state is compatible with the current version of the SDK.
  * If anything in this schema changes, the version will have to be incremented.
  */
-const CURRENT_SCHEMA_VERSION = '1.0' as const;
+export const CURRENT_SCHEMA_VERSION = '1.0' as const;
 const $schemaVersion = z.literal(CURRENT_SCHEMA_VERSION);
 
 const serializedAgentSchema = z.object({
@@ -349,7 +349,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   toJSON(): z.infer<typeof SerializedRunState> {
     const output = {
-      $schemaVersion: '1.0',
+      $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
       currentAgent: {
         name: this._currentAgent.name,
