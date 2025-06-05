@@ -217,6 +217,11 @@ export interface AgentConfiguration<
    * to `true`. This ensures that the agent doesn't enter an infinite loop of tool usage.
    */
   resetToolChoice: boolean;
+
+  /**
+   * Whether the agent is safe to run in a browser environment. Defaults to false.
+   */
+  safeToRunInBrowser?: boolean;
 }
 
 export type AgentOptions<
@@ -314,6 +319,7 @@ export class Agent<
   outputType: TOutput = 'text' as TOutput;
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
+  safeToRunInBrowser: boolean;
 
   constructor(config: AgentOptions<TContext, TOutput>) {
     super();
@@ -335,6 +341,7 @@ export class Agent<
     }
     this.toolUseBehavior = config.toolUseBehavior ?? 'run_llm_again';
     this.resetToolChoice = config.resetToolChoice ?? true;
+    this.safeToRunInBrowser = config.safeToRunInBrowser ?? false;
 
     // --- Runtime warning for handoff output type compatibility ---
     if (
@@ -437,7 +444,7 @@ export class Agent<
         additionalProperties: false,
       },
       strict: true,
-      localAgentAsTool: true,
+      safeToRunInBrowser: this.safeToRunInBrowser,
       execute: async (data, context) => {
         if (!isAgentToolInput(data)) {
           throw new ModelBehaviorError('Agent tool called with invalid input');

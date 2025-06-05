@@ -75,11 +75,9 @@ export type FunctionTool<
   needsApproval: ToolApprovalFunction<TParameters>;
 
   /**
-   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
-   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
-   * If the property is absent, it means false.
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
    */
-  localAgentAsTool?: boolean;
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -335,11 +333,9 @@ type StrictToolOptions<
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
 
   /**
-   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
-   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
-   * If the property is absent, it means false.
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
    */
-  localAgentAsTool?: boolean;
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -389,11 +385,9 @@ type NonStrictToolOptions<
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
 
   /**
-   * Whether the tool is a local agent. If true, the tool is a different agent that will be called
-   * locally. Note that an agent running on web frontend client side does not work for RealtimeAgent.
-   * If the property is absent, it means false.
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
    */
-  localAgentAsTool?: boolean;
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -518,6 +512,6 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
-    localAgentAsTool: options.localAgentAsTool,
+    safeToRunInBrowser: options.safeToRunInBrowser,
   };
 }

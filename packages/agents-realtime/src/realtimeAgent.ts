@@ -76,7 +76,7 @@ export class RealtimeAgent<TContext = UnknownContext> extends Agent<
   constructor(config: RealtimeAgentConfiguration<TContext>) {
     if (isBrowserEnvironment() && config.tools) {
       for (const tool of config.tools) {
-        if (tool.type === 'function' && tool.localAgentAsTool === true) {
+        if (tool.type === 'function' && tool.safeToRunInBrowser !== true) {
           throw new UserError(
             `Local agent as a tool detected: ${tool.name}. Please use a tool that makes requests to your server-side agent logic, rather than converting a locally running client-side agent into a tool.`,
           );
