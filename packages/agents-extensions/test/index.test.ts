@@ -60,7 +60,6 @@ describe('TwilioRealtimeTransportLayer', () => {
     const call = sendEventSpy.mock.calls.find(
       (c) => c[0]?.type === 'conversation.item.truncate',
     );
-    console.log('call', call);
     expect(call?.[0].audio_end_ms).toBe(50);
   });
 });
