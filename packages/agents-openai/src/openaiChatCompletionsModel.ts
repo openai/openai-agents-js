@@ -67,7 +67,7 @@ export class OpenAIChatCompletionsModel implements Model {
     const output: protocol.OutputModelItem[] = [];
     if (response.choices && response.choices[0]) {
       const message = response.choices[0].message;
-      if (message.content) {
+      if (message.content !== undefined && message.content !== null) {
         const { content, ...rest } = message;
         output.push({
           id: response.id,
