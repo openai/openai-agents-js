@@ -7,6 +7,7 @@ import {
   TransportEvent,
   RealtimeItem,
   OutputGuardrailTripwireTriggered,
+  RealtimeOutputGuardrail,
 } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
@@ -25,6 +26,21 @@ const refundBackchannel = tool({
     return handleRefundRequest(request);
   },
 });
+
+const guardrails: RealtimeOutputGuardrail[] = [
+  {
+    name: 'No mention of Dom',
+    execute: async ({ agentOutput }) => {
+      const domInOutput = agentOutput.includes('Dom');
+      return {
+        tripwireTriggered: domInOutput,
+        outputInfo: {
+          domInOutput,
+        },
+      };
+    },
+  },
+];
 
 const agent = new RealtimeAgent({
   name: 'Greeter',
@@ -48,6 +64,7 @@ export default function Home() {
   useEffect(() => {
     session.current = new RealtimeSession(agent, {
       transport: 'websocket',
+      outputGuardrails: guardrails,
     });
     recorder.current = new WavRecorder({ sampleRate: 24000 });
     player.current = new WavStreamPlayer({ sampleRate: 24000 });
@@ -87,6 +104,7 @@ export default function Home() {
   async function connect() {
     if (isConnected) {
       await session.current?.close();
+      await player.current?.interrupt();
       await recorder.current?.end();
       setIsConnected(false);
     } else {
