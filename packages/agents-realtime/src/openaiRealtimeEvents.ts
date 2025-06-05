@@ -6,15 +6,18 @@ import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 // provide better runtime validation when parsing events from the server.
 
 export const realtimeResponse = z.object({
-  id: z.string().optional(),
-  conversation_id: z.string().optional(),
-  max_output_tokens: z.number().or(z.literal('inf')).optional(),
+  id: z.string().optional().nullable(),
+  conversation_id: z.string().optional().nullable(),
+  max_output_tokens: z.number().or(z.literal('inf')).optional().nullable(),
   metadata: z.record(z.string(), z.any()).optional().nullable(),
-  modalities: z.array(z.string()).optional(),
-  object: z.literal('realtime.response').optional(),
-  output: z.array(z.any()).optional(),
-  output_audio_format: z.string().optional(),
-  status: z.enum(['completed', 'incomplete', 'failed', 'cancelled']).optional(),
+  modalities: z.array(z.string()).optional().nullable(),
+  object: z.literal('realtime.response').optional().nullable(),
+  output: z.array(z.any()).optional().nullable(),
+  output_audio_format: z.string().optional().nullable(),
+  status: z
+    .enum(['completed', 'incomplete', 'failed', 'cancelled', 'in_progress'])
+    .optional()
+    .nullable(),
   status_details: z.record(z.string(), z.any()).optional().nullable(),
   usage: z
     .object({
@@ -26,8 +29,9 @@ export const realtimeResponse = z.object({
         .optional()
         .nullable(),
     })
-    .optional(),
-  voice: z.string().optional(),
+    .optional()
+    .nullable(),
+  voice: z.string().optional().nullable(),
 });
 
 // Basic content schema used by ConversationItem.
@@ -315,7 +319,6 @@ export const responseDoneEventSchema = z.object({
   type: z.literal('response.done'),
   event_id: z.string(),
   response: realtimeResponse,
-  test: z.boolean(),
 });
 
 export const responseFunctionCallArgumentsDeltaEventSchema = z.object({

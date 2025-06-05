@@ -27,4 +27,5 @@ const agent = new RealtimeAgent({
   name: 'Customer Support',
   instructions:
     'You are a customer support agent. If you receive any requests for refunds, you need to delegate to your supervisor.',
+  tools: [refundSupervisor],
 });

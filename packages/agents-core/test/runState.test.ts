@@ -4,6 +4,7 @@ import {
   buildAgentMap,
   deserializeModelResponse,
   deserializeItem,
+  CURRENT_SCHEMA_VERSION,
 } from '../src/runState';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
@@ -35,7 +36,7 @@ describe('RunState', () => {
     const agent = new Agent({ name: 'Agent1' });
     const state = new RunState(context, 'input1', agent, 2);
     const json = state.toJSON();
-    expect(json.$schemaVersion).toBe('1.0');
+    expect(json.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(json.currentTurn).toBe(0);
     expect(json.currentAgent).toEqual({ name: 'Agent1' });
     expect(json.originalInput).toEqual('input1');
@@ -65,7 +66,7 @@ describe('RunState', () => {
     expect(
       async () => await RunState.fromString(agent, JSON.stringify(jsonVersion)),
     ).rejects.toThrow(
-      'Run state schema version 0.1 is not supported. Please use version 1.0',
+      `Run state schema version 0.1 is not supported. Please use version ${CURRENT_SCHEMA_VERSION}`,
     );
   });
 
