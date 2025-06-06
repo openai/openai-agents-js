@@ -9,7 +9,6 @@ packages:
   '@openai/*':
     access: $all
     publish: $all
-    proxy: npmjs
   '**':
     proxy: npmjs
 log: { type: stdout, format: pretty, level: http }
