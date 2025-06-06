@@ -78,8 +78,11 @@
 
 @layer my-overrides {
   :root {
+    --openai-text-primary: #ffffff;
     --openai-background: #202123;
     --openai-light-gray: #000;
+    --openai-primary: #4db8ff;
+    --openai-secondary: #6e6e80;
     --openai-gray-05: #f7f7f8;
     --openai-hover-gray: #565869;
     --openai-gray-1: #353741;
@@ -94,9 +97,13 @@
     --openai-code-highlight-color: rgba(255, 255, 255, 0.1);
     --openai-hero-background: var(--openai-code-background);
     --openai-hero-hover-color: var(--openai-gray-1);
-    --sl-color-bg-sidebar: var(--openai-light-gray) !important;
-    --sl-color-bg-nav: var(--openai-light-gray) !important;
-    --sl-color-bg: var(--openai-light-gray) !important;
+    --openai-search-text: var(--openai-text-primary);
+    --openai-search-field-background: var(--openai-light-gray);
+    --openai-search-button-color: var(--openai-gray-1);
+    --openai-search-button-hover-color: var(--openai-gray-2);
+    --sl-color-bg-sidebar: var(--openai-background) !important;
+    --sl-color-bg-nav: var(--openai-background) !important;
+    --sl-color-bg: var(--openai-background) !important;
     --sl-nav-pad-y: 1rem !important;
     --sl-text-h1: var(--sl-text-3xl) !important;
     --sl-text-h2: var(--sl-text-2xl) !important;
@@ -114,8 +121,11 @@
   }
 
   :root[data-theme='light'] {
+    --openai-text-primary: #202123;
     --openai-background: #ffffff;
     --openai-light-gray: #f5f5f5;
+    --openai-primary: #4db8ff;
+    --openai-secondary: #6e6e80;
     --openai-gray-05: #f7f7f8;
     --openai-hover-gray: hsla(240deg, 17%, 94%, 0.5);
     --openai-gray-1: #ececf1;
@@ -129,9 +139,13 @@
     --openai-title-color: #000000;
     --openai-code-highlight-color: var(--openai-gray-1);
     --openai-hero-background: var(--openai-gray-05);
-    --sl-color-bg-sidebar: var(--openai-light-gray) !important;
-    --sl-color-bg-nav: var(--openai-light-gray) !important;
-    --sl-color-bg: var(--openai-light-gray) !important;
+    --openai-search-text: var(--openai-text-primary);
+    --openai-search-field-background: var(--openai-light-gray);
+    --openai-search-button-color: var(--openai-gray-1);
+    --openai-search-button-hover-color: var(--openai-gray-2);
+    --sl-color-bg-sidebar: var(--openai-background) !important;
+    --sl-color-bg-nav: var(--openai-background) !important;
+    --sl-color-bg: var(--openai-background) !important;
     --sl-nav-pad-y: 1rem !important;
     --sl-text-h1: var(--sl-text-3xl) !important;
     --sl-text-h2: var(--sl-text-2xl) !important;
@@ -218,10 +232,30 @@
 
   site-search {
     button {
-      background-color: var(--openai-light-gray) !important;
-      kbd {
-        background-color: var(--openai-gray-1) !important;
-        color: var(--openai-gray-2) !important;
+      border: 0 !important;
+      color: var(--openai-search-text) !important;
+      background-color: var(--openai-search-field-background) !important;
+      > kbd {
+        display: inline-flex;
+        gap: 0.25rem;
+        padding: 0 !important;
+        background-color: transparent !important;
+
+        kbd {
+          padding-inline-start: 0.4rem !important;
+          padding-inline-end: 0.4rem !important;
+          border-radius: 4px !important;
+          background-color: var(--openai-search-button-color) !important;
+          color: var(--openai-search-text) !important;
+        }
+
+        &:hover {
+          kbd {
+            background-color: var(
+              --openai-search-button-hover-color
+            ) !important;
+          }
+        }
       }
     }
   }
@@ -252,9 +286,9 @@
   .sidebar {
     --sl-color-hairline-shade: rgba(0, 0, 0, 0) !important;
     a[aria-current='page'] {
-      color: initial !important;
-      font-weight: 700 !important;
-      background-color: var(--openai-gray-1) !important;
+      color: var(--openai-primary) !important;
+      font-weight: 500 !important;
+      background-color: transparent !important;
     }
 
     a {
@@ -282,7 +316,9 @@
     }
 
     ul.top-level > li > details > summary span {
-      text-transform: uppercase;
+      font-weight: 500 !important;
+      font-size: var(--sl-text-xs) !important;
+      color: var(--openai-secondary) !important;
     }
 
     details > summary span {
