@@ -115,7 +115,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #timer: Timer;
   #timeout: Timeout | null = null;
   #exportInProgress = false;
-  #timeoutAbortController: AbortController = new AbortController();
+  #timeoutAbortController: AbortController | null = null;
 
   constructor(
     exporter: TracingExporter,
@@ -142,6 +142,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   }
 
   start(): void {
+    this.#timeoutAbortController = new AbortController();
     this.#runExportLoop();
   }
 
@@ -217,7 +218,7 @@ export class BatchTraceProcessor implements TracingProcessor {
     if (timeout) {
       this.#timer.setTimeout(() => {
         // force shutdown the HTTP request
-        this.#timeoutAbortController.abort();
+        this.#timeoutAbortController?.abort();
       }, timeout);
     }
 
@@ -230,7 +231,7 @@ export class BatchTraceProcessor implements TracingProcessor {
         // no current export in progress. Forcing all items to be exported
         await this.#exportBatches(true);
       }
-      if (this.#timeoutAbortController.signal.aborted) {
+      if (this.#timeoutAbortController?.signal.aborted) {
         logger.debug('Timeout reached, force flushing');
         await this.#exportBatches(true);
         break;

@@ -12,26 +12,41 @@
  */
 
 export interface Env {
-	OPENAI_API_KEY: string;
+  OPENAI_API_KEY: string;
 }
 
+import {
+  Agent,
+  BatchTraceProcessor,
+  ConsoleSpanExporter,
+  getGlobalTraceProvider,
+  run,
+  setDefaultOpenAIKey,
+  setTraceProcessors,
+  startTraceExportLoop,
+} from '@openai/agents';
+
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
-		try {
-			const { Agent, run, setDefaultOpenAIKey, setTracingDisabled } = await import('@openai/agents');
+  async fetch(request, env, ctx): Promise<Response> {
+    try {
+      setDefaultOpenAIKey(env.OPENAI_API_KEY!);
+      setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+      startTraceExportLoop();
 
-			setDefaultOpenAIKey(env.OPENAI_API_KEY!);
-			setTracingDisabled(true);
+      const agent = new Agent({
+        name: 'Test Agent',
+        instructions:
+          'You will always only respond with "Hello there!". Not more not less.',
+      });
+      const result = await run(agent, 'Hey there!');
 
-			const agent = new Agent({
-				name: 'Test Agent',
-				instructions: 'You will always only respond with "Hello there!". Not more not less.',
-			});
-			const result = await run(agent, 'Hey there!');
-			return new Response(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
-		} catch (error) {
-			console.error(error);
-			return new Response(String(error), { status: 500 });
-		}
-	},
+      // make sure you shut down tracing before exiting to flush any remaining traces
+      await getGlobalTraceProvider().shutdown();
+
+      return new Response(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+    } catch (error) {
+      console.error(error);
+      return new Response(String(error), { status: 500 });
+    }
+  },
 } satisfies ExportedHandler<Env>;
