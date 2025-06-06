@@ -61,7 +61,7 @@ export class BrowserEventEmitter<
 
 export { BrowserEventEmitter as RuntimeEventEmitter };
 
-export const randomUUID = crypto.randomUUID;
+export const randomUUID = crypto.randomUUID.bind(crypto);
 export const Readable = class Readable {
   constructor() {}
   pipeTo(
