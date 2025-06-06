@@ -157,7 +157,7 @@ export class TraceProvider {
     );
   }
 
-  async shutdown(timeout?: number) {
+  async shutdown(timeout?: number): Promise<void> {
     try {
       logger.debug('Shutting down tracing provider');
       await this.#multiProcessor.shutdown(timeout);
@@ -167,7 +167,7 @@ export class TraceProvider {
   }
 
   /** Adds listeners to `process` to ensure `shutdown` occurs before exit. */
-  #addCleanupListeners() {
+  #addCleanupListeners(): void {
     if (typeof process !== 'undefined' && typeof process.on === 'function') {
       // handling Node.js process termination
       const cleanup = async () => {
