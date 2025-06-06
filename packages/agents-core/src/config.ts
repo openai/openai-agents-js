@@ -1,6 +1,9 @@
 // Use function instead of exporting the value to prevent
 // circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
-import { loadEnv as _loadEnv } from '@openai/agents-core/_shims';
+import {
+  loadEnv as _loadEnv,
+  isBrowserEnvironment,
+} from '@openai/agents-core/_shims';
 
 /**
  * Loads environment variables from the process environment.
@@ -30,6 +33,12 @@ function isEnabled(flagName: string): boolean {
  */
 export const tracing = {
   get disabled() {
+    if (isBrowserEnvironment()) {
+      return true;
+    } else if (loadEnv().NODE_ENV === 'test') {
+      // disabling by default in tests
+      return true;
+    }
     return isEnabled('OPENAI_AGENTS_DISABLE_TRACING');
   },
 };

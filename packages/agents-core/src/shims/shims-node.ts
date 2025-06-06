@@ -33,6 +33,11 @@ export {
   TransformStream,
 } from 'node:stream/web';
 export { AsyncLocalStorage } from 'node:async_hooks';
+
+export function isTracingLoopRunningByDefault(): boolean {
+  return true;
+}
+
 export function isBrowserEnvironment(): boolean {
   return false;
 }
