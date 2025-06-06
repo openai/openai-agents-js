@@ -256,6 +256,7 @@ export abstract class OpenAIRealtimeBase
           type: 'transcript_delta',
           delta: parsed.delta,
           itemId: parsed.item_id,
+          responseId: parsed.response_id,
         });
       }
       // no support for partial transcripts yet.

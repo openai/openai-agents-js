@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.0.3
+
+### Patch Changes
+
+- 0474de9: Fix incorrect handling of chat completions mode for handoff
+- Updated dependencies [d7fd8dc]
+- Updated dependencies [284d0ab]
+  - @openai/agents-core@0.0.3
+
 ## 0.0.2
 
 ### Patch Changes

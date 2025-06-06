@@ -8,7 +8,9 @@ import {
   run,
   Runner,
   setDefaultModelProvider,
+  setTraceProcessors,
   setTracingDisabled,
+  BatchTraceProcessor,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { handoff } from '../src/handoff';
@@ -25,6 +27,7 @@ import {
   FakeModel,
   fakeModelMessage,
   FakeModelProvider,
+  FakeTracingExporter,
   TEST_MODEL_MESSAGE,
   TEST_MODEL_RESPONSE_BASIC,
   TEST_TOOL,
@@ -425,6 +428,7 @@ describe('Runner.run', () => {
 
     it('does nothing when no input guardrails are configured', async () => {
       setTracingDisabled(false);
+      setTraceProcessors([new BatchTraceProcessor(new FakeTracingExporter())]);
       const agent = new Agent({
         name: 'NoIG',
         model: new FakeModel([
