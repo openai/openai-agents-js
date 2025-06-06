@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.0.4
+
+### Patch Changes
+
+- 0f4850e: Fix #34 by adjusting the internals of ai-sdk integration
+  - @openai/agents@0.0.4
+
 ## 0.0.3
 
 ### Patch Changes

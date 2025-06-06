@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.0.4
+
+### Patch Changes
+
+- 25165df: fix: Process hangs on SIGINT because `process.exit` is never called
+- 6683db0: fix(shims): Naively polyfill AsyncLocalStorage in browser
+- 78811c6: fix(shims): Bind crypto to randomUUID
+- 426ad73: ensure getTransferMessage returns valid JSON
+
 ## 0.0.3
 
 ### Patch Changes
