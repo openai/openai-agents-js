@@ -328,6 +328,7 @@ export class OpenAIRealtimeWebSocket
       this.sendEvent({
         type: 'response.cancel',
       });
+      this.#ongoingResponse = false;
     }
   }
 
@@ -367,8 +368,6 @@ export class OpenAIRealtimeWebSocket
     this._cancelResponse();
 
     const elapsedTime = Date.now() - this._firstAudioTimestamp;
-    console.log(`Interrupting response after ${elapsedTime}ms`);
-    console.log(`Audio length: ${this._audioLengthMs}ms`);
     if (elapsedTime >= 0 && elapsedTime < this._audioLengthMs) {
       this._interrupt(elapsedTime);
     }

@@ -34,6 +34,7 @@ export type TransportLayerTranscriptDelta = {
   type: 'transcript_delta';
   itemId: string;
   delta: string;
+  responseId: string;
 };
 
 export type TransportLayerResponseCompleted =

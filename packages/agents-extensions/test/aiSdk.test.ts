@@ -551,7 +551,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
       }),
     );
 
-    expect(async () => {
+    await expect(async () => {
       const iter = model.getStreamedResponse({
         input: 'hi',
         tools: [],

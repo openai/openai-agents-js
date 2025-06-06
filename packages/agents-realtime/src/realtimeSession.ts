@@ -180,6 +180,7 @@ export class RealtimeSession<
   #transcribedTextDeltas: Record<string, string> = {};
   #history: RealtimeItem[] = [];
   #shouldIncludeAudioData: boolean;
+  #interruptedByGuardrail: Record<string, boolean> = {};
 
   constructor(
     public readonly initialAgent:
@@ -446,7 +447,7 @@ export class RealtimeSession<
     }
   }
 
-  async #runOutputGuardrails(output: string) {
+  async #runOutputGuardrails(output: string, responseId: string) {
     if (this.#outputGuardrails.length === 0) {
       return;
     }
@@ -460,24 +461,28 @@ export class RealtimeSession<
       this.#outputGuardrails.map((guardrail) => guardrail.run(guardrailArgs)),
     );
 
-    for (const result of results) {
-      if (result.output.tripwireTriggered) {
-        const error = new OutputGuardrailTripwireTriggered(
-          `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-          result,
-        );
-        this.emit(
-          'guardrail_tripped',
-          this.#context,
-          this.#currentAgent,
-          error,
-        );
-        this.interrupt();
-
-        const feedbackText = getRealtimeGuardrailFeedbackMessage(result);
-        this.sendMessage(feedbackText);
-        break;
+    const firstTripwireTriggered = results.find(
+      (result) => result.output.tripwireTriggered,
+    );
+    if (firstTripwireTriggered) {
+      // this ensures that if one guardrail already trips and we are in the middle of another
+      // guardrail run, we don't trip again
+      if (this.#interruptedByGuardrail[responseId]) {
+        return;
       }
+      this.#interruptedByGuardrail[responseId] = true;
+      const error = new OutputGuardrailTripwireTriggered(
+        `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
+        firstTripwireTriggered,
+      );
+      this.emit('guardrail_tripped', this.#context, this.#currentAgent, error);
+      this.interrupt();
+
+      const feedbackText = getRealtimeGuardrailFeedbackMessage(
+        firstTripwireTriggered,
+      );
+      this.sendMessage(feedbackText);
+      return;
     }
   }
 
@@ -498,7 +503,7 @@ export class RealtimeSession<
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
-      this.#runOutputGuardrails(textOutput);
+      this.#runOutputGuardrails(textOutput, event.response.id);
     });
 
     this.#transport.on('audio_done', () => {
@@ -511,6 +516,7 @@ export class RealtimeSession<
       try {
         const delta = event.delta;
         const itemId = event.itemId;
+        const responseId = event.responseId;
         if (lastItemId !== itemId) {
           lastItemId = itemId;
           lastRunIndex = 0;
@@ -531,7 +537,7 @@ export class RealtimeSession<
           // We don't cancel existing runs because we want the first one to fail to fail
           // The transport layer should upon failure handle the interruption and stop the model
           // from generating further
-          this.#runOutputGuardrails(newText);
+          this.#runOutputGuardrails(newText, responseId);
         }
       } catch (err) {
         this.emit('error', {
@@ -672,6 +678,7 @@ export class RealtimeSession<
    * Disconnect from the session.
    */
   close() {
+    this.#interruptedByGuardrail = {};
     this.#transport.close();
   }
 
