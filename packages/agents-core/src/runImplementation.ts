@@ -14,7 +14,13 @@ import {
 } from './items';
 import logger, { Logger } from './logger';
 import { ModelResponse, ModelSettings } from './model';
-import { ComputerTool, FunctionTool, Tool, FunctionToolResult } from './tool';
+import {
+  ComputerTool,
+  FunctionTool,
+  Tool,
+  FunctionToolResult,
+  HostedMCPTool,
+} from './tool';
 import { AgentInputItem, UnknownContext } from './types';
 import { Runner } from './run';
 import { RunContext } from './runContext';
@@ -31,6 +37,7 @@ import * as protocol from './types/protocol';
 import { Computer } from './computer';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
+import * as ProviderData from './types/providerData';
 
 type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -47,11 +54,17 @@ type ToolRunComputer = {
   computer: ComputerTool;
 };
 
+type ToolRunMCPApprovalRequest = {
+  requestItem: RunToolApprovalItem;
+  mcpTool: HostedMCPTool;
+};
+
 export type ProcessedResponse<TContext = UnknownContext> = {
   newItems: RunItem[];
   handoffs: ToolRunHandoff[];
   functions: ToolRunFunction<TContext>[];
   computerActions: ToolRunComputer[];
+  mcpApprovalRequests: ToolRunMCPApprovalRequest[];
   toolsUsed: string[];
   hasToolsOrApprovalsToRun(): boolean;
 };
@@ -69,12 +82,19 @@ export function processModelResponse<TContext>(
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
   const runComputerActions: ToolRunComputer[] = [];
+  const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
   const toolsUsed: string[] = [];
   const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
   const functionMap = new Map(
     tools.filter((t) => t.type === 'function').map((t) => [t.name, t]),
   );
   const computerTool = tools.find((t) => t.type === 'computer');
+  const mcpToolMap = new Map(
+    tools
+      .filter((t) => t.type === 'hosted_tool' && t.providerData?.type === 'mcp')
+      .map((t) => t as HostedMCPTool)
+      .map((t) => [t.providerData.serverLabel, t]),
+  );
 
   for (const output of modelResponse.output) {
     if (output.type === 'message') {
@@ -82,8 +102,58 @@ export function processModelResponse<TContext>(
         items.push(new RunMessageOutputItem(output, agent));
       }
     } else if (output.type === 'hosted_tool_call') {
-      items.push(new RunToolCallItem(output, agent));
-      toolsUsed.push(output.name);
+      if (
+        output.providerData?.type === 'mcp_approval_request' ||
+        output.name === 'mcp_approval_request'
+      ) {
+        // Hosted remote MCP server support
+        const providerData =
+          output.providerData as ProviderData.HostedMCPApprovalRequest;
+        const mcpServerLabel = providerData.serverLabel;
+        const mcpServerTool = mcpToolMap.get(mcpServerLabel);
+        if (mcpServerTool !== undefined) {
+          const toolName = JSON.stringify({
+            server: providerData.serverLabel,
+            name: providerData.name,
+          });
+          // Do this approval later
+          runMCPApprovalRequests.push({
+            requestItem: new RunToolApprovalItem(
+              {
+                type: 'function_call',
+                name: toolName,
+                callId: providerData.id,
+                arguments: providerData.arguments || '',
+                status: 'in_progress',
+                providerData,
+              },
+              agent,
+            ),
+            mcpTool: mcpServerTool,
+          });
+          items.push(new RunToolCallItem(output, agent));
+          toolsUsed.push(toolName);
+        } else {
+          const message = `MCP server (${mcpServerLabel}) not found in Agent (${agent.name})`;
+          addErrorToCurrentSpan({
+            message,
+            data: { mcp_server_label: mcpServerLabel },
+          });
+          throw new ModelBehaviorError(message);
+        }
+      } else {
+        // the rest of the hosted
+        items.push(new RunToolCallItem(output, agent));
+        const toolName = output.providerData?.serverLabel
+          ? // hosted MCP tool
+            JSON.stringify({
+              server: output.providerData.serverLabel,
+              name: output.name,
+            })
+          : // other hosted tools
+            output.name;
+        toolsUsed.push(toolName);
+      }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
     } else if (output.type === 'computer_call') {
@@ -147,6 +217,7 @@ export function processModelResponse<TContext>(
     handoffs: runHandoffs,
     functions: runFunctions,
     computerActions: runComputerActions,
+    mcpApprovalRequests: runMCPApprovalRequests,
     toolsUsed: toolsUsed,
     hasToolsOrApprovalsToRun(): boolean {
       return (
@@ -343,6 +414,40 @@ export async function executeToolsAndSideEffects<TContext>(
 
   newItems = newItems.concat(functionResults.map((r) => r.runItem));
   newItems = newItems.concat(computerResults);
+
+  // run hosted MCP approval requests
+  if (processedResponse.mcpApprovalRequests.length > 0) {
+    for (const approvalRequest of processedResponse.mcpApprovalRequests) {
+      const toolData = approvalRequest.mcpTool
+        .providerData as ProviderData.HostedMCPTool<TContext>;
+      if (!toolData.onApproval) {
+        throw new UserError(
+          `Hosted remote MCP server tool (${toolData.serverLabel}) does not have an onApproval function`,
+        );
+      }
+      const approvalResult = await toolData.onApproval(
+        state._context,
+        approvalRequest.requestItem,
+      );
+      const requestData = approvalRequest.requestItem.rawItem
+        .providerData as ProviderData.HostedMCPApprovalRequest;
+      const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
+        approve: approvalResult.approve,
+        approvalRequestId: requestData.id,
+        reason: approvalResult.reason,
+      };
+      newItems.push(
+        new RunToolCallItem(
+          {
+            type: 'hosted_tool_call',
+            name: 'mcp_approval_response',
+            providerData: approvalResponseData,
+          },
+          agent as Agent<unknown, 'text'>,
+        ),
+      );
+    }
+  }
 
   // process handoffs
   if (processedResponse.handoffs.length > 0) {

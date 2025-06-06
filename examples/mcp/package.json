@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start:stdio": "tsx filesystem-example.ts"
+    "start:stdio": "tsx filesystem-example.ts",
+    "start:hosted-mcp-approvals": "tsx hosted-mcp-approvals.ts",
+    "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts"
   }
 }

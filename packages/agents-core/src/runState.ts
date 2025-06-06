@@ -152,6 +152,12 @@ const serializedProcessedResponseSchema = z.object({
       computer: z.any(),
     }),
   ),
+  mcpApprovalRequests: z.array(
+    z.object({
+      requestItem: z.any(),
+      mcpTool: z.any(),
+    }),
+  ),
 });
 
 const guardrailFunctionOutputSchema = z.object({
@@ -733,6 +739,15 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
           computer: computerTools.get(toolName)!,
         };
       },
+    ),
+    mcpApprovalRequests: serializedProcessedResponse.mcpApprovalRequests.map(
+      (approvalRequest) => ({
+        requestItem: new RunToolApprovalItem(
+          approvalRequest.requestItem.rawItem,
+          currentAgent,
+        ),
+        mcpTool: approvalRequest.mcpTool,
+      }),
     ),
   };
 

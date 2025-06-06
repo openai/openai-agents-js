@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computerTool, tool } from '../src/tool';
+import { computerTool, hostedMcpTool, tool } from '../src/tool';
 import { z } from 'zod/v3';
 import { Computer } from '../src';
 import { RunContext } from '../src/runContext';
@@ -32,6 +32,21 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('computer');
     expect(t.name).toBe('computer_use_preview');
+  });
+});
+
+describe('create a tool using hostedMcpTool utility', () => {
+  it('hostedMcpTool', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: 'never',
+    });
+    expect(t).toBeDefined();
+    expect(t.type).toBe('hosted_tool');
+    expect(t.name).toBe('hosted_mcp');
+    expect(t.providerData.type).toBe('mcp');
+    expect(t.providerData.serverLabel).toBe('gitmcp');
   });
 });
 

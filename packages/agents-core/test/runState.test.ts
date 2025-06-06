@@ -252,6 +252,7 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      mcpApprovalRequests: [],
       toolsUsed: [],
       hasToolsOrApprovalsToRun: () => true,
     };
@@ -277,6 +278,7 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      mcpApprovalRequests: [],
       toolsUsed: [],
       hasToolsOrApprovalsToRun: () => true,
     };
