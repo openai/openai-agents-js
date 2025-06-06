@@ -47,7 +47,7 @@ export type HandoffInputFilter = (input: HandoffInputData) => HandoffInputData;
 export function getTransferMessage<TContext, TOutput extends AgentOutputType>(
   agent: Agent<TContext, TOutput>,
 ) {
-  return `{'assistant': '${agent.name}'}`;
+  return JSON.stringify({ assistant: agent.name });
 }
 
 /**
