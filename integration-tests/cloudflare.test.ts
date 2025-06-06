@@ -24,6 +24,11 @@ describe('Cloudflare Workers', () => {
         }
       });
     });
+    process.on('exit', () => {
+      if (server) {
+        server.kill();
+      }
+    });
   }, 60000);
 
   test(
@@ -40,7 +45,7 @@ describe('Cloudflare Workers', () => {
 
   afterAll(async () => {
     if (server) {
-      server.kill;
+      server.kill();
     }
   });
 });
