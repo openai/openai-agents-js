@@ -11,6 +11,7 @@ import type { Computer } from '../src/computer';
 import type { Environment } from '../src/computer';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
+import { Span, Trace, TracingExporter } from '../src';
 
 export const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem = {
   id: '123',
@@ -93,7 +94,7 @@ export class FakeComputer implements Computer {
   dimensions: [number, number] = [1, 1];
 
   async screenshot(): Promise<string> {
-    return '';
+    return 'img';
   }
   async click(_x: number, _y: number, _button: any): Promise<void> {}
   async doubleClick(_x: number, _y: number): Promise<void> {}
@@ -132,5 +133,11 @@ export class FakeModel implements Model {
 export class FakeModelProvider implements ModelProvider {
   async getModel(_name: string): Promise<Model> {
     return new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+  }
+}
+
+export class FakeTracingExporter implements TracingExporter {
+  export(_items: (Trace | Span<any>)[], _signal?: AbortSignal): Promise<void> {
+    return Promise.resolve();
   }
 }

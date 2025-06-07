@@ -50,7 +50,7 @@ describe('RunState', () => {
     expect(JSON.parse(str)).toEqual(json);
   });
 
-  it('throws error if schema version is missing or invalid', () => {
+  it('throws error if schema version is missing or invalid', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent1' });
     const state = new RunState(context, 'input1', agent, 2);
@@ -58,13 +58,13 @@ describe('RunState', () => {
     delete jsonVersion.$schemaVersion;
 
     const str = JSON.stringify(jsonVersion);
-    expect(async () => await RunState.fromString(agent, str)).rejects.toThrow(
+    await expect(() => RunState.fromString(agent, str)).rejects.toThrow(
       'Run state is missing schema version',
     );
 
     jsonVersion.$schemaVersion = '0.1';
-    expect(
-      async () => await RunState.fromString(agent, JSON.stringify(jsonVersion)),
+    await expect(() =>
+      RunState.fromString(agent, JSON.stringify(jsonVersion)),
     ).rejects.toThrow(
       `Run state schema version 0.1 is not supported. Please use version ${CURRENT_SCHEMA_VERSION}`,
     );

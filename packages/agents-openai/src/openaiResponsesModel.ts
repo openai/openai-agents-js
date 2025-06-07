@@ -640,45 +640,37 @@ export class OpenAIResponsesModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
+    const requestData = {
+      instructions: request.systemInstructions,
+      model: this.#model,
+      input,
+      include,
+      tools,
+      previous_response_id: request.previousResponseId,
+      temperature: request.modelSettings.temperature,
+      top_p: request.modelSettings.topP,
+      truncation: request.modelSettings.truncation,
+      max_output_tokens: request.modelSettings.maxTokens,
+      tool_choice: toolChoice as ToolChoiceOptions,
+      parallel_tool_calls: parallelToolCalls,
+      stream,
+      text: responseFormat,
+      store: request.modelSettings.store,
+      ...request.modelSettings.providerData,
+    };
+
     if (logger.dontLogModelData) {
       logger.debug('Calling LLM');
     } else {
       logger.debug(
-        [
-          `Calling LLM ${this.#model} with input:`,
-          JSON.stringify(request.input, null, 2),
-          `Tools: ${JSON.stringify(tools, null, 2)}`,
-          `Stream: ${stream}`,
-          `Tool choice: ${toolChoice}`,
-          `Response format: ${JSON.stringify(responseFormat, null, 2)}`,
-        ].join('\n'),
+        `Calling LLM. Request data: ${JSON.stringify(requestData, null, 2)}`,
       );
     }
 
-    const response = await this.#client.responses.create(
-      {
-        instructions: request.systemInstructions,
-        model: this.#model,
-        input,
-        include,
-        tools,
-        previous_response_id: request.previousResponseId,
-        temperature: request.modelSettings.temperature,
-        top_p: request.modelSettings.topP,
-        truncation: request.modelSettings.truncation,
-        max_output_tokens: request.modelSettings.maxTokens,
-        tool_choice: toolChoice as ToolChoiceOptions,
-        parallel_tool_calls: parallelToolCalls,
-        stream,
-        text: responseFormat,
-        store: request.modelSettings.store,
-        ...request.modelSettings.providerData,
-      },
-      {
-        headers: HEADERS,
-        signal: request.signal,
-      },
-    );
+    const response = await this.#client.responses.create(requestData, {
+      headers: HEADERS,
+      signal: request.signal,
+    });
 
     if (logger.dontLogModelData) {
       logger.debug('Response received');

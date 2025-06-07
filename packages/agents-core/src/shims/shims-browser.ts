@@ -61,7 +61,7 @@ export class BrowserEventEmitter<
 
 export { BrowserEventEmitter as RuntimeEventEmitter };
 
-export const randomUUID = crypto.randomUUID;
+export const randomUUID = crypto.randomUUID.bind(crypto);
 export const Readable = class Readable {
   constructor() {}
   pipeTo(
@@ -87,10 +87,16 @@ export const ReadableStreamController =
 export const TransformStream = globalThis.TransformStream;
 
 export class AsyncLocalStorage {
-  constructor() {}
-  run() {}
-  getStore() {}
-  enterWith() {}
+  context = null;
+  constructor() { }
+  run(context: any, fn: () => any) {
+      this.context = context;
+      return fn();
+  }
+  getStore() {
+      return this.context;
+  }
+  enterWith() { }
 }
 
 export function isBrowserEnvironment(): boolean {

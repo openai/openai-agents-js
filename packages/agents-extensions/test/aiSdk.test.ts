@@ -118,7 +118,7 @@ describe('itemsToLanguageV1Messages', () => {
             type: 'tool-call',
             toolCallId: '1',
             toolName: 'foo',
-            args: '{}',
+            args: {},
           },
         ],
         providerMetadata: { stub: { a: 1 } },
@@ -181,7 +181,7 @@ describe('itemsToLanguageV1Messages', () => {
       {
         role: 'assistant',
         content: [
-          { type: 'tool-call', toolCallId: '1', toolName: 'do', args: '{}' },
+          { type: 'tool-call', toolCallId: '1', toolName: 'do', args: {} },
         ],
         providerMetadata: { stub: {} },
       },
@@ -376,7 +376,7 @@ describe('AiSdkModel.getResponse', () => {
                 toolCallType: 'function',
                 toolCallId: 'c1',
                 toolName: 'foo',
-                args: '{}',
+                args: {} as any,
               },
             ],
             finishReason: 'stop',
@@ -404,7 +404,7 @@ describe('AiSdkModel.getResponse', () => {
         type: 'function_call',
         callId: 'c1',
         name: 'foo',
-        arguments: '{}',
+        arguments: {},
         status: 'completed',
         providerData: { p: 1 },
       },
@@ -465,7 +465,7 @@ describe('AiSdkModel.getResponse', () => {
 
     expect(received[0]).toEqual({
       role: 'system',
-      content: [{ type: 'text', text: 'inst' }],
+      content: 'inst',
     });
   });
 });
@@ -551,7 +551,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
       }),
     );
 
-    expect(async () => {
+    await expect(async () => {
       const iter = model.getStreamedResponse({
         input: 'hi',
         tools: [],
@@ -636,7 +636,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
 
     expect(received[0]).toEqual({
       role: 'system',
-      content: [{ type: 'text', text: 'inst' }],
+      content: 'inst',
     });
   });
 });
@@ -695,7 +695,7 @@ describe('AiSdkModel', () => {
             type: 'tool-call',
             toolCallId: 'call1',
             toolName: 'do',
-            args: '{}',
+            args: {},
           },
         ],
         providerMetadata: { fake: { meta: 1 } },

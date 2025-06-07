@@ -245,20 +245,6 @@ export class OpenAIChatCompletionsModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
-    if (logger.dontLogModelData) {
-      logger.debug('Calling LLM');
-    } else {
-      logger.debug(
-        [
-          `Calling LLM ${this.#model} with input:`,
-          JSON.stringify(request.input, null, 2),
-          `Tools: ${JSON.stringify(tools, null, 2)}`,
-          `Stream: ${stream}`,
-          `Response format: ${JSON.stringify(responseFormat, null, 2)}`,
-        ].join('\n'),
-      );
-    }
-
     const messages = itemsToMessages(request.input);
     if (request.systemInstructions) {
       messages.unshift({
@@ -271,28 +257,35 @@ export class OpenAIChatCompletionsModel implements Model {
       span.spanData.input = messages;
     }
 
-    const completion = await this.#client.chat.completions.create(
-      {
-        model: this.#model,
-        messages,
-        tools,
-        temperature: request.modelSettings.temperature,
-        top_p: request.modelSettings.topP,
-        frequency_penalty: request.modelSettings.frequencyPenalty,
-        presence_penalty: request.modelSettings.presencePenalty,
-        max_tokens: request.modelSettings.maxTokens,
-        tool_choice: convertToolChoice(request.modelSettings.toolChoice),
-        response_format: responseFormat,
-        parallel_tool_calls: parallelToolCalls,
-        stream,
-        store: request.modelSettings.store,
-        ...request.modelSettings.providerData,
-      },
-      {
-        headers: HEADERS,
-        signal: request.signal,
-      },
-    );
+    const requestData = {
+      model: this.#model,
+      messages,
+      tools,
+      temperature: request.modelSettings.temperature,
+      top_p: request.modelSettings.topP,
+      frequency_penalty: request.modelSettings.frequencyPenalty,
+      presence_penalty: request.modelSettings.presencePenalty,
+      max_tokens: request.modelSettings.maxTokens,
+      tool_choice: convertToolChoice(request.modelSettings.toolChoice),
+      response_format: responseFormat,
+      parallel_tool_calls: parallelToolCalls,
+      stream,
+      store: request.modelSettings.store,
+      ...request.modelSettings.providerData,
+    };
+
+    if (logger.dontLogModelData) {
+      logger.debug('Calling LLM');
+    } else {
+      logger.debug(
+        `Calling LLM. Request data: ${JSON.stringify(requestData, null, 2)}`,
+      );
+    }
+
+    const completion = await this.#client.chat.completions.create(requestData, {
+      headers: HEADERS,
+      signal: request.signal,
+    });
 
     if (logger.dontLogModelData) {
       logger.debug('Response received');

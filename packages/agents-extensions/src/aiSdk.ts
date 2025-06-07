@@ -5,7 +5,6 @@ import type {
   LanguageModelV1FunctionTool,
   LanguageModelV1Message,
   LanguageModelV1Prompt,
-  LanguageModelV1TextPart,
   LanguageModelV1ProviderDefinedTool,
   LanguageModelV1ToolCallPart,
   LanguageModelV1ToolResultPart,
@@ -147,7 +146,7 @@ export function itemsToLanguageV1Messages(
           type: 'tool-call',
           toolCallId: item.callId,
           toolName: item.name,
-          args: item.arguments,
+          args: JSON.parse(item.arguments),
         };
         currentAssistantMessage.content.push(content);
       }
@@ -365,13 +364,8 @@ export class AiSdkModel implements Model {
           input = [
             {
               role: 'system',
-              content: [
-                {
-                  type: 'text',
-                  text: request.systemInstructions,
-                } as LanguageModelV1TextPart,
-              ],
-            } as unknown as LanguageModelV1Message,
+              content: request.systemInstructions,
+            },
             ...input,
           ];
         }
@@ -428,7 +422,11 @@ export class AiSdkModel implements Model {
           });
         });
 
-        if (result.text) {
+        // Some of other platforms may return both tool calls and text.
+        // Putting a text message here will let the agent loop to complete,
+        // so adding this item only when the tool calls are empty.
+        // Note that the same support is not available for streaming mode.
+        if (!result.toolCalls && result.text) {
           output.push({
             type: 'message',
             content: [{ type: 'output_text', text: result.text }],
@@ -515,13 +513,8 @@ export class AiSdkModel implements Model {
         input = [
           {
             role: 'system',
-            content: [
-              {
-                type: 'text',
-                text: request.systemInstructions,
-              } as LanguageModelV1TextPart,
-            ],
-          } as unknown as LanguageModelV1Message,
+            content: request.systemInstructions,
+          },
           ...input,
         ];
       }

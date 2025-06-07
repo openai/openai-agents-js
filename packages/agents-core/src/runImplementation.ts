@@ -12,7 +12,7 @@ import {
   RunToolCallItem,
   RunToolCallOutputItem,
 } from './items';
-import logger from './logger';
+import logger, { Logger } from './logger';
 import { ModelResponse, ModelSettings } from './model';
 import { ComputerTool, FunctionTool, Tool, FunctionToolResult } from './tool';
 import { AgentInputItem, UnknownContext } from './types';
@@ -695,7 +695,9 @@ export async function executeComputerActions(
   actions: ToolRunComputer[],
   runner: Runner,
   runContext: RunContext,
+  customLogger: Logger | undefined = undefined,
 ): Promise<RunItem[]> {
+  const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
     const computer = action.computer.computer;
@@ -712,7 +714,7 @@ export async function executeComputerActions(
     try {
       output = await _runComputerActionAndScreenshot(computer, toolCall);
     } catch (err) {
-      logger.error('Failed to execute computer action:', err);
+      _logger.error('Failed to execute computer action:', err);
       output = '';
     }
 
@@ -930,7 +932,6 @@ export async function checkForFinalOutputFromTools<
     return toolUseBehavior(state._context, toolResults);
   }
 
-  logger.error('Invalid toolUseBehavior: ', toolUseBehavior);
   throw new UserError(`Invalid toolUseBehavior: ${toolUseBehavior}`, state);
 }
 

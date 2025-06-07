@@ -69,7 +69,17 @@ describe('Agent + handoffs', () => {
         outputType: z.object({ a: z.string() }),
       }),
     );
-    expect(result).toBe("{'assistant': 'Agent A'}");
+    expect(result).toBe('{"assistant":"Agent A"}');
+  });
+
+  it('getTransferMessage produces valid JSON', () => {
+    const result = getTransferMessage(
+      new Agent({
+        name: 'Agent A',
+        outputType: z.object({ a: z.string() }),
+      }),
+    );
+    expect(JSON.parse(result)).toEqual({ assistant: 'Agent A' });
   });
 
   it('Handoff#getHandoffAsFunctionTool', async () => {

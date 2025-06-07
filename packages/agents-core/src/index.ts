@@ -1,7 +1,5 @@
-import logger from './logger';
 import { addTraceProcessor } from './tracing';
 import { defaultProcessor } from './tracing/processor';
-import { getGlobalTraceProvider } from './tracing/provider';
 
 export { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 export {
@@ -148,25 +146,3 @@ export * as protocol from './types/protocol';
  * 2. calling setTraceProcessors, which sets the processors and discards the default one
  */
 addTraceProcessor(defaultProcessor());
-
-const cleanup = async () => {
-  await getGlobalTraceProvider().shutdown();
-};
-
-if (typeof process !== 'undefined' && typeof process.on === 'function') {
-  // handling Node.js process termination
-
-  // Handle normal termination
-  process.on('beforeExit', cleanup);
-
-  // Handle CTRL+C (SIGINT)
-  process.on('SIGINT', cleanup);
-
-  // Handle termination (SIGTERM)
-  process.on('SIGTERM', cleanup);
-
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled rejection', reason, promise);
-    cleanup();
-  });
-}

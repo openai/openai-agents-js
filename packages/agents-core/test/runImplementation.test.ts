@@ -46,6 +46,7 @@ import * as protocol from '../src/types/protocol';
 import { Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
+import { Logger } from '../src/logger';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -627,6 +628,7 @@ describe('executeComputerActions', () => {
         [call],
         new Runner({ tracingDisabled: true }),
         new RunContext(),
+        { error: (_: string) => {} } as unknown as Logger,
       ),
     );
 
