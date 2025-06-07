@@ -45,6 +45,12 @@ export function isBrowserEnvironment(): boolean {
   return false;
 }
 
+export function isTracingLoopRunningByDefault(): boolean {
+  // Cloudflare workers does not support triggering things like setTimeout outside of the
+  // request context. So we don't run the trace export loop by default.
+  return false;
+}
+
 /**
  * Right now Cloudflare Workers does not support MCP
  */

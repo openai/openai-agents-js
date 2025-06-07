@@ -44,6 +44,9 @@ importers:
       husky:
         specifier: ^9.1.7
         version: 9.1.7
+      playwright:
+        specifier: ^1.52.0
+        version: 1.52.0
       prettier:
         specifier: ^3.5.3
         version: 3.5.3

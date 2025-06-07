@@ -46,3 +46,10 @@ export function setTraceProcessors(processors: TracingProcessor[]): void {
 export function setTracingDisabled(disabled: boolean): void {
   getGlobalTraceProvider().setDisabled(disabled);
 }
+
+/**
+ * Start the trace export loop.
+ */
+export function startTraceExportLoop(): void {
+  getGlobalTraceProvider().startExportLoop();
+}

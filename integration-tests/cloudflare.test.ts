@@ -5,8 +5,6 @@ const execa = execaBase({
   cwd: './integration-tests/cloudflare-workers/worker',
 });
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 let server: ResultPromise;
 
 describe('Cloudflare Workers', () => {
@@ -26,6 +24,11 @@ describe('Cloudflare Workers', () => {
         }
       });
     });
+    process.on('exit', () => {
+      if (server) {
+        server.kill();
+      }
+    });
   }, 60000);
 
   test(
@@ -42,7 +45,7 @@ describe('Cloudflare Workers', () => {
 
   afterAll(async () => {
     if (server) {
-      server.kill;
+      server.kill();
     }
   });
 });

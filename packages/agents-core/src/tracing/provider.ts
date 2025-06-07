@@ -1,5 +1,5 @@
 import { getCurrentSpan, getCurrentTrace } from './context';
-import { loadEnv, tracing } from '../config';
+import { tracing } from '../config';
 import logger from '../logger';
 import { MultiTracingProcessor, TracingProcessor } from './processor';
 import { NoopSpan, Span, SpanData, SpanOptions } from './spans';
@@ -18,11 +18,6 @@ export class TraceProvider {
   constructor() {
     this.#multiProcessor = new MultiTracingProcessor();
     this.#disabled = tracing.disabled;
-
-    if (loadEnv().NODE_ENV === 'test') {
-      // disable tracing in tests by default
-      this.#disabled = true;
-    }
 
     this.#addCleanupListeners();
   }
@@ -60,6 +55,10 @@ export class TraceProvider {
 
   setDisabled(disabled: boolean): void {
     this.#disabled = disabled;
+  }
+
+  startExportLoop(): void {
+    this.#multiProcessor.start();
   }
 
   createTrace(traceOptions: TraceOptions): Trace {

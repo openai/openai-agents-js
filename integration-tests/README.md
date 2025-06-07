@@ -11,7 +11,9 @@ local package registry using verdaccio.
 
 - Have Node.js, Bun, and Deno installed globally
 - Have an `OPENAI_API_KEY` environment variable configured
-- Add into `interation-tests/cloudflare-workers/worker` a file `.dev.vars` with `OPENAI_API_KEY=<your key>`
+- Add into `integration-tests/cloudflare-workers/worker` a file `.dev.vars` with `OPENAI_API_KEY=<your key>`
+- Add into `integration-tests/vite-react` a `.env` file with `VITE_OPENAI_API_KEY=<your key>`
+- Run `pnpm exec playwright install` to install playwright
 
 2. **Local npm registry**
 

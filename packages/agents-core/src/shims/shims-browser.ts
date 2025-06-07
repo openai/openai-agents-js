@@ -88,20 +88,27 @@ export const TransformStream = globalThis.TransformStream;
 
 export class AsyncLocalStorage {
   context = null;
-  constructor() { }
+  constructor() {}
   run(context: any, fn: () => any) {
-      this.context = context;
-      return fn();
+    this.context = context;
+    return fn();
   }
   getStore() {
-      return this.context;
+    return this.context;
   }
-  enterWith() { }
+  enterWith(context: any) {
+    this.context = context;
+  }
 }
 
 export function isBrowserEnvironment(): boolean {
   return true;
 }
+
+export function isTracingLoopRunningByDefault(): boolean {
+  return false;
+}
+
 export { MCPServerStdio } from './mcp-stdio/browser';
 
 class BrowserTimer implements Timer {

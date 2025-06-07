@@ -2,8 +2,8 @@ import { Span as TSpan } from './spans';
 import { Trace } from './traces';
 import logger from '../logger';
 import {
-  isBrowserEnvironment,
   timer as _timer,
+  isTracingLoopRunningByDefault,
 } from '@openai/agents-core/_shims';
 import type { Timeout, Timer } from '../shims/interface';
 import { tracing } from '../config';
@@ -14,6 +14,13 @@ type Span = TSpan<any>;
  * Interface for processing traces
  */
 export interface TracingProcessor {
+  /**
+   * Called when the trace processor should start procesing traces.
+   * Only available if the processor is performing tasks like exporting traces in a loop to start
+   * the loop
+   */
+  start?(): void;
+
   /***
    * Called when a trace is started
    */
@@ -108,7 +115,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #timer: Timer;
   #timeout: Timeout | null = null;
   #exportInProgress = false;
-  #timeoutAbortController: AbortController = new AbortController();
+  #timeoutAbortController: AbortController | null = null;
 
   constructor(
     exporter: TracingExporter,
@@ -125,13 +132,18 @@ export class BatchTraceProcessor implements TracingProcessor {
     this.#exportTriggerSize = maxQueueSize * exportTriggerRatio;
     this.#exporter = exporter;
     this.#timer = _timer;
-    if (!isBrowserEnvironment()) {
-      this.#runExportLoop();
+    if (isTracingLoopRunningByDefault()) {
+      this.start();
     } else {
-      logger.warn(
-        'BatchTraceProcessor is not supported in the browser. Traces will not be exported.',
+      logger.debug(
+        'Automatic trace export loop is not supported in this environment. Traces will not be exported until you call `startTraceExportLoop()`.',
       );
     }
+  }
+
+  start(): void {
+    this.#timeoutAbortController = new AbortController();
+    this.#runExportLoop();
   }
 
   async #safeAddItem(item: Trace | Span): Promise<void> {
@@ -206,7 +218,7 @@ export class BatchTraceProcessor implements TracingProcessor {
     if (timeout) {
       this.#timer.setTimeout(() => {
         // force shutdown the HTTP request
-        this.#timeoutAbortController.abort();
+        this.#timeoutAbortController?.abort();
       }, timeout);
     }
 
@@ -219,7 +231,7 @@ export class BatchTraceProcessor implements TracingProcessor {
         // no current export in progress. Forcing all items to be exported
         await this.#exportBatches(true);
       }
-      if (this.#timeoutAbortController.signal.aborted) {
+      if (this.#timeoutAbortController?.signal.aborted) {
         logger.debug('Timeout reached, force flushing');
         await this.#exportBatches(true);
         break;
@@ -243,6 +255,14 @@ export class BatchTraceProcessor implements TracingProcessor {
 
 export class MultiTracingProcessor implements TracingProcessor {
   #processors: TracingProcessor[] = [];
+
+  start(): void {
+    for (const processor of this.#processors) {
+      if (processor.start) {
+        processor.start();
+      }
+    }
+  }
 
   addTraceProcessor(processor: TracingProcessor): void {
     this.#processors.push(processor);
