@@ -252,6 +252,7 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      mcpApprovalRequests: [],
       toolsUsed: [],
     };
 
@@ -276,6 +277,7 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      mcpApprovalRequests: [],
       toolsUsed: [],
     };
     state._currentStep = {

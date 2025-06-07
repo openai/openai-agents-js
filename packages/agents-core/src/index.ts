@@ -99,6 +99,8 @@ export {
   HostedTool,
   ComputerTool,
   computerTool,
+  HostedMCPTool,
+  hostedMcpTool,
   FunctionTool,
   FunctionToolResult,
   Tool,

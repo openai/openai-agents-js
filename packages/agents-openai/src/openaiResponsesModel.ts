@@ -33,6 +33,8 @@ import {
   ImageGenerationStatus,
   WebSearchStatus,
 } from './tools';
+import { camelToSnakeCase, snakeToCamelCase } from './utils/providerData';
+import { ProviderData } from '@openai/agents-core/types';
 
 type ToolChoice = ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction;
 
@@ -40,6 +42,9 @@ const HostedToolChoice = z.enum([
   'file_search',
   'web_search_preview',
   'computer_use_preview',
+  'code_interpreter',
+  'image_generation',
+  'mcp',
 ]);
 
 const DefaultToolChoice = z.enum(['auto', 'required', 'none']);
@@ -142,7 +147,12 @@ function converTool<_TContext = unknown>(
       return {
         tool: {
           type: 'file_search',
-          vector_store_ids: tool.providerData.vectorStoreId,
+          vector_store_ids:
+            tool.providerData.vectorStoreIds ||
+            // for backwards compatibility
+            (typeof tool.providerData.vectorStoreId === 'string'
+              ? [tool.providerData.vectorStoreId]
+              : tool.providerData.vectorStoreId),
           max_num_results: tool.providerData.maxNumResults,
           ranking_options: tool.providerData.rankingOptions,
           filters: tool.providerData.filters,
@@ -175,6 +185,16 @@ function converTool<_TContext = unknown>(
         },
         include: undefined,
       };
+    } else if (tool.providerData?.type === 'mcp') {
+      return {
+        tool: {
+          type: 'mcp',
+          server_label: tool.providerData.serverLabel,
+          server_url: tool.providerData.serverUrl,
+          require_approval: tool.providerData.requireApproval,
+        },
+        include: undefined,
+      };
     }
   }
 
@@ -198,7 +218,7 @@ function getInputMessageContent(
     return {
       type: 'input_text',
       text: entry.text,
-      ...entry.providerData,
+      ...camelToSnakeCase(entry.providerData),
     };
   } else if (entry.type === 'input_image') {
     const imageEntry: OpenAI.Responses.ResponseInputImage = {
@@ -212,7 +232,7 @@ function getInputMessageContent(
     }
     return {
       ...imageEntry,
-      ...entry.providerData,
+      ...camelToSnakeCase(entry.providerData),
     };
   } else if (entry.type === 'input_file') {
     const fileEntry: OpenAI.Responses.ResponseInputFile = {
@@ -225,7 +245,7 @@ function getInputMessageContent(
     }
     return {
       ...fileEntry,
-      ...entry.providerData,
+      ...camelToSnakeCase(entry.providerData),
     };
   }
 
@@ -242,7 +262,7 @@ function getOutputMessageContent(
       type: 'output_text',
       text: entry.text,
       annotations: [],
-      ...entry.providerData,
+      ...camelToSnakeCase(entry.providerData),
     };
   }
 
@@ -250,7 +270,7 @@ function getOutputMessageContent(
     return {
       type: 'refusal',
       refusal: entry.refusal,
-      ...entry.providerData,
+      ...camelToSnakeCase(entry.providerData),
     };
   }
 
@@ -270,7 +290,7 @@ function getMessageItem(
       id: item.id,
       role: 'system',
       content: item.content,
-      ...item.providerData,
+      ...camelToSnakeCase(item.providerData),
     };
   }
 
@@ -280,7 +300,7 @@ function getMessageItem(
         id: item.id,
         role: 'user',
         content: item.content,
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
     }
 
@@ -288,7 +308,7 @@ function getMessageItem(
       id: item.id,
       role: 'user',
       content: item.content.map(getInputMessageContent),
-      ...item.providerData,
+      ...camelToSnakeCase(item.providerData),
     };
   }
 
@@ -299,7 +319,7 @@ function getMessageItem(
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
-      ...item.providerData,
+      ...camelToSnakeCase(item.providerData),
     };
     return assistantMessage;
   }
@@ -344,7 +364,7 @@ function getInputItems(
         call_id: item.callId,
         arguments: item.arguments,
         status: item.status,
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -362,7 +382,7 @@ function getInputItems(
         id: item.id,
         call_id: item.callId,
         output: item.output.text,
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -375,9 +395,9 @@ function getInputItems(
         summary: item.content.map((content) => ({
           type: 'summary_text',
           text: content.text,
-          ...content.providerData,
+          ...camelToSnakeCase(content.providerData),
         })),
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
       return entry;
     }
@@ -390,7 +410,7 @@ function getInputItems(
         action: item.action,
         status: item.status,
         pending_safety_checks: [],
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -402,7 +422,7 @@ function getInputItems(
         id: item.id,
         call_id: item.callId,
         output: buildResponseOutput(item),
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       };
       return entry;
     }
@@ -413,7 +433,7 @@ function getInputItems(
           type: 'web_search_call',
           id: item.id!,
           status: WebSearchStatus.parse(item.status ?? 'failed'),
-          ...item.providerData,
+          ...camelToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -425,7 +445,7 @@ function getInputItems(
           id: item.id!,
           status: FileSearchStatus.parse(item.status ?? 'failed'),
           queries: item.providerData?.queries ?? [],
-          ...item.providerData,
+          ...camelToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -438,7 +458,7 @@ function getInputItems(
           code: item.providerData?.code ?? '',
           results: item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
-          ...item.providerData,
+          ...camelToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -450,9 +470,68 @@ function getInputItems(
           id: item.id!,
           result: item.providerData?.result ?? null,
           status: ImageGenerationStatus.parse(item.status ?? 'failed'),
-          ...item.providerData,
+          ...camelToSnakeCase(item.providerData),
         };
 
+        return entry;
+      }
+
+      if (
+        item.providerData?.type === 'mcp_list_tools' ||
+        item.name === 'mcp_list_tools'
+      ) {
+        const providerData =
+          item.providerData as ProviderData.HostedMCPListTools;
+        const entry: OpenAI.Responses.ResponseInputItem.McpListTools = {
+          type: 'mcp_list_tools',
+          id: item.id!,
+          tools: camelToSnakeCase(providerData.tools) as any,
+          server_label: providerData.serverLabel,
+          ...camelToSnakeCase(item.providerData),
+        };
+        return entry;
+      } else if (
+        item.providerData?.type === 'mcp_approval_request' ||
+        item.name === 'mcp_approval_request'
+      ) {
+        const providerData =
+          item.providerData as ProviderData.HostedMCPApprovalRequest;
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest = {
+          type: 'mcp_approval_request',
+          id: providerData.id ?? item.id!,
+          name: providerData.name,
+          arguments: providerData.arguments,
+          server_label: providerData.serverLabel,
+          ...camelToSnakeCase(item.providerData),
+        };
+        return entry;
+      } else if (
+        item.providerData?.type === 'mcp_approval_response' ||
+        item.name === 'mcp_approval_response'
+      ) {
+        const providerData =
+          item.providerData as ProviderData.HostedMCPApprovalResponse;
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse = {
+          type: 'mcp_approval_response',
+          approve: providerData.approve,
+          approval_request_id: providerData.approvalRequestId,
+          reason: providerData.reason,
+          ...camelToSnakeCase(providerData),
+        };
+        return entry;
+      } else if (
+        item.providerData?.type === 'mcp_call' ||
+        item.name === 'mcp_call'
+      ) {
+        const providerData = item.providerData as ProviderData.HostedMCPCall;
+        const entry: OpenAI.Responses.ResponseInputItem.McpCall = {
+          type: 'mcp_call',
+          id: providerData.id ?? item.id!,
+          name: providerData.name,
+          arguments: providerData.arguments,
+          server_label: providerData.serverLabel,
+          ...camelToSnakeCase(providerData),
+        };
         return entry;
       }
 
@@ -464,7 +543,7 @@ function getInputItems(
     if (item.type === 'unknown') {
       return {
         id: item.id,
-        ...item.providerData,
+        ...camelToSnakeCase(item.providerData),
       } as OpenAI.Responses.ResponseItem;
     }
 
@@ -490,7 +569,7 @@ function convertToMessageContentItem(
     const { type, text, ...remainingItem } = item;
     return {
       type,
-      text: text,
+      text,
       ...remainingItem,
     };
   }
@@ -499,7 +578,7 @@ function convertToMessageContentItem(
     const { type, refusal, ...remainingItem } = item;
     return {
       type,
-      refusal: refusal,
+      refusal,
       ...remainingItem,
     };
   }
@@ -512,14 +591,14 @@ function convertToOutputItem(
 ): protocol.OutputModelItem[] {
   return items.map((item) => {
     if (item.type === 'message') {
-      const { id, type, role, content, status, ...remainingItem } = item;
+      const { id, type, role, content, status, ...providerData } = item;
       return {
-        type,
         id,
+        type,
         role,
         content: content.map(convertToMessageContentItem),
         status,
-        providerData: remainingItem,
+        providerData: snakeToCamelCase(providerData),
       };
     } else if (
       item.type === 'file_search_call' ||
@@ -527,71 +606,102 @@ function convertToOutputItem(
       item.type === 'image_generation_call' ||
       item.type === 'code_interpreter_call'
     ) {
-      const { id, type, status, ...remainingItem } = item;
-      const outputData =
-        'result' in remainingItem && remainingItem.result !== null
-          ? remainingItem.result // type: "image_generation_call"
-          : undefined;
+      const { status, ...remainingItem } = item;
+      let outputData = undefined;
+      if ('result' in remainingItem && remainingItem.result !== null) {
+        // type: "image_generation_call"
+        outputData = remainingItem.result;
+        delete (remainingItem as any).result;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
-        id,
-        name: type,
-        status: status,
+        id: item.id!,
+        name: item.type,
+        status,
         output: outputData,
-        providerData: remainingItem,
+        providerData: snakeToCamelCase(remainingItem),
       };
       return output;
     } else if (item.type === 'function_call') {
-      const {
-        id,
-        call_id,
+      const { call_id, name, status, arguments: args, ...providerData } = item;
+      const output: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: item.id!,
+        callId: call_id,
         name,
         status,
         arguments: args,
-        ...remainingItem
-      } = item;
-      const output: protocol.FunctionCallItem = {
-        type: 'function_call',
-        id: id,
-        callId: call_id,
-        name: name,
-        status: status,
-        arguments: args,
-        providerData: remainingItem,
+        providerData: snakeToCamelCase(providerData),
       };
       return output;
     } else if (item.type === 'computer_call') {
-      const { id, call_id, status, action, ...remainingItem } = item;
+      const { call_id, status, action, ...providerData } = item;
       const output: protocol.ComputerUseCallItem = {
         type: 'computer_call',
-        id: id,
+        id: item.id!,
         callId: call_id,
-        status: status,
-        action: action,
-        providerData: remainingItem,
+        status,
+        action,
+        providerData: snakeToCamelCase(providerData),
+      };
+      return output;
+    } else if (item.type === 'mcp_list_tools') {
+      const { ...providerData } = item;
+      const output: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: item.id!,
+        name: item.type,
+        status: 'completed',
+        output: undefined,
+        providerData: snakeToCamelCase(providerData),
+      };
+      return output;
+    } else if (item.type === 'mcp_approval_request') {
+      const { ...providerData } = item;
+      const output: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: item.id!,
+        name: 'mcp_approval_request',
+        status: 'completed',
+        output: undefined,
+        providerData: snakeToCamelCase(providerData),
+      };
+      return output;
+    } else if (item.type === 'mcp_call') {
+      // Avoiding to duplicate potentially large output data
+      const { output: outputData, ...providerData } = item;
+      const output: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: item.id!,
+        name: item.type,
+        status: 'completed',
+        output: outputData || undefined,
+        providerData: snakeToCamelCase(providerData),
       };
       return output;
     } else if (item.type === 'reasoning') {
-      const { id, summary, ...remainingItem } = item;
+      // Avoiding to duplicate potentially large summary data
+      const { summary, ...providerData } = item;
       const output: protocol.ReasoningItem = {
         type: 'reasoning',
-        id: id,
+        id: item.id!,
         content: summary.map((content) => {
+          // Avoiding to duplicate potentially large text
           const { text, ...remainingContent } = content;
           return {
             type: 'input_text',
-            text: text,
-            providerData: remainingContent,
+            text,
+            providerData: snakeToCamelCase(remainingContent),
           };
         }),
-        providerData: remainingItem,
+        providerData: snakeToCamelCase(providerData),
       };
       return output;
     }
 
     return {
       type: 'unknown',
-      providerData: item,
+      providerData: snakeToCamelCase(item),
     };
   });
 }

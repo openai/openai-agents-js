@@ -16,6 +16,7 @@ import logger from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
+import * as ProviderData from './types/providerData';
 
 /**
  * A function that determines if a tool call should be approved.
@@ -107,6 +108,61 @@ export function computerTool(
     type: 'computer',
     name: options.name ?? 'computer_use_preview',
     computer: options.computer,
+  };
+}
+
+export type HostedMCPApprovalFunction<Context = UnknownContext> = (
+  context: RunContext<Context>,
+  data: RunToolApprovalItem,
+) => Promise<{ approve: boolean; reason?: string }>;
+
+/**
+ * A hosted MCP tool that lets the model call a remote MCP server directly
+ * without a round trip back to your code.
+ */
+export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
+  name: 'hosted_mcp';
+  providerData: ProviderData.HostedMCPTool<Context>;
+};
+
+/**
+ * Creates a hosted MCP tool definition.
+ *
+ * @param serverLabel - The label identifying the MCP server.
+ * @param serverUrl - The URL of the MCP server.
+ * @param requireApproval - Whether tool calls require approval.
+ */
+export function hostedMcpTool<Context = UnknownContext>(
+  options: {
+    serverLabel: string;
+    serverUrl: string;
+  } & (
+    | { requireApproval?: 'never' }
+    | {
+        requireApproval: 'always';
+        onApproval: HostedMCPApprovalFunction<Context>;
+      }
+  ),
+): HostedMCPTool<Context> {
+  const providerData: ProviderData.HostedMCPTool<Context> =
+    options.requireApproval === 'always'
+      ? {
+          type: 'mcp',
+          serverLabel: options.serverLabel,
+          serverUrl: options.serverUrl,
+          requireApproval: 'always',
+          onApproval: options.onApproval,
+        }
+      : {
+          type: 'mcp',
+          serverLabel: options.serverLabel,
+          serverUrl: options.serverUrl,
+          requireApproval: 'never',
+        };
+  return {
+    type: 'hosted_tool',
+    name: 'hosted_mcp',
+    providerData,
   };
 }
 
