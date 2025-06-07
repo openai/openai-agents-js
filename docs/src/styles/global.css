@@ -82,6 +82,7 @@
     --openai-background: #202123;
     --openai-light-gray: #000;
     --openai-primary: #4db8ff;
+    --openai-primary-darker: #3e94ce;
     --openai-secondary: #6e6e80;
     --openai-gray-05: #f7f7f8;
     --openai-hover-gray: #565869;
@@ -89,7 +90,8 @@
     --openai-gray-2: #717182;
     --openai-green: #10a37f;
     --openai-green-darker: #1a7f64;
-    --openai-nav-text: #acacbe;
+    --openai-nav-category-text: #acacbe;
+    --openai-nav-text: #ffffff;
     --openai-toc-highlight: #ffffff;
     --openai-code-background: #161719;
     --openai-code-border-color: var(--openai-light-gray);
@@ -101,6 +103,9 @@
     --openai-search-field-background: var(--openai-light-gray);
     --openai-search-button-color: var(--openai-gray-1);
     --openai-search-button-hover-color: var(--openai-gray-2);
+    --openai-primary-button-background: var(--openai-text-primary);
+    --openai-primary-button-hover-background: var(--openai-gray-1);
+    --openai-primary-button-text: var(--openai-light-gray);
     --sl-color-bg-sidebar: var(--openai-background) !important;
     --sl-color-bg-nav: var(--openai-background) !important;
     --sl-color-bg: var(--openai-background) !important;
@@ -125,14 +130,17 @@
     --openai-background: #ffffff;
     --openai-light-gray: #f5f5f5;
     --openai-primary: #4db8ff;
+    --openai-primary-darker: #3e94ce;
     --openai-secondary: #6e6e80;
     --openai-gray-05: #f7f7f8;
     --openai-hover-gray: hsla(240deg, 17%, 94%, 0.5);
     --openai-gray-1: #ececf1;
     --openai-gray-2: #717182;
+    --openai-gray-3: #353740;
     --openai-green: #10a37f;
     --openai-green-darker: #1a7f64;
     --openai-nav-text: #202123;
+    --openai-nav-category-text: var(--openai-text-secondary);
     --openai-toc-highlight: #353740;
     --openai-code-background: var(--openai-gray-05);
     --openai-code-border-color: var(--openai-gray-1);
@@ -143,6 +151,9 @@
     --openai-search-field-background: var(--openai-light-gray);
     --openai-search-button-color: var(--openai-gray-1);
     --openai-search-button-hover-color: var(--openai-gray-2);
+    --openai-primary-button-background: #000000;
+    --openai-primary-button-hover-background: var(--openai-gray-3);
+    --openai-primary-button-text: var(--openai-light-gray);
     --sl-color-bg-sidebar: var(--openai-background) !important;
     --sl-color-bg-nav: var(--openai-background) !important;
     --sl-color-bg: var(--openai-background) !important;
@@ -156,6 +167,15 @@
     --sl-color-bg-inline-code: var(--openai-gray-05) !important;
     --sl-nav-gap: 1rem !important;
     --sl-content-width: 60rem !important;
+    --sl-content-pad-x: 1rem !important;
+
+    @media (min-width: 48rem) {
+      --sl-content-pad-x: 2rem !important;
+    }
+
+    @media (min-width: 72rem) {
+      --sl-content-pad-x: 3rem !important;
+    }
   }
 
   .openai-logo {
@@ -199,12 +219,12 @@
     }
 
     a:not(:where(.not-content *)) {
-      color: var(--openai-green) !important;
+      color: var(--openai-primary) !important;
       text-decoration: none !important;
     }
 
     a:hover:not(:where(.not-content *)) {
-      color: var(--openai-green-darker) !important;
+      color: var(--openai-primary-darker) !important;
     }
 
     table:not(:where(.not-content *)) {
@@ -269,13 +289,28 @@
     padding-top: var(--sl-content-pad-x) !important;
   }
 
-  starlight-toc ul > li {
-    padding-top: 0.3em;
-    padding-bottom: 0.3em;
-    border-left: calc(2px - var(--depth) * 2px) solid var(--openai-gray-1);
+  starlight-toc {
+    h2 {
+      font-size: var(--sl-text-2xs);
+      font-weight: 500;
+      color: var(--openai-nav-category-text);
+    }
+    ul > li {
+      padding-top: 0.3em;
+      padding-bottom: 0.3em;
+      border-inline-start: 0;
 
-    &:has([aria-current='true']) {
-      border-left-color: var(--openai-toc-highlight);
+      a {
+        color: var(--openai-text-primary);
+        padding-inline-start: calc(var(--depth) * 1em);
+      }
+
+      &:has([aria-current='true']) {
+        a {
+          color: var(--openai-primary) !important;
+        }
+        border-left-color: var(--openai-toc-highlight);
+      }
     }
   }
 
@@ -315,10 +350,16 @@
       padding-inline-start: 0 !important;
     }
 
-    ul.top-level > li > details > summary span {
-      font-weight: 500 !important;
-      font-size: var(--sl-text-xs) !important;
-      color: var(--openai-secondary) !important;
+    ul.top-level > li > details > summary {
+      svg {
+        color: var(--openai-nav-category-text) !important;
+      }
+
+      span {
+        font-weight: 500 !important;
+        font-size: var(--sl-text-xs) !important;
+        color: var(--openai-nav-category-text) !important;
+      }
     }
 
     details > summary span {
@@ -367,7 +408,12 @@
 
   .sl-markdown-content .openai-hero {
     background-color: var(--openai-hero-background);
-    border-radius: 8px;
+    border-radius: 24px;
+    --hero-padding: 2rem;
+
+    @media (min-width: 72rem) {
+      --hero-padding: 3rem;
+    }
 
     .openai-hero-container {
       flex-direction: column;
@@ -377,14 +423,30 @@
       }
     }
 
+    ul[role='tablist'] {
+      border-bottom: 0;
+    }
+
+    .openai-hero-code {
+      margin-bottom: var(--hero-padding);
+      margin-inline-start: calc(var(--hero-padding) - 1rem);
+      margin-inline-end: var(--hero-padding);
+
+      @media (min-width: 72rem) {
+        margin-bottom: 0rem;
+        margin-inline-start: 0rem;
+      }
+    }
+
     .tab a {
-      padding: 0.25rem 1rem;
-      margin-top: 0.5rem;
+      padding: 0;
+      padding-inline-start: 1rem;
       font-size: var(--sl-text-xs);
       border-radius: 0;
       &[aria-selected='true'] {
+        color: var(--openai-primary);
         font-weight: 500;
-        border-bottom: 2px solid var(--openai-green);
+        border-bottom: 0;
       }
       &:not([aria-selected='true']) {
         color: var(--openai-gray-2) !important;
@@ -395,24 +457,15 @@
       margin-top: 0;
     }
 
-    a.openai-quickstart {
-      border-radius: 8px;
-      padding: 1rem;
+    .openai-quickstart {
+      border-radius: 24px;
+      padding: var(--hero-padding);
+
       min-width: 15rem;
 
       @media (min-width: 72rem) {
         max-width: 20rem;
       }
-
-      &:hover,
-      &:focus {
-        background-color: var(--openai-hero-hover-color);
-
-        .openai-hero-cta::after {
-          margin-inline-start: 0.5rem;
-        }
-      }
-
       color: var(--openai-title-color) !important;
 
       span.title {
@@ -421,17 +474,27 @@
       }
 
       p {
-        margin-top: 0.5rem;
+        margin-top: 0.75rem;
+        margin-bottom: 0.75rem;
         font-size: var(--sl-text-sm);
       }
 
       .openai-hero-cta {
         font-size: var(--sl-text-sm);
         font-weight: 500;
+        color: var(--openai-primary-button-text) !important;
+        background-color: var(--openai-primary-button-background);
+        border-radius: 50px;
+        padding: 0.5rem 1rem;
+
+        &:hover,
+        &:focus {
+          background-color: var(--openai-primary-button-hover-background);
+        }
+
         &::after {
-          content: '→';
+          content: '❯';
           margin-inline-start: 0.25rem;
-          transition: margin-inline-start 0.2s ease-in-out;
         }
       }
     }
@@ -445,6 +508,10 @@
   .sl-markdown-content .expressive-code {
     .frame.has-title:not(.is-terminal) .header {
       background: none;
+    }
+
+    .frame.has-title:not(.is-terminal) .title::after {
+      border: none;
     }
 
     .mark {
@@ -467,7 +534,7 @@
 
         figcaption span {
           /* title */
-          font-family: var(--sl-font-mono);
+          font-family: var(--__sl-font-mono);
           font-size: var(--sl-text-2xs);
           padding: 0.75em 1rem;
           border-start-start-radius: var(--openai-code-border-radius);
