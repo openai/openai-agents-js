@@ -73,6 +73,11 @@ export type FunctionTool<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval: ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
+   */
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -326,6 +331,11 @@ type StrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
+   */
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -373,6 +383,11 @@ type NonStrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Whether the tool is safe to run in a browser. If true, the tool can be called from a browser. Default: false
+   */
+  safeToRunInBrowser?: boolean;
 };
 
 /**
@@ -497,5 +512,6 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
+    safeToRunInBrowser: options.safeToRunInBrowser,
   };
 }
