@@ -70,7 +70,7 @@ export function itemsToLanguageV1Messages(
                   }
                   if (c.type === 'input_image') {
                     const url = new URL(c.image);
-                    return { type: 'image', image: url };
+                    return { type: 'image', image: url as unknown as URL };
                   }
                   if (c.type === 'input_file') {
                     if (typeof c.file !== 'string') {

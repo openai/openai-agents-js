@@ -6,6 +6,7 @@ export { EventEmitter as RuntimeEventEmitter } from 'node:events';
 
 declare global {
   interface ImportMeta {
+    // @ts-expect-error - env is not defined in the type
     env?: Record<string, string | undefined>;
   }
 }
