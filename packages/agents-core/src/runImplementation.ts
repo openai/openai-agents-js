@@ -404,7 +404,13 @@ export async function executeToolsAndSideEffects<TContext>(
       : undefined;
 
   // if there is no output we just run again
-  if (!potentialFinalOutput) {
+  // Some models return both text and tool calls,
+  // So If there //are tool results, we should continue the agent loop
+  if (
+    !potentialFinalOutput ||
+    functionResults.length > 0 ||
+    computerResults?.length > 0
+  ) {
     return new SingleStepResult(
       originalInput,
       newResponse,
