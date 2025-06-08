@@ -25,6 +25,7 @@ import {
   executeFunctionToolCalls,
   executeComputerActions,
   executeHandoffCalls,
+  executeToolsAndSideEffects,
 } from '../src/runImplementation';
 import { FunctionTool, FunctionToolResult, tool } from '../src/tool';
 import { handoff } from '../src/handoff';
@@ -40,6 +41,7 @@ import {
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
   TEST_TOOL,
   FakeModelProvider,
+  fakeModelMessage,
 } from './stubs';
 import { computerTool } from '../src/tool';
 import * as protocol from '../src/types/protocol';
@@ -788,5 +790,41 @@ describe('empty execution helpers', () => {
 
     expect(fn).toEqual([]);
     expect(comp).toEqual([]);
+  });
+});
+
+describe('executeToolsAndSideEffects with text and tool calls', () => {
+  it('continues agent loop when model returns both text and tool calls', async () => {
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), '', TEST_AGENT, 1);
+
+    const responseWithBothTextAndTool: ModelResponse = {
+      output: [
+        TEST_MODEL_FUNCTION_CALL,
+        fakeModelMessage('Some text response'),
+      ],
+      usage: new Usage(),
+    };
+
+    const processedResponse = processModelResponse(
+      responseWithBothTextAndTool,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        TEST_AGENT,
+        '',
+        [],
+        responseWithBothTextAndTool,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 });
