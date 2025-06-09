@@ -1,5 +1,5 @@
 ---
-'@openai/agents-realtime': minor
+'@openai/agents-realtime': patch
 ---
 
 Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception
