@@ -536,6 +536,26 @@
     }
   }
 
+  .openai-github-link {
+    margin-top: 1rem;
+    --sl-sidebar-item-padding-inline: 0.5rem;
+
+    a {
+      display: flex;
+      align-items: center;
+      color: var(--openai-text-primary);
+      text-decoration: none;
+      margin-inline-start: var(--sl-sidebar-item-padding-inline);
+      margin-bottom: var(--sl-sidebar-item-padding-inline);
+      font-size: var(--sl-text-lg);
+
+      span {
+        font-size: var(--sl-text-sm);
+        margin-inline-start: var(--sl-sidebar-item-padding-inline);
+      }
+    }
+  }
+
   .sl-markdown-content .expressive-code {
     .frame.has-title:not(.is-terminal) .header {
       background: none;

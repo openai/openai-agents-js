@@ -1,0 +1,26 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import Default from '@astrojs/starlight/components/Sidebar.astro';
+// const { sidebar } = Astro.locals.starlightRoute;
+---
+
+<Default />
+
+<div class="openai-github-link sl-hidden md:sl-flex flex-col gap-5">
+  <a
+    href="https://github.com/openai/openai-agents-js"
+    target="_blank"
+    rel="noopener noreferrer"
+  >
+    <Icon name="github" />
+    <span>View on GitHub</span>
+  </a>
+  <a
+    href="https://www.npmjs.com/package/@openai/agents"
+    target="_blank"
+    rel="noopener noreferrer"
+  >
+    <Icon name="npm" />
+    <span>View on npm</span>
+  </a>
+</div>

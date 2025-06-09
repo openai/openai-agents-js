@@ -319,6 +319,8 @@ export default defineConfig({
         SiteTitle: './src/components/Title.astro',
         PageTitle: './src/components/PageTitle.astro',
         SocialIcons: './src/components/SocialIcons.astro',
+        Sidebar: './src/components/Sidebar.astro',
+        MobileMenuFooter: './src/components/MobileFooter.astro',
       },
       //   defaultLocale: 'root',
       locales: {
