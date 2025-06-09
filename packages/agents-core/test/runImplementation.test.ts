@@ -78,6 +78,7 @@ describe('processModelResponse', () => {
     expect(result.newItems[1].rawItem).toEqual(
       TEST_MODEL_RESPONSE_WITH_FUNCTION.output[1],
     );
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 });
 
@@ -438,6 +439,7 @@ describe('processModelResponse edge cases', () => {
     expect(result.computerActions[0]?.toolCall).toBe(compCall);
     expect(result.handoffs[0]?.toolCall).toBe(handCall);
     expect(result.toolsUsed).toEqual(['test', 'computer_use', h.toolName]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
     expect(result.newItems[3]).toBeInstanceOf(MessageOutputItem);
   });
 });

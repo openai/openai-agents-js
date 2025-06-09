@@ -694,7 +694,7 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
     }),
   );
 
-  return {
+  const result = {
     newItems: serializedProcessedResponse.newItems.map((item) =>
       deserializeItem(item, agentMap),
     ),
@@ -734,5 +734,16 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         };
       },
     ),
+  };
+
+  return {
+    ...result,
+    hasToolsOrApprovalsToRun(): boolean {
+      return (
+        result.handoffs.length > 0 ||
+        result.functions.length > 0 ||
+        result.computerActions.length > 0
+      );
+    },
   };
 }
