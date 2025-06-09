@@ -9,19 +9,19 @@ import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nod
 import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 
-Agents SDK はモデルからの出力やその他の実行ステップの結果を段階的に配信できます。ストリーミングにより UI の応答性を保ち、最終的な実行結果がそろうまで待たずにユーザーを更新できます。
+Agents SDK は、モデルの出力やその他の実行ステップをインクリメンタルに配信できます。ストリーミングを利用すると、UI が常にレスポンシブになり、最終的な実行結果をすべて受け取るまで待たずに ユーザー を更新できます。
 
 ## ストリーミングの有効化
 
-`Runner.run()` に `{ stream: true }` オプションを渡すと、完全な実行結果ではなくストリーミング オブジェクトを取得できます。
+`Runner.run()` に `{ stream: true }` オプションを渡すと、完全な実行結果の代わりにストリーミングオブジェクトが返されます。
 
 <Code
   lang="typescript"
   code={basicStreamingExample}
-  title="Enabling streaming"
+  title="ストリーミングの有効化"
 />
 
-ストリーミングが有効になると、返される `stream` は `AsyncIterable` インターフェースを実装します。各イベントは実行中に発生した内容を示すオブジェクトです。多くのアプリケーションが必要とするのはモデルのテキストだけなので、ストリームには補助メソッドが用意されています。
+ストリーミングが有効な場合、返される `stream` は `AsyncIterable` インターフェースを実装します。各イテレーションで、実行中に発生したイベントを表すオブジェクトが得られます。多くのアプリケーションはモデルのテキストだけを必要とするため、ストリームには補助メソッドが用意されています。
 
 ### テキスト出力の取得
 
@@ -30,42 +30,42 @@ Agents SDK はモデルからの出力やその他の実行ステップの結果
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="Logging out the text as it arrives"
+  title="到着したテキストをそのまま出力"
   meta={`{13-17}`}
 />
 
-`stream.completed` という Promise は、実行と保留中のすべてのコールバックが完了すると解決します。追加出力がないことを保証したい場合は必ず待機してください。
+`stream.completed` という Promise は、実行と保留中のすべてのコールバックが完了した時点で解決されます。出力がもう増えないことを保証したい場合は必ず await してください。
 
-### すべてのイベントの監視
+### すべてのイベントを監視
 
-`for await` ループを使って、到着した各イベントを確認できます。低レベルのモデルイベント、エージェントの切り替え、SDK 固有の実行情報などが含まれます。
+`for await` ループを使って、到着したイベントを逐次確認できます。低レベルのモデルイベント、エージェントの切り替え、SDK 固有の実行情報などが含まれます。
 
 <Code
   lang="typescript"
   code={handleAllEventsExample}
-  title="Listening to all events"
+  title="すべてのイベントを監視"
 />
 
-プレーンテキスト ストリームと raw イベント ストリームの両方を出力する完全なスクリプトは、[the streamed example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。
+完全なスクリプトは、[ストリーミングの例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。プレーンテキストストリームと元のイベントストリームの両方を出力します。
 
-## ストリーミング中の Human in the loop（人間の介入）
+## ストリーミング中の Human in the loop
 
-ストリーミングは、実行を一時停止するハンドオフ（例: ツールの承認が必要な場合）とも互換性があります。ストリーム オブジェクトの `interruption` フィールドで中断を検出でき、各中断に対して `state.approve()` または `state.reject()` を呼び出して実行を続行できます。再度 `{ stream: true }` を指定して実行するとストリーミング出力が再開します。
+ストリーミングは、実行を一時停止するハンドオフ（たとえばツールの承認待ち）と互換性があります。ストリームオブジェクトの `interruption` フィールドで割り込みを確認し、それぞれに対して `state.approve()` または `state.reject()` を呼び出すことで実行を継続できます。再度 `{ stream: true }` を指定して実行すると、ストリーミング出力が再開されます。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="Handling human approval while streaming"
+  title="ストリーミング中のユーザー承認を処理"
 />
 
-ユーザーと対話するより完全な例は
+ユーザーと対話するより詳細な例は
 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)
 を参照してください。
 
 ## ヒント
 
-- すべての出力がフラッシュされるのを確実にするため、終了前に `stream.completed` を必ず待機してください
-- 最初の `{ stream: true }` オプションは指定した呼び出しにのみ適用されます。`RunState` で再実行する場合は再度このオプションを指定してください
-- テキスト結果だけが必要なアプリケーションでは、個々のイベントを扱わずに済むよう `toTextStream()` を使用してください
+- プロセスを終了する前に `stream.completed` を待機し、すべての出力がフラッシュされたことを確認する
+- 最初の `{ stream: true }` オプションは、指定した呼び出しにのみ適用される。`RunState` で再実行する場合は再度オプションを指定する
+- テキスト結果のみが必要な場合は、個々のイベントオブジェクトを扱わずに済む `toTextStream()` を使用する
 
-ストリーミングとイベント システムを利用すれば、エージェントをチャット インターフェース、ターミナル アプリケーションなど、段階的な更新がユーザーの利点となるあらゆる場所に統合できます。
+ストリーミングとイベントシステムを組み合わせることで、チャットインターフェースやターミナルアプリケーションなど、インクリメンタルな更新が有用なあらゆる場所にエージェントを組み込めます。

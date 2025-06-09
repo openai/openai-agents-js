@@ -1,4 +1,3 @@
-import logger from '../logger';
 import { TracingProcessor } from './processor';
 import { getGlobalTraceProvider } from './provider';
 
@@ -46,26 +45,4 @@ export function setTraceProcessors(processors: TracingProcessor[]): void {
  */
 export function setTracingDisabled(disabled: boolean): void {
   getGlobalTraceProvider().setDisabled(disabled);
-}
-
-const cleanup = async () => {
-  await getGlobalTraceProvider().shutdown();
-};
-
-if (typeof process !== 'undefined' && typeof process.on === 'function') {
-  // handling Node.js process termination
-
-  // Handle normal termination
-  process.on('beforeExit', cleanup);
-
-  // Handle CTRL+C (SIGINT)
-  process.on('SIGINT', cleanup);
-
-  // Handle termination (SIGTERM)
-  process.on('SIGTERM', cleanup);
-
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled rejection', reason, promise);
-    cleanup();
-  });
 }

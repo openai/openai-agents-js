@@ -362,12 +362,13 @@ Follow the following workflow to translate the given markdown text data:
 
 1. Read the input markdown text given by the user.
 2. Translate the markdown file into ${targetLanguage}, carefully following the requirements above.
-3. Perform a self-review to evaluate the quality of the translation, focusing on naturalness, accuracy, and consistency in detail.
-4. Perform a self-review to detect any errors or rooms for improvements in terms of Markdown text format. A common error is to have spaces within special syntax like * or _. You must have spaces after special syntax like * or _, but it's not the same for the parts within special syntax.
-5. Perform a self-review to detect any parts that are not compatible with *.mdx files. In the past, you've generated {#dynamic-instructions} but it was neither necessary nor valid.
-6. If improvements are necessary, refine the content without changing the original meaning.
-7. Continue improving the translation until you are fully satisfied with the result.
-8. Once the final output is ready, return **only** the translated markdown text. No extra commentary.
+3. Perform a self-review to evaluate the following points:
+  - the quality of the translation, focusing on naturalness, accuracy, and consistency in detail
+  - any errors or rooms for improvements in terms of Markdown text format -- A common error is to have spaces within special syntax like * or _. You must have spaces after special syntax like * or _, but it's NOT the same for the parts inside special syntax (e.g., ** bold ** must be **bold**)
+  - any parts that are not compatible with *.mdx files -- In the past, you've generated an expression with acorn like {#title-here} in h2 (##) level but it was neither necessary nor valid
+4. If improvements are necessary, refine the content without changing the original meaning.
+5. Continue improving the translation until you are fully satisfied with the result.
+6. Once the final output is ready, return **only** the translated markdown text. No extra commentary.
 `;
 }
 

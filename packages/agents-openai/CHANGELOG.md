@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.0.4
+
+### Patch Changes
+
+- ded675a: chore(openai): add more accurate debug logging
+- Updated dependencies [25165df]
+- Updated dependencies [6683db0]
+- Updated dependencies [78811c6]
+- Updated dependencies [426ad73]
+  - @openai/agents-core@0.0.4
+
 ## 0.0.3
 
 ### Patch Changes

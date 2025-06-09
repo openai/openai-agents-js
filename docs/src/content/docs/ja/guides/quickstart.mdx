@@ -7,11 +7,11 @@ import { Steps } from '@astrojs/starlight/components';
 import { Code } from '@astrojs/starlight/components';
 import quickstartExample from '../../../../../../examples/docs/quickstart/index.ts?raw';
 
-## プロジェクト設定
+## プロジェクトセットアップ
 
 <Steps>
 
-1. プロジェクトを作成し、npm を初期化します。これは一度だけで構いません。
+1. プロジェクトを作成して npm を初期化します。これは一度だけで構いません。
 
    ```bash
    mkdir my_project
@@ -25,7 +25,7 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    npm install @openai/agents
    ```
 
-3. OpenAI API キーを設定します。キーがない場合は、[こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)に従って OpenAI API キーを作成してください。
+3. OpenAI API キーを設定します。まだお持ちでない場合は、[こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)に従って OpenAI API キーを作成してください。
 
    ```bash
    export OPENAI_API_KEY=sk-...
@@ -35,7 +35,7 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
 
 ## 最初のエージェントの作成
 
-エージェントは instructions と name で定義します。
+エージェントは instructions と名前で定義します。
 
 ```typescript
 import { Agent } from '@openai/agents';
@@ -49,9 +49,9 @@ const agent = new Agent({
 
 ## 最初のエージェントの実行
 
-`run` メソッドを使用してエージェントを実行できます。開始したいエージェントと渡したい入力を両方指定して実行します。
+`run` メソッドを使ってエージェントを実行できます。開始したいエージェントと渡したい入力を指定して実行をトリガーします。
 
-これにより、最終出力とその実行中に実行されたアクションを含む result が返されます。
+これにより、最終出力と実行中に実行されたアクションを含む実行結果が返されます。
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -67,7 +67,7 @@ const result = await run(agent, 'When did sharks first appear?');
 console.log(result.finalOutput);
 ```
 
-## エージェントにツールを提供
+## エージェントへのツール追加
 
 エージェントに情報を検索したりアクションを実行したりするためのツールを与えることができます。
 
@@ -94,9 +94,9 @@ const agent = new Agent({
 });
 ```
 
-## さらなるエージェントの追加
+## エージェントの追加
 
-追加のエージェントを同様に定義して、問題をより小さな部分に分割し、各エージェントが現在のタスクに集中できるようにします。また、エージェントごとにモデルを指定することで、異なる問題に対して異なるモデルを使用できます。
+問題をより小さな部分に分割し、エージェントがタスクに集中できるように、追加のエージェントを同様に定義できます。また、エージェントごとにモデルを指定することで、異なる問題に対して異なるモデルを使用できます。
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -114,7 +114,7 @@ const mathTutorAgent = new Agent({
 
 ## ハンドオフの定義
 
-複数のエージェントをオーケストレーションするために、エージェントに `handoffs` を定義できます。これにより、実行中に自動的に次のエージェントへ会話を引き継げるようになります。
+複数のエージェント間をオーケストレーションするために、エージェントに対して `handoffs` を定義できます。これにより、実行中に自動的に次のエージェントへ会話を引き継げます。
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -126,11 +126,11 @@ const triageAgent = Agent.create({
 });
 ```
 
-実行後、result の `finalAgent` プロパティを確認すると、最終応答を生成したエージェントがわかります。
+実行後、`finalAgent` プロパティを見ることで、どのエージェントが最終応答を生成したかを確認できます。
 
 ## エージェントオーケストレーションの実行
 
-Runner は各エージェントの実行、ハンドオフ、ツール実行を処理します。
+Runner は個々のエージェントの実行、ハンドオフ、ツール実行を処理します。
 
 ```typescript
 import { run } from '@openai/agents';
@@ -143,17 +143,18 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## まとめ
+## 総まとめ
 
-すべてを一つにまとめた完全な例を示します。`index.js` に貼り付けて実行してください。
+すべてをまとめて 1 つの完全なサンプルにしましょう。`index.js` に以下を配置して実行してください。
 
 <Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
-## トレースの閲覧
+## トレースの表示
 
-Agents SDK はトレースを自動生成します。これにより、エージェントがどのように動作したか、どのツールを呼び出したか、どのエージェントにハンドオフしたかを確認できます。
+Agents SDK はトレースを自動生成します。これにより、エージェントがどのように動作し、どのツールを呼び出し、どのエージェントへハンドオフしたかを確認できます。
 
-エージェントの実行内容を確認するには、[OpenAI ダッシュボードの Trace ビューア](https://platform.openai.com/traces)にアクセスしてください。
+エージェント実行中に何が起こったかを確認するには、
+[OpenAI ダッシュボードの Trace viewer](https://platform.openai.com/traces) に移動してください。
 
 ## 次のステップ
 

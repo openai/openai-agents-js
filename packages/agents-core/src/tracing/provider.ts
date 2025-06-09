@@ -23,6 +23,8 @@ export class TraceProvider {
       // disable tracing in tests by default
       this.#disabled = true;
     }
+
+    this.#addCleanupListeners();
   }
 
   /**
@@ -155,12 +157,52 @@ export class TraceProvider {
     );
   }
 
-  shutdown(timeout?: number): void {
+  async shutdown(timeout?: number): Promise<void> {
     try {
       logger.debug('Shutting down tracing provider');
-      this.#multiProcessor.shutdown(timeout);
+      await this.#multiProcessor.shutdown(timeout);
     } catch (error) {
       logger.error('Error shutting down tracing provider %o', error);
+    }
+  }
+
+  /** Adds listeners to `process` to ensure `shutdown` occurs before exit. */
+  #addCleanupListeners(): void {
+    if (typeof process !== 'undefined' && typeof process.on === 'function') {
+      // handling Node.js process termination
+      const cleanup = async () => {
+        const timeout = setTimeout(() => {
+          console.warn('Cleanup timeout, forcing exit');
+          process.exit(1);
+        }, 5000);
+
+        try {
+          await this.shutdown();
+        } finally {
+          clearTimeout(timeout);
+        }
+      };
+
+      // Handle normal termination
+      process.on('beforeExit', cleanup);
+
+      // Handle CTRL+C (SIGINT)
+      process.on('SIGINT', async () => {
+        await cleanup();
+        process.exit(130);
+      });
+
+      // Handle termination (SIGTERM)
+      process.on('SIGTERM', async () => {
+        await cleanup();
+        process.exit(0);
+      });
+
+      process.on('unhandledRejection', async (reason, promise) => {
+        logger.error('Unhandled rejection', reason, promise);
+        await cleanup();
+        process.exit(1);
+      });
     }
   }
 }
