@@ -8,13 +8,15 @@ import toolsFunctionExample from '../../../../../examples/docs/tools/functionToo
 import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
+import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
-computer. The JavaScript/TypeScript SDK supports three categories:
+computer. The JavaScript/TypeScript SDK supports four categories:
 
 1. **Hosted tools** – run alongside the model on OpenAI servers. _(web search, file search, computer use, code interpreter, image generation)_
 2. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 3. **Agents as tools** – expose an entire Agent as a callable tool.
+4. **Local MCP servers** – attach a Model Context Protocol server running on your machine.
 
 ---
 
@@ -83,6 +85,17 @@ Under the hood the SDK:
 - Creates a function tool with a single `input` parameter.
 - Runs the sub‑agent with that input when the tool is called.
 - Returns either the last message or the output extracted by `customOutputExtractor`.
+
+---
+
+## 4. Local MCP servers
+
+You can expose tools via a local [Model Context Protocol](https://modelcontextprotocol.io/) server and attach them to an agent.
+Use `MCPServerStdio` to spawn and connect to the server:
+
+<Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
+
+See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example.
 
 ---
 
