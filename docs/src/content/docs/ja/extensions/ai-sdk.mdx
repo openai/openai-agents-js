@@ -7,18 +7,18 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。特に小規模なモデルプロバイダーでは問題が発生する可能性があります。問題を発見された場合は
-  [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  このアダプターはまだベータ版です。特に規模の小さいモデルプロバイダーでは問題が発生する可能性があります。問題を見つけた場合は、[GitHub
+  issues](https://github.com/openai/openai-agents-js/issues)
   からご報告ください。迅速に対応します。
 </Aside>
 
-Agents SDK は、標準で Responses API または Chat Completions API を通じて OpenAI モデルと動作します。別のモデルを使用したい場合は、[Vercel's AI SDK](https://sdk.vercel.ai/) がサポートするさまざまなモデルを、このアダプター経由で Agents SDK に組み込むことができます。
+初期状態で Agents SDK は Responses API または Chat Completions API を通じて OpenAI モデルと連携します。ただし別のモデルを使用したい場合は、[Vercel's AI SDK](https://sdk.vercel.ai/) が対応する多様なモデルを提供しており、このアダプター経由で Agents SDK に組み込むことができます。
 
 ## セットアップ
 
 <Steps>
 
-1. extensions パッケージをインストールして AI SDK アダプターを追加します:
+1. 拡張パッケージをインストールして AI SDK アダプターを追加します:
 
    ```bash
    npm install @openai/agents-extensions
@@ -30,7 +30,7 @@ Agents SDK は、標準で Responses API または Chat Completions API を通�
    npm install @ai-sdk/openai
    ```
 
-3. エージェントに接続するためにアダプターとモデルをインポートします:
+3. エージェントに接続するため、アダプターとモデルをインポートします:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
@@ -47,4 +47,4 @@ Agents SDK は、標準で Responses API または Chat Completions API を通�
 
 ## 例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK セットアップ" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
