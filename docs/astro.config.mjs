@@ -317,6 +317,7 @@ export default defineConfig({
       title: 'OpenAI Agents SDK',
       components: {
         SiteTitle: './src/components/Title.astro',
+        PageTitle: './src/components/PageTitle.astro',
       },
       //   defaultLocale: 'root',
       locales: {
