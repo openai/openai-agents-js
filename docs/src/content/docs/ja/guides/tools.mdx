@@ -8,12 +8,14 @@ import toolsFunctionExample from '../../../../../../examples/docs/tools/function
 import toolsHostedToolsExample from '../../../../../../examples/docs/tools/hostedTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../../examples/docs/tools/agentsAsTools.ts?raw';
+import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
-ツールを使うことで、エージェントは **行動を実行** できます。たとえばデータの取得、外部 API の呼び出し、コードの実行、さらにはコンピュータ操作まで可能です。JavaScript / TypeScript SDK は次の 3 カテゴリーをサポートします:
+ツールを使うことで、エージェントは **行動を実行** できます。たとえばデータの取得、外部 API の呼び出し、コードの実行、さらにはコンピュータ操作まで可能です。JavaScript / TypeScript SDK は次の 4 カテゴリーをサポートします:
 
 1. **組み込みツール（Hosted）** – モデルと同じ OpenAI サーバー上で動作します。 _(Web 検索、ファイル検索、コンピュータ操作、Code Interpreter、画像生成)_
 2. **関数ツール** – 任意のローカル関数を JSON スキーマでラップし、LLM から呼び出せるようにします。
 3. **エージェントをツールとして使用** – エージェント全体を呼び出し可能なツールとして公開します。
+4. **ローカル MCP サーバー** – ローカルで動作する Model Context Protocol サーバーをエージェントに追加します。
 
 ---
 
@@ -79,6 +81,16 @@ SDK は内部で次の処理を行います:
 - 単一の `input` パラメーターを持つ関数ツールを生成
 - ツール呼び出し時にサブエージェントをその入力で実行
 - 最後のメッセージ、または `customOutputExtractor` で抽出した出力を返却
+
+---
+
+## 4. ローカル MCP サーバー
+
+ローカルで動作する [Model Context Protocol](https://modelcontextprotocol.io/) サーバーからツールを公開し、エージェントに接続できます。`MCPServerStdio` を使用してサーバーを起動し接続します:
+
+<Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
+
+`filesystem-example.ts` の完全な例もご覧ください。
 
 ---
 
