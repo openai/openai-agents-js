@@ -6,3 +6,5 @@ dist-ssr
 .env
 .output
 .vinxi
+.tanstack-start
+.nitro

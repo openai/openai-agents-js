@@ -21,6 +21,7 @@ export default tseslint.config(
     '**/node_modules/**',
     '**/docs/.astro/**',
     'examples/realtime-next/**',
+    'examples/realtime-tantsack-start/**',
     'examples/realtime-demo/**',
     'integration-tests//**',
   ]),

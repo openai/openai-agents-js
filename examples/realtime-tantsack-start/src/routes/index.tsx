@@ -1,4 +1,3 @@
-import { createFileRoute } from '@tanstack/react-router';
 import {
   RealtimeAgent,
   RealtimeSession,
@@ -15,7 +14,7 @@ import { handleRefundRequestServerFn } from '../server/backendAgent';
 import { getTokenServerFn } from '../server/token';
 import { App } from '@/components/App';
 
-export const Route = createFileRoute('/')({
+export const Route = createFileRoute({
   component: Home,
 });
 
