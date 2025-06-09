@@ -1,0 +1,45 @@
+---
+import config from 'virtual:starlight/user-config';
+import { Icon } from '@astrojs/starlight/components';
+
+const links = config.social || [];
+---
+
+{
+  links.length > 0 && (
+    <>
+      {links.map(({ label, href, icon }) => (
+        <a {href} target="_blank" rel="noopener noreferrer" class="sl-flex">
+          <Icon name={icon} />
+          <span>{label}</span>
+        </a>
+      ))}
+    </>
+  )
+}
+
+<style>
+  @layer starlight.core {
+    a {
+      color: var(--sl-color-text-accent);
+      padding: 0.5em;
+      margin: -0.5em;
+      text-decoration: none;
+      align-items: center;
+
+      span {
+        font-size: var(--sl-text-sm);
+        margin-inline-start: 0.3rem;
+      }
+
+      @media (max-width: 72rem) {
+        span {
+          @apply sr-only;
+        }
+      }
+    }
+    a:hover {
+      opacity: 0.66;
+    }
+  }
+</style>

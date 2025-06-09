@@ -1,0 +1,80 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import LanguageSelect from '@astrojs/starlight/components/LanguageSelect.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import { ParseStatus } from 'astro:schema';
+
+const additionalLinks = [
+  {
+    label: 'View on GitHub',
+    href: 'https://github.com/openai/openai-agents-js',
+    icon: 'github' as const,
+  },
+  {
+    label: 'View on npm',
+    href: 'https://www.npmjs.com/package/@openai/agents',
+    icon: 'npm' as const,
+  },
+];
+---
+
+<div class="mobile-preferences sl-flex">
+  <div class="social-icons">
+    <SocialIcons />
+    {
+      additionalLinks.map(({ label, href, icon }) => (
+        <a {href} target="_blank" rel="noopener noreferrer" class="sl-flex">
+          <Icon name={icon as any} />
+          <span>{label}</span>
+        </a>
+      ))
+    }
+  </div>
+  <ThemeSelect />
+  <LanguageSelect />
+</div>
+
+<style>
+  @layer starlight.core {
+    .social-icons {
+      display: flex;
+      margin-inline-end: auto;
+      gap: 1rem;
+      align-items: center;
+      padding-block: 1rem;
+    }
+    .social-icons:empty {
+      display: none;
+    }
+    .mobile-preferences {
+      justify-content: space-between;
+      flex-wrap: wrap;
+      border-top: 1px solid var(--sl-color-gray-6);
+      column-gap: 1rem;
+      padding: 0.5rem 0;
+    }
+
+    .social-icons a {
+      color: var(--sl-color-text-accent);
+      padding: 0.5em;
+      margin: -0.5em;
+      text-decoration: none;
+      align-items: center;
+
+      span {
+        font-size: var(--sl-text-sm);
+        margin-inline-start: 0.3rem;
+      }
+
+      @media (max-width: 72rem) {
+        span {
+          @apply sr-only;
+        }
+      }
+    }
+    a:hover {
+      opacity: 0.66;
+    }
+  }
+</style>

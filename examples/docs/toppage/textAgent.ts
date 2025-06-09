@@ -9,4 +9,5 @@ const result = await run(
   agent,
   'Write a haiku about recursion in programming.',
 );
+
 console.log(result.finalOutput);

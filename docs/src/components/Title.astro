@@ -1,5 +1,8 @@
 ---
 import Logo from './Logo.astro';
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
 ---
 
-<Logo height="24" alt="OpenAI Agents SDK" />
+<a href={siteTitleHref} class="site-title sl-flex">
+  <Logo height="24" alt={siteTitle} />
+</a>

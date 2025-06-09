@@ -183,7 +183,8 @@
   }
 
   .content-panel:first-of-type {
-    padding-top: var(--sl-content-pad-x) !important;
+    /* padding-top: var(--sl-content-pad-x) !important; */
+    padding-top: 1.5rem !important;
   }
 
   .content-panel {
@@ -203,6 +204,10 @@
     font-size: var(--sl-text-xl) !important;
     font-weight: 600 !important;
     color: var(--openai-title-color) !important;
+  }
+
+  .social-icons::after {
+    border: none !important;
   }
 
   .main-pane {
@@ -251,29 +256,35 @@
   }
 
   site-search {
-    button {
-      border: 0 !important;
-      color: var(--openai-search-text) !important;
-      background-color: var(--openai-search-field-background) !important;
-      > kbd {
-        display: inline-flex;
-        gap: 0.25rem;
-        padding: 0 !important;
-        background-color: transparent !important;
+    > dialog {
+      background-color: var(--openai-code-background) !important;
+    }
 
-        kbd {
-          padding-inline-start: 0.4rem !important;
-          padding-inline-end: 0.4rem !important;
-          border-radius: 4px !important;
-          background-color: var(--openai-search-button-color) !important;
-          color: var(--openai-search-text) !important;
-        }
+    > button {
+      @media (min-width: 50rem) {
+        border: 0 !important;
+        color: var(--openai-search-text) !important;
+        background-color: var(--openai-search-field-background) !important;
+        > kbd {
+          display: inline-flex;
+          gap: 0.25rem;
+          padding: 0 !important;
+          background-color: transparent !important;
 
-        &:hover {
           kbd {
-            background-color: var(
-              --openai-search-button-hover-color
-            ) !important;
+            padding-inline-start: 0.4rem !important;
+            padding-inline-end: 0.4rem !important;
+            border-radius: 4px !important;
+            background-color: var(--openai-search-button-color) !important;
+            color: var(--openai-search-text) !important;
+          }
+
+          &:hover {
+            kbd {
+              background-color: var(
+                --openai-search-button-hover-color
+              ) !important;
+            }
           }
         }
       }
@@ -286,7 +297,8 @@
   }
 
   .right-sidebar-panel {
-    padding-top: var(--sl-content-pad-x) !important;
+    /* padding-top: var(--sl-content-pad-x) !important; */
+    padding-top: 2.5rem !important;
   }
 
   starlight-toc {
@@ -320,6 +332,11 @@
 
   .sidebar {
     --sl-color-hairline-shade: rgba(0, 0, 0, 0) !important;
+
+    .sidebar-content {
+      padding-top: 2rem;
+    }
+
     a[aria-current='page'] {
       color: var(--openai-primary) !important;
       font-weight: 500 !important;
@@ -351,8 +368,11 @@
     }
 
     ul.top-level > li > details > summary {
+      justify-content: flex-start !important;
+
       svg {
         color: var(--openai-nav-category-text) !important;
+        align-self: flex-end;
       }
 
       span {
@@ -406,6 +426,16 @@
     }
   }
 
+  .sl-markdown-content {
+    .expressive-code .ec-line {
+      line-height: 0.5rem;
+
+      &:has(.code *:is(span)) {
+        line-height: 1.2rem;
+      }
+    }
+  }
+
   .sl-markdown-content .openai-hero {
     background-color: var(--openai-hero-background);
     border-radius: 24px;
@@ -430,7 +460,6 @@
     .openai-hero-code {
       margin-bottom: var(--hero-padding);
       margin-inline-start: calc(var(--hero-padding) - 1rem);
-      margin-inline-end: var(--hero-padding);
 
       @media (min-width: 72rem) {
         margin-bottom: 0rem;
@@ -444,7 +473,8 @@
       font-size: var(--sl-text-xs);
       border-radius: 0;
       &[aria-selected='true'] {
-        color: var(--openai-primary);
+        color: var(--openai-text-primary);
+        /* color: var(--openai-primary); */
         font-weight: 500;
         border-bottom: 0;
       }
@@ -464,6 +494,7 @@
       min-width: 15rem;
 
       @media (min-width: 72rem) {
+        padding-inline-end: 0;
         max-width: 20rem;
       }
       color: var(--openai-title-color) !important;
@@ -502,6 +533,26 @@
     .expressive-code {
       --openai-code-border-color: rgba(0, 0, 0, 0);
       font-size: var(--sl-text-sm);
+    }
+  }
+
+  .openai-github-link {
+    margin-top: 1rem;
+    --sl-sidebar-item-padding-inline: 0.5rem;
+
+    a {
+      display: flex;
+      align-items: center;
+      color: var(--openai-text-primary);
+      text-decoration: none;
+      margin-inline-start: var(--sl-sidebar-item-padding-inline);
+      margin-bottom: var(--sl-sidebar-item-padding-inline);
+      font-size: var(--sl-text-lg);
+
+      span {
+        font-size: var(--sl-text-sm);
+        margin-inline-start: var(--sl-sidebar-item-padding-inline);
+      }
     }
   }
 

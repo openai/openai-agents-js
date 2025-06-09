@@ -1,0 +1,47 @@
+---
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+
+const isHomepage =
+  Astro.locals.starlightRoute.id === '' ||
+  Astro.locals.starlightRoute.id === Astro.locals.starlightRoute.lang;
+const rawTitle = Astro.locals.starlightRoute.entry.data.title;
+const keyword = 'TypeScript';
+const idx = rawTitle.indexOf(keyword);
+let beforeKeyword = rawTitle;
+let afterKeyword = '';
+let hasKeyword = false;
+
+if (isHomepage && idx !== -1) {
+  beforeKeyword = rawTitle.slice(0, idx);
+  afterKeyword = rawTitle.slice(idx + keyword.length);
+  hasKeyword = true;
+}
+---
+
+{
+  isHomepage ? (
+    <h1 id="_top" class="sr-only">
+      {beforeKeyword}
+      {hasKeyword ? <span class="keyword">{keyword}</span> : ''}
+      {afterKeyword}
+    </h1>
+  ) : (
+    <Default />
+  )
+}
+
+<style>
+  @layer starlight.core {
+    h1 {
+      margin-top: 1rem;
+      font-size: var(--sl-text-h1);
+      line-height: var(--sl-line-height-headings);
+      font-weight: 600;
+      color: var(--sl-color-white);
+    }
+
+    .keyword {
+      color: var(--openai-primary);
+    }
+  }
+</style>

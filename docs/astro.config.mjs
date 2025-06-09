@@ -317,6 +317,10 @@ export default defineConfig({
       title: 'OpenAI Agents SDK',
       components: {
         SiteTitle: './src/components/Title.astro',
+        PageTitle: './src/components/PageTitle.astro',
+        SocialIcons: './src/components/SocialIcons.astro',
+        Sidebar: './src/components/Sidebar.astro',
+        MobileMenuFooter: './src/components/MobileFooter.astro',
       },
       //   defaultLocale: 'root',
       locales: {
@@ -331,19 +335,9 @@ export default defineConfig({
       },
       social: [
         {
-          icon: 'x.com',
-          href: 'https://x.com/OpenAIDevs',
-          label: 'OpenAI on X',
-        },
-        {
-          icon: 'github',
-          href: 'https://github.com/openai/openai-agents-js',
-          label: 'Agents SDK on GitHub',
-        },
-        {
           icon: 'seti:python',
           href: 'https://github.com/openai/openai-agents-python',
-          label: 'Agents SDK for Python',
+          label: 'Python SDK',
         },
       ],
       editLink: {
@@ -352,7 +346,7 @@ export default defineConfig({
       plugins,
       sidebar,
       expressiveCode: {
-        themes: ['dracula', 'one-light'],
+        themes: ['houston', 'one-light'],
       },
       customCss: ['./src/styles/global.css'],
     }),
