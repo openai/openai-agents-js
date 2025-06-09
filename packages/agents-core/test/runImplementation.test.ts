@@ -25,6 +25,7 @@ import {
   executeFunctionToolCalls,
   executeComputerActions,
   executeHandoffCalls,
+  executeToolsAndSideEffects,
 } from '../src/runImplementation';
 import { FunctionTool, FunctionToolResult, tool } from '../src/tool';
 import { handoff } from '../src/handoff';
@@ -790,5 +791,135 @@ describe('empty execution helpers', () => {
 
     expect(fn).toEqual([]);
     expect(comp).toEqual([]);
+  });
+});
+
+describe('hasToolsOrApprovalsToRun method', () => {
+  it('returns true when handoffs are pending', () => {
+    const target = new Agent({ name: 'Target' });
+    const h = handoff(target);
+    const response: ModelResponse = {
+      output: [{ ...TEST_MODEL_FUNCTION_CALL, name: h.toolName }],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [], [h]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns true when function calls are pending', () => {
+    const result = processModelResponse(
+      TEST_MODEL_RESPONSE_WITH_FUNCTION,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns true when computer actions are pending', () => {
+    const computer = computerTool({
+      computer: {
+        environment: 'mac',
+        dimensions: [10, 10],
+        screenshot: vi.fn(async () => 'img'),
+        click: vi.fn(async () => {}),
+        doubleClick: vi.fn(async () => {}),
+        drag: vi.fn(async () => {}),
+        keypress: vi.fn(async () => {}),
+        move: vi.fn(async () => {}),
+        scroll: vi.fn(async () => {}),
+        type: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    });
+    const compCall: protocol.ComputerUseCallItem = {
+      id: 'c1',
+      type: 'computer_call',
+      callId: 'c1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const response: ModelResponse = {
+      output: [compCall],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [computer], []);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('returns false when no tools or approvals are pending', () => {
+    const response: ModelResponse = {
+      output: [TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(response, TEST_AGENT, [], []);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+});
+
+describe('executeToolsAndSideEffects', () => {
+  let runner: Runner;
+  let state: RunState<any, any>;
+
+  beforeEach(() => {
+    runner = new Runner({ tracingDisabled: true });
+    state = new RunState(new RunContext(), 'test input', TEST_AGENT, 1);
+  });
+
+  it('continues execution when text agent has tools pending', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const processedResponse = processModelResponse(
+      TEST_MODEL_RESPONSE_WITH_FUNCTION,
+      textAgent,
+      [TEST_TOOL],
+      [],
+    );
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        textAgent,
+        'test input',
+        [],
+        TEST_MODEL_RESPONSE_WITH_FUNCTION,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('returns final output when text agent has no tools pending', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const response: ModelResponse = {
+      output: [TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    } as any;
+    const processedResponse = processModelResponse(response, textAgent, [], []);
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
   });
 });
