@@ -25,27 +25,27 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 ![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-Voice Agents は OpenAI の speech-to-speech モデルを利用してリアルタイムの音声チャットを実現します。これらのモデルは音声・テキスト・ツール呼び出しをストリーミングで扱え、音声／電話のカスタマーサポートやモバイルアプリでの音声体験、音声チャットなどに最適です。
+音声エージェントは、OpenAI の音声 to 音声モデルを利用してリアルタイムの音声チャットを提供します。これらのモデルはストリーミング音声・テキスト・ツール呼び出しをサポートしており、音声／電話のカスタマーサポート、モバイルアプリ体験、音声チャットなどの用途に最適です。
 
-Voice Agents SDK は [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 用の TypeScript クライアントを提供します。
+Voice Agents SDK は、OpenAI Realtime API 向けの TypeScript クライアントを提供します。
 
 <LinkCard
-  title="クイックスタート"
+  title="音声エージェント クイックスタート"
   href="/openai-agents-js/ja/guides/voice-agents/quickstart"
-  description="OpenAI Agents SDK を使って数分で最初のリアルタイム音声アシスタントを構築します。"
+  description="OpenAI Agents SDK を使って数分で初めてのリアルタイム音声アシスタントを構築しましょう。"
 />
 
-### 主要機能
+### 主な機能
 
-- WebSocket もしくは WebRTC で接続
-- ブラウザとバックエンドの両方で利用可能
-- オーディオおよび割り込み処理
-- ハンドオフによるマルチエージェントのオーケストレーション
-- ツール定義と呼び出し
+- WebSocket または WebRTC 経由で接続
+- ブラウザでもバックエンド接続でも利用可能
+- 音声と割り込みのハンドリング
+- ハンドオフによるマルチエージェントオーケストレーション
+- ツールの定義と呼び出し
 - モデル出力を監視するカスタムガードレール
 - ストリーミングイベント用のコールバック
 - テキストエージェントと音声エージェントで同じコンポーネントを再利用
 
-speech-to-speech モデルを使用することで、音声をテキストに書き起こして再度音声に変換し直す手間なく、モデルがオーディオをリアルタイムで処理できます。
+音声 to 音声モデルを使用することで、モデルが音声をリアルタイムに処理できるため、テキストへ文字起こししてから再び音声に変換し直す必要がありません。
 
-![Speech-to-speech model](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+![音声 to 音声モデル](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
