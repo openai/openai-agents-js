@@ -260,7 +260,7 @@ export class OpenAIChatCompletionsModel implements Model {
     const requestData = {
       model: this.#model,
       messages,
-      tools,
+      tools: tools.length ? tools : undefined,
       temperature: request.modelSettings.temperature,
       top_p: request.modelSettings.topP,
       frequency_penalty: request.modelSettings.frequencyPenalty,
