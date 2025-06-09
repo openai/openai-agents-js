@@ -175,6 +175,11 @@ function converTool<_TContext = unknown>(
         },
         include: undefined,
       };
+    } else if (tool.providerData) {
+      return {
+        tool: tool.providerData as unknown as OpenAI.Responses.Tool,
+        include: undefined,
+      };
     }
   }
 
