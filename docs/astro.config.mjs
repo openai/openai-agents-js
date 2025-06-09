@@ -318,6 +318,7 @@ export default defineConfig({
       components: {
         SiteTitle: './src/components/Title.astro',
         PageTitle: './src/components/PageTitle.astro',
+        SocialIcons: './src/components/SocialIcons.astro',
       },
       //   defaultLocale: 'root',
       locales: {
@@ -332,19 +333,14 @@ export default defineConfig({
       },
       social: [
         {
-          icon: 'x.com',
-          href: 'https://x.com/OpenAIDevs',
-          label: 'OpenAI on X',
-        },
-        {
           icon: 'github',
           href: 'https://github.com/openai/openai-agents-js',
-          label: 'Agents SDK on GitHub',
+          label: 'openai-agents-js',
         },
         {
           icon: 'seti:python',
           href: 'https://github.com/openai/openai-agents-python',
-          label: 'Agents SDK for Python',
+          label: 'Python SDK',
         },
       ],
       editLink: {
