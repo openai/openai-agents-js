@@ -61,6 +61,14 @@ export type OpenAIRealtimeWebRTCOptions = {
    * @see https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token
    */
   useInsecureApiKey?: boolean;
+  /**
+   * Optional hook invoked with the freshly created peer connection. Returning a
+   * different connection will override the one created by the transport layer.
+   * This is called right before the offer is created and can be asynchronous.
+   */
+  changePeerConnection?: (
+    peerConnection: RTCPeerConnection,
+  ) => RTCPeerConnection | Promise<RTCPeerConnection>;
 } & OpenAIRealtimeBaseOptions;
 
 /**
@@ -158,7 +166,11 @@ export class OpenAIRealtimeWebRTC
 
         const connectionUrl = new URL(baseUrl);
 
-        const peerConnection = new RTCPeerConnection();
+        let peerConnection: RTCPeerConnection = new RTCPeerConnection();
+        if (this.options.changePeerConnection) {
+          peerConnection =
+            await this.options.changePeerConnection(peerConnection);
+        }
         const dataChannel = peerConnection.createDataChannel('oai-events');
 
         this.#state = {

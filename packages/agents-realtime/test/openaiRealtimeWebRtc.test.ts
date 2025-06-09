@@ -195,4 +195,14 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     const rtc = new OpenAIRealtimeWebRTC();
     expect(() => rtc.sendEvent({ type: 'test' } as any)).toThrow();
   });
+
+  it('allows overriding the peer connection', async () => {
+    class NewPeerConnection extends FakeRTCPeerConnection {}
+    const custom = new NewPeerConnection();
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => custom as any,
+    });
+    await rtc.connect({ apiKey: 'ek_test' });
+    expect(rtc.connectionState.peerConnection).toBe(custom as any);
+  });
 });
