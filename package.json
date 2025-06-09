@@ -32,6 +32,7 @@
     "examples:customer-service": "pnpm -F customer-service start",
     "examples:realtime-demo": "pnpm -F realtime-demo dev",
     "examples:realtime-next": "pnpm -F realtime-next dev",
+    "examples:realtime-tantsack-start": "pnpm -F realtime-tantsack-start dev",
     "examples:research-bot": "pnpm -F research-bot start",
     "examples:financial-research-agent": "pnpm -F financial-research-agent start",
     "examples:tools-computer-use": "pnpm -F tools start:computer-use",
