@@ -333,11 +333,6 @@ export default defineConfig({
       },
       social: [
         {
-          icon: 'github',
-          href: 'https://github.com/openai/openai-agents-js',
-          label: 'openai-agents-js',
-        },
-        {
           icon: 'seti:python',
           href: 'https://github.com/openai/openai-agents-python',
           label: 'Python SDK',
@@ -349,7 +344,7 @@ export default defineConfig({
       plugins,
       sidebar,
       expressiveCode: {
-        themes: ['dracula', 'one-light'],
+        themes: ['houston', 'one-light'],
       },
       customCss: ['./src/styles/global.css'],
     }),

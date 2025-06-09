@@ -183,7 +183,8 @@
   }
 
   .content-panel:first-of-type {
-    padding-top: var(--sl-content-pad-x) !important;
+    /* padding-top: var(--sl-content-pad-x) !important; */
+    padding-top: 1.5rem !important;
   }
 
   .content-panel {
@@ -203,6 +204,10 @@
     font-size: var(--sl-text-xl) !important;
     font-weight: 600 !important;
     color: var(--openai-title-color) !important;
+  }
+
+  .social-icons::after {
+    border: none !important;
   }
 
   .main-pane {
@@ -292,7 +297,8 @@
   }
 
   .right-sidebar-panel {
-    padding-top: var(--sl-content-pad-x) !important;
+    /* padding-top: var(--sl-content-pad-x) !important; */
+    padding-top: 2.5rem !important;
   }
 
   starlight-toc {
@@ -326,6 +332,11 @@
 
   .sidebar {
     --sl-color-hairline-shade: rgba(0, 0, 0, 0) !important;
+
+    .sidebar-content {
+      padding-top: 2rem;
+    }
+
     a[aria-current='page'] {
       color: var(--openai-primary) !important;
       font-weight: 500 !important;
@@ -357,8 +368,11 @@
     }
 
     ul.top-level > li > details > summary {
+      justify-content: flex-start !important;
+
       svg {
         color: var(--openai-nav-category-text) !important;
+        align-self: flex-end;
       }
 
       span {
@@ -414,7 +428,11 @@
 
   .sl-markdown-content {
     .expressive-code .ec-line {
-      line-height: 1.2rem;
+      line-height: 0.5rem;
+
+      &:has(.code *:is(span)) {
+        line-height: 1.2rem;
+      }
     }
   }
 
@@ -442,7 +460,6 @@
     .openai-hero-code {
       margin-bottom: var(--hero-padding);
       margin-inline-start: calc(var(--hero-padding) - 1rem);
-      margin-inline-end: var(--hero-padding);
 
       @media (min-width: 72rem) {
         margin-bottom: 0rem;
@@ -456,7 +473,8 @@
       font-size: var(--sl-text-xs);
       border-radius: 0;
       &[aria-selected='true'] {
-        color: var(--openai-primary);
+        color: var(--openai-text-primary);
+        /* color: var(--openai-primary); */
         font-weight: 500;
         border-bottom: 0;
       }
@@ -476,6 +494,7 @@
       min-width: 15rem;
 
       @media (min-width: 72rem) {
+        padding-inline-end: 0;
         max-width: 20rem;
       }
       color: var(--openai-title-color) !important;

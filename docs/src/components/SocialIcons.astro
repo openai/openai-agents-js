@@ -9,7 +9,7 @@ const links = config.social || [];
   links.length > 0 && (
     <>
       {links.map(({ label, href, icon }) => (
-        <a {href} rel="me" class="sl-flex">
+        <a {href} target="_blank" rel="noopener noreferrer" class="sl-flex">
           <Icon name={icon} />
           <span>{label}</span>
         </a>
