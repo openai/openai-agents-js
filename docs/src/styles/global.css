@@ -412,6 +412,12 @@
     }
   }
 
+  .sl-markdown-content {
+    .expressive-code .ec-line {
+      line-height: 1.2rem;
+    }
+  }
+
   .sl-markdown-content .openai-hero {
     background-color: var(--openai-hero-background);
     border-radius: 24px;
