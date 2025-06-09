@@ -167,10 +167,6 @@ export class OpenAIRealtimeWebRTC
         const connectionUrl = new URL(baseUrl);
 
         let peerConnection: RTCPeerConnection = new RTCPeerConnection();
-        if (this.options.changePeerConnection) {
-          peerConnection =
-            await this.options.changePeerConnection(peerConnection);
-        }
         const dataChannel = peerConnection.createDataChannel('oai-events');
 
         this.#state = {
@@ -237,6 +233,12 @@ export class OpenAIRealtimeWebRTC
             audio: true,
           }));
         peerConnection.addTrack(stream.getAudioTracks()[0]);
+
+        if (this.options.changePeerConnection) {
+          peerConnection =
+            await this.options.changePeerConnection(peerConnection);
+          this.#state = { ...this.#state, peerConnection };
+        }
 
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
