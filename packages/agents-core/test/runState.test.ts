@@ -253,6 +253,7 @@ describe('deserialize helpers', () => {
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
       toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
     };
 
     const restored = await RunState.fromString(agent, state.toString());
@@ -277,6 +278,7 @@ describe('deserialize helpers', () => {
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
       toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
     };
     state._currentStep = {
       type: 'next_step_handoff',
