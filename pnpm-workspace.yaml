@@ -3,6 +3,7 @@ packages:
   - examples/*
   - docs
 onlyBuiltDependencies:
+  - '@parcel/watcher'
   - esbuild
   - sharp
 publishBranch: main
