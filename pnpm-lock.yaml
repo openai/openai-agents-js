@@ -455,6 +455,9 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
+      '@openai/zod':
+        specifier: npm:zod@^3.25.40
+        version: zod@3.25.40
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
