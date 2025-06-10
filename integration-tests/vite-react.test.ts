@@ -39,11 +39,9 @@ describe('Vite React', () => {
     const page = await browser.newPage();
     await page.goto('http://localhost:9999/');
     const root = await page.$('#root');
-    console.log('root', root);
     const span = await root?.waitForSelector('span[data-testid="response"]', {
       state: 'attached',
     });
-    console.log('span', span);
     expect(await span?.textContent()).toBe('[RESPONSE]Hello there![/RESPONSE]');
     await browser.close();
   });
