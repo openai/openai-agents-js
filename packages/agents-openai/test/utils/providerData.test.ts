@@ -1,19 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
-  camelToSnakeCase,
+  camelOrSnakeToSnakeCase,
   snakeToCamelCase,
 } from '../../src/utils/providerData';
 
 describe('camelToSnakeCase', () => {
   it('converts flat camelCase keys to snake_case', () => {
-    expect(camelToSnakeCase({ fooBar: 1, bazQux: 2 })).toEqual({
+    expect(camelOrSnakeToSnakeCase({ fooBar: 1, bazQux: 2 })).toEqual({
       foo_bar: 1,
       baz_qux: 2,
     });
   });
   it('converts snake_case keys to snake_case', () => {
     expect(
-      camelToSnakeCase({ foo_bar_buz: 1, baz_qux: 2, foo_bar: 3 }),
+      camelOrSnakeToSnakeCase({ foo_bar_buz: 1, baz_qux: 2, foo_bar: 3 }),
     ).toEqual({
       foo_bar_buz: 1,
       baz_qux: 2,
@@ -21,7 +21,9 @@ describe('camelToSnakeCase', () => {
     });
   });
   it('converts mixed keys to snake_case', () => {
-    expect(camelToSnakeCase({ foo_barBuz: 1, bazQux: 2, foo_bar: 3 })).toEqual({
+    expect(
+      camelOrSnakeToSnakeCase({ foo_barBuz: 1, bazQux: 2, foo_bar: 3 }),
+    ).toEqual({
       foo_bar_buz: 1,
       baz_qux: 2,
       foo_bar: 3,
@@ -30,7 +32,7 @@ describe('camelToSnakeCase', () => {
 
   it('handles nested objects', () => {
     expect(
-      camelToSnakeCase({
+      camelOrSnakeToSnakeCase({
         outerKey: { innerKey: 42, anotherInner: { deepKey: 'x' } },
       }),
     ).toEqual({
@@ -40,7 +42,7 @@ describe('camelToSnakeCase', () => {
 
   it('handles nested objects with mixed keys', () => {
     expect(
-      camelToSnakeCase({
+      camelOrSnakeToSnakeCase({
         outerKey: { innerKey: 42, anotherInner: { deep_key: 'x' } },
       }),
     ).toEqual({
@@ -49,19 +51,21 @@ describe('camelToSnakeCase', () => {
   });
 
   it('handles arrays and primitives', () => {
-    expect(camelToSnakeCase([1, 2, 3])).toEqual([1, 2, 3]);
-    expect(camelToSnakeCase(undefined)).toBe(undefined);
+    expect(camelOrSnakeToSnakeCase([1, 2, 3])).toEqual([1, 2, 3]);
+    expect(camelOrSnakeToSnakeCase(undefined)).toBe(undefined);
   });
 
   it('leaves already snake_case keys as is', () => {
-    expect(camelToSnakeCase({ already_snake: 1, also_snake_case: 2 })).toEqual({
+    expect(
+      camelOrSnakeToSnakeCase({ already_snake: 1, also_snake_case: 2 }),
+    ).toEqual({
       already_snake: 1,
       also_snake_case: 2,
     });
   });
 
   it('handles mixed keys', () => {
-    expect(camelToSnakeCase({ fooBar: 1, already_snake: 2 })).toEqual({
+    expect(camelOrSnakeToSnakeCase({ fooBar: 1, already_snake: 2 })).toEqual({
       foo_bar: 1,
       already_snake: 2,
     });

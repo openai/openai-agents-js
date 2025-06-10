@@ -1,9 +1,9 @@
 /**
- * Converts camelCase keys of an object to snake_case recursively.
+ * Converts camelCase or snake_case keys of an object to snake_case recursively.
  */
-export function camelToSnakeCase<T extends Record<string, any> | undefined>(
-  providerData: T | undefined,
-): Record<string, any> | undefined {
+export function camelOrSnakeToSnakeCase<
+  T extends Record<string, any> | undefined,
+>(providerData: T | undefined): Record<string, any> | undefined {
   if (
     !providerData ||
     typeof providerData !== 'object' ||
@@ -15,7 +15,7 @@ export function camelToSnakeCase<T extends Record<string, any> | undefined>(
   const result: Record<string, any> = {};
   for (const [key, value] of Object.entries(providerData)) {
     const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-    result[snakeKey] = camelToSnakeCase(value);
+    result[snakeKey] = camelOrSnakeToSnakeCase(value);
   }
   return result;
 }

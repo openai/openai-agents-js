@@ -33,7 +33,10 @@ import {
   ImageGenerationStatus,
   WebSearchStatus,
 } from './tools';
-import { camelToSnakeCase, snakeToCamelCase } from './utils/providerData';
+import {
+  camelOrSnakeToSnakeCase,
+  snakeToCamelCase,
+} from './utils/providerData';
 import { ProviderData } from '@openai/agents-core/types';
 
 type ToolChoice = ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction;
@@ -242,7 +245,7 @@ function getInputMessageContent(
     return {
       type: 'input_text',
       text: entry.text,
-      ...camelToSnakeCase(entry.providerData),
+      ...camelOrSnakeToSnakeCase(entry.providerData),
     };
   } else if (entry.type === 'input_image') {
     const imageEntry: OpenAI.Responses.ResponseInputImage = {
@@ -256,7 +259,7 @@ function getInputMessageContent(
     }
     return {
       ...imageEntry,
-      ...camelToSnakeCase(entry.providerData),
+      ...camelOrSnakeToSnakeCase(entry.providerData),
     };
   } else if (entry.type === 'input_file') {
     const fileEntry: OpenAI.Responses.ResponseInputFile = {
@@ -269,7 +272,7 @@ function getInputMessageContent(
     }
     return {
       ...fileEntry,
-      ...camelToSnakeCase(entry.providerData),
+      ...camelOrSnakeToSnakeCase(entry.providerData),
     };
   }
 
@@ -286,7 +289,7 @@ function getOutputMessageContent(
       type: 'output_text',
       text: entry.text,
       annotations: [],
-      ...camelToSnakeCase(entry.providerData),
+      ...camelOrSnakeToSnakeCase(entry.providerData),
     };
   }
 
@@ -294,7 +297,7 @@ function getOutputMessageContent(
     return {
       type: 'refusal',
       refusal: entry.refusal,
-      ...camelToSnakeCase(entry.providerData),
+      ...camelOrSnakeToSnakeCase(entry.providerData),
     };
   }
 
@@ -314,7 +317,7 @@ function getMessageItem(
       id: item.id,
       role: 'system',
       content: item.content,
-      ...camelToSnakeCase(item.providerData),
+      ...camelOrSnakeToSnakeCase(item.providerData),
     };
   }
 
@@ -324,7 +327,7 @@ function getMessageItem(
         id: item.id,
         role: 'user',
         content: item.content,
-        ...camelToSnakeCase(item.providerData),
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
     }
 
@@ -332,7 +335,7 @@ function getMessageItem(
       id: item.id,
       role: 'user',
       content: item.content.map(getInputMessageContent),
-      ...camelToSnakeCase(item.providerData),
+      ...camelOrSnakeToSnakeCase(item.providerData),
     };
   }
 
@@ -343,7 +346,7 @@ function getMessageItem(
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
-      ...camelToSnakeCase(item.providerData),
+      ...camelOrSnakeToSnakeCase(item.providerData),
     };
     return assistantMessage;
   }
@@ -388,7 +391,7 @@ function getInputItems(
         call_id: item.callId,
         arguments: item.arguments,
         status: item.status,
-        ...camelToSnakeCase(item.providerData),
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -406,7 +409,8 @@ function getInputItems(
         id: item.id,
         call_id: item.callId,
         output: item.output.text,
-        ...camelToSnakeCase(item.providerData),
+        status: item.status,
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -419,9 +423,10 @@ function getInputItems(
         summary: item.content.map((content) => ({
           type: 'summary_text',
           text: content.text,
-          ...camelToSnakeCase(content.providerData),
+          ...camelOrSnakeToSnakeCase(content.providerData),
         })),
-        ...camelToSnakeCase(item.providerData),
+        encrypted_content: item.providerData?.encryptedContent,
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
       return entry;
     }
@@ -434,7 +439,7 @@ function getInputItems(
         action: item.action,
         status: item.status,
         pending_safety_checks: [],
-        ...camelToSnakeCase(item.providerData),
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
 
       return entry;
@@ -446,7 +451,9 @@ function getInputItems(
         id: item.id,
         call_id: item.callId,
         output: buildResponseOutput(item),
-        ...camelToSnakeCase(item.providerData),
+        status: item.providerData?.status,
+        acknowledged_safety_checks: item.providerData?.acknowledgedSafetyChecks,
+        ...camelOrSnakeToSnakeCase(item.providerData),
       };
       return entry;
     }
@@ -457,7 +464,7 @@ function getInputItems(
           type: 'web_search_call',
           id: item.id!,
           status: WebSearchStatus.parse(item.status ?? 'failed'),
-          ...camelToSnakeCase(item.providerData),
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -469,7 +476,8 @@ function getInputItems(
           id: item.id!,
           status: FileSearchStatus.parse(item.status ?? 'failed'),
           queries: item.providerData?.queries ?? [],
-          ...camelToSnakeCase(item.providerData),
+          results: item.providerData?.results,
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -482,7 +490,8 @@ function getInputItems(
           code: item.providerData?.code ?? '',
           results: item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
-          ...camelToSnakeCase(item.providerData),
+          container_id: item.providerData?.containerId,
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -494,7 +503,7 @@ function getInputItems(
           id: item.id!,
           result: item.providerData?.result ?? null,
           status: ImageGenerationStatus.parse(item.status ?? 'failed'),
-          ...camelToSnakeCase(item.providerData),
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -509,9 +518,10 @@ function getInputItems(
         const entry: OpenAI.Responses.ResponseInputItem.McpListTools = {
           type: 'mcp_list_tools',
           id: item.id!,
-          tools: camelToSnakeCase(providerData.tools) as any,
+          tools: camelOrSnakeToSnakeCase(providerData.tools) as any,
           server_label: providerData.serverLabel,
-          ...camelToSnakeCase(item.providerData),
+          error: providerData.error,
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
         return entry;
       } else if (
@@ -526,7 +536,7 @@ function getInputItems(
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.serverLabel,
-          ...camelToSnakeCase(item.providerData),
+          ...camelOrSnakeToSnakeCase(item.providerData),
         };
         return entry;
       } else if (
@@ -537,10 +547,11 @@ function getInputItems(
           item.providerData as ProviderData.HostedMCPApprovalResponse;
         const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse = {
           type: 'mcp_approval_response',
+          id: providerData.id,
           approve: providerData.approve,
           approval_request_id: providerData.approvalRequestId,
           reason: providerData.reason,
-          ...camelToSnakeCase(providerData),
+          ...camelOrSnakeToSnakeCase(providerData),
         };
         return entry;
       } else if (
@@ -554,7 +565,10 @@ function getInputItems(
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.serverLabel,
-          ...camelToSnakeCase(providerData),
+          error: providerData.error,
+          // output, which can be a large text string, is optional here, so we don't include it
+          // output: item.output,
+          ...camelOrSnakeToSnakeCase(providerData),
         };
         return entry;
       }
@@ -567,7 +581,7 @@ function getInputItems(
     if (item.type === 'unknown') {
       return {
         id: item.id,
-        ...camelToSnakeCase(item.providerData),
+        ...camelOrSnakeToSnakeCase(item.providerData),
       } as OpenAI.Responses.ResponseItem;
     }
 
