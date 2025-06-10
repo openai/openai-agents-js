@@ -302,19 +302,18 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
 ): Promise<SingleStepResult> {
-  const preStepItems = originalPreStepItems.filter((item) => {
-    return !(item instanceof RunToolApprovalItem);
-  });
-  const approvalRequestCallIds = originalPreStepItems
-    .filter((item) => {
-      return item instanceof RunToolApprovalItem && 'callId' in item.rawItem;
-    })
-    .map((item) => {
-      return 'callId' in item.rawItem && item.rawItem.callId!;
-    });
+  // call_ids for function tools
+  const functionCallIds = originalPreStepItems
+    .filter(
+      (item) =>
+        item instanceof RunToolApprovalItem &&
+        'callId' in item.rawItem &&
+        item.rawItem.type === 'function_call',
+    )
+    .map((item) => (item.rawItem as protocol.FunctionCallItem).callId);
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
-    return approvalRequestCallIds.includes(run.toolCall.callId);
+    return functionCallIds.includes(run.toolCall.callId);
   });
 
   const functionResults = await executeFunctionToolCalls(
@@ -324,7 +323,7 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     state,
   );
 
-  // The output items
+  // Create the initial set of the output items
   const newItems: RunItem[] = functionResults.map((r) => r.runItem);
 
   // Run MCP tools that require approval after they get their approval results
@@ -338,17 +337,20 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     },
   );
   for (const run of mcpApprovalRuns) {
-    const callId = run.requestItem.rawItem.id!;
+    // the approval_request_id "mcpr_123..."
+    const approvalRequestId = run.requestItem.rawItem.id!;
     const approved = state._context.isToolApproved({
+      // Since this item name must be the same with the one sent from Responses API server
       toolName: run.requestItem.rawItem.name,
-      callId,
+      callId: approvalRequestId,
     });
     if (typeof approved !== 'undefined') {
       const providerData: ProviderData.HostedMCPApprovalResponse = {
         approve: approved,
-        approvalRequestId: callId,
+        approvalRequestId,
         reason: undefined,
       };
+      // Tell Responses API server the approval result in the next turn
       newItems.push(
         new RunToolCallItem(
           {
@@ -367,6 +369,12 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     functionResults,
     state,
   );
+
+  // Exclude the tool approval items, which should not be sent to Responses API,
+  // from the SingleStepResult's preStepItems
+  const preStepItems = originalPreStepItems.filter((item) => {
+    return !(item instanceof RunToolApprovalItem);
+  });
 
   if (checkToolOutput.isFinalOutput) {
     runner.emit(
