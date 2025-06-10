@@ -31,6 +31,7 @@ import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import { safeExecute } from './utils/safeExecute';
+import { HostedMCPTool } from './tool';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -152,12 +153,28 @@ const serializedProcessedResponseSchema = z.object({
       computer: z.any(),
     }),
   ),
-  mcpApprovalRequests: z.array(
-    z.object({
-      requestItem: z.any(),
-      mcpTool: z.any(),
-    }),
-  ),
+  mcpApprovalRequests: z
+    .array(
+      z.object({
+        requestItem: z.object({
+          // protocol.HostedToolCallItem
+          rawItem: z.object({
+            type: z.literal('hosted_tool_call'),
+            name: z.string(),
+            arguments: z.string().optional(),
+            status: z.string().optional(),
+            output: z.string().optional(),
+          }),
+        }),
+        // HostedMCPTool
+        mcpTool: z.object({
+          type: z.literal('hosted_tool'),
+          name: z.literal('hosted_mcp'),
+          providerData: z.record(z.string(), z.any()),
+        }),
+      }),
+    )
+    .optional(),
 });
 
 const guardrailFunctionOutputSchema = z.object({
@@ -740,15 +757,16 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         };
       },
     ),
-    mcpApprovalRequests: serializedProcessedResponse.mcpApprovalRequests.map(
-      (approvalRequest) => ({
-        requestItem: new RunToolApprovalItem(
-          approvalRequest.requestItem.rawItem,
-          currentAgent,
-        ),
-        mcpTool: approvalRequest.mcpTool,
-      }),
-    ),
+    mcpApprovalRequests: (
+      serializedProcessedResponse.mcpApprovalRequests ?? []
+    ).map((approvalRequest) => ({
+      requestItem: new RunToolApprovalItem(
+        approvalRequest.requestItem
+          .rawItem as unknown as protocol.HostedToolCallItem,
+        currentAgent,
+      ),
+      mcpTool: approvalRequest.mcpTool as unknown as HostedMCPTool,
+    })),
   };
 
   return {
@@ -757,6 +775,7 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       return (
         result.handoffs.length > 0 ||
         result.functions.length > 0 ||
+        result.mcpApprovalRequests.length > 0 ||
         result.computerActions.length > 0
       );
     },

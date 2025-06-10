@@ -130,9 +130,9 @@ describe('converTool', () => {
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
-        server_label: 'deepwiki',
-        server_url: 'https://mcp.deepwiki.com/mcp',
-        require_approval: 'never',
+        serverLabel: 'deepwiki',
+        serverUrl: 'https://mcp.deepwiki.com/mcp',
+        requireApproval: 'never',
       },
     } as any);
 

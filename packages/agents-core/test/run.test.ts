@@ -88,7 +88,7 @@ describe('Runner.run', () => {
 
       const rawItem = {
         name: 'toolZ',
-        call_id: 'c1',
+        callId: 'c1',
         type: 'function_call',
         arguments: '{}',
       } as any;
@@ -126,6 +126,7 @@ describe('Runner.run', () => {
           },
         ],
         handoffs: [],
+        mcpApprovalRequests: [],
         computerActions: [],
       } as any;
 
