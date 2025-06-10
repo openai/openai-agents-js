@@ -189,40 +189,4 @@ export function imageGenerationTool(
   };
 }
 
-/**
- * A hosted MCP tool that lets the model call a remote MCP server directly
- * without a round trip back to your code.
- */
-export type HostedMCPTool = HostedTool & {
-  name: 'hosted_mcp';
-  providerData: {
-    type: 'mcp';
-    serverLabel: string;
-    serverUrl: string;
-    requireApproval?: 'never' | 'once' | 'always';
-  };
-};
-
-/**
- * Creates a hosted MCP tool definition.
- *
- * @param serverLabel - The label identifying the MCP server.
- * @param serverUrl - The URL of the MCP server.
- * @param requireApproval - Whether tool calls require approval.
- */
-export function hostedMcpTool(options: {
-  serverLabel: string;
-  serverUrl: string;
-  requireApproval?: 'never' | 'once' | 'always';
-}): HostedMCPTool {
-  return {
-    type: 'hosted_tool',
-    name: 'hosted_mcp',
-    providerData: {
-      type: 'mcp',
-      serverLabel: options.serverLabel,
-      serverUrl: options.serverUrl,
-      requireApproval: options.requireApproval,
-    },
-  };
-}
+// HostedMCPTool exists in agents-core package
