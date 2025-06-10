@@ -11,11 +11,37 @@ describe('camelToSnakeCase', () => {
       baz_qux: 2,
     });
   });
+  it('converts snake_case keys to snake_case', () => {
+    expect(
+      camelToSnakeCase({ foo_bar_buz: 1, baz_qux: 2, foo_bar: 3 }),
+    ).toEqual({
+      foo_bar_buz: 1,
+      baz_qux: 2,
+      foo_bar: 3,
+    });
+  });
+  it('converts mixed keys to snake_case', () => {
+    expect(camelToSnakeCase({ foo_barBuz: 1, bazQux: 2, foo_bar: 3 })).toEqual({
+      foo_bar_buz: 1,
+      baz_qux: 2,
+      foo_bar: 3,
+    });
+  });
 
   it('handles nested objects', () => {
     expect(
       camelToSnakeCase({
         outerKey: { innerKey: 42, anotherInner: { deepKey: 'x' } },
+      }),
+    ).toEqual({
+      outer_key: { inner_key: 42, another_inner: { deep_key: 'x' } },
+    });
+  });
+
+  it('handles nested objects with mixed keys', () => {
+    expect(
+      camelToSnakeCase({
+        outerKey: { innerKey: 42, anotherInner: { deep_key: 'x' } },
       }),
     ).toEqual({
       outer_key: { inner_key: 42, another_inner: { deep_key: 'x' } },
