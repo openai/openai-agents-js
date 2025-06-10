@@ -206,6 +206,13 @@ const sidebar = [
           ja: 'トラブルシューティング',
         },
       },
+      {
+        label: 'Release process',
+        link: '/guides/release',
+        translations: {
+          ja: 'リリースプロセス',
+        },
+      },
     ],
   },
   {

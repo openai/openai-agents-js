@@ -3,7 +3,7 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [],
-  "linked": [],
+  "linked": [["@openai/agents-*"]],
   "access": "restricted",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
