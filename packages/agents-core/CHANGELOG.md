@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.0.5
+
+### Patch Changes
+
+- 544ed4b: Continue agent execution when function calls are pending
+
 ## 0.0.4
 
 ### Patch Changes

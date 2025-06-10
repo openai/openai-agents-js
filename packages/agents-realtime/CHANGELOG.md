@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.0.5
+
+### Patch Changes
+
+- 6e2445a: Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception
+  and replacement of the created `RTCPeerConnection` before the offer is made.
+- ca5cf8b: fix(realtime): add zod dependency to package.json
+- Updated dependencies [544ed4b]
+  - @openai/agents-core@0.0.5
+
 ## 0.0.4
 
 ### Patch Changes
