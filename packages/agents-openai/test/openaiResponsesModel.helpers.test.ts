@@ -125,6 +125,23 @@ describe('converTool', () => {
       quality: undefined,
       size: undefined,
     });
+
+    const custom = converTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'mcp',
+        server_label: 'deepwiki',
+        server_url: 'https://mcp.deepwiki.com/mcp',
+        require_approval: 'never',
+      },
+    } as any);
+
+    expect(custom.tool).toEqual({
+      type: 'mcp',
+      server_label: 'deepwiki',
+      server_url: 'https://mcp.deepwiki.com/mcp',
+      require_approval: 'never',
+    });
   });
 
   it('throws on unsupported tool', () => {
