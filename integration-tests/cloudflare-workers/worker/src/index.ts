@@ -23,6 +23,7 @@ import {
   run,
   setDefaultOpenAIKey,
   setTraceProcessors,
+  withTrace,
 } from '@openai/agents';
 
 export default {
@@ -31,14 +32,17 @@ export default {
       setDefaultOpenAIKey(env.OPENAI_API_KEY!);
       setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
 
-      const agent = new Agent({
-        name: 'Test Agent',
-        instructions:
-          'You will always only respond with "Hello there!". Not more not less.',
-      });
-      const result = await run(agent, 'Hey there!');
+      // Optionally wrap your code into a trace if you want to make multiple runs in a single trace
+      return await withTrace('Cloudflare Worker', async () => {
+        const agent = new Agent({
+          name: 'Test Agent',
+          instructions:
+            'You will always only respond with "Hello there!". Not more not less.',
+        });
+        const result = await run(agent, 'Hey there!');
 
-      return new Response(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+        return new Response(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+      });
     } catch (error) {
       console.error(error);
       return new Response(String(error), { status: 500 });
