@@ -118,7 +118,7 @@ const itemSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('tool_approval_item'),
-    rawItem: protocol.FunctionCallItem,
+    rawItem: protocol.FunctionCallItem.or(protocol.HostedToolCallItem),
     agent: serializedAgentSchema,
   }),
 ]);

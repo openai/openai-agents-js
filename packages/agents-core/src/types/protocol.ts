@@ -317,6 +317,14 @@ export const HostedToolCallItem = ItemBase.extend({
   name: z.string().describe('The name of the hosted tool'),
 
   /**
+   * The arguments of the hosted tool call.
+   */
+  arguments: z
+    .string()
+    .describe('The arguments of the hosted tool call')
+    .optional(),
+
+  /**
    * The status of the tool call.
    */
   status: z.string().optional(),

@@ -142,7 +142,7 @@ export class RunToolApprovalItem extends RunItemBase {
   public readonly type = 'tool_approval_item' as const;
 
   constructor(
-    public rawItem: protocol.FunctionCallItem,
+    public rawItem: protocol.FunctionCallItem | protocol.HostedToolCallItem,
     public agent: Agent<any, any>,
   ) {
     super();

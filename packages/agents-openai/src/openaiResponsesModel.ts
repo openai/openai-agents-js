@@ -191,7 +191,9 @@ function converTool<_TContext = unknown>(
           type: 'mcp',
           server_label: tool.providerData.serverLabel,
           server_url: tool.providerData.serverUrl,
-          require_approval: tool.providerData.requireApproval,
+          require_approval: convertMCPRequireApproval(
+            tool.providerData.requireApproval,
+          ),
         },
         include: undefined,
       };
@@ -204,6 +206,23 @@ function converTool<_TContext = unknown>(
   }
 
   throw new Error(`Unsupported tool type: ${JSON.stringify(tool)}`);
+}
+
+function convertMCPRequireApproval(
+  requireApproval: ProviderData.HostedMCPTool['requireApproval'],
+): OpenAI.Responses.Tool.Mcp.McpToolApprovalFilter | 'always' | 'never' | null {
+  if (requireApproval === 'never' || requireApproval === undefined) {
+    return 'never';
+  }
+
+  if (requireApproval === 'always') {
+    return 'always';
+  }
+
+  return {
+    never: { tool_names: requireApproval.never?.toolNames },
+    always: { tool_names: requireApproval.always?.toolNames },
+  };
 }
 
 function getHandoffTool(handoff: SerializedHandoff): OpenAI.Responses.Tool {

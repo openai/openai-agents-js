@@ -14,6 +14,17 @@ async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
 }
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
+  // 'always' |
+  // 'never'  |
+  // { never?: { toolNames: string[] }; always?: { toolNames: string[] } }
+  const requireApproval = {
+    never: {
+      toolNames: ['fetch_codex_documentation', 'fetch_generic_url_content'],
+    },
+    always: {
+      toolNames: ['search_codex_code'],
+    },
+  };
   const agent = new Agent({
     name: 'MCP Assistant',
     instructions: 'You must always use the MCP tools to answer questions.',
@@ -21,9 +32,10 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
       hostedMcpTool({
         serverLabel: 'gitmcp',
         serverUrl: 'https://gitmcp.io/openai/codex',
-        requireApproval: 'always',
-        onApproval: async (_, data) => {
-          return { approve: await promptApproval(data) };
+        requireApproval,
+        onApproval: async (_context, item) => {
+          const approval = await promptApproval(item);
+          return { approve: approval, reason: undefined };
         },
       }),
     ],

@@ -11,8 +11,13 @@ export type HostedMCPTool<Context = UnknownContext> = {
 } & (
   | { requireApproval?: 'never'; onApproval?: never }
   | {
-      requireApproval: 'always';
-      onApproval: HostedMCPApprovalFunction<Context>;
+      requireApproval:
+        | 'always'
+        | {
+            never?: { toolNames: string[] };
+            always?: { toolNames: string[] };
+          };
+      onApproval?: HostedMCPApprovalFunction<Context>;
     }
 );
 

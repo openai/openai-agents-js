@@ -117,7 +117,12 @@ export class RunContext<TContext = UnknownContext> {
       rejected: [],
     };
     if (Array.isArray(approvalEntry.approved)) {
-      approvalEntry.approved.push(approvalItem.rawItem.callId);
+      // function tool has call_id, hosted tool call has id
+      const callId =
+        'callId' in approvalItem.rawItem
+          ? approvalItem.rawItem.callId // function tools
+          : approvalItem.rawItem.id!; // hosted tools
+      approvalEntry.approved.push(callId);
     }
     this.#approvals.set(toolName, approvalEntry);
   }
@@ -146,7 +151,12 @@ export class RunContext<TContext = UnknownContext> {
     };
 
     if (Array.isArray(approvalEntry.rejected)) {
-      approvalEntry.rejected.push(approvalItem.rawItem.callId);
+      // function tool has call_id, hosted tool call has id
+      const callId =
+        'callId' in approvalItem.rawItem
+          ? approvalItem.rawItem.callId // function tools
+          : approvalItem.rawItem.id!; // hosted tools
+      approvalEntry.rejected.push(callId);
     }
     this.#approvals.set(toolName, approvalEntry);
   }

@@ -102,38 +102,21 @@ export function processModelResponse<TContext>(
         items.push(new RunMessageOutputItem(output, agent));
       }
     } else if (output.type === 'hosted_tool_call') {
+      items.push(new RunToolCallItem(output, agent));
+      const toolName = output.name;
+      toolsUsed.push(toolName);
+
       if (
         output.providerData?.type === 'mcp_approval_request' ||
         output.name === 'mcp_approval_request'
       ) {
-        // Hosted remote MCP server support
+        // Hosted remote MCP server's approval process
         const providerData =
           output.providerData as ProviderData.HostedMCPApprovalRequest;
+
         const mcpServerLabel = providerData.serverLabel;
         const mcpServerTool = mcpToolMap.get(mcpServerLabel);
-        if (mcpServerTool !== undefined) {
-          const toolName = JSON.stringify({
-            server: providerData.serverLabel,
-            name: providerData.name,
-          });
-          // Do this approval later
-          runMCPApprovalRequests.push({
-            requestItem: new RunToolApprovalItem(
-              {
-                type: 'function_call',
-                name: toolName,
-                callId: providerData.id,
-                arguments: providerData.arguments || '',
-                status: 'in_progress',
-                providerData,
-              },
-              agent,
-            ),
-            mcpTool: mcpServerTool,
-          });
-          items.push(new RunToolCallItem(output, agent));
-          toolsUsed.push(toolName);
-        } else {
+        if (typeof mcpServerTool === 'undefined') {
           const message = `MCP server (${mcpServerLabel}) not found in Agent (${agent.name})`;
           addErrorToCurrentSpan({
             message,
@@ -141,18 +124,29 @@ export function processModelResponse<TContext>(
           });
           throw new ModelBehaviorError(message);
         }
-      } else {
-        // the rest of the hosted
-        items.push(new RunToolCallItem(output, agent));
-        const toolName = output.providerData?.serverLabel
-          ? // hosted MCP tool
-            JSON.stringify({
-              server: output.providerData.serverLabel,
-              name: output.name,
-            })
-          : // other hosted tools
-            output.name;
-        toolsUsed.push(toolName);
+
+        // Do this approval later:
+        // We support both onApproval callback (like the Python SDK does) and HITL patterns.
+        const approvalItem = new RunToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            // We must use this name to align with the name sent from the servers
+            name: providerData.name,
+            id: providerData.id,
+            status: 'in_progress',
+            providerData,
+          },
+          agent,
+        );
+        runMCPApprovalRequests.push({
+          requestItem: approvalItem,
+          mcpTool: mcpServerTool,
+        });
+        if (!mcpServerTool.providerData.onApproval) {
+          // When onApproval function exists, it confirms the approval right after this.
+          // Thus, this approval item must be appended only for the next turn interrpution patterns.
+          items.push(approvalItem);
+        }
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
@@ -223,6 +217,7 @@ export function processModelResponse<TContext>(
       return (
         runHandoffs.length > 0 ||
         runFunctions.length > 0 ||
+        runMCPApprovalRequests.length > 0 ||
         runComputerActions.length > 0
       );
     },
@@ -310,17 +305,16 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
   const preStepItems = originalPreStepItems.filter((item) => {
     return !(item instanceof RunToolApprovalItem);
   });
-
-  const approvalRequests = originalPreStepItems
+  const approvalRequestCallIds = originalPreStepItems
     .filter((item) => {
-      return item instanceof RunToolApprovalItem;
+      return item instanceof RunToolApprovalItem && 'callId' in item.rawItem;
     })
     .map((item) => {
-      return item.rawItem.callId;
+      return 'callId' in item.rawItem && item.rawItem.callId!;
     });
-
+  // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
-    return approvalRequests.includes(run.toolCall.callId);
+    return approvalRequestCallIds.includes(run.toolCall.callId);
   });
 
   const functionResults = await executeFunctionToolCalls(
@@ -330,7 +324,43 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     state,
   );
 
-  const newItems = functionResults.map((r) => r.runItem);
+  // The output items
+  const newItems: RunItem[] = functionResults.map((r) => r.runItem);
+
+  // Run MCP tools that require approval after they get their approval results
+  const mcpApprovalRuns = processedResponse.mcpApprovalRequests.filter(
+    (run) => {
+      return (
+        run.requestItem.type === 'tool_approval_item' &&
+        run.requestItem.rawItem.type === 'hosted_tool_call' &&
+        run.requestItem.rawItem.providerData?.type === 'mcp_approval_request'
+      );
+    },
+  );
+  for (const run of mcpApprovalRuns) {
+    const callId = run.requestItem.rawItem.id!;
+    const approved = state._context.isToolApproved({
+      toolName: run.requestItem.rawItem.name,
+      callId,
+    });
+    if (typeof approved !== 'undefined') {
+      const providerData: ProviderData.HostedMCPApprovalResponse = {
+        approve: approved,
+        approvalRequestId: callId,
+        reason: undefined,
+      };
+      newItems.push(
+        new RunToolCallItem(
+          {
+            type: 'hosted_tool_call',
+            name: 'mcp_approval_response',
+            providerData,
+          },
+          agent as Agent<unknown, 'text'>,
+        ),
+      );
+    }
+  }
 
   const checkToolOutput = await checkForFinalOutputFromTools(
     agent,
@@ -420,32 +450,50 @@ export async function executeToolsAndSideEffects<TContext>(
     for (const approvalRequest of processedResponse.mcpApprovalRequests) {
       const toolData = approvalRequest.mcpTool
         .providerData as ProviderData.HostedMCPTool<TContext>;
-      if (!toolData.onApproval) {
-        throw new UserError(
-          `Hosted remote MCP server tool (${toolData.serverLabel}) does not have an onApproval function`,
-        );
-      }
-      const approvalResult = await toolData.onApproval(
-        state._context,
-        approvalRequest.requestItem,
-      );
       const requestData = approvalRequest.requestItem.rawItem
         .providerData as ProviderData.HostedMCPApprovalRequest;
-      const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
-        approve: approvalResult.approve,
-        approvalRequestId: requestData.id,
-        reason: approvalResult.reason,
-      };
-      newItems.push(
-        new RunToolCallItem(
-          {
-            type: 'hosted_tool_call',
-            name: 'mcp_approval_response',
-            providerData: approvalResponseData,
-          },
-          agent as Agent<unknown, 'text'>,
-        ),
-      );
+      if (toolData.onApproval) {
+        // synchronously handle the approval process here
+        const approvalResult = await toolData.onApproval(
+          state._context,
+          approvalRequest.requestItem,
+        );
+        const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
+          approve: approvalResult.approve,
+          approvalRequestId: requestData.id,
+          reason: approvalResult.reason,
+        };
+        newItems.push(
+          new RunToolCallItem(
+            {
+              type: 'hosted_tool_call',
+              name: 'mcp_approval_response',
+              providerData: approvalResponseData,
+            },
+            agent as Agent<unknown, 'text'>,
+          ),
+        );
+      } else {
+        // receive a user's approval on the next turn
+        newItems.push(approvalRequest.requestItem);
+        const approvalItem = {
+          type: 'hosted_mcp_tool_approval' as const,
+          tool: approvalRequest.mcpTool,
+          runItem: new RunToolApprovalItem(
+            {
+              type: 'hosted_tool_call',
+              name: requestData.name,
+              id: requestData.id,
+              arguments: requestData.arguments,
+              status: 'in_progress',
+              providerData: requestData,
+            },
+            agent,
+          ),
+        };
+        functionResults.push(approvalItem);
+        // newItems.push(approvalItem.runItem);
+      }
     }
   }
 
@@ -626,6 +674,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       });
 
       if (approval === false) {
+        // rejected
         return withFunctionSpan(
           async (span) => {
             const response = 'Tool execution was not approved.';
@@ -659,6 +708,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       }
 
       if (approval !== true) {
+        // this approval process needs to be done in the next turn
         return {
           type: 'function_approval' as const,
           tool: toolRun.tool,

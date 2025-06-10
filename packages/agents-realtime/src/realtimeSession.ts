@@ -714,7 +714,11 @@ export class RealtimeSession<
     const tool = this.#currentAgent.tools.find(
       (tool) => tool.name === approvalItem.rawItem.name,
     );
-    if (tool && tool.type === 'function') {
+    if (
+      tool &&
+      tool.type === 'function' &&
+      approvalItem.rawItem.type === 'function_call'
+    ) {
       await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
     } else {
       throw new ModelBehaviorError(
@@ -739,7 +743,11 @@ export class RealtimeSession<
     const tool = this.#currentAgent.tools.find(
       (tool) => tool.name === approvalItem.rawItem.name,
     );
-    if (tool && tool.type === 'function') {
+    if (
+      tool &&
+      tool.type === 'function' &&
+      approvalItem.rawItem.type === 'function_call'
+    ) {
       await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
     } else {
       throw new ModelBehaviorError(

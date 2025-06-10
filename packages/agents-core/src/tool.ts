@@ -137,27 +137,33 @@ export function hostedMcpTool<Context = UnknownContext>(
     serverLabel: string;
     serverUrl: string;
   } & (
-    | { requireApproval?: 'never' }
+    | { requireApproval: never }
+    | { requireApproval: 'never' }
     | {
-        requireApproval: 'always';
-        onApproval: HostedMCPApprovalFunction<Context>;
+        requireApproval:
+          | 'always'
+          | {
+              never?: { toolNames: string[] };
+              always?: { toolNames: string[] };
+            };
+        onApproval?: HostedMCPApprovalFunction<Context>;
       }
   ),
 ): HostedMCPTool<Context> {
   const providerData: ProviderData.HostedMCPTool<Context> =
-    options.requireApproval === 'always'
+    options.requireApproval === 'never'
       ? {
           type: 'mcp',
           serverLabel: options.serverLabel,
           serverUrl: options.serverUrl,
-          requireApproval: 'always',
-          onApproval: options.onApproval,
+          requireApproval: 'never',
         }
       : {
           type: 'mcp',
           serverLabel: options.serverLabel,
           serverUrl: options.serverUrl,
-          requireApproval: 'never',
+          requireApproval: options.requireApproval,
+          onApproval: options.onApproval,
         };
   return {
     type: 'hosted_tool',
@@ -229,6 +235,20 @@ export type FunctionToolResult<
        * The tool that is requiring to be approved.
        */
       tool: FunctionTool<Context, TParameters, Result>;
+      /**
+       * The item representing the tool call that is requiring approval.
+       */
+      runItem: RunToolApprovalItem;
+    }
+  | {
+      /**
+       * Indiciates that the tool requires approval before it can be called.
+       */
+      type: 'hosted_mcp_tool_approval';
+      /**
+       * The tool that is requiring to be approved.
+       */
+      tool: HostedMCPTool<Context>;
       /**
        * The item representing the tool call that is requiring approval.
        */

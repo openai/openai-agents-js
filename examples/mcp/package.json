@@ -9,7 +9,8 @@
   "scripts": {
     "build-check": "tsc --noEmit",
     "start:stdio": "tsx filesystem-example.ts",
-    "start:hosted-mcp-approvals": "tsx hosted-mcp-approvals.ts",
+    "start:hosted-mcp-on-approval": "tsx hosted-mcp-on-approval.ts",
+    "start:hosted-mcp-human-in-the-loop": "tsx hosted-mcp-human-in-the-loop.ts",
     "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts"
   }
 }
