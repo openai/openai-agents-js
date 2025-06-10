@@ -20,6 +20,7 @@
     "start:stream-text": "tsx stream-text.ts",
     "start:json-schema-output-type": "tsx json-schema-output-type.ts",
     "start:tool-use-behavior": "tsx tool-use-behavior.ts",
-    "start:tools": "tsx tools.ts"
+    "start:tools": "tsx tools.ts",
+    "start:reasoning": "tsx reasoning.ts"
   }
 }
