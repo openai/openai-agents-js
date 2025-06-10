@@ -53,6 +53,7 @@ export type ProcessedResponse<TContext = UnknownContext> = {
   functions: ToolRunFunction<TContext>[];
   computerActions: ToolRunComputer[];
   toolsUsed: string[];
+  hasToolsOrApprovalsToRun(): boolean;
 };
 
 /**
@@ -147,6 +148,13 @@ export function processModelResponse<TContext>(
     functions: runFunctions,
     computerActions: runComputerActions,
     toolsUsed: toolsUsed,
+    hasToolsOrApprovalsToRun(): boolean {
+      return (
+        runHandoffs.length > 0 ||
+        runFunctions.length > 0 ||
+        runComputerActions.length > 0
+      );
+    },
   };
 }
 
@@ -414,7 +422,10 @@ export async function executeToolsAndSideEffects<TContext>(
     );
   }
 
-  if (agent.outputType === 'text') {
+  if (
+    agent.outputType === 'text' &&
+    !processedResponse.hasToolsOrApprovalsToRun()
+  ) {
     return new SingleStepResult(
       originalInput,
       newResponse,
@@ -425,7 +436,8 @@ export async function executeToolsAndSideEffects<TContext>(
         output: potentialFinalOutput,
       },
     );
-  } else {
+  } else if (agent.outputType !== 'text' && potentialFinalOutput) {
+    // Structured output schema => always leads to a final output if we have text
     const { parser } = getSchemaAndParserFromInputType(
       agent.outputType,
       'final_output',
