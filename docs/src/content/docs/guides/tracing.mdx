@@ -5,6 +5,7 @@ description: Learn how to trace your agent runs
 
 import { Aside, Code } from '@astrojs/starlight/components';
 import customTraceExample from '../../../../../examples/docs/custom-trace.ts?raw';
+import cloudflareWorkers from '../../../../../examples/docs/tracing/cloudflareWorkers.ts?raw';
 
 The Agents SDK includes built-in tracing, collecting a comprehensive record of events during an agent
 run: LLM generations, tool calls, handoffs, guardrails, and even custom events that occur. Using the
@@ -21,6 +22,18 @@ Tracing is enabled by default. There are two ways to disable tracing:
 **_For organizations operating under a Zero Data Retention (ZDR) policy using OpenAI's APIs, tracing is unavailable._**
 
 </Aside>
+
+## Export loop lifecycle
+
+In most environments traces will automatically be exported on a regular interval. In the browser or in Cloudflare Workers, this functionality is disabled by default. Traces will still get exported if too many are queued up but they are not exported on a regular interval. Instead you should use `getGlobalTraceProvider().forceFlush()` to manually export the traces as part of your code's lifecycle.
+
+For example, in a Cloudflare Worker, you should wrap your code into a `try/catch/finally` block and use force flush with `waitUntil` to ensure that traces are exported before the worker exits.
+
+<Code
+  lang="typescript"
+  code={cloudflareWorkers.replace(/\s+\/\/ @ts-expect-error.*$/m, '')}
+  meta="{13}"
+/>
 
 ## Traces and spans
 

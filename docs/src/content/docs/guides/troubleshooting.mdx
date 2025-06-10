@@ -15,7 +15,7 @@ The OpenAI Agents SDK is supported on the following server environments:
 
 - **Cloudflare Workers**: The Agents SDK can be used in Cloudflare Workers, but currently comes with some limitations:
   - The SDK current requires `nodejs_compat` to be enabled
-  - The SDK can currently only be imported using dynamic imports `await import('@openai/agents')`
+  - Traces need to be manually flushed at the end of the request. [See the tracing guide](/openai-agents-js/guides/tracing#export-loop-lifecycle) for more details.
   - Due to Cloudflare Workers' limited support for `AsyncLocalStorage` some traces might not be accurate
 - **Browsers**:
   - Tracing is currently not supported in browsers
