@@ -4,7 +4,7 @@ import { RunContext } from './runContext';
 import { ResolvedAgentOutput, TextOutput, UnknownContext } from './types';
 
 /**
- * Internal definition of input/output guardrails; SDK users usually do not need to create this.
+ * Definition of input/output guardrails; SDK users usually do not need to create this.
  */
 export type GuardrailDefinition =
   | InputGuardrailDefinition
@@ -91,11 +91,8 @@ export type InputGuardrailFunction = (
   args: InputGuardrailFunctionArgs,
 ) => Promise<GuardrailFunctionOutput>;
 
-// internal definition
-
 /**
- * Internal metadata for an input guardrail.
- * @internal
+ * Metadata for an input guardrail.
  */
 export interface InputGuardrailMetadata {
   type: 'input';
@@ -103,9 +100,7 @@ export interface InputGuardrailMetadata {
 }
 
 /**
- * Internal definition of an input guardrail. SDK users usually do not need to create this.
- *
- * @internal
+ * Definition of an input guardrail. SDK users usually do not need to create this.
  */
 export interface InputGuardrailDefinition extends InputGuardrailMetadata {
   guardrailFunction: InputGuardrailFunction;
@@ -113,8 +108,7 @@ export interface InputGuardrailDefinition extends InputGuardrailMetadata {
 }
 
 /**
- * Arguments for defining an internal input guardrail definition.
- * SDK users usually do not need to use this.
+ * Arguments for defining an input guardrail definition.
  */
 export interface DefineInputGuardrailArgs {
   name: string;
@@ -122,8 +116,7 @@ export interface DefineInputGuardrailArgs {
 }
 
 /**
- * Defines an internal input guardrail definition.
- * SDK users usually do not need to use this.
+ * Defines an input guardrail definition.
  */
 export function defineInputGuardrail({
   name,
@@ -210,11 +203,8 @@ export interface OutputGuardrail<TOutput extends AgentOutputType = TextOutput> {
   execute: OutputGuardrailFunction<TOutput>;
 }
 
-// internal definition
-
 /**
- * Internal metadata for an output guardrail.
- * @internal
+ * Metadata for an output guardrail.
  */
 export interface OutputGuardrailMetadata {
   type: 'output';
@@ -222,9 +212,7 @@ export interface OutputGuardrailMetadata {
 }
 
 /**
- * Internal definition of an output guardrail.
- * SDK users usually do not need to use this.
- * @internal
+ * Definition of an output guardrail.
  */
 export interface OutputGuardrailDefinition<
   TMeta = OutputGuardrailMetadata,
@@ -237,9 +225,7 @@ export interface OutputGuardrailDefinition<
 }
 
 /**
- * Arguments for defining an internal output guardrail definition.
- * SDK users usually do not need to use this.
- * @internal
+ * Arguments for defining an output guardrail definition.
  */
 export interface DefineOutputGuardrailArgs<
   TOutput extends AgentOutputType = TextOutput,
@@ -249,9 +235,7 @@ export interface DefineOutputGuardrailArgs<
 }
 
 /**
- * Creates an internal output guardrail definition.
- * SDK users usually do not need to use this.
- * @internal
+ * Creates an output guardrail definition.
  */
 export function defineOutputGuardrail<
   TOutput extends AgentOutputType = TextOutput,
