@@ -1,0 +1,39 @@
+---
+title: リリースプロセス
+description: Learn how we version and release the SDK and recent changes.
+---
+
+import { Content as AgentsSdkChangelog } from '../../../../../../packages/agents/CHANGELOG.md';
+
+## バージョニング
+
+このプロジェクトでは、`0.Y.Z` 形式を用いたわずかに変更されたセマンティック バージョニングを採用しています。先頭の `0` は、SDK がまだ急速に進化していることを示します。各コンポーネントの増分ルールは次のとおりです:
+
+## マイナー (`Y`) バージョン
+
+ベータでない公開インターフェースに **breaking changes** がある場合、マイナー バージョン `Y` を上げます。たとえば、`0.0.x` から `0.1.x` への更新には breaking changes が含まれる可能性があります。
+
+破壊的変更を避けたい場合は、プロジェクトで `0.0.x` バージョンに固定することを推奨します。
+
+## パッチ (`Z`) バージョン
+
+`Z` は非破壊的変更の場合に増分します:
+
+- バグ修正
+- 新機能
+- プライベート インターフェースの変更
+- ベータ機能の更新
+
+## サブパッケージのバージョニング
+
+メインの `@openai/agents` パッケージは、単体でも利用可能な複数のサブパッケージで構成されています。現在は各パッケージのバージョンが連動しており、いずれかのパッケージでバージョンが上がると他も同時に上がります。`1.0.0` に移行する段階で、この戦略を変更する可能性があります。
+
+## 変更履歴
+
+各サブパッケージごとに変更履歴を生成しているため、何が変更されたかを確認できます。変更はサブパッケージ内で発生している場合があるため、詳細は該当する変更履歴をご確認ください。
+
+- [`@openai/agents` の変更履歴](https://github.com/openai/openai-agents-js/blob/main/packages/agents/CHANGELOG.md)
+- [`@openai/agents-core` の変更履歴](https://github.com/openai/openai-agents-js/blob/main/packages/agents-core/CHANGELOG.md)
+- [`@openai/agents-extensions` の変更履歴](https://github.com/openai/openai-agents-js/blob/main/packages/agents-extensions/CHANGELOG.md)
+- [`@openai/agents-openai` の変更履歴](https://github.com/openai/openai-agents-js/blob/main/packages/agents-openai/CHANGELOG.md)
+- [`@openai/agents-realtime` の変更履歴](https://github.com/openai/openai-agents-js/blob/main/packages/agents-realtime/CHANGELOG.md)
