@@ -23,7 +23,6 @@ import {
   run,
   setDefaultOpenAIKey,
   setTraceProcessors,
-  startTraceExportLoop,
 } from '@openai/agents';
 
 export default {
@@ -31,7 +30,6 @@ export default {
     try {
       setDefaultOpenAIKey(env.OPENAI_API_KEY!);
       setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
-      startTraceExportLoop();
 
       const agent = new Agent({
         name: 'Test Agent',
@@ -40,13 +38,13 @@ export default {
       });
       const result = await run(agent, 'Hey there!');
 
-      // make sure you shut down tracing before exiting to flush any remaining traces
-      await getGlobalTraceProvider().shutdown();
-
       return new Response(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
     } catch (error) {
       console.error(error);
       return new Response(String(error), { status: 500 });
+    } finally {
+      // make sure to flush any remaining traces before exiting
+      ctx.waitUntil(getGlobalTraceProvider().forceFlush());
     }
   },
 } satisfies ExportedHandler<Env>;

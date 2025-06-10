@@ -204,6 +204,10 @@ export class TraceProvider {
       });
     }
   }
+
+  async forceFlush(): Promise<void> {
+    await this.#multiProcessor.forceFlush();
+  }
 }
 
 let GLOBAL_TRACE_PROVIDER: TraceProvider | undefined = undefined;
