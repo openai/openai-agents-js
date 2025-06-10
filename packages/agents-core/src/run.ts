@@ -377,6 +377,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 this.config.tracingDisabled,
                 this.config.traceIncludeSensitiveData,
               ),
+              signal: options.signal,
             });
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
@@ -724,6 +725,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this.config.tracingDisabled,
               this.config.traceIncludeSensitiveData,
             ),
+            signal: options.signal,
           })) {
             if (event.type === 'response_done') {
               const parsed = StreamEventResponseCompleted.parse(event);

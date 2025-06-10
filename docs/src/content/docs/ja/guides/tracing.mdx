@@ -51,12 +51,12 @@ Agents SDK にはトレーシング機能が組み込まれており、エージ
 
 デフォルトで SDK は以下をトレースします:
 
-- `run()` または `Runner.run()` 全体を 1 つの `Trace` でラップ
-- エージェント実行ごとに `AgentSpan` でラップ
-- LLM 生成は `GenerationSpan` でラップ
-- 関数ツール呼び出しはそれぞれ `FunctionSpan` でラップ
-- ガードレールは `GuardrailSpan` でラップ
-- ハンドオフは `HandoffSpan` でラップ
+- `run()` または `Runner.run()` 全体を `Trace` でラップ
+- エージェントが実行されるたびに `AgentSpan` でラップ
+- LLM 生成を `GenerationSpan` でラップ
+- 関数ツール呼び出しをそれぞれ `FunctionSpan` でラップ
+- ガードレールを `GuardrailSpan` でラップ
+- ハンドオフを `HandoffSpan` でラップ
 
 デフォルトのトレース名は "Agent workflow" です。`withTrace` を使ってこの名前を変更できます。または [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname) で名前や他のプロパティを設定できます。
 
