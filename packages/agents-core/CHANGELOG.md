@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.0.6
+
+### Patch Changes
+
+- 2c6cfb1: Pass through signal to model call
+- 36a401e: Add force flush to global provider. Consistently default disable logging loop in Cloudflare Workers and Browser
+
 ## 0.0.5
 
 ### Patch Changes
