@@ -136,7 +136,7 @@ export class BatchTraceProcessor implements TracingProcessor {
       this.start();
     } else {
       logger.debug(
-        'Automatic trace export loop is not supported in this environment. Traces will not be exported until you call `startTraceExportLoop()`.',
+        'Automatic trace export loop is not supported in this environment. You need to manually call `getGlobalTraceProvider().forceFlush()` to export traces.',
       );
     }
   }
