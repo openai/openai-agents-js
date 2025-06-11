@@ -43,7 +43,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `pnpm-workspace.yaml`: Defines workspace packages.
 - `tsconfig.json`, `tsc-multi.json`: TypeScript configuration.
 - `vitest.config.ts`: Test runner configuration.
-- `eslint.config.js`: ESLint configuration.
+- `eslint.config.mjs`: ESLint configuration.
 - `package.json` (root): Common scripts (`build`, `test`, `lint`, `dev`, `docs:dev`, `examples:*`).
 
 ## Testing & Automated Checks
@@ -81,7 +81,7 @@ Before submitting changes, ensure all checks pass:
   ```bash
   pnpm lint
   ```
-- Code style follows `eslint.config.js` and Prettier defaults.
+- Code style follows `eslint.config.mjs` and Prettier defaults.
 - Comments must end with a period.
 
 ### Type Checking
@@ -128,7 +128,7 @@ Before submitting changes, ensure all checks pass:
 
 ## Style, Linting & Type Checking
 
-- Follow ESLint rules (`eslint.config.js`), no unused imports, adhere to Prettier.
+- Follow ESLint rules (`eslint.config.mjs`), no unused imports, adhere to Prettier.
 - Run `pnpm lint` and fix all errors locally.
 - Use `pnpm build` to catch type errors.
 
