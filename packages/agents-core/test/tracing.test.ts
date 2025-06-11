@@ -10,7 +10,12 @@ import {
 
 import { Trace, NoopTrace } from '../src/tracing/traces';
 
-import { Span, CustomSpanData, NoopSpan } from '../src/tracing/spans';
+import {
+  Span,
+  CustomSpanData,
+  ResponseSpanData,
+  NoopSpan,
+} from '../src/tracing/spans';
 
 import {
   BatchTraceProcessor,
@@ -299,5 +304,29 @@ describe('TraceProvider disabled behaviour', () => {
       trace,
     );
     expect(span).toBeInstanceOf(NoopSpan);
+  });
+});
+
+// -----------------------------------------------------------------------------------------
+// Tests for ResponseSpanData serialization
+// -----------------------------------------------------------------------------------------
+
+describe('ResponseSpanData serialization', () => {
+  it('removes private fields _input and _response from JSON output', () => {
+    const data: ResponseSpanData = {
+      type: 'response',
+      response_id: 'resp_123',
+      _input: 'private input data',
+      _response: { id: 'response_obj' } as any,
+    };
+
+    const span = new Span({ traceId: 'trace_123', data }, new TestProcessor());
+
+    const json = span.toJSON() as any;
+
+    expect(json.span_data.type).toBe('response');
+    expect(json.span_data.response_id).toBe('resp_123');
+    expect(json.span_data).not.toHaveProperty('_input');
+    expect(json.span_data).not.toHaveProperty('_response');
   });
 });

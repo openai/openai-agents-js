@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import logger from '../logger';
 import { TracingProcessor } from './processor';
 import { generateSpanId, removePrivateFields, timeIso } from './utils';
@@ -38,6 +39,7 @@ export type ResponseSpanData = SpanDataBase & {
    * Not used by the OpenAI tracing provider but helpful for other tracing providers.
    */
   _input?: string | Record<string, any>[];
+  _response?: OpenAI.Responses.Response;
 };
 
 export type HandoffSpanData = SpanDataBase & {

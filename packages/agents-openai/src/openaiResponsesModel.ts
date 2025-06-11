@@ -837,9 +837,8 @@ export class OpenAIResponsesModel implements Model {
 
       if (request.tracing) {
         span.spanData.response_id = response.id;
-        if (request.tracing === true) {
-          span.spanData._input = request.input;
-        }
+        span.spanData._input = request.input;
+        span.spanData._response = response;
       }
 
       return response;
@@ -931,8 +930,9 @@ export class OpenAIResponsesModel implements Model {
         };
       }
 
-      if (span && finalResponse && request.tracing) {
+      if (request.tracing && span && finalResponse) {
         span.spanData.response_id = finalResponse.id;
+        span.spanData._response = finalResponse;
       }
     } catch (error) {
       if (span) {
