@@ -25,13 +25,13 @@ There are three types of MCP servers this SDK supports:
 
 Choose a server type based on your use‑case:
 
-| What you need                                                           | Recommended option      |
-| ----------------------------------------------------------------------- | ----------------------- |
-| Call publicly accessible remote servers within Responses API calls      | **1. Hosted MCP tools** |
-| Use publicly accessible remote servers as an Agent's function tools     | **2. Streamable HTTP**  |
-| Use locally running Streamable HTTP servers                             | **2. Streamable HTTP**  |
-| Use any Streamable HTTP servers with Chat-Completions-compatible models | **2. Streamable HTTP**  |
-| Work with local MCP servers that only support the standard-I/O protocol | **3. Stdio**            |
+| What you need                                                                    | Recommended option      |
+| -------------------------------------------------------------------------------- | ----------------------- |
+| Call publicly accessible remote servers with default OpenAI responses models     | **1. Hosted MCP tools** |
+| Use publicly accessible remote servers but have the tool calls triggered locally | **2. Streamable HTTP**  |
+| Use locally running Streamable HTTP servers                                      | **2. Streamable HTTP**  |
+| Use any Streamable HTTP servers with non-OpenAI Responses models                 | **2. Streamable HTTP**  |
+| Work with local MCP servers that only support the standard-I/O protocol          | **3. Stdio**            |
 
 ## 1. Hosted MCP server tools
 
@@ -61,7 +61,9 @@ To stream incremental MCP results, pass `stream: true` when you run the `Agent`:
 
 #### Optional approval flow
 
-For sensitive operations you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`:
+For sensitive operations you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`.
+
+If you can programatically determine whether a tool call is safe, you can use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
 
 <Code
   lang="typescript"
@@ -69,7 +71,7 @@ For sensitive operations you can require human approval of individual tool calls
   title="Human in the loop with hosted MCP tools"
 />
 
-Fully worked samples (streaming, approval, HITL) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
+Fully working samples (streaming, approval, HITL) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
 
 ## 2. Streamable HTTP MCP servers
 
