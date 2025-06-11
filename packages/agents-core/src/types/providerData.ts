@@ -8,6 +8,8 @@ export type HostedMCPTool<Context = UnknownContext> = {
   type: 'mcp';
   server_label: string;
   server_url: string;
+  allowed_tools?: string[] | { tool_names: string[] };
+  headers?: Record<string, string>;
 } & (
   | { require_approval?: 'never'; on_approval?: never }
   | {
