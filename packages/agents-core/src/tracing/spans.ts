@@ -38,6 +38,7 @@ export type ResponseSpanData = SpanDataBase & {
    * Not used by the OpenAI tracing provider but helpful for other tracing providers.
    */
   _input?: string | Record<string, any>[];
+  _response?: Record<string, any>;
 };
 
 export type HandoffSpanData = SpanDataBase & {
