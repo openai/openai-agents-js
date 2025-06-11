@@ -674,6 +674,7 @@
   --sl-color-gray-6: #000000;
   --sl-color-black: #1a1a1a;
   --sl-color-bg-sidebar: #000000;
+  --sl-sidebar-width: 17rem;
 }
 
 /* Light mode colors. */
@@ -693,4 +694,5 @@
   --sl-color-gray-6: #d9d9e3;
   --sl-color-gray-7: #ececf1;
   --sl-color-black: #ffffff;
+  --sl-sidebar-width: 17rem;
 }
