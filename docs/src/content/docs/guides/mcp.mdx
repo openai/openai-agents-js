@@ -11,8 +11,6 @@ import hostedHITLExample from '../../../../../examples/docs/mcp/hostedHITL.ts?ra
 import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
 
-## Overview
-
 The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an open protocol that standardizes how applications provide tools and context to LLMs. From the MCP docs:
 
 > MCP is an open protocol that standardizes how applications provide context to LLMs. Think of MCP like a USB-C port for AI applications. Just as USB-C provides a standardized way to connect your devices to various peripherals and accessories, MCP provides a standardized way to connect AI models to different data sources and tools.
@@ -36,8 +34,6 @@ Choose a server type based on your use‑case:
 ## 1. Hosted MCP server tools
 
 Hosted tools push the entire round‑trip into the model. Instead of your code calling an MCP server, the OpenAI Responses API invokes the remote tool endpoint and streams the result back to the model.
-
-### Quick start
 
 Here is the simplest example of using hosted MCP tools. You can pass the remote MCP server's label and URL to the `hostedMcpTool` utility function, which is helpful for creating hosted MCP server tools.
 

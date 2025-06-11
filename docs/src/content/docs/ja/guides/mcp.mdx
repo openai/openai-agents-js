@@ -11,8 +11,6 @@ import hostedHITLExample from '../../../../../../examples/docs/mcp/hostedHITL.ts
 import streamableHttpExample from '../../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 
-## 概要
-
 [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールとコンテキストを提供する方法を標準化するオープンプロトコルです。MCP ドキュメントより引用します。
 
 > MCP は、アプリケーションが LLM にコンテキストを提供する方法を標準化するオープンプロトコルです。MCP は AI アプリケーション向けの USB-C ポートのようなものと考えてください。USB-C がデバイスをさまざまな周辺機器やアクセサリーに接続するための標準化された方法を提供するのと同様に、MCP は AI モデルをさまざまなデータソースやツールに接続するための標準化された方法を提供します。
@@ -36,8 +34,6 @@ import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 ## 1. Hosted MCP サーバーツール
 
 Hosted tool では、往復すべてがモデル内部で完結します。あなたのコードが MCP サーバーを呼び出す代わりに、OpenAI Responses API がリモートツールのエンドポイントを呼び出し、その結果をストリームでモデルに返します。
-
-### クイックスタート
 
 Hosted MCP サーバーツールを使うもっともシンプルな例を示します。`hostedMcpTool` ユーティリティ関数にリモート MCP サーバーのラベルと URL を渡すだけで作成できます。
 
