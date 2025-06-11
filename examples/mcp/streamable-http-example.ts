@@ -18,7 +18,7 @@ async function main() {
         agent,
         'Which language is this repo written in?',
       );
-      console.log(result.finalOutput ?? result.output ?? result);
+      console.log(result.finalOutput);
     });
   } finally {
     await mcpServer.close();
