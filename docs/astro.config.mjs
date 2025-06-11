@@ -186,6 +186,13 @@ const sidebar = [
         },
       },
       {
+        label: 'Model Context Protocol (MCP)',
+        link: '/guides/mcp',
+        translations: {
+          ja: 'MCP 連携',
+        },
+      },
+      {
         label: 'Tracing',
         link: '/guides/tracing',
         translations: {

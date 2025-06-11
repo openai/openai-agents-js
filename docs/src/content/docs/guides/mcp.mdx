@@ -1,0 +1,106 @@
+---
+title: Model Context Protocol (MCP)
+description: Learn how to utilize MCP servers as tools
+---
+
+import { Code } from '@astrojs/starlight/components';
+import hostedAgentExample from '../../../../../examples/docs/mcp/hostedAgent.ts?raw';
+import hostedExample from '../../../../../examples/docs/mcp/hosted.ts?raw';
+import hostedStreamExample from '../../../../../examples/docs/mcp/hostedStream.ts?raw';
+import hostedHITLExample from '../../../../../examples/docs/mcp/hostedHITL.ts?raw';
+import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHttp.ts?raw';
+import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
+
+## Overview
+
+The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an open protocol that standardizes how applications provide tools and context to LLMs. From the MCP docs:
+
+> MCP is an open protocol that standardizes how applications provide context to LLMs. Think of MCP like a USB-C port for AI applications. Just as USB-C provides a standardized way to connect your devices to various peripherals and accessories, MCP provides a standardized way to connect AI models to different data sources and tools.
+
+There are three types of MCP servers this SDK supports:
+
+1. **Hosted MCP‑server tools** – remote MCP servers used as tools by the [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp)
+2. **Streamable HTTP MCP servers** – local or remote servers that implement the [Streamable HTTP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)
+3. **Stdio MCP servers** – servers accessed via standard input/output (the simplest option)
+
+Choose a server type based on your use‑case:
+
+| What you need                                                           | Recommended option      |
+| ----------------------------------------------------------------------- | ----------------------- |
+| Call publicly accessible remote servers within Responses API calls      | **1. Hosted MCP tools** |
+| Use publicly accessible remote servers as an Agent's function tools     | **2. Streamable HTTP**  |
+| Use locally running Streamable HTTP servers                             | **2. Streamable HTTP**  |
+| Use any Streamable HTTP servers with Chat-Completions-compatible models | **2. Streamable HTTP**  |
+| Work with local MCP servers that only support the standard-I/O protocol | **3. Stdio**            |
+
+## 1. Hosted MCP server tools
+
+Hosted tools push the entire round‑trip into the model. Instead of your code calling an MCP server, the OpenAI Responses API invokes the remote tool endpoint and streams the result back to the model.
+
+### Quick start
+
+Here is the simplest example of using hosted MCP tools. You can pass the remote MCP server's label and URL to the `hostedMcpTool` utility function, which is helpful for creating hosted MCP server tools.
+
+<Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
+
+Then, you can run the Agent with the `run` function (or your own customized `Runner` instance's `run` method):
+
+<Code
+  lang="typescript"
+  code={hostedExample}
+  title="Run with hosted MCP tools"
+/>
+
+To stream incremental MCP results, pass `stream: true` when you run the `Agent`:
+
+<Code
+  lang="typescript"
+  code={hostedStreamExample}
+  title="Run with hosted MCP tools (streaming)"
+/>
+
+#### Optional approval flow
+
+For sensitive operations you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`:
+
+<Code
+  lang="typescript"
+  code={hostedHITLExample}
+  title="Human in the loop with hosted MCP tools"
+/>
+
+Fully worked samples (streaming, approval, HITL) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
+
+## 2. Streamable HTTP MCP servers
+
+When your Agent talks directly to a Streamable HTTP MCP server—local or remote—instantiate `MCPServerStreamableHttp` with the server `url`, `name`, and any optional settings:
+
+<Code
+  lang="typescript"
+  code={streamableHttpExample}
+  title="Run with Streamable HTTP MCP servers"
+/>
+
+The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
+
+## 3. Stdio MCP servers
+
+For servers that expose only standard I/O, instantiate `MCPServerStdio` with a `fullCommand`:
+
+<Code
+  lang="typescript"
+  code={stdioExample}
+  title="Run with Stdio MCP servers"
+/>
+
+## Other things to know
+
+For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may call `list_tools()` to discover available tools. Because that round‑trip can add latency—especially to remote servers—you can cache the results in memory by passing `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
+
+Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance.
+
+## Further reading
+
+- [Model Context Protocol](https://modelcontextprotocol.io/) – official specification.
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – runnable
+  demos referenced above.
