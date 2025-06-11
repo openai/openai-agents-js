@@ -46,7 +46,7 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.type).toBe('hosted_tool');
     expect(t.name).toBe('hosted_mcp');
     expect(t.providerData.type).toBe('mcp');
-    expect(t.providerData.serverLabel).toBe('gitmcp');
+    expect(t.providerData.server_label).toBe('gitmcp');
   });
 });
 

@@ -154,16 +154,19 @@ export function hostedMcpTool<Context = UnknownContext>(
     options.requireApproval === 'never'
       ? {
           type: 'mcp',
-          serverLabel: options.serverLabel,
-          serverUrl: options.serverUrl,
-          requireApproval: 'never',
+          server_label: options.serverLabel,
+          server_url: options.serverUrl,
+          require_approval: 'never',
         }
       : {
           type: 'mcp',
-          serverLabel: options.serverLabel,
-          serverUrl: options.serverUrl,
-          requireApproval: options.requireApproval,
-          onApproval: options.onApproval,
+          server_label: options.serverLabel,
+          server_url: options.serverUrl,
+          require_approval:
+            typeof options.requireApproval === 'string'
+              ? options.requireApproval
+              : buildRequireApproval(options.requireApproval),
+          on_approval: options.onApproval,
         };
   return {
     type: 'hosted_tool',
@@ -574,4 +577,21 @@ export function tool<
     invoke,
     needsApproval,
   };
+}
+
+function buildRequireApproval(requireApproval: {
+  never?: { toolNames: string[] };
+  always?: { toolNames: string[] };
+}): { never?: { tool_names: string[] }; always?: { tool_names: string[] } } {
+  const result: {
+    never?: { tool_names: string[] };
+    always?: { tool_names: string[] };
+  } = {};
+  if (requireApproval.always) {
+    result.always = { tool_names: requireApproval.always.toolNames };
+  }
+  if (requireApproval.never) {
+    result.never = { tool_names: requireApproval.never.toolNames };
+  }
+  return result;
 }

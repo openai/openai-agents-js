@@ -93,7 +93,7 @@ export function processModelResponse<TContext>(
     tools
       .filter((t) => t.type === 'hosted_tool' && t.providerData?.type === 'mcp')
       .map((t) => t as HostedMCPTool)
-      .map((t) => [t.providerData.serverLabel, t]),
+      .map((t) => [t.providerData.server_label, t]),
   );
 
   for (const output of modelResponse.output) {
@@ -114,7 +114,7 @@ export function processModelResponse<TContext>(
         const providerData =
           output.providerData as ProviderData.HostedMCPApprovalRequest;
 
-        const mcpServerLabel = providerData.serverLabel;
+        const mcpServerLabel = providerData.server_label;
         const mcpServerTool = mcpToolMap.get(mcpServerLabel);
         if (typeof mcpServerTool === 'undefined') {
           const message = `MCP server (${mcpServerLabel}) not found in Agent (${agent.name})`;
@@ -142,7 +142,7 @@ export function processModelResponse<TContext>(
           requestItem: approvalItem,
           mcpTool: mcpServerTool,
         });
-        if (!mcpServerTool.providerData.onApproval) {
+        if (!mcpServerTool.providerData.on_approval) {
           // When onApproval function exists, it confirms the approval right after this.
           // Thus, this approval item must be appended only for the next turn interrpution patterns.
           items.push(approvalItem);
@@ -347,7 +347,7 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     if (typeof approved !== 'undefined') {
       const providerData: ProviderData.HostedMCPApprovalResponse = {
         approve: approved,
-        approvalRequestId,
+        approval_request_id: approvalRequestId,
         reason: undefined,
       };
       // Tell Responses API server the approval result in the next turn
@@ -460,15 +460,15 @@ export async function executeToolsAndSideEffects<TContext>(
         .providerData as ProviderData.HostedMCPTool<TContext>;
       const requestData = approvalRequest.requestItem.rawItem
         .providerData as ProviderData.HostedMCPApprovalRequest;
-      if (toolData.onApproval) {
+      if (toolData.on_approval) {
         // synchronously handle the approval process here
-        const approvalResult = await toolData.onApproval(
+        const approvalResult = await toolData.on_approval(
           state._context,
           approvalRequest.requestItem,
         );
         const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
           approve: approvalResult.approve,
-          approvalRequestId: requestData.id,
+          approval_request_id: requestData.id,
           reason: approvalResult.reason,
         };
         newItems.push(

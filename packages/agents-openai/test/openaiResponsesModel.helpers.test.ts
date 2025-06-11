@@ -72,8 +72,8 @@ describe('converTool', () => {
       type: 'hosted_tool',
       providerData: {
         type: 'web_search',
-        userLocation: {},
-        searchContextSize: 'low',
+        user_location: {},
+        search_context_size: 'low',
       },
     } as any);
     expect(web.tool).toEqual({
@@ -86,9 +86,9 @@ describe('converTool', () => {
       type: 'hosted_tool',
       providerData: {
         type: 'file_search',
-        vectorStoreId: ['v'],
-        maxNumResults: 5,
-        includeSearchResults: true,
+        vector_store_ids: ['v'],
+        max_num_results: 5,
+        include_search_results: true,
       },
     } as any);
     expect(file.tool).toEqual({
@@ -130,9 +130,9 @@ describe('converTool', () => {
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
-        serverLabel: 'deepwiki',
-        serverUrl: 'https://mcp.deepwiki.com/mcp',
-        requireApproval: 'never',
+        server_label: 'deepwiki',
+        server_url: 'https://mcp.deepwiki.com/mcp',
+        require_approval: 'never',
       },
     } as any);
 

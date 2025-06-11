@@ -33,10 +33,7 @@ import {
   ImageGenerationStatus,
   WebSearchStatus,
 } from './tools';
-import {
-  camelOrSnakeToSnakeCase,
-  snakeToCamelCase,
-} from './utils/providerData';
+import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { ProviderData } from '@openai/agents-core/types';
 
 type ToolChoice = ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction;
@@ -141,8 +138,8 @@ function converTool<_TContext = unknown>(
       return {
         tool: {
           type: 'web_search_preview',
-          user_location: tool.providerData.userLocation,
-          search_context_size: tool.providerData.searchContextSize,
+          user_location: tool.providerData.user_location,
+          search_context_size: tool.providerData.search_context_size,
         },
         include: undefined,
       };
@@ -151,16 +148,16 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'file_search',
           vector_store_ids:
-            tool.providerData.vectorStoreIds ||
+            tool.providerData.vector_store_ids ||
             // for backwards compatibility
-            (typeof tool.providerData.vectorStoreId === 'string'
-              ? [tool.providerData.vectorStoreId]
-              : tool.providerData.vectorStoreId),
-          max_num_results: tool.providerData.maxNumResults,
-          ranking_options: tool.providerData.rankingOptions,
+            (typeof tool.providerData.vector_store_id === 'string'
+              ? [tool.providerData.vector_store_id]
+              : tool.providerData.vector_store_id),
+          max_num_results: tool.providerData.max_num_results,
+          ranking_options: tool.providerData.ranking_options,
           filters: tool.providerData.filters,
         },
-        include: tool.providerData.includeSearchResults
+        include: tool.providerData.include_search_results
           ? ['file_search_call.results']
           : undefined,
       };
@@ -177,12 +174,12 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'image_generation',
           background: tool.providerData.background,
-          input_image_mask: tool.providerData.inputImageMask,
+          input_image_mask: tool.providerData.input_image_mask,
           model: tool.providerData.model,
           moderation: tool.providerData.moderation,
-          output_compression: tool.providerData.outputCompression,
-          output_format: tool.providerData.outputFormat,
-          partial_images: tool.providerData.partialImages,
+          output_compression: tool.providerData.output_compression,
+          output_format: tool.providerData.output_format,
+          partial_images: tool.providerData.partial_images,
           quality: tool.providerData.quality,
           size: tool.providerData.size,
         },
@@ -192,10 +189,10 @@ function converTool<_TContext = unknown>(
       return {
         tool: {
           type: 'mcp',
-          server_label: tool.providerData.serverLabel,
-          server_url: tool.providerData.serverUrl,
+          server_label: tool.providerData.server_label,
+          server_url: tool.providerData.server_url,
           require_approval: convertMCPRequireApproval(
-            tool.providerData.requireApproval,
+            tool.providerData.require_approval,
           ),
         },
         include: undefined,
@@ -212,7 +209,7 @@ function converTool<_TContext = unknown>(
 }
 
 function convertMCPRequireApproval(
-  requireApproval: ProviderData.HostedMCPTool['requireApproval'],
+  requireApproval: ProviderData.HostedMCPTool['require_approval'],
 ): OpenAI.Responses.Tool.Mcp.McpToolApprovalFilter | 'always' | 'never' | null {
   if (requireApproval === 'never' || requireApproval === undefined) {
     return 'never';
@@ -223,8 +220,8 @@ function convertMCPRequireApproval(
   }
 
   return {
-    never: { tool_names: requireApproval.never?.toolNames },
-    always: { tool_names: requireApproval.always?.toolNames },
+    never: { tool_names: requireApproval.never?.tool_names },
+    always: { tool_names: requireApproval.always?.tool_names },
   };
 }
 
@@ -519,7 +516,7 @@ function getInputItems(
           type: 'mcp_list_tools',
           id: item.id!,
           tools: camelOrSnakeToSnakeCase(providerData.tools) as any,
-          server_label: providerData.serverLabel,
+          server_label: providerData.server_label,
           error: providerData.error,
           ...camelOrSnakeToSnakeCase(item.providerData),
         };
@@ -535,7 +532,7 @@ function getInputItems(
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
-          server_label: providerData.serverLabel,
+          server_label: providerData.server_label,
           ...camelOrSnakeToSnakeCase(item.providerData),
         };
         return entry;
@@ -549,7 +546,7 @@ function getInputItems(
           type: 'mcp_approval_response',
           id: providerData.id,
           approve: providerData.approve,
-          approval_request_id: providerData.approvalRequestId,
+          approval_request_id: providerData.approval_request_id,
           reason: providerData.reason,
           ...camelOrSnakeToSnakeCase(providerData),
         };
@@ -564,7 +561,7 @@ function getInputItems(
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
-          server_label: providerData.serverLabel,
+          server_label: providerData.server_label,
           error: providerData.error,
           // output, which can be a large text string, is optional here, so we don't include it
           // output: item.output,
@@ -636,7 +633,7 @@ function convertToOutputItem(
         role,
         content: content.map(convertToMessageContentItem),
         status,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
     } else if (
       item.type === 'file_search_call' ||
@@ -657,7 +654,7 @@ function convertToOutputItem(
         name: item.type,
         status,
         output: outputData,
-        providerData: snakeToCamelCase(remainingItem),
+        providerData: remainingItem,
       };
       return output;
     } else if (item.type === 'function_call') {
@@ -669,7 +666,7 @@ function convertToOutputItem(
         name,
         status,
         arguments: args,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     } else if (item.type === 'computer_call') {
@@ -680,7 +677,7 @@ function convertToOutputItem(
         callId: call_id,
         status,
         action,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     } else if (item.type === 'mcp_list_tools') {
@@ -691,7 +688,7 @@ function convertToOutputItem(
         name: item.type,
         status: 'completed',
         output: undefined,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     } else if (item.type === 'mcp_approval_request') {
@@ -702,7 +699,7 @@ function convertToOutputItem(
         name: 'mcp_approval_request',
         status: 'completed',
         output: undefined,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     } else if (item.type === 'mcp_call') {
@@ -714,7 +711,7 @@ function convertToOutputItem(
         name: item.type,
         status: 'completed',
         output: outputData || undefined,
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     } else if (item.type === 'reasoning') {
@@ -729,17 +726,17 @@ function convertToOutputItem(
           return {
             type: 'input_text',
             text,
-            providerData: snakeToCamelCase(remainingContent),
+            providerData: remainingContent,
           };
         }),
-        providerData: snakeToCamelCase(providerData),
+        providerData,
       };
       return output;
     }
 
     return {
       type: 'unknown',
-      providerData: snakeToCamelCase(item),
+      providerData: item,
     };
   });
 }

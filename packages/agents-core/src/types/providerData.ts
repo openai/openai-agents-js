@@ -6,26 +6,26 @@ import { UnknownContext } from './aliases';
  */
 export type HostedMCPTool<Context = UnknownContext> = {
   type: 'mcp';
-  serverLabel: string;
-  serverUrl: string;
+  server_label: string;
+  server_url: string;
 } & (
-  | { requireApproval?: 'never'; onApproval?: never }
+  | { require_approval?: 'never'; on_approval?: never }
   | {
-      requireApproval:
+      require_approval:
         | 'always'
         | {
-            never?: { toolNames: string[] };
-            always?: { toolNames: string[] };
+            never?: { tool_names: string[] };
+            always?: { tool_names: string[] };
           };
-      onApproval?: HostedMCPApprovalFunction<Context>;
+      on_approval?: HostedMCPApprovalFunction<Context>;
     }
 );
 
 export type HostedMCPListTools = {
   id: string;
-  serverLabel: string;
+  server_label: string;
   tools: {
-    inputSchema: unknown;
+    input_schema: unknown;
     name: string;
     annotations?: unknown | null;
     description?: string | null;
@@ -36,7 +36,7 @@ export type HostedMCPCall = {
   id: string;
   arguments: string;
   name: string;
-  serverLabel: string;
+  server_label: string;
   error?: string | null;
   // excluding this large data field
   // output?: string | null;
@@ -46,12 +46,12 @@ export type HostedMCPApprovalRequest = {
   id: string;
   name: string;
   arguments: string;
-  serverLabel: string;
+  server_label: string;
 };
 
 export type HostedMCPApprovalResponse = {
   id?: string;
   approve: boolean;
-  approvalRequestId: string;
+  approval_request_id: string;
   reason?: string;
 };

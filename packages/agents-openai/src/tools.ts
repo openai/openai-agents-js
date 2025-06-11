@@ -1,6 +1,7 @@
 import { HostedTool } from '@openai/agents-core';
 import type OpenAI from 'openai';
 import { z } from '@openai/zod/v3';
+import * as ProviderData from './types/providerData';
 
 // -----------------------------------------------------
 // Status enums
@@ -50,15 +51,16 @@ export type WebSearchTool = {
 export function webSearchTool(
   options: Partial<Omit<WebSearchTool, 'type'>> = {},
 ): HostedTool {
+  const providerData: ProviderData.WebSearchTool = {
+    type: 'web_search',
+    name: options.name ?? 'web_search_preview',
+    user_location: options.userLocation,
+    search_context_size: options.searchContextSize ?? 'medium',
+  };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'web_search_preview',
-    providerData: {
-      type: 'web_search',
-      name: options.name ?? 'web_search_preview',
-      userLocation: options.userLocation,
-      searchContextSize: options.searchContextSize ?? 'medium',
-    },
+    providerData,
   };
 }
 
@@ -103,18 +105,19 @@ export function fileSearchTool(
   const vectorIds = Array.isArray(vectorStoreIds)
     ? vectorStoreIds
     : [vectorStoreIds];
+  const providerData: ProviderData.FileSearchTool = {
+    type: 'file_search',
+    name: options.name ?? 'file_search',
+    vector_store_ids: vectorIds,
+    max_num_results: options.maxNumResults,
+    include_search_results: options.includeSearchResults,
+    ranking_options: options.rankingOptions,
+    filters: options.filters,
+  };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'file_search',
-    providerData: {
-      type: 'file_search',
-      name: options.name ?? 'file_search',
-      vectorStoreId: vectorIds,
-      maxNumResults: options.maxNumResults,
-      includeSearchResults: options.includeSearchResults,
-      rankingOptions: options.rankingOptions,
-      filters: options.filters,
-    },
+    providerData,
   };
 }
 
@@ -134,14 +137,15 @@ export type CodeInterpreterTool = {
 export function codeInterpreterTool(
   options: Partial<Omit<CodeInterpreterTool, 'type'>> = {},
 ): HostedTool {
+  const providerData: ProviderData.CodeInterpreterTool = {
+    type: 'code_interpreter',
+    name: options.name ?? 'code_interpreter',
+    container: options.container ?? { type: 'auto' },
+  };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'code_interpreter',
-    providerData: {
-      type: 'code_interpreter',
-      name: options.name ?? 'code_interpreter',
-      container: options.container,
-    },
+    providerData,
   };
 }
 
@@ -170,22 +174,23 @@ export type ImageGenerationTool = {
 export function imageGenerationTool(
   options: Partial<Omit<ImageGenerationTool, 'type'>> = {},
 ): HostedTool {
+  const providerData: ProviderData.ImageGenerationTool = {
+    type: 'image_generation',
+    name: options.name ?? 'image_generation',
+    background: options.background,
+    input_image_mask: options.inputImageMask,
+    model: options.model,
+    moderation: options.moderation,
+    output_compression: options.outputCompression,
+    output_format: options.outputFormat,
+    partial_images: options.partialImages,
+    quality: options.quality,
+    size: options.size,
+  };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'image_generation',
-    providerData: {
-      type: 'image_generation',
-      name: options.name ?? 'image_generation',
-      background: options.background,
-      inputImageMask: options.inputImageMask,
-      model: options.model,
-      moderation: options.moderation,
-      outputCompression: options.outputCompression,
-      outputFormat: options.outputFormat,
-      partialImages: options.partialImages,
-      quality: options.quality,
-      size: options.size,
-    },
+    providerData,
   };
 }
 
