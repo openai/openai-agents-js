@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { MCPServerStdio } from '../../../src/shims/mcp-stdio/browser';
+import { MCPServerStdio } from '../../../src/shims/mcp-server/browser';
 
 describe('MCPServerStdio', () => {
   test('should be available', async () => {

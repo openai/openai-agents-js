@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterAll, beforeAll } from 'vitest';
-import { NodeMCPServerStdio } from '../../../src/shims/mcp-stdio/node';
+import { NodeMCPServerStdio } from '../../../src/shims/mcp-server/node';
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getAllMcpTools } from '../src/mcp';
 import { withTrace } from '../src/tracing';
-import { NodeMCPServerStdio } from '../src/shims/mcp-stdio/node';
+import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import type { CallToolResultContent } from '../src/mcp';
 
 class StubServer extends NodeMCPServerStdio {
@@ -20,7 +20,10 @@ class StubServer extends NodeMCPServerStdio {
     this._toolsList = this.toolList;
     return this.toolList;
   }
-  async callTool(_toolName: string, _args: Record<string, unknown> | null): Promise<CallToolResultContent> {
+  async callTool(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent> {
     return [];
   }
 }
@@ -29,10 +32,18 @@ describe('MCP tools cache invalidation', () => {
   it('fetches fresh tools after cache invalidation', async () => {
     await withTrace('test', async () => {
       const toolsA = [
-        { name: 'a', description: '', inputSchema: { type: 'object', properties: {} } },
+        {
+          name: 'a',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
       ];
       const toolsB = [
-        { name: 'b', description: '', inputSchema: { type: 'object', properties: {} } },
+        {
+          name: 'b',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
       ];
       const server = new StubServer('server', toolsA);
 
