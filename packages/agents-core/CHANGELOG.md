@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.0.7
+
+### Patch Changes
+
+- 0580b9b: Add remote MCP server (Streamable HTTP) support
+- 77c603a: Add allowed_tools and headers to hosted mcp server factory method
+- 1fccdca: Publishes types that were marked as internal but caused build errors when not exported in typings.
+- 2fae25c: Add hosted MCP server support
+
 ## 0.0.6
 
 ### Patch Changes
