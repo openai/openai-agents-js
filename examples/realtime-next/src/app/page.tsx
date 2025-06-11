@@ -40,15 +40,21 @@ const weatherTool = tool({
   },
 });
 
+// To invoke this tool, you can ask a question like "What is the special number?"
 const secretTool = tool({
   name: 'secret',
-  description: 'A secret tool',
+  description: 'A secret tool to tell the special number',
   parameters: z.object({
-    question: z.string().describe('The question to ask the secret tool'),
+    question: z
+      .string()
+      .describe(
+        'The question to ask the secret tool; mainly about the special number.',
+      ),
   }),
   execute: async ({ question }) => {
     return `The answer to ${question} is 42.`;
   },
+  // RealtimeAgent handles this approval process within tool_approval_requested events
   needsApproval: true,
 });
 
@@ -114,6 +120,7 @@ export default function Home() {
     session.current.on(
       'tool_approval_requested',
       (_context, _agent, approvalRequest) => {
+        // You'll be prompted when making the tool call that requires approval in web browser.
         const approved = confirm(
           `Approve tool call to ${approvalRequest.tool.name} with parameters:\n ${JSON.stringify(approvalRequest.tool.parameters, null, 2)}?`,
         );
