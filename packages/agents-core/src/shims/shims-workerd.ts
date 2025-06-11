@@ -54,7 +54,7 @@ export function isTracingLoopRunningByDefault(): boolean {
 /**
  * Right now Cloudflare Workers does not support MCP
  */
-export { MCPServerStdio } from './mcp-stdio/browser';
+export { MCPServerStdio, MCPServerStreamableHttp } from './mcp-server/browser';
 
 export { clearTimeout, setTimeout } from 'node:timers';
 
