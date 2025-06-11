@@ -1,8 +1,8 @@
-import * as readline from 'readline/promises';
-import { stdin, stdout } from 'node:process';
 import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
+import * as readline from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 
-async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
+async function confirm(item: RunToolApprovalItem): Promise<boolean> {
   const rl = readline.createInterface({ input: stdin, output: stdout });
   const name = item.rawItem.name;
   const params = JSON.parse(item.rawItem.providerData?.arguments || '{}');
@@ -14,9 +14,7 @@ async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
 }
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
-  // 'always' |
-  // 'never'  |
-  // { never?: { toolNames: string[] }; always?: { toolNames: string[] } }
+  // 'always' | 'never' | { never, always }
   const requireApproval = {
     never: { toolNames: ['search_codex_code', 'fetch_codex_documentation'] },
     always: { toolNames: ['fetch_generic_url_content'] },
@@ -54,17 +52,18 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
     console.log(`Done streaming; final result: ${result.finalOutput}`);
   } else {
     // Non-streaming
-    let result = await run(agent, input, { maxTurns: 100 });
+    let result = await run(agent, input);
     while (result.interruptions && result.interruptions.length) {
       for (const interruption of result.interruptions) {
-        const approval = await promptApproval(interruption);
+        // Human in the loop here
+        const approval = await confirm(interruption);
         if (approval) {
           result.state.approve(interruption);
         } else {
           result.state.reject(interruption);
         }
       }
-      result = await run(agent, result.state, { maxTurns: 100 });
+      result = await run(agent, result.state);
     }
     console.log(result.finalOutput);
 

@@ -1,6 +1,9 @@
 import { FunctionTool, tool, Tool } from './tool';
 import { UserError } from './errors';
-import { MCPServerStdio as UnderlyingMCPServerStdio } from '@openai/agents-core/_shims';
+import {
+  MCPServerStdio as UnderlyingMCPServerStdio,
+  MCPServerStreamableHttp as UnderlyingMCPServerStreamableHttp,
+} from '@openai/agents-core/_shims';
 import { getCurrentSpan, withMCPListToolsSpan } from './tracing';
 import { logger as globalLogger, getLogger, Logger } from './logger';
 import debug from 'debug';
@@ -14,6 +17,9 @@ import {
 
 export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:stdio-mcp-client';
+
+export const DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME =
+  'openai-agents:streamable-http-mcp-client';
 
 /**
  * Interface for MCP server implementations.
@@ -39,6 +45,39 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   constructor(options: MCPServerStdioOptions) {
     this.logger =
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
+    this.cacheToolsList = options.cacheToolsList ?? true;
+  }
+
+  abstract get name(): string;
+  abstract connect(): Promise<void>;
+  abstract close(): Promise<void>;
+  abstract listTools(): Promise<any[]>;
+  abstract callTool(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent>;
+
+  /**
+   * Logs a debug message when debug logging is enabled.
+   * @param buildMessage A function that returns the message to log.
+   */
+  protected debugLog(buildMessage: () => string): void {
+    if (debug.enabled(this.logger.namespace)) {
+      // only when this is true, the function to build the string is called
+      this.logger.debug(buildMessage());
+    }
+  }
+}
+
+export abstract class BaseMCPServerStreamableHttp implements MCPServer {
+  public cacheToolsList: boolean;
+  protected _cachedTools: any[] | undefined = undefined;
+
+  protected logger: Logger;
+  constructor(options: MCPServerStreamableHttpOptions) {
+    this.logger =
+      options.logger ??
+      getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? true;
   }
 
@@ -116,6 +155,40 @@ export class MCPServerStdio extends BaseMCPServerStdio {
     return this.underlying.callTool(toolName, args);
   }
 }
+
+export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
+  private underlying: UnderlyingMCPServerStreamableHttp;
+  constructor(options: MCPServerStreamableHttpOptions) {
+    super(options);
+    this.underlying = new UnderlyingMCPServerStreamableHttp(options);
+  }
+  get name(): string {
+    return this.underlying.name;
+  }
+  connect(): Promise<void> {
+    return this.underlying.connect();
+  }
+  close(): Promise<void> {
+    return this.underlying.close();
+  }
+  async listTools(): Promise<MCPTool[]> {
+    if (this.cacheToolsList && this._cachedTools) {
+      return this._cachedTools;
+    }
+    const tools = await this.underlying.listTools();
+    if (this.cacheToolsList) {
+      this._cachedTools = tools;
+    }
+    return tools;
+  }
+  callTool(
+    toolName: string,
+    args: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent> {
+    return this.underlying.callTool(toolName, args);
+  }
+}
+
 /**
  * Fetches and flattens all tools from multiple MCP servers.
  * Logs and skips any servers that fail to respond.
@@ -291,6 +364,25 @@ export interface FullCommandMCPServerStdioOptions
 export type MCPServerStdioOptions =
   | DefaultMCPServerStdioOptions
   | FullCommandMCPServerStdioOptions;
+
+export interface MCPServerStreamableHttpOptions {
+  url: string;
+  cacheToolsList?: boolean;
+  clientSessionTimeoutSeconds?: number;
+  name?: string;
+  logger?: Logger;
+
+  // ----------------------------------------------------
+  // OAuth
+  // import { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+  authProvider?: any;
+  // RequestInit
+  requestInit?: any;
+  // import { StreamableHTTPReconnectionOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+  reconnectionOptions?: any;
+  sessionId?: string;
+  // ----------------------------------------------------
+}
 
 /**
  * Represents a JSON-RPC request message.

@@ -9,7 +9,6 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
         hostedMcpTool({
           serverLabel: 'gitmcp',
           serverUrl: 'https://gitmcp.io/openai/codex',
-          requireApproval: 'never',
         }),
       ],
     });

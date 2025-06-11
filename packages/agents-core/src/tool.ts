@@ -136,8 +136,10 @@ export function hostedMcpTool<Context = UnknownContext>(
   options: {
     serverLabel: string;
     serverUrl: string;
+    allowedTools?: string[] | { toolNames?: string[] };
+    headers?: Record<string, string>;
   } & (
-    | { requireApproval: never }
+    | { requireApproval?: never }
     | { requireApproval: 'never' }
     | {
         requireApproval:
@@ -151,20 +153,25 @@ export function hostedMcpTool<Context = UnknownContext>(
   ),
 ): HostedMCPTool<Context> {
   const providerData: ProviderData.HostedMCPTool<Context> =
+    typeof options.requireApproval === 'undefined' ||
     options.requireApproval === 'never'
       ? {
           type: 'mcp',
           server_label: options.serverLabel,
           server_url: options.serverUrl,
           require_approval: 'never',
+          allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+          headers: options.headers,
         }
       : {
           type: 'mcp',
           server_label: options.serverLabel,
           server_url: options.serverUrl,
+          allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+          headers: options.headers,
           require_approval:
             typeof options.requireApproval === 'string'
-              ? options.requireApproval
+              ? 'always'
               : buildRequireApproval(options.requireApproval),
           on_approval: options.onApproval,
         };
@@ -594,4 +601,16 @@ function buildRequireApproval(requireApproval: {
     result.never = { tool_names: requireApproval.never.toolNames };
   }
   return result;
+}
+
+function toMcpAllowedToolsFilter(
+  allowedTools: string[] | { toolNames?: string[] } | undefined,
+): { tool_names: string[] } | undefined {
+  if (typeof allowedTools === 'undefined') {
+    return undefined;
+  }
+  if (Array.isArray(allowedTools)) {
+    return { tool_names: allowedTools };
+  }
+  return { tool_names: allowedTools?.toolNames ?? [] };
 }

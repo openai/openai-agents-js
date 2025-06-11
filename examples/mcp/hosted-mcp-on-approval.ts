@@ -14,9 +14,7 @@ async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
 }
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
-  // 'always' |
-  // 'never'  |
-  // { never?: { toolNames: string[] }; always?: { toolNames: string[] } }
+  // 'always' | 'never' | { never, always }
   const requireApproval = {
     never: {
       toolNames: ['fetch_codex_documentation', 'fetch_generic_url_content'],
@@ -34,6 +32,7 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
         serverUrl: 'https://gitmcp.io/openai/codex',
         requireApproval,
         onApproval: async (_context, item) => {
+          // Human in the loop here
           const approval = await promptApproval(item);
           return { approve: approval, reason: undefined };
         },

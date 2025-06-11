@@ -71,6 +71,7 @@ export {
   invalidateServerToolsCache,
   MCPServer,
   MCPServerStdio,
+  MCPServerStreamableHttp,
 } from './mcp';
 export {
   Model,

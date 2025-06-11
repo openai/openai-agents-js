@@ -41,7 +41,10 @@ export function isTracingLoopRunningByDefault(): boolean {
 export function isBrowserEnvironment(): boolean {
   return false;
 }
-export { NodeMCPServerStdio as MCPServerStdio } from './mcp-stdio/node';
+export {
+  NodeMCPServerStdio as MCPServerStdio,
+  NodeMCPServerStreamableHttp as MCPServerStreamableHttp,
+} from './mcp-server/node';
 
 export { clearTimeout } from 'node:timers';
 
