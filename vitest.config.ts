@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    workspace: ['packages/*'],
+    projects: ['packages/*'],
     globalSetup: './helpers/tests/setup.ts',
     // Enable code coverage reporting with Vitest's built‑in integration. We
     // only enable it for the monorepo packages (workspaces) so that the
