@@ -276,17 +276,11 @@ export type Prompt = {
    */
   version?: string;
   /**
-   * Optional variables to substitute into the prompt template. Can be a string,
-   * or an object with string keys and values that are string, InputText,
-   * InputImage, or InputFile.
-   *
-   * If an object is provided, the keys will be substituted into the prompt template
-   * as variables. The values will be substituted into the prompt template as the
-   * values of the variables.
+   * Optional variables to substitute into the prompt template.
+   * Can be a string, or an object with string keys and values that are string,
+   * InputText, InputImage, or InputFile.
    */
-  variables?:
-    | string
-    | {
-        [key: string]: string | InputText | InputImage | InputFile;
-      };
+  variables?: {
+    [key: string]: string | InputText | InputImage | InputFile;
+  };
 };
