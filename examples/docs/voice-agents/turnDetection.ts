@@ -7,8 +7,8 @@ const session = new RealtimeSession(agent, {
     turnDetection: {
       type: 'semantic_vad',
       eagerness: 'medium',
-      create_response: true,
-      interrupt_response: true,
+      createResponse: true,
+      interruptResponse: true,
     },
   },
 });

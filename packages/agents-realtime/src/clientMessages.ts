@@ -33,6 +33,37 @@ export type RealtimeTracingConfig =
     }
   | 'auto';
 
+export type RealtimeInputAudioTranscriptionConfig = {
+  language?: string;
+  model?: 'gpt-4o-transcribe' | 'gpt-4o-mini-transcribe' | 'whisper-1' | string;
+  prompt?: string;
+};
+
+export type RealtimeTurnDetectionConfigAsIs = {
+  type?: 'semantic_vad';
+  create_response?: boolean;
+  eagerness?: 'auto' | 'low' | 'medium' | 'high';
+  interrupt_response?: boolean;
+  prefix_padding_ms?: number;
+  silence_duration_ms?: number;
+  threshold?: number;
+};
+
+// The Realtime API accepts snake_cased keys, so when using this, this SDK coverts the keys to snake_case ones before passing it to the API
+export type RealtimeTurnDetectionConfigCamelCase = {
+  type?: 'semantic_vad';
+  createResponse?: boolean;
+  eagerness?: 'auto' | 'low' | 'medium' | 'high';
+  interruptResponse?: boolean;
+  prefixPaddingMs?: number;
+  silenceDurationMs?: number;
+  threshold?: number;
+};
+
+export type RealtimeTurnDetectionConfig =
+  | RealtimeTurnDetectionConfigAsIs
+  | RealtimeTurnDetectionConfigCamelCase;
+
 export type RealtimeSessionConfig = {
   model: string;
   instructions: string;
@@ -40,8 +71,8 @@ export type RealtimeSessionConfig = {
   voice: string;
   inputAudioFormat: RealtimeAudioFormat;
   outputAudioFormat: RealtimeAudioFormat;
-  inputAudioTranscription: Record<string, any>;
-  turnDetection: Record<string, any>;
+  inputAudioTranscription: RealtimeInputAudioTranscriptionConfig;
+  turnDetection: RealtimeTurnDetectionConfig;
   toolChoice: ModelSettingsToolChoice;
   tools: FunctionToolDefinition[];
   tracing?: RealtimeTracingConfig | null;
