@@ -6,7 +6,7 @@ import {
   StreamedRunResult,
 } from '@openai/agents';
 import readline from 'node:readline/promises';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 
 const rl = readline.createInterface({
   input: process.stdin,

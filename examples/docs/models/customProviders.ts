@@ -2,10 +2,8 @@ import {
   ModelProvider,
   Model,
   ModelRequest,
-  AgentOutputType,
   ModelResponse,
   ResponseStreamEvent,
-  TextOutput,
 } from '@openai/agents-core';
 
 import { Agent, Runner } from '@openai/agents';
