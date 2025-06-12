@@ -794,6 +794,7 @@ export class OpenAIResponsesModel implements Model {
       include,
       tools,
       previous_response_id: request.previousResponseId,
+      prompt: request.prompt,
       temperature: request.modelSettings.temperature,
       top_p: request.modelSettings.topP,
       truncation: request.modelSettings.truncation,

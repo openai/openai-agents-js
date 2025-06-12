@@ -3,7 +3,7 @@ import type { ZodObject } from 'zod/v3';
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
 import { getAllMcpTools, type MCPServer } from './mcp';
-import type { Model, ModelSettings } from './model';
+import type { Model, ModelSettings, Prompt } from './model';
 import type { RunContext } from './runContext';
 import {
   type FunctionTool,
@@ -131,6 +131,20 @@ export interface AgentConfiguration<
         runContext: RunContext<TContext>,
         agent: Agent<TContext, TOutput>,
       ) => Promise<string> | string);
+
+  /**
+   * The prompt template to use for the agent (OpenAI Responses API only).
+   *
+   * Can either be a prompt template object, or a function that returns a prompt
+   * template object. If a function is provided, it will be called with the run
+   * context and the agent instance. It must return a prompt template object.
+   */
+  prompt?:
+    | Prompt
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<Prompt> | Prompt);
 
   /**
    * A description of the agent. This is used when the agent is used as a handoff, so that an LLM
@@ -303,6 +317,12 @@ export class Agent<
         runContext: RunContext<TContext>,
         agent: Agent<TContext, TOutput>,
       ) => Promise<string> | string);
+  prompt?:
+    | Prompt
+    | ((
+        runContext: RunContext<TContext>,
+        agent: Agent<TContext, TOutput>,
+      ) => Promise<Prompt> | Prompt);
   handoffDescription: string;
   handoffs: (Agent<any, TOutput> | Handoff<any, TOutput>)[];
   model: string | Model;
@@ -322,6 +342,7 @@ export class Agent<
     }
     this.name = config.name;
     this.instructions = config.instructions ?? '';
+    this.prompt = config.prompt;
     this.handoffDescription = config.handoffDescription ?? '';
     this.handoffs = config.handoffs ?? [];
     this.model = config.model ?? '';
@@ -470,6 +491,21 @@ export class Agent<
     }
 
     return this.instructions;
+  }
+
+  /**
+   * Returns the prompt template for the agent, if defined.
+   *
+   * If the agent has a function as its prompt, this function will be called with the
+   * runContext and the agent instance.
+   */
+  async getPrompt(
+    runContext: RunContext<TContext>,
+  ): Promise<Prompt | undefined> {
+    if (typeof this.prompt === 'function') {
+      return await this.prompt(runContext, this);
+    }
+    return this.prompt;
   }
 
   /**
