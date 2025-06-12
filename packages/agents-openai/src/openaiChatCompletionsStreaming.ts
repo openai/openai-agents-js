@@ -43,7 +43,7 @@ export async function* convertChatCompletionsStreamToResponses(
     // This is always set by the OpenAI API, but not by others e.g. LiteLLM
     usage = (chunk as any).usage || undefined;
 
-    if (!chunk.choices || !chunk.choices[0].delta) continue;
+    if (!chunk.choices?.[0]?.delta) continue;
     const delta = chunk.choices[0].delta;
 
     // Handle text
