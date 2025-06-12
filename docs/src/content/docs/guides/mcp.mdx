@@ -17,7 +17,7 @@ The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an op
 
 There are three types of MCP servers this SDK supports:
 
-1. **Hosted MCP‑server tools** – remote MCP servers used as tools by the [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp)
+1. **Hosted MCP server tools** – remote MCP servers used as tools by the [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp)
 2. **Streamable HTTP MCP servers** – local or remote servers that implement the [Streamable HTTP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)
 3. **Stdio MCP servers** – servers accessed via standard input/output (the simplest option)
 
@@ -28,7 +28,7 @@ Choose a server type based on your use‑case:
 | Call publicly accessible remote servers with default OpenAI responses models     | **1. Hosted MCP tools** |
 | Use publicly accessible remote servers but have the tool calls triggered locally | **2. Streamable HTTP**  |
 | Use locally running Streamable HTTP servers                                      | **2. Streamable HTTP**  |
-| Use any Streamable HTTP servers with non-OpenAI Responses models                 | **2. Streamable HTTP**  |
+| Use any Streamable HTTP servers with non-OpenAI-Responses models                 | **2. Streamable HTTP**  |
 | Work with local MCP servers that only support the standard-I/O protocol          | **3. Stdio**            |
 
 ## 1. Hosted MCP server tools
@@ -67,7 +67,7 @@ If you can programatically determine whether a tool call is safe, you can use th
   title="Human in the loop with hosted MCP tools"
 />
 
-Fully working samples (streaming, approval, HITL) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
+Fully working samples (Hosted tools/Streamable HTTP/stdio + Streaming, HITL, onApproval) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
 
 ## 2. Streamable HTTP MCP servers
 

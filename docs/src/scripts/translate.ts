@@ -168,6 +168,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'TypeScript-first': 'TypeScript ファースト',
     'Human in the loop': 'Human in the loop (人間の介入)',
     'Hosted tool': '組み込みツール（Hosted）',
+    'Hosted MCP server tools': 'リモート MCP サーバーツール（Hosted）',
     raw: '元',
   },
 };
