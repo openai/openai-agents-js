@@ -15,6 +15,7 @@
     "start:lifecycle-example": "tsx lifecycle-example.ts",
     "start:local-image": "tsx local-image.ts",
     "start:previous-response-id": "tsx previous-response-id.ts",
+    "start:prompt": "tsx prompt-id.ts",
     "start:remote-image": "tsx remote-image.ts",
     "start:stream-items": "tsx stream-items.ts",
     "start:stream-text": "tsx stream-text.ts",

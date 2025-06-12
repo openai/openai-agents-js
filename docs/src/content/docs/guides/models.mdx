@@ -7,6 +7,7 @@ import { Code } from '@astrojs/starlight/components';
 import modelCustomProviderExample from '../../../../../examples/docs/models/customProviders.ts?raw';
 import setDefaultOpenAIKeyExample from '../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
 import modelSettingsExample from '../../../../../examples/docs/models/modelSettings.ts?raw';
+import promptIdExample from '../../../../../examples/basic/prompt-id.ts?raw';
 import agentWithModelExample from '../../../../../examples/docs/models/agentWithModel.ts?raw';
 import runnerWithModelExample from '../../../../../examples/docs/models/runnerWithModel.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
@@ -84,6 +85,26 @@ Attach settings at either level:
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
 `Runner`‑level settings override any conflicting per‑agent settings.
+
+---
+
+## Prompt
+
+Agents can be configured with a `prompt` parameter, indicating a server-stored
+prompt configuration that should be used to control the Agent's behavior. Currently,
+this option is only supported when you use the OpenAI
+[Responses API](https://platform.openai.com/docs/api-reference/responses).
+
+| Field       | Type     | Notes                                                                                                                                  |
+| ----------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt_id` | `string` | Unique identifier for a prompt.                                                                                                        |
+| `version`   | `string` | Version of the prompt you wish to use.                                                                                                 |
+| `variables` | `object` | A key/value pair of variables to substitute into the prompt. Values can be strings or content input types like text, images, or files. |
+
+<Code lang="typescript" code={promptIdExample} title="Model settings" />
+
+Any additional agent configuration, like tools or instructions, will override the
+values you may have configured in your stored prompt.
 
 ---
 
