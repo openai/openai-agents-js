@@ -27,6 +27,7 @@ export default function Home() {
 
     setHistory([
       ...messages,
+      // This is just a placeholder to show on the UI to show the agent is working
       {
         type: 'message',
         role: 'assistant',
@@ -35,6 +36,8 @@ export default function Home() {
       },
     ]);
 
+    // We will send the messages to the API route along with the conversation ID if we have one
+    // and the decisions if we had any approvals in this turn
     const response = await fetch('/api/basic', {
       method: 'POST',
       body: JSON.stringify({
@@ -56,6 +59,8 @@ export default function Home() {
 
     if (data.approvals) {
       setApprovals(data.approvals);
+    } else {
+      setApprovals([]);
     }
   }
 
@@ -70,6 +75,14 @@ export default function Home() {
   return (
     <>
       <App history={history} onSend={handleSend} />
+      {/**
+       * If we have any approvals, we will show the approvals component to allow the user to
+       * approve or reject the tool calls. If we don't have any approvals, we will just show the
+       * history. Once all the approvals are done, we will call the handleDone function to continue
+       * the run. What kind of UI you render to show approval requests is up to you. You could also
+       * render them as part of the chat history. We are rendering them separately here to show
+       * that it can be an entirely different UI.
+       */}
       <Approvals approvals={approvals} onDone={handleDone} />
     </>
   );

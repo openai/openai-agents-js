@@ -1,7 +1,7 @@
 import type { AgentInputItem } from '@openai/agents';
 import { History } from '@/components/History';
 import { Button } from '@/components/ui/Button';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ArrowUpIcon from './icons/ArrowUpIcon';
 
 export type AppProps = {
@@ -13,6 +13,13 @@ export type AppProps = {
 export function App({ title = 'Agent Demo', history, onSend }: AppProps) {
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isLoading) {
+      inputRef.current?.focus();
+    }
+  }, [isLoading]);
 
   const handleSend = async () => {
     if (!message.trim()) return;
@@ -56,6 +63,7 @@ export function App({ title = 'Agent Demo', history, onSend }: AppProps) {
               placeholder="Ask me anything..."
               onChange={(e) => setMessage(e.target.value)}
               disabled={isLoading}
+              ref={inputRef}
             />
             <Button
               variant="primary"

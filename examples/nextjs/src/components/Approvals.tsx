@@ -52,6 +52,12 @@ function ToolApprovalEntry({
   );
 }
 
+/**
+ * This component just renders all of the approval requests and tracks whether they were approved
+ * or not by storing the callId in a decision Map with `approved` or `rejected` as the value.
+ * Once all the approvals are done, we will call the onDone function to let the parent component
+ * trigger the next run.
+ */
 export function Approvals({
   approvals,
   onDone,

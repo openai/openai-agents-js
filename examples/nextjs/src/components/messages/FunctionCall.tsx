@@ -1,23 +1,31 @@
 import React from 'react';
 
 import ClockIcon from '@/components/icons/ClockIcon';
-import type { FunctionCallItem } from '@openai/agents';
 import FunctionsIcon from '@/components/icons/FunctionsIcon';
 
+export type ProcessedFunctionCallItem = {
+  type: 'function_call';
+  name: string;
+  arguments: string;
+  id: string;
+  callId: string;
+  output?: string;
+  status: 'completed' | 'in_progress';
+};
+
 type FunctionCallMessageProps = {
-  message: FunctionCallItem;
+  message: ProcessedFunctionCallItem;
 };
 
 export function FunctionCallMessage({ message }: FunctionCallMessageProps) {
-  // let output = message?.output;
-  // try {
-  //   if (message.output) {
-  //     output = JSON.stringify(JSON.parse(message.output), null, 2);
-  //   }
-  // } catch {
-  //   output = message.output;
-  // }
-  const output = '';
+  let output = message?.output;
+  try {
+    if (message.output) {
+      output = JSON.stringify(JSON.parse(message.output), null, 2);
+    }
+  } catch {
+    output = message.output;
+  }
   return (
     <div className="flex flex-col w-[70%] relative mb-[8px]">
       <div>
