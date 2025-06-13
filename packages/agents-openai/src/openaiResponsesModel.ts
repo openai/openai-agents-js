@@ -856,6 +856,7 @@ export class OpenAIResponsesModel implements Model {
       }),
       output: convertToOutputItem(response.output),
       responseId: response.id,
+      providerData: response,
     };
 
     return output;

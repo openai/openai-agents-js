@@ -141,6 +141,7 @@ export class OpenAIChatCompletionsModel implements Model {
         : new Usage(),
       output,
       responseId: response.id,
+      providerData: response,
     };
 
     return modelResponse;

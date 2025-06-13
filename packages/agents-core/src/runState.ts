@@ -82,6 +82,7 @@ const modelResponseSchema = z.object({
   usage: usageSchema,
   output: z.array(protocol.OutputModelItem),
   responseId: z.string().optional(),
+  providerData: z.record(z.string(), z.any()).optional(),
 });
 
 const itemSchema = z.discriminatedUnion('type', [
@@ -388,6 +389,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           },
           output: response.output as any,
           responseId: response.responseId,
+          providerData: response.providerData,
         };
       }),
       context: this._context.toJSON(),
@@ -635,6 +637,7 @@ export function deserializeModelResponse(
       protocol.OutputModelItem.parse(item),
     ),
     responseId: serializedModelResponse.responseId,
+    providerData: serializedModelResponse.providerData,
   };
 }
 

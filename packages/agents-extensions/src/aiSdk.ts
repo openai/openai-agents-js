@@ -449,6 +449,7 @@ export class AiSdkModel implements Model {
               result.usage.promptTokens + result.usage.completionTokens,
           }),
           output,
+          providerData: result,
         };
       } catch (error) {
         if (error instanceof Error) {
