@@ -290,6 +290,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
             state._currentStep = turnResult.nextStep;
+
+            if (turnResult.nextStep.type === 'next_step_interruption') {
+              // we are still in an interruption, so we need to avoid an infinite loop
+              return new RunResult<TContext, TAgent>(state);
+            }
+
             continue;
           }
 
@@ -641,6 +647,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
           result.state._currentStep = turnResult.nextStep;
+          if (turnResult.nextStep.type === 'next_step_interruption') {
+            // we are still in an interruption, so we need to avoid an infinite loop
+            return;
+          }
           continue;
         }
 
