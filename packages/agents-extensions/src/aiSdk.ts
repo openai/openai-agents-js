@@ -443,10 +443,19 @@ export class AiSdkModel implements Model {
         return {
           responseId: result.response?.id ?? 'FAKE_ID',
           usage: new Usage({
-            inputTokens: result.usage.promptTokens,
-            outputTokens: result.usage.completionTokens,
+            inputTokens: Number.isNaN(result.usage?.promptTokens)
+              ? 0
+              : (result.usage?.promptTokens ?? 0),
+            outputTokens: Number.isNaN(result.usage?.completionTokens)
+              ? 0
+              : (result.usage?.completionTokens ?? 0),
             totalTokens:
-              result.usage.promptTokens + result.usage.completionTokens,
+              (Number.isNaN(result.usage?.promptTokens)
+                ? 0
+                : (result.usage?.promptTokens ?? 0)) +
+              (Number.isNaN(result.usage?.completionTokens)
+                ? 0
+                : (result.usage?.completionTokens ?? 0)),
           }),
           output,
         };
@@ -608,8 +617,12 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'finish': {
-            usagePromptTokens = part.usage.promptTokens;
-            usageCompletionTokens = part.usage.completionTokens;
+            usagePromptTokens = Number.isNaN(part.usage?.promptTokens)
+              ? 0
+              : (part.usage?.promptTokens ?? 0);
+            usageCompletionTokens = Number.isNaN(part.usage?.completionTokens)
+              ? 0
+              : (part.usage?.completionTokens ?? 0);
             break;
           }
           case 'error': {

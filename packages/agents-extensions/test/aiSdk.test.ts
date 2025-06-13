@@ -468,6 +468,42 @@ describe('AiSdkModel.getResponse', () => {
       content: 'inst',
     });
   });
+
+  test('handles NaN usage in doGenerate', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            text: '',
+            finishReason: 'stop',
+            usage: { promptTokens: Number.NaN, completionTokens: Number.NaN },
+            providerMetadata: {},
+            rawCall: { rawPrompt: '', rawSettings: {} },
+          };
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.usage).toEqual({
+      requests: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      inputTokensDetails: [],
+      outputTokensDetails: [],
+    });
+  });
 });
 
 describe('AiSdkModel.getStreamedResponse', () => {
@@ -638,6 +674,43 @@ describe('AiSdkModel.getStreamedResponse', () => {
       role: 'system',
       content: 'inst',
     });
+  });
+
+  test('handles NaN usage in stream finish event', async () => {
+    const parts = [
+      { type: 'text-delta', textDelta: 'a' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { promptTokens: Number.NaN, completionTokens: Number.NaN },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream(parts),
+            rawCall: { rawPrompt: '', rawSettings: {} },
+          } as any;
+        },
+      }),
+    );
+
+    let final: any;
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      if (ev.type === 'response_done') {
+        final = ev.response.usage;
+      }
+    }
+
+    expect(final).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
   });
 });
 
