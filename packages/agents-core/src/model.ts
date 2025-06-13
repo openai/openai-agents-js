@@ -221,6 +221,11 @@ export type ModelResponse = {
    * model. Not supported by all model providers.
    */
   responseId?: string;
+
+  /**
+   * Raw response data from the underlying model provider.
+   */
+  providerData?: Record<string, any>;
 };
 
 /**

@@ -543,6 +543,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent: state._currentAgent,
         agentOutput,
         context: state._context,
+        details: { modelResponse: state._lastTurnResponse },
       };
       try {
         const results = await Promise.all(

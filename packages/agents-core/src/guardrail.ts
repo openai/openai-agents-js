@@ -2,6 +2,7 @@ import type { ModelItem } from './types/protocol';
 import { Agent, AgentOutputType } from './agent';
 import { RunContext } from './runContext';
 import { ResolvedAgentOutput, TextOutput, UnknownContext } from './types';
+import type { ModelResponse } from './model';
 
 /**
  * Definition of input/output guardrails; SDK users usually do not need to create this.
@@ -149,6 +150,13 @@ export interface OutputGuardrailFunctionArgs<
   agent: Agent<any, any>;
   agentOutput: ResolvedAgentOutput<TOutput>;
   context: RunContext<TContext>;
+  /**
+   * Additional details about the agent output.
+   */
+  details?: {
+    /** Model response associated with the output if available. */
+    modelResponse?: ModelResponse;
+  };
 }
 /**
  * The result of an output guardrail execution.
