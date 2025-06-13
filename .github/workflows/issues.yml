@@ -15,6 +15,7 @@ jobs:
           days-before-issue-stale: 7
           days-before-issue-close: 3
           stale-issue-label: "stale"
+          exempt-issue-labels: "skip-stale"
           stale-issue-message: "This issue is stale because it has been open for 7 days with no activity."
           close-issue-message: "This issue was closed because it has been inactive for 3 days since being marked as stale."
           any-of-issue-labels: 'question,needs-more-info'
