@@ -9,6 +9,7 @@ import { RealtimeItem } from './items';
 import { RealtimeAgent } from './realtimeAgent';
 import { TransportEvent, TransportLayerAudio } from './transportLayerEvents';
 import { RealtimeContextData } from './realtimeSession';
+import { protocol } from '@openai/agents-core';
 
 type AgentWithOrWithoutHistory<TContext> =
   | RealtimeAgent<TContext>
@@ -59,6 +60,7 @@ export type RealtimeSessionEventTypes<TContext = unknown> = {
     context: RunContext<RealtimeContextData<TContext>>,
     agent: AgentWithOrWithoutHistory<TContext>,
     tool: FunctionTool<RealtimeContextData<TContext>>,
+    details: { toolCall: protocol.ToolCallItem },
   ];
 
   /**
@@ -68,7 +70,8 @@ export type RealtimeSessionEventTypes<TContext = unknown> = {
     context: RunContext<RealtimeContextData<TContext>>,
     agent: AgentWithOrWithoutHistory<TContext>,
     tool: FunctionTool<RealtimeContextData<TContext>>,
-    result?: string,
+    result: string,
+    details: { toolCall: protocol.ToolCallItem },
   ];
 
   /**

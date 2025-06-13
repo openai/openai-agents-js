@@ -537,8 +537,16 @@ describe('executeFunctionToolCalls', () => {
     );
 
     expect(res[0].type).toBe('function_output');
-    expect(start).toHaveBeenCalled();
-    expect(end).toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(state._context, state._currentAgent, t, {
+      toolCall,
+    });
+    expect(end).toHaveBeenCalledWith(
+      state._context,
+      state._currentAgent,
+      t,
+      'ok',
+      { toolCall },
+    );
     expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
     expect(invokeSpy).toHaveBeenCalled();
   });
