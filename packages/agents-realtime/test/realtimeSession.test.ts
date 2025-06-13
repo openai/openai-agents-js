@@ -155,6 +155,7 @@ describe('RealtimeSession', () => {
     await vi.waitFor(() => expect(guardrailEvents.length).toBe(1));
     expect(transport.interruptCalls).toBe(1);
     expect(transport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
+    expect(guardrailEvents[0][3]).toEqual({ itemId: '123' });
     vi.restoreAllMocks();
   });
 

@@ -447,7 +447,11 @@ export class RealtimeSession<
     }
   }
 
-  async #runOutputGuardrails(output: string, responseId: string) {
+  async #runOutputGuardrails(
+    output: string,
+    responseId: string,
+    itemId: string,
+  ) {
     if (this.#outputGuardrails.length === 0) {
       return;
     }
@@ -475,7 +479,9 @@ export class RealtimeSession<
         `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
         firstTripwireTriggered,
       );
-      this.emit('guardrail_tripped', this.#context, this.#currentAgent, error);
+      this.emit('guardrail_tripped', this.#context, this.#currentAgent, error, {
+        itemId,
+      });
       this.interrupt();
 
       const feedbackText = getRealtimeGuardrailFeedbackMessage(
@@ -500,10 +506,11 @@ export class RealtimeSession<
     this.#transport.on('turn_done', (event) => {
       const item = event.response.output[event.response.output.length - 1];
       const textOutput = getLastTextFromAudioOutputMessage(item) ?? '';
+      const itemId = item.id ?? '';
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
-      this.#runOutputGuardrails(textOutput, event.response.id);
+      this.#runOutputGuardrails(textOutput, event.response.id, itemId);
     });
 
     this.#transport.on('audio_done', () => {
@@ -537,7 +544,7 @@ export class RealtimeSession<
           // We don't cancel existing runs because we want the first one to fail to fail
           // The transport layer should upon failure handle the interruption and stop the model
           // from generating further
-          this.#runOutputGuardrails(newText, responseId);
+          this.#runOutputGuardrails(newText, responseId, itemId);
         }
       } catch (err) {
         this.emit('error', {

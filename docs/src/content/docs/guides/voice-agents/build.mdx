@@ -98,7 +98,7 @@ Guardrails offer a way to monitor whether what the agent has said violated a set
 
 The guardrails that you provide will run asynchronously as a model response is returned, allowing you to cut off the response based a predefined classification trigger, for example "mentions a specific banned word".
 
-When a guardrail trips the session emits a `guardrail_tripped` event.
+When a guardrail trips the session emits a `guardrail_tripped` event. The event also provides a `details` object containing the `itemId` that triggered the guardrail.
 
 <Code lang="typescript" code={guardrailsExample} />
 

@@ -113,6 +113,7 @@ export type RealtimeSessionEventTypes<TContext = unknown> = {
     context: RunContext<RealtimeContextData<TContext>>,
     agent: AgentWithOrWithoutHistory<TContext>,
     error: OutputGuardrailTripwireTriggered<RealtimeGuardrailMetadata>,
+    details: { itemId: string },
   ];
 
   /**
