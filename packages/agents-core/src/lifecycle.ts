@@ -7,6 +7,7 @@ import {
   EventEmitterEvents,
 } from '@openai/agents-core/_shims';
 import { TextOutput, UnknownContext } from './types';
+import * as protocol from './types/protocol';
 
 export abstract class EventEmitterDelegate<
   EventTypes extends EventEmitterEvents = Record<string, any[]>,
@@ -64,7 +65,11 @@ export type AgentHookEvents<
    * @param agent - The agent that is starting a tool
    * @param tool - The tool that is starting
    */
-  agent_tool_start: [context: RunContext<TContext>, tool: Tool<any>];
+  agent_tool_start: [
+    context: RunContext<TContext>,
+    tool: Tool<any>,
+    details: { toolCall: protocol.ToolCallItem },
+  ];
   /**
    * @param context - The context of the run
    * @param agent - The agent that is ending a tool
@@ -75,6 +80,7 @@ export type AgentHookEvents<
     context: RunContext<TContext>,
     tool: Tool<any>,
     result: string,
+    details: { toolCall: protocol.ToolCallItem },
   ];
 };
 
@@ -129,6 +135,7 @@ export type RunHookEvents<
     context: RunContext<TContext>,
     agent: Agent<TContext, TOutput>,
     tool: Tool,
+    details: { toolCall: protocol.ToolCallItem },
   ];
   /**
    * @param context - The context of the run
@@ -141,6 +148,7 @@ export type RunHookEvents<
     agent: Agent<TContext, TOutput>,
     tool: Tool,
     result: string,
+    details: { toolCall: protocol.ToolCallItem },
   ];
 };
 

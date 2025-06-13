@@ -372,8 +372,12 @@ export class RealtimeSession<
         callId: toolCall.callId,
       });
       if (approval === false) {
-        this.emit('agent_tool_start', this.#context, this.#currentAgent, tool);
-        this.#currentAgent.emit('agent_tool_start', this.#context, tool);
+        this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+          toolCall,
+        });
+        this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+          toolCall,
+        });
 
         const result = 'Tool execution was not approved.';
         this.#transport.sendFunctionCallOutput(toolCall, result, true);
@@ -383,8 +387,11 @@ export class RealtimeSession<
           this.#currentAgent,
           tool,
           result,
+          { toolCall },
         );
-        this.#currentAgent.emit('agent_tool_end', this.#context, tool, result);
+        this.#currentAgent.emit('agent_tool_end', this.#context, tool, result, {
+          toolCall,
+        });
         return;
       } else if (typeof approval === 'undefined') {
         this.emit(
@@ -401,8 +408,12 @@ export class RealtimeSession<
       }
     }
 
-    this.emit('agent_tool_start', this.#context, this.#currentAgent, tool);
-    this.#currentAgent.emit('agent_tool_start', this.#context, tool);
+    this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+      toolCall,
+    });
+    this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+      toolCall,
+    });
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     const result = await tool.invoke(this.#context, toolCall.arguments);
@@ -414,12 +425,14 @@ export class RealtimeSession<
       this.#currentAgent,
       tool,
       stringResult,
+      { toolCall },
     );
     this.#currentAgent.emit(
       'agent_tool_end',
       this.#context,
       tool,
       stringResult,
+      { toolCall },
     );
   }
 

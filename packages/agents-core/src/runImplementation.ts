@@ -732,8 +732,12 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         }
 
         try {
-          runner.emit('agent_tool_start', state._context, agent, toolRun.tool);
-          agent.emit('agent_tool_start', state._context, toolRun.tool);
+          runner.emit('agent_tool_start', state._context, agent, toolRun.tool, {
+            toolCall: toolRun.toolCall,
+          });
+          agent.emit('agent_tool_start', state._context, toolRun.tool, {
+            toolCall: toolRun.toolCall,
+          });
           const result = await toolRun.tool.invoke(
             state._context,
             toolRun.toolCall.arguments,
@@ -747,12 +751,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
             agent,
             toolRun.tool,
             stringResult,
+            { toolCall: toolRun.toolCall },
           );
           agent.emit(
             'agent_tool_end',
             state._context,
             toolRun.tool,
             stringResult,
+            { toolCall: toolRun.toolCall },
           );
 
           if (runner.config.traceIncludeSensitiveData) {
@@ -879,9 +885,11 @@ export async function executeComputerActions(
     const toolCall = action.toolCall;
 
     // Hooks: on_tool_start (global + agent)
-    runner.emit('agent_tool_start', runContext, agent, action.computer);
+    runner.emit('agent_tool_start', runContext, agent, action.computer, {
+      toolCall,
+    });
     if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_start', runContext, action.computer);
+      agent.emit('agent_tool_start', runContext, action.computer, { toolCall });
     }
 
     // Run the action and get screenshot
@@ -894,9 +902,13 @@ export async function executeComputerActions(
     }
 
     // Hooks: on_tool_end (global + agent)
-    runner.emit('agent_tool_end', runContext, agent, action.computer, output);
+    runner.emit('agent_tool_end', runContext, agent, action.computer, output, {
+      toolCall,
+    });
     if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_end', runContext, action.computer, output);
+      agent.emit('agent_tool_end', runContext, action.computer, output, {
+        toolCall,
+      });
     }
 
     // Always return a screenshot as a base64 data URL
