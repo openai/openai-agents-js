@@ -10,6 +10,8 @@ const getWeather = tool({
   execute: async ({ city }) => {
     return `The weather in ${city} is sunny.`;
   },
+
+  needsApproval: true,
 });
 
 export const agent = new Agent({

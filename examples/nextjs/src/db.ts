@@ -3,8 +3,8 @@
  * In a real application, you would use a proper database that persists the data.
  */
 
-export class Database {
-  #database: Map<string, any>;
+export class Database<Value> {
+  #database: Map<string, Value>;
 
   constructor() {
     this.#database = new Map();
@@ -14,16 +14,16 @@ export class Database {
     return this.#database.get(key);
   }
 
-  async set(key: string, value: any) {
+  async set(key: string, value: Value) {
     this.#database.set(key, value);
   }
 }
 
-let database: Database | undefined;
+let database: Database<string> | undefined;
 
 export function db() {
   if (!database) {
-    database = new Database();
+    database = new Database<string>();
   }
   return database;
 }

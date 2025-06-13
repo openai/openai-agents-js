@@ -12,6 +12,8 @@ const buttonVariants = cva(
         ghost:
           'text-gray-800 disabled:text-gray-300 hover:bg-gray-100 hover:text-black',
         primary: 'bg-black text-white hover:bg-gray-800 disabled:bg-gray-300',
+        secondary:
+          'bg-gray-100 text-gray-800 hover:bg-gray-200 disabled:bg-gray-300',
         outline:
           'border border-2 border-gray-100 text-gray-800 hover:bg-gray-100 hover:text-black',
         stop: 'bg-red-500 text-white hover:bg-red-600 disabled:bg-red-300',
@@ -19,6 +21,7 @@ const buttonVariants = cva(
       size: {
         default: 'h-9 px-4 py-2',
         sm: 'h-8 rounded-md px-3 text-xs',
+        smRounded: 'h-8 rounded-full px-3 text-xs',
         lg: 'h-10 rounded-md px-8',
         icon: 'h-10 w-10 rounded-full [&_svg]:size-6',
         iconSmall: 'h-8 w-8 rounded-full [&_svg]:size-6',

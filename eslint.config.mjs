@@ -22,6 +22,7 @@ export default tseslint.config(
     '**/docs/.astro/**',
     'examples/realtime-next/**',
     'examples/realtime-demo/**',
+    'examples/nextjs/**',
     'integration-tests//**',
   ]),
   eslint.configs.recommended,
