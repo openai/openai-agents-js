@@ -5,6 +5,8 @@ import {
   RealtimeClientMessage,
   RealtimeSessionConfig,
   RealtimeTracingConfig,
+  RealtimeTurnDetectionConfig,
+  RealtimeTurnDetectionConfigAsIs,
   RealtimeUserInput,
 } from './clientMessages';
 import {
@@ -390,7 +392,7 @@ export abstract class OpenAIRealtimeBase
         config.inputAudioTranscription ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioTranscription,
       turn_detection:
-        config.turnDetection ??
+        OpenAIRealtimeBase.buildTurnDetectionConfig(config.turnDetection) ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.turnDetection,
       tool_choice:
         config.toolChoice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.toolChoice,
@@ -404,6 +406,43 @@ export abstract class OpenAIRealtimeBase
     };
 
     return sessionData;
+  }
+
+  private static buildTurnDetectionConfig(
+    c: RealtimeTurnDetectionConfig | undefined,
+  ): RealtimeTurnDetectionConfigAsIs | undefined {
+    if (typeof c === 'undefined') {
+      return undefined;
+    }
+    return {
+      type: c.type,
+      create_response:
+        'createResponse' in c
+          ? c.createResponse
+          : 'create_response' in c
+            ? c.create_response
+            : undefined,
+      eagerness: c.eagerness,
+      interrupt_response:
+        'interruptResponse' in c
+          ? c.interruptResponse
+          : 'interrupt_response' in c
+            ? c.interrupt_response
+            : undefined,
+      prefix_padding_ms:
+        'prefixPaddingMs' in c
+          ? c.prefixPaddingMs
+          : 'prefix_padding_ms' in c
+            ? c.prefix_padding_ms
+            : undefined,
+      silence_duration_ms:
+        'silenceDurationMs' in c
+          ? c.silenceDurationMs
+          : 'silence_duration_ms' in c
+            ? c.silence_duration_ms
+            : undefined,
+      threshold: c.threshold,
+    };
   }
 
   /**
