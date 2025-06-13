@@ -2,7 +2,7 @@
   "name": "@openai/agents-extensions",
   "repository": "https://github.com/openai/openai-agents-js",
   "homepage": "https://openai.github.io/openai-agents-js/",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Extensions for the OpenAI Agents SDK",
   "author": "OpenAI <support@openai.com>",
   "main": "dist/index.js",

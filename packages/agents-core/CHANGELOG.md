@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.0.8
+
+### Patch Changes
+
+- 6e1d67d: Add OpenAI Response object on ResponseSpanData for other exporters.
+
 ## 0.0.7
 
 ### Patch Changes

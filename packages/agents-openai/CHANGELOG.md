@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.0.8
+
+### Patch Changes
+
+- 6e1d67d: Add OpenAI Response object on ResponseSpanData for other exporters.
+- fc99390: Fix Azure streaming annotation handling
+- Updated dependencies [6e1d67d]
+  - @openai/agents-core@0.0.8
+
 ## 0.0.7
 
 ### Patch Changes
