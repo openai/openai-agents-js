@@ -1,19 +1,28 @@
-# Realtime Next.js Demo
+# Next.js Demo
 
-This example shows how to combine Next.js with the OpenAI Agents SDK to create a realtime voice agent.
+This example shows a basic example of how to use human-in-the-loop in a Next.js application.
+
+Right now it only uses a synchronous approach without streaming and storing in an in-memory DB.
+
+Eventually we will add more examples.
 
 ## Run the example
 
 Set the `OPENAI_API_KEY` environment variable and run:
 
 ```bash
-pnpm examples:realtime-next
+pnpm -F nextjs dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser and start talking.
+Open [http://localhost:3000](http://localhost:3000) in your browser and ask `What is the weather in San Francisco and Oakland?`
 
 ## Endpoints
 
-- **`/`** – WebRTC voice demo using the `RealtimeSession` class. Code in `src/app/page.tsx`.
-- **`/websocket`** – Same agent over WebSockets. Code in `src/app/websocket/page.tsx`.
-- **`/raw-client`** – Low-level WebRTC example using `OpenAIRealtimeWebRTC`. Code in `src/app/raw-client/page.tsx`.
+- **`/`** – The basic example that actually handles receiving the approval requests and sending messages to the API. Code in `src/app/page.tsx`.
+- **`/api/basic`** – The endpoint that gets triggered to run the agent. Code in `src/app/websocket/page.tsx`.
+
+## Other files
+
+- `src/components/Approvals.tsx` — renders the approval dialog
+- `src/agents.ts` — contains the basic Agent configuration
+- `src/db.ts` — contains the mock database implementation
