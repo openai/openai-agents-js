@@ -365,14 +365,18 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   return false;
 }
 
-function getPrompt(prompt: ModelRequest['prompt']): any {
+function getPrompt(prompt: ModelRequest['prompt']): {
+  prompt_id: string;
+  version?: string;
+  variables?: Record<string, any>;
+} | null {
   if (!prompt) {
     return null;
   }
 
   const transformedVariables: Record<string, any> = {};
 
-  for (const [key, value] of Object.entries(prompt?.variables ?? {})) {
+  for (const [key, value] of Object.entries(prompt.variables ?? {})) {
     if (typeof value === 'string') {
       transformedVariables[key] = value;
     } else if (typeof value === 'object') {
@@ -381,8 +385,8 @@ function getPrompt(prompt: ModelRequest['prompt']): any {
   }
 
   return {
-    prompt_id: prompt?.prompt_id,
-    version: prompt?.version,
+    prompt_id: prompt.promptId,
+    version: prompt.version,
     variables: transformedVariables,
   };
 }

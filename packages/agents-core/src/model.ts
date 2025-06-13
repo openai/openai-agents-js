@@ -270,7 +270,7 @@ export type Prompt = {
   /**
    * The unique identifier of the prompt template to use.
    */
-  prompt_id: string;
+  promptId: string;
   /**
    * Optional version of the prompt template.
    */
