@@ -325,6 +325,16 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   /**
+   * Returns all interruptions if the current step is an interruption otherwise returns an empty array.
+   */
+  getInterruptions() {
+    if (this._currentStep?.type !== 'next_step_interruption') {
+      return [];
+    }
+    return this._currentStep.data.interruptions;
+  }
+
+  /**
    * Approves a tool call requested by the agent through an interruption and approval item request.
    *
    * To approve the request use this method and then run the agent again with the same state object
