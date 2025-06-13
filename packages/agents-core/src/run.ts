@@ -179,7 +179,9 @@ export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
 ): AgentInputItem[] {
-  const rawItems = generatedItems.map((item) => item.rawItem);
+  const rawItems = generatedItems
+    .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
+    .map((item) => item.rawItem);
 
   if (typeof originalInput === 'string') {
     originalInput = [{ type: 'message', role: 'user', content: originalInput }];
