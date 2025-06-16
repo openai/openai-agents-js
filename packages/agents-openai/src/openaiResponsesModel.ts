@@ -366,7 +366,7 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
 }
 
 function getPrompt(prompt: ModelRequest['prompt']): {
-  prompt_id: string;
+  id: string;
   version?: string;
   variables?: Record<string, any>;
 } | null {
@@ -385,7 +385,7 @@ function getPrompt(prompt: ModelRequest['prompt']): {
   }
 
   return {
-    prompt_id: prompt.promptId,
+    id: prompt.promptId,
     version: prompt.version,
     variables: transformedVariables,
   };
