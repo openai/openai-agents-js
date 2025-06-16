@@ -1,5 +1,20 @@
 # @openai/agents-openai
 
+## 0.0.8
+
+### Patch Changes
+
+- 6e1d67d: Add OpenAI Response object on ResponseSpanData for other exporters.
+- 9e6db14: Adding support for prompt configuration to agents
+- 0565bf1: Add details to output guardrail execution
+- fc99390: Fix Azure streaming annotation handling
+- Updated dependencies [6e1d67d]
+- Updated dependencies [52eb3f9]
+- Updated dependencies [9e6db14]
+- Updated dependencies [0565bf1]
+- Updated dependencies [52eb3f9]
+  - @openai/agents-core@0.0.8
+
 ## 0.0.7
 
 ### Patch Changes

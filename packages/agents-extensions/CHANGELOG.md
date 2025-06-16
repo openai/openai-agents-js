@@ -1,5 +1,13 @@
 # @openai/agents-extensions
 
+## 0.0.8
+
+### Patch Changes
+
+- ef64938: fix(aisdk): handle non number token values
+- 0565bf1: Add details to output guardrail execution
+  - @openai/agents@0.0.8
+
 ## 0.0.7
 
 ### Patch Changes

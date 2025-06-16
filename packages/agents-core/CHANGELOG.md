@@ -1,5 +1,15 @@
 # @openai/agents-core
 
+## 0.0.8
+
+### Patch Changes
+
+- 6e1d67d: Add OpenAI Response object on ResponseSpanData for other exporters.
+- 52eb3f9: fix(interruptions): avoid double outputting function calls for approval requests
+- 9e6db14: Adding support for prompt configuration to agents
+- 0565bf1: Add details to output guardrail execution
+- 52eb3f9: fix(interruptions): avoid accidental infinite loop if all interruptions were not cleared. expose interruptions helper on state
+
 ## 0.0.7
 
 ### Patch Changes

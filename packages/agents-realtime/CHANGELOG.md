@@ -1,5 +1,17 @@
 # @openai/agents-realtime
 
+## 0.0.8
+
+### Patch Changes
+
+- 0565bf1: Add details to output guardrail execution
+- Updated dependencies [6e1d67d]
+- Updated dependencies [52eb3f9]
+- Updated dependencies [9e6db14]
+- Updated dependencies [0565bf1]
+- Updated dependencies [52eb3f9]
+  - @openai/agents-core@0.0.8
+
 ## 0.0.7
 
 ### Patch Changes
