@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Agent, run } from '@openai/agents';
 
 const bisonImagePath = path.join(__dirname, 'media/image_bison.jpg');

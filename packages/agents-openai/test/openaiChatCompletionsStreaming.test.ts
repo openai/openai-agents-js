@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { convertChatCompletionsStreamToResponses } from '../src/openaiChatCompletionsStreaming';
 import { FAKE_ID } from '../src/openaiChatCompletionsModel';
-import type { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+} from 'openai/resources/chat';
 
 function makeChunk(delta: any, usage?: any) {
   return {
@@ -13,7 +16,6 @@ function makeChunk(delta: any, usage?: any) {
     usage,
   } as any;
 }
-
 
 describe('convertChatCompletionsStreamToResponses', () => {
   it('emits protocol events for streamed chat completions', async () => {
@@ -81,13 +83,23 @@ describe('convertChatCompletionsStreamToResponses', () => {
     }
 
     const events = [] as any[];
-    for await (const ev of convertChatCompletionsStreamToResponses(response, fakeStream() as any)) {
+    for await (const ev of convertChatCompletionsStreamToResponses(
+      response,
+      fakeStream() as any,
+    )) {
       events.push(ev);
     }
 
-    expect(events[0]).toEqual({ type: 'response_started', providerData: { ...chunk1 } });
+    expect(events[0]).toEqual({
+      type: 'response_started',
+      providerData: { ...chunk1 },
+    });
     expect(events[1]).toEqual({ type: 'model', event: chunk1 });
-    expect(events[2]).toEqual({ type: 'output_text_delta', delta: 'hello', providerData: { ...chunk1 } });
+    expect(events[2]).toEqual({
+      type: 'output_text_delta',
+      delta: 'hello',
+      providerData: { ...chunk1 },
+    });
     expect(events[3]).toEqual({ type: 'model', event: chunk2 });
     expect(events[4]).toEqual({ type: 'model', event: chunk3 });
 
@@ -109,7 +121,11 @@ describe('convertChatCompletionsStreamToResponses', () => {
             type: 'message',
             status: 'completed',
             content: [
-              { type: 'output_text', text: 'hello', providerData: { annotations: [] } },
+              {
+                type: 'output_text',
+                text: 'hello',
+                providerData: { annotations: [] },
+              },
               { type: 'refusal', refusal: 'nope' },
             ],
           },
@@ -126,29 +142,51 @@ describe('convertChatCompletionsStreamToResponses', () => {
   });
 });
 
-
 describe('convertChatCompletionsStreamToResponses', () => {
   it('converts chunks to protocol events', async () => {
-    async function* stream(): AsyncGenerator<ChatCompletionChunk, void, unknown> {
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
       yield makeChunk({ content: 'he' });
-      yield makeChunk({ content: 'llo' }, { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 });
-      yield makeChunk({ tool_calls: [{ index: 0, id: 'call', function: { name: 'fn', arguments: 'a' } }] });
+      yield makeChunk(
+        { content: 'llo' },
+        { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      );
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, id: 'call', function: { name: 'fn', arguments: 'a' } },
+        ],
+      });
     }
 
     const resp = { id: 'r' } as any;
     const events: any[] = [];
-    for await (const e of convertChatCompletionsStreamToResponses(resp, stream() as any)) {
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
       events.push(e);
     }
 
-    expect(events[0]).toEqual({ type: 'response_started', providerData: makeChunk({ content: 'he' }) });
+    expect(events[0]).toEqual({
+      type: 'response_started',
+      providerData: makeChunk({ content: 'he' }),
+    });
     // last event should be final response
     const final = events[events.length - 1];
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
         id: FAKE_ID,
-        content: [{ text: 'hello', type: 'output_text', providerData: { annotations: [] } }],
+        content: [
+          {
+            text: 'hello',
+            type: 'output_text',
+            providerData: { annotations: [] },
+          },
+        ],
         role: 'assistant',
         type: 'message',
         status: 'completed',
@@ -162,5 +200,37 @@ describe('convertChatCompletionsStreamToResponses', () => {
       },
     ]);
     expect(final.response.usage.totalTokens).toBe(0);
+  });
+
+  it('ignores chunks with empty choices', async () => {
+    const emptyChunk: ChatCompletionChunk = {
+      id: 'e',
+      created: 0,
+      model: 'm',
+      object: 'chat.completion.chunk',
+      choices: [],
+    } as any;
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield emptyChunk;
+      yield makeChunk({ content: 'hi' });
+    }
+
+    const resp = { id: 'r' } as any;
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const deltas = events.filter((ev) => ev.type === 'output_text_delta');
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toBe('hi');
   });
 });

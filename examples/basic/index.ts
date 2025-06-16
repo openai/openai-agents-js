@@ -4,11 +4,9 @@ import { Agent, run, tool } from '@openai/agents';
 const getWeatherTool = tool({
   name: 'get_weather',
   description: 'Get the weather for a given city',
-  parameters: z.object({
-    demo: z.string(),
-  }),
+  parameters: z.object({ city: z.string() }),
   execute: async (input) => {
-    return `The weather in ${input.demo} is sunny`;
+    return `The weather in ${input.city} is sunny`;
   },
 });
 
