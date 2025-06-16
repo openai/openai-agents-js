@@ -24,6 +24,10 @@ function ToolApprovalEntry({
   onReject: () => void;
   decision: 'approved' | 'rejected' | undefined;
 }) {
+  if (approval.rawItem?.type !== 'function_call') {
+    return null;
+  }
+
   return (
     <div key={approval.rawItem?.id} className="flex flex-col gap-2">
       <h3 className="font-medium text-sm">
@@ -78,23 +82,25 @@ export function Approvals({
   }, [approvals]);
 
   function handleApprove(approval: Item) {
-    if (approval.rawItem?.id) {
-      setDecisions((prev) => {
-        const newDecisions = new Map(prev);
-        newDecisions.set(approval.rawItem?.callId ?? '', 'approved');
-        return newDecisions;
-      });
-    }
+    setDecisions((prev) => {
+      if (approval.rawItem?.type !== 'function_call') {
+        return prev;
+      }
+      const newDecisions = new Map(prev);
+      newDecisions.set(approval.rawItem?.callId ?? '', 'approved');
+      return newDecisions;
+    });
   }
 
   function handleReject(approval: Item) {
-    if (approval.rawItem?.id) {
-      setDecisions((prev) => {
-        const newDecisions = new Map(prev);
-        newDecisions.set(approval.rawItem?.callId ?? '', 'rejected');
-        return newDecisions;
-      });
-    }
+    setDecisions((prev) => {
+      if (approval.rawItem?.type !== 'function_call') {
+        return prev;
+      }
+      const newDecisions = new Map(prev);
+      newDecisions.set(approval.rawItem?.callId ?? '', 'rejected');
+      return newDecisions;
+    });
   }
 
   function handleDone() {
@@ -119,13 +125,8 @@ export function Approvals({
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-8">
-          {approvals
-            .filter(
-              (item) =>
-                item.type === 'tool_approval_item' &&
-                item.rawItem?.type === 'function_call',
-            )
-            .map((approval) => (
+          {approvals.map((approval) =>
+            approval.rawItem?.type === 'function_call' ? (
               <ToolApprovalEntry
                 key={approval.rawItem?.callId}
                 approval={approval}
@@ -133,7 +134,8 @@ export function Approvals({
                 onApprove={() => handleApprove(approval)}
                 onReject={() => handleReject(approval)}
               />
-            ))}
+            ) : null,
+          )}
         </div>
         <DialogFooter>
           <Button
