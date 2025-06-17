@@ -414,35 +414,40 @@ export abstract class OpenAIRealtimeBase
     if (typeof c === 'undefined') {
       return undefined;
     }
-    return {
-      type: c.type,
-      create_response:
-        'createResponse' in c
-          ? c.createResponse
-          : 'create_response' in c
-            ? c.create_response
-            : undefined,
-      eagerness: c.eagerness,
-      interrupt_response:
-        'interruptResponse' in c
-          ? c.interruptResponse
-          : 'interrupt_response' in c
-            ? c.interrupt_response
-            : undefined,
-      prefix_padding_ms:
-        'prefixPaddingMs' in c
-          ? c.prefixPaddingMs
-          : 'prefix_padding_ms' in c
-            ? c.prefix_padding_ms
-            : undefined,
-      silence_duration_ms:
-        'silenceDurationMs' in c
-          ? c.silenceDurationMs
-          : 'silence_duration_ms' in c
-            ? c.silence_duration_ms
-            : undefined,
-      threshold: c.threshold,
+    const {
+      type,
+      createResponse,
+      create_response,
+      eagerness,
+      interruptResponse,
+      interrupt_response,
+      prefixPaddingMs,
+      prefix_padding_ms,
+      silenceDurationMs,
+      silence_duration_ms,
+      threshold,
+      ...rest
+    } = c;
+
+    const config: RealtimeTurnDetectionConfigAsIs & Record<string, any> = {
+      type,
+      create_response: createResponse ? createResponse : create_response,
+      eagerness,
+      interrupt_response: interruptResponse
+        ? interruptResponse
+        : interrupt_response,
+      prefix_padding_ms: prefixPaddingMs ? prefixPaddingMs : prefix_padding_ms,
+      silence_duration_ms: silenceDurationMs
+        ? silenceDurationMs
+        : silence_duration_ms,
+      threshold,
+      ...rest,
     };
+    // Remove undefined values from the config
+    Object.keys(config).forEach((key) => {
+      if (config[key] === undefined) delete config[key];
+    });
+    return Object.keys(config).length > 0 ? config : undefined;
   }
 
   /**

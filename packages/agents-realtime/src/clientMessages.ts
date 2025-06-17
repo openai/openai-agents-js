@@ -44,7 +44,7 @@ export type RealtimeInputAudioTranscriptionConfig = {
 };
 
 export type RealtimeTurnDetectionConfigAsIs = {
-  type?: 'semantic_vad';
+  type?: 'semantic_vad' | 'server_vad';
   create_response?: boolean;
   eagerness?: 'auto' | 'low' | 'medium' | 'high';
   interrupt_response?: boolean;
@@ -55,7 +55,7 @@ export type RealtimeTurnDetectionConfigAsIs = {
 
 // The Realtime API accepts snake_cased keys, so when using this, this SDK coverts the keys to snake_case ones before passing it to the API
 export type RealtimeTurnDetectionConfigCamelCase = {
-  type?: 'semantic_vad';
+  type?: 'semantic_vad' | 'server_vad';
   createResponse?: boolean;
   eagerness?: 'auto' | 'low' | 'medium' | 'high';
   interruptResponse?: boolean;
@@ -64,9 +64,11 @@ export type RealtimeTurnDetectionConfigCamelCase = {
   threshold?: number;
 };
 
-export type RealtimeTurnDetectionConfig =
+export type RealtimeTurnDetectionConfig = (
   | RealtimeTurnDetectionConfigAsIs
-  | RealtimeTurnDetectionConfigCamelCase;
+  | RealtimeTurnDetectionConfigCamelCase
+) &
+  Record<string, any>;
 
 export type RealtimeSessionConfig = {
   model: string;

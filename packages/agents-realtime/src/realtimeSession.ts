@@ -519,7 +519,7 @@ export class RealtimeSession<
     this.#transport.on('turn_done', (event) => {
       const item = event.response.output[event.response.output.length - 1];
       const textOutput = getLastTextFromAudioOutputMessage(item) ?? '';
-      const itemId = item.id ?? '';
+      const itemId = item?.id ?? '';
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
