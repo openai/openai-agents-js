@@ -20,14 +20,14 @@ function stubModel(
     defaultObjectGenerationMode: undefined,
     async doGenerate(options) {
       if (partial.doGenerate) {
-        return partial.doGenerate(options);
+        return partial.doGenerate(options) as any;
       }
       return {
         text: '',
         finishReason: 'stop',
         usage: { promptTokens: 0, completionTokens: 0 },
         rawCall: { rawPrompt: '', rawSettings: {} },
-      };
+      } as any;
     },
     async doStream(options) {
       if (partial.doStream) {
@@ -109,7 +109,7 @@ describe('itemsToLanguageV1Messages', () => {
       {
         role: 'user',
         content: [{ type: 'text', text: 'hi' }],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
       {
         role: 'assistant',
@@ -121,7 +121,7 @@ describe('itemsToLanguageV1Messages', () => {
             args: {},
           },
         ],
-        providerMetadata: { stub: { a: 1 } },
+        providerMetadata: { a: 1 },
       },
       {
         role: 'tool',
@@ -133,7 +133,7 @@ describe('itemsToLanguageV1Messages', () => {
             result: { type: 'output_text', text: 'out' },
           },
         ],
-        providerMetadata: { stub: { b: 2 } },
+        providerMetadata: { b: 2 },
       },
     ]);
   });
@@ -176,14 +176,14 @@ describe('itemsToLanguageV1Messages', () => {
           { type: 'text', text: 'hi' },
           { type: 'image', image: new URL('http://x/img') },
         ],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
       {
         role: 'assistant',
         content: [
           { type: 'tool-call', toolCallId: '1', toolName: 'do', args: {} },
         ],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
       {
         role: 'tool',
@@ -195,12 +195,12 @@ describe('itemsToLanguageV1Messages', () => {
             result: { type: 'output_text', text: 'out' },
           },
         ],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
       {
         role: 'assistant',
         content: [{ type: 'reasoning', text: 'why' }],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
     ]);
   });
@@ -219,7 +219,7 @@ describe('itemsToLanguageV1Messages', () => {
       {
         role: 'user',
         content: [{ type: 'text', text: 'hi' }],
-        providerMetadata: { stub: {} },
+        providerMetadata: {},
       },
     ]);
   });
@@ -300,9 +300,9 @@ describe('AiSdkModel.getResponse', () => {
             text: 'ok',
             finishReason: 'stop',
             usage: { promptTokens: 1, completionTokens: 2 },
-            providerMetadata: { stub: { p: 1 } },
+            providerMetadata: { p: 1 },
             rawCall: { rawPrompt: '', rawSettings: {} },
-          };
+          } as any;
         },
       }),
     );
@@ -381,9 +381,9 @@ describe('AiSdkModel.getResponse', () => {
             ],
             finishReason: 'stop',
             usage: { promptTokens: 1, completionTokens: 2 },
-            providerMetadata: { stub: { p: 1 } },
+            providerMetadata: { p: 1 },
             rawCall: { rawPrompt: '', rawSettings: {} },
-          };
+          } as any;
         },
       }),
     );
@@ -771,7 +771,7 @@ describe('AiSdkModel', () => {
             args: {},
           },
         ],
-        providerMetadata: { fake: { meta: 1 } },
+        providerMetadata: { meta: 1 },
       },
     ]);
   });

@@ -51,3 +51,33 @@ of supported models that can be brought into the Agents SDK through this adapter
 ## Example
 
 <Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
+
+## Passing provider metadata
+
+If you need to send provider-specific options with a message, pass them through
+`providerMetadata`. The values are forwarded directly to the underlying AI SDK
+model. For example, the following `providerData` in the Agents SDK
+
+```ts
+providerData: {
+  anthropic: {
+    cacheControl: {
+      type: 'ephemeral';
+    }
+  }
+}
+```
+
+would become
+
+```ts
+providerMetadata: {
+  anthropic: {
+    cacheControl: {
+      type: 'ephemeral';
+    }
+  }
+}
+```
+
+when using the AI SDK integration.

@@ -48,3 +48,29 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 ## 例
 
 <Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
+
+## プロバイダーメタデータの渡し方
+
+メッセージにプロバイダー固有のオプションを設定したい場合は、`providerMetadata` にその値を直接指定します。例えば Agents SDK で
+
+```ts
+providerData: {
+  anthropic: {
+    cacheControl: {
+      type: 'ephemeral';
+    }
+  }
+}
+```
+
+と指定していた場合、AI SDK 連携では次のようになります。
+
+```ts
+providerMetadata: {
+  anthropic: {
+    cacheControl: {
+      type: 'ephemeral';
+    }
+  }
+}
+```
