@@ -86,7 +86,13 @@ describe('itemsToLanguageV1Messages', () => {
     const items: protocol.ModelItem[] = [
       {
         role: 'user',
-        content: [{ type: 'input_text', text: 'hi' }],
+        content: [
+          {
+            type: 'input_text',
+            text: 'hi',
+            providerData: { test: { cacheControl: { type: 'ephemeral' } } },
+          },
+        ],
       } as any,
       {
         type: 'function_call',
@@ -108,7 +114,13 @@ describe('itemsToLanguageV1Messages', () => {
     expect(msgs).toEqual([
       {
         role: 'user',
-        content: [{ type: 'text', text: 'hi' }],
+        content: [
+          {
+            type: 'text',
+            text: 'hi',
+            providerMetadata: { test: { cacheControl: { type: 'ephemeral' } } },
+          },
+        ],
         providerMetadata: {},
       },
       {
@@ -119,6 +131,7 @@ describe('itemsToLanguageV1Messages', () => {
             toolCallId: '1',
             toolName: 'foo',
             args: {},
+            providerMetadata: { a: 1 },
           },
         ],
         providerMetadata: { a: 1 },
@@ -131,6 +144,7 @@ describe('itemsToLanguageV1Messages', () => {
             toolCallId: '1',
             toolName: 'foo',
             result: { type: 'output_text', text: 'out' },
+            providerMetadata: { b: 2 },
           },
         ],
         providerMetadata: { b: 2 },
@@ -173,15 +187,25 @@ describe('itemsToLanguageV1Messages', () => {
       {
         role: 'user',
         content: [
-          { type: 'text', text: 'hi' },
-          { type: 'image', image: new URL('http://x/img') },
+          { type: 'text', text: 'hi', providerMetadata: {} },
+          {
+            type: 'image',
+            image: new URL('http://x/img'),
+            providerMetadata: {},
+          },
         ],
         providerMetadata: {},
       },
       {
         role: 'assistant',
         content: [
-          { type: 'tool-call', toolCallId: '1', toolName: 'do', args: {} },
+          {
+            type: 'tool-call',
+            toolCallId: '1',
+            toolName: 'do',
+            args: {},
+            providerMetadata: {},
+          },
         ],
         providerMetadata: {},
       },
@@ -193,13 +217,14 @@ describe('itemsToLanguageV1Messages', () => {
             toolCallId: '1',
             toolName: 'do',
             result: { type: 'output_text', text: 'out' },
+            providerMetadata: {},
           },
         ],
         providerMetadata: {},
       },
       {
         role: 'assistant',
-        content: [{ type: 'reasoning', text: 'why' }],
+        content: [{ type: 'reasoning', text: 'why', providerMetadata: {} }],
         providerMetadata: {},
       },
     ]);
@@ -218,7 +243,7 @@ describe('itemsToLanguageV1Messages', () => {
     expect(msgs).toEqual([
       {
         role: 'user',
-        content: [{ type: 'text', text: 'hi' }],
+        content: [{ type: 'text', text: 'hi', providerMetadata: {} }],
         providerMetadata: {},
       },
     ]);
@@ -769,6 +794,8 @@ describe('AiSdkModel', () => {
             toolCallId: 'call1',
             toolName: 'do',
             args: {},
+
+            providerMetadata: { meta: 1 },
           },
         ],
         providerMetadata: { meta: 1 },

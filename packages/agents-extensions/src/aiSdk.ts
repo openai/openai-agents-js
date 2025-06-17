@@ -219,7 +219,13 @@ export function itemsToLanguageV1Messages(
     ) {
       messages.push({
         role: 'assistant',
-        content: [{ type: 'reasoning', text: item.content[0].text }],
+        content: [
+          {
+            type: 'reasoning',
+            text: item.content[0].text,
+            providerMetadata: { ...(item.providerData ?? {}) },
+          },
+        ],
         providerMetadata: {
           ...(item.providerData ?? {}),
         },
