@@ -1,0 +1,22 @@
+{
+  "name": "ag-ui-example",
+  "version": "0.0.1",
+  "description": "AG-UI protocol example for openai-agents-js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server-clean.ts",
+    "start": "tsx index.ts",
+    "start:server": "tsx server.ts",
+    "build-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
+    "zod": "^3.25.40"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

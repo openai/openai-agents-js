@@ -1,0 +1,407 @@
+---
+title: AG-UI Integration
+description: Integrate openai-agents-js with the AG-UI protocol for standardized agent-user interactions
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The **AG-UI (Agent-User Interaction Protocol)** is an open, lightweight, event-based protocol that standardizes how AI agents connect to frontend applications. The openai-agents-js SDK provides full AG-UI compatibility, enabling seamless integration with any AG-UI compatible frontend framework.
+
+## What is AG-UI?
+
+AG-UI is a protocol that enables:
+
+- **Real-time streaming chat** between agents and users
+- **Bi-directional state synchronization** for complex interactions
+- **Generative UI** with delta streaming for dynamic interfaces
+- **Frontend tool usage** for interactive experiences
+- **Human-in-the-loop collaboration** with approval workflows
+
+## Event Types
+
+AG-UI defines 16 standard event types that openai-agents-js fully supports:
+
+### Lifecycle Events
+
+- `RUN_STARTED` - Agent workflow started
+- `RUN_FINISHED` - Agent workflow completed
+- `RUN_ERROR` - Error occurred during run
+- `STEP_STARTED` - New agent step started
+- `STEP_FINISHED` - Agent step completed
+
+### Message Events
+
+- `TEXT_MESSAGE_START` - Text message generation started
+- `TEXT_MESSAGE_CONTENT` - Streaming text content (delta)
+- `TEXT_MESSAGE_END` - Text message completed
+
+### Tool Events
+
+- `TOOL_CALL_START` - Tool call initiated
+- `TOOL_CALL_ARGS` - Tool arguments provided
+- `TOOL_CALL_END` - Tool call completed
+
+### State Events
+
+- `STATE_SNAPSHOT` - Complete state at point in time
+- `STATE_DELTA` - Incremental state changes
+- `MESSAGES_SNAPSHOT` - Complete conversation history
+
+### Special Events
+
+- `RAW` - Raw model events (optional)
+- `CUSTOM` - Custom events
+
+## Quick Start
+
+<Tabs>
+  <TabItem label="Basic Usage">
+
+```typescript
+import { Agent, tool, agui } from '@openai/agents';
+import { z } from 'zod';
+
+// Create an agent with tools
+const weatherAgent = new Agent({
+  name: 'Weather Assistant',
+  instructions: 'You help users with weather information.',
+  tools: [weatherTool],
+});
+
+// Run with AG-UI streaming
+const result = await agui.runWithAGUI(
+  weatherAgent,
+  'What is the weather in Tokyo?',
+  {
+    stream: true,
+    agui: {
+      runId: 'weather-query-001',
+      includeRawEvents: false,
+      includeStateSnapshots: true,
+    },
+  },
+);
+
+// Consume AG-UI events
+for await (const event of result.toAGUIAsyncIterator()) {
+  console.log(`${event.type}:`, event);
+
+  if (event.type === 'TEXT_MESSAGE_CONTENT') {
+    process.stdout.write(event.content);
+  }
+}
+
+await result.completed;
+```
+
+  </TabItem>
+  <TabItem label="HTTP Server">
+
+```typescript
+import { createServer } from 'http';
+import { Agent, agui } from '@openai/agents';
+
+const agent = new Agent({
+  name: 'Assistant',
+  instructions: 'You are a helpful assistant.',
+});
+
+const server = createServer(async (req, res) => {
+  if (req.method === 'POST' && req.url === '/chat') {
+    // Parse request
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', async () => {
+      const { message } = JSON.parse(body);
+
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      try {
+        // Stream AG-UI events
+        const result = await agui.runWithAGUI(agent, message, {
+          stream: true,
+          agui: { runId: `run-${Date.now()}` },
+        });
+
+        for await (const event of result.toAGUIAsyncIterator()) {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+
+        await result.completed;
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } catch (error) {
+        const errorEvent = {
+          type: 'RUN_ERROR',
+          error: error.message,
+          timestamp: Date.now(),
+        };
+        res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+        res.end();
+      }
+    });
+  }
+});
+
+server.listen(3000, () => {
+  console.log('AG-UI server running on port 3000');
+});
+```
+
+  </TabItem>
+</Tabs>
+
+## Configuration Options
+
+### AG-UI Adapter Options
+
+```typescript
+interface AGUIAdapterOptions {
+  /** Unique identifier for the run */
+  runId?: string;
+
+  /** Include raw model events in the stream */
+  includeRawEvents?: boolean;
+
+  /** Include state snapshot events */
+  includeStateSnapshots?: boolean;
+}
+```
+
+### Usage Example
+
+```typescript
+const result = await agui.runWithAGUI(agent, input, {
+  stream: true,
+  agui: {
+    runId: 'unique-run-id',
+    includeRawEvents: true, // Include raw LLM events
+    includeStateSnapshots: true, // Include complete state
+  },
+});
+```
+
+## Event Stream Examples
+
+### Text Message Streaming
+
+```typescript
+for await (const event of result.toAGUIAsyncIterator()) {
+  switch (event.type) {
+    case 'TEXT_MESSAGE_START':
+      console.log('Agent started responding...');
+      break;
+
+    case 'TEXT_MESSAGE_CONTENT':
+      // Stream individual characters/tokens
+      process.stdout.write(event.content);
+      break;
+
+    case 'TEXT_MESSAGE_END':
+      console.log('\nMessage complete:', event.fullContent);
+      break;
+  }
+}
+```
+
+### Tool Call Monitoring
+
+```typescript
+for await (const event of result.toAGUIAsyncIterator()) {
+  switch (event.type) {
+    case 'TOOL_CALL_START':
+      console.log(`🔧 Calling tool: ${event.toolName}`);
+      break;
+
+    case 'TOOL_CALL_ARGS':
+      console.log('📝 Arguments:', event.args);
+      break;
+
+    case 'TOOL_CALL_END':
+      console.log(`✅ Tool result:`, event.result);
+      break;
+  }
+}
+```
+
+### Multi-Agent Handoffs
+
+```typescript
+for await (const event of result.toAGUIAsyncIterator()) {
+  switch (event.type) {
+    case 'STEP_STARTED':
+      console.log(`🤖 Agent ${event.agentName} started`);
+      break;
+
+    case 'STATE_DELTA':
+      if (event.delta.handoff) {
+        console.log(
+          `🔄 Handoff: ${event.delta.handoff.from} → ${event.delta.handoff.to}`,
+        );
+      }
+      break;
+
+    case 'STEP_FINISHED':
+      console.log(`✓ Agent ${event.agentName} finished`);
+      break;
+  }
+}
+```
+
+## Frontend Integration
+
+### React with CopilotKit
+
+```tsx
+import { CopilotKit, CopilotChat } from '@copilotkit/react-core';
+
+function App() {
+  return (
+    <CopilotKit
+      runtimeUrl="/api/copilot" // Your AG-UI endpoint
+      publicApiKey="your-api-key"
+    >
+      <CopilotChat
+        instructions="You are a helpful assistant."
+        showInProgress={true}
+        showResponseButton={true}
+      />
+    </CopilotKit>
+  );
+}
+```
+
+### Custom Frontend
+
+```javascript
+// Connect to AG-UI endpoint
+const eventSource = new EventSource('/chat');
+
+eventSource.onmessage = (event) => {
+  if (event.data === '[DONE]') {
+    eventSource.close();
+    return;
+  }
+
+  const aguiEvent = JSON.parse(event.data);
+
+  switch (aguiEvent.type) {
+    case 'TEXT_MESSAGE_CONTENT':
+      appendToChat(aguiEvent.content);
+      break;
+
+    case 'TOOL_CALL_START':
+      showToolIndicator(aguiEvent.toolName);
+      break;
+
+    case 'RUN_FINISHED':
+      hideLoadingIndicator();
+      break;
+  }
+};
+```
+
+## Advanced Usage
+
+### Custom Event Processing
+
+```typescript
+import { AGUIAdapter } from '@openai/agents/agui';
+
+class CustomAGUIAdapter extends AGUIAdapter {
+  protected convertToAGUIEvents(event: RunStreamEvent): AGUIEvent[] {
+    const events = super.convertToAGUIEvents(event);
+
+    // Add custom event processing
+    if (
+      event.type === 'run_item_stream_event' &&
+      event.name === 'tool_called'
+    ) {
+      events.push({
+        type: 'CUSTOM',
+        data: {
+          customToolEvent: true,
+          toolName: event.item.toolName,
+        },
+        timestamp: Date.now(),
+      });
+    }
+
+    return events;
+  }
+}
+```
+
+### Error Handling
+
+```typescript
+try {
+  const result = await agui.runWithAGUI(agent, input, { stream: true });
+
+  for await (const event of result.toAGUIAsyncIterator()) {
+    if (event.type === 'RUN_ERROR') {
+      console.error('Agent error:', event.error);
+      break;
+    }
+    // Process other events...
+  }
+} catch (error) {
+  console.error('Stream error:', error);
+}
+```
+
+## Transport Options
+
+AG-UI is transport-agnostic and works with:
+
+- **Server-Sent Events (SSE)** - HTTP streaming
+- **WebSockets** - Bi-directional communication
+- **HTTP Polling** - Request/response cycles
+- **Webhooks** - Push notifications
+
+## Compatibility
+
+The openai-agents-js AG-UI implementation is compatible with:
+
+- **CopilotKit** - React components for AG-UI
+- **Mastra** - Multi-agent orchestration platform
+- **LangGraph** - Graph-based agent workflows
+- **Any AG-UI compatible frontend**
+
+## Best Practices
+
+### Performance
+
+- Use `includeRawEvents: false` for better performance
+- Implement client-side event buffering for high-frequency updates
+- Consider WebSocket transport for real-time applications
+
+### Error Handling
+
+- Always handle `RUN_ERROR` events
+- Implement reconnection logic for network failures
+- Validate event schemas on the client side
+
+### Security
+
+- Validate and sanitize event data
+- Use HTTPS for production deployments
+- Implement proper authentication for endpoints
+
+## Examples
+
+Check out the complete examples in the repository:
+
+- [Basic AG-UI Demo](/examples/ag-ui-demo/) - Simple text-based interaction
+- [HTTP Server](/examples/ag-ui-demo/server.ts) - SSE endpoint with HTML client
+- [Multi-Agent Handoffs](/examples/ag-ui-demo/) - Complex workflows
+
+For more information about the AG-UI protocol, visit the [official AG-UI documentation](https://docs.ag-ui.com).

@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AG-UI Example</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #f5f5f5;
+        color: #333;
+        line-height: 1.6;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 2rem;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
+
+      .header h1 {
+        color: #2563eb;
+        margin-bottom: 0.5rem;
+      }
+
+      .header p {
+        color: #6b7280;
+      }
+
+      .chat-container {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+      .input-section {
+        padding: 1.5rem;
+        border-bottom: 1px solid #e5e7eb;
+        background: #f9fafb;
+      }
+
+      .input-group {
+        display: flex;
+        gap: 1rem;
+      }
+
+      .input-group input {
+        flex: 1;
+        padding: 0.75rem 1rem;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 1rem;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+
+      .input-group input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+      }
+
+      .input-group button {
+        padding: 0.75rem 1.5rem;
+        background: #2563eb;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+
+      .input-group button:hover {
+        background: #1d4ed8;
+      }
+
+      .input-group button:disabled {
+        background: #9ca3af;
+        cursor: not-allowed;
+      }
+
+      .messages {
+        height: 500px;
+        overflow-y: auto;
+        padding: 1.5rem;
+      }
+
+      .message {
+        margin-bottom: 1rem;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid transparent;
+      }
+
+      .message.user {
+        background: #eff6ff;
+        border-left-color: #2563eb;
+      }
+
+      .message.event {
+        background: #f0fdf4;
+        border-left-color: #16a34a;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 0.875rem;
+      }
+
+      .message-header {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        color: #374151;
+      }
+
+      .message-content {
+        color: #6b7280;
+      }
+
+      .event-type {
+        font-weight: 700;
+        color: #16a34a;
+        margin-bottom: 0.5rem;
+      }
+
+      .event-data {
+        background: #f8fafc;
+        padding: 0.75rem;
+        border-radius: 4px;
+        border: 1px solid #e2e8f0;
+        overflow-x: auto;
+      }
+
+      .loading {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #2563eb;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .status {
+        text-align: center;
+        padding: 1rem;
+        background: #f8fafc;
+        border-top: 1px solid #e5e7eb;
+        color: #6b7280;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🤖 AG-UI Example</h1>
+        <p>Real-time streaming agent interactions with AG-UI protocol</p>
+      </div>
+
+      <div class="chat-container">
+        <div class="input-section">
+          <div class="input-group">
+            <input
+              type="text"
+              id="messageInput"
+              placeholder="Ask me about weather, time, or anything else..."
+              autocomplete="off"
+            />
+            <button id="sendButton" onclick="sendMessage()">
+              <span id="buttonText">Send</span>
+              <span
+                id="buttonLoading"
+                class="loading"
+                style="display: none"
+              ></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="messages" id="messages"></div>
+
+        <div class="status" id="status">Ready to chat</div>
+      </div>
+    </div>
+
+    <script>
+      let isProcessing = false;
+
+      function setLoading(loading) {
+        isProcessing = loading;
+        const button = document.getElementById('sendButton');
+        const buttonText = document.getElementById('buttonText');
+        const buttonLoading = document.getElementById('buttonLoading');
+        const input = document.getElementById('messageInput');
+
+        button.disabled = loading;
+        input.disabled = loading;
+        buttonText.style.display = loading ? 'none' : 'inline';
+        buttonLoading.style.display = loading ? 'inline-block' : 'none';
+      }
+
+      function updateStatus(message) {
+        document.getElementById('status').textContent = message;
+      }
+
+      function addUserMessage(message) {
+        const messagesDiv = document.getElementById('messages');
+        const messageEl = document.createElement('div');
+        messageEl.className = 'message user';
+        messageEl.innerHTML = `
+                <div class="message-header">You</div>
+                <div class="message-content">${escapeHtml(message)}</div>
+            `;
+        messagesDiv.appendChild(messageEl);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+
+      function addEventMessage(event) {
+        const messagesDiv = document.getElementById('messages');
+        const messageEl = document.createElement('div');
+        messageEl.className = 'message event';
+        messageEl.innerHTML = `
+                <div class="event-type">${event.type}</div>
+                <div class="event-data">${escapeHtml(JSON.stringify(event, null, 2))}</div>
+            `;
+        messagesDiv.appendChild(messageEl);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      async function sendMessage() {
+        if (isProcessing) return;
+
+        const input = document.getElementById('messageInput');
+        const message = input.value.trim();
+        if (!message) return;
+
+        addUserMessage(message);
+        input.value = '';
+        setLoading(true);
+        updateStatus('Processing...');
+
+        try {
+          const response = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') {
+                  updateStatus('Completed');
+                  setLoading(false);
+                  return;
+                }
+
+                try {
+                  const event = JSON.parse(data);
+                  addEventMessage(event);
+                  updateStatus(`Processing: ${event.type}`);
+                } catch (e) {
+                  console.error('Parse error:', e);
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error:', error);
+          updateStatus(`Error: ${error.message}`);
+          addEventMessage({
+            type: 'ERROR',
+            message: error.message,
+            timestamp: Date.now(),
+          });
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      // Enter key support
+      document
+        .getElementById('messageInput')
+        .addEventListener('keypress', function (e) {
+          if (e.key === 'Enter' && !isProcessing) {
+            sendMessage();
+          }
+        });
+
+      // Focus input on load
+      document.getElementById('messageInput').focus();
+    </script>
+  </body>
+</html>

@@ -112,6 +112,28 @@ importers:
         specifier: ^1.4.1
         version: 1.4.1(typedoc@0.28.1(typescript@5.8.3))
 
+  examples/ag-ui:
+    dependencies:
+      '@openai/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
+      '@openai/agents-extensions':
+        specifier: workspace:*
+        version: link:../../packages/agents-extensions
+      zod:
+        specifier: ^3.25.40
+        version: 3.25.40
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.13.14
+      tsx:
+        specifier: ^4.19.3
+        version: 4.19.4
+      typescript:
+        specifier: ^5.8.2
+        version: 5.8.3
+
   examples/agent-patterns:
     dependencies:
       '@openai/agents':
