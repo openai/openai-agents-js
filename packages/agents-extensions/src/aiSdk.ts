@@ -24,6 +24,7 @@ import {
   Usage,
   UserError,
   withGenerationSpan,
+  getLogger,
 } from '@openai/agents';
 import { isZodObject } from '@openai/agents/utils';
 
@@ -325,11 +326,17 @@ export function getResponseFormat(
  */
 export class AiSdkModel implements Model {
   #model: LanguageModelV1;
+  #logger = getLogger('openai-agents:extensions:ai-sdk');
   constructor(model: LanguageModelV1) {
     this.#model = model;
   }
 
   async getResponse(request: ModelRequest) {
+    if (this.#logger.dontLogModelData) {
+      this.#logger.debug('Request received');
+    } else {
+      this.#logger.debug('Request:', request);
+    }
     return withGenerationSpan(async (span) => {
       try {
         span.spanData.model = this.#model.provider + ':' + this.#model.modelId;
@@ -426,7 +433,7 @@ export class AiSdkModel implements Model {
           span.spanData.output = output;
         }
 
-        return {
+        const response = {
           responseId: result.response?.id ?? 'FAKE_ID',
           usage: new Usage({
             inputTokens: Number.isNaN(result.usage?.promptTokens)
@@ -445,7 +452,15 @@ export class AiSdkModel implements Model {
           }),
           output,
           providerData: result,
-        };
+        } as const;
+
+        if (this.#logger.dontLogModelData) {
+          this.#logger.debug('Response ready');
+        } else {
+          this.#logger.debug('Response:', response);
+        }
+
+        return response;
       } catch (error) {
         if (error instanceof Error) {
           span.setError({
@@ -480,6 +495,11 @@ export class AiSdkModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
+    if (this.#logger.dontLogModelData) {
+      this.#logger.debug('Request received (streamed)');
+    } else {
+      this.#logger.debug('Request (streamed):', request);
+    }
     const span = request.tracing ? createGenerationSpan() : undefined;
     try {
       if (span) {
@@ -648,6 +668,12 @@ export class AiSdkModel implements Model {
 
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
+      }
+
+      if (this.#logger.dontLogModelData) {
+        this.#logger.debug('Response ready (streamed)');
+      } else {
+        this.#logger.debug('Response (streamed):', finalEvent.response);
       }
 
       yield finalEvent;
