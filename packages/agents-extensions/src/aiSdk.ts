@@ -64,12 +64,25 @@ export function itemsToLanguageV1Messages(
             typeof content === 'string'
               ? [{ type: 'text', text: content }]
               : content.map((c) => {
+                  const { providerData: contentProviderData } = c;
                   if (c.type === 'input_text') {
-                    return { type: 'text', text: c.text };
+                    return {
+                      type: 'text',
+                      text: c.text,
+                      providerMetadata: {
+                        ...(contentProviderData ?? {}),
+                      },
+                    };
                   }
                   if (c.type === 'input_image') {
                     const url = new URL(c.image);
-                    return { type: 'image', image: url };
+                    return {
+                      type: 'image',
+                      image: url,
+                      providerMetadata: {
+                        ...(contentProviderData ?? {}),
+                      },
+                    };
                   }
                   if (c.type === 'input_file') {
                     if (typeof c.file !== 'string') {
@@ -80,6 +93,9 @@ export function itemsToLanguageV1Messages(
                       file: c.file,
                       mimeType: 'application/octet-stream',
                       data: c.file,
+                      providerMetadata: {
+                        ...(contentProviderData ?? {}),
+                      },
                     };
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
@@ -102,11 +118,24 @@ export function itemsToLanguageV1Messages(
           content: content
             .filter((c) => c.type === 'input_text' || c.type === 'output_text')
             .map((c) => {
+              const { providerData: contentProviderData } = c;
               if (c.type === 'output_text') {
-                return { type: 'text', text: c.text };
+                return {
+                  type: 'text',
+                  text: c.text,
+                  providerMetadata: {
+                    ...(contentProviderData ?? {}),
+                  },
+                };
               }
               if (c.type === 'input_text') {
-                return { type: 'text', text: c.text };
+                return {
+                  type: 'text',
+                  text: c.text,
+                  providerMetadata: {
+                    ...(contentProviderData ?? {}),
+                  },
+                };
               }
               const exhaustiveCheck = c satisfies never;
               throw new UserError(`Unknown content type: ${exhaustiveCheck}`);
@@ -140,6 +169,9 @@ export function itemsToLanguageV1Messages(
           toolCallId: item.callId,
           toolName: item.name,
           args: JSON.parse(item.arguments),
+          providerMetadata: {
+            ...(item.providerData ?? {}),
+          },
         };
         currentAssistantMessage.content.push(content);
       }
@@ -154,6 +186,9 @@ export function itemsToLanguageV1Messages(
         toolCallId: item.callId,
         toolName: item.name,
         result: item.output,
+        providerMetadata: {
+          ...(item.providerData ?? {}),
+        },
       };
       messages.push({
         role: 'tool',
@@ -332,11 +367,6 @@ export class AiSdkModel implements Model {
   }
 
   async getResponse(request: ModelRequest) {
-    if (this.#logger.dontLogModelData) {
-      this.#logger.debug('Request received');
-    } else {
-      this.#logger.debug('Request:', request);
-    }
     return withGenerationSpan(async (span) => {
       try {
         span.spanData.model = this.#model.provider + ':' + this.#model.modelId;
@@ -384,7 +414,7 @@ export class AiSdkModel implements Model {
         const responseFormat: LanguageModelV1CallOptions['responseFormat'] =
           getResponseFormat(request.outputType);
 
-        const result = await this.#model.doGenerate({
+        const aiSdkRequest: LanguageModelV1CallOptions = {
           inputFormat: 'messages',
           mode: {
             type: 'regular',
@@ -400,7 +430,15 @@ export class AiSdkModel implements Model {
           abortSignal: request.signal,
 
           ...(request.modelSettings.providerData ?? {}),
-        });
+        };
+
+        if (this.#logger.dontLogModelData) {
+          this.#logger.debug('Request sent');
+        } else {
+          this.#logger.debug('Request:', aiSdkRequest);
+        }
+
+        const result = await this.#model.doGenerate(aiSdkRequest);
 
         const output: ModelResponse['output'] = [];
 
@@ -495,11 +533,6 @@ export class AiSdkModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
-    if (this.#logger.dontLogModelData) {
-      this.#logger.debug('Request received (streamed)');
-    } else {
-      this.#logger.debug('Request (streamed):', request);
-    }
     const span = request.tracing ? createGenerationSpan() : undefined;
     try {
       if (span) {
@@ -550,7 +583,7 @@ export class AiSdkModel implements Model {
       const responseFormat: LanguageModelV1CallOptions['responseFormat'] =
         getResponseFormat(request.outputType);
 
-      const { stream } = await this.#model.doStream({
+      const aiSdkRequest: LanguageModelV1CallOptions = {
         inputFormat: 'messages',
         mode: {
           type: 'regular',
@@ -565,7 +598,15 @@ export class AiSdkModel implements Model {
         responseFormat,
         abortSignal: request.signal,
         ...(request.modelSettings.providerData ?? {}),
-      });
+      };
+
+      if (this.#logger.dontLogModelData) {
+        this.#logger.debug('Request received (streamed)');
+      } else {
+        this.#logger.debug('Request (streamed):', aiSdkRequest);
+      }
+
+      const { stream } = await this.#model.doStream(aiSdkRequest);
 
       let started = false;
       let responseId: string | undefined;
