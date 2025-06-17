@@ -50,9 +50,7 @@ export function itemsToLanguageV1Messages(
           role: 'system',
           content: content,
           providerMetadata: {
-            [model.provider]: {
-              ...(providerData ?? {}),
-            },
+            ...(providerData ?? {}),
           },
         });
         continue;
@@ -86,9 +84,7 @@ export function itemsToLanguageV1Messages(
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
           providerMetadata: {
-            [model.provider]: {
-              ...(providerData ?? {}),
-            },
+            ...(providerData ?? {}),
           },
         });
         continue;
@@ -115,9 +111,7 @@ export function itemsToLanguageV1Messages(
               throw new UserError(`Unknown content type: ${exhaustiveCheck}`);
             }),
           providerMetadata: {
-            [model.provider]: {
-              ...(providerData ?? {}),
-            },
+            ...(providerData ?? {}),
           },
         });
         continue;
@@ -131,9 +125,7 @@ export function itemsToLanguageV1Messages(
           role: 'assistant',
           content: [],
           providerMetadata: {
-            [model.provider]: {
-              ...(item.providerData ?? {}),
-            },
+            ...(item.providerData ?? {}),
           },
         };
       }
@@ -166,9 +158,7 @@ export function itemsToLanguageV1Messages(
         role: 'tool',
         content: [toolResult],
         providerMetadata: {
-          [model.provider]: {
-            ...(item.providerData ?? {}),
-          },
+          ...(item.providerData ?? {}),
         },
       });
       continue;
@@ -195,9 +185,7 @@ export function itemsToLanguageV1Messages(
         role: 'assistant',
         content: [{ type: 'reasoning', text: item.content[0].text }],
         providerMetadata: {
-          [model.provider]: {
-            ...(item.providerData ?? {}),
-          },
+          ...(item.providerData ?? {}),
         },
       });
       continue;
@@ -416,9 +404,7 @@ export class AiSdkModel implements Model {
             name: toolCall.toolName,
             arguments: toolCall.args,
             status: 'completed',
-            providerData: !result.text
-              ? result.providerMetadata?.[this.#model.provider]
-              : undefined,
+            providerData: !result.text ? result.providerMetadata : undefined,
           });
         });
 
@@ -432,7 +418,7 @@ export class AiSdkModel implements Model {
             content: [{ type: 'output_text', text: result.text }],
             role: 'assistant',
             status: 'completed',
-            providerData: result.providerMetadata?.[this.#model.provider],
+            providerData: result.providerMetadata,
           });
         }
 
