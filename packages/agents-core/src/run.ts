@@ -956,13 +956,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       });
     }
 
-    return getOrCreateTrace(async () => {
-      if (options?.stream) {
-        return this.#runIndividualStream(agent, input, options);
-      } else {
-        return this.#runIndividualNonStream(agent, input, options);
-      }
-    });
+    return getOrCreateTrace(
+      async () => {
+        if (options?.stream) {
+          return this.#runIndividualStream(agent, input, options);
+        } else {
+          return this.#runIndividualNonStream(agent, input, options);
+        }
+      },
+      {
+        traceId: this.config.traceId,
+        name: this.config.workflowName,
+        groupId: this.config.groupId,
+        metadata: this.config.traceMetadata,
+      },
+    );
   }
 }
 

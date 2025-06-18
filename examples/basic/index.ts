@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, Runner, tool } from '@openai/agents';
 
 const getWeatherTool = tool({
   name: 'get_weather',
@@ -24,7 +24,14 @@ const agent = new Agent({
 });
 
 async function main() {
-  const result = await run(agent, 'What is the weather in San Francisco?');
+  const runner = new Runner({
+    groupId: 'My group',
+    traceMetadata: { user_id: '123' },
+  });
+  const result = await runner.run(
+    agent,
+    'What is the weather in San Francisco?',
+  );
 
   console.log(result.finalOutput);
 }
