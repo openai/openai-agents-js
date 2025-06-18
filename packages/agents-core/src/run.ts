@@ -127,7 +127,7 @@ export type RunConfig = {
   /**
    * An optional dictionary of additional metadata to include with the trace.
    */
-  traceMetadata?: Record<string, any>;
+  traceMetadata?: Record<string, string>;
 };
 
 type SharedRunOptions<TContext = undefined> = {
