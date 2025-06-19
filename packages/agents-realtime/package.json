@@ -23,6 +23,11 @@
       "default": "./dist/index.mjs"
     },
     "./_shims": {
+      "workerd": {
+        "require": "./dist/shims/shims-workerd.js",
+        "types": "./dist/shims/shims-workerd.d.ts",
+        "default": "./dist/shims/shims-workerd.mjs"
+      },
       "browser": {
         "require": "./dist/shims/shims-browser.js",
         "types": "./dist/shims/shims-browser.d.ts",
