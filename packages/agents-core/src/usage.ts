@@ -62,11 +62,11 @@ export class Usage {
     this.outputTokens += newUsage.outputTokens;
     this.totalTokens += newUsage.totalTokens;
     if (newUsage.inputTokensDetails) {
-      // The type does not allow unddefined, but it could happen runtime
+      // The type does not allow undefined, but it could happen runtime
       this.inputTokensDetails.push(...newUsage.inputTokensDetails);
     }
     if (newUsage.outputTokensDetails) {
-      // The type does not allow unddefined, but it could happen runtime
+      // The type does not allow undefined, but it could happen runtime
       this.outputTokensDetails.push(...newUsage.outputTokensDetails);
     }
   }
