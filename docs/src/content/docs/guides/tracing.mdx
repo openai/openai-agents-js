@@ -108,3 +108,8 @@ To customize this default setup, to send traces to alternative or additional bac
 
 1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor) lets you add an **additional** trace processor that will receive traces and spans as they are ready. This lets you do your own processing in addition to sending traces to OpenAI's backend.
 2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors) lets you **replace** the default processors with your own trace processors. This means traces will not be sent to the OpenAI backend unless you include a `TracingProcessor` that does so.
+
+## External tracing processors list
+
+- [AgentOps](https://docs.agentops.ai/v2/usage/typescript-sdk#openai-agents-integration)
+- [Keywords AI](https://docs.keywordsai.co/integration/development-frameworks/openai-agents-sdk-js)
