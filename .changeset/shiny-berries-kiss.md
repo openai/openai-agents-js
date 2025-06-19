@@ -1,4 +1,5 @@
 ---
+'@openai/agents': patch
 '@openai/agents-extensions': patch
 '@openai/agents-realtime': patch
 ---
