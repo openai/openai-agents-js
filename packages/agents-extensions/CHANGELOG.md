@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.0.9
+
+### Patch Changes
+
+- fb9ca4f: fix(aisdk): make providerData less opinionated and pass to content
+  - @openai/agents@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes

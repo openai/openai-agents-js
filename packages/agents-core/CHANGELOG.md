@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.0.9
+
+### Patch Changes
+
+- 9028df4: Adjust Usage object to accept empty data
+- ce62f7c: Fix #117 by adding groupId, metadata to trace data
+
 ## 0.0.8
 
 ### Patch Changes
