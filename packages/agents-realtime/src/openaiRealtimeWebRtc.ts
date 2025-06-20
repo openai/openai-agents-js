@@ -15,6 +15,7 @@ import {
 } from './openaiRealtimeBase';
 import { parseRealtimeEvent } from './openaiRealtimeEvents';
 import { HEADERS } from './utils';
+import { getPlatformAPIs } from './platform';
 
 /**
  * The connection state of the WebRTC connection.
@@ -156,6 +157,19 @@ export class OpenAIRealtimeWebRTC
       );
     }
 
+    const {
+      RTCPeerConnection: overridePC,
+      mediaDevices: overrideMediaDevices,
+      registerGlobals,
+    } = getPlatformAPIs();
+    const PeerConnectionCtor = overridePC ?? RTCPeerConnection;
+    if (!PeerConnectionCtor) {
+      throw new Error('WebRTC is not supported in this environment');
+    }
+    if (registerGlobals) {
+      registerGlobals();
+    }
+
     // eslint-disable-next-line no-async-promise-executor
     return new Promise<void>(async (resolve, reject) => {
       try {
@@ -166,7 +180,7 @@ export class OpenAIRealtimeWebRTC
 
         const connectionUrl = new URL(baseUrl);
 
-        let peerConnection: RTCPeerConnection = new RTCPeerConnection();
+        let peerConnection: RTCPeerConnection = new PeerConnectionCtor();
         const dataChannel = peerConnection.createDataChannel('oai-events');
 
         this.#state = {
@@ -225,13 +239,11 @@ export class OpenAIRealtimeWebRTC
         peerConnection.ontrack = (event) => {
           audioElement.srcObject = event.streams[0];
         };
-
         // get microphone stream
+        const mediaDevicesImpl = overrideMediaDevices ?? navigator.mediaDevices;
         const stream =
           this.options.mediaStream ??
-          (await navigator.mediaDevices.getUserMedia({
-            audio: true,
-          }));
+          (await mediaDevicesImpl.getUserMedia({ audio: true }));
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
         if (this.options.changePeerConnection) {

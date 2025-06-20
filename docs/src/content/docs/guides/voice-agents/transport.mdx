@@ -51,6 +51,37 @@ Use any recording/playback library to handle the raw PCM16 audio bytes.
 If you want to use a different speech-to-speech API or have your own custom transport mechanism, you
 can create your own by implementing the `RealtimeTransportLayer` interface and emit the `RealtimeTranportEventTypes` events.
 
+## React Native / Custom Environment Bindings
+
+When using React Native, you can inject your own WebSocket and WebRTC bindings (e.g., from `react-native-webrtc`) before creating a session:
+
+```ts
+import { setPlatformAPIs } from '@openai/agents-realtime';
+import { WebSocket } from 'react-native';
+import {
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+  mediaDevices,
+  registerGlobals,
+} from 'react-native-webrtc';
+
+// Must be called once before creating any WebRTC connections
+registerGlobals();
+
+// Inject React Native implementations
+setPlatformAPIs({
+  WebSocket,
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+  mediaDevices,
+  registerGlobals,
+});
+
+// Then create the session as usual
+``` 
+
 ## Interacting with the Realtime API more directly
 
 If you want to use the OpenAI Realtime API but have more direct access to the Realtime API, you have

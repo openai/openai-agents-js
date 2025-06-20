@@ -80,3 +80,5 @@ export {
   tool,
   UserError,
 } from '@openai/agents-core';
+
+export { setPlatformAPIs, PlatformAPIs } from './platform';
