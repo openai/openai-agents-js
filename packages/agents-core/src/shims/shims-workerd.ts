@@ -1,6 +1,6 @@
-import * as process from 'node:process';
-import { AsyncLocalStorage as BuiltinAsyncLocalStorage } from 'node:async_hooks';
-export { EventEmitter as RuntimeEventEmitter } from 'node:events';
+import * as process from 'process';
+import { AsyncLocalStorage as BuiltinAsyncLocalStorage } from 'async_hooks';
+export { EventEmitter as RuntimeEventEmitter } from 'events';
 
 import { Timeout, Timer } from './interface';
 export { EventEmitter, EventEmitterEvents } from './interface';
@@ -12,7 +12,7 @@ declare global {
 }
 
 // Use function instead of exporting the value to prevent
-// circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
+// circular dependency resolution issues caused by other exports in '@chollier/agents-core/_shims'
 export function loadEnv(): Record<string, string | undefined> {
   if (typeof process === 'undefined' || typeof process.env === 'undefined') {
     if (
@@ -26,8 +26,8 @@ export function loadEnv(): Record<string, string | undefined> {
   return process.env;
 }
 
-export { randomUUID } from 'node:crypto';
-export { Readable } from 'node:stream';
+export { randomUUID } from 'crypto';
+export { Readable } from 'stream';
 
 export const ReadableStream = globalThis.ReadableStream;
 export const ReadableStreamController =
@@ -56,7 +56,7 @@ export function isTracingLoopRunningByDefault(): boolean {
  */
 export { MCPServerStdio, MCPServerStreamableHttp } from './mcp-server/browser';
 
-export { clearTimeout, setTimeout } from 'node:timers';
+export { clearTimeout, setTimeout } from 'timers';
 
 class NodeTimer implements Timer {
   constructor() {}

@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from '@openai/agents-core/_shims';
+import { AsyncLocalStorage } from '@chollier/agents-core/_shims';
 import { Trace, TraceOptions } from './traces';
 import { getGlobalTraceProvider } from './provider';
 import { Span, SpanError } from './spans';

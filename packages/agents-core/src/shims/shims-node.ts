@@ -1,8 +1,7 @@
-import * as process from 'node:process';
 import { Timeout, Timer } from './interface';
 
 export { EventEmitter, EventEmitterEvents } from './interface';
-export { EventEmitter as RuntimeEventEmitter } from 'node:events';
+export { EventEmitter as RuntimeEventEmitter } from 'events';
 
 declare global {
   interface ImportMeta {
@@ -11,28 +10,27 @@ declare global {
 }
 
 // Use function instead of exporting the value to prevent
-// circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
+// circular dependency resolution issues caused by other exports in '@chollier/agents-core/_shims'
 export function loadEnv(): Record<string, string | undefined> {
-  if (typeof process === 'undefined' || typeof process.env === 'undefined') {
-    if (
-      typeof import.meta === 'object' &&
-      typeof import.meta.env === 'object'
-    ) {
-      return import.meta.env as unknown as Record<string, string | undefined>;
-    }
-    return {};
+  // Check if we're in a Node.js environment
+  if (typeof process !== 'undefined' && typeof process.env !== 'undefined') {
+    return process.env;
   }
-  return process.env;
+
+  if (typeof import.meta === 'object' && typeof import.meta.env === 'object') {
+    return import.meta.env as unknown as Record<string, string | undefined>;
+  }
+  return {};
 }
 
-export { randomUUID } from 'node:crypto';
-export { Readable } from 'node:stream';
+export { randomUUID } from 'crypto';
+export { Readable } from 'stream';
 export {
   ReadableStream,
   ReadableStreamController,
   TransformStream,
-} from 'node:stream/web';
-export { AsyncLocalStorage } from 'node:async_hooks';
+} from 'stream/web';
+export { AsyncLocalStorage } from 'async_hooks';
 
 export function isTracingLoopRunningByDefault(): boolean {
   return true;
@@ -46,7 +44,7 @@ export {
   NodeMCPServerStreamableHttp as MCPServerStreamableHttp,
 } from './mcp-server/node';
 
-export { clearTimeout } from 'node:timers';
+export { clearTimeout } from 'timers';
 
 class NodeTimer implements Timer {
   constructor() {}

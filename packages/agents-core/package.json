@@ -1,10 +1,16 @@
 {
-  "name": "@openai/agents-core",
-  "repository": "https://github.com/openai/openai-agents-js",
-  "homepage": "https://openai.github.io/openai-agents-js/",
+  "name": "@chollier/agents-core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chollier/openai-agents-js.git"
+  },
+  "homepage": "https://github.com/chollier/openai-agents-js",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "version": "0.0.9",
   "description": "The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows.",
-  "author": "OpenAI <support@openai.com>",
+  "author": "Loic Chollier <loic@chollier.com>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -63,6 +69,11 @@
         "require": "./dist/shims/shims-browser.js",
         "types": "./dist/shims/shims-browser.d.ts",
         "default": "./dist/shims/shims-browser.mjs"
+      },
+      "react-native": {
+        "require": "./dist/shims/shims-react-native.js",
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "default": "./dist/shims/shims-react-native.mjs"
       },
       "node": {
         "require": "./dist/shims/shims-node.js",

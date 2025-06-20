@@ -13,7 +13,7 @@ import {
   ReadableStream as _ReadableStream,
   TransformStream,
   Readable,
-} from '@openai/agents-core/_shims';
+} from '@chollier/agents-core/_shims';
 import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
 import { getTurnInput } from './run';

@@ -1,10 +1,16 @@
 {
-  "name": "@openai/agents-extensions",
-  "repository": "https://github.com/openai/openai-agents-js",
-  "homepage": "https://openai.github.io/openai-agents-js/",
+  "name": "@chollier/agents-extensions",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chollier/openai-agents-js.git"
+  },
+  "homepage": "https://github.com/chollier/openai-agents-js",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "version": "0.0.9",
   "description": "Extensions for the OpenAI Agents SDK",
-  "author": "OpenAI <support@openai.com>",
+  "author": "Loic Chollier <loic@chollier.com>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -29,7 +35,7 @@
     }
   },
   "peerDependencies": {
-    "@openai/agents": "workspace:*",
+    "@chollier/agents": "workspace:*",
     "ws": "^8.18.1"
   },
   "keywords": [
@@ -40,7 +46,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@openai/agents": "workspace:*",
+    "@chollier/agents": "workspace:*",
     "@types/debug": "^4.1.12",
     "ws": "^8.18.1"
   },

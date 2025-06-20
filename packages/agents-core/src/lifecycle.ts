@@ -5,7 +5,7 @@ import {
   RuntimeEventEmitter,
   EventEmitter,
   EventEmitterEvents,
-} from '@openai/agents-core/_shims';
+} from '@chollier/agents-core/_shims';
 import { TextOutput, UnknownContext } from './types';
 import * as protocol from './types/protocol';
 

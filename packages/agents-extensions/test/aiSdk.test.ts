@@ -6,7 +6,7 @@ import {
   toolToLanguageV1Tool,
 } from '../src/aiSdk';
 import { protocol, withTrace, UserError } from '@openai/agents';
-import { ReadableStream } from 'node:stream/web';
+import { ReadableStream } from 'stream/web';
 import type { LanguageModelV1 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 

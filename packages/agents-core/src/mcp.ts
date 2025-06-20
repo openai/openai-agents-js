@@ -3,7 +3,7 @@ import { UserError } from './errors';
 import {
   MCPServerStdio as UnderlyingMCPServerStdio,
   MCPServerStreamableHttp as UnderlyingMCPServerStreamableHttp,
-} from '@openai/agents-core/_shims';
+} from '@chollier/agents-core/_shims';
 import { getCurrentSpan, withMCPListToolsSpan } from './tracing';
 import { logger as globalLogger, getLogger, Logger } from './logger';
 import debug from 'debug';
