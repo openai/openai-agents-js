@@ -234,17 +234,30 @@ export class OpenAIRealtimeWebRTC
 
         // set up audio playback
         const audioElement =
-          this.options.audioElement ?? document.createElement('audio');
-        audioElement.autoplay = true;
-        peerConnection.ontrack = (event) => {
-          audioElement.srcObject = event.streams[0];
-        };
+          this.options.audioElement ??
+          (typeof document !== 'undefined'
+            ? document.createElement('audio')
+            : null);
+
+        if (audioElement) {
+          audioElement.autoplay = true;
+          peerConnection.ontrack = (event) => {
+            audioElement.srcObject = event.streams[0];
+          };
+        }
         // get microphone stream
-        const mediaDevicesImpl = overrideMediaDevices ?? navigator.mediaDevices;
+        const mediaDevicesImpl =
+          overrideMediaDevices ??
+          (typeof navigator !== 'undefined' ? navigator.mediaDevices : null);
         const stream =
           this.options.mediaStream ??
-          (await mediaDevicesImpl.getUserMedia({ audio: true }));
-        peerConnection.addTrack(stream.getAudioTracks()[0]);
+          (mediaDevicesImpl
+            ? await mediaDevicesImpl.getUserMedia({ audio: true })
+            : null);
+
+        if (stream) {
+          peerConnection.addTrack(stream.getAudioTracks()[0]);
+        }
 
         if (this.options.changePeerConnection) {
           peerConnection =
