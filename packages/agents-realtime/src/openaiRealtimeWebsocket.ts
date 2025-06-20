@@ -184,7 +184,7 @@ export class OpenAIRealtimeWebSocket
       resolve();
     });
 
-    ws.addEventListener('error', (error) => {
+    ws.addEventListener('error', (error: Event) => {
       this._onError(error);
       this.#state = {
         status: 'disconnected',
@@ -194,7 +194,7 @@ export class OpenAIRealtimeWebSocket
       reject(error);
     });
 
-    ws.addEventListener('message', (message) => {
+    ws.addEventListener('message', (message: MessageEvent) => {
       this._onMessage(message);
       const { data: parsed, isGeneric } = parseRealtimeEvent(message);
       if (!parsed || isGeneric) {
