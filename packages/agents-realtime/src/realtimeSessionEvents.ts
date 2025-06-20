@@ -3,13 +3,13 @@ import {
   OutputGuardrailTripwireTriggered,
   RunContext,
   RunToolApprovalItem,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 import { RealtimeGuardrailMetadata } from './guardrail';
 import { RealtimeItem } from './items';
 import { RealtimeAgent } from './realtimeAgent';
 import { TransportEvent, TransportLayerAudio } from './transportLayerEvents';
 import { RealtimeContextData } from './realtimeSession';
-import { protocol } from '@openai/agents-core';
+import { protocol } from '@chollier/agents-core';
 
 type AgentWithOrWithoutHistory<TContext> =
   | RealtimeAgent<TContext>

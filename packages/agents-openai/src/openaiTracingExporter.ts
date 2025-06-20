@@ -2,9 +2,9 @@ import {
   TracingExporter,
   BatchTraceProcessor,
   setTraceProcessors,
-} from '@openai/agents-core';
-import type { Span } from '@openai/agents-core/dist/tracing/spans';
-import type { Trace } from '@openai/agents-core/dist/tracing/traces';
+} from '@chollier/agents-core';
+import type { Span } from '@chollier/agents-core/dist/tracing/spans';
+import type { Trace } from '@chollier/agents-core/dist/tracing/traces';
 import { getTracingExportApiKey, HEADERS } from './defaults';
 import logger from './logger';
 

@@ -7,9 +7,9 @@ import {
   protocol,
   tool,
   Usage,
-} from '@openai/agents-core';
-import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
-import { EventEmitterDelegate } from '@openai/agents-core/utils';
+} from '@chollier/agents-core';
+import { RuntimeEventEmitter } from '@chollier/agents-core/_shims';
+import { EventEmitterDelegate } from '@chollier/agents-core/utils';
 import { z } from '@openai/zod/v3';
 import type {
   RealtimeClientMessage,

@@ -6,7 +6,7 @@ import {
   setTracingDisabled,
   withTrace,
   type ResponseStreamEvent,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {

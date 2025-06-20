@@ -2,8 +2,8 @@
   "private": true,
   "name": "ai-sdk",
   "dependencies": {
-    "@openai/agents": "workspace:*",
-    "@openai/agents-extensions": "workspace:*",
+    "@chollier/agents": "workspace:*",
+    "@chollier/agents-extensions": "workspace:*",
     "@ai-sdk/openai": "^1.1.3",
     "zod": "~3.25.40"
   },

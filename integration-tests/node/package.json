@@ -5,6 +5,6 @@
     "start:esm": "node index.mjs"
   },
   "dependencies": {
-    "@openai/agents": "latest"
+    "@chollier/agents": "latest"
   }
 }

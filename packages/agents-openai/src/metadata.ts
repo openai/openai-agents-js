@@ -6,7 +6,6 @@ export const METADATA = {
   "version": "0.0.9",
   "versions": {
     "@chollier/agents-openai": "0.0.9",
-    "@chollier/agents-core": "workspace:*",
     "openai": "^5.0.1",
     "@openai/zod": "npm:zod@^3.25.40"
   }

@@ -1,7 +1,7 @@
 import {
   JsonObjectSchema,
   ModelSettingsToolChoice,
-} from '@openai/agents-core/types';
+} from '@chollier/agents-core/types';
 
 export type RealtimeClientMessage = {
   type: string;

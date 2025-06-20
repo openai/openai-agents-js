@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@openai/agents": "latest",
+    "@chollier/agents": "latest",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

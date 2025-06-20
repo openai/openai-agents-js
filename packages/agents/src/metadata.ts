@@ -6,9 +6,6 @@ export const METADATA = {
   "version": "0.0.9",
   "versions": {
     "@chollier/agents": "0.0.9",
-    "@chollier/agents-core": "workspace:*",
-    "@chollier/agents-openai": "workspace:*",
-    "@chollier/agents-realtime": "workspace:*",
     "openai": "^5.0.1"
   }
 };

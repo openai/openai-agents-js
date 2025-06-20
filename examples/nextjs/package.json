@@ -9,7 +9,7 @@
     "build-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@openai/agents": "workspace:*",
+    "@chollier/agents": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.14",
     "@radix-ui/react-slot": "^1.2.3",
     "@tanstack/react-query": "^5.80.7",

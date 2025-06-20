@@ -2,7 +2,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 
-vi.mock('@openai/agents/realtime', () => {
+vi.mock('@chollier/agents/realtime', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { EventEmitter } = require('events');
   const utils = {
@@ -57,7 +57,9 @@ describe('TwilioRealtimeTransportLayer', () => {
       twilioWebSocket: twilio as any,
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
-    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const { OpenAIRealtimeWebSocket } = await import(
+      '@chollier/agents/realtime'
+    );
     const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
     const closeSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.close);
     const interruptSpy = vi.mocked(

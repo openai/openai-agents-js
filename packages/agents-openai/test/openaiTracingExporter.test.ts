@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OpenAITracingExporter } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
-import { createCustomSpan } from '@openai/agents-core';
+import { createCustomSpan } from '@chollier/agents-core';
 
 describe('OpenAITracingExporter', () => {
   const fakeSpan = createCustomSpan({
@@ -91,9 +91,15 @@ describe('OpenAITracingExporter', () => {
 
   it('stops on client error', async () => {
     const item = fakeSpan;
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
     vi.stubGlobal('fetch', fetchMock);
-    const exporter = new OpenAITracingExporter({ apiKey: 'key3', endpoint: 'u', maxRetries: 2 });
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -102,8 +108,8 @@ describe('OpenAITracingExporter', () => {
     const setTraceProcessors = vi.fn();
     const BatchTraceProcessor = vi.fn().mockImplementation((exp) => ({ exp }));
     vi.resetModules();
-    vi.doMock('@openai/agents-core', async () => {
-      const actual = await vi.importActual<any>('@openai/agents-core');
+    vi.doMock('@chollier/agents-core', async () => {
+      const actual = await vi.importActual<any>('@chollier/agents-core');
       return { ...actual, BatchTraceProcessor, setTraceProcessors };
     });
     const mod = await import('../src/openaiTracingExporter');

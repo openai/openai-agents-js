@@ -5,7 +5,7 @@ import {
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
   OutputGuardrailFunctionArgs,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 
 export interface RealtimeOutputGuardrailSettings {
   /**

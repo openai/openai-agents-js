@@ -1,5 +1,5 @@
 import { OpenAI } from 'openai';
-import { loadEnv } from '@openai/agents-core/_shims';
+import { loadEnv } from '@chollier/agents-core/_shims';
 import METADATA from './metadata';
 
 export const DEFAULT_OPENAI_API = 'responses';

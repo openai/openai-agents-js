@@ -1,4 +1,4 @@
-import { getLogger } from '@openai/agents-core';
+import { getLogger } from '@chollier/agents-core';
 
 const logger = getLogger('openai-agents:openai');
 

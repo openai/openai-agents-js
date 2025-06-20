@@ -2,8 +2,8 @@
   "compilerOptions": {
     "outDir": "./dist",
     "paths": {
-      "@openai/agents-core": ["./src/index.ts"],
-      "@openai/agents-core/_shims": ["./src/shims/shims-node.ts"]
+      "@chollier/agents-core": ["./src/index.ts"],
+      "@chollier/agents-core/_shims": ["./src/shims/shims-node.ts"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],

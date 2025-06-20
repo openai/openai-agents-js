@@ -1,6 +1,6 @@
 import type { Stream } from 'openai/streaming';
 import type { CompletionUsage } from 'openai/resources/completions';
-import { protocol } from '@openai/agents-core';
+import { protocol } from '@chollier/agents-core';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiChatCompletionsModel';
 

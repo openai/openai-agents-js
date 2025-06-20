@@ -1,7 +1,7 @@
 import {
   isBrowserEnvironment,
   WebSocket,
-} from '@openai/agents-realtime/_shims';
+} from '@chollier/agents-realtime/_shims';
 import {
   RealtimeTransportLayerConnectOptions,
   RealtimeTransportLayer,
@@ -13,7 +13,7 @@ import {
   OpenAIRealtimeBaseOptions,
 } from './openaiRealtimeBase';
 import { base64ToArrayBuffer, HEADERS, WEBSOCKET_META } from './utils';
-import { UserError } from '@openai/agents-core';
+import { UserError } from '@chollier/agents-core';
 import { TransportLayerAudio } from './transportLayerEvents';
 import { parseRealtimeEvent } from './openaiRealtimeEvents';
 

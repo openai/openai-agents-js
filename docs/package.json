@@ -13,7 +13,7 @@
   "dependencies": {
     "@astrojs/starlight": "^0.34.3",
     "@astrojs/starlight-tailwind": "^3.0.1",
-    "@openai/agents": "workspace:*",
+    "@chollier/agents": "workspace:*",
     "@tailwindcss/vite": "^4.0.17",
     "astro": "^5.5.3",
     "sharp": "^0.34.2",

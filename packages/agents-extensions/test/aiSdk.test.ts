@@ -5,10 +5,10 @@ import {
   itemsToLanguageV1Messages,
   toolToLanguageV1Tool,
 } from '../src/aiSdk';
-import { protocol, withTrace, UserError } from '@openai/agents';
+import { protocol, withTrace, UserError } from '@chollier/agents';
 import { ReadableStream } from 'stream/web';
 import type { LanguageModelV1 } from '@ai-sdk/provider';
-import type { SerializedOutputType } from '@openai/agents';
+import type { SerializedOutputType } from '@chollier/agents';
 
 function stubModel(
   partial: Partial<Pick<LanguageModelV1, 'doGenerate' | 'doStream'>>,

@@ -7,7 +7,7 @@ import {
   resetCurrentSpan,
   protocol,
   UserError,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 import type {
   SerializedHandoff,
   SerializedTool,
@@ -16,7 +16,7 @@ import type {
   ModelSettingsToolChoice,
   ResponseStreamEvent,
   SerializedOutputType,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
 import logger from './logger';
@@ -34,7 +34,7 @@ import {
   WebSearchStatus,
 } from './tools';
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
-import { ProviderData } from '@openai/agents-core/types';
+import { ProviderData } from '@chollier/agents-core/types';
 
 type ToolChoice = ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction;
 

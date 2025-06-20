@@ -1,12 +1,12 @@
 /// <reference lib="dom" />
 
-import { isBrowserEnvironment } from '@openai/agents-core/_shims';
+import { isBrowserEnvironment } from '@chollier/agents-core/_shims';
 import {
   RealtimeTransportLayer,
   RealtimeTransportLayerConnectOptions,
 } from './transportLayer';
 
-import { UserError } from '@openai/agents-core';
+import { UserError } from '@chollier/agents-core';
 import logger from './logger';
 import { RealtimeClientMessage, RealtimeSessionConfig } from './clientMessages';
 import {

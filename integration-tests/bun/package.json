@@ -13,6 +13,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@openai/agents": "latest"
+    "@chollier/agents": "latest"
   }
 }

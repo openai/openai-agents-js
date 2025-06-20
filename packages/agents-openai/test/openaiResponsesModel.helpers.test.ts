@@ -5,7 +5,7 @@ import {
   getInputItems,
   convertToOutputItem,
 } from '../src/openaiResponsesModel';
-import { UserError } from '@openai/agents-core';
+import { UserError } from '@chollier/agents-core';
 
 describe('getToolChoice', () => {
   it('returns default choices', () => {

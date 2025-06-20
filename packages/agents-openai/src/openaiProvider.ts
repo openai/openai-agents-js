@@ -1,4 +1,4 @@
-import { Model, ModelProvider } from '@openai/agents-core';
+import { Model, ModelProvider } from '@chollier/agents-core';
 import OpenAI from 'openai';
 import {
   DEFAULT_OPENAI_MODEL,

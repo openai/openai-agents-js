@@ -5,6 +5,6 @@
     "start": "deno --allow-net --allow-env main.ts"
   },
   "dependencies": {
-    "@openai/agents": "latest"
+    "@chollier/agents": "latest"
   }
 }

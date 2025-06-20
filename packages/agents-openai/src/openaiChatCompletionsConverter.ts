@@ -11,7 +11,7 @@ import {
   ModelRequest,
   protocol,
   UserError,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | string | undefined | null,

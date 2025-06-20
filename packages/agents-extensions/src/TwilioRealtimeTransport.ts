@@ -5,8 +5,8 @@ import {
   RealtimeTransportLayerConnectOptions,
   TransportLayerAudio,
   RealtimeSessionConfig,
-} from '@openai/agents/realtime';
-import { getLogger } from '@openai/agents';
+} from '@chollier/agents/realtime';
+import { getLogger } from '@chollier/agents';
 import type { WebSocket, MessageEvent } from 'ws';
 
 /**

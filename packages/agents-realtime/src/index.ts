@@ -79,6 +79,6 @@ export {
   OutputGuardrailTripwireTriggered,
   tool,
   UserError,
-} from '@openai/agents-core';
+} from '@chollier/agents-core';
 
 export { setPlatformAPIs, PlatformAPIs } from './platform';

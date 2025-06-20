@@ -10,9 +10,9 @@ import {
   Usage,
   RunToolApprovalItem,
   type FunctionTool,
-} from '@openai/agents-core';
-import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
-import { isZodObject, toSmartString } from '@openai/agents-core/utils';
+} from '@chollier/agents-core';
+import { RuntimeEventEmitter } from '@chollier/agents-core/_shims';
+import { isZodObject, toSmartString } from '@chollier/agents-core/utils';
 import type {
   FunctionToolDefinition,
   RealtimeSessionConfig,

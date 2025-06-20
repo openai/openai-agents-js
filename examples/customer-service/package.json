@@ -2,8 +2,8 @@
   "private": true,
   "name": "customer-service",
   "dependencies": {
-    "@openai/agents": "workspace:*",
-    "@openai/agents-core": "workspace:*",
+    "@chollier/agents": "workspace:*",
+    "@chollier/agents-core": "workspace:*",
     "zod": "~3.25.40"
   },
   "scripts": {
