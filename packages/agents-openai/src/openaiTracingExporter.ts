@@ -55,6 +55,8 @@ export class OpenAITracingExporter implements TracingExporter {
       data: items.map((items) => items.toJSON()).filter((item) => !!item),
     };
 
+    const body = Buffer.from(JSON.stringify(payload), 'utf8');
+
     let attempts = 0;
     let delay = this.#options.baseDelay;
 
@@ -68,7 +70,7 @@ export class OpenAITracingExporter implements TracingExporter {
             'OpenAI-Beta': 'traces=v1',
             ...HEADERS,
           },
-          body: JSON.stringify(payload),
+          body,
           signal,
         });
 
