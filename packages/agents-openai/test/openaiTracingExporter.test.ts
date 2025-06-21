@@ -63,7 +63,39 @@ describe('OpenAITracingExporter', () => {
         ...HEADERS,
       }),
     );
-    expect(JSON.parse(opts.body as string)).toEqual({ data: [item.toJSON()] });
+    const body = Buffer.isBuffer(opts.body)
+      ? opts.body.toString()
+      : (opts.body as string);
+    expect(JSON.parse(body)).toEqual({ data: [item.toJSON()] });
+  });
+
+  it('exports unicode payload via fetch', async () => {
+    const unicodeSpan = createCustomSpan({
+      data: {
+        name: 'unicode',
+      },
+    });
+    unicodeSpan.toJSON = () => ({
+      object: 'trace.span',
+      id: 'u123',
+      trace_id: 'u123',
+      parent_id: 'u123',
+      started_at: '1',
+      ended_at: '2',
+      span_data: { prompt: 'Hello “world”' },
+      error: null,
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({ apiKey: 'key1' });
+    await exporter.export([unicodeSpan]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(Buffer.isBuffer(opts.body)).toBe(true);
+    const body = (opts.body as Buffer).toString();
+    expect(JSON.parse(body)).toEqual({ data: [unicodeSpan.toJSON()] });
   });
 
   it('retries on server errors', async () => {
@@ -91,9 +123,15 @@ describe('OpenAITracingExporter', () => {
 
   it('stops on client error', async () => {
     const item = fakeSpan;
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
     vi.stubGlobal('fetch', fetchMock);
-    const exporter = new OpenAITracingExporter({ apiKey: 'key3', endpoint: 'u', maxRetries: 2 });
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
