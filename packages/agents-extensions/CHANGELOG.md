@@ -1,5 +1,11 @@
 # @openai/agents-extensions
 
+## 0.1.0
+
+### Patch Changes
+
+- @openai/agents@0.0.10
+
 ## 0.0.9
 
 ### Patch Changes

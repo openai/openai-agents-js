@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.1.0
+
+### Minor Changes
+
+- f61fd18: Don't enable `cacheToolsList` per default for MCP servers
+
 ## 0.0.9
 
 ### Patch Changes
