@@ -9,7 +9,7 @@ const agent = new RealtimeAgent({
 // the OpenAI Realtime API.
 const twilioTransport = new TwilioRealtimeTransportLayer({
   // @ts-expect-error - this is not defined
-  twilioWebSocket: websoketConnection,
+  twilioWebSocket: websocketConnection,
 });
 
 const session = new RealtimeSession(agent, {

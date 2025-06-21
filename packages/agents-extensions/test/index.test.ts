@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src';
+import type { MessageEvent as NodeMessageEvent } from 'ws';
 
 vi.mock('ws', () => {
   class FakeWebSocket {
@@ -29,6 +30,14 @@ class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
 }
+
+// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
+FakeTwilioWebSocket.prototype.addEventListener = function (
+  type: string,
+  listener: (evt: MessageEvent | NodeMessageEvent) => void,
+) {
+  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+};
 
 describe('TwilioRealtimeTransportLayer', () => {
   test('should be available', () => {

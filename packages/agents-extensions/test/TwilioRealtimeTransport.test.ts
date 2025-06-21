@@ -2,6 +2,9 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 
+import type { MessageEvent as NodeMessageEvent } from 'ws';
+import type { MessageEvent } from 'undici-types';
+
 vi.mock('@openai/agents/realtime', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { EventEmitter } = require('events');
@@ -30,6 +33,14 @@ class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
 }
+
+// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
+FakeTwilioWebSocket.prototype.addEventListener = function (
+  type: string,
+  listener: (evt: MessageEvent | NodeMessageEvent) => void,
+) {
+  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+};
 
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 

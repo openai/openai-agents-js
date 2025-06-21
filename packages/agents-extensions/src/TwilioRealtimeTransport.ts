@@ -7,7 +7,13 @@ import {
   RealtimeSessionConfig,
 } from '@openai/agents/realtime';
 import { getLogger } from '@openai/agents';
-import type { WebSocket, MessageEvent } from 'ws';
+import type {
+  WebSocket as NodeWebSocket,
+  MessageEvent as NodeMessageEvent,
+  ErrorEvent as NodeErrorEvent,
+} from 'ws';
+
+import type { ErrorEvent } from 'undici-types';
 
 /**
  * The options for the Twilio Realtime Transport Layer.
@@ -18,7 +24,7 @@ export type TwilioRealtimeTransportLayerOptions =
      * The websocket that is receiving messages from Twilio's Media Streams API. Typically the
      * connection gets passed into your request handler when running your WebSocket server.
      */
-    twilioWebSocket: WebSocket;
+    twilioWebSocket: WebSocket | NodeWebSocket;
   };
 
 /**
@@ -48,7 +54,7 @@ export type TwilioRealtimeTransportLayerOptions =
  * ```
  */
 export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
-  #twilioWebSocket: WebSocket;
+  #twilioWebSocket: WebSocket | NodeWebSocket;
   #streamSid: string | null = null;
   #audioChunkCount: number = 0;
   #lastPlayedChunkCount: number = 0;
@@ -82,74 +88,80 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       options.initialSessionConfig,
     );
     // listen to Twilio messages as quickly as possible
-    this.#twilioWebSocket.on('message', (message: MessageEvent) => {
-      try {
-        const data = JSON.parse(message.toString());
-        if (this.#logger.dontLogModelData) {
-          this.#logger.debug('Twilio message:', data.event);
-        } else {
-          this.#logger.debug('Twilio message:', data);
-        }
-        this.emit('*', {
-          type: 'twilio_message',
-          message: data,
-        });
-        switch (data.event) {
-          case 'media':
-            if (this.status === 'connected') {
-              this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
-            }
-            break;
-          case 'mark':
-            if (
-              !data.mark.name.startsWith('done:') &&
-              data.mark.name.includes(':')
-            ) {
-              // keeping track of what the last chunk was that the user heard fully
-              const count = Number(data.mark.name.split(':')[1]);
-              if (Number.isFinite(count)) {
-                this.#lastPlayedChunkCount = count;
-              } else {
-                this.#logger.warn(
-                  'Invalid mark name received:',
-                  data.mark.name,
-                );
+    this.#twilioWebSocket.addEventListener(
+      'message',
+      (message: MessageEvent | NodeMessageEvent) => {
+        try {
+          const data = JSON.parse(message.data.toString());
+          if (this.#logger.dontLogModelData) {
+            this.#logger.debug('Twilio message:', data.event);
+          } else {
+            this.#logger.debug('Twilio message:', data);
+          }
+          this.emit('*', {
+            type: 'twilio_message',
+            message: data,
+          });
+          switch (data.event) {
+            case 'media':
+              if (this.status === 'connected') {
+                this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
               }
-            } else if (data.mark.name.startsWith('done:')) {
-              this.#lastPlayedChunkCount = 0;
-            }
-            break;
-          case 'start':
-            this.#streamSid = data.start.streamSid;
-            break;
-          default:
-            break;
+              break;
+            case 'mark':
+              if (
+                !data.mark.name.startsWith('done:') &&
+                data.mark.name.includes(':')
+              ) {
+                // keeping track of what the last chunk was that the user heard fully
+                const count = Number(data.mark.name.split(':')[1]);
+                if (Number.isFinite(count)) {
+                  this.#lastPlayedChunkCount = count;
+                } else {
+                  this.#logger.warn(
+                    'Invalid mark name received:',
+                    data.mark.name,
+                  );
+                }
+              } else if (data.mark.name.startsWith('done:')) {
+                this.#lastPlayedChunkCount = 0;
+              }
+              break;
+            case 'start':
+              this.#streamSid = data.start.streamSid;
+              break;
+            default:
+              break;
+          }
+        } catch (error) {
+          this.#logger.error(
+            'Error parsing message:',
+            error,
+            'Message:',
+            message,
+          );
+          this.emit('error', {
+            type: 'error',
+            error,
+          });
         }
-      } catch (error) {
-        this.#logger.error(
-          'Error parsing message:',
-          error,
-          'Message:',
-          message,
-        );
-        this.emit('error', {
-          type: 'error',
-          error,
-        });
-      }
-    });
-    this.#twilioWebSocket.on('close', () => {
+      },
+    );
+    this.#twilioWebSocket.addEventListener('close', () => {
       if (this.status !== 'disconnected') {
         this.close();
       }
     });
-    this.#twilioWebSocket.on('error', (error) => {
-      this.emit('error', {
-        type: 'error',
-        error,
-      });
-      this.close();
-    });
+    this.#twilioWebSocket.addEventListener(
+      'error',
+      (error: ErrorEvent | NodeErrorEvent) => {
+        this.emit('error', {
+          type: 'error',
+          error,
+        });
+        this.close();
+      },
+    );
     this.on('audio_done', () => {
       this.#twilioWebSocket.send(
         JSON.stringify({
