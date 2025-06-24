@@ -3,6 +3,7 @@ import {
   AiSdkModel,
   getResponseFormat,
   itemsToLanguageV1Messages,
+  parseArguments,
   toolToLanguageV1Tool,
 } from '../src/aiSdk';
 import { protocol, withTrace, UserError } from '@openai/agents';
@@ -801,5 +802,24 @@ describe('AiSdkModel', () => {
         providerMetadata: { meta: 1 },
       },
     ]);
+  });
+
+  describe('parseArguments', () => {
+    test('should parse valid JSON', () => {
+      expect(parseArguments(undefined)).toEqual({});
+      expect(parseArguments(null)).toEqual({});
+      expect(parseArguments('')).toEqual({});
+      expect(parseArguments(' ')).toEqual({});
+      expect(parseArguments('{ ')).toEqual({});
+      expect(parseArguments('foo')).toEqual({});
+      expect(parseArguments('{}')).toEqual({});
+      expect(parseArguments('{ }')).toEqual({});
+
+      expect(parseArguments('"foo"')).toEqual('foo');
+      expect(parseArguments('[]')).toEqual([]);
+      expect(parseArguments('[1,2,3]')).toEqual([1, 2, 3]);
+      expect(parseArguments('{"a":1}')).toEqual({ a: 1 });
+      expect(parseArguments('{"a":1,"b":"c"}')).toEqual({ a: 1, b: 'c' });
+    });
   });
 });
