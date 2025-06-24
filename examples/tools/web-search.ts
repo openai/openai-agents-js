@@ -18,6 +18,16 @@ async function main() {
     );
     console.log(result.finalOutput);
     // The New York Giants are reportedly pursuing quarterback Aaron Rodgers after his ...
+
+    const messages = result.history;
+    messages.push({
+      role: 'user',
+      content: 'search the web for more details of the highlighed player.',
+    });
+
+    const result2 = await run(agent, messages);
+    console.log();
+    console.log(result2.finalOutput);
   });
 }
 

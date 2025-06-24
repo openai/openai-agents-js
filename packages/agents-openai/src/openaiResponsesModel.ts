@@ -484,51 +484,63 @@ function getInputItems(
     }
 
     if (item.type === 'hosted_tool_call') {
-      if (item.providerData?.type === 'web_search') {
+      if (
+        item.providerData?.type === 'web_search_call' ||
+        item.providerData?.type === 'web_search' // for backward compatibility
+      ) {
         const entry: OpenAI.Responses.ResponseFunctionWebSearch = {
+          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'web_search_call',
           id: item.id!,
           status: WebSearchStatus.parse(item.status ?? 'failed'),
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
       }
 
-      if (item.providerData?.type === 'file_search') {
+      if (
+        item.providerData?.type === 'file_search_call' ||
+        item.providerData?.type === 'file_search' // for backward compatibility
+      ) {
         const entry: OpenAI.Responses.ResponseFileSearchToolCall = {
+          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'file_search_call',
           id: item.id!,
           status: FileSearchStatus.parse(item.status ?? 'failed'),
           queries: item.providerData?.queries ?? [],
           results: item.providerData?.results,
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
       }
 
-      if (item.providerData?.type === 'code_interpreter') {
+      if (
+        item.providerData?.type === 'code_interpreter_call' ||
+        item.providerData?.type === 'code_interpreter' // for backward compatibility
+      ) {
         const entry: OpenAI.Responses.ResponseCodeInterpreterToolCall = {
+          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'code_interpreter_call',
           id: item.id!,
           code: item.providerData?.code ?? '',
           results: item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.containerId,
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
       }
 
-      if (item.providerData?.type === 'image_generation') {
+      if (
+        item.providerData?.type === 'image_generation_call' ||
+        item.providerData?.type === 'image_generation' // for backward compatibility
+      ) {
         const entry: OpenAI.Responses.ResponseInputItem.ImageGenerationCall = {
+          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'image_generation_call',
           id: item.id!,
           result: item.providerData?.result ?? null,
           status: ImageGenerationStatus.parse(item.status ?? 'failed'),
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
 
         return entry;
@@ -541,12 +553,12 @@ function getInputItems(
         const providerData =
           item.providerData as ProviderData.HostedMCPListTools;
         const entry: OpenAI.Responses.ResponseInputItem.McpListTools = {
+          ...camelOrSnakeToSnakeCase(item.providerData),
           type: 'mcp_list_tools',
           id: item.id!,
           tools: camelOrSnakeToSnakeCase(providerData.tools) as any,
           server_label: providerData.server_label,
           error: providerData.error,
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
         return entry;
       } else if (
@@ -556,12 +568,12 @@ function getInputItems(
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalRequest;
         const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest = {
+          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'mcp_approval_request',
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.server_label,
-          ...camelOrSnakeToSnakeCase(item.providerData),
         };
         return entry;
       } else if (
@@ -571,12 +583,12 @@ function getInputItems(
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalResponse;
         const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse = {
+          ...camelOrSnakeToSnakeCase(providerData),
           type: 'mcp_approval_response',
           id: providerData.id,
           approve: providerData.approve,
           approval_request_id: providerData.approval_request_id,
           reason: providerData.reason,
-          ...camelOrSnakeToSnakeCase(providerData),
         };
         return entry;
       } else if (
@@ -585,15 +597,15 @@ function getInputItems(
       ) {
         const providerData = item.providerData as ProviderData.HostedMCPCall;
         const entry: OpenAI.Responses.ResponseInputItem.McpCall = {
+          // output, which can be a large text string, is optional here, so we don't include it
+          // output: item.output,
+          ...camelOrSnakeToSnakeCase(providerData), // place here to prioritize the below fields
           type: 'mcp_call',
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.server_label,
           error: providerData.error,
-          // output, which can be a large text string, is optional here, so we don't include it
-          // output: item.output,
-          ...camelOrSnakeToSnakeCase(providerData),
         };
         return entry;
       }
@@ -605,8 +617,8 @@ function getInputItems(
 
     if (item.type === 'unknown') {
       return {
+        ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
         id: item.id,
-        ...camelOrSnakeToSnakeCase(item.providerData),
       } as OpenAI.Responses.ResponseItem;
     }
 
