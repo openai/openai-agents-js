@@ -1,5 +1,17 @@
 # @openai/agents-openai
 
+## 0.0.10
+
+### Patch Changes
+
+- 4adbcb5: Fix #140 by resolving built-in tool call item compatibility
+- Updated dependencies [c248a7d]
+- Updated dependencies [ff63127]
+- Updated dependencies [9c60282]
+- Updated dependencies [f61fd18]
+- Updated dependencies [c248a7d]
+  - @openai/agents-core@0.0.10
+
 ## 0.0.9
 
 ### Patch Changes

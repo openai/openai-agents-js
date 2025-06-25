@@ -302,7 +302,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const handoffs = state._currentAgent.handoffs.map(getHandoff);
+            const handoffs: Handoff<any>[] = [];
+            if (state._currentAgent.handoffs) {
+              // While this array usually must not be undefined,
+              // we've added this check to prevent unexpected runtime errors like https://github.com/openai/openai-agents-js/issues/138
+              handoffs.push(...state._currentAgent.handoffs.map(getHandoff));
+            }
 
             if (!state._currentAgentSpan) {
               const handoffNames = handoffs.map((h) => h.agentName);

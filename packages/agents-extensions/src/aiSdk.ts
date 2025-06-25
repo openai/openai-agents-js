@@ -168,7 +168,7 @@ export function itemsToLanguageV1Messages(
           type: 'tool-call',
           toolCallId: item.callId,
           toolName: item.name,
-          args: JSON.parse(item.arguments),
+          args: parseArguments(item.arguments),
           providerMetadata: {
             ...(item.providerData ?? {}),
           },
@@ -787,4 +787,16 @@ export class AiSdkModel implements Model {
  */
 export function aisdk(model: LanguageModelV1) {
   return new AiSdkModel(model);
+}
+
+export function parseArguments(args: string | undefined | null): any {
+  if (!args) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(args);
+  } catch (_) {
+    return {};
+  }
 }

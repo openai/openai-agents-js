@@ -1,5 +1,17 @@
 # @openai/agents-realtime
 
+## 0.0.10
+
+### Patch Changes
+
+- 787968b: fix: use web standard event apis for twilio websocket
+- Updated dependencies [c248a7d]
+- Updated dependencies [ff63127]
+- Updated dependencies [9c60282]
+- Updated dependencies [f61fd18]
+- Updated dependencies [c248a7d]
+  - @openai/agents-core@0.0.10
+
 ## 0.0.9
 
 ### Patch Changes
