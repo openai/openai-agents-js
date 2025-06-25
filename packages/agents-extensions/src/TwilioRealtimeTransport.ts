@@ -176,6 +176,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     await super.connect(options);
   }
 
+  updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
+    const newConfig = this._setInputAndOutputAudioFormat(config);
+    super.updateSessionConfig(newConfig);
+  }
+
   _interrupt(_elapsedTime: number) {
     const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
     this.#logger.debug(
