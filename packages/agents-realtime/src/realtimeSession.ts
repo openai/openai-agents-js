@@ -35,6 +35,7 @@ import { RealtimeAgent } from './realtimeAgent';
 import { RealtimeSessionEventTypes } from './realtimeSessionEvents';
 import type { ApiKey, RealtimeTransportLayer } from './transportLayer';
 import type { TransportToolCallEvent } from './transportLayerEvents';
+import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import {
   getLastTextFromAudioOutputMessage,
   hasWebRTCSupport,
@@ -508,6 +509,26 @@ export class RealtimeSession<
   #setEventListeners() {
     this.#transport.on('*', (event) => {
       this.emit('transport_event', event);
+      // Handle completed user transcription events
+      if (
+        event.type === 'conversation.item.input_audio_transcription.completed'
+      ) {
+        try {
+          const completedEvent = event as InputAudioTranscriptionCompletedEvent;
+          this.#history = updateRealtimeHistory(
+            this.#history,
+            completedEvent,
+            this.#shouldIncludeAudioData,
+          );
+          this.#context.context.history = this.#history;
+          this.emit('history_updated', this.#history);
+        } catch (err) {
+          this.emit('error', {
+            type: 'error',
+            error: err,
+          });
+        }
+      }
     });
     this.#transport.on('audio', (event) => {
       this.emit('audio', event);
