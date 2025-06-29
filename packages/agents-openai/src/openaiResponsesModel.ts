@@ -365,13 +365,15 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   return false;
 }
 
-function getPrompt(prompt: ModelRequest['prompt']): {
-  id: string;
-  version?: string;
-  variables?: Record<string, any>;
-} | null {
+function getPrompt(prompt: ModelRequest['prompt']):
+  | {
+      id: string;
+      version?: string;
+      variables?: Record<string, any>;
+    }
+  | undefined {
   if (!prompt) {
-    return null;
+    return undefined;
   }
 
   const transformedVariables: Record<string, any> = {};
