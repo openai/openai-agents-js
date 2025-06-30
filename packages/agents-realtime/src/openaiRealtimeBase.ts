@@ -65,6 +65,7 @@ export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConf
     turnDetection: {
       type: 'semantic_vad',
     },
+    speed: 1,
   };
 
 /**
@@ -380,6 +381,7 @@ export abstract class OpenAIRealtimeBase
         this.#model ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.model,
       voice: config.voice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.voice,
+      speed: config.speed ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.speed,
       modalities:
         config.modalities ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.modalities,
       input_audio_format:
