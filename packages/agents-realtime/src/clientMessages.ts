@@ -83,6 +83,7 @@ export type RealtimeSessionConfig = {
   tools: FunctionToolDefinition[];
   tracing?: RealtimeTracingConfig | null;
   providerData?: Record<string, any>;
+  speed: number;
 };
 
 export type FunctionToolDefinition = {
