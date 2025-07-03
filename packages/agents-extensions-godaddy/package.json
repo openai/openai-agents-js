@@ -1,0 +1,37 @@
+{
+  "name": "@openai/agents-extensions-godaddy",
+  "repository": "https://github.com/openai/openai-agents-js",
+  "homepage": "https://openai.github.io/openai-agents-js/",
+  "version": "1.0.0",
+  "description": "GoDaddy Extensions for the OpenAI Agents SDK",
+  "author": "wcarpenter1 <wcarpenter1@godaddy.com>",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "tsx ../../scripts/embedMeta.ts",
+    "build": "tsc",
+    "build-check": "tsc --noEmit -p ./tsconfig.test.json"
+  },
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "keywords": [
+    "openai",
+    "agents",
+    "ai",
+    "agentic"
+  ],
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -10,5 +10,6 @@ packages:
     access: $all
     publish: $all
   '**':
+    access: $all
     proxy: npmjs
 log: { type: stdout, format: pretty, level: http }

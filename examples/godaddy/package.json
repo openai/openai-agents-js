@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "name": "godaddy",
+  "dependencies": {},
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "tsx index.ts"
+  }
+}
