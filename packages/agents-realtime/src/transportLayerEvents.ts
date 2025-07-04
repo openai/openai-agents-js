@@ -62,7 +62,7 @@ export type TransportEvent =
       [key: string]: any;
     };
 
-export type RealtimeTranportEventTypes = {
+export type RealtimeTransportEventTypes = {
   /**
    * A raw event from the transport layer. Allows a user to tap directly into the events of the
    * transport layer.

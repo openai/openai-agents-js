@@ -25,7 +25,7 @@ import {
   RealtimeTransportLayerConnectOptions,
 } from './transportLayer';
 import {
-  RealtimeTranportEventTypes,
+  RealtimeTransportEventTypes,
   TransportToolCallEvent,
 } from './transportLayerEvents';
 import { arrayBufferToBase64, diffRealtimeHistory } from './utils';
@@ -93,7 +93,7 @@ export type OpenAIRealtimeEventTypes = {
    * Triggered when the connection is closed.
    */
   disconnected: [];
-} & RealtimeTranportEventTypes;
+} & RealtimeTransportEventTypes;
 
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
