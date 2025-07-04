@@ -97,6 +97,23 @@ For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may 
 
 Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance.
 
+### Tool filtering
+
+You can restrict which tools are exposed from each server. Pass either a static filter
+using `createStaticToolFilter` or a custom function:
+
+```ts
+const server = new MCPServerStdio({
+  fullCommand: 'my-server',
+  toolFilter: createStaticToolFilter(['safe_tool'], ['danger_tool']),
+});
+
+const dynamicServer = new MCPServerStreamableHttp({
+  url: 'http://localhost:3000',
+  toolFilter: ({ runContext }, tool) => runContext.context.allowAll || tool.name !== 'admin',
+});
+```
+
 ## Further reading
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – official specification.

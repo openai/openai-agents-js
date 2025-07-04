@@ -514,9 +514,11 @@ export class Agent<
    * Fetches the available tools from the MCP servers.
    * @returns the MCP powered tools
    */
-  async getMcpTools(): Promise<Tool<TContext>[]> {
+  async getMcpTools(
+    runContext: RunContext<TContext>,
+  ): Promise<Tool<TContext>[]> {
     if (this.mcpServers.length > 0) {
-      return getAllMcpTools(this.mcpServers);
+      return getAllMcpTools(this.mcpServers, false, runContext, this);
     }
 
     return [];
@@ -527,8 +529,10 @@ export class Agent<
    *
    * @returns all configured tools
    */
-  async getAllTools(): Promise<Tool<TContext>[]> {
-    return [...(await this.getMcpTools()), ...this.tools];
+  async getAllTools(
+    runContext: RunContext<TContext>,
+  ): Promise<Tool<TContext>[]> {
+    return [...(await this.getMcpTools(runContext)), ...this.tools];
   }
 
   /**

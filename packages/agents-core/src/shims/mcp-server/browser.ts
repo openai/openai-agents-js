@@ -6,6 +6,8 @@ import {
   MCPServerStreamableHttpOptions,
   MCPTool,
 } from '../../mcp';
+import type { RunContext } from '../../runContext';
+import type { Agent } from '../../agent';
 
 export class MCPServerStdio extends BaseMCPServerStdio {
   constructor(params: MCPServerStdioOptions) {
@@ -20,7 +22,10 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   close(): Promise<void> {
     throw new Error('Method not implemented.');
   }
-  listTools(): Promise<MCPTool[]> {
+  listTools(
+    _runContext?: RunContext<any>,
+    _agent?: Agent<any, any>,
+  ): Promise<MCPTool[]> {
     throw new Error('Method not implemented.');
   }
   callTool(
@@ -44,7 +49,10 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   close(): Promise<void> {
     throw new Error('Method not implemented.');
   }
-  listTools(): Promise<MCPTool[]> {
+  listTools(
+    _runContext?: RunContext<any>,
+    _agent?: Agent<any, any>,
+  ): Promise<MCPTool[]> {
     throw new Error('Method not implemented.');
   }
   callTool(
