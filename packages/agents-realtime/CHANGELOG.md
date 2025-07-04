@@ -1,5 +1,11 @@
 # @openai/agents-realtime
 
+## 0.0.11
+
+### Patch Changes
+
+- 6e0d1bd: Fixes issue #106 where overlapping user inputs caused null transcripts in history
+
 ## 0.0.10
 
 ### Patch Changes
