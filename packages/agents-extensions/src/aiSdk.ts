@@ -498,6 +498,14 @@ export class AiSdkModel implements Model {
           providerData: result,
         } as const;
 
+        if (span && request.tracing === true) {
+          span.spanData.usage = {
+            input_tokens: response.usage.inputTokens,
+            output_tokens: response.usage.outputTokens,
+            total_tokens: response.usage.totalTokens,
+          };
+        }
+
         if (this.#logger.dontLogModelData) {
           this.#logger.debug('Response ready');
         } else {
@@ -715,6 +723,11 @@ export class AiSdkModel implements Model {
 
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
+        span.spanData.usage = {
+          input_tokens: finalEvent.response.usage.inputTokens,
+          output_tokens: finalEvent.response.usage.outputTokens,
+          total_tokens: finalEvent.response.usage.totalTokens,
+        };
       }
 
       if (this.#logger.dontLogModelData) {
