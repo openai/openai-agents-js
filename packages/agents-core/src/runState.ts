@@ -165,6 +165,7 @@ const serializedProcessedResponseSchema = z.object({
             arguments: z.string().optional(),
             status: z.string().optional(),
             output: z.string().optional(),
+            providerData: z.record(z.string(), z.any()),
           }),
         }),
         // HostedMCPTool
