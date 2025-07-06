@@ -7,6 +7,20 @@
       "name": "Docs development server",
       "request": "launch",
       "type": "node-terminal"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Financial Research Agent",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "--nolazy",
+        "tsx",
+        "examples/financial-research-agent/main.ts"
+      ],
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     }
   ]
 }

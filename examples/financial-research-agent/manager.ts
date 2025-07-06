@@ -65,6 +65,7 @@ export class FinancialResearchManager {
 
   async search(item: FinancialSearchItem): Promise<string | null> {
     const inputData = `Search term: ${item.query}\nReason: ${item.reason}`;
+    console.log(`[searching] Input data:`, inputData);
     try {
       const result = await run(searchAgent, inputData);
       return String(result.finalOutput);
