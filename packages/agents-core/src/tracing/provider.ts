@@ -188,19 +188,16 @@ export class TraceProvider {
       // Handle CTRL+C (SIGINT)
       process.on('SIGINT', async () => {
         await cleanup();
-        process.exit(130);
       });
 
       // Handle termination (SIGTERM)
       process.on('SIGTERM', async () => {
         await cleanup();
-        process.exit(0);
       });
 
       process.on('unhandledRejection', async (reason, promise) => {
         logger.error('Unhandled rejection', reason, promise);
         await cleanup();
-        process.exit(1);
       });
     }
   }
