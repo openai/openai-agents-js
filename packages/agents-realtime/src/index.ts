@@ -19,7 +19,7 @@ export {
   TransportLayerTranscriptDelta,
   TransportError,
   TransportToolCallEvent,
-  RealtimeTranportEventTypes,
+  RealtimeTransportEventTypes,
 } from './transportLayerEvents';
 
 export {

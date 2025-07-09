@@ -310,6 +310,8 @@ export class Agent<
     });
   }
 
+  static DEFAULT_MODEL_PLACEHOLDER = '';
+
   name: string;
   instructions:
     | string
@@ -341,7 +343,7 @@ export class Agent<
       throw new UserError('Agent must have a name.');
     }
     this.name = config.name;
-    this.instructions = config.instructions ?? '';
+    this.instructions = config.instructions ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
     this.prompt = config.prompt;
     this.handoffDescription = config.handoffDescription ?? '';
     this.handoffs = config.handoffs ?? [];

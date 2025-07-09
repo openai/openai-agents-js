@@ -1,4 +1,5 @@
 import { RealtimeItem, RealtimeMessageItem } from './items';
+import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import METADATA from './metadata';
 
 /**
@@ -182,9 +183,37 @@ export function removeAudioFromContent(
  */
 export function updateRealtimeHistory(
   history: RealtimeItem[],
-  event: RealtimeItem,
+  event: RealtimeItem | InputAudioTranscriptionCompletedEvent,
   shouldIncludeAudioData: boolean,
 ): RealtimeItem[] {
+  // Merge transcript into placeholder input_audio message
+  if (event.type === 'conversation.item.input_audio_transcription.completed') {
+    return history.map((item) => {
+      if (
+        item.itemId === event.item_id &&
+        item.type === 'message' &&
+        'role' in item &&
+        item.role === 'user'
+      ) {
+        const updatedContent = item.content.map((entry: any) => {
+          if (entry.type === 'input_audio') {
+            return {
+              ...entry,
+              transcript: event.transcript,
+            };
+          }
+          return entry;
+        });
+
+        return {
+          ...item,
+          content: updatedContent,
+          status: 'completed',
+        };
+      }
+      return item;
+    });
+  }
   const newEvent =
     !shouldIncludeAudioData && event.type === 'message'
       ? removeAudioFromContent(event as any)

@@ -253,7 +253,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
-          let model = state._currentAgent.model ?? this.config.model;
+          let model = selectModel(state._currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
             model = await this.config.modelProvider.getModel(model);
@@ -302,7 +302,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const handoffs = state._currentAgent.handoffs.map(getHandoff);
+            const handoffs: Handoff<any>[] = [];
+            if (state._currentAgent.handoffs) {
+              // While this array usually must not be undefined,
+              // we've added this check to prevent unexpected runtime errors like https://github.com/openai/openai-agents-js/issues/138
+              handoffs.push(...state._currentAgent.handoffs.map(getHandoff));
+            }
 
             if (!state._currentAgentSpan) {
               const handoffNames = handoffs.map((h) => h.agentName);
@@ -690,7 +695,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
-          let model = currentAgent.model ?? this.config.model;
+          let model = selectModel(currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
             model = await this.config.modelProvider.getModel(model);
@@ -981,6 +986,23 @@ function getDefaultRunner() {
   }
   _defaultRunner = new Runner();
   return _defaultRunner;
+}
+
+export function selectModel(
+  agentModel: string | Model,
+  runConfigModel: string | Model | undefined,
+): string | Model {
+  // When initializing an agent without model name, the model property is set to an empty string. So,
+  // * agentModel === '' & runConfigModel exists, runConfigModel will be used
+  // * agentModel is set, the agentModel will be used over runConfigModel
+  if (
+    (typeof agentModel === 'string' &&
+      agentModel !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
+    agentModel // any truthy value
+  ) {
+    return agentModel;
+  }
+  return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
 }
 
 export async function run<TAgent extends Agent<any, any>, TContext = undefined>(

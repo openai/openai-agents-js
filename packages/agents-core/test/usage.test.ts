@@ -46,4 +46,11 @@ describe('Usage', () => {
     expect(usageA.outputTokens).toBe(5); // 1 + 4
     expect(usageA.totalTokens).toBe(9); // 2 + 7
   });
+
+  it('the add method accepts an empty object', () => {
+    const usage = new Usage({});
+    usage.add({} as Usage);
+    expect(usage.inputTokensDetails).toEqual([]);
+    expect(usage.outputTokensDetails).toEqual([]);
+  });
 });

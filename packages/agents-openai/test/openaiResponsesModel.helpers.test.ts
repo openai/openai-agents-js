@@ -203,7 +203,17 @@ describe('getInputItems', () => {
         providerData: { type: 'web_search' },
       },
     ] as any);
-    expect(web[0]).toMatchObject({ type: 'web_search' });
+    expect(web[0]).toMatchObject({ type: 'web_search_call' });
+
+    const webCall = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'w',
+        status: 'completed',
+        providerData: { type: 'web_search_call' },
+      },
+    ] as any);
+    expect(webCall[0]).toMatchObject({ type: 'web_search_call' });
 
     const file = getInputItems([
       {
@@ -213,7 +223,7 @@ describe('getInputItems', () => {
         providerData: { type: 'file_search', queries: [] },
       },
     ] as any);
-    expect(file[0]).toMatchObject({ type: 'file_search', queries: [] });
+    expect(file[0]).toMatchObject({ type: 'file_search_call', queries: [] });
 
     const ci = getInputItems([
       {
@@ -223,7 +233,10 @@ describe('getInputItems', () => {
         providerData: { type: 'code_interpreter', code: 'print()' },
       },
     ] as any);
-    expect(ci[0]).toMatchObject({ type: 'code_interpreter', code: 'print()' });
+    expect(ci[0]).toMatchObject({
+      type: 'code_interpreter_call',
+      code: 'print()',
+    });
 
     const img = getInputItems([
       {
@@ -233,7 +246,10 @@ describe('getInputItems', () => {
         providerData: { type: 'image_generation', result: 'img' },
       },
     ] as any);
-    expect(img[0]).toMatchObject({ type: 'image_generation', result: 'img' });
+    expect(img[0]).toMatchObject({
+      type: 'image_generation_call',
+      result: 'img',
+    });
   });
 
   it('errors on unsupported function output type', () => {

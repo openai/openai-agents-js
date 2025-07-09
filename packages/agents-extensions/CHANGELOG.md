@@ -1,5 +1,21 @@
 # @openai/agents-extensions
 
+## 0.0.10
+
+### Patch Changes
+
+- 955e6f1: Fix #152 empty arguments parsing error in ai-sdk extension
+- 787968b: fix: use web standard event apis for twilio websocket
+- Updated dependencies [787968b]
+  - @openai/agents@0.0.10
+
+## 0.0.9
+
+### Patch Changes
+
+- fb9ca4f: fix(aisdk): make providerData less opinionated and pass to content
+  - @openai/agents@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes

@@ -1,5 +1,22 @@
 # @openai/agents-core
 
+## 0.0.10
+
+### Patch Changes
+
+- c248a7d: Fix #138 by checking the unexpected absence of state.currentAgent.handoffs
+- ff63127: Fix #129 The model in run config should be used over an agent's default setting
+- 9c60282: Fix a bug where some of the exceptions thrown from runImplementation.ts could be unhandled
+- f61fd18: Don't enable `cacheToolsList` per default for MCP servers
+- c248a7d: Fix #138 by checking the unexpected absence of currentAgent.handoffs
+
+## 0.0.9
+
+### Patch Changes
+
+- 9028df4: Adjust Usage object to accept empty data
+- ce62f7c: Fix #117 by adding groupId, metadata to trace data
+
 ## 0.0.8
 
 ### Patch Changes

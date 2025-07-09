@@ -9,6 +9,7 @@ class StubServer extends NodeMCPServerStdio {
   constructor(name: string, tools: any[]) {
     super({ command: 'noop', name });
     this.toolList = tools;
+    this.cacheToolsList = true;
   }
   async connect(): Promise<void> {}
   async close(): Promise<void> {}
