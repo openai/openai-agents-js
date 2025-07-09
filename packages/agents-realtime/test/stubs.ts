@@ -22,7 +22,7 @@ import type {
   RealtimeTransportLayerConnectOptions,
 } from '../src/transportLayer';
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
-import { RealtimeTranportEventTypes } from '../src/transportLayerEvents';
+import { RealtimeTransportEventTypes } from '../src/transportLayerEvents';
 
 export const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem = {
   id: '123',
@@ -123,7 +123,7 @@ export class FakeModelProvider implements ModelProvider {
 }
 
 export class FakeTransport
-  extends EventEmitterDelegate<RealtimeTranportEventTypes>
+  extends EventEmitterDelegate<RealtimeTransportEventTypes>
   implements RealtimeTransportLayer
 {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
@@ -135,7 +135,7 @@ export class FakeTransport
   sendAudioCalls: [ArrayBuffer, { commit?: boolean }][] = [];
   updateSessionConfigCalls: Partial<RealtimeSessionConfig>[] = [];
   closeCalls = 0;
-  eventEmitter = new RuntimeEventEmitter<RealtimeTranportEventTypes>();
+  eventEmitter = new RuntimeEventEmitter<RealtimeTransportEventTypes>();
   muteCalls: boolean[] = [];
   sendFunctionCallOutputCalls: [TransportToolCallEvent, string, boolean][] = [];
   interruptCalls = 0;
