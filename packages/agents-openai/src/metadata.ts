@@ -8,7 +8,7 @@ export const METADATA = {
     "@openai/agents-openai": "0.0.7",
     "@openai/agents-core": "workspace:*",
     "openai": "^5.0.1",
-    "@openai/zod": "npm:zod@^3.25.40"
+    "@openai/zod": "npm:zod@3.25.40 - 3.25.67"
   }
 };
 

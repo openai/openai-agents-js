@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^1.1.3",
-    "@openai/zod": "npm:zod@^3.25.40",
+    "@openai/zod": "npm:zod@3.25.40 - 3.25.67",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
   },

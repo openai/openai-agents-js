@@ -9,7 +9,7 @@
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
     "ws": "^8.18.1",
-    "zod": "~3.25.40"
+    "zod": "3.25.40 - 3.25.67"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

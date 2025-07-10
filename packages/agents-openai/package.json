@@ -21,7 +21,7 @@
     "@openai/agents-core": "workspace:*",
     "debug": "^4.4.0",
     "openai": "^5.0.1",
-    "@openai/zod": "npm:zod@^3.25.40"
+    "@openai/zod": "npm:zod@3.25.40 - 3.25.67"
   },
   "scripts": {
     "prebuild": "tsx ../../scripts/embedMeta.ts",
