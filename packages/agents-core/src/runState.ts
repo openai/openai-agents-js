@@ -165,6 +165,8 @@ const serializedProcessedResponseSchema = z.object({
             arguments: z.string().optional(),
             status: z.string().optional(),
             output: z.string().optional(),
+            // this always exists but marked as optional for early version compatibility; when releasing 1.0, we can remove the nullable and optional
+            providerData: z.record(z.string(), z.any()).nullable().optional(),
           }),
         }),
         // HostedMCPTool

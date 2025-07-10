@@ -74,7 +74,7 @@ function processItems(items: AgentInputItem[]): ProcessedItem[] {
                   return '';
                 })
                 .join('\n') || '⚫︎⚫︎⚫︎',
-        id: item.id ?? JSON.stringify(item.content),
+        id: item.id ?? '',
       });
     }
   }
@@ -100,7 +100,7 @@ export function History({ history }: HistoryProps) {
             <TextMessage
               text={item.content}
               isUser={item.role === 'user'}
-              key={item.id ?? idx}
+              key={item.id || idx}
             />
           );
         }
