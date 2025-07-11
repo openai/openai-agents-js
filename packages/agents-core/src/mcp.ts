@@ -14,6 +14,13 @@ import {
   JsonObjectSchemaStrict,
   UnknownContext,
 } from './types';
+import type {
+  ToolFilterCallable,
+  ToolFilterStatic,
+  ToolFilterContext,
+} from './mcpUtil';
+import type { RunContext } from './runContext';
+import type { Agent } from './agent';
 
 export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:stdio-mcp-client';
@@ -27,10 +34,14 @@ export const DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME =
  */
 export interface MCPServer {
   cacheToolsList: boolean;
+  toolFilter?: ToolFilterCallable | ToolFilterStatic;
   connect(): Promise<void>;
   readonly name: string;
   close(): Promise<void>;
-  listTools(): Promise<MCPTool[]>;
+  listTools(
+    runContext?: RunContext<any>,
+    agent?: Agent<any, any>,
+  ): Promise<MCPTool[]>;
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
@@ -40,18 +51,23 @@ export interface MCPServer {
 export abstract class BaseMCPServerStdio implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
+  public toolFilter?: ToolFilterCallable | ToolFilterStatic;
 
   protected logger: Logger;
   constructor(options: MCPServerStdioOptions) {
     this.logger =
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
+    this.toolFilter = options.toolFilter;
   }
 
   abstract get name(): string;
   abstract connect(): Promise<void>;
   abstract close(): Promise<void>;
-  abstract listTools(): Promise<any[]>;
+  abstract listTools(
+    runContext?: RunContext<any>,
+    agent?: Agent<any, any>,
+  ): Promise<any[]>;
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
@@ -72,6 +88,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
 export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
+  public toolFilter?: ToolFilterCallable | ToolFilterStatic;
 
   protected logger: Logger;
   constructor(options: MCPServerStreamableHttpOptions) {
@@ -79,12 +96,16 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
       options.logger ??
       getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
+    this.toolFilter = options.toolFilter;
   }
 
   abstract get name(): string;
   abstract connect(): Promise<void>;
   abstract close(): Promise<void>;
-  abstract listTools(): Promise<any[]>;
+  abstract listTools(
+    runContext?: RunContext<any>,
+    agent?: Agent<any, any>,
+  ): Promise<any[]>;
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
@@ -138,7 +159,10 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   close(): Promise<void> {
     return this.underlying.close();
   }
-  async listTools(): Promise<MCPTool[]> {
+  async listTools(
+    _runContext?: RunContext<any>,
+    _agent?: Agent<any, any>,
+  ): Promise<MCPTool[]> {
     if (this.cacheToolsList && this._cachedTools) {
       return this._cachedTools;
     }
@@ -171,7 +195,10 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   close(): Promise<void> {
     return this.underlying.close();
   }
-  async listTools(): Promise<MCPTool[]> {
+  async listTools(
+    _runContext?: RunContext<any>,
+    _agent?: Agent<any, any>,
+  ): Promise<MCPTool[]> {
     if (this.cacheToolsList && this._cachedTools) {
       return this._cachedTools;
     }
@@ -196,6 +223,8 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 export async function getAllMcpFunctionTools<TContext = UnknownContext>(
   mcpServers: MCPServer[],
   convertSchemasToStrict = false,
+  runContext?: RunContext<TContext>,
+  agent?: Agent<TContext, any>,
 ): Promise<Tool<TContext>[]> {
   const allTools: Tool<TContext>[] = [];
   const toolNames = new Set<string>();
@@ -203,6 +232,8 @@ export async function getAllMcpFunctionTools<TContext = UnknownContext>(
     const serverTools = await getFunctionToolsFromServer(
       server,
       convertSchemasToStrict,
+      runContext,
+      agent,
     );
     const serverToolNames = new Set(serverTools.map((t) => t.name));
     const intersection = [...serverToolNames].filter((n) => toolNames.has(n));
@@ -234,13 +265,24 @@ export function invalidateServerToolsCache(serverName: string) {
 async function getFunctionToolsFromServer<TContext = UnknownContext>(
   server: MCPServer,
   convertSchemasToStrict: boolean,
+  runContext?: RunContext<TContext>,
+  agent?: Agent<TContext, any>,
 ): Promise<FunctionTool<TContext, any, unknown>[]> {
   if (server.cacheToolsList && _cachedTools[server.name]) {
     return _cachedTools[server.name];
   }
   return withMCPListToolsSpan(
     async (span) => {
-      const mcpTools = await server.listTools();
+      let mcpTools = await server.listTools(runContext, agent);
+      if (server.toolFilter) {
+        mcpTools = await filterMcpTools(
+          mcpTools,
+          server.toolFilter as ToolFilterCallable<TContext> | ToolFilterStatic,
+          runContext,
+          agent,
+          server.name,
+        );
+      }
       span.spanData.result = mcpTools.map((t) => t.name);
       const tools: FunctionTool<TContext, any, string>[] = mcpTools.map((t) =>
         mcpToFunctionTool(t, server, convertSchemasToStrict),
@@ -260,8 +302,15 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>(
 export async function getAllMcpTools<TContext = UnknownContext>(
   mcpServers: MCPServer[],
   convertSchemasToStrict = false,
+  runContext?: RunContext<TContext>,
+  agent?: Agent<TContext, any>,
 ): Promise<Tool<TContext>[]> {
-  return getAllMcpFunctionTools(mcpServers, convertSchemasToStrict);
+  return getAllMcpFunctionTools(
+    mcpServers,
+    convertSchemasToStrict,
+    runContext,
+    agent,
+  );
 }
 
 /**
@@ -336,6 +385,41 @@ function ensureStrictJsonSchema(
   return out;
 }
 
+async function filterMcpTools<TContext = UnknownContext>(
+  tools: MCPTool[],
+  filter: ToolFilterCallable<TContext> | ToolFilterStatic,
+  runContext: RunContext<TContext> | undefined,
+  agent: Agent<TContext, any> | undefined,
+  serverName: string,
+): Promise<MCPTool[]> {
+  if (typeof filter === 'function') {
+    if (!runContext || !agent) {
+      return tools;
+    }
+    const ctx = {
+      runContext,
+      agent,
+      serverName,
+    } as ToolFilterContext<TContext>;
+    const result: MCPTool[] = [];
+    for (const tool of tools) {
+      if (await filter(ctx, tool)) {
+        result.push(tool);
+      }
+    }
+    return result;
+  }
+  return tools.filter((t) => {
+    if (filter.allowedToolNames && !filter.allowedToolNames.includes(t.name)) {
+      return false;
+    }
+    if (filter.blockedToolNames && filter.blockedToolNames.includes(t.name)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 /**
  * Abstract base class for MCP servers that use a ClientSession for communication.
  * Handles session management, tool listing, tool calling, and cleanup.
@@ -351,6 +435,7 @@ export interface BaseMCPServerStdioOptions {
   encoding?: string;
   encodingErrorHandler?: 'strict' | 'ignore' | 'replace';
   logger?: Logger;
+  toolFilter?: ToolFilterCallable | ToolFilterStatic;
 }
 export interface DefaultMCPServerStdioOptions
   extends BaseMCPServerStdioOptions {
@@ -371,6 +456,7 @@ export interface MCPServerStreamableHttpOptions {
   clientSessionTimeoutSeconds?: number;
   name?: string;
   logger?: Logger;
+  toolFilter?: ToolFilterCallable | ToolFilterStatic;
 
   // ----------------------------------------------------
   // OAuth

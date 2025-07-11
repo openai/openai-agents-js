@@ -558,6 +558,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           agentMap,
           state._currentAgent,
           stateJson.lastProcessedResponse,
+          state._context,
         )
       : undefined;
 
@@ -710,8 +711,9 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   serializedProcessedResponse: z.infer<
     typeof serializedProcessedResponseSchema
   >,
+  runContext: RunContext<TContext>,
 ): Promise<ProcessedResponse<TContext>> {
-  const allTools = await currentAgent.getAllTools();
+  const allTools = await currentAgent.getAllTools(runContext);
   const tools = new Map(
     allTools
       .filter((tool) => tool.type === 'function')
