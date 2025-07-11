@@ -7,11 +7,11 @@ import { Steps } from '@astrojs/starlight/components';
 import { Code } from '@astrojs/starlight/components';
 import quickstartExample from '../../../../../../examples/docs/quickstart/index.ts?raw';
 
-## プロジェクトセットアップ
+## プロジェクトのセットアップ
 
 <Steps>
 
-1. プロジェクトを作成して npm を初期化します。これは一度だけで構いません。
+1. プロジェクトを作成して npm を初期化します。これは最初の一度だけで大丈夫です。
 
    ```bash
    mkdir my_project
@@ -22,21 +22,20 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
 2. Agents SDK をインストールします。
 
    ```bash
-   npm install @openai/agents
+   npm install @openai/agents 'zod@<=3.25.67'
    ```
 
-3. OpenAI API キーを設定します。まだお持ちでない場合は、[こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)に従って OpenAI API キーを作成してください。
+3. OpenAI API キーを設定します。まだお持ちでない場合は、[こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) に従って OpenAI API キーを作成してください。
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   あるいは `setDefaultOpenAIKey('<api key>')` を呼び出してプログラムからキーを設定し、トレーシングには `setTracingExportApiKey('<api key>')` を使用できます。
-   くわしくは[SDK の設定](/openai-agents-js/ja/guides/config)をご覧ください。
+   あるいは、`setDefaultOpenAIKey('<api key>')` を呼び出してプログラム上でキーを設定し、トレーシング用には `setTracingExportApiKey('<api key>')` を使用できます。詳細は [SDK の設定](/openai-agents-js/ja/guides/config) をご覧ください。
 
 </Steps>
 
-## 最初のエージェントの作成
+## はじめてのエージェントを作成する
 
 エージェントは instructions と名前で定義します。
 
@@ -50,11 +49,11 @@ const agent = new Agent({
 });
 ```
 
-## 最初のエージェントの実行
+## はじめてのエージェントを実行する
 
-`run` メソッドを使ってエージェントを実行できます。開始したいエージェントと入力を渡すことで実行がトリガーされます。
+`run` メソッドを使ってエージェントを実行できます。実行を開始するには、開始したいエージェントと渡したい入力の両方を渡します。
 
-これにより、最終出力と実行中に行われたアクションを含む実行結果が返されます。
+これにより、その実行中に行われた最終出力とすべてのアクションを含む result が返されます。
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -70,9 +69,9 @@ const result = await run(agent, 'When did sharks first appear?');
 console.log(result.finalOutput);
 ```
 
-## エージェントにツールを与える
+## エージェントにツールを持たせる
 
-エージェントにツールを渡すことで、情報の検索やアクションの実行が可能になります。
+エージェントにツールを与えて、情報を検索したりアクションを実行したりさせることができます。
 
 ```typescript
 import { Agent, tool } from '@openai/agents';
@@ -101,7 +100,7 @@ const agent = new Agent({
 
 ## さらにエージェントを追加する
 
-追加のエージェントを同様に定義して、問題をより小さなパートに分割し、タスクに集中させることができます。また、エージェントごとにモデルを指定することで、問題に応じて異なるモデルを使用できます。
+追加のエージェントを同様に定義して、問題をより小さな部分に分割し、タスクに集中させることができます。また、エージェントごとにモデルを定義することで、異なる問題に異なるモデルを使用できます。
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -117,9 +116,9 @@ const mathTutorAgent = new Agent({
 });
 ```
 
-## ハンドオフの定義
+## ハンドオフを定義する
 
-複数のエージェント間でオーケストレーションを行うには、エージェントに `handoffs` を定義します。これにより、実行中に会話が自動的に次のエージェントへ渡されます。
+複数のエージェント間でオーケストレーションを行うために、エージェントに `handoffs` を定義できます。これにより、実行中に会話が自動的に次のエージェントへ引き継がれます。
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -131,11 +130,11 @@ const triageAgent = Agent.create({
 });
 ```
 
-実行後、`finalAgent` プロパティを確認すると、どのエージェントが最終応答を生成したかがわかります。
+実行後、`finalAgent` プロパティを見ることで、最終的な応答を生成したエージェントを確認できます。
 
-## エージェントオーケストレーションの実行
+## エージェントオーケストレーションを実行する
 
-Runner は、個々のエージェントの実行、ハンドオフ、ツール実行を管理します。
+Runner は個々のエージェントの実行、ハンドオフの可能性、ツールの実行を管理します。
 
 ```typescript
 import { run } from '@openai/agents';
@@ -148,21 +147,21 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## まとめ
+## すべてをまとめる
 
-すべてをまとめて 1 つの完全な例にしてみましょう。これを `index.js` に配置して実行してください。
+これまでの内容を 1 つの例にまとめましょう。`index.js` に配置して実行してください。
 
-<Code lang="typescript" code={quickstartExample} title="Quickstart" />
+<Code lang="typescript" code={quickstartExample} title="クイックスタート" />
 
-## トレースの確認
+## トレースを確認する
 
-Agents SDK は自動的にトレースを生成します。これにより、エージェントがどのように動作し、どのツールを呼び出し、どのエージェントにハンドオフしたかを確認できます。
+Agents SDK はトレースを自動的に生成します。これにより、エージェントがどのように動作したか、どのツールを呼び出したか、どのエージェントへハンドオフしたかを確認できます。
 
-エージェント実行中に何が起こったかを確認するには、[OpenAI ダッシュボードの Trace viewer](https://platform.openai.com/traces) に移動してください。
+エージェント実行中に何が起こったかを確認するには、[OpenAI ダッシュボードの Trace ビューア](https://platform.openai.com/traces) に移動してください。
 
 ## 次のステップ
 
-より複雑なエージェントフローの構築方法を学びましょう。
+より複雑なエージェントフローの構築方法を学びましょう:
 
 - [エージェント](/openai-agents-js/ja/guides/agents) の設定方法を学ぶ
 - [エージェントの実行](/openai-agents-js/ja/guides/running-agents) について学ぶ
