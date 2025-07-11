@@ -1,5 +1,17 @@
 # @openai/agents-realtime
 
+## 0.0.11
+
+### Patch Changes
+
+- 07939c0: Correct typo in RealtimeTransportEventTypes in code and docs
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 6e0d1bd: Fixes issue #106 where overlapping user inputs caused null transcripts in history
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
 ## 0.0.10
 
 ### Patch Changes

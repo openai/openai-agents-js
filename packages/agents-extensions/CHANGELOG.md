@@ -1,5 +1,13 @@
 # @openai/agents-extensions
 
+## 0.0.11
+
+### Patch Changes
+
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 0664056: Add tracing usage telemetry to aiSdk
+  - @openai/agents@0.0.11
+
 ## 0.0.10
 
 ### Patch Changes

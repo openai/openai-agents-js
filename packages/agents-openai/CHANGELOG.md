@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.0.11
+
+### Patch Changes
+
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
 ## 0.0.10
 
 ### Patch Changes

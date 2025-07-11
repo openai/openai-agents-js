@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.0.11
+
+### Patch Changes
+
+- a60eabe: Fix #131 Human in the Loop MCP approval fails
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 17077d8: Fix #175 by removing internal system.exit calls
+
 ## 0.0.10
 
 ### Patch Changes
