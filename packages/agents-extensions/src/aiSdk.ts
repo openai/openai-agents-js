@@ -446,6 +446,20 @@ export class AiSdkModel implements Model {
 
         const result = await this.#model.doGenerate(aiSdkRequest);
 
+        for (const warning of result.warnings ?? []) {
+          this.#logger.warn(`@ai-sdk generation warning`, {
+            type: warning.type,
+            message: (warning as any)?.message ?? 'Unknown warning',
+            details: (warning as any)?.details ?? 'Unknown details',
+            model: {
+              modelId: this.#model.modelId,
+              version: this.#model.specificationVersion,
+              provider: this.#model.provider,
+              supportsStructuredOutputs: this.#model.supportsStructuredOutputs,
+            },
+          });
+        }
+
         const output: ModelResponse['output'] = [];
 
         result.toolCalls?.forEach((toolCall) => {
