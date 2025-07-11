@@ -33,6 +33,11 @@
         "types": "./dist/shims/shims-browser.d.ts",
         "default": "./dist/shims/shims-browser.mjs"
       },
+      "react-native": {
+        "require": "./dist/shims/shims-react-native.js",
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "default": "./dist/shims/shims-react-native.mjs"
+      },
       "node": {
         "require": "./dist/shims/shims-node.js",
         "types": "./dist/shims/shims-node.d.ts",
@@ -79,5 +84,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "peerDependencies": {
+    "react-native-webrtc": "^124.0.5"
+  }
 }
