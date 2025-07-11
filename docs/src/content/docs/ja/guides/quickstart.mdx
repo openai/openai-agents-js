@@ -31,7 +31,8 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    export OPENAI_API_KEY=sk-...
    ```
 
-   代わりに `setDefaultOpenAIKey('<api key>')` を呼び出して API キーを設定することもできます。トレーシング用には `setTracingExportApiKey('<api key>')` を使用してください。詳しくは [設定ガイド](/openai-agents-js/ja/guides/config) をご覧ください。
+   あるいは `setDefaultOpenAIKey('<api key>')` を呼び出してプログラムからキーを設定し、トレーシングには `setTracingExportApiKey('<api key>')` を使用できます。
+   くわしくは[SDK の設定](/openai-agents-js/ja/guides/config)をご覧ください。
 
 </Steps>
 
@@ -51,9 +52,9 @@ const agent = new Agent({
 
 ## 最初のエージェントの実行
 
-`run` メソッドを使ってエージェントを実行できます。開始したいエージェントと渡したい入力を指定して実行をトリガーします。
+`run` メソッドを使ってエージェントを実行できます。開始したいエージェントと入力を渡すことで実行がトリガーされます。
 
-これにより、最終出力と実行中に実行されたアクションを含む実行結果が返されます。
+これにより、最終出力と実行中に行われたアクションを含む実行結果が返されます。
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -69,9 +70,9 @@ const result = await run(agent, 'When did sharks first appear?');
 console.log(result.finalOutput);
 ```
 
-## エージェントへのツール追加
+## エージェントにツールを与える
 
-エージェントに情報を検索したりアクションを実行したりするためのツールを与えることができます。
+エージェントにツールを渡すことで、情報の検索やアクションの実行が可能になります。
 
 ```typescript
 import { Agent, tool } from '@openai/agents';
@@ -81,6 +82,8 @@ const historyFunFact = tool({
   name: 'history_fun_fact',
   // The description is used to describe **when** to use the tool by telling it **what** it does.
   description: 'Give a fun fact about a historical event',
+  // This tool takes no parameters, so we provide an empty Zod Object.
+  parameters: z.object({}),
   execute: async () => {
     // The output will be returned back to the Agent to use
     return 'Sharks are older than trees.';
@@ -96,9 +99,9 @@ const agent = new Agent({
 });
 ```
 
-## エージェントの追加
+## さらにエージェントを追加する
 
-問題をより小さな部分に分割し、エージェントがタスクに集中できるように、追加のエージェントを同様に定義できます。また、エージェントごとにモデルを指定することで、異なる問題に対して異なるモデルを使用できます。
+追加のエージェントを同様に定義して、問題をより小さなパートに分割し、タスクに集中させることができます。また、エージェントごとにモデルを指定することで、問題に応じて異なるモデルを使用できます。
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -116,7 +119,7 @@ const mathTutorAgent = new Agent({
 
 ## ハンドオフの定義
 
-複数のエージェント間をオーケストレーションするために、エージェントに対して `handoffs` を定義できます。これにより、実行中に自動的に次のエージェントへ会話を引き継げます。
+複数のエージェント間でオーケストレーションを行うには、エージェントに `handoffs` を定義します。これにより、実行中に会話が自動的に次のエージェントへ渡されます。
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -128,11 +131,11 @@ const triageAgent = Agent.create({
 });
 ```
 
-実行後、`finalAgent` プロパティを見ることで、どのエージェントが最終応答を生成したかを確認できます。
+実行後、`finalAgent` プロパティを確認すると、どのエージェントが最終応答を生成したかがわかります。
 
 ## エージェントオーケストレーションの実行
 
-Runner は個々のエージェントの実行、ハンドオフ、ツール実行を処理します。
+Runner は、個々のエージェントの実行、ハンドオフ、ツール実行を管理します。
 
 ```typescript
 import { run } from '@openai/agents';
@@ -145,23 +148,22 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## 総まとめ
+## まとめ
 
-すべてをまとめて 1 つの完全なサンプルにしましょう。`index.js` に以下を配置して実行してください。
+すべてをまとめて 1 つの完全な例にしてみましょう。これを `index.js` に配置して実行してください。
 
 <Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
-## トレースの表示
+## トレースの確認
 
-Agents SDK はトレースを自動生成します。これにより、エージェントがどのように動作し、どのツールを呼び出し、どのエージェントへハンドオフしたかを確認できます。
+Agents SDK は自動的にトレースを生成します。これにより、エージェントがどのように動作し、どのツールを呼び出し、どのエージェントにハンドオフしたかを確認できます。
 
-エージェント実行中に何が起こったかを確認するには、
-[OpenAI ダッシュボードの Trace viewer](https://platform.openai.com/traces) に移動してください。
+エージェント実行中に何が起こったかを確認するには、[OpenAI ダッシュボードの Trace viewer](https://platform.openai.com/traces) に移動してください。
 
 ## 次のステップ
 
-より複雑なエージェントフローの構築方法を学びましょう:
+より複雑なエージェントフローの構築方法を学びましょう。
 
-- [エージェント](/openai-agents-js/ja/guides/agents) の設定について学ぶ
+- [エージェント](/openai-agents-js/ja/guides/agents) の設定方法を学ぶ
 - [エージェントの実行](/openai-agents-js/ja/guides/running-agents) について学ぶ
 - [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models) について学ぶ
