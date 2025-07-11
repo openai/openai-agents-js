@@ -25,6 +25,8 @@ jobs:
           version: 10.13.1
           run_install: false  # do manual install to avoid heap memory errors
       - name: Install dependencies
+        env:
+          NODE_OPTIONS: --max_old_space_size=4096
         # lower parallelism to save RAM
         run: pnpm install --frozen-lockfile --network-concurrency=1
       - name: Build all packages
