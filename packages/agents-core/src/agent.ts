@@ -383,7 +383,7 @@ export class Agent<
   }
 
   /**
-   * Ouput schema name
+   * Output schema name
    */
   get outputSchemaName(): string {
     if (this.outputType === 'text') {
