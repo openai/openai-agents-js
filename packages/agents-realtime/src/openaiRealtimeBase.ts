@@ -65,6 +65,7 @@ export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConf
     turnDetection: {
       type: 'semantic_vad',
     },
+    inputAudioNoiseReduction: null,
   };
 
 /**
@@ -391,6 +392,9 @@ export abstract class OpenAIRealtimeBase
       input_audio_transcription:
         config.inputAudioTranscription ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioTranscription,
+      input_audio_noise_reduction:
+        config.inputAudioNoiseReduction ??
+        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioNoiseReduction,
       turn_detection:
         OpenAIRealtimeBase.buildTurnDetectionConfig(config.turnDetection) ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.turnDetection,

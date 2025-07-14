@@ -33,6 +33,10 @@ export type RealtimeTracingConfig =
     }
   | 'auto';
 
+export type RealtimeInputAudioNoiseReductionConfig = {
+  type: 'near_field' | 'far_field';
+};
+
 export type RealtimeInputAudioTranscriptionConfig = {
   language?: string;
   model?:
@@ -83,6 +87,7 @@ export type RealtimeSessionConfig = {
   tools: FunctionToolDefinition[];
   tracing?: RealtimeTracingConfig | null;
   providerData?: Record<string, any>;
+  inputAudioNoiseReduction: RealtimeInputAudioNoiseReductionConfig | null;
 };
 
 export type FunctionToolDefinition = {
