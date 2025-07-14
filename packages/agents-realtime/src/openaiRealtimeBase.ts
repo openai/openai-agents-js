@@ -65,6 +65,7 @@ export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConf
     turnDetection: {
       type: 'semantic_vad',
     },
+    inputAudioNoiseReduction: null,
   };
 
 /**
