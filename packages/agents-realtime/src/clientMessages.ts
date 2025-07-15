@@ -34,7 +34,7 @@ export type RealtimeTracingConfig =
   | 'auto';
 
 export type RealtimeInputAudioNoiseReductionConfig = {
-  type: 'near_field' | 'far_field';
+  type: 'near_field' | 'far_field' | (string & {});
 };
 
 export type RealtimeInputAudioTranscriptionConfig = {
