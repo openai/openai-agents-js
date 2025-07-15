@@ -90,13 +90,6 @@ export class OpenAIProvider implements ModelProvider {
           project: this.#options.project,
         });
     }
-    // LEFT ON PURPOSE: will delete when merged
-    console.log(
-      'Using OpenAI client',
-      this.#client.project,
-      this.#client.apiKey,
-    );
-    // Return
     return this.#client;
   }
 
