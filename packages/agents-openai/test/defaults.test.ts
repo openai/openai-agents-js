@@ -50,4 +50,20 @@ describe('Defaults', () => {
     // Cleanup
     unregisterOpenAIProvider(mockProvider);
   });
+
+  test('setDefaultOpenAIClient notifies registered providers', async () => {
+    const mockProvider = { invalidateClient: vi.fn() };
+    const { registerOpenAIProvider, unregisterOpenAIProvider } = await import(
+      '../src/defaults'
+    );
+
+    registerOpenAIProvider(mockProvider);
+    const client = new OpenAI({ apiKey: 'test-key' });
+    setDefaultOpenAIClient(client);
+
+    expect(mockProvider.invalidateClient).toHaveBeenCalledTimes(1);
+
+    // Cleanup
+    unregisterOpenAIProvider(mockProvider);
+  });
 });

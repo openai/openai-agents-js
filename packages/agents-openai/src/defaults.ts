@@ -13,16 +13,28 @@ let _defaultTracingApiKey: string | undefined = undefined;
 // Registry for tracking OpenAI providers that need to be notified of key changes
 const _providerRegistry = new Set<{ invalidateClient(): void }>();
 
+/**
+ * Registers an OpenAI provider to receive notifications when the default API key or client changes.
+ * @param provider The provider to register for key change notifications
+ */
 export function registerOpenAIProvider(provider: { invalidateClient(): void }) {
   _providerRegistry.add(provider);
 }
 
+/**
+ * Unregisters an OpenAI provider from key change notifications.
+ * @param provider The provider to unregister
+ */
 export function unregisterOpenAIProvider(provider: {
   invalidateClient(): void;
 }) {
   _providerRegistry.delete(provider);
 }
 
+/**
+ * Notifies all registered providers that the default API key or client has changed.
+ * This causes providers to invalidate their cached clients.
+ */
 function notifyProvidersOfKeyChange() {
   _providerRegistry.forEach((provider) => {
     try {
@@ -50,28 +62,31 @@ export function setOpenAIAPI(value: 'chat_completions' | 'responses') {
   _defaultOpenAIAPI = value;
 }
 
+/**
+ * Sets the default OpenAI client to use for all providers.
+ * This will invalidate cached clients in existing providers that rely on the default client.
+ * @param client The OpenAI client to use as the default
+ */
 export function setDefaultOpenAIClient(client: OpenAI) {
-  console.log('Setting default OpenAI client', client.project, client.apiKey);
   _defaultOpenAIClient = client;
+  notifyProvidersOfKeyChange();
 }
 
 export function getDefaultOpenAIClient(): OpenAI | undefined {
-  console.log(
-    'Getting default OpenAI client',
-    _defaultOpenAIClient?.project,
-    _defaultOpenAIClient?.apiKey,
-  );
   return _defaultOpenAIClient;
 }
 
+/**
+ * Sets the default OpenAI API key to use for all providers.
+ * This will invalidate cached clients in existing providers that rely on the default key.
+ * @param key The OpenAI API key to use as the default
+ */
 export function setDefaultOpenAIKey(key: string) {
-  console.log('setting default OpenAI key', key);
   _defaultOpenAIKey = key;
   notifyProvidersOfKeyChange();
 }
 
 export function getDefaultOpenAIKey(): string | undefined {
-  console.log('getting default OpenAI key', _defaultOpenAIKey);
   return _defaultOpenAIKey ?? loadEnv().OPENAI_API_KEY;
 }
 
