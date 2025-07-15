@@ -169,9 +169,9 @@ async function main() {
           console.log(`${agentName}: Skipping item: ${newItem.type}`);
         }
       }
-      // Defensive: check if toInputList and lastAgent exist
-      if (typeof (result as any).toInputList === 'function') {
-        inputItems = (result as any).toInputList();
+      // Defensive: check if history and lastAgent exist
+      if ((result as any).history) {
+        inputItems = (result as any).history;
       }
       if ((result as any).lastAgent) {
         currentAgent = (result as any).lastAgent;

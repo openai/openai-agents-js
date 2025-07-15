@@ -25,7 +25,7 @@ import {
   RealtimeTransportLayerConnectOptions,
 } from './transportLayer';
 import {
-  RealtimeTranportEventTypes,
+  RealtimeTransportEventTypes,
   TransportToolCallEvent,
 } from './transportLayerEvents';
 import { arrayBufferToBase64, diffRealtimeHistory } from './utils';
@@ -66,6 +66,7 @@ export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConf
       type: 'semantic_vad',
     },
     inputAudioNoiseReduction: null,
+    speed: 1,
   };
 
 /**
@@ -94,7 +95,7 @@ export type OpenAIRealtimeEventTypes = {
    * Triggered when the connection is closed.
    */
   disconnected: [];
-} & RealtimeTranportEventTypes;
+} & RealtimeTransportEventTypes;
 
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
@@ -381,6 +382,7 @@ export abstract class OpenAIRealtimeBase
         this.#model ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.model,
       voice: config.voice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.voice,
+      speed: config.speed ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.speed,
       modalities:
         config.modalities ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.modalities,
       input_audio_format:

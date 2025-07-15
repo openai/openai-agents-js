@@ -1,5 +1,6 @@
 import {
   isBrowserEnvironment,
+  useWebSocketProtocols,
   WebSocket,
 } from '@openai/agents-realtime/_shims';
 import {
@@ -149,7 +150,8 @@ export class OpenAIRealtimeWebSocket
       );
     }
 
-    const websocketArguments = isBrowserEnvironment()
+    // browsers and workerd should use the protocols argument, node should use the headers argument
+    const websocketArguments = useWebSocketProtocols
       ? [
           'realtime',
           // Auth

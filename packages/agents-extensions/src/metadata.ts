@@ -6,7 +6,7 @@ export const METADATA = {
   "version": "0.0.7",
   "versions": {
     "@openai/agents-extensions": "0.0.7",
-    "@openai/zod": "npm:zod@^3.25.40"
+    "@openai/zod": "npm:zod@3.25.40 - 3.25.67"
   }
 };
 

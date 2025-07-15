@@ -40,6 +40,7 @@ jobs:
         run: pnpm build
 
       - name: Create and publish versions
+        id: changesets
         uses: changesets/action@v1
         with:
           commit: 'chore: update versions'
@@ -50,3 +51,15 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           NPM_CONFIG_ACCESS: public
+
+      - name: Tag release
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          version=$(jq -r '.version' packages/agents/package.json)
+          tag="v${version}"
+          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists"
+          else
+            git tag -a "$tag" -m "Release $tag"
+            git push origin "$tag"
+          fi

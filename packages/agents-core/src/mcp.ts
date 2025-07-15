@@ -45,7 +45,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   constructor(options: MCPServerStdioOptions) {
     this.logger =
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
-    this.cacheToolsList = options.cacheToolsList ?? true;
+    this.cacheToolsList = options.cacheToolsList ?? false;
   }
 
   abstract get name(): string;
@@ -78,7 +78,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     this.logger =
       options.logger ??
       getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
-    this.cacheToolsList = options.cacheToolsList ?? true;
+    this.cacheToolsList = options.cacheToolsList ?? false;
   }
 
   abstract get name(): string;

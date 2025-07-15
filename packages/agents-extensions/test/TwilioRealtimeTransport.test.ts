@@ -2,6 +2,9 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 
+import type { MessageEvent as NodeMessageEvent } from 'ws';
+import type { MessageEvent } from 'undici-types';
+
 vi.mock('@openai/agents/realtime', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { EventEmitter } = require('events');
@@ -23,6 +26,7 @@ vi.mock('@openai/agents/realtime', () => {
   FakeOpenAIRealtimeWebSocket.prototype.sendAudio = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.close = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype._interrupt = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype.updateSessionConfig = vi.fn();
   return { OpenAIRealtimeWebSocket: FakeOpenAIRealtimeWebSocket, utils };
 });
 
@@ -30,6 +34,14 @@ class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
 }
+
+// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
+FakeTwilioWebSocket.prototype.addEventListener = function (
+  type: string,
+  listener: (evt: MessageEvent | NodeMessageEvent) => void,
+) {
+  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+};
 
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 
@@ -134,5 +146,23 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(marks[1].mark.name).toBe('a:3');
     expect(marks[2].mark.name).toBe('b:1');
     expect(audioListener).toHaveBeenCalledTimes(3);
+  });
+
+  test('updateSessionConfig keeps audio format', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const spy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype.updateSessionConfig,
+    );
+    transport.updateSessionConfig({ instructions: 'hi' });
+    expect(spy).toHaveBeenCalledWith({
+      instructions: 'hi',
+      inputAudioFormat: 'g711_ulaw',
+      outputAudioFormat: 'g711_ulaw',
+    });
   });
 });

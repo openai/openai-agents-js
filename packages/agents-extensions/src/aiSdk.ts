@@ -168,7 +168,7 @@ export function itemsToLanguageV1Messages(
           type: 'tool-call',
           toolCallId: item.callId,
           toolName: item.name,
-          args: JSON.parse(item.arguments),
+          args: parseArguments(item.arguments),
           providerMetadata: {
             ...(item.providerData ?? {}),
           },
@@ -498,6 +498,14 @@ export class AiSdkModel implements Model {
           providerData: result,
         } as const;
 
+        if (span && request.tracing === true) {
+          span.spanData.usage = {
+            input_tokens: response.usage.inputTokens,
+            output_tokens: response.usage.outputTokens,
+            total_tokens: response.usage.totalTokens,
+          };
+        }
+
         if (this.#logger.dontLogModelData) {
           this.#logger.debug('Response ready');
         } else {
@@ -715,6 +723,11 @@ export class AiSdkModel implements Model {
 
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
+        span.spanData.usage = {
+          input_tokens: finalEvent.response.usage.inputTokens,
+          output_tokens: finalEvent.response.usage.outputTokens,
+          total_tokens: finalEvent.response.usage.totalTokens,
+        };
       }
 
       if (this.#logger.dontLogModelData) {
@@ -774,4 +787,16 @@ export class AiSdkModel implements Model {
  */
 export function aisdk(model: LanguageModelV1) {
   return new AiSdkModel(model);
+}
+
+export function parseArguments(args: string | undefined | null): any {
+  if (!args) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(args);
+  } catch (_) {
+    return {};
+  }
 }

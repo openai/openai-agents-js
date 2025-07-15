@@ -188,19 +188,28 @@ export class TraceProvider {
       // Handle CTRL+C (SIGINT)
       process.on('SIGINT', async () => {
         await cleanup();
-        process.exit(130);
+        if (!hasOtherListenersForSignals('SIGINT')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(130);
+        }
       });
 
       // Handle termination (SIGTERM)
       process.on('SIGTERM', async () => {
         await cleanup();
-        process.exit(0);
+        if (!hasOtherListenersForSignals('SIGTERM')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(0);
+        }
       });
 
       process.on('unhandledRejection', async (reason, promise) => {
         logger.error('Unhandled rejection', reason, promise);
         await cleanup();
-        process.exit(1);
+        if (!hasOtherListenersForEvents('unhandledRejection')) {
+          // Only when there are no other listeners, exit the process on this SDK side
+          process.exit(1);
+        }
       });
     }
   }
@@ -208,6 +217,14 @@ export class TraceProvider {
   async forceFlush(): Promise<void> {
     await this.#multiProcessor.forceFlush();
   }
+}
+
+function hasOtherListenersForSignals(event: 'SIGINT' | 'SIGTERM'): boolean {
+  return process.listeners(event).length > 1;
+}
+
+function hasOtherListenersForEvents(event: 'unhandledRejection'): boolean {
+  return process.listeners(event).length > 1;
 }
 
 let GLOBAL_TRACE_PROVIDER: TraceProvider | undefined = undefined;

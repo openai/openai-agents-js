@@ -30,6 +30,16 @@ export type TransportLayerAudio = {
   responseId: string;
 };
 
+/**
+ * Event representing the completion of user audio transcription.
+ * Contains the finalized transcript string and the ID of the associated item.
+ */
+export type InputAudioTranscriptionCompletedEvent = {
+  type: 'conversation.item.input_audio_transcription.completed';
+  item_id: string;
+  transcript: string;
+};
+
 export type TransportLayerTranscriptDelta = {
   type: 'transcript_delta';
   itemId: string;
@@ -46,12 +56,13 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 export type TransportEvent =
   | TransportError
   | TransportToolCallEvent
+  | InputAudioTranscriptionCompletedEvent
   | {
       type: string;
       [key: string]: any;
     };
 
-export type RealtimeTranportEventTypes = {
+export type RealtimeTransportEventTypes = {
   /**
    * A raw event from the transport layer. Allows a user to tap directly into the events of the
    * transport layer.

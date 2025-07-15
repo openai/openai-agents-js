@@ -308,6 +308,9 @@ export class StreamedRunResult<
     }
     this.#error = err;
     this.#completedPromiseReject?.(err);
+    this.#completedPromise.catch((e) => {
+      logger.debug(`Resulted in an error: ${e}`);
+    });
   }
 
   /**

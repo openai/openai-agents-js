@@ -18,7 +18,7 @@ import {
   RunMessageOutputItem as MessageOutputItem,
   RunToolApprovalItem as ToolApprovalItem,
 } from '../src/items';
-import { getTurnInput } from '../src/run';
+import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
@@ -490,6 +490,43 @@ describe('Runner.run', () => {
       await run(agentB, '2');
       expect(spy.mock.instances[0]).toBe(spy.mock.instances[1]);
       spy.mockRestore();
+    });
+  });
+
+  describe('selectModel', () => {
+    const MODEL_A = 'gpt-4o';
+    const MODEL_B = 'gpt-4.1-mini';
+
+    it("returns the agent's model when it is a non-empty string and no override is provided", () => {
+      const result = selectModel(MODEL_A, undefined);
+      expect(result).toBe(MODEL_A);
+    });
+
+    it("returns the agent's model when it is a non-empty string even when an override is provided", () => {
+      const result = selectModel(MODEL_A, MODEL_B);
+      expect(result).toBe(MODEL_A);
+    });
+
+    it("returns the agent's model when it is a Model instance and no override is provided", () => {
+      const fakeModel = new FakeModel();
+      const result = selectModel(fakeModel, undefined);
+      expect(result).toBe(fakeModel);
+    });
+
+    it("returns the agent's model when it is a Model instance even when an override is provided", () => {
+      const fakeModel = new FakeModel();
+      const result = selectModel(fakeModel, MODEL_B);
+      expect(result).toBe(fakeModel);
+    });
+
+    it('returns the override model when the agent model is the default placeholder', () => {
+      const result = selectModel(Agent.DEFAULT_MODEL_PLACEHOLDER, MODEL_B);
+      expect(result).toBe(MODEL_B);
+    });
+
+    it('returns the default placeholder when both agent and override models are the default placeholder / undefined', () => {
+      const result = selectModel(Agent.DEFAULT_MODEL_PLACEHOLDER, undefined);
+      expect(result).toBe(Agent.DEFAULT_MODEL_PLACEHOLDER);
     });
   });
 });

@@ -6,7 +6,7 @@ import {
 } from './clientMessages';
 import { RealtimeItem } from './items';
 import {
-  RealtimeTranportEventTypes,
+  RealtimeTransportEventTypes,
   TransportToolCallEvent,
 } from './transportLayerEvents';
 
@@ -46,7 +46,7 @@ export type RealtimeTransportLayerConnectOptions = {
  * and the communication with the model.
  */
 export interface RealtimeTransportLayer
-  extends EventEmitter<RealtimeTranportEventTypes> {
+  extends EventEmitter<RealtimeTransportEventTypes> {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting';
 
   /**

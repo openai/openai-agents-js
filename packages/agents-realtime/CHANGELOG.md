@@ -1,5 +1,38 @@
 # @openai/agents-realtime
 
+## 0.0.11
+
+### Patch Changes
+
+- 07939c0: Correct typo in RealtimeTransportEventTypes in code and docs
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 6e0d1bd: Fixes issue #106 where overlapping user inputs caused null transcripts in history
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
+## 0.0.10
+
+### Patch Changes
+
+- 787968b: fix: use web standard event apis for twilio websocket
+- Updated dependencies [c248a7d]
+- Updated dependencies [ff63127]
+- Updated dependencies [9c60282]
+- Updated dependencies [f61fd18]
+- Updated dependencies [c248a7d]
+  - @openai/agents-core@0.0.10
+
+## 0.0.9
+
+### Patch Changes
+
+- 49bfe25: Improve the types of turnDetection and inputAudioTranscription in RealtimeAgent configuration
+- Updated dependencies [9028df4]
+- Updated dependencies [ce62f7c]
+  - @openai/agents-core@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes

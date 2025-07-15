@@ -47,8 +47,10 @@ Experimental support:
 
 ### Installation
 
+This SDK currently does not work with `zod@3.25.68` and above. Please install `zod@3.25.67` (or any older version) explicitly. We will resolve this dependency issue soon. Please check [this issue](https://github.com/openai/openai-agents-js/issues/187) for updates.
+
 ```bash
-npm install @openai/agents
+npm install @openai/agents 'zod@<=3.25.67'
 ```
 
 ## Hello world example

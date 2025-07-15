@@ -88,6 +88,7 @@ export type RealtimeSessionConfig = {
   tracing?: RealtimeTracingConfig | null;
   providerData?: Record<string, any>;
   inputAudioNoiseReduction: RealtimeInputAudioNoiseReductionConfig | null;
+  speed: number;
 };
 
 export type FunctionToolDefinition = {
