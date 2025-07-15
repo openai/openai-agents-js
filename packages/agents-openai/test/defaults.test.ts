@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import {
   DEFAULT_OPENAI_MODEL,
   setTracingExportApiKey,
@@ -34,5 +34,20 @@ describe('Defaults', () => {
   test('get/setDefaultOpenAIKey', async () => {
     setDefaultOpenAIKey('foo');
     expect(getDefaultOpenAIKey()).toBe('foo');
+  });
+
+  test('setDefaultOpenAIKey notifies registered providers', async () => {
+    const mockProvider = { invalidateClient: vi.fn() };
+    const { registerOpenAIProvider, unregisterOpenAIProvider } = await import(
+      '../src/defaults'
+    );
+
+    registerOpenAIProvider(mockProvider);
+    setDefaultOpenAIKey('new-key');
+
+    expect(mockProvider.invalidateClient).toHaveBeenCalledTimes(1);
+
+    // Cleanup
+    unregisterOpenAIProvider(mockProvider);
   });
 });

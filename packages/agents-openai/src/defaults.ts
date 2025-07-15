@@ -10,6 +10,30 @@ let _defaultOpenAIClient: OpenAI | undefined;
 let _defaultOpenAIKey: string | undefined = undefined;
 let _defaultTracingApiKey: string | undefined = undefined;
 
+// Registry for tracking OpenAI providers that need to be notified of key changes
+const _providerRegistry = new Set<{ invalidateClient(): void }>();
+
+export function registerOpenAIProvider(provider: { invalidateClient(): void }) {
+  _providerRegistry.add(provider);
+}
+
+export function unregisterOpenAIProvider(provider: {
+  invalidateClient(): void;
+}) {
+  _providerRegistry.delete(provider);
+}
+
+function notifyProvidersOfKeyChange() {
+  _providerRegistry.forEach((provider) => {
+    try {
+      provider.invalidateClient();
+    } catch (error) {
+      // Ignore errors in provider invalidation to prevent breaking the system
+      console.warn('Error invalidating provider client:', error);
+    }
+  });
+}
+
 export function setTracingExportApiKey(key: string) {
   _defaultTracingApiKey = key;
 }
@@ -27,18 +51,27 @@ export function setOpenAIAPI(value: 'chat_completions' | 'responses') {
 }
 
 export function setDefaultOpenAIClient(client: OpenAI) {
+  console.log('Setting default OpenAI client', client.project, client.apiKey);
   _defaultOpenAIClient = client;
 }
 
 export function getDefaultOpenAIClient(): OpenAI | undefined {
+  console.log(
+    'Getting default OpenAI client',
+    _defaultOpenAIClient?.project,
+    _defaultOpenAIClient?.apiKey,
+  );
   return _defaultOpenAIClient;
 }
 
 export function setDefaultOpenAIKey(key: string) {
+  console.log('setting default OpenAI key', key);
   _defaultOpenAIKey = key;
+  notifyProvidersOfKeyChange();
 }
 
 export function getDefaultOpenAIKey(): string | undefined {
+  console.log('getting default OpenAI key', _defaultOpenAIKey);
   return _defaultOpenAIKey ?? loadEnv().OPENAI_API_KEY;
 }
 

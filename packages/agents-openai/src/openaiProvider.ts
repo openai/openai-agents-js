@@ -5,6 +5,8 @@ import {
   getDefaultOpenAIClient,
   getDefaultOpenAIKey,
   shouldUseResponsesByDefault,
+  registerOpenAIProvider,
+  unregisterOpenAIProvider,
 } from './defaults';
 import { OpenAIResponsesModel } from './openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
@@ -28,6 +30,7 @@ export class OpenAIProvider implements ModelProvider {
   #client?: OpenAI;
   #useResponses?: boolean;
   #options: OpenAIProviderOptions;
+  #shouldRegisterForKeyChanges: boolean;
 
   constructor(options: OpenAIProviderOptions = {}) {
     this.#options = options;
@@ -38,9 +41,38 @@ export class OpenAIProvider implements ModelProvider {
       if (this.#options.baseURL) {
         throw new Error('Cannot provide both baseURL and openAIClient');
       }
+      console.log('Using provided OpenAI client');
       this.#client = this.#options.openAIClient;
+      this.#shouldRegisterForKeyChanges = false;
+    } else {
+      console.log('Using default OpenAI client');
+      // Only register for key changes if we don't have a pre-built client
+      // and don't have a specific API key (using default key)
+      this.#shouldRegisterForKeyChanges = !this.#options.apiKey;
+      if (this.#shouldRegisterForKeyChanges) {
+        registerOpenAIProvider(this);
+      }
     }
     this.#useResponses = this.#options.useResponses;
+  }
+
+  /**
+   * Invalidates the cached client. Called when the default API key changes.
+   */
+  invalidateClient(): void {
+    console.log('Invalidating OpenAI client due to key change');
+    this.#client = undefined;
+  }
+
+  /**
+   * Cleanup method to unregister from key change notifications.
+   * Should be called when the provider is no longer needed.
+   */
+  destroy(): void {
+    if (this.#shouldRegisterForKeyChanges) {
+      console.log('Unregistering OpenAI provider for key changes');
+      unregisterOpenAIProvider(this);
+    }
   }
 
   /**
@@ -48,8 +80,10 @@ export class OpenAIProvider implements ModelProvider {
    * never actually use the client.
    */
   #getClient(): OpenAI {
+    console.log('Getting OpenAI client');
     // If the constructor does not accept the OpenAI client,
     if (!this.#client) {
+      console.log('Creating new OpenAI client', this.#options);
       this.#client =
         // this provider checks if there is the default client first,
         getDefaultOpenAIClient() ??
@@ -61,6 +95,11 @@ export class OpenAIProvider implements ModelProvider {
           project: this.#options.project,
         });
     }
+    console.log(
+      'Returning OpenAI client:',
+      this.#client.apiKey,
+      this.#client.project,
+    );
     return this.#client;
   }
 
