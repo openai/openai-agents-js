@@ -3,7 +3,7 @@ import 'server-only';
 
 import { Agent, run } from '@openai/agents';
 import type { RealtimeItem } from '@openai/agents/realtime';
-import z from 'zod';
+import z from '@openai/zod';
 
 const agent = new Agent({
   name: 'Refund Expert',

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import readline from 'node:readline/promises';
 import fs from 'node:fs/promises';
 import { Agent, run, tool, RunState, RunResult } from '@openai/agents';

@@ -165,7 +165,7 @@ SDK はキャッチ可能な少数のエラーをスローします。
 以下は `GuardrailExecutionError` を処理するコード例です。
 
 ```typescript
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import {
   Agent,
   run,

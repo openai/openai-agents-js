@@ -1,5 +1,5 @@
 import { Agent, run, RunContext, tool } from '@openai/agents';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 interface UserInfo {
   name: string;

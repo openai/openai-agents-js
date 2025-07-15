@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { Agent, run, tool, ToolCallError } from '@openai/agents';
 
 const unstableTool = tool({

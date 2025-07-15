@@ -81,7 +81,7 @@ console.log(result.finalOutput);
 ## Functions example
 
 ```js
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { Agent, run, tool } from '@openai/agents';
 
 const getWeatherTool = tool({
@@ -110,7 +110,7 @@ main().catch(console.error);
 ## Handoffs example
 
 ```js
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { Agent, run, tool } from '@openai/agents';
 
 const getWeatherTool = tool({
@@ -147,7 +147,7 @@ main().catch(console.error);
 ## Voice Agent
 
 ```js
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents-realtime';
 
 const getWeatherTool = tool({

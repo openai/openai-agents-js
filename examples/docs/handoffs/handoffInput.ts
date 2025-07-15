@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { Agent, handoff, RunContext } from '@openai/agents';
 
 const EscalationData = z.object({ reason: z.string() });

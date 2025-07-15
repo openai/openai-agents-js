@@ -4,7 +4,7 @@ import {
   InputGuardrailTripwireTriggered,
   InputGuardrail,
 } from '@openai/agents';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 const guardrailAgent = new Agent({
   name: 'Guardrail check',

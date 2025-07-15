@@ -4,7 +4,7 @@ import {
   tool,
 } from '@openai/agents/realtime';
 import { handleRefundRequest } from './serverAgent';
-import z from 'zod';
+import z from '@openai/zod';
 
 const refundSupervisorParameters = z.object({
   request: z.string(),

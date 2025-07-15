@@ -1,5 +1,5 @@
 import { Agent, run } from '@openai/agents';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 const refundAgent = new Agent({
   name: 'Refund Agent',

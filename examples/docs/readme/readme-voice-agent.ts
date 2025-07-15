@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents-realtime';
 
 const getWeatherTool = tool({

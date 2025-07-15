@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '@openai/zod';
 import { Agent, run, tool } from '@openai/agents';
 
 const getWeatherTool = tool({

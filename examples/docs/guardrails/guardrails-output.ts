@@ -4,7 +4,7 @@ import {
   OutputGuardrailTripwireTriggered,
   OutputGuardrail,
 } from '@openai/agents';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 // The output by the main agent
 const MessageOutput = z.object({ response: z.string() });

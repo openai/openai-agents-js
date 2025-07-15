@@ -1,5 +1,5 @@
 import { Agent } from '@openai/agents';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 const CalendarEvent = z.object({
   name: z.string(),

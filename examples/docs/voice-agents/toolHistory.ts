@@ -3,7 +3,7 @@ import {
   RealtimeContextData,
   RealtimeItem,
 } from '@openai/agents/realtime';
-import { z } from 'zod';
+import { z } from '@openai/zod';
 
 const parameters = z.object({
   request: z.string(),
