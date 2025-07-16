@@ -34,30 +34,30 @@ export type ToolUseBehaviorFlags = 'run_llm_again' | 'stop_on_first_tool';
 export type ToolsToFinalOutputResult =
   | {
       /**
-       * Wether this is the final output. If `false`, the LLM will run again and receive the tool call output
+       * Whether this is the final output. If `false`, the LLM will run again and receive the tool call output
        */
       isFinalOutput: false;
       /**
-       * Wether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
        */
       isInterrupted: undefined;
     }
   | {
       isFinalOutput: false;
       /**
-       * Wether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
        */
       isInterrupted: true;
       interruptions: RunToolApprovalItem[];
     }
   | {
       /**
-       * Wether this is the final output. If `false`, the LLM will run again and receive the tool call output
+       * Whether this is the final output. If `false`, the LLM will run again and receive the tool call output
        */
       isFinalOutput: true;
 
       /**
-       * Wether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
+       * Whether the agent was interrupted by a tool approval. If `true`, the LLM will run again and receive the tool call output
        */
       isInterrupted: undefined;
 
@@ -212,7 +212,7 @@ export interface AgentConfiguration<
    * This lets you configure how tool use is handled.
    * - run_llm_again: The default behavior. Tools are run, and then the LLM receives the results
    *   and gets to respond.
-   * - stop_on_first_tool: The output of the frist tool call is used as the final output. This means
+   * - stop_on_first_tool: The output of the first tool call is used as the final output. This means
    *   that the LLM does not process the result of the tool call.
    * - A list of tool names: The agent will stop running if any of the tools in the list are called.
    *   The final output will be the output of the first matching tool call. The LLM does not process
@@ -227,7 +227,7 @@ export interface AgentConfiguration<
   toolUseBehavior: ToolUseBehavior;
 
   /**
-   * Wether to reset the tool choice to the default value after a tool has been called. Defaults
+   * Whether to reset the tool choice to the default value after a tool has been called. Defaults
    * to `true`. This ensures that the agent doesn't enter an infinite loop of tool usage.
    */
   resetToolChoice: boolean;
@@ -383,7 +383,7 @@ export class Agent<
   }
 
   /**
-   * Ouput schema name
+   * Output schema name.
    */
   get outputSchemaName(): string {
     if (this.outputType === 'text') {

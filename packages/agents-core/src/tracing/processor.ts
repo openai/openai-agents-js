@@ -15,7 +15,7 @@ type Span = TSpan<any>;
  */
 export interface TracingProcessor {
   /**
-   * Called when the trace processor should start procesing traces.
+   * Called when the trace processor should start processing traces.
    * Only available if the processor is performing tasks like exporting traces in a loop to start
    * the loop
    */

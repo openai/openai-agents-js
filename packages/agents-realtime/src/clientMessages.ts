@@ -57,7 +57,7 @@ export type RealtimeTurnDetectionConfigAsIs = {
   threshold?: number;
 };
 
-// The Realtime API accepts snake_cased keys, so when using this, this SDK coverts the keys to snake_case ones before passing it to the API
+// The Realtime API accepts snake_cased keys, so when using this, this SDK converts the keys to snake_case ones before passing it to the API.
 export type RealtimeTurnDetectionConfigCamelCase = {
   type?: 'semantic_vad' | 'server_vad';
   createResponse?: boolean;

@@ -767,7 +767,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           if (!finalResponse) {
             throw new ModelBehaviorError(
-              'Model did not procude a final response!',
+              'Model did not produce a final response!',
               result.state,
             );
           }

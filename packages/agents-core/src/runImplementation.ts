@@ -144,7 +144,7 @@ export function processModelResponse<TContext>(
         });
         if (!mcpServerTool.providerData.on_approval) {
           // When onApproval function exists, it confirms the approval right after this.
-          // Thus, this approval item must be appended only for the next turn interrpution patterns.
+          // Thus, this approval item must be appended only for the next turn interruption patterns.
           items.push(approvalItem);
         }
       }
@@ -956,7 +956,7 @@ export async function executeHandoffCalls<
 
   if (runHandoffs.length > 1) {
     // multiple handoffs. Ignoring all but the first one by adding reject responses for those
-    const outputMessage = 'Multiple handoffs detected, ignorning this one.';
+    const outputMessage = 'Multiple handoffs detected, ignoring this one.';
     for (let i = 1; i < runHandoffs.length; i++) {
       newStepItems.push(
         new RunToolCallOutputItem(

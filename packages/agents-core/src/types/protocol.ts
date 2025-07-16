@@ -5,7 +5,7 @@ import { z } from '@openai/zod/v3';
 // ----------------------------
 
 /**
- * Every item in the protocol provides a `providerData` field to accomodate custom functionality
+ * Every item in the protocol provides a `providerData` field to accommodate custom functionality
  * or new fields
  */
 export const SharedBase = z.object({

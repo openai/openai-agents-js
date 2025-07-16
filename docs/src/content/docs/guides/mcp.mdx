@@ -59,7 +59,7 @@ To stream incremental MCP results, pass `stream: true` when you run the `Agent`:
 
 For sensitive operations you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`.
 
-If you can programatically determine whether a tool call is safe, you can use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
+If you can programmatically determine whether a tool call is safe, you can use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
 
 <Code
   lang="typescript"

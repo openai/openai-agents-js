@@ -50,7 +50,7 @@ export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
   'gpt-4o-realtime-preview';
 
 /**
- * The default session config that gets send over during session connection unless overriden
+ * The default session config that gets send over during session connection unless overridden
  * by the user.
  */
 export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConfig> =

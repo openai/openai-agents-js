@@ -69,7 +69,7 @@
 
 ### Patch Changes
 
-- adeb218: Ignore empty tool list when callling LLM
+- adeb218: Ignore empty tool list when calling LLM
 - cbd4deb: feat: handle unknown hosted tools in responses model
 - Updated dependencies [544ed4b]
   - @openai/agents-core@0.0.5

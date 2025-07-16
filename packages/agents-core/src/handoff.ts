@@ -119,7 +119,7 @@ export class Handoff<
   /**
    * The function that invokes the handoff. The parameters passed are:
    * 1. The handoff run context
-   * 2. The arugments from the LLM, as a JSON string. Empty string if inputJsonSchema is empty.
+   * 2. The arguments from the LLM, as a JSON string. Empty string if inputJsonSchema is empty.
    *
    * Must return an agent
    */

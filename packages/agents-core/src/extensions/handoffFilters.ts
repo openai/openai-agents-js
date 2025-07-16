@@ -17,7 +17,7 @@ const TOOL_TYPES = new Set([
 ]);
 
 /**
- * Filters out all tool items: file search, web serach and function calls+output
+ * Filters out all tool items: file search, web search and function calls+output
  * @param handoffInputData
  * @returns
  */

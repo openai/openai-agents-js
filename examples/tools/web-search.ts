@@ -22,7 +22,7 @@ async function main() {
     const messages = result.history;
     messages.push({
       role: 'user',
-      content: 'search the web for more details of the highlighed player.',
+      content: 'search the web for more details of the highlighted player.',
     });
 
     const result2 = await run(agent, messages);

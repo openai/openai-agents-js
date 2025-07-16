@@ -71,7 +71,7 @@ async function main() {
     result = await run(secondAgent, [
       ...result.history,
       {
-        content: 'I live in New York City. Whats the population of the city?',
+        content: "I live in New York City. What's the population of the city?",
         role: 'user',
       },
     ]);
