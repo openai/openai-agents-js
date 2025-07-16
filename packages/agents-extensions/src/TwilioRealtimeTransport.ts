@@ -181,7 +181,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     super.updateSessionConfig(newConfig);
   }
 
-  _interrupt(_elapsedTime: number) {
+  _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
     const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
     this.#logger.debug(
       `Interruption detected, clearing Twilio audio and truncating OpenAI audio after ${elapsedTime}ms`,
@@ -192,7 +192,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         streamSid: this.#streamSid,
       }),
     );
-    super._interrupt(elapsedTime);
+    super._interrupt(elapsedTime, cancelOngoingResponse);
   }
 
   protected _onAudio(audioEvent: TransportLayerAudio) {

@@ -91,7 +91,7 @@ describe('TwilioRealtimeTransportLayer', () => {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:5' } }),
     });
     transport._interrupt(0);
-    expect(interruptSpy).toHaveBeenCalledWith(55);
+    expect(interruptSpy).toHaveBeenCalledWith(55, true);
     expect(twilio.send).toHaveBeenCalledWith(
       JSON.stringify({ event: 'clear', streamSid: 'sid' }),
     );

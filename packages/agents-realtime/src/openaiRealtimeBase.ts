@@ -104,6 +104,7 @@ export abstract class OpenAIRealtimeBase
   #model: string;
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
+  #rawSessionConfig: Record<string, any> | null = null;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -149,6 +150,10 @@ export abstract class OpenAIRealtimeBase
 
   abstract readonly muted: boolean | null;
 
+  protected get _rawSessionConfig(): Record<string, any> | null {
+    return this.#rawSessionConfig ?? null;
+  }
+
   protected async _getApiKey(options: RealtimeTransportLayerConnectOptions) {
     const apiKey = options.apiKey ?? this.#apiKey;
 
@@ -184,6 +189,10 @@ export abstract class OpenAIRealtimeBase
         },
       });
       return;
+    }
+
+    if (parsed.type === 'session.updated') {
+      this.#rawSessionConfig = parsed.session;
     }
 
     if (parsed.type === 'response.done') {
