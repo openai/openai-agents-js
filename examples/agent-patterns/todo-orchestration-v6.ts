@@ -131,8 +131,10 @@ const orchestrationAgent = new Agent({
     'IMPORTANT: You ONLY plan and coordinate. You do NOT execute tools yourself.',
     'SEQUENTIAL TOOLS: When one tool needs output from another (e.g., write_poem then format_response)',
     'PARALLEL TOOLS: When tools are independent and can run simultaneously (e.g., write_blog_title and write_audio_jingle)',
-    'Respond with JSON: {"tasks": {"completed": [], "pending": [], "current_batch": []}, "tools": {"sequential_groups": [[tool1], [tool2]], "parallel_group": [tool3, tool4], "inputs": {"tool1": {"param": "value"}}, "reasoning": "why"}, "status": {"complete": false, "continue": true, "missing_inputs": [], "execution_mode": "sequential|parallel"}}',
-    'Mark tasks as completed ONLY after action agent confirms execution. Never mark tasks complete until they are actually executed.'
+    'CRITICAL: For sequential tools, provide ALL inputs for ALL tools. For format_response, set content:"<from_previous_tool>" as a placeholder.',
+    'Respond with JSON: {"tasks": {"completed": [], "pending": [], "current_batch": []}, "tools": {"sequential_groups": [[tool1], [tool2]], "parallel_group": [tool3, tool4], "inputs": {"tool1": {"param": "value"}, "tool2": {"param": "value"}}, "reasoning": "why"}, "status": {"complete": false, "continue": true, "missing_inputs": [], "execution_mode": "sequential|parallel"}}',
+    'Mark tasks as completed ONLY after action agent confirms execution. Never mark tasks complete until they are actually executed.',
+    'ENSURE all tools in sequential_groups and parallel_group have corresponding entries in inputs object with all required parameters.'
   ].join(' '),
 });
 
@@ -492,22 +494,31 @@ async function executeWorkflow(userRequest: string): Promise<string> {
         content: `Action agent successfully executed ${response.tools.parallel_group.join(', ')} in parallel. Results: ${resultsText}. Mark these tasks as completed.`
       });
       
-    } else if (response.tools.sequential_groups) {
-      // SEQUENTIAL EXECUTION
-      for (const group of response.tools.sequential_groups) {
-        for (const toolName of group) {
-          const result = await executeToolSequentially(toolName, response.tools.inputs);
-          
-          generatedContent[toolName] = result;
-          console.log(`\n🎨 ${toolName.toUpperCase()} RESULT:\n${result}\n`);
-          
-          // For sequential tools, output of one tool might be input to next
-          // Add the result to tool inputs for potential use by next tool
-          if (toolName.includes('poem') || toolName.includes('lego') || toolName.includes('jingle') || toolName.includes('blog')) {
-            response.tools.inputs['format_response'] = { content: result };
-          }
-        }
-      }
+         } else if (response.tools.sequential_groups) {
+       // SEQUENTIAL EXECUTION
+       for (const group of response.tools.sequential_groups) {
+         for (const toolName of group) {
+           // Before executing, check if this tool needs output from previous tool
+           const toolInputs = { ...response.tools.inputs };
+           
+           // Replace placeholder content with actual previous tool output
+           if (toolName === 'format_response' && toolInputs[toolName]?.content === '<from_previous_tool>') {
+             // Find the most recent non-format tool result as content
+             const contentSources = ['write_poem', 'write_blog_title', 'write_audio_jingle', 'write_lego_concept'];
+             for (const source of contentSources) {
+               if (generatedContent[source]) {
+                 toolInputs[toolName].content = generatedContent[source];
+                 break;
+               }
+             }
+           }
+           
+           const result = await executeToolSequentially(toolName, toolInputs);
+           
+           generatedContent[toolName] = result;
+           console.log(`\n🎨 ${toolName.toUpperCase()} RESULT:\n${result}\n`);
+         }
+       }
       
       // Add results to conversation  
       conversation.push({
