@@ -9,7 +9,7 @@ Create a **2-agent system** where an **Orchestration Agent** manages workflow co
 ### **🧠 Orchestration Agent** (Brain)
 - **Workflow Coordination**: Manages TODO lists with completed/pending/current tasks
 - **Input Validation**: Detects missing inputs and gathers them from user
-- **Tool Selection**: Chooses appropriate tools and passes them to action agent
+- **Tool Discovery**: Calls `toolSelector` to identify relevant tools from user request
 - **State Management**: Maintains conversation history across iterations
 - **Completion Detection**: Determines when workflow is finished
 
@@ -19,6 +19,56 @@ Create a **2-agent system** where an **Orchestration Agent** manages workflow co
 - **No Decision Making**: Simply executes what orchestrator assigns
 - **Result Reporting**: Returns generated content to orchestrator
 
+### **🔍 Tool Selector** (Intelligence)
+- **Smart Tool Discovery**: Analyzes user requests to identify relevant tools from large catalogs
+- **Scalable Architecture**: Designed to handle 1000s of available tools efficiently
+- **Semantic Matching**: Uses LLM reasoning to match user intent with appropriate tools
+- **Clean Separation**: Isolated tool selection logic for maintainability and testing
+- **Extensible Design**: Can be enhanced with embeddings, tool categorization, or ML ranking
+
+#### **Tool Selector Interface**
+```javascript
+const toolSelector = tool({
+  name: 'toolSelector',
+  description: 'Analyzes user requests to identify relevant tools',
+  parameters: z.object({
+    userRequest: z.string().describe('The user\'s request'),
+    availableTools: z.array(z.object({
+      name: z.string(),
+      description: z.string(),
+      parameters: z.object({})
+    })).describe('Array of all available tools')
+  }),
+  async execute({ userRequest, availableTools }) {
+    // LLM analyzes request against tool catalog
+    // Returns ranked list of relevant tools with reasoning
+    return {
+      selectedTools: ['write_poem', 'format_response'],
+      reasoning: 'User wants creative content (poem) and formatting',
+      confidence: 0.95,
+      alternatives: ['write_blog_title', 'write_audio_jingle']
+    };
+  }
+});
+```
+
+#### **Why Tool Selector?**
+
+**🎯 Scalability**: Hard-coding tool lists in prompts becomes unwieldy with 100+ tools
+- Orchestrator prompt stays clean and focused on workflow management
+- Tool selection logic is centralized and testable
+- Easy to add/remove tools without modifying orchestrator
+
+**🧠 Intelligence**: LLM-powered tool matching vs simple keyword matching
+- Understands user intent semantically ("create content" → multiple content tools)
+- Handles ambiguous requests ("make something creative" → suggests multiple options)
+- Can rank tools by relevance and suggest alternatives
+
+**🔧 Maintainability**: Separation of concerns for complex tool ecosystems
+- Tool selection logic separate from workflow orchestration
+- Different teams can work on tool discovery vs workflow management
+- Easy to A/B test different tool selection strategies
+
 ## How It Works
 
 ### **1. User Interaction**
@@ -26,13 +76,18 @@ Create a **2-agent system** where an **Orchestration Agent** manages workflow co
 User: "Write a poem about winter and format it"
 ```
 
-### **2. Orchestration Analysis**
-- **Parse Request**: Identify needed tools (`write_poem`, `format_response`)
-- **Input Validation**: Check if all required inputs provided
-- **Missing Input Gathering**: Prompt user for missing theme, parameters
-- **TODO List Creation**: Queue tasks in execution order
+### **2. Tool Discovery**
+- **Call toolSelector**: Send user request to intelligent tool selection
+- **Receive Tool Recommendations**: Get array of relevant tools with reasoning
+- **Tool Validation**: Verify recommended tools are available and appropriate
 
-### **3. Iterative Execution Loop**
+### **3. Orchestration Analysis**
+- **Parse Request**: Analyze user intent with selected tools
+- **Input Validation**: Check if all required inputs provided for selected tools
+- **Missing Input Gathering**: Prompt user for missing theme, parameters
+- **TODO List Creation**: Queue tasks in execution order with dependency analysis
+
+### **4. Iterative Execution Loop**
 ```
 ITERATION 1:
 📋 TODO: [write_poem (pending), format_response (pending)]
@@ -49,15 +104,22 @@ ITERATION 2:
 🏁 COMPLETE: All tasks finished
 ```
 
-### **4. Tool Assignment Pattern**
+### **5. Tool Assignment Pattern**
 ```javascript
-// Orchestrator decides what to do
+// Step 1: Orchestrator discovers relevant tools
+const toolSelection = await orchestrator.useTool('toolSelector', {
+  userRequest: "write a poem about winter and format it",
+  availableTools: [...ALL_TOOLS]
+});
+// Returns: ["write_poem", "format_response"]
+
+// Step 2: Orchestrator plans workflow with selected tools
 orchestrator: "Action agent needs to use write_poem with theme='winter'"
 
-// Orchestrator assigns tool to action agent
+// Step 3: Orchestrator assigns tool to action agent
 actionAgent.tools = [writePoemTool];
 
-// Action agent executes exactly one tool
+// Step 4: Action agent executes exactly one tool
 actionAgent.run("Use write_poem with theme='winter'");
 ```
 
@@ -104,8 +166,10 @@ npm run start:todo-orchestration-v5:approval
 
 ## Benefits
 
-✅ **Scalable**: Handles simple single-tool to complex multi-tool workflows  
+✅ **Scalable**: Handles simple single-tool to complex multi-tool workflows from 1000s of available tools  
+✅ **Intelligent**: LLM-powered tool discovery understands user intent semantically  
 ✅ **Robust**: Input validation, error handling, state management  
 ✅ **Controlled**: Optional human approval for sensitive operations  
-✅ **Clear**: Clean separation between planning and execution  
-✅ **Maintainable**: Easy to add new tools or modify workflows
+✅ **Modular**: Clean separation between tool discovery, planning, and execution  
+✅ **Maintainable**: Easy to add new tools, modify workflows, or enhance tool selection logic  
+✅ **Testable**: Tool selection logic isolated and independently verifiable
