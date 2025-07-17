@@ -8,7 +8,7 @@
     "@openai/agents-extensions": "workspace:*",
     "@ai-sdk/openai": "^1.0.0",
     "server-only": "^0.0.1",
-    "openai": "^5.0.1",
+    "openai": "^5.10.1",
     "zod": "3.25.40 - 3.25.67"
   },
   "scripts": {
