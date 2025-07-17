@@ -151,6 +151,19 @@ USER REQUEST: "${userRequest}"
 AVAILABLE TOOLS:
 ${toolCatalog.map(tool => `- ${tool.name}: ${tool.description}`).join('\n')}
 
+SMART PATTERN RECOGNITION:
+🎯 "formatted [content]" = create content + format_response (SEQUENTIAL)
+🎯 "write X and Y" = usually parallel unless Y depends on X
+🎯 "create X then Y" = sequential (Y uses X output)
+🎯 "X and formatted Y" = X in parallel with (create Y + format Y)
+
+SEMANTIC EXAMPLES:
+- "formatted poem" → write_poem + format_response (sequential)
+- "formatted blog title" → write_blog_title + format_response (sequential)  
+- "poem and jingle" → write_poem + write_audio_jingle (parallel)
+- "poem about X and format it" → write_poem + format_response (sequential)
+- "lego concept and formatted poem" → write_lego_concept + (write_poem→format_response) (mixed: parallel lego + sequential poem formatting)
+
 Determine:
 1. Which tools are needed to fulfill the request
 2. Whether they should run sequentially (one depends on another) or in parallel (independent)
@@ -171,6 +184,7 @@ Return a JSON object with this structure:
 Important:
 - Sequential: When one tool's output feeds into another (e.g., create content then format it)
 - Parallel: When tools are independent and can run simultaneously
+- Mixed workflows: If user wants both independent items AND sequential chains, choose the predominant pattern
 - Only extract inputs that are clearly mentioned in the user request`;
 
   const response = await openai.chat.completions.create({
