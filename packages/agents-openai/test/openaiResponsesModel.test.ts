@@ -74,6 +74,47 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('getResponse should not throw tracing exception when tracing is disabled', async () => {
+    const fakeResponse = {
+      id: 'res1',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 4,
+        total_tokens: 7,
+      },
+      output: [
+        {
+          id: 'test_id',
+          type: 'message',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'hi' }],
+          role: 'assistant',
+        },
+      ],
+    };
+    const createMock = vi.fn().mockResolvedValue(fakeResponse);
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    const request = {
+      systemInstructions: 'inst',
+      input: 'hello',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    await expect(model.getResponse(request as any)).resolves.not.toThrow();
+    await expect(model.getResponse(request as any)).resolves.not.toThrow(
+      'No existing trace found',
+    );
+  });
+
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
     withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };

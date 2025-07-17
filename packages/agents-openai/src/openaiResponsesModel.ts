@@ -1,7 +1,6 @@
 import {
   Model,
   Usage,
-  withResponseSpan,
   createResponseSpan,
   setCurrentSpan,
   resetCurrentSpan,
@@ -876,32 +875,56 @@ export class OpenAIResponsesModel implements Model {
    * @returns A promise that resolves to the response from the model.
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    const response = await withResponseSpan(async (span) => {
+    const span = request.tracing ? createResponseSpan() : undefined;
+
+    try {
+      if (span) {
+        span.start();
+        setCurrentSpan(span);
+      }
+
       const response = await this.#fetchResponse(request, false);
 
-      if (request.tracing) {
+      if (request.tracing && span) {
         span.spanData.response_id = response.id;
         span.spanData._input = request.input;
         span.spanData._response = response;
       }
 
-      return response;
-    });
+      const output: ModelResponse = {
+        usage: new Usage({
+          inputTokens: response.usage?.input_tokens ?? 0,
+          outputTokens: response.usage?.output_tokens ?? 0,
+          totalTokens: response.usage?.total_tokens ?? 0,
+          inputTokensDetails: { ...response.usage?.input_tokens_details },
+          outputTokensDetails: { ...response.usage?.output_tokens_details },
+        }),
+        output: convertToOutputItem(response.output),
+        responseId: response.id,
+        providerData: response,
+      };
 
-    const output: ModelResponse = {
-      usage: new Usage({
-        inputTokens: response.usage?.input_tokens ?? 0,
-        outputTokens: response.usage?.output_tokens ?? 0,
-        totalTokens: response.usage?.total_tokens ?? 0,
-        inputTokensDetails: { ...response.usage?.input_tokens_details },
-        outputTokensDetails: { ...response.usage?.output_tokens_details },
-      }),
-      output: convertToOutputItem(response.output),
-      responseId: response.id,
-      providerData: response,
-    };
-
-    return output;
+      return output;
+    } catch (error) {
+      if (span) {
+        span.setError({
+          message: 'Error getting response',
+          data: {
+            error: request.tracing
+              ? String(error)
+              : error instanceof Error
+                ? error.name
+                : undefined,
+          },
+        });
+      }
+      throw error;
+    } finally {
+      if (span) {
+        span.end();
+        resetCurrentSpan();
+      }
+    }
   }
 
   /**
