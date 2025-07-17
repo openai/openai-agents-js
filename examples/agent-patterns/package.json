@@ -25,6 +25,9 @@
     "start:todo-orchestration-v3": "tsx todo-orchestration-v3.ts",
     "start:todo-orchestration-v5": "tsx todo-orchestration-v5.ts",
     "start:todo-orchestration-v5:auto": "tsx todo-orchestration-v5.ts",
-    "start:todo-orchestration-v5:approval": "APPROVAL_ENABLED=true tsx todo-orchestration-v5.ts"
+    "start:todo-orchestration-v5:approval": "APPROVAL_ENABLED=true tsx todo-orchestration-v5.ts",
+    "start:todo-orchestration-v6": "tsx todo-orchestration-v6.ts",
+    "start:todo-orchestration-v6:auto": "tsx todo-orchestration-v6.ts",
+    "start:todo-orchestration-v6:approval": "APPROVAL_ENABLED=true tsx todo-orchestration-v6.ts"
   }
 }

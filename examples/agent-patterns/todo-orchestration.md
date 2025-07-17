@@ -2,162 +2,110 @@
 
 ## Objective
 
-Create a two-agent system where an **Orchestration Agent** manages high-level task coordination and state, while an **Action Agent** executes individual tools. The orchestration agent maintains a to-do list, decides when to continue looping, and delivers final answers. The action agent focuses solely on executing one tool at a time.
+Create a **2-agent system** where an **Orchestration Agent** manages workflow coordination and state, while an **Action Agent** executes individual tools. The orchestrator maintains TODO lists, gathers missing inputs, and coordinates multi-step workflows. The action agent receives specific tools from the orchestrator and executes them.
 
-## Implementation Approach
+## Core Architecture
 
-### Configuration
+### **🧠 Orchestration Agent** (Brain)
+- **Workflow Coordination**: Manages TODO lists with completed/pending/current tasks
+- **Input Validation**: Detects missing inputs and gathers them from user
+- **Tool Selection**: Chooses appropriate tools and passes them to action agent
+- **State Management**: Maintains conversation history across iterations
+- **Completion Detection**: Determines when workflow is finished
 
-- **Approval Toggle**
-  - Boolean flag to enable/disable human-in-the-loop approval
-  - When enabled, all action agent tool calls require user confirmation
-  - When disabled, tools execute automatically without interruption
-  - Can be set globally or per-tool basis
+### **⚡ Action Agent** (Hands)  
+- **Tool Execution**: Receives specific tools from orchestrator and executes them
+- **Single Focus**: Uses exactly one tool per request with `toolChoice: 'required'`
+- **No Decision Making**: Simply executes what orchestrator assigns
+- **Result Reporting**: Returns generated content to orchestrator
 
-### Orchestration Agent Responsibilities
+## How It Works
 
-- **User Interaction & Discovery**
-  - Start by presenting available tool options to the user
-  - Summarize capabilities: "What do you want to do today? Here are some options..."
-  - Guide user through tool selection and input gathering process
+### **1. User Interaction**
+```
+User: "Write a poem about winter and format it"
+```
 
-- **Input Requirements Management**
-  - Analyze selected tools and identify all required inputs
-  - Check if user's request contains all necessary parameters
-  - If inputs are missing, continue asking user until all are gathered
-  - Validate input completeness before proceeding to execution
+### **2. Orchestration Analysis**
+- **Parse Request**: Identify needed tools (`write_poem`, `format_response`)
+- **Input Validation**: Check if all required inputs provided
+- **Missing Input Gathering**: Prompt user for missing theme, parameters
+- **TODO List Creation**: Queue tasks in execution order
 
-- **Tool Selection & Chaining**
-  - Select appropriate tools based on user intent
-  - Support multi-tool workflows (e.g., "write poem and format it")
-  - Pass focused tool sets with complete inputs to action agent
-  - Coordinate sequential tool execution for complex requests
+### **3. Iterative Execution Loop**
+```
+ITERATION 1:
+📋 TODO: [write_poem (pending), format_response (pending)]
+🎯 CURRENT: write_poem
+⚡ ACTION: Execute write_poem with theme="winter"
+✅ RESULT: Generated poem
+📋 TODO: [write_poem (completed), format_response (pending)]
 
-- **To-Do List Management**
-  - Maintain current task state and progress
-  - Track completed and pending items
-  - Update task list based on action agent results
-  - Use conversation history to persist state across iterations
+ITERATION 2: 
+🎯 CURRENT: format_response
+⚡ ACTION: Execute format_response with content=<poem>
+✅ RESULT: Formatted poem
+📋 TODO: [write_poem (completed), format_response (completed)]
+🏁 COMPLETE: All tasks finished
+```
 
-- **Loop Decision Logic**
-  - Evaluate completion criteria after each action agent execution
-  - Decide whether to continue with more tasks or terminate
-  - Handle missing input scenarios by continuing conversation
-  - Implement maximum iteration limits for safety
+### **4. Tool Assignment Pattern**
+```javascript
+// Orchestrator decides what to do
+orchestrator: "Action agent needs to use write_poem with theme='winter'"
 
-- **Final Answer Delivery**
-  - Synthesize results from multiple action agent executions
-  - Provide comprehensive final response
-  - Include summary of completed tasks
+// Orchestrator assigns tool to action agent
+actionAgent.tools = [writePoemTool];
 
-### Action Agent Responsibilities
+// Action agent executes exactly one tool
+actionAgent.run("Use write_poem with theme='winter'");
+```
 
-- **Single Tool Execution**
-  - Use `stop_on_first_tool` behavior to ensure exactly one tool call
-  - Set `toolChoice: 'required'` to force tool usage
-  - Return immediately after tool execution
-  - No decision making or orchestration logic
+## Key Features
 
-- **Optional Human Approval**
-  - Support toggle for human-in-the-loop tool approval
-  - When approval toggle is enabled, request user confirmation before tool execution
-  - Handle approval/rejection workflow from `human-in-the-loop.ts` pattern
-  - Allow user to approve or reject individual tool calls
+### **📋 Sophisticated Orchestration**
+- **TODO List Management**: Tracks completed vs pending tasks
+- **Conversation State**: Persistent across multiple iterations  
+- **Input Gathering**: Asks user for missing parameters
+- **Multi-Tool Workflows**: Coordinates complex sequences
 
-### Pattern Integration
+### **🎭 Clean Agent Separation**
+- **Orchestrator**: Plans, coordinates, never executes tools
+- **Action Agent**: Executes tools, never makes decisions
+- **Dynamic Tool Assignment**: Tools passed from orchestrator to action agent
 
-- **State Management** (from `llm-as-a-judge.ts`)
-  - Use `inputItems` array to maintain conversation state
-  - Track progress across multiple iterations
-  - Persist to-do list state in conversation history
+### **🤝 Human Control (Optional)**
+- **Approval Toggle**: `APPROVAL_ENABLED=true` for human-in-the-loop
+- **Tool Approval**: Review each tool execution before it runs
+- **State Persistence**: Save/restore during approval process
 
-- **Decision Gates** (from `deterministic.ts`)
-  - Clear boolean logic for continuation decisions
-  - Quality checks between iterations
-  - Early termination conditions
+## Usage
 
-- **Controlled Tool Use** (from `forcing-tool-use.ts`)
-  - Enforce single tool execution in action agent
-  - Prevent action agent from making multiple calls
-  - Ensure predictable execution flow
+### **🚀 Quick Start**
+```bash
+# Auto execution (no approvals)
+npm run start:todo-orchestration-v5:auto
 
-- **Human Approval** (from `human-in-the-loop.ts`)
-  - Optional approval toggle for tool execution
-  - Use `needsApproval` function on tools when toggle is enabled
-  - Handle interruptions and approval/rejection workflow
-  - State persistence during approval process
+# With human approvals  
+npm run start:todo-orchestration-v5:approval
+```
 
-### Workflow
+### **🛠️ Available Tools**
+- `write_poem` - Create poetry (needs: theme)
+- `write_blog_title` - Generate blog titles (needs: theme)
+- `write_audio_jingle` - Create jingles (needs: word_count, theme)
+- `write_lego_concept` - Design LEGO sets (needs: theme)
+- `format_response` - Format content in markdown (needs: content)
 
-1. **Discovery & Planning**
-   - Orchestration agent presents available tools to user
-   - User selects desired action(s) from available options
-   - Orchestration agent analyzes request and identifies required tools
-   - Creates initial to-do list with input requirements
+### **🎯 Example Workflows**
+- **Single Tool**: "Create a LEGO set about space"
+- **Multi-Tool**: "Write a poem about nature and format it" 
+- **Missing Inputs**: "Write a jingle" → prompts for word count and theme
 
-2. **Input Gathering Loop**
-   - Check if all required inputs are available for selected tools
-   - If inputs missing: ask user for specific missing parameters
-   - Continue input gathering until all tool requirements satisfied
-   - Validate input completeness before proceeding to execution
+## Benefits
 
-3. **Execution Loop**
-   - Orchestration agent selects next task from to-do list
-   - Passes focused tool set WITH complete inputs to action agent
-   - **Optional Approval Step** (if toggle enabled):
-     - Action agent requests tool execution
-     - System interrupts and prompts user for approval
-     - User approves or rejects the tool call
-     - If rejected, orchestration agent adjusts plan
-   - Action agent executes single tool and returns result
-   - For multi-tool tasks: continue with next tool in sequence
-   - Orchestration agent updates to-do list based on results
-   - Evaluates if more work is needed
-
-4. **Completion**
-   - Orchestration agent determines all tasks complete
-   - Synthesizes final answer from all executions
-   - Delivers comprehensive response to user
-
-### Example Tools
-
-- **`write_poem`** - Creates poetry based on a given theme
-  - Required input: `theme` (string)
-  - Example: theme="nature" → generates nature-themed poem
-
-- **`write_blog_title`** - Generates compelling blog post titles
-  - Required input: `theme` (string) 
-  - Example: theme="productivity" → "10 Proven Strategies to Boost Your Daily Productivity"
-
-- **`write_audio_jingle`** - Creates short promotional jingles
-  - Required input: `word_count` (number)
-  - Example: word_count=8 → "Fresh coffee brewed just right for you!"
-
-- **`write_lego_concept`** - Designs new LEGO kit concepts
-  - Required input: `theme` (string)
-  - Example: theme="space exploration" → detailed Mars rover LEGO set concept
-
-- **`format_response`** - Formats creative writing in markdown
-  - Required input: `content` (string)
-  - Example: converts plain text to properly formatted markdown
-
-### Multi-Tool Workflows
-
-- **"Write a poem about winter and format it"**
-  - Tools: `write_poem` → `format_response`
-  - Inputs: theme="winter", then content=<poem_output>
-
-- **"Create a blog title and jingle for my coffee shop"**
-  - Tools: `write_blog_title` + `write_audio_jingle`
-  - Inputs: theme="coffee shop", word_count=10
-
-### Key Benefits
-
-- **Clear Separation of Concerns**: Orchestration vs. execution
-- **Input Validation**: Ensures all required parameters are gathered
-- **Tool Chaining**: Supports multi-step creative workflows  
-- **Predictable Tool Usage**: Always one tool per action agent call
-- **State Persistence**: To-do list maintained across iterations
-- **Controlled Flow**: Clear decision points for continuation
-- **User Control**: Optional human approval for sensitive tool executions
-- **Scalable**: Can handle complex multi-step tasks
+✅ **Scalable**: Handles simple single-tool to complex multi-tool workflows  
+✅ **Robust**: Input validation, error handling, state management  
+✅ **Controlled**: Optional human approval for sensitive operations  
+✅ **Clear**: Clean separation between planning and execution  
+✅ **Maintainable**: Easy to add new tools or modify workflows
