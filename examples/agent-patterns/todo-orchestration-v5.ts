@@ -1,10 +1,12 @@
 import { Agent, tool, run, AgentInputItem } from '@openai/agents';
 import { z } from 'zod';
 import readline from 'node:readline/promises';
+import fs from 'node:fs/promises';
 
 console.log('=== TODO Orchestration Pattern v5: v3 Logic + v4 Action Agent ===');
 
 // ===== CONFIGURATION =====
+const APPROVAL_ENABLED = process.env.APPROVAL_ENABLED === 'true' || false;
 const MAX_ITERATIONS = 10;
 
 // ===== TOOL DEFINITIONS =====
@@ -14,6 +16,7 @@ const writePoem = tool({
   parameters: z.object({
     theme: z.string().describe('The theme or topic for the poem')
   }),
+  needsApproval: APPROVAL_ENABLED ? async () => true : undefined,
   async execute({ theme }) {
     return `A beautiful poem about ${theme}:
 
@@ -33,6 +36,7 @@ const writeBlogTitle = tool({
   parameters: z.object({
     theme: z.string().describe('The theme or topic for the blog post')
   }),
+  needsApproval: APPROVAL_ENABLED ? async () => true : undefined,
   async execute({ theme }) {
     const titles = [
       `10 Amazing Ways ${theme} Can Transform Your Life`,
@@ -51,6 +55,7 @@ const writeAudioJingle = tool({
     word_count: z.number().describe('Target word count for the jingle'),
     theme: z.string().describe('The theme or product for the jingle')
   }),
+  needsApproval: APPROVAL_ENABLED ? async () => true : undefined,
   async execute({ word_count, theme }) {
     const words = [
       'Amazing', 'Fresh', 'New', 'Best', 'Quality', 'Perfect', 'Great', 'Awesome',
@@ -77,6 +82,7 @@ const writeLegoeConcept = tool({
   parameters: z.object({
     theme: z.string().describe('The theme for the LEGO set')
   }),
+  needsApproval: APPROVAL_ENABLED ? async () => true : undefined,
   async execute({ theme }) {
     return `🧱 LEGO ${theme.toUpperCase()} ADVENTURE SET
 
@@ -101,6 +107,7 @@ const formatResponse = tool({
   parameters: z.object({
     content: z.string().describe('The content to format')
   }),
+  needsApproval: APPROVAL_ENABLED ? async () => true : undefined,
   async execute({ content }) {
     return `# Formatted Content
 
@@ -233,10 +240,67 @@ function logToolSelection(tools: ToolSelection, status: ExecutionStatus) {
   }
 }
 
+// ===== HUMAN APPROVAL SYSTEM =====
+async function askApproval(toolName: string, args: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  console.log(`
+>> 🤝 HUMAN APPROVAL REQUIRED
+   Tool: ${toolName}
+   Arguments: ${args}
+===================================================================`);
+
+  const answer = await rl.question('Approve this tool execution? (y/n): ');
+  rl.close();
+  
+  const approved = answer.toLowerCase().startsWith('y');
+  console.log(`
+>> 📝 DECISION: ${approved ? 'APPROVED' : 'REJECTED'}
+===================================================================`);
+  
+  return approved;
+}
+
+async function handleApprovals(result: any): Promise<any> {
+  let currentResult = result;
+  
+  while (currentResult.interruptions?.length > 0) {
+    await fs.writeFile('state.json', JSON.stringify(currentResult.state, null, 2));
+    
+    const state = await currentResult.state.constructor.fromString(
+      actionAgent, 
+      await fs.readFile('state.json', 'utf-8')
+    );
+    
+    for (const interruption of currentResult.interruptions) {
+      const approved = await askApproval(
+        interruption.rawItem.name,
+        interruption.rawItem.arguments
+      );
+      
+      if (approved) {
+        state.approve(interruption);
+      } else {
+        state.reject(interruption);
+      }
+    }
+    
+    console.log(`🤖 LLM CALL STARTING (Resume) ===================================`);
+    currentResult = await run(actionAgent, state);
+    console.log(`✅ LLM CALL COMPLETED ========================================`);
+  }
+  
+  return currentResult;
+}
+
 // ===== MAIN ORCHESTRATION LOGIC (v3 style) =====
 async function executeWorkflow(userRequest: string): Promise<string> {
   console.log('\n🎯 Starting v5 Orchestration: v3 Logic + v4 Action Agent\n');
-  console.log(`👤 User: "${userRequest}"\n`);
+  console.log(`👤 User: "${userRequest}"`);
+  console.log(`🎛️  Mode: ${APPROVAL_ENABLED ? 'APPROVAL ENABLED' : 'AUTO EXECUTION'}\n`);
 
   // Show available tools if user asks what we can do
   if (userRequest.toLowerCase().includes('what') && (userRequest.toLowerCase().includes('can') || userRequest.toLowerCase().includes('do'))) {
@@ -331,9 +395,14 @@ async function executeWorkflow(userRequest: string): Promise<string> {
         .map(([key, value]) => `${key}: ${value}`)
         .join(', ');
       
-      const actionResult = await run(actionAgent, [
+      let actionResult = await run(actionAgent, [
         { role: 'user', content: `Use ${tool.name} with these inputs: ${inputsText}` }
       ]);
+      
+      // Handle approvals if needed
+      if (APPROVAL_ENABLED) {
+        actionResult = await handleApprovals(actionResult);
+      }
       
       // Store generated content
       const result = actionResult.finalOutput || 'No result';
@@ -398,6 +467,13 @@ Try requests like:
 
   } finally {
     rl.close();
+    
+    // Cleanup state file
+    try {
+      await fs.unlink('state.json');
+    } catch (e) {
+      // Ignore cleanup errors
+    }
   }
 }
 
