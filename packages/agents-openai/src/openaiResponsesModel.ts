@@ -174,6 +174,7 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'image_generation',
           background: tool.providerData.background,
+          input_fidelity: tool.providerData.input_fidelity,
           input_image_mask: tool.providerData.input_image_mask,
           model: tool.providerData.model,
           moderation: tool.providerData.moderation,
