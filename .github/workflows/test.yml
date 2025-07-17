@@ -13,7 +13,8 @@ jobs:
     strategy:
       matrix:
         # https://nodejs.org/en/about/previous-releases
-        node-version: [20, 22, 24]
+        # Using 24.3.x due to https://github.com/pnpm/pnpm/issues/9743
+        node-version: ['20', '22', '24.3.x']
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
