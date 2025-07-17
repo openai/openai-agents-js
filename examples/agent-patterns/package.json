@@ -19,6 +19,10 @@
     "start:parallelization": "tsx parallelization.ts",
     "start:routing": "tsx routing.ts",
     "start:streamed": "tsx streamed.ts",
-    "start:streaming-guardrails": "tsx streaming-guardrails.ts"
+    "start:streaming-guardrails": "tsx streaming-guardrails.ts",
+    "start:todo-orchestration": "tsx todo-orchestration.ts",
+    "start:todo-orchestration-v2": "tsx todo-orchestration-v2.ts",
+    "start:todo-orchestration-v3": "tsx todo-orchestration-v3.ts",
+    "start:todo-orchestration-v5": "tsx todo-orchestration-v5.ts"
   }
 }
