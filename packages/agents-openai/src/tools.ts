@@ -156,6 +156,7 @@ export type ImageGenerationTool = {
   type: 'image_generation';
   name?: 'image_generation' | string;
   background?: 'transparent' | 'opaque' | 'auto' | string;
+  inputFidelity?: 'high' | 'low' | null;
   inputImageMask?: OpenAI.Responses.Tool.ImageGeneration.InputImageMask;
   model?: 'gpt-image-1' | string;
   moderation?: 'auto' | 'low' | string;
@@ -178,6 +179,7 @@ export function imageGenerationTool(
     type: 'image_generation',
     name: options.name ?? 'image_generation',
     background: options.background,
+    input_fidelity: options.inputFidelity,
     input_image_mask: options.inputImageMask,
     model: options.model,
     moderation: options.moderation,

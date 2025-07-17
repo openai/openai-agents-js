@@ -174,6 +174,7 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'image_generation',
           background: tool.providerData.background,
+          input_fidelity: tool.providerData.input_fidelity,
           input_image_mask: tool.providerData.input_image_mask,
           model: tool.providerData.model,
           moderation: tool.providerData.moderation,
@@ -525,7 +526,10 @@ function getInputItems(
           type: 'code_interpreter_call',
           id: item.id!,
           code: item.providerData?.code ?? '',
-          results: item.providerData?.results ?? [],
+          // This property used to be results, so keeping both for backward compatibility
+          // That said, this property cannot be passed from a user, so it's just API's internal data.
+          outputs:
+            item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.containerId,
         };
