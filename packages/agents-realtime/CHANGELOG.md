@@ -1,5 +1,19 @@
 # @openai/agents-realtime
 
+## 0.0.12
+
+### Patch Changes
+
+- a2f78fe: support noise reduction argument
+- d9b94b3: Adds support for the speed parameter
+- f6e68f4: fix(realtime-ws): stop accidental cancellation error
+- 046f8cc: Fix typos across repo
+- Updated dependencies [af73bfb]
+- Updated dependencies [046f8cc]
+- Updated dependencies [ed66acf]
+- Updated dependencies [40dc0be]
+  - @openai/agents-core@0.0.12
+
 ## 0.0.11
 
 ### Patch Changes

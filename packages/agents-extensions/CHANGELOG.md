@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.0.12
+
+### Patch Changes
+
+- f6e68f4: fix(realtime-ws): stop accidental cancellation error
+  - @openai/agents@0.0.12
+
 ## 0.0.11
 
 ### Patch Changes

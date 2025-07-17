@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.0.12
+
+### Patch Changes
+
+- af73bfb: Rebinds cached tools to the current MCP server to avoid stale tool invocation (fixes #195)
+- 046f8cc: Fix typos across repo
+- ed66acf: Fixes handling of `agent_updated_stream_event` in run implementation and adds corresponding test coverage.
+- 40dc0be: Fix #216 Publicly accessible PDF file URL is not yet supported in the input_file content data
+
 ## 0.0.11
 
 ### Patch Changes

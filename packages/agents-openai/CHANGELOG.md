@@ -1,5 +1,20 @@
 # @openai/agents-openai
 
+## 0.0.12
+
+### Patch Changes
+
+- fe5fb97: Handle function call messages with empty content in Chat Completions
+- ad05c65: fix: if prompt is not specified return undefined - fixes #159
+- 886e25a: Add input_fidelity parameter support to image generation tool
+- 046f8cc: Fix typos across repo
+- 40dc0be: Fix #216 Publicly accessible PDF file URL is not yet supported in the input_file content data
+- Updated dependencies [af73bfb]
+- Updated dependencies [046f8cc]
+- Updated dependencies [ed66acf]
+- Updated dependencies [40dc0be]
+  - @openai/agents-core@0.0.12
+
 ## 0.0.11
 
 ### Patch Changes
