@@ -1,6 +1,6 @@
 import { Agent, run } from '@openai/agents';
 
-const URL =
+const url =
   'https://upload.wikimedia.org/wikipedia/commons/0/0c/GoldenGateBridge-001.jpg';
 
 async function main() {
@@ -15,7 +15,7 @@ async function main() {
       content: [
         {
           type: 'input_image',
-          image: URL,
+          image: url,
           providerData: {
             detail: 'auto',
           },
