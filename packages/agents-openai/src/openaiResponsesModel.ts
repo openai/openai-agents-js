@@ -265,9 +265,19 @@ function getInputMessageContent(
       type: 'input_file',
     };
     if (typeof entry.file === 'string') {
-      fileEntry.file_data = entry.file;
-    } else {
+      if (entry.file.startsWith('data:')) {
+        fileEntry.file_data = entry.file;
+      } else if (entry.file.startsWith('https://')) {
+        fileEntry.file_url = entry.file;
+      } else {
+        throw new UserError(
+          `Unsupported string data for file input. If you're trying to pass an uploaded file's ID, use an object with the ID property instead.`,
+        );
+      }
+    } else if ('id' in entry.file) {
       fileEntry.file_id = entry.file.id;
+    } else if ('url' in entry.file) {
+      fileEntry.file_url = entry.file.url;
     }
     return {
       ...fileEntry,
@@ -525,7 +535,10 @@ function getInputItems(
           type: 'code_interpreter_call',
           id: item.id!,
           code: item.providerData?.code ?? '',
-          results: item.providerData?.results ?? [],
+          // This property used to be results, so keeping both for backward compatibility
+          // That said, this property cannot be passed from a user, so it's just API's internal data.
+          outputs:
+            item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.containerId,
         };

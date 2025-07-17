@@ -20,7 +20,7 @@
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "debug": "^4.4.0",
-    "openai": "^5.0.1",
+    "openai": "^5.10.1",
     "@openai/zod": "npm:zod@3.25.40 - 3.25.67"
   },
   "scripts": {
