@@ -53,6 +53,7 @@ jobs:
           NPM_CONFIG_ACCESS: public
 
       - name: Tag release
+        # currently this step does not work due to https://github.com/openai/openai-agents-js/pull/232
         if: steps.changesets.outputs.published == 'true'
         run: |
           version=$(jq -r '.version' packages/agents/package.json)
