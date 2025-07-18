@@ -53,7 +53,6 @@ jobs:
           NPM_CONFIG_ACCESS: public
 
       - name: Tag release
-        if: steps.changesets.outputs.published == 'true'
         run: |
           version=$(jq -r '.version' packages/agents/package.json)
           tag="v${version}"
