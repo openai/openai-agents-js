@@ -26,7 +26,8 @@ object rather than a full result:
 
 When streaming is enabled the returned `stream` implements the
 `AsyncIterable` interface. Each yielded event is an object describing
-what happened within the run. Most applications only want the model's
+what happened within the run. The stream yields one of three event types, each describing a different part of the agent's execution.
+Most applications only want the model's
 text though, so the stream provides helpers.
 
 ### Get the text output
@@ -62,6 +63,76 @@ and SDK specific run information:
 See [the streamed example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)
 for a fully worked script that prints both the plain text stream and the
 raw event stream.
+
+## Event types
+
+The stream yields three different event types:
+
+### raw_model_stream_event
+
+```ts
+type RunRawModelStreamEvent = {
+  type: 'raw_model_stream_event';
+  data: ResponseStreamEvent;
+};
+```
+
+Example:
+
+```json
+{
+  "type": "raw_model_stream_event",
+  "data": {
+    "type": "output_text_delta",
+    "delta": "Hello"
+  }
+}
+```
+
+### run_item_stream_event
+
+```ts
+type RunItemStreamEvent = {
+  type: 'run_item_stream_event';
+  name: RunItemStreamEventName;
+  item: RunItem;
+};
+```
+
+Example handoff payload:
+
+```json
+{
+  "type": "run_item_stream_event",
+  "name": "handoff_occurred",
+  "item": {
+    "type": "handoff_call",
+    "id": "h1",
+    "status": "completed",
+    "name": "transfer_to_refund_agent"
+  }
+}
+```
+
+### agent_updated_stream_event
+
+```ts
+type RunAgentUpdatedStreamEvent = {
+  type: 'agent_updated_stream_event';
+  agent: Agent<any, any>;
+};
+```
+
+Example:
+
+```json
+{
+  "type": "agent_updated_stream_event",
+  "agent": {
+    "name": "Refund Agent"
+  }
+}
+```
 
 ## Human in the loop while streaming
 
