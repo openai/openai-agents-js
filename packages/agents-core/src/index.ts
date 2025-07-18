@@ -74,6 +74,12 @@ export {
   MCPServerStreamableHttp,
 } from './mcp';
 export {
+  MCPToolFilterCallable,
+  MCPToolFilterContext,
+  MCPToolFilterStatic,
+  createMCPToolStaticFilter,
+} from './mcpUtil';
+export {
   Model,
   ModelProvider,
   ModelRequest,
