@@ -267,4 +267,29 @@ describe('RealtimeSession', () => {
     transport.emit('audio_interrupted');
     expect(audioEvents).toBe(1);
   });
+
+  it('emits audio_start when audio begins', () => {
+    let startEvents = 0;
+    session.on('audio_start', () => startEvents++);
+    transport.emit('turn_started', {} as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r',
+    } as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r',
+    } as any);
+    expect(startEvents).toBe(1);
+    transport.emit('audio_done');
+    transport.emit('turn_started', {} as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r2',
+    } as any);
+    expect(startEvents).toBe(2);
+  });
 });
