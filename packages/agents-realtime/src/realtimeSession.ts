@@ -672,6 +672,7 @@ export class RealtimeSession<
     await this.#transport.connect({
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
+      url: options.url,
       initialSessionConfig: await this.#getSessionConfig(this.options.config),
     });
 
