@@ -56,7 +56,7 @@ describe('MCP tools cache invalidation', () => {
       tools = await getAllMcpTools([server]);
       expect(tools.map((t) => t.name)).toEqual(['a']);
 
-      server.invalidateToolsCache();
+      await server.invalidateToolsCache();
       tools = await getAllMcpTools([server]);
       expect(tools.map((t) => t.name)).toEqual(['b']);
     });
