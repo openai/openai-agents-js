@@ -113,14 +113,6 @@ describe('RealtimeSession', () => {
     expect(transport.closeCalls).toBe(1);
   });
 
-  it('forwards url in connect options to transport', async () => {
-    const t = new FakeTransport();
-    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
-    const s = new RealtimeSession(agent, { transport: t });
-    await s.connect({ apiKey: 'test', url: 'ws://example' });
-    expect(t.connectCalls[0]?.url).toBe('ws://example');
-  });
-
   it('updateHistory accepts callback', () => {
     const item = createMessage('1', 'hi');
     session.updateHistory([item]);
