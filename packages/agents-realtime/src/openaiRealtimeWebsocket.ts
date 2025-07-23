@@ -47,6 +47,10 @@ export type OpenAIRealtimeWebSocketOptions = {
    * @see https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token
    */
   useInsecureApiKey?: boolean;
+  /**
+   * The URL to use for the WebSocket connection.
+   */
+  url?: string;
 } & OpenAIRealtimeBaseOptions;
 
 /**
@@ -59,7 +63,7 @@ export class OpenAIRealtimeWebSocket
   implements RealtimeTransportLayer
 {
   #apiKey: string | undefined;
-  #url: string;
+  #url: string | undefined;
   #state: WebSocketState = {
     status: 'disconnected',
     websocket: undefined,
@@ -80,7 +84,7 @@ export class OpenAIRealtimeWebSocket
 
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
     super(options);
-    this.#url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    this.#url = options.url;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
   }
 
@@ -169,7 +173,7 @@ export class OpenAIRealtimeWebSocket
           },
         };
 
-    const ws = new WebSocket(this.#url, websocketArguments as any);
+    const ws = new WebSocket(this.#url!, websocketArguments as any);
     this.#state = {
       status: 'connecting',
       websocket: ws,
@@ -260,9 +264,11 @@ export class OpenAIRealtimeWebSocket
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     this.#apiKey = await this._getApiKey(options);
-    this.#url =
+    const url =
       options.url ??
+      this.#url ??
       `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    this.#url = url;
 
     const sessionConfig: Partial<RealtimeSessionConfig> = {
       ...(options.initialSessionConfig || {}),
