@@ -3,7 +3,6 @@ export { EventEmitter, EventEmitterEvents } from './interface';
 import type { EventEmitterEvents, Timeout, Timer } from './interface';
 
 import { EventEmitter as NodeEventEmitter } from 'events';
-import 'event-target-shim';
 import structuredClone from '@ungap/structured-clone';
 import uuid from 'react-native-uuid';
 
