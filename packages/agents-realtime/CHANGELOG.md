@@ -1,5 +1,14 @@
 # @openai/agents-realtime
 
+## 0.0.13
+
+### Patch Changes
+
+- 9fdecdb: Expose configurable URL in OpenAIRealtimeWebSocket constructor and RealtimeSession.connect.
+- 25241e4: Fix missing `audio_start` event; now emitted on first audio chunk per turn
+- Updated dependencies [bd463ef]
+  - @openai/agents-core@0.0.13
+
 ## 0.0.12
 
 ### Patch Changes

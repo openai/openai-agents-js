@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.0.13
+
+### Patch Changes
+
+- bd463ef: Fix #219 MCPServer#invalidateToolsCache() not exposed while being mentioned in the documents
+
 ## 0.0.12
 
 ### Patch Changes
