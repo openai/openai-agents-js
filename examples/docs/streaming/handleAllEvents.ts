@@ -16,7 +16,7 @@ for await (const event of result) {
     console.log(`${event.type} %o`, event.data);
   }
   // agent updated events
-  if (event.type == 'agent_updated_stream_event') {
+  if (event.type === 'agent_updated_stream_event') {
     console.log(`${event.type} %s`, event.agent.name);
   }
   // Agent SDK specific events

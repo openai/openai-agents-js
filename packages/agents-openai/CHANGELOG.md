@@ -1,5 +1,37 @@
 # @openai/agents-openai
 
+## 0.0.13
+
+### Patch Changes
+
+- Updated dependencies [bd463ef]
+  - @openai/agents-core@0.0.13
+
+## 0.0.12
+
+### Patch Changes
+
+- fe5fb97: Handle function call messages with empty content in Chat Completions
+- ad05c65: fix: if prompt is not specified return undefined - fixes #159
+- 886e25a: Add input_fidelity parameter support to image generation tool
+- 046f8cc: Fix typos across repo
+- 40dc0be: Fix #216 Publicly accessible PDF file URL is not yet supported in the input_file content data
+- Updated dependencies [af73bfb]
+- Updated dependencies [046f8cc]
+- Updated dependencies [ed66acf]
+- Updated dependencies [40dc0be]
+  - @openai/agents-core@0.0.12
+
+## 0.0.11
+
+### Patch Changes
+
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
 ## 0.0.10
 
 ### Patch Changes
@@ -59,7 +91,7 @@
 
 ### Patch Changes
 
-- adeb218: Ignore empty tool list when callling LLM
+- adeb218: Ignore empty tool list when calling LLM
 - cbd4deb: feat: handle unknown hosted tools in responses model
 - Updated dependencies [544ed4b]
   - @openai/agents-core@0.0.5

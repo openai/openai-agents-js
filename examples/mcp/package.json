@@ -4,7 +4,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openai/agents": "workspace:*",
-    "zod": "~3.25.40"
+    "zod": "3.25.40 - 3.25.67"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

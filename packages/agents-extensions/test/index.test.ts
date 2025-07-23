@@ -64,7 +64,10 @@ describe('TwilioRealtimeTransportLayer', () => {
     const payload = { event: 'mark', mark: { name: 'badmark' } };
     twilio.emit('message', { toString: () => JSON.stringify(payload) });
 
-    transport._interrupt(0);
+    transport._interrupt(0, false);
+    // @ts-expect-error - we're testing protected fields
+    transport._audioLengthMs = 500;
+    transport._interrupt(0, true);
 
     const call = sendEventSpy.mock.calls.find(
       (c) => c[0]?.type === 'conversation.item.truncate',

@@ -1,5 +1,40 @@
 # @openai/agents-realtime
 
+## 0.0.13
+
+### Patch Changes
+
+- 9fdecdb: Expose configurable URL in OpenAIRealtimeWebSocket constructor and RealtimeSession.connect.
+- 25241e4: Fix missing `audio_start` event; now emitted on first audio chunk per turn
+- Updated dependencies [bd463ef]
+  - @openai/agents-core@0.0.13
+
+## 0.0.12
+
+### Patch Changes
+
+- a2f78fe: support noise reduction argument
+- d9b94b3: Adds support for the speed parameter
+- f6e68f4: fix(realtime-ws): stop accidental cancellation error
+- 046f8cc: Fix typos across repo
+- Updated dependencies [af73bfb]
+- Updated dependencies [046f8cc]
+- Updated dependencies [ed66acf]
+- Updated dependencies [40dc0be]
+  - @openai/agents-core@0.0.12
+
+## 0.0.11
+
+### Patch Changes
+
+- 07939c0: Correct typo in RealtimeTransportEventTypes in code and docs
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 6e0d1bd: Fixes issue #106 where overlapping user inputs caused null transcripts in history
+- Updated dependencies [a60eabe]
+- Updated dependencies [a153963]
+- Updated dependencies [17077d8]
+  - @openai/agents-core@0.0.11
+
 ## 0.0.10
 
 ### Patch Changes

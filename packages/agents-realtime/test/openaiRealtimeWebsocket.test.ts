@@ -58,6 +58,14 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(statuses).toEqual(['connecting', 'connected']);
   });
 
+  it('uses custom url from constructor', async () => {
+    const ws = new OpenAIRealtimeWebSocket({ url: 'ws://test' });
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe('ws://test');
+  });
+
   it('handles audio delta, speech started and created/done events', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const audioSpy = vi.fn();

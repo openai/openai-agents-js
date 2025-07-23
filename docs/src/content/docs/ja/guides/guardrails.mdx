@@ -7,42 +7,42 @@ import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 
-ガードレールはエージェントと _並列で_ 実行され、 ユーザー入力やエージェント出力に対してチェックとバリデーションを行えます。たとえば、高価なモデルを呼び出す前に軽量モデルをガードレールとして動かすことができます。ガードレールが悪意のある利用を検知した場合、エラーを発生させて高価なモデルの実行を停止できます。
+ガードレールはエージェントと _並列で_ 実行され、ユーザー入力やエージェント出力に対してチェックやバリデーションを行えます。たとえば、コストの高いモデルを呼び出す前に軽量モデルをガードレールとして実行することができます。ガードレールが悪意のある利用を検出した場合、エラーを発生させて高価なモデルの実行を停止できます。
 
 ガードレールには 2 種類あります:
 
-1. **Input guardrails** は最初のユーザー入力に対して実行されます
-2. **Output guardrails** は最終的なエージェント出力に対して実行されます
+1. **入力ガードレール** は最初のユーザー入力に対して実行されます
+2. **出力ガードレール** は最終的なエージェント出力に対して実行されます
 
-## Input guardrails
+## 入力ガードレール
 
-Input guardrails は次の 3 ステップで実行されます:
-
-1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
-2. ガードレール関数が実行され、 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) にラップして返します
-3. `tripwireTriggered` が `true` の場合、 [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) エラーがスローされます
-
-> **Note**  
-> Input guardrails はユーザー入力向けであるため、ワークフロー内でエージェントが _最初の_ エージェントである場合にのみ実行されます。ガードレールはエージェント自身に設定します。エージェントごとに必要なガードレールが異なることが多いためです。
-
-## Output guardrails
-
-Output guardrails も同じパターンに従います:
+入力ガードレールは次の 3 ステップで動作します:
 
 1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
-2. ガードレール関数が実行され、 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) にラップして返します
-3. `tripwireTriggered` が `true` の場合、 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます
+2. ガードレール関数が実行され、その戻り値として [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) にラップして返します
+3. `tripwireTriggered` が `true` の場合、[`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) エラーがスローされます
 
 > **Note**  
-> Output guardrails はワークフロー内でエージェントが _最後の_ エージェントである場合にのみ実行されます。リアルタイム音声インタラクションについては [音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails) を参照してください。
+> 入力ガードレールはユーザー入力を対象としているため、ワークフロー内で _最初_ のエージェントに対してのみ実行されます。ガードレールはエージェントごとに設定します。エージェントごとに必要なガードレールが異なることが多いためです。
 
-## Tripwires
+## 出力ガードレール
 
-ガードレールが失敗すると、トリップワイヤーによってそれが通知されます。トリップワイヤーが作動すると直ちにランナーが対応するエラーをスローし、実行を停止します。
+出力ガードレールも同じパターンに従います:
 
-## Implementing a guardrail
+1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
+2. ガードレール関数が実行され、その戻り値として [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) にラップして返します
+3. `tripwireTriggered` が `true` の場合、[`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます
 
-ガードレールは `GuardrailFunctionOutput` を返す単なる関数です。以下は、内部で別のエージェントを実行してユーザーが数学の宿題の助けを求めているかどうかを判定する最小限の例です。
+> **Note**  
+> 出力ガードレールはワークフロー内で _最後_ のエージェントに対してのみ実行されます。リアルタイム音声インタラクションについては [音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails) を参照してください。
+
+## トリップワイヤ
+
+ガードレールが失敗すると、トリップワイヤを通じてそれを通知します。トリップワイヤが発火すると直ちに Runner が該当エラーをスローし、実行を停止します。
+
+## ガードレールの実装
+
+ガードレールは `GuardrailFunctionOutput` を返すシンプルな関数です。以下は、内部で別のエージェントを利用して、ユーザーが数学の宿題を求めているかをチェックする最小例です。
 
 <Code
   lang="typescript"
@@ -50,7 +50,7 @@ Output guardrails も同じパターンに従います:
   title="Input guardrail example"
 />
 
-Output guardrails も同じ方法で動作します。
+出力ガードレールも同様に動作します。
 
 <Code
   lang="typescript"
@@ -60,5 +60,5 @@ Output guardrails も同じ方法で動作します。
 
 1. `guardrailAgent` はガードレール関数内で使用されます
 2. ガードレール関数はエージェントの入力または出力を受け取り、結果を返します
-3. 追加情報を guardrail 結果に含めることができます
+3. 追加情報をガードレール結果に含めることもできます
 4. `agent` がガードレールを適用する実際のワークフローを定義します

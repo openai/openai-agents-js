@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getAllMcpTools } from '../src/mcp';
+import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import type { CallToolResultContent } from '../src/mcp';
@@ -55,9 +56,36 @@ describe('MCP tools cache invalidation', () => {
       tools = await getAllMcpTools([server]);
       expect(tools.map((t) => t.name)).toEqual(['a']);
 
-      server.invalidateToolsCache();
+      await server.invalidateToolsCache();
       tools = await getAllMcpTools([server]);
       expect(tools.map((t) => t.name)).toEqual(['b']);
+    });
+  });
+
+  it('binds cached tools to the current server instance', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'a',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const serverA = new StubServer('server', tools);
+      await getAllMcpTools([serverA]);
+
+      const serverB = new StubServer('server', tools);
+      let called = false;
+      (serverB as any).callTool = async () => {
+        called = true;
+        return [];
+      };
+
+      const cachedTools = (await getAllMcpTools([serverB])) as FunctionTool[];
+      await cachedTools[0].invoke({} as any, '{}');
+
+      expect(called).toBe(true);
     });
   });
 });

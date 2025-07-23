@@ -113,6 +113,14 @@ describe('RealtimeSession', () => {
     expect(transport.closeCalls).toBe(1);
   });
 
+  it('forwards url in connect options to transport', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test', url: 'ws://example' });
+    expect(t.connectCalls[0]?.url).toBe('ws://example');
+  });
+
   it('updateHistory accepts callback', () => {
     const item = createMessage('1', 'hi');
     session.updateHistory([item]);
@@ -266,5 +274,30 @@ describe('RealtimeSession', () => {
     session.on('audio_interrupted', () => audioEvents++);
     transport.emit('audio_interrupted');
     expect(audioEvents).toBe(1);
+  });
+
+  it('emits audio_start when audio begins', () => {
+    let startEvents = 0;
+    session.on('audio_start', () => startEvents++);
+    transport.emit('turn_started', {} as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r',
+    } as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r',
+    } as any);
+    expect(startEvents).toBe(1);
+    transport.emit('audio_done');
+    transport.emit('turn_started', {} as any);
+    transport.emit('audio', {
+      type: 'audio',
+      data: new ArrayBuffer(1),
+      responseId: 'r2',
+    } as any);
+    expect(startEvents).toBe(2);
   });
 });

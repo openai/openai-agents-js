@@ -35,6 +35,7 @@ export interface MCPServer {
     toolName: string,
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  invalidateToolsCache(): Promise<void>;
 }
 
 export abstract class BaseMCPServerStdio implements MCPServer {
@@ -56,6 +57,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     _toolName: string,
     _args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract invalidateToolsCache(): Promise<void>;
 
   /**
    * Logs a debug message when debug logging is enabled.
@@ -89,6 +91,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     _toolName: string,
     _args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract invalidateToolsCache(): Promise<void>;
 
   /**
    * Logs a debug message when debug logging is enabled.
@@ -154,6 +157,9 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args);
   }
+  invalidateToolsCache(): Promise<void> {
+    return this.underlying.invalidateToolsCache();
+  }
 }
 
 export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
@@ -187,6 +193,9 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args);
   }
+  invalidateToolsCache(): Promise<void> {
+    return this.underlying.invalidateToolsCache();
+  }
 }
 
 /**
@@ -219,13 +228,13 @@ export async function getAllMcpFunctionTools<TContext = UnknownContext>(
   return allTools;
 }
 
-const _cachedTools: Record<string, FunctionTool<any, any, unknown>[]> = {};
+const _cachedTools: Record<string, MCPTool[]> = {};
 /**
  * Remove cached tools for the given server so the next lookup fetches fresh data.
  *
  * @param serverName - Name of the MCP server whose cache should be cleared.
  */
-export function invalidateServerToolsCache(serverName: string) {
+export async function invalidateServerToolsCache(serverName: string) {
   delete _cachedTools[serverName];
 }
 /**
@@ -236,7 +245,9 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>(
   convertSchemasToStrict: boolean,
 ): Promise<FunctionTool<TContext, any, unknown>[]> {
   if (server.cacheToolsList && _cachedTools[server.name]) {
-    return _cachedTools[server.name];
+    return _cachedTools[server.name].map((t) =>
+      mcpToFunctionTool(t, server, convertSchemasToStrict),
+    );
   }
   return withMCPListToolsSpan(
     async (span) => {
@@ -246,7 +257,7 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>(
         mcpToFunctionTool(t, server, convertSchemasToStrict),
       );
       if (server.cacheToolsList) {
-        _cachedTools[server.name] = tools;
+        _cachedTools[server.name] = mcpTools;
       }
       return tools;
     },

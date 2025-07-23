@@ -238,7 +238,7 @@ export type FunctionToolResult<
     }
   | {
       /**
-       * Indiciates that the tool requires approval before it can be called.
+       * Indicates that the tool requires approval before it can be called.
        */
       type: 'function_approval';
       /**
@@ -252,7 +252,7 @@ export type FunctionToolResult<
     }
   | {
       /**
-       * Indiciates that the tool requires approval before it can be called.
+       * Indicates that the tool requires approval before it can be called.
        */
       type: 'hosted_mcp_tool_approval';
       /**

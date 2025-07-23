@@ -33,6 +33,10 @@ export type RealtimeTracingConfig =
     }
   | 'auto';
 
+export type RealtimeInputAudioNoiseReductionConfig = {
+  type: 'near_field' | 'far_field' | (string & {});
+};
+
 export type RealtimeInputAudioTranscriptionConfig = {
   language?: string;
   model?:
@@ -53,7 +57,7 @@ export type RealtimeTurnDetectionConfigAsIs = {
   threshold?: number;
 };
 
-// The Realtime API accepts snake_cased keys, so when using this, this SDK coverts the keys to snake_case ones before passing it to the API
+// The Realtime API accepts snake_cased keys, so when using this, this SDK converts the keys to snake_case ones before passing it to the API.
 export type RealtimeTurnDetectionConfigCamelCase = {
   type?: 'semantic_vad' | 'server_vad';
   createResponse?: boolean;
@@ -83,6 +87,8 @@ export type RealtimeSessionConfig = {
   tools: FunctionToolDefinition[];
   tracing?: RealtimeTracingConfig | null;
   providerData?: Record<string, any>;
+  inputAudioNoiseReduction: RealtimeInputAudioNoiseReductionConfig | null;
+  speed: number;
 };
 
 export type FunctionToolDefinition = {

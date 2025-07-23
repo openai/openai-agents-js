@@ -5,7 +5,7 @@ import { z } from '@openai/zod/v3';
 // ----------------------------
 
 /**
- * Every item in the protocol provides a `providerData` field to accomodate custom functionality
+ * Every item in the protocol provides a `providerData` field to accommodate custom functionality
  * or new fields
  */
 export const SharedBase = z.object({
@@ -91,9 +91,17 @@ export const InputFile = SharedBase.extend({
    */
   file: z
     .string()
+    .describe(
+      'Either base64 encoded file data or a publicly accessible file URL',
+    )
     .or(
       z.object({
-        id: z.string(),
+        id: z.string().describe('OpenAI file ID'),
+      }),
+    )
+    .or(
+      z.object({
+        url: z.string().describe('Publicly accessible PDF file URL'),
       }),
     )
     .describe('Contents of the file or an object with a file ID.'),

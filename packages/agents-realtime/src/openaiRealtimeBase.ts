@@ -50,7 +50,7 @@ export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
   'gpt-4o-realtime-preview';
 
 /**
- * The default session config that gets send over during session connection unless overriden
+ * The default session config that gets send over during session connection unless overridden
  * by the user.
  */
 export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConfig> =
@@ -65,6 +65,8 @@ export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConf
     turnDetection: {
       type: 'semantic_vad',
     },
+    inputAudioNoiseReduction: null,
+    speed: 1,
   };
 
 /**
@@ -102,6 +104,7 @@ export abstract class OpenAIRealtimeBase
   #model: string;
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
+  #rawSessionConfig: Record<string, any> | null = null;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -147,6 +150,10 @@ export abstract class OpenAIRealtimeBase
 
   abstract readonly muted: boolean | null;
 
+  protected get _rawSessionConfig(): Record<string, any> | null {
+    return this.#rawSessionConfig ?? null;
+  }
+
   protected async _getApiKey(options: RealtimeTransportLayerConnectOptions) {
     const apiKey = options.apiKey ?? this.#apiKey;
 
@@ -182,6 +189,10 @@ export abstract class OpenAIRealtimeBase
         },
       });
       return;
+    }
+
+    if (parsed.type === 'session.updated') {
+      this.#rawSessionConfig = parsed.session;
     }
 
     if (parsed.type === 'response.done') {
@@ -380,6 +391,7 @@ export abstract class OpenAIRealtimeBase
         this.#model ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.model,
       voice: config.voice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.voice,
+      speed: config.speed ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.speed,
       modalities:
         config.modalities ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.modalities,
       input_audio_format:
@@ -391,6 +403,9 @@ export abstract class OpenAIRealtimeBase
       input_audio_transcription:
         config.inputAudioTranscription ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioTranscription,
+      input_audio_noise_reduction:
+        config.inputAudioNoiseReduction ??
+        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioNoiseReduction,
       turn_detection:
         OpenAIRealtimeBase.buildTurnDetectionConfig(config.turnDetection) ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.turnDetection,

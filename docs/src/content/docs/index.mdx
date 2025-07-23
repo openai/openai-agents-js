@@ -21,7 +21,7 @@ The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-j
 enables you to build agentic AI apps in a lightweight, easy-to-use package with
 very few abstractions. It's a production-ready upgrade of our previous
 experimentation for agents,
-[Swarm](https://github.com/openai/swarm/tree/main) that's also [available in Python](https://github.com/openai/openai-agents-python). The Agents SDK has a very
+[Swarm](https://github.com/openai/swarm/tree/main), that's also [available in Python](https://github.com/openai/openai-agents-python). The Agents SDK has a very
 small set of primitives:
 
 - **Agents**, which are LLMs equipped with instructions and tools
@@ -63,8 +63,10 @@ Here are the main features of the SDK:
 
 ## Installation
 
+This SDK currently does not work with `zod@3.25.68` and above. Please install `zod@3.25.67` (or any older version) explicitly. We will resolve this dependency issue soon. Please check [this issue](https://github.com/openai/openai-agents-js/issues/187) for updates.
+
 ```bash
-npm install @openai/agents
+npm install @openai/agents 'zod@<=3.25.67'
 ```
 
 ## Hello world example

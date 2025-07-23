@@ -4,7 +4,7 @@
   "dependencies": {
     "@openai/agents": "workspace:*",
     "playwright": "^1.52.0",
-    "zod": "~3.25.40"
+    "zod": "3.25.40 - 3.25.67"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

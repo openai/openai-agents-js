@@ -174,6 +174,7 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'image_generation',
           background: tool.providerData.background,
+          input_fidelity: tool.providerData.input_fidelity,
           input_image_mask: tool.providerData.input_image_mask,
           model: tool.providerData.model,
           moderation: tool.providerData.moderation,
@@ -265,9 +266,19 @@ function getInputMessageContent(
       type: 'input_file',
     };
     if (typeof entry.file === 'string') {
-      fileEntry.file_data = entry.file;
-    } else {
+      if (entry.file.startsWith('data:')) {
+        fileEntry.file_data = entry.file;
+      } else if (entry.file.startsWith('https://')) {
+        fileEntry.file_url = entry.file;
+      } else {
+        throw new UserError(
+          `Unsupported string data for file input. If you're trying to pass an uploaded file's ID, use an object with the ID property instead.`,
+        );
+      }
+    } else if ('id' in entry.file) {
       fileEntry.file_id = entry.file.id;
+    } else if ('url' in entry.file) {
+      fileEntry.file_url = entry.file.url;
     }
     return {
       ...fileEntry,
@@ -365,13 +376,15 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   return false;
 }
 
-function getPrompt(prompt: ModelRequest['prompt']): {
-  id: string;
-  version?: string;
-  variables?: Record<string, any>;
-} | null {
+function getPrompt(prompt: ModelRequest['prompt']):
+  | {
+      id: string;
+      version?: string;
+      variables?: Record<string, any>;
+    }
+  | undefined {
   if (!prompt) {
-    return null;
+    return undefined;
   }
 
   const transformedVariables: Record<string, any> = {};
@@ -523,7 +536,10 @@ function getInputItems(
           type: 'code_interpreter_call',
           id: item.id!,
           code: item.providerData?.code ?? '',
-          results: item.providerData?.results ?? [],
+          // This property used to be results, so keeping both for backward compatibility
+          // That said, this property cannot be passed from a user, so it's just API's internal data.
+          outputs:
+            item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.containerId,
         };

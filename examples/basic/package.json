@@ -3,7 +3,7 @@
   "name": "basic",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "zod": "~3.25.40"
+    "zod": "3.25.40 - 3.25.67"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
@@ -17,6 +17,7 @@
     "start:previous-response-id": "tsx previous-response-id.ts",
     "start:prompt": "tsx prompt-id.ts",
     "start:remote-image": "tsx remote-image.ts",
+    "start:remote-pdf": "tsx remote-pdf.ts",
     "start:stream-items": "tsx stream-items.ts",
     "start:stream-text": "tsx stream-text.ts",
     "start:json-schema-output-type": "tsx json-schema-output-type.ts",

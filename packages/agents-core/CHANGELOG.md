@@ -1,5 +1,28 @@
 # @openai/agents-core
 
+## 0.0.13
+
+### Patch Changes
+
+- bd463ef: Fix #219 MCPServer#invalidateToolsCache() not exposed while being mentioned in the documents
+
+## 0.0.12
+
+### Patch Changes
+
+- af73bfb: Rebinds cached tools to the current MCP server to avoid stale tool invocation (fixes #195)
+- 046f8cc: Fix typos across repo
+- ed66acf: Fixes handling of `agent_updated_stream_event` in run implementation and adds corresponding test coverage.
+- 40dc0be: Fix #216 Publicly accessible PDF file URL is not yet supported in the input_file content data
+
+## 0.0.11
+
+### Patch Changes
+
+- a60eabe: Fix #131 Human in the Loop MCP approval fails
+- a153963: Tentative fix for #187 : Lock zod version to <=3.25.67
+- 17077d8: Fix #175 by removing internal system.exit calls
+
 ## 0.0.10
 
 ### Patch Changes

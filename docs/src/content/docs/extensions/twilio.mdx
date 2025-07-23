@@ -12,7 +12,7 @@ raw audio from a phone call to a WebSocket server. This set up can be used to co
 [voice agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport
 in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However,
 this requires you to set the right audio format and adjust your own interruption timing as phone
-calls will naturally introduce more latency than a web-based converstaion.
+calls will naturally introduce more latency than a web-based conversation.
 
 To improve the set up experience, we've created a dedicated transport layer that handles the
 connection to Twilio for you, including handling interruptions and audio forwarding for you.
@@ -72,7 +72,7 @@ for more information on how to use the `RealtimeSession` with voice agents.
 
    In order to receive all the necessary events and audio from Twilio, you should create your
    `TwilioRealtimeTransportLayer` instance as soon as you have a reference to the WebSocket
-   connetion and immediately call `session.connect()` afterwards.
+   connection and immediately call `session.connect()` afterwards.
 
 2. **Access the raw Twilio events.**
 

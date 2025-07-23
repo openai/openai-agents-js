@@ -47,6 +47,10 @@ export type OpenAIRealtimeWebSocketOptions = {
    * @see https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token
    */
   useInsecureApiKey?: boolean;
+  /**
+   * The URL to use for the WebSocket connection.
+   */
+  url?: string;
 } & OpenAIRealtimeBaseOptions;
 
 /**
@@ -59,7 +63,7 @@ export class OpenAIRealtimeWebSocket
   implements RealtimeTransportLayer
 {
   #apiKey: string | undefined;
-  #url: string;
+  #url: string | undefined;
   #state: WebSocketState = {
     status: 'disconnected',
     websocket: undefined,
@@ -80,7 +84,7 @@ export class OpenAIRealtimeWebSocket
 
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
     super(options);
-    this.#url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    this.#url = options.url;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
   }
 
@@ -169,7 +173,7 @@ export class OpenAIRealtimeWebSocket
           },
         };
 
-    const ws = new WebSocket(this.#url, websocketArguments as any);
+    const ws = new WebSocket(this.#url!, websocketArguments as any);
     this.#state = {
       status: 'connecting',
       websocket: ws,
@@ -215,7 +219,15 @@ export class OpenAIRealtimeWebSocket
 
         const buff = base64ToArrayBuffer(parsed.delta);
         // calculate the audio length in milliseconds assuming 24kHz pcm16le
-        this._audioLengthMs += buff.byteLength / 24 / 2; // 24kHz * 2 bytes per sample
+        const audioFormat =
+          this._rawSessionConfig?.output_audio_format ?? 'pcm16';
+        if (audioFormat.startsWith('g711_')) {
+          // 8kHz * 1 byte per sample
+          this._audioLengthMs += buff.byteLength / 8;
+        } else {
+          // 24kHz * 2 bytes per sample
+          this._audioLengthMs += buff.byteLength / 24 / 2;
+        }
 
         const audioEvent: TransportLayerAudio = {
           type: 'audio',
@@ -224,7 +236,9 @@ export class OpenAIRealtimeWebSocket
         };
         this._onAudio(audioEvent);
       } else if (parsed.type === 'input_audio_buffer.speech_started') {
-        this.interrupt();
+        const automaticResponseCancellationEnabled =
+          this._rawSessionConfig?.turn_detection?.interrupt_response ?? false;
+        this.interrupt(!automaticResponseCancellationEnabled);
       } else if (parsed.type === 'response.created') {
         this.#ongoingResponse = true;
       } else if (parsed.type === 'response.done') {
@@ -250,9 +264,11 @@ export class OpenAIRealtimeWebSocket
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     this.#apiKey = await this._getApiKey(options);
-    this.#url =
+    const url =
       options.url ??
+      this.#url ??
       `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    this.#url = url;
 
     const sessionConfig: Partial<RealtimeSessionConfig> = {
       ...(options.initialSessionConfig || {}),
@@ -343,8 +359,16 @@ export class OpenAIRealtimeWebSocket
    *
    * @param elapsedTime - The elapsed time since the response started.
    */
-  _interrupt(elapsedTime: number) {
+  _interrupt(elapsedTime: number, cancelOngoingResponse: boolean = true) {
+    if (elapsedTime < 0 || elapsedTime > this._audioLengthMs) {
+      return;
+    }
+
     // immediately emit this event so the client can stop playing audio
+    if (cancelOngoingResponse) {
+      this._cancelResponse();
+    }
+
     this.emit('audio_interrupted');
     this.sendEvent({
       type: 'conversation.item.truncate',
@@ -362,16 +386,15 @@ export class OpenAIRealtimeWebSocket
    * You can also call this method directly if you want to interrupt the conversation for example
    * based on an event in the client.
    */
-  interrupt() {
+  interrupt(cancelOngoingResponse: boolean = true) {
     if (!this.#currentItemId || typeof this._firstAudioTimestamp !== 'number') {
       return;
     }
 
-    this._cancelResponse();
-
     const elapsedTime = Date.now() - this._firstAudioTimestamp;
-    if (elapsedTime >= 0 && elapsedTime < this._audioLengthMs) {
-      this._interrupt(elapsedTime);
+
+    if (elapsedTime >= 0) {
+      this._interrupt(elapsedTime, cancelOngoingResponse);
     }
 
     this.#currentItemId = undefined;

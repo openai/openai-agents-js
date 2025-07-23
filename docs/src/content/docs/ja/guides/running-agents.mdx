@@ -9,112 +9,111 @@ import helloWorldExample from '../../../../../../examples/docs/hello-world.ts?ra
 import runningAgentsExceptionExample from '../../../../../../examples/docs/running-agents/exceptions1.ts?raw';
 import chatLoopExample from '../../../../../../examples/docs/running-agents/chatLoop.ts?raw';
 
-エージェントはそれ単体では何もしません。`Runner` クラスまたは `run()` ユーティリティで **実行** します。
+エージェントは単体では何もしません。`Runner` クラスまたは `run()` ユーティリティを使って **実行** します。
 
-<Code lang="typescript" code={helloWorldExample} title="シンプルな実行" />
+<Code lang="typescript" code={helloWorldExample} title="Simple run" />
 
-カスタム Runner が不要な場合は、シングルトンのデフォルト `Runner` インスタンスで実行される `run()` ユーティリティを利用できます。
+カスタム Runner が不要な場合は `run()` ユーティリティを使用できます。これはシングルトンのデフォルト `Runner` インスタンスでエージェントを実行します。
 
-また、自分で Runner インスタンスを生成することもできます。
+別途 Runner インスタンスを作成することもできます。
 
-<Code
-  lang="typescript"
-  code={helloWorldWithRunnerExample}
-  title="Runner を使ったシンプルな実行"
-/>
+<Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
 
-エージェントを実行すると、最終出力と実行履歴が含まれる [エージェントの実行結果](/openai-agents-js/ja/guides/results) オブジェクトを受け取ります。
+エージェントを実行すると、最終出力と実行履歴が入った [実行結果](/openai-agents-js/ja/guides/results) オブジェクトが返されます。
 
 ## エージェントループ
 
-Runner の `run` メソッドを使うときは、開始エージェントと入力を渡します。入力は文字列（ユーザー メッセージとみなされます）または OpenAI Responses API の項目である input items のリスト、のいずれかです。
+Runner の `run` メソッドには、開始エージェントと入力を渡します。入力は文字列（ユーザーメッセージとみなされます）か、OpenAI Responses API のアイテムである入力アイテムのリストのいずれかです。
 
 Runner は次のループを実行します。
 
 1. 現在の入力で現在のエージェントのモデルを呼び出す
-2. LLM 応答を検査する
+2. LLM の応答を確認する
    - **最終出力** → 返却
-   - **ハンドオフ** → 新しいエージェントへ切り替え、これまでの会話履歴を保持して 1 へ
-   - **ツール呼び出し** → ツールを実行し、その結果を会話に追加して 1 へ
-3. `maxTurns` に達した場合は [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスロー
+   - **ハンドオフ** → 新しいエージェントに切り替え、蓄積した会話履歴を保持して 1 に戻る
+   - **ツール呼び出し** → ツールを実行し、その結果を会話に追加して 1 に戻る
+3. `maxTurns` に達したら [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスローする
 
 <Aside type="note">
   LLM
-  の出力が「最終出力」と見なされるルールは、望ましい型のテキストを生成し、ツール呼び出しがない場合です。
+  の出力が「最終出力」と見なされるルールは、望ましい型でテキストを生成し、ツール呼び出しが含まれていない場合です。
 </Aside>
 
 ### Runner のライフサイクル
 
-アプリ起動時に `Runner` を作成し、リクエスト間で再利用してください。このインスタンスはモデルプロバイダーやトレーシング設定などのグローバル設定を保持します。まったく異なる設定が必要な場合のみ、新しい `Runner` を作成します。簡単なスクリプトでは内部でデフォルト Runner を使用する `run()` を呼び出すこともできます。
+アプリ起動時に `Runner` を作成し、リクエスト間で再利用してください。このインスタンスはモデルプロバイダーやトレーシング設定などのグローバル設定を保持します。まったく異なる設定が必要な場合のみ別の `Runner` を作成します。簡単なスクリプトでは内部でデフォルト Runner を使う `run()` を呼び出すだけでも構いません。
 
 ## Run 引数
 
-`run()` メソッドへの入力は、実行開始エージェント、実行入力、およびオプションのセットです。
+`run()` メソッドの入力は、開始エージェント・実行入力・オプションのセットです。
 
-入力は文字列、[input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop](/openai-agents-js/ja/guides/human-in-the-loop) エージェントを構築する場合の [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) オブジェクトのいずれかです。
+入力は文字列、[入力アイテム](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop](/openai-agents-js/ja/guides/human-in-the-loop) エージェントを構築している場合は [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) オブジェクトを指定できます。
 
-追加オプションは以下のとおりです。
+追加オプション:
 
-| Option     | Default | Description                                                                                                                                             |
-| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`   | `false` | `true` の場合、`StreamedRunResult` を返し、モデルから到着したイベントを随時発火します。                                                                 |
-| `context`  | –       | すべてのツール / ガードレール / ハンドオフに転送されるコンテキストオブジェクト。詳細は [コンテキスト管理](/openai-agents-js/ja/guides/context) を参照。 |
-| `maxTurns` | `10`    | セーフティリミット – 到達すると [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスローします。          |
-| `signal`   | –       | キャンセル用の `AbortSignal`                                                                                                                            |
+| Option     | Default | 説明                                                                                                                                           |
+| ---------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`   | `false` | `true` の場合、`StreamedRunResult` を返し、モデルから届いたイベントをストリーミングします                                                      |
+| `context`  | –       | すべてのツール / ガードレール / ハンドオフに転送されるコンテキストオブジェクト。詳細は [コンテキスト管理](/openai-agents-js/ja/guides/context) |
+| `maxTurns` | `10`    | 安全上限。到達すると [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスローします              |
+| `signal`   | –       | キャンセル用の `AbortSignal`                                                                                                                   |
 
 ## ストリーミング
 
-ストリーミングを有効にすると、LLM 実行中のイベントを逐次受け取れます。ストリームが開始されると、`StreamedRunResult` に実行に関する完全な情報（新たな出力を含む）が格納されます。`for await` ループでストリーミングイベントを反復できます。詳しくは [ストリーミング](/openai-agents-js/ja/guides/streaming) ガイドを参照してください。
+ストリーミングを有効にすると、LLM が実行される間にイベントを逐次受け取れます。ストリーム開始後、`StreamedRunResult` にはすべての新しい出力を含む実行情報が格納されます。`for await` ループでストリーミングイベントを反復処理できます。詳しくは [ストリーミング](/openai-agents-js/ja/guides/streaming) ガイドを参照してください。
 
 ## Run 設定
 
 独自の `Runner` インスタンスを作成する場合は、`RunConfig` オブジェクトで Runner を設定できます。
 
-| Field                       | Type                  | Purpose                                                                          |
-| --------------------------- | --------------------- | -------------------------------------------------------------------------------- |
-| `model`                     | `string \| Model`     | すべてのエージェントに対して特定モデルを強制指定します。                         |
-| `modelProvider`             | `ModelProvider`       | モデル名を解決します。デフォルトは OpenAI プロバイダーです。                     |
-| `modelSettings`             | `ModelSettings`       | エージェント単位の設定を上書きするグローバルチューニングパラメーター。           |
-| `handoffInputFilter`        | `HandoffInputFilter`  | ハンドオフ時に入力項目を変換します（ハンドオフ自体で既に定義されていない場合）。 |
-| `inputGuardrails`           | `InputGuardrail[]`    | 初期ユーザー入力に適用されるガードレール。                                       |
-| `outputGuardrails`          | `OutputGuardrail[]`   | 最終出力に適用されるガードレール。                                               |
-| `tracingDisabled`           | `boolean`             | OpenAI トレーシングを完全に無効化します。                                        |
-| `traceIncludeSensitiveData` | `boolean`             | スパンは生成しつつ、トレースから LLM/ツール入出力を除外します。                  |
-| `workflowName`              | `string`              | Traces ダッシュボードに表示され、関連実行をグループ化するのに役立ちます。        |
-| `traceId` / `groupId`       | `string`              | SDK による自動生成ではなく、トレース ID またはグループ ID を手動指定します。     |
-| `traceMetadata`             | `Record<string, any>` | すべてのスパンに付与する任意のメタデータ。                                       |
+| Field                       | Type                  | 目的                                                                  |
+| --------------------------- | --------------------- | --------------------------------------------------------------------- |
+| `model`                     | `string \| Model`     | すべてのエージェントに対して特定のモデルを強制使用                    |
+| `modelProvider`             | `ModelProvider`       | モデル名を解決。デフォルトは OpenAI プロバイダー                      |
+| `modelSettings`             | `ModelSettings`       | エージェントごとの設定を上書きするグローバルチューニングパラメーター  |
+| `handoffInputFilter`        | `HandoffInputFilter`  | ハンドオフ時に入力アイテムを変換（ハンドオフ側で未定義の場合）        |
+| `inputGuardrails`           | `InputGuardrail[]`    | _初期_ ユーザー入力に適用するガードレール                             |
+| `outputGuardrails`          | `OutputGuardrail[]`   | _最終_ 出力に適用するガードレール                                     |
+| `tracingDisabled`           | `boolean`             | OpenAI Tracing を完全に無効化                                         |
+| `traceIncludeSensitiveData` | `boolean`             | LLM / ツールの入出力をトレースから除外しつつスパンは発行              |
+| `workflowName`              | `string`              | Traces ダッシュボードに表示される名前。関連する実行をまとめる際に便利 |
+| `traceId` / `groupId`       | `string`              | SDK に任せず手動でトレース ID / グループ ID を指定                    |
+| `traceMetadata`             | `Record<string, any>` | すべてのスパンに付与する任意メタデータ                                |
 
 ## 会話 / チャットスレッド
 
-`runner.run()`（または `run()` ユーティリティ）への各呼び出しは、アプリケーションレベルの会話における **1 ターン** を表します。  
-エンドユーザーにどの程度の `RunResult` を表示するかは自由です。`finalOutput` のみを表示する場合もあれば、生成されたすべての項目を表示する場合もあります。
+`runner.run()`（または `run()` ユーティリティ）の呼び出しは、アプリケーションレベルで 1 **ターン** を表します。エンドユーザーにどこまで `RunResult` を見せるかは自由です―`finalOutput` のみを表示する場合もあれば、生成されたすべてのアイテムを表示する場合もあります。
 
-<Code lang="typescript" code={chatLoopExample} title="会話履歴を引き継ぐ例" />
+<Code
+  lang="typescript"
+  code={chatLoopExample}
+  title="Example of carrying over the conversation history"
+/>
 
-対話型バージョンは [チャットのコード例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) をご覧ください。
+対話版は [チャットのコード例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) を参照してください。
 
 ## 例外
 
-SDK は次の少数のエラーをスローします（捕捉可能）。
+SDK は次の少数のエラーをスローします。必要に応じて捕捉してください。
 
 - [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns` に到達
-- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – モデルが無効な出力を生成（例: 不正な JSON、未知のツール）
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – モデルが無効な出力を生成（例: 形式不正 JSON、未知のツール）
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – ガードレール違反
-- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – ガードレールの実行失敗
-- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – いずれかの関数ツール呼び出しが失敗
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 設定またはユーザー入力に基づくエラー
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – ガードレールの実行に失敗
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 関数ツール呼び出しでエラー
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 設定やユーザー入力に基づくエラー
 
-すべて基底クラス `AgentsError` を継承しており、現在の実行状態にアクセスできる `state` プロパティを持つ場合があります。
+これらはすべて基底クラス `AgentsError` を継承しており、現在の実行状態にアクセスできる `state` プロパティを提供することがあります。
 
-以下は `GuardrailExecutionError` を処理するコード例です。
+以下は `GuardrailExecutionError` を処理する例です。
 
 <Code
   lang="typescript"
   code={runningAgentsExceptionExample}
-  title="ガードレール実行エラー"
+  title="Guardrail execution error"
 />
 
-上記を実行すると、次のような出力が得られます。
+上記の例を実行すると、次のような出力が得られます。
 
 ```
 Guardrail execution failed: Error: Input guardrail failed to complete: Error: Something is wrong!
@@ -125,6 +124,6 @@ Math homework guardrail tripped
 
 ## 次のステップ
 
-- [モデル](/openai-agents-js/ja/guides/models) を設定する
+- [モデル](/openai-agents-js/ja/guides/models) の設定方法を学ぶ
 - エージェントに [ツール](/openai-agents-js/ja/guides/tools) を提供する
-- 本番運用に向けて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加する
+- 本番環境に向けて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加する

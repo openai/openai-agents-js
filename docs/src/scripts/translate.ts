@@ -170,6 +170,10 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '組み込みツール（Hosted）',
     'Hosted MCP server tools': 'リモート MCP サーバーツール',
     raw: '元',
+    'Realtime Agents': 'リアルタイムエージェント',
+    'Build your first agent in minutes.':
+      'ほんの数分ではじめてのエージェントをつくることができます。',
+    "Let's build": 'はじめる',
   },
 };
 

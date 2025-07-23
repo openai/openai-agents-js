@@ -7,7 +7,7 @@ const agent = new Agent({
 });
 
 let history: AgentInputItem[] = [
-  // intial message
+  // initial message
   user('Are we there yet?'),
 ];
 
