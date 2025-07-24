@@ -58,22 +58,21 @@ jobs:
           if git diff --quiet -- $files; then
             echo "No metadata changes to push"
           else
+            # -- Commit all the metadata.ts files --
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add $files
             git commit -m "chore: sync metadata files"
             git push origin HEAD:main
-          fi
-
-      - name: Tag release
-        # currently this step does not work due to https://github.com/openai/openai-agents-js/pull/232
-        if: steps.changesets.outputs.published == 'true'
-        run: |
-          version=$(jq -r '.version' packages/agents/package.json)
-          tag="v${version}"
-          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists"
-          else
-            git tag -a "$tag" -m "Release $tag"
-            git push origin "$tag"
+            # -- Push a new release tag as well --
+            # We don't use changeset release command because we always do release for all the packages
+            # Thus, creating git tags manually here
+            version=$(jq -r '.version' packages/agents/package.json)
+            tag="v${version}"
+            if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "Tag $tag already exists"
+            else
+              git tag -a "$tag" -m "Release $tag"
+              git push origin "$tag"
+            fi
           fi
