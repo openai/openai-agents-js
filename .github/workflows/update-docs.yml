@@ -1,0 +1,47 @@
+name: "Update Translated Docs"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+    paths-ignore:
+      - 'docs/src/content/docs/ja/**'
+
+jobs:
+  update-docs:
+    if: "!contains(github.event.head_commit.message, 'Update all translated document pages')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+          run_install: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Translate docs
+        env:
+          OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
+        run: pnpm docs:translate
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update all translated document pages"
+            git push
+          else
+            echo "No changes to commit"
+          fi
