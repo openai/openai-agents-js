@@ -57,6 +57,7 @@ export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,
   RunHandoffCallItem,
+  RunHandoffOutputItem,
   RunItem,
   RunMessageOutputItem,
   RunReasoningItem,
