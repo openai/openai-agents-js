@@ -6,8 +6,7 @@ on:
       - main
     paths:
       - 'docs/**'
-    paths-ignore:
-      - 'docs/src/content/docs/ja/**'
+      - '!docs/src/content/docs/ja/**'
 
 jobs:
   update-docs:
