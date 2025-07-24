@@ -35,6 +35,7 @@ export interface MCPServer {
     toolName: string,
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  invalidateToolsCache(): Promise<void>;
 }
 
 export abstract class BaseMCPServerStdio implements MCPServer {
@@ -56,6 +57,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     _toolName: string,
     _args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract invalidateToolsCache(): Promise<void>;
 
   /**
    * Logs a debug message when debug logging is enabled.
@@ -89,6 +91,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     _toolName: string,
     _args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract invalidateToolsCache(): Promise<void>;
 
   /**
    * Logs a debug message when debug logging is enabled.
@@ -154,6 +157,9 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args);
   }
+  invalidateToolsCache(): Promise<void> {
+    return this.underlying.invalidateToolsCache();
+  }
 }
 
 export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
@@ -186,6 +192,9 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args);
+  }
+  invalidateToolsCache(): Promise<void> {
+    return this.underlying.invalidateToolsCache();
   }
 }
 
@@ -225,7 +234,7 @@ const _cachedTools: Record<string, MCPTool[]> = {};
  *
  * @param serverName - Name of the MCP server whose cache should be cleared.
  */
-export function invalidateServerToolsCache(serverName: string) {
+export async function invalidateServerToolsCache(serverName: string) {
   delete _cachedTools[serverName];
 }
 /**

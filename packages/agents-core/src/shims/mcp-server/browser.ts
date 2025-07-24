@@ -29,6 +29,9 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
+  invalidateToolsCache(): Promise<void> {
+    throw new Error('Method not implemented.');
+  }
 }
 
 export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
@@ -51,6 +54,9 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     _toolName: string,
     _args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
+    throw new Error('Method not implemented.');
+  }
+  invalidateToolsCache(): Promise<void> {
     throw new Error('Method not implemented.');
   }
 }

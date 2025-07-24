@@ -52,6 +52,19 @@ jobs:
           NPM_CONFIG_PROVENANCE: true
           NPM_CONFIG_ACCESS: public
 
+      - name: Push metadata changes
+        run: |
+          files="packages/agents-core/src/metadata.ts packages/agents-extensions/src/metadata.ts packages/agents-openai/src/metadata.ts packages/agents-realtime/src/metadata.ts packages/agents/src/metadata.ts"
+          if git diff --quiet -- $files; then
+            echo "No metadata changes to push"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add $files
+            git commit -m "chore: sync metadata files"
+            git push origin HEAD:main
+          fi
+
       - name: Tag release
         # currently this step does not work due to https://github.com/openai/openai-agents-js/pull/232
         if: steps.changesets.outputs.published == 'true'

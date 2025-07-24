@@ -182,6 +182,7 @@ export class RealtimeSession<
   #history: RealtimeItem[] = [];
   #shouldIncludeAudioData: boolean;
   #interruptedByGuardrail: Record<string, boolean> = {};
+  #audioStarted = false;
 
   constructor(
     public readonly initialAgent:
@@ -531,9 +532,14 @@ export class RealtimeSession<
       }
     });
     this.#transport.on('audio', (event) => {
+      if (!this.#audioStarted) {
+        this.#audioStarted = true;
+        this.emit('audio_start', this.#context, this.#currentAgent);
+      }
       this.emit('audio', event);
     });
     this.#transport.on('turn_started', () => {
+      this.#audioStarted = false;
       this.emit('agent_start', this.#context, this.#currentAgent);
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
@@ -548,6 +554,9 @@ export class RealtimeSession<
     });
 
     this.#transport.on('audio_done', () => {
+      if (this.#audioStarted) {
+        this.#audioStarted = false;
+      }
       this.emit('audio_stopped', this.#context, this.#currentAgent);
     });
 
@@ -648,6 +657,9 @@ export class RealtimeSession<
     });
 
     this.#transport.on('audio_interrupted', () => {
+      if (this.#audioStarted) {
+        this.#audioStarted = false;
+      }
       this.emit('audio_interrupted', this.#context, this.#currentAgent);
     });
 

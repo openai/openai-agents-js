@@ -91,8 +91,8 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
-  invalidateToolsCache() {
-    invalidateServerToolsCache(this.name);
+  async invalidateToolsCache(): Promise<void> {
+    await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
   }
 
@@ -208,8 +208,8 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
 
-  invalidateToolsCache() {
-    invalidateServerToolsCache(this.name);
+  async invalidateToolsCache(): Promise<void> {
+    await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
   }
 
