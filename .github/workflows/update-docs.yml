@@ -29,18 +29,32 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install
+
       - name: Translate docs
         env:
           OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
         run: pnpm docs:translate
+
       - name: Commit changes
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "Update all translated document pages"
-            git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No changes to commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Create Pull Request
+        if: steps.commit.outputs.committed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Update all translated document pages"
+          title: "Update all translated document pages"
+          body: "Automated update of translated documentation"
+          branch: update-translated-docs-${{ github.run_id }}
+          delete-branch: true
