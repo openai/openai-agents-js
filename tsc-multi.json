@@ -1,6 +1,6 @@
 {
   "targets": [
-    { "extname": ".js", "module": "es2022", "moduleResolution": "node" },
+    { "extname": ".js", "module": "commonjs", "moduleResolution": "node" },
     { "extname": ".mjs", "module": "esnext" }
   ],
   "projects": [

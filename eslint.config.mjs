@@ -24,6 +24,7 @@ export default tseslint.config(
     'examples/realtime-demo/**',
     'examples/nextjs/**',
     'integration-tests//**',
+    'tsc-multi.json',
   ]),
   eslint.configs.recommended,
   tseslint.configs.recommended,
