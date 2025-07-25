@@ -12,3 +12,9 @@ Run the example from the repository root:
 ```bash
 pnpm -F mcp start:stdio
 ```
+
+`tool-filter-example.ts` shows how to expose only a subset of server tools:
+
+```bash
+pnpm -F mcp start:tool-filter
+```
