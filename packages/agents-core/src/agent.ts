@@ -444,8 +444,22 @@ export class Agent<
     customOutputExtractor?: (
       output: RunResult<TContext, Agent<TContext, any>>,
     ) => string | Promise<string>;
-  }): FunctionTool {
-    const { toolName, toolDescription, customOutputExtractor } = options;
+    /**
+     * If true, the invoked tool will return the {@link RunResult} of the agent
+     * run instead of just the extracted output text.
+     */
+    returnRunResult?: boolean;
+  }): FunctionTool<
+    TContext,
+    any,
+    string | RunResult<TContext, Agent<TContext, any>>
+  > {
+    const {
+      toolName,
+      toolDescription,
+      customOutputExtractor,
+      returnRunResult,
+    } = options;
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
       description: toolDescription ?? '',
@@ -469,6 +483,9 @@ export class Agent<
         const result = await runner.run(this, data.input, {
           context: context?.context,
         });
+        if (returnRunResult) {
+          return result as RunResult<TContext, Agent<TContext, any>>;
+        }
         if (typeof customOutputExtractor === 'function') {
           return customOutputExtractor(result as any);
         }

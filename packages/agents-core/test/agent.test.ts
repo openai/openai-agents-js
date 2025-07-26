@@ -3,7 +3,11 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
 import { z } from 'zod/v3';
-import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
+import {
+  JsonSchemaDefinition,
+  setDefaultModelProvider,
+  RunResult,
+} from '../src';
 import { FakeModelProvider } from './stubs';
 
 describe('Agent', () => {
@@ -198,6 +202,21 @@ describe('Agent', () => {
     const result1 = agent.processFinalOutput('{"message": "Hi, how are you?"}');
     expect(result1).toEqual({ message: 'Hi, how are you?' });
   });
+
+  it('should return a RunResult when returnRunResult option is true', async () => {
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+    });
+    const tool = agent.asTool({ returnRunResult: true });
+    setDefaultModelProvider(new FakeModelProvider());
+    const result = await tool.invoke({} as any, '{"input":"hello"}');
+    expect(result).toBeInstanceOf(RunResult);
+    expect((result as RunResult<any, Agent<any, any>>).finalOutput).toBe(
+      'Hello World',
+    );
+  });
+
   it('should process final output (json schema)', async () => {
     const agent = new Agent({
       name: 'Test Agent',
