@@ -8,5 +8,9 @@ git update-index --again
 
 # check for secrets
 if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
-  trufflehog git file://. --since-commit HEAD --fail
+  if command -v trufflehog >/dev/null 2>&1; then
+    trufflehog git file://. --since-commit HEAD --fail
+  else
+    echo "Warning: trufflehog not found, skipping secret scanning"
+  fi
 fi
