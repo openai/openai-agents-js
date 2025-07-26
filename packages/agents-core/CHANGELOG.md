@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.0.14
+
+### Patch Changes
+
+- d9c4ddf: include JsonSchema definitions in mcpTool inputSchema
+- fba44d9: Fix #246 by exposing RunHandoffOutputItem type
+
 ## 0.0.13
 
 ### Patch Changes
