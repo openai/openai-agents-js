@@ -115,6 +115,6 @@ export type FinancialReportData = z.infer<typeof FinancialReportData>;
 export const writerAgent = new Agent({
   name: 'FinancialWriterAgent',
   instructions: writerPrompt,
-  model: 'gpt-4.5-preview-2025-02-27',
+  model: 'gpt-4.1',
   outputType: FinancialReportData,
 });
