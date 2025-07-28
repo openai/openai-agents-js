@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.0.14
+
+### Patch Changes
+
+- b6c7e9d: Fix codeInterpreterTool run replay by correctly using container_id from providerData (fixes #253)
+- Updated dependencies [08dd469]
+- Updated dependencies [d9c4ddf]
+- Updated dependencies [fba44d9]
+  - @openai/agents-core@0.0.14
+
 ## 0.0.13
 
 ### Patch Changes

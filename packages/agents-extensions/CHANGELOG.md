@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.0.14
+
+### Patch Changes
+
+- 63e534b: Fix #259 Failing to send trace data with usage for ai-sdk models
+  - @openai/agents@0.0.14
+
 ## 0.0.13
 
 ### Patch Changes

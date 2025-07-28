@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.0.14
+
+### Patch Changes
+
+- 08dd469: agents-core, agents-realtime: add MCP tool-filtering support (fixes #162)
+- d9c4ddf: include JsonSchema definitions in mcpTool inputSchema
+- fba44d9: Fix #246 by exposing RunHandoffOutputItem type
+
 ## 0.0.13
 
 ### Patch Changes
