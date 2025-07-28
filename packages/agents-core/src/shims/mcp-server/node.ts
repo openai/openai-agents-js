@@ -96,7 +96,6 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     this._cacheDirty = true;
   }
 
-  // The response element type is intentionally left as `any` to avoid explosing MCP SDK type dependencies.
   async listTools(): Promise<MCPTool[]> {
     const { ListToolsResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -109,6 +108,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
       return this._toolsList;
     }
+
     this._cacheDirty = false;
     const response = await this.session.listTools();
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
@@ -213,7 +213,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this._cacheDirty = true;
   }
 
-  // The response element type is intentionally left as `any` to avoid explosing MCP SDK type dependencies.
   async listTools(): Promise<MCPTool[]> {
     const { ListToolsResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -226,6 +225,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     if (this.cacheToolsList && !this._cacheDirty && this._toolsList) {
       return this._toolsList;
     }
+
     this._cacheDirty = false;
     const response = await this.session.listTools();
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);

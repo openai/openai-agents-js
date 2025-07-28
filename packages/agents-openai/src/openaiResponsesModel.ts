@@ -541,7 +541,7 @@ function getInputItems(
           outputs:
             item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
-          container_id: item.providerData?.containerId,
+          container_id: item.providerData?.container_id,
         };
 
         return entry;

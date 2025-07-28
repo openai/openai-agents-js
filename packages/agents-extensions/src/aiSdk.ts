@@ -500,9 +500,10 @@ export class AiSdkModel implements Model {
 
         if (span && request.tracing === true) {
           span.spanData.usage = {
+            // Note that tracing supports only input and output tokens for Chat Completions.
+            // So, we don't include other properties here.
             input_tokens: response.usage.inputTokens,
             output_tokens: response.usage.outputTokens,
-            total_tokens: response.usage.totalTokens,
           };
         }
 
@@ -724,9 +725,10 @@ export class AiSdkModel implements Model {
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
         span.spanData.usage = {
+          // Note that tracing supports only input and output tokens for Chat Completions.
+          // So, we don't include other properties here.
           input_tokens: finalEvent.response.usage.inputTokens,
           output_tokens: finalEvent.response.usage.outputTokens,
-          total_tokens: finalEvent.response.usage.totalTokens,
         };
       }
 

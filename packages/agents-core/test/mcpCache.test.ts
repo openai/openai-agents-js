@@ -4,6 +4,8 @@ import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import type { CallToolResultContent } from '../src/mcp';
+import { RunContext } from '../src/runContext';
+import { Agent } from '../src/agent';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -49,15 +51,27 @@ describe('MCP tools cache invalidation', () => {
       ];
       const server = new StubServer('server', toolsA);
 
-      let tools = await getAllMcpTools([server]);
+      let tools = await getAllMcpTools(
+        [server],
+        new RunContext({}),
+        new Agent({ name: 'test' }),
+      );
       expect(tools.map((t) => t.name)).toEqual(['a']);
 
       server.toolList = toolsB;
-      tools = await getAllMcpTools([server]);
+      tools = await getAllMcpTools(
+        [server],
+        new RunContext({}),
+        new Agent({ name: 'test' }),
+      );
       expect(tools.map((t) => t.name)).toEqual(['a']);
 
       await server.invalidateToolsCache();
-      tools = await getAllMcpTools([server]);
+      tools = await getAllMcpTools(
+        [server],
+        new RunContext({}),
+        new Agent({ name: 'test' }),
+      );
       expect(tools.map((t) => t.name)).toEqual(['b']);
     });
   });
@@ -73,7 +87,11 @@ describe('MCP tools cache invalidation', () => {
       ];
 
       const serverA = new StubServer('server', tools);
-      await getAllMcpTools([serverA]);
+      await getAllMcpTools(
+        [serverA],
+        new RunContext({}),
+        new Agent({ name: 'test' }),
+      );
 
       const serverB = new StubServer('server', tools);
       let called = false;
@@ -82,7 +100,11 @@ describe('MCP tools cache invalidation', () => {
         return [];
       };
 
-      const cachedTools = (await getAllMcpTools([serverB])) as FunctionTool[];
+      const cachedTools = (await getAllMcpTools(
+        [serverB],
+        new RunContext({}),
+        new Agent({ name: 'test' }),
+      )) as FunctionTool[];
       await cachedTools[0].invoke({} as any, '{}');
 
       expect(called).toBe(true);

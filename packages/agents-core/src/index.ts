@@ -57,6 +57,7 @@ export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,
   RunHandoffCallItem,
+  RunHandoffOutputItem,
   RunItem,
   RunMessageOutputItem,
   RunReasoningItem,
@@ -73,6 +74,12 @@ export {
   MCPServerStdio,
   MCPServerStreamableHttp,
 } from './mcp';
+export {
+  MCPToolFilterCallable,
+  MCPToolFilterContext,
+  MCPToolFilterStatic,
+  createMCPToolStaticFilter,
+} from './mcpUtil';
 export {
   Model,
   ModelProvider,

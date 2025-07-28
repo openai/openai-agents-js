@@ -12,6 +12,7 @@
     "start:streamable-http": "tsx streamable-http-example.ts",
     "start:hosted-mcp-on-approval": "tsx hosted-mcp-on-approval.ts",
     "start:hosted-mcp-human-in-the-loop": "tsx hosted-mcp-human-in-the-loop.ts",
-    "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts"
+    "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts",
+    "start:tool-filter": "tsx tool-filter-example.ts"
   }
 }
