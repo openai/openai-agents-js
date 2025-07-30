@@ -1,4 +1,4 @@
-import { z } from '@openai/zod/v3';
+import { z } from 'zod/v3';
 import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 
 // Event schemas mirroring the structures defined in the OpenAI SDK typings.
