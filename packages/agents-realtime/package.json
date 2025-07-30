@@ -61,7 +61,6 @@
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
-    "@openai/zod": "npm:zod@3.25.40 - 3.25.67",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0",
     "ws": "^8.18.1"
@@ -73,9 +72,13 @@
     "agentic"
   ],
   "license": "MIT",
+  "peerDependencies": {
+    "zod": "^3.25.40"
+  },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "zod": "^3.25.40"
   },
   "files": [
     "dist"

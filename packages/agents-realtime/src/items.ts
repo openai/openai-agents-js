@@ -1,4 +1,4 @@
-import { z } from '@openai/zod/v3';
+import { z } from 'zod/v3';
 
 export const baseItemSchema = z.object({
   itemId: z.string(),

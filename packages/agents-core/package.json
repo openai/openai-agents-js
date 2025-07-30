@@ -88,12 +88,11 @@
     "@modelcontextprotocol/sdk": "^1.17.2"
   },
   "dependencies": {
-    "@openai/zod": "npm:zod@3.25.40 - 3.25.67",
     "debug": "^4.4.0",
     "openai": "^5.10.1"
   },
   "peerDependencies": {
-    "zod": "3.25.40 - 3.25.67"
+    "zod": "^3.25.40"
   },
   "peerDependenciesMeta": {
     "zod": {
@@ -121,7 +120,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "zod": "3.25.40 - 3.25.67"
+    "zod": "^3.25.40"
   },
   "files": [
     "dist"
