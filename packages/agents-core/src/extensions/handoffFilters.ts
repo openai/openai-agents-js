@@ -24,7 +24,8 @@ const TOOL_TYPES = new Set([
 export function removeAllTools(
   handoffInputData: HandoffInputData,
 ): HandoffInputData {
-  const { inputHistory, preHandoffItems, newItems } = handoffInputData;
+  const { inputHistory, preHandoffItems, newItems, runContext } =
+    handoffInputData;
 
   const filteredHistory = Array.isArray(inputHistory)
     ? removeToolTypesFromInput(inputHistory)
@@ -37,6 +38,7 @@ export function removeAllTools(
     inputHistory: filteredHistory,
     preHandoffItems: filteredPreHandoffItems,
     newItems: filteredNewItems,
+    runContext,
   };
 }
 
