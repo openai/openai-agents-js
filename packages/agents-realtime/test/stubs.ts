@@ -10,7 +10,7 @@ import {
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { EventEmitterDelegate } from '@openai/agents-core/utils';
-import { z } from '@openai/zod/v3';
+import { z } from 'zod/v3';
 import type {
   RealtimeClientMessage,
   RealtimeSessionConfig,
