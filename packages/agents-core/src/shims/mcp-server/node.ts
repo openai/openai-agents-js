@@ -36,6 +36,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected _toolsList: any[] = [];
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
+  protected timeout: number;
 
   params: DefaultMCPServerStdioOptions;
   private _name: string;
@@ -44,6 +45,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   constructor(params: MCPServerStdioOptions) {
     super(params);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
+    this.timeout = params.timeout ?? DEFAULT_TOOL_CALL_TIMEOUT;
     if ('fullCommand' in params) {
       const elements = params.fullCommand.split(' ');
       const command = elements.shift();
@@ -121,7 +123,6 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-    timeout?: number,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -131,12 +132,16 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const response = await this.session.callTool({
-      name: toolName,
-      arguments: args ?? {},
-    }, undefined, {
-      timeout: timeout ?? DEFAULT_TOOL_CALL_TIMEOUT
-    });
+    const response = await this.session.callTool(
+      {
+        name: toolName,
+        arguments: args ?? {},
+      },
+      undefined,
+      {
+        timeout: this.timeout,
+      },
+    );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
     this.debugLog(
@@ -168,6 +173,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   protected _toolsList: any[] = [];
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
+  protected timeout: number;
 
   params: MCPServerStreamableHttpOptions;
   private _name: string;
@@ -178,6 +184,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `streamable-http: ${this.params.url}`;
+    this.timeout = params.timeout ?? DEFAULT_TOOL_CALL_TIMEOUT;
   }
 
   async connect(): Promise<void> {
@@ -241,7 +248,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-    timeout?: number,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -251,12 +257,16 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const response = await this.session.callTool({
-      name: toolName,
-      arguments: args ?? {},
-    }, undefined, {
-      timeout: timeout ?? DEFAULT_TOOL_CALL_TIMEOUT
-    });
+    const response = await this.session.callTool(
+      {
+        name: toolName,
+        arguments: args ?? {},
+      },
+      undefined,
+      {
+        timeout: this.timeout,
+      },
+    );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
     this.debugLog(
