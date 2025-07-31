@@ -13,6 +13,8 @@ import {
 } from '../../mcp';
 import logger from '../../logger';
 
+const DEFAULT_TOOL_CALL_TIMEOUT = 60000;
+
 export interface SessionMessage {
   message: any;
 }
@@ -119,6 +121,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    timeout?: number,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -131,6 +134,8 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     const response = await this.session.callTool({
       name: toolName,
       arguments: args ?? {},
+    }, undefined, {
+      timeout: timeout ?? DEFAULT_TOOL_CALL_TIMEOUT
     });
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -236,6 +241,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    timeout?: number,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -248,6 +254,8 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const response = await this.session.callTool({
       name: toolName,
       arguments: args ?? {},
+    }, undefined, {
+      timeout: timeout ?? DEFAULT_TOOL_CALL_TIMEOUT
     });
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
