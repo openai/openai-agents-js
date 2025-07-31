@@ -11,6 +11,7 @@ import {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunInjectedMessageItem,
 } from './items';
 import logger, { Logger } from './logger';
 import { ModelResponse, ModelSettings } from './model';
@@ -451,6 +452,24 @@ export async function executeToolsAndSideEffects<TContext>(
   ]);
 
   newItems = newItems.concat(functionResults.map((r) => r.runItem));
+
+  // Add injected message items for tools that returned message objects
+  for (const functionResult of functionResults) {
+    if (
+      functionResult.type === 'function_output' &&
+      functionResult.output &&
+      typeof functionResult.output === 'object' &&
+      (functionResult.output as any).type === 'message'
+    ) {
+      // Create and add the injected message item
+      const injectedMessageItem = new RunInjectedMessageItem(
+        functionResult.output as protocol.MessageItem,
+        agent as any,
+      );
+      newItems.push(injectedMessageItem);
+    }
+  }
+
   newItems = newItems.concat(computerResults);
 
   // run hosted MCP approval requests
@@ -742,6 +761,50 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
             state._context,
             toolRun.toolCall.arguments,
           );
+
+          // If the tool returned a full MessageItem, inject it directly into the run history
+          if (
+            result &&
+            typeof result === 'object' &&
+            (result as any).type === 'message'
+          ) {
+            // Use string data for tracing and event emitter
+            const stringResult =
+              'Message with rich content injected into conversation';
+
+            runner.emit(
+              'agent_tool_end',
+              state._context,
+              agent,
+              toolRun.tool,
+              stringResult,
+              { toolCall: toolRun.toolCall },
+            );
+            agent.emit(
+              'agent_tool_end',
+              state._context,
+              toolRun.tool,
+              stringResult,
+              { toolCall: toolRun.toolCall },
+            );
+
+            if (runner.config.traceIncludeSensitiveData) {
+              span.spanData.output = stringResult;
+            }
+
+            // Return a proper tool call response to satisfy OpenAI API requirements
+            // The message injection will be handled in the processing logic
+            return {
+              type: 'function_output' as const,
+              tool: toolRun.tool,
+              output: result, // Keep the original message object for processing
+              runItem: new RunToolCallOutputItem(
+                getToolCallOutputItem(toolRun.toolCall, stringResult),
+                agent,
+                result,
+              ),
+            };
+          }
           // Use string data for tracing and event emitter
           const stringResult = toSmartString(result);
 
@@ -796,7 +859,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
 
   try {
     const results = await Promise.all(toolRuns.map(runSingleTool));
-    return results;
+    return results as FunctionToolResult[];
   } catch (e: unknown) {
     throw new ToolCallError(
       `Failed to run function tools: ${e}`,

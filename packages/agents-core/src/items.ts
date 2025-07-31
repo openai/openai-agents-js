@@ -156,6 +156,24 @@ export class RunToolApprovalItem extends RunItemBase {
   }
 }
 
+export class RunInjectedMessageItem extends RunItemBase {
+  public readonly type = 'injected_message_item' as const;
+
+  constructor(
+    public rawItem: protocol.MessageItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
 export type RunItem =
   | RunMessageOutputItem
   | RunToolCallItem
@@ -163,7 +181,8 @@ export type RunItem =
   | RunHandoffCallItem
   | RunToolCallOutputItem
   | RunHandoffOutputItem
-  | RunToolApprovalItem;
+  | RunToolApprovalItem
+  | RunInjectedMessageItem;
 
 /**
  * Extract all text output from a list of run items by concatenating the content of all
