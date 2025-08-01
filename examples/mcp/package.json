@@ -1,6 +1,7 @@
 {
   "private": true,
   "name": "mcp",
+  "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openai/agents": "workspace:*",
@@ -13,6 +14,7 @@
     "start:hosted-mcp-on-approval": "tsx hosted-mcp-on-approval.ts",
     "start:hosted-mcp-human-in-the-loop": "tsx hosted-mcp-human-in-the-loop.ts",
     "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts",
-    "start:tool-filter": "tsx tool-filter-example.ts"
+    "start:tool-filter": "tsx tool-filter-example.ts",
+    "start:sse": "tsx sse-example.ts"
   }
 }

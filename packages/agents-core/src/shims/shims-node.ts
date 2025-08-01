@@ -44,6 +44,7 @@ export function isBrowserEnvironment(): boolean {
 export {
   NodeMCPServerStdio as MCPServerStdio,
   NodeMCPServerStreamableHttp as MCPServerStreamableHttp,
+  NodeMCPServerSSE as MCPServerSSE,
 } from './mcp-server/node';
 
 export { clearTimeout } from 'node:timers';

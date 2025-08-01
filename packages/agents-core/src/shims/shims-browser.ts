@@ -109,7 +109,11 @@ export function isTracingLoopRunningByDefault(): boolean {
   return false;
 }
 
-export { MCPServerStdio, MCPServerStreamableHttp } from './mcp-server/browser';
+export {
+  MCPServerStdio,
+  MCPServerStreamableHttp,
+  MCPServerSSE,
+} from './mcp-server/browser';
 
 class BrowserTimer implements Timer {
   constructor() {}

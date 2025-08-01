@@ -73,6 +73,7 @@ export {
   MCPServer,
   MCPServerStdio,
   MCPServerStreamableHttp,
+  MCPServerSSE,
 } from './mcp';
 export {
   MCPToolFilterCallable,

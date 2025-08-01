@@ -3,6 +3,7 @@ import { UserError } from './errors';
 import {
   MCPServerStdio as UnderlyingMCPServerStdio,
   MCPServerStreamableHttp as UnderlyingMCPServerStreamableHttp,
+  MCPServerSSE as UnderlyingMCPServerSSE,
 } from '@openai/agents-core/_shims';
 import { getCurrentSpan, withMCPListToolsSpan } from './tracing';
 import { logger as globalLogger, getLogger, Logger } from './logger';
@@ -23,6 +24,9 @@ export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
 
 export const DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:streamable-http-mcp-client';
+
+export const DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME =
+  'openai-agents:sse-mcp-client';
 
 /**
  * Interface for MCP server implementations.
@@ -113,6 +117,41 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   }
 }
 
+export abstract class BaseMCPServerSSE implements MCPServer {
+  public cacheToolsList: boolean;
+  protected _cachedTools: any[] | undefined = undefined;
+  public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+
+  protected logger: Logger;
+  constructor(options: MCPServerSSEOptions) {
+    this.logger =
+      options.logger ?? getLogger(DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME);
+    this.cacheToolsList = options.cacheToolsList ?? false;
+    this.toolFilter = options.toolFilter;
+  }
+
+  abstract get name(): string;
+  abstract connect(): Promise<void>;
+  abstract close(): Promise<void>;
+  abstract listTools(): Promise<any[]>;
+  abstract callTool(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent>;
+  abstract invalidateToolsCache(): Promise<void>;
+
+  /**
+   * Logs a debug message when debug logging is enabled.
+   * @param buildMessage A function that returns the message to log.
+   */
+  protected debugLog(buildMessage: () => string): void {
+    if (debug.enabled(this.logger.namespace)) {
+      // only when this is true, the function to build the string is called
+      this.logger.debug(buildMessage());
+    }
+  }
+}
+
 /**
  * Minimum MCP tool data definition.
  * This type definition does not intend to cover all possible properties.
@@ -175,6 +214,42 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   constructor(options: MCPServerStreamableHttpOptions) {
     super(options);
     this.underlying = new UnderlyingMCPServerStreamableHttp(options);
+  }
+  get name(): string {
+    return this.underlying.name;
+  }
+  connect(): Promise<void> {
+    return this.underlying.connect();
+  }
+  close(): Promise<void> {
+    return this.underlying.close();
+  }
+  async listTools(): Promise<MCPTool[]> {
+    if (this.cacheToolsList && this._cachedTools) {
+      return this._cachedTools;
+    }
+    const tools = await this.underlying.listTools();
+    if (this.cacheToolsList) {
+      this._cachedTools = tools;
+    }
+    return tools;
+  }
+  callTool(
+    toolName: string,
+    args: Record<string, unknown> | null,
+  ): Promise<CallToolResultContent> {
+    return this.underlying.callTool(toolName, args);
+  }
+  invalidateToolsCache(): Promise<void> {
+    return this.underlying.invalidateToolsCache();
+  }
+}
+
+export class MCPServerSSE extends BaseMCPServerSSE {
+  private underlying: UnderlyingMCPServerSSE;
+  constructor(options: MCPServerSSEOptions) {
+    super(options);
+    this.underlying = new UnderlyingMCPServerSSE(options);
   }
   get name(): string {
     return this.underlying.name;
@@ -464,6 +539,26 @@ export interface MCPServerStreamableHttpOptions {
   // import { StreamableHTTPReconnectionOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
   reconnectionOptions?: any;
   sessionId?: string;
+  // ----------------------------------------------------
+}
+
+export interface MCPServerSSEOptions {
+  url: string;
+  cacheToolsList?: boolean;
+  clientSessionTimeoutSeconds?: number;
+  name?: string;
+  logger?: Logger;
+  toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  timeout?: number;
+
+  // ----------------------------------------------------
+  // OAuth
+  // import { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+  authProvider?: any;
+  // RequestInit
+  requestInit?: any;
+  // import { SSEReconnectionOptions } from '@modelcontextprotocol/sdk/client/sse.js';
+  eventSourceInit?: any;
   // ----------------------------------------------------
 }
 
