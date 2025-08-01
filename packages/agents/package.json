@@ -53,7 +53,11 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/debug": "^4.1.12"
+    "@types/debug": "^4.1.12",
+    "zod": "^3.25.40"
+  },
+  "peerDependencies": {
+    "zod": "^3.25.40"
   },
   "files": [
     "dist"
