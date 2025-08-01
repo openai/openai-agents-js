@@ -56,11 +56,12 @@ async function main() {
       history.push(user(message));
       const result = await run(latestAgent, history);
 
-      console.log(`[${latestAgent.name}] ${result.finalOutput}`);
-
       if (result.lastAgent) {
         latestAgent = result.lastAgent;
       }
+
+      console.log(`[${latestAgent.name}] ${result.finalOutput}`);
+
       history = result.history;
     }
   });
