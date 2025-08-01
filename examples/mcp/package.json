@@ -1,7 +1,6 @@
 {
   "private": true,
   "name": "mcp",
-  "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openai/agents": "workspace:*",
