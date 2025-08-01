@@ -1,110 +1,93 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
 
-class FakeRTCDataChannel extends EventTarget {
-  sent: string[] = [];
-  readyState = 'open';
-  send(data: string) {
-    this.sent.push(data);
-  }
-  close() {
-    this.readyState = 'closed';
-  }
-}
+const { FakeRTCDataChannel, FakeRTCPeerConnection, lastChannelRef } =
+  vi.hoisted(() => {
+    let lastChannel: any = null;
 
-let lastChannel: FakeRTCDataChannel | null = null;
+    class FakeRTCDataChannel extends EventTarget {
+      sent: string[] = [];
+      readyState: RTCDataChannelState = 'open';
+      send(data: string) {
+        this.sent.push(data);
+      }
+      close() {
+        this.readyState = 'closed';
+      }
+    }
 
-class FakeRTCPeerConnection {
-  ontrack: ((ev: any) => void) | null = null;
-  createDataChannel(_name: string) {
-    lastChannel = new FakeRTCDataChannel();
-    // simulate async open event
-    setTimeout(() => lastChannel?.dispatchEvent(new Event('open')));
-    return lastChannel as unknown as RTCDataChannel;
-  }
-  addTrack() {}
-  async createOffer() {
-    return { sdp: 'offer', type: 'offer' };
-  }
-  async setLocalDescription(_desc: any) {}
-  async setRemoteDescription(_desc: any) {}
-  close() {}
-  getSenders() {
-    return [] as any;
-  }
-}
+    class FakeRTCPeerConnection {
+      ontrack: ((ev: any) => void) | null = null;
+      createDataChannel(_name: string) {
+        lastChannel = new FakeRTCDataChannel();
+        // simulate async open event
+        setTimeout(() => lastChannel?.dispatchEvent(new Event('open')));
+        return lastChannel as unknown as RTCDataChannel;
+      }
+      addTrack() {}
+      async createOffer() {
+        return { sdp: 'offer', type: 'offer' };
+      }
+      async setLocalDescription(_desc: any) {}
+      async setRemoteDescription(_desc: any) {}
+      close() {}
+      getSenders() {
+        return [] as any;
+      }
+    }
 
-describe('OpenAIRealtimeWebRTC.interrupt', () => {
-  const originals: Record<string, any> = {};
-
-  beforeEach(() => {
-    originals.RTCPeerConnection = (global as any).RTCPeerConnection;
-    originals.navigator = (global as any).navigator;
-    originals.document = (global as any).document;
-    originals.fetch = (global as any).fetch;
-
-    (global as any).RTCPeerConnection = FakeRTCPeerConnection as any;
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        mediaDevices: {
-          getUserMedia: async () => ({
-            getAudioTracks: () => [{ enabled: true }],
-          }),
+    return {
+      FakeRTCDataChannel,
+      FakeRTCPeerConnection,
+      lastChannelRef: {
+        get: () => lastChannel,
+        set: (value: any) => {
+          lastChannel = value;
         },
       },
-      configurable: true,
-      writable: true,
-    });
-    Object.defineProperty(globalThis, 'document', {
-      value: { createElement: () => ({ autoplay: true }) },
-      configurable: true,
-      writable: true,
-    });
-    Object.defineProperty(globalThis, 'fetch', {
-      value: async () => ({ text: async () => 'answer' }),
-      configurable: true,
-      writable: true,
-    });
+    };
+  });
+
+vi.mock('@openai/agents-realtime/_shims', () => ({
+  isBrowserEnvironment: () => false,
+  RTCPeerConnection: FakeRTCPeerConnection,
+  mediaDevices: {
+    getUserMedia: async () => ({
+      getAudioTracks: () => [{ enabled: true }],
+    }),
+  },
+}));
+
+import { OpenAIRealtimeWebRTC } from '../src';
+
+describe('OpenAIRealtimeWebRTC', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ text: () => 'answer' });
+    lastChannelRef.set(null);
   });
 
   afterEach(() => {
-    (global as any).RTCPeerConnection = originals.RTCPeerConnection;
-    Object.defineProperty(globalThis, 'navigator', {
-      value: originals.navigator,
-      configurable: true,
-      writable: true,
-    });
-    Object.defineProperty(globalThis, 'document', {
-      value: originals.document,
-      configurable: true,
-      writable: true,
-    });
-    Object.defineProperty(globalThis, 'fetch', {
-      value: originals.fetch,
-      configurable: true,
-      writable: true,
-    });
-    lastChannel = null;
+    vi.restoreAllMocks();
+    lastChannelRef.set(null);
   });
 
   it('sends response.cancel when interrupting during a response', async () => {
     const rtc = new OpenAIRealtimeWebRTC();
     await rtc.connect({ apiKey: 'ek_test' });
 
-    // ensure channel exists
-    const channel = lastChannel as FakeRTCDataChannel;
-    const event = new MessageEvent('message', {
-      data: JSON.stringify({
-        type: 'response.created',
-        event_id: '1',
-        response: {},
+    const channel = lastChannelRef.get()!;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: '1',
+          response: {},
+        }),
       }),
-    });
-    channel.dispatchEvent(event);
+    );
 
     rtc.interrupt();
 
-    expect(channel.sent.length).toBe(3);
+    expect(channel.sent).toHaveLength(3);
     expect(JSON.parse(channel.sent[0]).type).toBe('session.update');
     expect(JSON.parse(channel.sent[1])).toEqual({ type: 'response.cancel' });
     expect(JSON.parse(channel.sent[2])).toEqual({
@@ -122,24 +105,20 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     class FailingRTCPeerConnection extends FakeRTCPeerConnection {
       createDataChannel(_name: string) {
         // do not open the channel automatically
-        lastChannel = new FakeRTCDataChannel();
-        return lastChannel as unknown as RTCDataChannel;
+        lastChannelRef.set(new FakeRTCDataChannel());
+        return lastChannelRef.get() as unknown as RTCDataChannel;
       }
     }
 
-    (global as any).RTCPeerConnection = FailingRTCPeerConnection as any;
-    Object.defineProperty(globalThis, 'fetch', {
-      value: async () => {
-        throw new Error('connect failed');
-      },
-      configurable: true,
-      writable: true,
+    global.fetch = vi.fn().mockRejectedValue(new Error('connect failed'));
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => new FailingRTCPeerConnection() as any,
     });
 
-    const rtc = new OpenAIRealtimeWebRTC();
-    rtc.on('error', () => {});
     const events: string[] = [];
-    rtc.on('connection_change', (status) => events.push(status));
+    rtc.on('connection_change', (s) => events.push(s));
+    rtc.on('error', () => {});
 
     await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow();
     expect(rtc.status).toBe('disconnected');
@@ -150,24 +129,15 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     const stop = vi.fn();
     class StopTrackPeerConnection extends FakeRTCPeerConnection {
       getSenders() {
-        return [{ track: { stop } } as any];
-      }
-      createDataChannel(_name: string) {
-        lastChannel = new FakeRTCDataChannel();
-        return lastChannel as unknown as RTCDataChannel;
+        return [{ track: { stop } }] as any;
       }
     }
 
-    (global as any).RTCPeerConnection = StopTrackPeerConnection as any;
-    Object.defineProperty(globalThis, 'fetch', {
-      value: async () => {
-        throw new Error('connect failed');
-      },
-      configurable: true,
-      writable: true,
-    });
+    global.fetch = vi.fn().mockRejectedValue(new Error('connect failed'));
 
-    const rtc = new OpenAIRealtimeWebRTC();
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => new StopTrackPeerConnection() as any,
+    });
     rtc.on('error', () => {});
     await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow();
 
@@ -182,8 +152,9 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
         return [{ track: trackState } as any];
       }
     }
-    (global as any).RTCPeerConnection = TrackPeerConnection as any;
-    const rtc = new OpenAIRealtimeWebRTC();
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => new TrackPeerConnection() as any,
+    });
     await rtc.connect({ apiKey: 'ek_test' });
     rtc.mute(true);
     expect(trackState.enabled).toBe(false);

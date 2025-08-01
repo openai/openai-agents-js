@@ -44,6 +44,7 @@ Explore the [`examples/`](examples/) directory to see the SDK in action.
 - Node.js 22 or later
 - Deno
 - Bun
+- React Native
 
 Experimental support:
 
