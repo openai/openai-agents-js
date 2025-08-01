@@ -89,18 +89,47 @@ const historyFunFact = tool({
   parameters: z.object({}),
   execute: async () => {
     // The output will be returned back to the Agent to use
-    return 'Sharks are older than trees.';
-  },
+    return 'Sharks are older 
 });
+```function generateColdCallScripts() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sheet1");
+  const data = sheet.getDataRange().getValues();
+  const apiKey = "YOUR_OPENAI_API_KEY"; // Get a free key at platform.openai.com
 
-const agent = new Agent({
-  name: 'History Tutor',
-  instructions:
-    'You provide assistance with historical queries. Explain important events and context clearly.',
-  // Adding the tool to the agent
-  tools: [historyFunFact],
-});
-```
+  for (let i = 1; i < data.length; i++) {
+    const name = data[i][0];
+    const phone = data[i][1];
+    const address = data[i][2];
+    const status = data[i][5];
+
+    if (!status || status === "") {
+      const prompt = `Write a cold call script for a real estate wholesaler reaching out to ${name} about their property at ${address}. Be friendly, brief, mention a cash offer, and ask if they’re interested in selling.`;
+
+      const payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+          { "role": "user", "content": prompt }
+        ]
+      };
+
+      const options = {
+        "method": "post",
+        "contentType": "application/json",
+        "headers": {
+          "Authorization": `Bearer ${apiKey}`
+        },
+        "payload": JSON.stringify(payload)
+      };
+
+      const response = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+      const result = JSON.parse(response.getContentText());
+      const script = result.choices[0].message.content;
+
+      sheet.getRange(i + 1, 8).setValue(script); // Column H
+      sheet.getRange(i + 1, 6).setValue("Script Created");
+    }
+  }
+}
 
 ## Add a few more agents
 
