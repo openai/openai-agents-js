@@ -453,6 +453,7 @@ export interface MCPServerStreamableHttpOptions {
   name?: string;
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  timeout?: number;
 
   // ----------------------------------------------------
   // OAuth
@@ -464,7 +465,6 @@ export interface MCPServerStreamableHttpOptions {
   reconnectionOptions?: any;
   sessionId?: string;
   // ----------------------------------------------------
-  timeout?: number;
 }
 
 /**
