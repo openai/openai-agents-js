@@ -1,4 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
 
 import {
   BaseMCPServerStdio,
@@ -12,8 +13,6 @@ import {
   invalidateServerToolsCache,
 } from '../../mcp';
 import logger from '../../logger';
-
-const DEFAULT_TOOL_CALL_TIMEOUT = 60000;
 
 export interface SessionMessage {
   message: any;
@@ -45,7 +44,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   constructor(params: MCPServerStdioOptions) {
     super(params);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
-    this.timeout = params.timeout ?? DEFAULT_TOOL_CALL_TIMEOUT;
+    this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
     if ('fullCommand' in params) {
       const elements = params.fullCommand.split(' ');
       const command = elements.shift();
@@ -184,7 +183,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `streamable-http: ${this.params.url}`;
-    this.timeout = params.timeout ?? DEFAULT_TOOL_CALL_TIMEOUT;
+    this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
   }
 
   async connect(): Promise<void> {
