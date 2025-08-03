@@ -233,4 +233,36 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(deltas).toHaveLength(1);
     expect(deltas[0].delta).toBe('hi');
   });
+
+  it('accumulates reasoning deltas into a reasoning item', async () => {
+    const resp: ChatCompletion = {
+      id: 'r1',
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield makeChunk({ reasoning: 'foo' });
+      yield makeChunk({ reasoning: 'bar' });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    expect(final.type).toBe('response_done');
+    expect(final.response.output[0]).toEqual({
+      type: 'reasoning',
+      content: [],
+      rawContent: [{ type: 'reasoning_text', text: 'foobar' }],
+    });
+  });
 });
