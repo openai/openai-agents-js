@@ -285,35 +285,6 @@ export class MCPServerSSE extends BaseMCPServerSSE {
  * Fetches and flattens all tools from multiple MCP servers.
  * Logs and skips any servers that fail to respond.
  */
-export async function getAllMcpFunctionTools<TContext = UnknownContext>(
-  mcpServers: MCPServer[],
-  runContext: RunContext<TContext>,
-  agent: Agent<any, any>,
-  convertSchemasToStrict = false,
-): Promise<Tool<TContext>[]> {
-  const allTools: Tool<TContext>[] = [];
-  const toolNames = new Set<string>();
-  for (const server of mcpServers) {
-    const serverTools = await getFunctionToolsFromServer(
-      server,
-      runContext,
-      agent,
-      convertSchemasToStrict,
-    );
-    const serverToolNames = new Set(serverTools.map((t) => t.name));
-    const intersection = [...serverToolNames].filter((n) => toolNames.has(n));
-    if (intersection.length > 0) {
-      throw new UserError(
-        `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
-      );
-    }
-    for (const t of serverTools) {
-      toolNames.add(t.name);
-      allTools.push(t);
-    }
-  }
-  return allTools;
-}
 
 const _cachedTools: Record<string, MCPTool[]> = {};
 /**
@@ -327,12 +298,17 @@ export async function invalidateServerToolsCache(serverName: string) {
 /**
  * Fetches all function tools from a single MCP server.
  */
-async function getFunctionToolsFromServer<TContext = UnknownContext>(
-  server: MCPServer,
-  runContext: RunContext<TContext>,
-  agent: Agent<any, any>,
-  convertSchemasToStrict: boolean,
-): Promise<FunctionTool<TContext, any, unknown>[]> {
+async function getFunctionToolsFromServer<TContext = UnknownContext>({
+  server,
+  convertSchemasToStrict,
+  runContext,
+  agent,
+}: {
+  server: MCPServer;
+  convertSchemasToStrict: boolean;
+  runContext?: RunContext<TContext>;
+  agent?: Agent<any, any>;
+}): Promise<FunctionTool<TContext, any, unknown>[]> {
   if (server.cacheToolsList && _cachedTools[server.name]) {
     return _cachedTools[server.name].map((t) =>
       mcpToFunctionTool(t, server, convertSchemasToStrict),
@@ -341,52 +317,54 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>(
   return withMCPListToolsSpan(
     async (span) => {
       const fetchedMcpTools = await server.listTools();
-      const mcpTools: MCPTool[] = [];
-      const context = {
-        runContext,
-        agent,
-        serverName: server.name,
-      };
-      for (const tool of fetchedMcpTools) {
-        const filter = server.toolFilter;
-        if (filter) {
-          if (filter && typeof filter === 'function') {
-            const filtered = await filter(context, tool);
-            if (!filtered) {
-              globalLogger.debug(
-                `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the callable filter.`,
-              );
-              continue; // skip this tool
-            }
-          } else {
-            const allowedToolNames = filter.allowedToolNames ?? [];
-            const blockedToolNames = filter.blockedToolNames ?? [];
-            if (allowedToolNames.length > 0 || blockedToolNames.length > 0) {
-              const allowed =
-                allowedToolNames.length > 0
-                  ? allowedToolNames.includes(tool.name)
-                  : true;
-              const blocked =
-                blockedToolNames.length > 0
-                  ? blockedToolNames.includes(tool.name)
-                  : false;
-              if (!allowed || blocked) {
-                if (blocked) {
-                  globalLogger.debug(
-                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the static filter.`,
-                  );
-                } else if (!allowed) {
-                  globalLogger.debug(
-                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is not allowed by the static filter.`,
-                  );
+      let mcpTools: MCPTool[] = fetchedMcpTools;
+
+      if (runContext && agent) {
+        const context = { runContext, agent, serverName: server.name };
+        const filteredTools: MCPTool[] = [];
+        for (const tool of fetchedMcpTools) {
+          const filter = server.toolFilter;
+          if (filter) {
+            if (typeof filter === 'function') {
+              const filtered = await filter(context, tool);
+              if (!filtered) {
+                globalLogger.debug(
+                  `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the callable filter.`,
+                );
+                continue;
+              }
+            } else {
+              const allowedToolNames = filter.allowedToolNames ?? [];
+              const blockedToolNames = filter.blockedToolNames ?? [];
+              if (allowedToolNames.length > 0 || blockedToolNames.length > 0) {
+                const allowed =
+                  allowedToolNames.length > 0
+                    ? allowedToolNames.includes(tool.name)
+                    : true;
+                const blocked =
+                  blockedToolNames.length > 0
+                    ? blockedToolNames.includes(tool.name)
+                    : false;
+                if (!allowed || blocked) {
+                  if (blocked) {
+                    globalLogger.debug(
+                      `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the static filter.`,
+                    );
+                  } else if (!allowed) {
+                    globalLogger.debug(
+                      `MCP Tool (server: ${server.name}, tool: ${tool.name}) is not allowed by the static filter.`,
+                    );
+                  }
+                  continue;
                 }
-                continue; // skip this tool
               }
             }
           }
+          filteredTools.push(tool);
         }
-        mcpTools.push(tool);
+        mcpTools = filteredTools;
       }
+
       span.spanData.result = mcpTools.map((t) => t.name);
       const tools: FunctionTool<TContext, any, string>[] = mcpTools.map((t) =>
         mcpToFunctionTool(t, server, convertSchemasToStrict),
@@ -401,20 +379,48 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>(
 }
 
 /**
- * Returns all MCP tools from the provided servers, using the function tool conversion.
+ * Options for fetching MCP tools.
  */
-export async function getAllMcpTools<TContext = UnknownContext>(
-  mcpServers: MCPServer[],
-  runContext: RunContext<TContext>,
-  agent: Agent<TContext, any>,
+export type GetAllMcpToolsOptions<TContext> = {
+  mcpServers: MCPServer[];
+  convertSchemasToStrict?: boolean;
+  runContext?: RunContext<TContext>;
+  agent?: Agent<TContext, any>;
+};
+
+/**
+ * Returns all MCP tools from the provided servers, using the function tool conversion.
+ * If runContext and agent are provided, callable tool filters will be applied.
+ */
+export async function getAllMcpTools<TContext = UnknownContext>({
+  mcpServers,
   convertSchemasToStrict = false,
-): Promise<Tool<TContext>[]> {
-  return getAllMcpFunctionTools(
-    mcpServers,
-    runContext,
-    agent,
-    convertSchemasToStrict,
-  );
+  runContext,
+  agent,
+}: GetAllMcpToolsOptions<TContext>): Promise<Tool<TContext>[]> {
+  const allTools: Tool<TContext>[] = [];
+  const toolNames = new Set<string>();
+
+  for (const server of mcpServers) {
+    const serverTools = await getFunctionToolsFromServer({
+      server,
+      convertSchemasToStrict,
+      runContext,
+      agent,
+    });
+    const serverToolNames = new Set(serverTools.map((t) => t.name));
+    const intersection = [...serverToolNames].filter((n) => toolNames.has(n));
+    if (intersection.length > 0) {
+      throw new UserError(
+        `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
+      );
+    }
+    for (const t of serverTools) {
+      toolNames.add(t.name);
+      allTools.push(t);
+    }
+  }
+  return allTools;
 }
 
 /**
