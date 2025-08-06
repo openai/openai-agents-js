@@ -4,7 +4,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openai/agents": "workspace:*",
-    "zod": "3.25.40 - 3.25.67"
+    "zod": "3.25.40 - 3.25.67",
+    "@openai/agents-extensions": "workspace:*",
+    "@ai-sdk/openai": "^1.1.3"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
@@ -14,6 +16,7 @@
     "start:hosted-mcp-human-in-the-loop": "tsx hosted-mcp-human-in-the-loop.ts",
     "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts",
     "start:tool-filter": "tsx tool-filter-example.ts",
-    "start:sse": "tsx sse-example.ts"
+    "start:sse": "tsx sse-example.ts",
+    "start:get-all-tools": "tsx get-all-mcp-tools-example.ts"
   }
 }

@@ -392,21 +392,42 @@ export type GetAllMcpToolsOptions<TContext> = {
  * Returns all MCP tools from the provided servers, using the function tool conversion.
  * If runContext and agent are provided, callable tool filters will be applied.
  */
-export async function getAllMcpTools<TContext = UnknownContext>({
-  mcpServers,
+export async function getAllMcpTools<TContext = UnknownContext>(
+  mcpServers: MCPServer[],
+): Promise<Tool<TContext>[]>;
+export async function getAllMcpTools<TContext = UnknownContext>(
+  opts: GetAllMcpToolsOptions<TContext>,
+): Promise<Tool<TContext>[]>;
+export async function getAllMcpTools<TContext = UnknownContext>(
+  mcpServersOrOpts: MCPServer[] | GetAllMcpToolsOptions<TContext>,
+  runContext?: RunContext<TContext>,
+  agent?: Agent<TContext, any>,
   convertSchemasToStrict = false,
-  runContext,
-  agent,
-}: GetAllMcpToolsOptions<TContext>): Promise<Tool<TContext>[]> {
+): Promise<Tool<TContext>[]> {
+  const opts = Array.isArray(mcpServersOrOpts)
+    ? {
+        mcpServers: mcpServersOrOpts,
+        runContext,
+        agent,
+        convertSchemasToStrict,
+      }
+    : mcpServersOrOpts;
+
+  const {
+    mcpServers,
+    convertSchemasToStrict: convertSchemasToStrictFromOpts = false,
+    runContext: runContextFromOpts,
+    agent: agentFromOpts,
+  } = opts;
   const allTools: Tool<TContext>[] = [];
   const toolNames = new Set<string>();
 
   for (const server of mcpServers) {
     const serverTools = await getFunctionToolsFromServer({
       server,
-      convertSchemasToStrict,
-      runContext,
-      agent,
+      convertSchemasToStrict: convertSchemasToStrictFromOpts,
+      runContext: runContextFromOpts,
+      agent: agentFromOpts,
     });
     const serverToolNames = new Set(serverTools.map((t) => t.name));
     const intersection = [...serverToolNames].filter((n) => toolNames.has(n));
