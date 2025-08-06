@@ -6,15 +6,6 @@ import {
   withTrace,
 } from '@openai/agents';
 import * as path from 'node:path';
-import { createOpenAI } from '@ai-sdk/openai';
-import { aisdk } from '@openai/agents-extensions';
-
-const openai = createOpenAI({
-  baseURL: 'https://api.moonshot.cn/v1',
-  apiKey: process.env.MOONSHOT_API_KEY,
-});
-
-const model = aisdk(openai('kimi-k2-turbo-preview'));
 
 async function main() {
   const samplesDir = path.join(__dirname, 'sample_files');
@@ -74,7 +65,6 @@ async function main() {
         instructions:
           'Use the available tools to help the user with file operations.',
         tools: allTools, // Use pre-fetched tools instead of mcpServers
-        model,
       });
 
       // Test the agent
