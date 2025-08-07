@@ -277,6 +277,7 @@ export function toolToOpenAI(tool: SerializedTool): ChatCompletionTool {
         name: tool.name,
         description: tool.description || '',
         parameters: tool.parameters,
+        strict: tool.strict,
       },
     };
   }

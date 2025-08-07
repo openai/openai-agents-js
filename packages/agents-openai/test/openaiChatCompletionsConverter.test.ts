@@ -253,6 +253,7 @@ describe('tool helpers', () => {
           required: [],
           additionalProperties: false,
         },
+        strict: true,
       },
     });
   });
