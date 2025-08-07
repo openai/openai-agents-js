@@ -241,6 +241,7 @@ export type ComputerAction = z.infer<typeof computerActions>;
 export const AssistantContent = z.discriminatedUnion('type', [
   OutputText,
   Refusal,
+  AudioContent,
   ImageContent,
 ]);
 
