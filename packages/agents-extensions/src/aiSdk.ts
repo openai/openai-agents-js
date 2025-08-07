@@ -463,7 +463,10 @@ export class AiSdkModel implements Model {
         // Putting a text message here will let the agent loop to complete,
         // so adding this item only when the tool calls are empty.
         // Note that the same support is not available for streaming mode.
-        if (!result.toolCalls && result.text) {
+        if (
+          (!result.toolCalls || result.toolCalls.length === 0) &&
+          result.text
+        ) {
           output.push({
             type: 'message',
             content: [{ type: 'output_text', text: result.text }],
