@@ -37,7 +37,7 @@ export function extractAllAssistantContent(
   }
   const out: ChatCompletionAssistantMessageParam['content'] = [];
   for (const c of content) {
-    if (c.type === 'output_text' || c.type === 'input_text') {
+    if (c.type === 'output_text') {
       out.push({
         type: 'text',
         text: c.text,
@@ -49,7 +49,7 @@ export function extractAllAssistantContent(
         refusal: c.refusal,
         ...c.providerData,
       });
-    } else if (c.type === 'audio' || c.type === 'image') {
+    } else if (c.type === 'image') {
       // ignoring audio as it is handled on the assistant message level
       continue;
     } else {
@@ -158,14 +158,6 @@ export function itemsToMessages(
           content: extractAllAssistantContent(content),
           ...providerData,
         };
-
-        const audio = content.find((c) => c.type === 'audio');
-        if (audio) {
-          assistant.audio = {
-            id: '', // setting this to empty ID and expecting that the user sets providerData.id
-            ...audio.providerData,
-          };
-        }
 
         result.push(assistant);
       } else if (role === 'user') {
