@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.0.16
+
+### Patch Changes
+
+- 191b82a: fix: the aisdk extension should grab output when toolCalls is a blank array
+
+  When the output of a provider includes an empty tool calls array, we'd mistakenly skip over the text result. This patch checks for that condition.
+  - @openai/agents@0.0.16
+
 ## 0.0.15
 
 ### Patch Changes
