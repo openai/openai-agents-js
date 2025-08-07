@@ -30,7 +30,7 @@ of supported models that can be brought into the Agents SDK through this adapter
 2. Choose your desired model package from the [Vercel's AI SDK](https://sdk.vercel.ai/docs/models/overview) and install it:
 
    ```bash
-   npm install @ai-sdk/openai
+   npm install @ai-sdk/openai@"^1.0.0"
    ```
 
 3. Import the adapter and model to connect to your agent:
@@ -47,6 +47,11 @@ of supported models that can be brought into the Agents SDK through this adapter
    ```
 
 </Steps>
+
+<Aside type="caution">
+  Vercel's AI SDK has recently migrated to v2, however openai agent extensions is not yet compatible with v2.
+  Therefore v1 versions of Vercel's AI SDK has to be installed.
+</Aside>
 
 ## Example
 
