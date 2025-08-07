@@ -10,7 +10,17 @@ const summarizerTool = summarizer.asTool({
   toolDescription: 'Generate a concise summary of the supplied text.',
 });
 
+const echoAgent = new Agent({
+  name: 'Echo',
+  instructions: 'Repeat whatever the user says.',
+});
+
+const echoTool = echoAgent.asTool({
+  toolName: 'echo_text',
+  returnRunResult: true,
+});
+
 const mainAgent = new Agent({
   name: 'Research assistant',
-  tools: [summarizerTool],
+  tools: [summarizerTool, echoTool],
 });

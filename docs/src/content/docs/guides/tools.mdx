@@ -85,6 +85,7 @@ Under the hood the SDK:
 - Creates a function tool with a single `input` parameter.
 - Runs the sub‑agent with that input when the tool is called.
 - Returns either the last message or the output extracted by `customOutputExtractor`.
+- If `returnRunResult` is set, returns the full `RunResult` so nested interruptions can be inspected.
 
 ---
 

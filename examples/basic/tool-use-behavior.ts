@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool, RunContext, RunResult } from '@openai/agents';
 
 const Weather = z.object({
   city: z.string(),
@@ -46,6 +46,19 @@ const agent3 = new Agent({
   tools: [getWeatherTool, saySomethingTool],
 });
 
+const agentWithRunResult = new Agent({
+  name: 'Tool agent with RunResult',
+  instructions,
+  toolUseBehavior: { stopAtToolNames: ['get_weather'] },
+  outputType: Weather,
+  tools: [getWeatherTool, saySomethingTool],
+});
+
+const weatherToolWithRunResult = agentWithRunResult.asTool({
+  toolName: 'weather_summary',
+  returnRunResult: true,
+});
+
 async function main() {
   const input = 'What is the weather in San Francisco?';
   const result = await run(agent, input);
@@ -65,6 +78,12 @@ async function main() {
   const finalOutput3 = result3.finalOutput;
   // The weather in San Francisco is sunny. Thanks for asking!
   console.log(finalOutput3);
+
+  const result4 = (await weatherToolWithRunResult.invoke(
+    new RunContext(),
+    JSON.stringify({ input }),
+  )) as RunResult<any, Agent<any, any>>;
+  console.log('agentWithRunResult.newItems:', result4.newItems);
 }
 
 main();
