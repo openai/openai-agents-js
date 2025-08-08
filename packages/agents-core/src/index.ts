@@ -70,10 +70,12 @@ export { getLogger } from './logger';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
+  mcpToFunctionTool,
   MCPServer,
   MCPServerStdio,
   MCPServerStreamableHttp,
   MCPServerSSE,
+  GetAllMcpToolsOptions,
 } from './mcp';
 export {
   MCPToolFilterCallable,

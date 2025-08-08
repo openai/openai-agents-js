@@ -18,3 +18,9 @@ pnpm -F mcp start:stdio
 ```bash
 pnpm -F mcp start:tool-filter
 ```
+
+`get-all-mcp-tools-example.ts` demonstrates how to use the `getAllMcpTools` function to fetch tools from multiple MCP servers:
+
+```bash
+pnpm -F mcp start:get-all-tools
+```
