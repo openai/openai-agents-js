@@ -536,6 +536,9 @@ export interface MCPServerStreamableHttpOptions {
   authProvider?: any;
   // RequestInit
   requestInit?: any;
+  // Custom fetch implementation used for all network requests.
+  // import { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
+  fetch?: any;
   // import { StreamableHTTPReconnectionOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
   reconnectionOptions?: any;
   sessionId?: string;
