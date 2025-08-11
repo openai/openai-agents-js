@@ -307,7 +307,7 @@ importers:
         version: 4.1.10(vite@6.3.5(@types/node@24.0.13)(jiti@2.4.2)(lightningcss@1.30.1)(tsx@4.20.3)(yaml@2.7.1))
       openai:
         specifier: ^4.91.0
-        version: 4.104.0(ws@8.18.2)(zod@3.25.76)
+        version: 4.104.0(ws@8.18.2)(zod@3.25.62)
       tailwindcss:
         specifier: ^4.1.7
         version: 4.1.10
@@ -438,7 +438,7 @@ importers:
         version: 4.4.1
       openai:
         specifier: ^5.10.1
-        version: 5.10.1(ws@8.18.2)(zod@3.25.76)
+        version: 5.10.1(ws@8.18.2)(zod@3.25.62)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -505,7 +505,7 @@ importers:
         version: 4.4.1
       openai:
         specifier: ^5.10.1
-        version: 5.10.1(ws@8.18.2)(zod@3.25.76)
+        version: 5.10.1(ws@8.18.2)(zod@3.25.62)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -6214,9 +6214,6 @@ packages:
   zod@3.25.62:
     resolution: {integrity: sha512-YCxsr4DmhPcrKPC9R1oBHQNlQzlJEyPAId//qTau/vBee9uO8K6prmRq4eMkOyxvBfH4wDPIPdLx9HVMWIY3xA==}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
-
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -6333,7 +6330,7 @@ snapshots:
     dependencies:
       sitemap: 8.0.0
       stream-replace-string: 2.0.0
-      zod: 3.25.76
+      zod: 3.25.62
 
   '@astrojs/starlight-tailwind@3.0.1(@astrojs/starlight@0.34.3(astro@5.9.2(@types/node@24.0.13)(jiti@2.4.2)(lightningcss@1.30.1)(rollup@4.44.2)(tsx@4.20.1)(typescript@5.8.3)(yaml@2.7.1)))(@astrojs/tailwind@6.0.2(astro@5.9.2(@types/node@24.0.13)(jiti@2.4.2)(lightningcss@1.30.1)(rollup@4.44.2)(tsx@4.20.1)(typescript@5.8.3)(yaml@2.7.1))(tailwindcss@3.4.17))(tailwindcss@3.4.17)':
     dependencies:
@@ -10865,7 +10862,7 @@ snapshots:
       regex: 6.0.1
       regex-recursion: 6.0.2
 
-  openai@4.104.0(ws@8.18.2)(zod@3.25.76):
+  openai@4.104.0(ws@8.18.2)(zod@3.25.62):
     dependencies:
       '@types/node': 18.19.118
       '@types/node-fetch': 2.6.12
@@ -10876,7 +10873,7 @@ snapshots:
       node-fetch: 2.7.0
     optionalDependencies:
       ws: 8.18.2
-      zod: 3.25.76
+      zod: 3.25.62
     transitivePeerDependencies:
       - encoding
 
@@ -10884,11 +10881,6 @@ snapshots:
     optionalDependencies:
       ws: 8.18.2
       zod: 3.25.62
-
-  openai@5.10.1(ws@8.18.2)(zod@3.25.76):
-    optionalDependencies:
-      ws: 8.18.2
-      zod: 3.25.76
 
   optionator@0.9.4:
     dependencies:
@@ -12682,7 +12674,5 @@ snapshots:
       zod: 3.25.62
 
   zod@3.25.62: {}
-
-  zod@3.25.76: {}
 
   zwitch@2.0.4: {}
