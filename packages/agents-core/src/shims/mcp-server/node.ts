@@ -322,6 +322,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         {
           authProvider: this.params.authProvider,
           requestInit: this.params.requestInit,
+          fetch: this.params.fetch,
           reconnectionOptions: this.params.reconnectionOptions,
           sessionId: this.params.sessionId,
         },
