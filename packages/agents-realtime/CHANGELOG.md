@@ -1,5 +1,18 @@
 # @openai/agents-realtime
 
+## 0.0.16
+
+### Patch Changes
+
+- b487db1: Fix: clamp and floor `audio_end_ms` in interrupts to prevent Realtime API error with fractional speeds (#315)
+- a0b1f3b: fix(realtime-session): preserve audio format & other session config fields on agent update
+- Updated dependencies [1bb4d86]
+- Updated dependencies [4818d5e]
+- Updated dependencies [0858c98]
+- Updated dependencies [4bfd911]
+- Updated dependencies [c42a0a9]
+  - @openai/agents-core@0.0.16
+
 ## 0.0.15
 
 ### Patch Changes

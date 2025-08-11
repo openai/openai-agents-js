@@ -1,5 +1,18 @@
 # @openai/agents-core
 
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- 4818d5e: fix: support snake_case usage fields from OpenAI responses
+- 0858c98: fix: prevent crash when importing in cloudflare workers
+
+  An export was missed in https://github.com/openai/openai-agents-js/pull/290 for the workerd shim, this prevents the crash when importing there. Long term we should just add an implementation for cloudflare workers (and I suspect the node implementation might just work)
+
+- 4bfd911: Add custom fetch support to StreamableHTTP MCP transport
+- c42a0a9: refactor: restructure mcp tools fetching with options object pattern
+
 ## 0.0.15
 
 ### Patch Changes

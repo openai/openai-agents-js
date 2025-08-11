@@ -1,5 +1,19 @@
 # @openai/agents-openai
 
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- a51105b: Pass through strict flag for function tools when using completion
+- 4818d5e: fix: support snake_case usage fields from OpenAI responses
+- Updated dependencies [1bb4d86]
+- Updated dependencies [4818d5e]
+- Updated dependencies [0858c98]
+- Updated dependencies [4bfd911]
+- Updated dependencies [c42a0a9]
+  - @openai/agents-core@0.0.16
+
 ## 0.0.15
 
 ### Patch Changes
