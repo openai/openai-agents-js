@@ -37,7 +37,7 @@ export function extractAllAssistantContent(
   }
   const out: ChatCompletionAssistantMessageParam['content'] = [];
   for (const c of content) {
-    if (c.type === 'output_text' || c.type === 'input_text') {
+    if (c.type === 'output_text') {
       out.push({
         type: 'text',
         text: c.text,
@@ -277,6 +277,7 @@ export function toolToOpenAI(tool: SerializedTool): ChatCompletionTool {
         name: tool.name,
         description: tool.description || '',
         parameters: tool.parameters,
+        strict: tool.strict,
       },
     };
   }

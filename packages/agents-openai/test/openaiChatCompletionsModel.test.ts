@@ -79,6 +79,32 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('parses usage tokens from snake_case fields', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.usage.inputTokens).toBe(11);
+    expect(result.usage.outputTokens).toBe(7);
+    expect(result.usage.totalTokens).toBe(18);
+  });
+
   it('outputs message when content is empty string', async () => {
     const client = new FakeClient();
     const response = {

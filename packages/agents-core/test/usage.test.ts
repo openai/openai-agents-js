@@ -26,6 +26,24 @@ describe('Usage', () => {
     expect(usage.totalTokens).toBe(15);
   });
 
+  it('falls back to snake_case fields', () => {
+    const usage = new Usage({
+      requests: 2,
+      input_tokens: 7,
+      output_tokens: 3,
+      total_tokens: 10,
+      input_tokens_details: { foo: 1 },
+      output_tokens_details: { bar: 2 },
+    });
+
+    expect(usage.requests).toBe(2);
+    expect(usage.inputTokens).toBe(7);
+    expect(usage.outputTokens).toBe(3);
+    expect(usage.totalTokens).toBe(10);
+    expect(usage.inputTokensDetails).toEqual([{ foo: 1 }]);
+    expect(usage.outputTokensDetails).toEqual([{ bar: 2 }]);
+  });
+
   it('adds other Usage instances correctly', () => {
     const usageA = new Usage({
       inputTokens: 1,
