@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- 191b82a: fix: the aisdk extension should grab output when toolCalls is a blank array
+
+  When the output of a provider includes an empty tool calls array, we'd mistakenly skip over the text result. This patch checks for that condition.
+
+- b487db1: Fix: clamp and floor `audio_end_ms` in interrupts to prevent Realtime API error with fractional speeds (#315)
+  - @openai/agents@0.0.16
+
 ## 0.0.15
 
 ### Patch Changes
