@@ -6,7 +6,28 @@ git update-index --again
 pnpm eslint $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g') --fix
 git update-index --again
 
-# check for secrets
+
+# Only adjust PATH on macOS/Linux/WSL
+UNAME=$(uname -s 2>/dev/null || echo "")
+case "$UNAME" in
+  Linux|Darwin|*WSL*)
+    export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+    ;;
+esac
+
+# run trufflehog check script
+tsx scripts/check-trufflehog.mts
+
 if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
-  trufflehog git file://. --since-commit HEAD --fail
+  if command -v trufflehog >/dev/null 2>&1; then
+    TRUFFLEHOG_BIN=$(command -v trufflehog)
+  elif where trufflehog >/dev/null 2>&1; then
+    TRUFFLEHOG_BIN=$(where trufflehog | head -n 1)
+  else
+    echo "Error: trufflehog is not installed or not in PATH"
+    exit 1
+  fi
+
+  "$TRUFFLEHOG_BIN" git file://. --since-commit HEAD --fail
 fi
+
