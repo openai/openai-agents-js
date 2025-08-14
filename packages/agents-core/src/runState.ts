@@ -12,6 +12,7 @@ import {
 } from './items';
 import type { ModelResponse } from './model';
 import { RunContext } from './runContext';
+import { getTurnInput } from './run';
 import {
   AgentToolUseTracker,
   nextStepSchema,
@@ -325,6 +326,15 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._inputGuardrailResults = [];
     this._outputGuardrailResults = [];
     this._trace = getCurrentTrace();
+  }
+
+  /**
+   * The history of the agent run. This includes the input items and the new items generated during the run.
+   *
+   * This can be used as inputs for the next agent run.
+   */
+  get history(): AgentInputItem[] {
+    return getTurnInput(this._originalInput, this._generatedItems);
   }
 
   /**
