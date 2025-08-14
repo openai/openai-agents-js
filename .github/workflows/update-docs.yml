@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Build workspace packages
+        run: pnpm build
+
       - name: Translate docs
         env:
           OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}

@@ -7,24 +7,24 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import customTraceExample from '../../../../../../examples/docs/custom-trace.ts?raw';
 import cloudflareWorkers from '../../../../../../examples/docs/tracing/cloudflareWorkers.ts?raw';
 
-Agents SDK にはトレーシングが組み込まれており、エージェント実行中に発生するイベント（LLM 生成、ツール呼び出し、ハンドオフ、ガードレール、さらにはカスタムイベント）を網羅的に記録します。[Traces ダッシュボード](https://platform.openai.com/traces) を使用すると、開発時および本番環境でワークフローをデバッグ、可視化、モニタリングできます。
+Agents SDK には組み込みのトレーシングが含まれており、エージェント実行中に発生するイベントの包括的な記録（LLM の生成、ツール呼び出し、ハンドオフ、ガードレール、さらにはカスタムイベント）を収集します。 [Traces ダッシュボード](https://platform.openai.com/traces) を使うと、開発中および本番環境でワークフローをデバッグ・可視化・監視できます。
 
 <Aside type="note">
 
-トレーシングはデフォルトで有効になっています。無効化する方法は 2 つあります:
+トレーシングはデフォルトで有効です。無効化する方法は 2 つあります:
 
-1. 環境変数 `OPENAI_AGENTS_DISABLE_TRACING=1` を設定してグローバルにトレーシングを無効化する
-2. 単一の実行に対しては [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) に `true` を設定して無効化する
+1. 環境変数 `OPENAI_AGENTS_DISABLE_TRACING=1` を設定して、トレーシングをグローバルに無効化できます
+2. 単一の実行では、[`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) を `true` に設定して無効化できます
 
-**_OpenAI の API を Zero Data Retention (ZDR) ポリシーでご利用の組織では、トレーシングを使用できません。_**
+**_OpenAI の API を使用し Zero Data Retention (ZDR) ポリシーの下で運用している組織では、トレーシングは利用できません。_**
 
 </Aside>
 
 ## エクスポートループのライフサイクル
 
-ほとんどの環境では、トレースは一定間隔で自動的にエクスポートされます。ブラウザーや Cloudflare Workers ではこの機能がデフォルトで無効です。キューに溜まり過ぎた場合はエクスポートされますが、定期的には送信されません。その場合は `getGlobalTraceProvider().forceFlush()` を呼び出し、コードのライフサイクルの一部として手動でトレースをエクスポートしてください。
+多くの環境では、トレースは一定間隔で自動的にエクスポートされます。ブラウザや Cloudflare Workers では、この機能はデフォルトで無効です。キューが溜まりすぎた場合は引き続きエクスポートされますが、定期的にはエクスポートされません。代わりに、コードのライフサイクルの一部として `getGlobalTraceProvider().forceFlush()` を使用して手動でトレースをエクスポートしてください。
 
-たとえば Cloudflare Worker では、コード全体を `try/catch/finally` ブロックでラップし、`waitUntil` と組み合わせて force flush を呼び出すことで、ワーカーが終了する前にトレースを確実にエクスポートできます。
+例えば Cloudflare Worker では、コードを `try/catch/finally` ブロックでラップし、`waitUntil` と併用して強制フラッシュすることで、ワーカーが終了する前にトレースがエクスポートされるようにします。
 
 <Code
   lang="typescript"
@@ -32,82 +32,81 @@ Agents SDK にはトレーシングが組み込まれており、エージェン
   meta="{13}"
 />
 
-## Trace と Span
+## トレースとスパン
 
-- **Trace** は 1 回のワークフロー全体 (end-to-end) の操作を表し、複数の Span で構成されます。Trace には次のプロパティがあります:
-  - `workflow_name`: 論理的なワークフローまたはアプリ名 例: "Code generation" や "Customer service"
-  - `trace_id`: Trace の一意 ID。指定しない場合は自動生成され、形式は `trace_<32_alphanumeric>`
-  - `group_id`: 同じ会話からの複数トレースを関連付けるオプションのグループ ID。たとえばチャットスレッド ID など
-  - `disabled`: `true` の場合、この Trace は記録されない
-  - `metadata`: Trace 用の任意メタデータ
-- **Span** は開始時刻と終了時刻を持つ操作を表します。Span には次のプロパティがあります:
+- **トレース** は「ワークフロー」のエンドツーエンドの 1 回の操作を表します。スパンで構成されます。トレースには次のプロパティがあります:
+  - `workflow_name`: これは論理的なワークフローまたはアプリです。例えば "Code generation" や "Customer service"
+  - `trace_id`: トレースの一意の ID。渡さなかった場合は自動生成されます。形式は `trace_<32_alphanumeric>` である必要があります
+  - `group_id`: オプションのグループ ID。同じ会話からの複数のトレースをリンクするために使用します。例えば、チャットスレッドの ID を使えます
+  - `disabled`: True の場合、トレースは記録されません
+  - `metadata`: トレース用のオプションのメタデータ
+- **スパン** は開始時刻と終了時刻を持つ操作を表します。スパンには次があります:
   - `started_at` と `ended_at` のタイムスタンプ
-  - 所属する Trace を示す `trace_id`
-  - 親 Span を指す `parent_id`（存在する場合）
-  - Span の情報を保持する `span_data`。例: `AgentSpanData` はエージェント情報、`GenerationSpanData` は LLM 生成情報など
+  - 所属するトレースを示す `trace_id`
+  - このスパンの親スパン（存在する場合）を指す `parent_id`
+  - スパンに関する情報である `span_data`。例えば、`AgentSpanData` はエージェントに関する情報、`GenerationSpanData` は LLM の生成に関する情報など
 
 ## デフォルトのトレーシング
 
-デフォルトでは、SDK は次の内容をトレースします:
+デフォルトでは、SDK は次をトレースします:
 
-- `run()` または `Runner.run()` 全体を `Trace` でラップ
-- エージェントの実行ごとに `AgentSpan` でラップ
-- LLM 生成を `GenerationSpan` でラップ
-- 関数ツール呼び出しを `FunctionSpan` でラップ
-- ガードレールを `GuardrailSpan` でラップ
-- ハンドオフを `HandoffSpan` でラップ
+- `run()` または `Runner.run()` 全体は `Trace` でラップされます
+- エージェントが実行されるたびに `AgentSpan` でラップされます
+- LLM の生成は `GenerationSpan` でラップされます
+- 関数ツールの呼び出しはそれぞれ `FunctionSpan` でラップされます
+- ガードレールは `GuardrailSpan` でラップされます
+- ハンドオフは `HandoffSpan` でラップされます
 
-既定ではトレース名は "Agent workflow" です。`withTrace` を使用して変更するか、[`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname) で名前や他のプロパティを設定できます。
+デフォルトでは、トレース名は "Agent workflow" です。`withTrace` を使用してこの名前を設定することも、[`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname) で名前やその他のプロパティを設定することもできます。
 
-さらに、[カスタムトレースプロセッサー](#custom-tracing-processors) を設定して、トレースを別の送信先に転送（置き換えや追加送信）することもできます。
+さらに、[カスタムトレーシングプロセッサー](#custom-tracing-processors) を設定して、トレースを他の送信先にプッシュできます（置き換えまたはセカンダリの送信先として）
 
 ### 音声エージェントのトレーシング
 
-デフォルトの OpenAI Realtime API で `RealtimeAgent` と `RealtimeSession` を使用している場合、`RealtimeSession` で `tracingDisabled: true` を指定するか環境変数 `OPENAI_AGENTS_DISABLE_TRACING` を設定しない限り、トレーシングは Realtime API 側で自動的に実行されます。
+デフォルトの OpenAI Realtime API とともに `RealtimeAgent` および `RealtimeSession` を使用している場合、`RealtimeSession` で `tracingDisabled: true` を指定するか、環境変数 `OPENAI_AGENTS_DISABLE_TRACING` を使用して無効化しない限り、トレーシングは Realtime API 側で自動的に行われます。
 
-詳細は [音声エージェントの概要](/openai-agents-js/guides/voice-agents) を参照してください。
+詳しくは、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を参照してください。
 
-## 上位レベルのトレース
+## より高レベルのトレース
 
-複数回の `run()` 呼び出しを 1 つの Trace にまとめたい場合は、コード全体を `withTrace()` でラップします。
+複数の `run()` 呼び出しを 1 つのトレースにまとめたい場合があります。コード全体を `withTrace()` でラップすれば実現できます。
 
 <Code lang="typescript" code={customTraceExample} />
 
-1. 2 回の `run` 呼び出しが `withTrace()` でラップされているため、それぞれの実行は個別の Trace を作成せず、全体 Trace の一部になります。
+1. 2 回の `run` 呼び出しが `withTrace()` でラップされているため、個々の実行は 2 つのトレースを作成するのではなく、全体のトレースの一部になります
 
-## Trace の作成
+## トレースの作成
 
-[`withTrace()`](/openai-agents-js/openai/agents-core/functions/withtrace/) 関数で Trace を作成できます。あるいは `getGlobalTraceProvider().createTrace()` で新しい Trace を手動作成し、それを `withTrace()` に渡す方法もあります。
+トレースは [`withTrace()`](/openai-agents-js/openai/agents-core/functions/withtrace/) 関数で作成できます。あるいは、`getGlobalTraceProvider().createTrace()` を使って手動で新しいトレースを作成し、それを `withTrace()` に渡すこともできます。
 
-現在の Trace は [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage)（または各環境のポリフィル）で管理されるため、自動的に並行処理に対応します。
+現在のトレースは [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) または各環境のポリフィルを通じて追跡されます。これにより、並行実行でも自動的に機能します。
 
-## Span の作成
+## スパンの作成
 
-`createGenerationSpan()` や `createFunctionSpan()` などの `create*Span()` メソッドで Span を作成できます。通常は手動で Span を作成する必要はありません。カスタム情報を追跡したい場合は [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) を使用できます。
+各種 `create*Span()`（例: `createGenerationSpan()`, `createFunctionSpan()` など）のメソッドでスパンを作成できます。一般的には、手動でスパンを作成する必要はありません。カスタムスパン情報を追跡するための [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) 関数も利用できます。
 
-Span は自動的に現在の Trace に属し、最も近い現在の Span の子としてネストされます。この情報も [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) で管理されます。
+スパンは自動的に現在のトレースの一部となり、最も近い現在のスパンの下にネストされます。これは [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) または各環境のポリフィルによって追跡されます。
 
-## 機密データ
+## 機微なデータ
 
-一部の Span では機密データが記録される可能性があります。
+一部のスパンは、機微なデータを取り込む可能性があります。
 
-`createGenerationSpan()` は LLM 生成の入力／出力を、`createFunctionSpan()` は関数呼び出しの入力／出力を保存します。機密データを含む可能性があるため、[`RunConfig.traceIncludeSensitiveData`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata) で記録を無効化できます。
+`createGenerationSpan()` は LLM の生成の入力/出力を、`createFunctionSpan()` は関数呼び出しの入力/出力を保存します。これらには機微なデータが含まれる可能性があるため、[`RunConfig.traceIncludeSensitiveData
+`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata) 経由でそのデータの捕捉を無効化できます。
 
-## カスタムトレースプロセッサー
+## カスタムトレーシングプロセッサー
 
-トレーシングの高レベル構成は以下のとおりです:
+トレーシングの高レベルのアーキテクチャは次のとおりです:
 
-- 初期化時にグローバル [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider) を作成し、[`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/) から取得できます。
-- `TraceProvider` には [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/) を設定し、Trace / Span をバッチで [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/) に送信して OpenAI バックエンドへエクスポートします。
+- 初期化時にグローバルな [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider) を作成します。これはトレースの作成を担い、[`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/) からアクセスできます
+- `TraceProvider` には [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/) を設定します。これはトレース/スパンをバッチで [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/) に送信し、OpenAI のバックエンドにスパンとトレースをバッチでエクスポートします
 
-デフォルト設定を変更し、別のバックエンドへ送信したりエクスポーターの挙動を変更したりするには、次の 2 つの方法があります:
+このデフォルト構成をカスタマイズして、別のバックエンドへの送信や追加のバックエンドへの送信、エクスポーターの動作変更を行うには、次の 2 つの方法があります:
 
-1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor)  
-   追加のトレースプロセッサーを登録し、Trace / Span が準備でき次第受け取れるようにします。これにより、OpenAI バックエンドへの送信に加えて独自処理を実行できます。
-2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors)  
-   既定のプロセッサーを置き換えて独自のトレースプロセッサーのみを使用します。OpenAI バックエンドへ送信したい場合は、その機能を持つ `TracingProcessor` を含める必要があります。
+1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor) は、 **追加の** トレースプロセッサーを追加でき、トレースやスパンが準備でき次第それらを受け取ります。これにより、OpenAI のバックエンドへの送信に加えて、独自の処理を実行できます
+2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors) は、デフォルトのプロセッサーを自分のトレースプロセッサーに **置き換える** ことができます。この場合、OpenAI のバックエンドに送信する `TracingProcessor` を含めない限り、トレースは OpenAI のバックエンドに送信されません
 
-## 外部トレースプロセッサー一覧
+## 外部トレーシングプロセッサー一覧
 
 - [AgentOps](https://docs.agentops.ai/v2/usage/typescript-sdk#openai-agents-integration)
 - [Keywords AI](https://docs.keywordsai.co/integration/development-frameworks/openai-agents-sdk-js)
