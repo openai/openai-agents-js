@@ -7,13 +7,13 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  このアダプターはまだ beta
-  です。一部のモデルプロバイダー、特に小規模なものでは問題が発生する場合があります。問題は
-  [GitHub issues](https://github.com/openai/openai-agents-js/issues)
-  から報告してください。迅速に修正します。
+  このアダプターはまだベータ版です。特に小規模なモデル
+  プロバイダーでは問題が発生する場合があります。問題があれば [GitHub
+  Issues](https://github.com/openai/openai-agents-js/issues)
+  から報告してください。迅速に 対応します。
 </Aside>
 
-標準で Agents SDK は Responses API または Chat Completions API を通じて OpenAI モデルと動作します。ただし、他のモデルを使いたい場合は、[Vercel の AI SDK](https://sdk.vercel.ai/) がこのアダプター経由で Agents SDK に組み込める多数の対応モデルを提供します。
+Agents SDKは標準で Responses API または Chat Completions API を通じてOpenAIのモデルと連携します。ただし、別のモデルを使いたい場合は、[Vercel の AI SDK](https://sdk.vercel.ai/) が提供する多数の対応モデルをこのアダプター経由で Agents SDKに組み込めます。
 
 ## セットアップ
 
@@ -25,13 +25,13 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel の AI SDK](https://sdk.vercel.ai/docs/models/overview) から目的のモデルパッケージを選び、インストールします:
+2. [Vercel の AI SDK](https://sdk.vercel.ai/docs/models/overview) から目的のモデルパッケージを選んでインストールします:
 
    ```bash
    npm install @ai-sdk/openai@"^1.0.0"
    ```
 
-3. アダプターとモデルをインポートして、エージェントに接続します:
+3. アダプターとモデルをインポートしてエージェントに接続します:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
@@ -47,18 +47,22 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  Vercel の AI SDK は最近 v2 に移行しましたが、 openai agent extensions はまだ
-  v2 と互換性がありません。 そのため Vercel の AI SDK は v1
-  バージョンをインストールする必要があります。
+  Vercel の AI SDK は最近 v2 に移行しましたが、openai agent extensions はまだ v2
+  に対応していません。 そのため Vercel の AI SDK は v1
+  をインストールする必要があります。
 </Aside>
 
 ## 例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK セットアップ" />
+<Code
+  lang="typescript"
+  code={aiSdkSetupExample}
+  title="AI SDK のセットアップ"
+/>
 
-## プロバイダーのメタデータの受け渡し
+## プロバイダー メタデータの受け渡し
 
-メッセージにプロバイダー固有のオプションを添えて送信する必要がある場合は、`providerMetadata` を通して渡します。値は基盤の AI SDK モデルにそのまま転送されます。たとえば、Agents SDK で次の `providerData` は
+メッセージと一緒にプロバイダー固有のオプションを送る必要がある場合は、`providerMetadata` に渡します。値は基盤の AI SDK モデルにそのまま転送されます。例えば、Agents SDKで次の `providerData` は
 
 ```ts
 providerData: {
@@ -70,7 +74,7 @@ providerData: {
 }
 ```
 
-AI SDK 連携を使用する場合は
+次のようになります
 
 ```ts
 providerMetadata: {
@@ -82,4 +86,4 @@ providerMetadata: {
 }
 ```
 
-になります。
+AI SDK 連携を使用する場合

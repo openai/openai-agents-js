@@ -10,107 +10,115 @@ import nonStrictSchemaTools from '../../../../../../examples/docs/tools/nonStric
 import agentsAsToolsExample from '../../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
-ツールは、エージェント が **行動を実行** できるようにします — データの取得、外部 API の呼び出し、コードの実行、さらには コンピュータ操作 まで。JavaScript/TypeScript SDK は 4 つのカテゴリーをサポートします:
+ツールは エージェント が **行動を実行** できるようにします – データを取得し、外部 API を呼び出し、コードを実行し、さらにはコンピュータを使うこともできます。JavaScript / TypeScript SDK は 4 つのカテゴリーをサポートしています:
 
-1. **組み込みツール（Hosted）** — モデルと同じ OpenAI のサーバー上で動作します （Web 検索、ファイル検索、コンピュータ操作、Code Interpreter、画像生成）
-2. **関数ツール** — 任意のローカル関数を JSON スキーマでラップし、LLM が呼び出せるようにします
-3. **エージェントをツールとして** — エージェント 全体を呼び出し可能なツールとして公開します
-4. **ローカル MCP サーバー** — 手元のマシンで動作する Model Context Protocol サーバーをアタッチします
+1. OpenAI がホストするツール – モデルと同じ OpenAI サーバー上で動作します。_(Web 検索、ファイル検索、コンピュータ操作、code interpreter、画像生成)_
+2. 関数ツール – 任意のローカル関数を JSON スキーマでラップして LLM が呼び出せるようにします
+3. ツールとしての エージェント – エージェント全体を呼び出し可能なツールとして公開します
+4. ローカル MCP サーバー – マシン上で動作する Model Context Protocol サーバーを接続します
 
 ---
 
 ## 1. 組み込みツール（Hosted）
 
-`OpenAIResponsesModel` を使用する場合、次の組み込みツールを追加できます:
+`OpenAIResponsesModel` を使うと、次の組み込みツールを追加できます:
 
-| ツール                      | タイプ文字列         | 目的                                       |
-| --------------------------- | -------------------- | ------------------------------------------ |
-| Web 検索                    | `'web_search'`       | インターネット検索                         |
-| ファイル / リトリーバル検索 | `'file_search'`      | OpenAIがホストする ベクトルストア をクエリ |
-| コンピュータ操作            | `'computer'`         | GUI の操作を自動化                         |
-| Code Interpreter            | `'code_interpreter'` | サンドボックス化された環境でコードを実行   |
-| 画像生成                    | `'image_generation'` | テキストに基づいて画像を生成               |
+| ツール                  | Type string          | 目的                                        |
+| ----------------------- | -------------------- | ------------------------------------------- |
+| Web search              | `'web_search'`       | インターネット検索                          |
+| File / retrieval search | `'file_search'`      | OpenAI にホストされた ベクトルストア を検索 |
+| Computer use            | `'computer'`         | GUI 操作を自動化                            |
+| Code Interpreter        | `'code_interpreter'` | サンドボックス環境でコードを実行            |
+| Image generation        | `'image_generation'` | テキストに基づいて画像を生成                |
 
-<Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
+<Code
+  lang="typescript"
+  code={toolsHostedToolsExample}
+  title="組み込みツール（Hosted）"
+/>
 
-正確なパラメーターセットは OpenAI Responses API と一致します。`rankingOptions` やセマンティック フィルターなどの高度なオプションについては、公式ドキュメントを参照してください。
+正確なパラメーター群は OpenAI Responses API と一致します。`rankingOptions` やセマンティックフィルターなどの高度なオプションは公式ドキュメントを参照してください。
 
 ---
 
 ## 2. 関数ツール
 
-`tool()` ヘルパーを使うと、任意の関数をツールにできます。
+`tool()` ヘルパーで任意の関数をツールにできます。
 
 <Code
   lang="typescript"
   code={toolsFunctionExample}
-  title="Function tool with Zod parameters"
+  title="Zod パラメーター付きの関数ツール"
 />
 
 ### オプションリファレンス
 
-| フィールド      | 必須   | 説明                                                                                                                                                                                                  |
-| --------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`          | いいえ | 関数名（例: `get_weather`）をデフォルトに使用                                                                                                                                                         |
-| `description`   | はい   | LLM に表示される、人間が読みやすい明確な説明                                                                                                                                                          |
-| `parameters`    | はい   | Zod スキーマ または raw JSON スキーマオブジェクト。Zod の parameters は自動的に strict モードを有効化                                                                                                 |
-| `strict`        | いいえ | `true`（デフォルト）の場合、引数が検証に失敗すると SDK はモデルエラーを返します。あいまい一致にするには `false` に設定                                                                                |
-| `execute`       | はい   | `(args, context) => string                                                                                               \| Promise<string>` — ビジネスロジック。2 番目のオプション引数は`RunContext` |
-| `errorFunction` | いいえ | 内部エラーをユーザーに見える文字列へ変換するためのカスタムハンドラー `(context, error) => string`                                                                                                     |
+| 項目            | 必須   | 説明                                                                                                                                                                                                         |
+| --------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`          | いいえ | 関数名が既定値になります（例: `get_weather`）                                                                                                                                                                |
+| `description`   | はい   | LLM に表示される、わかりやすい人間向けの説明                                                                                                                                                                 |
+| `parameters`    | はい   | Zod スキーマ、または 元 の JSON スキーマオブジェクトのいずれか。Zod のパラメーターを使うと **strict** モードが自動的に有効になります                                                                         |
+| `strict`        | いいえ | `true`（既定）で、引数が検証に失敗した場合は SDK が model エラーを返します。曖昧一致にしたい場合は `false` にします                                                                                          |
+| `execute`       | はい   | `(args, context) => string                                                                                               \| Promise<string>` – ビジネスロジック。2 番目の引数は省略可能で、`RunContext` です |
+| `errorFunction` | いいえ | 内部エラーをユーザーに見える文字列へ変換するためのカスタムハンドラー `(context, error) => string`                                                                                                            |
 
-### 非 strict な JSON スキーマ ツール
+### 非 strict JSON スキーマのツール
 
-無効または不完全な入力をモデルに推測させたい場合は、raw JSON スキーマ使用時に strict モードを無効化できます:
+モデルに無効または不完全な入力を推測させたい場合は、元 の JSON スキーマを使う際に strict モードを無効化できます:
 
 <Code
   lang="typescript"
   code={nonStrictSchemaTools}
-  title="Non-strict JSON schema tools"
+  title="非 strict JSON スキーマのツール"
 />
 
 ---
 
-## 3. エージェントをツールとして
+## 3. ツールとしてのエージェント
 
-会話を完全にハンドオフせずに、ある エージェント に別の エージェント を支援させたい場合があります。`agent.asTool()` を使用します:
+会話を完全にハンドオフすることなく、ある エージェント が別の エージェント を支援してほしい場合があります。`agent.asTool()` を使います:
 
-<Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
+<Code
+  lang="typescript"
+  code={agentsAsToolsExample}
+  title="ツールとしてのエージェント"
+/>
 
-内部的に SDK は次を行います:
+内部的には SDK は次を行います:
 
-- 単一の `input` パラメーターをもつ関数ツールを作成
+- 単一の `input` パラメーターを持つ関数ツールを作成
 - ツールが呼び出されたときに、その入力でサブエージェントを実行
-- 最後のメッセージ、または `customOutputExtractor` で抽出された出力を返却
+- 最後のメッセージ、または `customOutputExtractor` で抽出した出力を返却
 
 ---
 
 ## 4. ローカル MCP サーバー
 
-ローカルの [Model Context Protocol](https://modelcontextprotocol.io/) サーバーを通じてツールを公開し、エージェントにアタッチできます。`MCPServerStdio` を使ってサーバーを起動して接続します:
+ローカルの [Model Context Protocol](https://modelcontextprotocol.io/) サーバー経由でツールを公開し、エージェントに接続できます。`MCPServerStdio` を使ってサーバーを起動・接続します:
 
-<Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
+<Code lang="typescript" code={mcpLocalServer} title="ローカル MCP サーバー" />
 
 完全な code examples は [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) を参照してください。
 
 ---
 
-## ツール使用の挙動
+## ツール使用時の挙動
 
-モデルがいつどのようにツールを必ず使用すべきかを制御する方法については、[エージェント](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照してください（`tool_choice`、`toolUseBehavior` など）。
+モデルがいつどのようにツールを使うべきか（`tool_choice`、`toolUseBehavior` など）を制御するには、[エージェント](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照してください。
 
 ---
 
 ## ベストプラクティス
 
-- **短く明確な説明** — ツールが何をするか、いつ使うべきかを記述
-- **入力を検証** — 可能であれば Zod スキーマで厳密な JSON 検証を行う
-- **エラーハンドラーで副作用を避ける** — `errorFunction` は有用な文字列を返すべきで、例外を throw しない
-- **ツールは単一責務** — 小さく合成可能なツールはモデルの推論を改善
+- **短く明確な説明** – ツールが何をするか、いつ使うかを記述
+- **入力の検証** – 可能であれば Zod スキーマで厳密な JSON 検証を実施
+- **エラーハンドラーで副作用を避ける** – `errorFunction` は例外を投げず、有用な文字列を返す
+- **ツールごとに責務は 1 つ** – 小さく合成しやすいツールのほうがモデルの推論が良くなる
 
 ---
 
 ## 次のステップ
 
 - [ツール使用の強制](/openai-agents-js/ja/guides/agents#forcing-tool-use) について学ぶ
-- ツールの入力または出力を検証するために [ガードレール](/openai-agents-js/ja/guides/guardrails) を追加
-- [`tool()`](/openai-agents-js/openai/agents/functions/tool) と各種 組み込みツール（Hosted）の型について TypeDoc リファレンスを参照
+- ツールの入力や出力を検証するために [ガードレール](/openai-agents-js/ja/guides/guardrails) を追加
+- [`tool()`](/openai-agents-js/openai/agents/functions/tool) と各種の 組み込みツール（Hosted）タイプの TypeDoc リファレンスを読む
