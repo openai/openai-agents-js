@@ -1,5 +1,5 @@
 ---
-'@openai/agents-core': minor
+'@openai/agents-core': patch
 ---
 
 feat: expose the `history` getter on `RunState` to access input and generated items.
