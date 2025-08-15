@@ -1,7 +1,15 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
-const execa = execaBase({ cwd: './integration-tests/node' });
+const execa = execaBase({
+  cwd: './integration-tests/node',
+  env: {
+    ...process.env,
+    NODE_OPTIONS: '',
+    TS_NODE_PROJECT: '',
+    TS_NODE_COMPILER_OPTIONS: '',
+  },
+});
 
 describe('Node.js', () => {
   beforeAll(async () => {
