@@ -34,6 +34,11 @@ export type HandoffInputData = {
    * handoff and the tool output message representing the response from the handoff output.
    */
   newItems: RunItem[];
+  /**
+   * The context of the handoff.
+   * Note that, since this property was added later on, it's optional to pass from users.
+   */
+  runContext?: RunContext<any>;
 };
 
 export type HandoffInputFilter = (input: HandoffInputData) => HandoffInputData;

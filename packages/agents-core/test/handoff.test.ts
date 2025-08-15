@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../src/agent';
 import { handoff, getHandoff, Handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 const agent = new Agent({ name: 'A' });
 

@@ -12,3 +12,15 @@ Run the example from the repository root:
 ```bash
 pnpm -F mcp start:stdio
 ```
+
+`tool-filter-example.ts` shows how to expose only a subset of server tools:
+
+```bash
+pnpm -F mcp start:tool-filter
+```
+
+`get-all-mcp-tools-example.ts` demonstrates how to use the `getAllMcpTools` function to fetch tools from multiple MCP servers:
+
+```bash
+pnpm -F mcp start:get-all-tools
+```

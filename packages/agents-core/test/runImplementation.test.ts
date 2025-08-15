@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 import { Agent } from '../src/agent';
 import {

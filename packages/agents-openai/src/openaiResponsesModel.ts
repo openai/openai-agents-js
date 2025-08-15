@@ -25,7 +25,7 @@ import {
   ToolChoiceOptions,
   ToolChoiceTypes,
 } from 'openai/resources/responses/responses';
-import { z } from '@openai/zod/v3';
+import { z } from 'zod';
 import { HEADERS } from './defaults';
 import {
   CodeInterpreterStatus,
@@ -541,7 +541,7 @@ function getInputItems(
           outputs:
             item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
-          container_id: item.providerData?.containerId,
+          container_id: item.providerData?.container_id,
         };
 
         return entry;

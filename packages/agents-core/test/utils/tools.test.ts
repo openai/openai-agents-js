@@ -3,7 +3,7 @@ import {
   toFunctionToolName,
   getSchemaAndParserFromInputType,
 } from '../../src/utils/tools';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
 

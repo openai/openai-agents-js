@@ -1,4 +1,4 @@
-import type { ZodObject, infer as zInfer } from 'zod/v3';
+import type { ZodObject, infer as zInfer } from 'zod';
 import { Agent, AgentOutputType } from '../agent';
 import { ToolInputParameters } from '../tool';
 import { Handoff } from '../handoff';

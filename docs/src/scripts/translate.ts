@@ -120,7 +120,7 @@ const languages: Record<string, string> = {
   ja: 'Japanese',
   // Add more languages here
 };
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'o3';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
 setDefaultOpenAIKey(process.env.OPENAI_API_KEY || '');
 const ENABLE_CODE_SNIPPET_EXCLUSION = true;
 
@@ -309,6 +309,7 @@ You must return **only** the translated markdown. Do not include any commentary,
 - Section titles must be translated except for the Do-Not-Translate list.
 - Do not omit any content. If a segment should stay in English, copy it verbatim.
 - Do not change the markdown data structure, including the indentations.
+- Keep the valid *.md/*.mdx data structure; Do not break anything at runtime.
 - Don't add any tags that don't exist in the origin text
 - Keep all placeholders such as \`CODE_BLOCK_*\` and \`CODE_LINE_PREFIX\` unchanged.
 - Don't add any tags before/after lines using astrojs items such as <Code> and their imports
@@ -370,6 +371,7 @@ Follow the following workflow to translate the given markdown text data:
 3. Perform a self-review to evaluate the following points:
   - the quality of the translation, focusing on naturalness, accuracy, and consistency in detail
   - any errors or rooms for improvements in terms of Markdown text format -- A common error is to have spaces within special syntax like * or _. You must have spaces after special syntax like * or _, but it's NOT the same for the parts inside special syntax (e.g., ** bold ** must be **bold**)
+  - you should not have any unnecessary spaces outside of tags; especially for the ones you replace with the "TERM-SPECIFIC" list
   - any parts that are not compatible with *.mdx files -- In the past, you've generated an expression with acorn like {#title-here} in h2 (##) level but it was neither necessary nor valid
 4. If improvements are necessary, refine the content without changing the original meaning.
 5. Continue improving the translation until you are fully satisfied with the result.

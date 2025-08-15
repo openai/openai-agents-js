@@ -28,136 +28,138 @@ import serverAgentExample from '../../../../../../../examples/docs/voice-agents/
 import delegationAgentExample from '../../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
 import turnDetectionExample from '../../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
 
-## オーディオ処理
+## 音声の取り扱い
 
-デフォルトの `OpenAIRealtimeWebRTC` のような一部のトランスポートレイヤーは、音声の入出力を自動で処理します。`OpenAIRealtimeWebSocket` のような別のトランスポート機構を使う場合は、セッションの音声を自分で処理する必要があります。
+デフォルトの `OpenAIRealtimeWebRTC` のような一部のトランスポート層は、音声の入出力を自動的に処理します。`OpenAIRealtimeWebSocket` のような他のトランスポート機構では、セッションの音声を自分で扱う必要があります:
 
 <Code lang="typescript" code={handleAudioExample} />
 
 ## セッション設定
 
-[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) のコンストラクタ、または `connect(...)` を呼び出す際に追加オプションを渡すことでセッションを設定できます。
+[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) の構築時、または `connect(...)` を呼び出すときに追加オプションを渡すことで、セッションを設定できます。
 
 <Code lang="typescript" code={configureSessionExample} />
 
-これらのトランスポートレイヤーでは、[session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) に一致する任意のパラメーターを渡せます。
+これらのトランスポート層では、[session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) に一致する任意のパラメーターを渡せます。
 
-[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) にまだ存在しない新しいパラメーターについては `providerData` を使えます。`providerData` に渡した内容は `session` オブジェクトの一部としてそのまま送信されます。
+[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) にまだ対応するパラメーターがない新しいパラメーターについては、`providerData` を使用できます。`providerData` に渡した内容は、`session` オブジェクトの一部としてそのまま渡されます。
 
 ## ハンドオフ
 
-通常のエージェントと同様に、ハンドオフを使ってエージェントを複数に分割し、それらをオーケストレーションすることでパフォーマンスを向上させたり、問題のスコープをより適切に定義できます。
+通常のエージェントと同様に、ハンドオフを使ってエージェントを複数のエージェントに分割し、それらの間をオーケストレーションすることで、エージェントのパフォーマンスを向上させ、問題の範囲を適切に絞り込めます。
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-通常のエージェントとは異なり、リアルタイムエージェントにおけるハンドオフは少し挙動が異なります。ハンドオフが実行されると、進行中のセッションは新しいエージェント設定で更新されます。そのため、エージェントは自動的に進行中の会話履歴へアクセスでき、現時点では入力フィルターは適用されません。
+通常のエージェントとは異なり、Realtime Agents ではハンドオフの挙動が少し異なります。ハンドオフが実行されると、進行中のセッションが新しいエージェント設定で更新されます。これにより、エージェントは進行中の会話履歴に自動的にアクセスでき、現在は入力フィルターが適用されません。
 
-さらに、`voice` や `model` はハンドオフの一部として変更できません。また、接続先は他のリアルタイムエージェントのみです。別のモデル（例: 推論用モデル `o4-mini`）を使用する必要がある場合は、[ツールによる委任](#delegation-through-tools) を利用してください。
+さらに、ハンドオフの一環として `voice` や `model` を変更することはできません。また、接続できるのは他の Realtime Agents のみです。別のモデル、たとえば `o4-mini` のような推論モデルを使用する必要がある場合は、[ツールによる委譲](#delegation-through-tools) を使用できます。
 
 ## ツール
 
-通常のエージェントと同様に、リアルタイムエージェントでもツールを呼び出してアクションを実行できます。通常のエージェントと同じ `tool()` 関数を使ってツールを定義します。
+通常のエージェントと同様に、Realtime Agents はツールを呼び出してアクションを実行できます。通常のエージェントで使用するのと同じ `tool()` 関数でツールを定義できます。
 
 <Code lang="typescript" code={defineToolExample} />
 
-リアルタイムエージェントで使用できるのは関数ツールだけで、これらのツールはリアルタイムセッションと同じ場所で実行されます。つまり、ブラウザでリアルタイムセッションを実行している場合、ツールもブラウザで実行されます。よりセンシティブな処理が必要な場合は、ツール内で自分のバックエンドサーバーへ HTTP リクエストを送ることができます。
+Realtime Agents で使用できるのは関数ツールのみで、これらのツールは Realtime セッション と同じ場所で実行されます。つまり、Realtime セッション をブラウザで実行している場合、ツールもブラウザで実行されます。より機微な処理が必要な場合は、ツール内からバックエンド サーバー への HTTP リクエストを行ってください。
 
-ツールが実行されている間、エージェントはユーザーからの新しいリクエストを処理できません。エクスペリエンスを向上させる 1 つの方法として、ツール実行前にエージェントにアナウンスさせたり、時間稼ぎのためのフレーズを言わせたりすると良いでしょう。
+ツールの実行中、エージェント は新しい ユーザー リクエストを処理できません。体験を改善する 1 つの方法は、ツールの実行直前にアナウンスさせたり、ツールの実行時間を稼ぐための特定のフレーズを話すようにエージェントに指示することです。
 
 ### 会話履歴へのアクセス
 
-エージェントがツールを呼び出した際の引数に加え、リアルタイムセッションが追跡している現在の会話履歴のスナップショットにもアクセスできます。これは、会話の現在の状態に基づいてより複雑なアクションを実行する場合や、[ツールによる委任](#delegation-through-tools) を計画している場合に役立ちます。
+エージェントが特定のツールを呼び出す際の引数に加えて、Realtime セッション が追跡している現在の会話履歴のスナップショットにもアクセスできます。これは、会話の現在の状態に基づいてより複雑なアクションを実行する必要がある場合や、[ツールによる委譲](#delegation-through-tools) を利用する予定がある場合に役立ちます。
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
-  渡される履歴はツール呼び出し時点でのスナップショットです。ユーザーが最後に話した内容の書き起こしがまだ利用できない場合があります。
+  渡される履歴は、ツール呼び出し時点の履歴のスナップショットです。
+  ユーザーが最後に話した内容の書き起こしは、まだ利用できない場合があります。
 </Aside>
 
 ### ツール実行前の承認
 
-ツールを `needsApproval: true` で定義すると、ツール実行前に `tool_approval_requested` イベントが発火します。
+ツールを `needsApproval: true` で定義すると、エージェント はツールを実行する前に `tool_approval_requested` イベントを発行します。
 
-このイベントを監視して、ユーザーがツール呼び出しを承認または拒否できる UI を表示できます。
+このイベントを監視することで、ツール呼び出しの承認または拒否を ユーザー に求める UI を表示できます。
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  音声エージェントがツール実行の承認を待っている間、エージェントはユーザーからの新しいリクエストを処理できません。
+  ボイス エージェント がツール呼び出しの承認待ちの間は、 ユーザー
+  からの新しいリクエストを処理できません。
 </Aside>
 
 ## ガードレール
 
-ガードレールは、エージェントが発話した内容がルールに違反していないかを監視し、違反があれば直ちにレスポンスを打ち切る方法を提供します。これらのガードレールチェックはエージェントのレスポンステキストの書き起こしに基づいて行われるため、モデルのテキスト出力が有効である必要があります（デフォルトで有効）。
+ガードレールは、エージェントの発話が一連のルールに違反していないかを監視し、違反した場合に応答を即時に打ち切る手段を提供します。これらのガードレールのチェックはエージェントの応答の書き起こしに基づいて行われるため、モデルのテキスト出力が有効である必要があります（デフォルトで有効）。
 
-指定したガードレールは、モデルレスポンスが返ってくるのと同時に非同期で実行され、例えば「特定の禁止ワードを含む」など、あらかじめ定義した分類トリガーに基づいてレスポンスを打ち切れます。
+提供したガードレールは、モデルの応答が返ってくるのに合わせて非同期に実行され、たとえば「特定の禁止語を言及した」など、あらかじめ定義した分類トリガーに基づいて応答を打ち切れるようにします。
 
-ガードレールが発動すると、セッションは `guardrail_tripped` イベントを発火します。このイベントは、ガードレールをトリガーした `itemId` を含む `details` オブジェクトも提供します。
+ガードレールが作動すると、セッションは `guardrail_tripped` イベントを発行します。このイベントには、ガードレールをトリガーした `itemId` を含む `details` オブジェクトも提供されます。
 
 <Code lang="typescript" code={guardrailsExample} />
 
-デフォルトでは、ガードレールは 100 文字ごと、またはレスポンステキストの生成が完了した時点で実行されます。音声で読み上げる方が通常時間がかかるため、多くの場合ユーザーが聞く前にガードレールが違反を検知できます。
+デフォルトでは、ガードレールは 100 文字ごと、またはレスポンスのテキストが生成し終わった時点で実行されます。テキストを話し終える方が通常は時間がかかるため、ほとんどの場合、ユーザーが聞く前にガードレールが違反を検知できます。
 
-この挙動を変更したい場合は、`outputGuardrailSettings` オブジェクトをセッションに渡せます。
+この挙動を変更したい場合は、セッションに `outputGuardrailSettings` オブジェクトを渡してください。
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
 ## ターン検出 / 音声活動検出
 
-リアルタイムセッションは、[Realtime API の音声活動検出モード](https://platform.openai.com/docs/guides/realtime-vad) を使用して、ユーザーが話しているかどうかを自動的に検出し、新しいターンをトリガーします。
+Realtime セッション は、ユーザーが話し始めたことを自動検出し、組み込みの[Realtime API の音声活動検出モード](https://platform.openai.com/docs/guides/realtime-vad)を使って新しいターンを開始します。
 
-`turnDetection` オブジェクトをセッションに渡すことで音声活動検出モードを変更できます。
+セッションに `turnDetection` オブジェクトを渡すことで、音声活動検出モードを変更できます。
 
 <Code lang="typescript" code={turnDetectionExample} />
 
-ターン検出設定を変更することで、不要な割り込みや無音への対応を調整できます。さまざまな設定の詳細については [Realtime API ドキュメント](https://platform.openai.com/docs/guides/realtime-vad) を参照してください。
+ターン検出の設定を調整することで、意図しない割り込みや無音への対処を改善できます。さまざまな設定の詳細は、[Realtime API documentation for more details on the different settings](https://platform.openai.com/docs/guides/realtime-vad) を参照してください
 
 ## 割り込み
 
-組み込みの音声活動検出を使用している場合、エージェントの発話中にユーザーが話し始めると、自動的に割り込みが検知され、その内容に基づいてコンテキストが更新されます。また `audio_interrupted` イベントも発火します。これは（WebSocket 接続時のみ該当）すべての音声再生を直ちに停止するのに利用できます。
+組み込みの音声活動検出を使用している場合、エージェント の発話に被せて話すと、発話内容に基づいてエージェント が自動的に検出し、コンテキストを更新します。また、`audio_interrupted` イベントも発行されます。これは、すべての音声再生を即座に停止するために使用できます（WebSocket 接続にのみ適用）。
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-UI に「停止」ボタンを提供するなど手動で割り込みを行いたい場合は、`interrupt()` を手動で呼び出せます。
+手動で割り込みたい場合、たとえば UI に「停止」ボタンを用意したいときは、`interrupt()` を手動で呼び出せます:
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
-いずれの方法でも、リアルタイムセッションはエージェントの生成を中断し、ユーザーに対して話した内容の知識を切り詰め、履歴を更新します。
+いずれの場合も、Realtime セッション はエージェントの生成を中断し、ユーザーに話した内容の認識を切り詰め、履歴を更新します。
 
-WebRTC でエージェントに接続している場合は、音声出力もクリアされます。WebSocket を使用している場合は、キューに入った音声再生を停止する処理を自分で行う必要があります。
+エージェントへの接続に WebRTC を使用している場合は、音声出力もクリアされます。WebSocket を使用している場合は、再生キューに入っている音声の再生を停止するなど、これを自分で処理する必要があります。
 
 ## テキスト入力
 
 エージェントにテキスト入力を送信したい場合は、`RealtimeSession` の `sendMessage` メソッドを使用できます。
 
-これは、ユーザーがエージェントと音声・テキスト両方のモダリティでやり取りできるようにしたり、会話に追加のコンテキストを提供したりする際に役立ちます。
+これは、ユーザーがエージェントと複数のモダリティでやり取りできるようにしたい場合や、会話に追加のコンテキストを提供したい場合に便利です。
 
 <Code lang="typescript" code={sendMessageExample} />
 
 ## 会話履歴の管理
 
-`RealtimeSession` は `history` プロパティで会話履歴を自動管理します。
+`RealtimeSession` は、`history` プロパティで会話履歴を自動的に管理します:
 
-これを利用して履歴をユーザーに表示したり、追加処理を実行したりできます。会話中に履歴は常に変化するため、`history_updated` イベントを監視できます。
+これを使って履歴をユーザーに表示したり、追加のアクションを実行したりできます。会話の進行中はこの履歴が継続的に変化するため、`history_updated` イベントを監視できます。
 
-履歴を完全に削除したり、書き起こしを更新したりしたい場合は、`updateHistory` メソッドを利用してください。
+履歴を変更したい場合（メッセージを完全に削除したり、その書き起こしを更新したりするなど）は、`updateHistory` メソッドを使用できます。
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 ### 制限事項
 
-1. 現在、関数ツール呼び出しを後から更新・変更することはできません
-2. 履歴内のテキスト出力には、書き起こしとテキストモダリティが有効である必要があります
-3. 割り込みにより切り詰められたレスポンスには書き起こしがありません
+1. 現時点では、一度行われた関数ツールの呼び出しを更新・変更できません
+2. 履歴のテキスト出力には、書き起こしとテキストモダリティの有効化が必要です
+3. 割り込みによって切り詰められたレスポンスには書き起こしがありません
 
-## ツールによる委任
+## ツールによる委譲
 
-![Delegation through tools](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
+![ツールによる委譲](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-会話履歴とツール呼び出しを組み合わせることで、会話を別のバックエンドエージェントに委任してより複雑な処理を行い、その結果をユーザーに返すことができます。
+会話履歴とツール呼び出しを組み合わせることで、より複雑なアクションを実行するために会話を別のバックエンド エージェント に委譲し、その結果を ユーザー へ返すことができます。
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-下記のコードはサーバー側で実行されます。この例では Next.js のサーバーアクションを通じて行います。
+以下のコードは サーバー 側で実行されます。この例では Next.js の Server Actions を使用します。
 
 <Code lang="typescript" code={serverAgentExample} />

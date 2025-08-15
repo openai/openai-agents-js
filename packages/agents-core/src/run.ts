@@ -322,7 +322,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               setCurrentSpan(state._currentAgentSpan);
             }
 
-            const tools = await state._currentAgent.getAllTools();
+            const tools = await state._currentAgent.getAllTools(state._context);
             const serializedTools = tools.map((t) => serializeTool(t));
             const serializedHandoffs = handoffs.map((h) => serializeHandoff(h));
             if (state._currentAgentSpan) {
@@ -615,7 +615,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       while (true) {
         const currentAgent = result.state._currentAgent;
         const handoffs = currentAgent.handoffs.map(getHandoff);
-        const tools = await currentAgent.getAllTools();
+        const tools = await currentAgent.getAllTools(result.state._context);
         const serializedTools = tools.map((t) => serializeTool(t));
         const serializedHandoffs = handoffs.map((h) => serializeHandoff(h));
 

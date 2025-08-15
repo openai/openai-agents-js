@@ -9,6 +9,7 @@ type StreamingState = {
   text_content_index_and_output: [number, protocol.OutputText] | null;
   refusal_content_index_and_output: [number, protocol.Refusal] | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
+  reasoning: string;
 };
 
 export async function* convertChatCompletionsStreamToResponses(
@@ -21,6 +22,7 @@ export async function* convertChatCompletionsStreamToResponses(
     text_content_index_and_output: null,
     refusal_content_index_and_output: null,
     function_calls: {},
+    reasoning: '',
   };
 
   for await (const chunk of stream) {
@@ -64,6 +66,14 @@ export async function* convertChatCompletionsStreamToResponses(
       state.text_content_index_and_output[1].text += delta.content;
     }
 
+    if (
+      'reasoning' in delta &&
+      delta.reasoning &&
+      typeof delta.reasoning === 'string'
+    ) {
+      state.reasoning += delta.reasoning;
+    }
+
     // Handle refusals
     if ('refusal' in delta && delta.refusal) {
       if (!state.refusal_content_index_and_output) {
@@ -98,6 +108,15 @@ export async function* convertChatCompletionsStreamToResponses(
 
   // Final output message
   const outputs: protocol.OutputModelItem[] = [];
+
+  if (state.reasoning) {
+    outputs.push({
+      type: 'reasoning',
+      content: [],
+      rawContent: [{ type: 'reasoning_text', text: state.reasoning }],
+    });
+  }
+
   if (
     state.text_content_index_and_output ||
     state.refusal_content_index_and_output

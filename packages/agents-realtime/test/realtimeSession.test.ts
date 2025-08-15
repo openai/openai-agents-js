@@ -300,4 +300,20 @@ describe('RealtimeSession', () => {
     } as any);
     expect(startEvents).toBe(2);
   });
+
+  it('preserves custom audio formats across updateAgent', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Orig', handoffs: [] });
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      config: { inputAudioFormat: 'g711_ulaw', outputAudioFormat: 'g711_ulaw' },
+    });
+    await s.connect({ apiKey: 'test' });
+    const newAgent = new RealtimeAgent({ name: 'Next', handoffs: [] });
+    await s.updateAgent(newAgent);
+    // Find the last updateSessionConfig call
+    const last = t.updateSessionConfigCalls.at(-1)!;
+    expect(last.inputAudioFormat).toBe('g711_ulaw');
+    expect(last.outputAudioFormat).toBe('g711_ulaw');
+  });
 });

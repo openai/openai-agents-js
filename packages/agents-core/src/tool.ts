@@ -1,5 +1,5 @@
 import type { Computer } from './computer';
-import type { infer as zInfer, ZodObject } from 'zod/v3';
+import type { infer as zInfer, ZodObject } from 'zod';
 import {
   JsonObjectSchema,
   JsonObjectSchemaNonStrict,

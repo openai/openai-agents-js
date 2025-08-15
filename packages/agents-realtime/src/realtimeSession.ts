@@ -183,6 +183,13 @@ export class RealtimeSession<
   #shouldIncludeAudioData: boolean;
   #interruptedByGuardrail: Record<string, boolean> = {};
   #audioStarted = false;
+  // Keeps track of the last full session config we sent (camelCase keys) so that
+  // subsequent updates (e.g. during agent handoffs) preserve properties that are
+  // not explicitly recalculated here (such as inputAudioFormat, outputAudioFormat,
+  // modalities, speed, toolChoice, turnDetection, etc.). Without this, updating
+  // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
+  // transport defaults causing issues for integrations like Twilio.
+  #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
 
   constructor(
     public readonly initialAgent:
@@ -275,10 +282,11 @@ export class RealtimeSession<
     const handoffTools = handoffs.map((handoff) =>
       handoff.getHandoffAsFunctionTool(),
     );
+    const allTools = await (
+      this.#currentAgent as RealtimeAgent<TBaseContext>
+    ).getAllTools(this.#context);
     this.#currentTools = [
-      ...(await this.#currentAgent.getAllTools()).filter(
-        (tool) => tool.type === 'function',
-      ),
+      ...allTools.filter((tool) => tool.type === 'function'),
       ...handoffTools,
     ];
   }
@@ -312,14 +320,34 @@ export class RealtimeSession<
       );
     }
 
-    return {
+    // Start from any previously-sent config (so we preserve values like audio formats)
+    // and the original options.config provided by the user. Preference order:
+    // 1. Last session config we sent (#lastSessionConfig)
+    // 2. Original options.config
+    // 3. Additional config passed into this invocation (explicit overrides)
+    // Finally we overwrite dynamic fields (instructions, voice, model, tools, tracing)
+    // to ensure they always reflect the current agent & runtime state.
+    const base: Partial<RealtimeSessionConfig> = {
+      ...(this.#lastSessionConfig ?? {}),
+      ...(this.options.config ?? {}),
+      ...(additionalConfig ?? {}),
+    };
+
+    // Note: Certain fields cannot be updated after the session begins, such as voice and model
+    const fullConfig: Partial<RealtimeSessionConfig> = {
+      ...base,
       instructions,
       voice: this.#currentAgent.voice,
       model: this.options.model,
       tools: this.#currentTools,
       tracing: tracingConfig,
-      ...additionalConfig,
     };
+
+    // Update our cache so subsequent updates inherit the full set including any
+    // dynamic fields we just overwrote.
+    this.#lastSessionConfig = fullConfig;
+
+    return fullConfig;
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
@@ -445,9 +473,10 @@ export class RealtimeSession<
         .map((handoff) => [handoff.toolName, handoff]),
     );
 
-    const functionToolMap = new Map(
-      (await this.#currentAgent.getAllTools()).map((tool) => [tool.name, tool]),
-    );
+    const allTools = await (
+      this.#currentAgent as RealtimeAgent<TBaseContext>
+    ).getAllTools(this.#context);
+    const functionToolMap = new Map(allTools.map((tool) => [tool.name, tool]));
 
     const possibleHandoff = handoffMap.get(toolCall.name);
     if (possibleHandoff) {
@@ -687,6 +716,9 @@ export class RealtimeSession<
       url: options.url,
       initialSessionConfig: await this.#getSessionConfig(this.options.config),
     });
+    // Ensure the cached lastSessionConfig includes everything passed as the initial session config
+    // (the call above already set it via #getSessionConfig but in case additional overrides were
+    // passed directly here in the future we could merge them). For now it's a no-op.
 
     this.#history = [];
     this.emit('history_updated', this.#history);

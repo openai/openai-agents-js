@@ -1,4 +1,4 @@
-import { z } from '@openai/zod/v3';
+import { z } from 'zod';
 import { Agent } from './agent';
 import {
   RunMessageOutputItem,
@@ -557,6 +557,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       ? await deserializeProcessedResponse(
           agentMap,
           state._currentAgent,
+          state._context,
           stateJson.lastProcessedResponse,
         )
       : undefined;
@@ -707,11 +708,12 @@ export function deserializeItem(
 async function deserializeProcessedResponse<TContext = UnknownContext>(
   agentMap: Map<string, Agent<any, any>>,
   currentAgent: Agent<TContext, any>,
+  context: RunContext<TContext>,
   serializedProcessedResponse: z.infer<
     typeof serializedProcessedResponseSchema
   >,
 ): Promise<ProcessedResponse<TContext>> {
-  const allTools = await currentAgent.getAllTools();
+  const allTools = await currentAgent.getAllTools(context);
   const tools = new Map(
     allTools
       .filter((tool) => tool.type === 'function')

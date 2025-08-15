@@ -5,7 +5,7 @@ import {
   setDefaultModelProvider,
   setTracingDisabled,
 } from '../src/index';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { FakeModelProvider } from './stubs';
 import { getTransferMessage, handoff } from '../src/handoff';
 

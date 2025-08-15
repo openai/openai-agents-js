@@ -1,4 +1,4 @@
-import type { ZodObject } from 'zod/v3';
+import type { ZodObject } from 'zod';
 
 /**
  * Verifies that an input is a ZodObject without needing to have Zod at runtime since it's an

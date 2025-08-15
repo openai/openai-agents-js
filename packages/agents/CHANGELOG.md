@@ -1,5 +1,45 @@
 # @openai/agents
 
+## 0.0.16
+
+### Patch Changes
+
+- Updated dependencies [1bb4d86]
+- Updated dependencies [a51105b]
+- Updated dependencies [b487db1]
+- Updated dependencies [4818d5e]
+- Updated dependencies [0858c98]
+- Updated dependencies [a0b1f3b]
+- Updated dependencies [4bfd911]
+- Updated dependencies [c42a0a9]
+  - @openai/agents-core@0.0.16
+  - @openai/agents-openai@0.0.16
+  - @openai/agents-realtime@0.0.16
+
+## 0.0.15
+
+### Patch Changes
+
+- Updated dependencies [5f7d0d6]
+- Updated dependencies [7b437d9]
+- Updated dependencies [b65315f]
+- Updated dependencies [0fe38c0]
+  - @openai/agents-core@0.0.15
+  - @openai/agents-openai@0.0.15
+  - @openai/agents-realtime@0.0.15
+
+## 0.0.14
+
+### Patch Changes
+
+- Updated dependencies [08dd469]
+- Updated dependencies [d9c4ddf]
+- Updated dependencies [b6c7e9d]
+- Updated dependencies [fba44d9]
+  - @openai/agents-realtime@0.0.14
+  - @openai/agents-core@0.0.14
+  - @openai/agents-openai@0.0.14
+
 ## 0.0.13
 
 ### Patch Changes

@@ -69,9 +69,37 @@ describe('TwilioRealtimeTransportLayer', () => {
     transport._audioLengthMs = 500;
     transport._interrupt(0, true);
 
-    const call = sendEventSpy.mock.calls.find(
-      (c) => c[0]?.type === 'conversation.item.truncate',
-    );
+    const call = sendEventSpy.mock.calls
+      .filter((c) => c[0]?.type === 'conversation.item.truncate')
+      .at(-1);
     expect(call?.[0].audio_end_ms).toBe(50);
+  });
+
+  test('interrupt clamps overshoot and emits integer audio_end_ms', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const sendEventSpy = vi.spyOn(
+      transport as TwilioRealtimeTransportLayer,
+      'sendEvent',
+    );
+
+    await transport.connect({
+      apiKey: 'ek_test',
+      initialSessionConfig: { speed: 1.1 },
+    });
+    sendEventSpy.mockClear();
+
+    // @ts-expect-error - we're testing protected fields.
+    transport._audioLengthMs = 20;
+    transport._interrupt(0, true);
+
+    const call = sendEventSpy.mock.calls
+      .filter((c) => c[0]?.type === 'conversation.item.truncate')
+      .at(-1);
+    expect(call?.[0].audio_end_ms).toBe(20);
+    expect(Number.isInteger(call?.[0].audio_end_ms)).toBe(true);
   });
 });

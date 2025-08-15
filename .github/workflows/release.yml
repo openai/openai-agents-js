@@ -1,4 +1,4 @@
-name: Changesets
+name: Changesets Release
 
 on:
   workflow_run:
@@ -45,34 +45,10 @@ jobs:
         with:
           commit: 'chore: update versions'
           title: 'chore: update versions'
+          version: pnpm bump-version
           publish: pnpm ci:publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           NPM_CONFIG_ACCESS: public
-
-      - name: Push metadata changes
-        run: |
-          files="packages/agents-core/src/metadata.ts packages/agents-extensions/src/metadata.ts packages/agents-openai/src/metadata.ts packages/agents-realtime/src/metadata.ts packages/agents/src/metadata.ts"
-          if git diff --quiet -- $files; then
-            echo "No metadata changes to push"
-          else
-            # -- Commit all the metadata.ts files --
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add $files
-            git commit -m "chore: sync metadata files"
-            git push origin HEAD:main
-            # -- Push a new release tag as well --
-            # We don't use changeset release command because we always do release for all the packages
-            # Thus, creating git tags manually here
-            version=$(jq -r '.version' packages/agents/package.json)
-            tag="v${version}"
-            if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
-              echo "Tag $tag already exists"
-            else
-              git tag -a "$tag" -m "Release $tag"
-              git push origin "$tag"
-            fi
-          fi

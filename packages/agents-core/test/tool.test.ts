@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computerTool, hostedMcpTool, tool } from '../src/tool';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { Computer } from '../src';
 import { RunContext } from '../src/runContext';
 

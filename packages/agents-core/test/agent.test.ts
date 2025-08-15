@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
 

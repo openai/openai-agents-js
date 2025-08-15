@@ -37,7 +37,7 @@ export function extractAllAssistantContent(
   }
   const out: ChatCompletionAssistantMessageParam['content'] = [];
   for (const c of content) {
-    if (c.type === 'output_text' || c.type === 'input_text') {
+    if (c.type === 'output_text') {
       out.push({
         type: 'text',
         text: c.text,
@@ -182,10 +182,11 @@ export function itemsToMessages(
         });
       }
     } else if (item.type === 'reasoning') {
-      throw new UserError(
-        'Reasoning is not supported for chat completions. Got item: ' +
-          JSON.stringify(item),
-      );
+      const asst = ensureAssistantMessage();
+      // @ts-expect-error - reasoning is not supported in the official Chat Completion API spec
+      // this is handling third party providers that support reasoning
+      asst.reasoning = item.rawContent?.[0]?.text;
+      continue;
     } else if (item.type === 'hosted_tool_call') {
       if (item.name === 'file_search_call') {
         const asst = ensureAssistantMessage();
@@ -276,6 +277,7 @@ export function toolToOpenAI(tool: SerializedTool): ChatCompletionTool {
         name: tool.name,
         description: tool.description || '',
         parameters: tool.parameters,
+        strict: tool.strict,
       },
     };
   }

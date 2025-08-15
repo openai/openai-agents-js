@@ -360,7 +360,7 @@ export class OpenAIRealtimeWebSocket
    * @param elapsedTime - The elapsed time since the response started.
    */
   _interrupt(elapsedTime: number, cancelOngoingResponse: boolean = true) {
-    if (elapsedTime < 0 || elapsedTime > this._audioLengthMs) {
+    if (elapsedTime < 0) {
       return;
     }
 
@@ -369,12 +369,15 @@ export class OpenAIRealtimeWebSocket
       this._cancelResponse();
     }
 
+    const length = this._audioLengthMs ?? Number.POSITIVE_INFINITY;
+    const audio_end_ms = Math.max(0, Math.min(Math.floor(elapsedTime), length));
+
     this.emit('audio_interrupted');
     this.sendEvent({
       type: 'conversation.item.truncate',
       item_id: this.#currentItemId,
       content_index: this.#currentAudioContentIndex,
-      audio_end_ms: elapsedTime,
+      audio_end_ms,
     });
   }
 

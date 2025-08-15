@@ -10,6 +10,7 @@ import hostedStreamExample from '../../../../../examples/docs/mcp/hostedStream.t
 import hostedHITLExample from '../../../../../examples/docs/mcp/hostedHITL.ts?raw';
 import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
+import toolFilterExample from '../../../../../examples/docs/mcp/tool-filter.ts?raw';
 
 The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an open protocol that standardizes how applications provide tools and context to LLMs. From the MCP docs:
 
@@ -79,7 +80,7 @@ When your Agent talks directly to a Streamable HTTP MCP server—local or remote
   title="Run with Streamable HTTP MCP servers"
 />
 
-The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
+The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
 
 ## 3. Stdio MCP servers
 
@@ -96,6 +97,16 @@ For servers that expose only standard I/O, instantiate `MCPServerStdio` with a `
 For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may call `list_tools()` to discover available tools. Because that round‑trip can add latency—especially to remote servers—you can cache the results in memory by passing `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
 
 Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance.
+
+### Tool filtering
+
+You can restrict which tools are exposed from each server by passing either a static filter via `createMCPToolStaticFilter` or a custom function. Here’s a combined example showing both approaches:
+
+<Code 
+  lang="typescript" 
+  code={toolFilterExample} 
+  title="Tool filtering" 
+/>
 
 ## Further reading
 

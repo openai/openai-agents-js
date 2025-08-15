@@ -1,5 +1,40 @@
 # @openai/agents-openai
 
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- a51105b: Pass through strict flag for function tools when using completion
+- 4818d5e: fix: support snake_case usage fields from OpenAI responses
+- Updated dependencies [1bb4d86]
+- Updated dependencies [4818d5e]
+- Updated dependencies [0858c98]
+- Updated dependencies [4bfd911]
+- Updated dependencies [c42a0a9]
+  - @openai/agents-core@0.0.16
+
+## 0.0.15
+
+### Patch Changes
+
+- 7b437d9: feat: add reasoning handling in chat completions
+- Updated dependencies [5f7d0d6]
+- Updated dependencies [7b437d9]
+- Updated dependencies [b65315f]
+- Updated dependencies [0fe38c0]
+  - @openai/agents-core@0.0.15
+
+## 0.0.14
+
+### Patch Changes
+
+- b6c7e9d: Fix codeInterpreterTool run replay by correctly using container_id from providerData (fixes #253)
+- Updated dependencies [08dd469]
+- Updated dependencies [d9c4ddf]
+- Updated dependencies [fba44d9]
+  - @openai/agents-core@0.0.14
+
 ## 0.0.13
 
 ### Patch Changes

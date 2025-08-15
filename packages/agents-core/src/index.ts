@@ -70,10 +70,19 @@ export { getLogger } from './logger';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
+  mcpToFunctionTool,
   MCPServer,
   MCPServerStdio,
   MCPServerStreamableHttp,
+  MCPServerSSE,
+  GetAllMcpToolsOptions,
 } from './mcp';
+export {
+  MCPToolFilterCallable,
+  MCPToolFilterContext,
+  MCPToolFilterStatic,
+  createMCPToolStaticFilter,
+} from './mcpUtil';
 export {
   Model,
   ModelProvider,

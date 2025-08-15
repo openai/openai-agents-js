@@ -2,7 +2,7 @@
   "name": "@openai/agents-core",
   "repository": "https://github.com/openai/openai-agents-js",
   "homepage": "https://openai.github.io/openai-agents-js/",
-  "version": "0.0.13",
+  "version": "0.0.16",
   "description": "The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows.",
   "author": "OpenAI <support@openai.com>",
   "main": "dist/index.js",
@@ -85,15 +85,14 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "@modelcontextprotocol/sdk": "^1.17.2"
   },
   "dependencies": {
-    "@openai/zod": "npm:zod@3.25.40 - 3.25.67",
     "debug": "^4.4.0",
     "openai": "^5.10.1"
   },
   "peerDependencies": {
-    "zod": "3.25.40 - 3.25.67"
+    "zod": "^3.25.40"
   },
   "peerDependenciesMeta": {
     "zod": {
@@ -121,7 +120,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "zod": "3.25.40 - 3.25.67"
+    "zod": "^3.25.40"
   },
   "files": [
     "dist"

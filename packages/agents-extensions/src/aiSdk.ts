@@ -116,29 +116,16 @@ export function itemsToLanguageV1Messages(
         messages.push({
           role,
           content: content
-            .filter((c) => c.type === 'input_text' || c.type === 'output_text')
+            .filter((c) => c.type === 'output_text')
             .map((c) => {
               const { providerData: contentProviderData } = c;
-              if (c.type === 'output_text') {
-                return {
-                  type: 'text',
-                  text: c.text,
-                  providerMetadata: {
-                    ...(contentProviderData ?? {}),
-                  },
-                };
-              }
-              if (c.type === 'input_text') {
-                return {
-                  type: 'text',
-                  text: c.text,
-                  providerMetadata: {
-                    ...(contentProviderData ?? {}),
-                  },
-                };
-              }
-              const exhaustiveCheck = c satisfies never;
-              throw new UserError(`Unknown content type: ${exhaustiveCheck}`);
+              return {
+                type: 'text',
+                text: c.text,
+                providerMetadata: {
+                  ...(contentProviderData ?? {}),
+                },
+              };
             }),
           providerMetadata: {
             ...(providerData ?? {}),
@@ -463,7 +450,10 @@ export class AiSdkModel implements Model {
         // Putting a text message here will let the agent loop to complete,
         // so adding this item only when the tool calls are empty.
         // Note that the same support is not available for streaming mode.
-        if (!result.toolCalls && result.text) {
+        if (
+          (!result.toolCalls || result.toolCalls.length === 0) &&
+          result.text
+        ) {
           output.push({
             type: 'message',
             content: [{ type: 'output_text', text: result.text }],
@@ -500,9 +490,10 @@ export class AiSdkModel implements Model {
 
         if (span && request.tracing === true) {
           span.spanData.usage = {
+            // Note that tracing supports only input and output tokens for Chat Completions.
+            // So, we don't include other properties here.
             input_tokens: response.usage.inputTokens,
             output_tokens: response.usage.outputTokens,
-            total_tokens: response.usage.totalTokens,
           };
         }
 
@@ -724,9 +715,10 @@ export class AiSdkModel implements Model {
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
         span.spanData.usage = {
+          // Note that tracing supports only input and output tokens for Chat Completions.
+          // So, we don't include other properties here.
           input_tokens: finalEvent.response.usage.inputTokens,
           output_tokens: finalEvent.response.usage.outputTokens,
-          total_tokens: finalEvent.response.usage.totalTokens,
         };
       }
 

@@ -1,5 +1,35 @@
 # @openai/agents-core
 
+## 0.0.16
+
+### Patch Changes
+
+- 1bb4d86: Fix #233 - eliminate confusion with "input_text" type items with role: "assistant"
+- 4818d5e: fix: support snake_case usage fields from OpenAI responses
+- 0858c98: fix: prevent crash when importing in cloudflare workers
+
+  An export was missed in https://github.com/openai/openai-agents-js/pull/290 for the workerd shim, this prevents the crash when importing there. Long term we should just add an implementation for cloudflare workers (and I suspect the node implementation might just work)
+
+- 4bfd911: Add custom fetch support to StreamableHTTP MCP transport
+- c42a0a9: refactor: restructure mcp tools fetching with options object pattern
+
+## 0.0.15
+
+### Patch Changes
+
+- 5f7d0d6: Add run context to handoff input filter to align with Python SDK
+- 7b437d9: feat: add reasoning handling in chat completions
+- b65315f: feat: add timeout parameter to callTool method
+- 0fe38c0: feat: add sse server implementation for mcp
+
+## 0.0.14
+
+### Patch Changes
+
+- 08dd469: agents-core, agents-realtime: add MCP tool-filtering support (fixes #162)
+- d9c4ddf: include JsonSchema definitions in mcpTool inputSchema
+- fba44d9: Fix #246 by exposing RunHandoffOutputItem type
+
 ## 0.0.13
 
 ### Patch Changes

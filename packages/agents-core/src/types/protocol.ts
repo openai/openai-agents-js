@@ -1,4 +1,4 @@
-import { z } from '@openai/zod/v3';
+import { z } from 'zod';
 
 // ----------------------------
 // Shared base types
@@ -64,6 +64,16 @@ export const InputText = SharedBase.extend({
 });
 
 export type InputText = z.infer<typeof InputText>;
+
+export const ReasoningText = SharedBase.extend({
+  type: z.literal('reasoning_text'),
+  /**
+   * A text input for example a message from a user
+   */
+  text: z.string(),
+});
+
+export type ReasoningText = z.infer<typeof ReasoningText>;
 
 export const InputImage = SharedBase.extend({
   type: z.literal('input_image'),
@@ -231,7 +241,6 @@ export type ComputerAction = z.infer<typeof computerActions>;
 export const AssistantContent = z.discriminatedUnion('type', [
   OutputText,
   Refusal,
-  InputText,
   AudioContent,
   ImageContent,
 ]);
@@ -452,6 +461,11 @@ export const ReasoningItem = SharedBase.extend({
    * The user facing representation of the reasoning. Additional information might be in the `providerData` field.
    */
   content: z.array(InputText),
+
+  /**
+   * The raw reasoning text from the model.
+   */
+  rawContent: z.array(ReasoningText).optional(),
 });
 
 export type ReasoningItem = z.infer<typeof ReasoningItem>;

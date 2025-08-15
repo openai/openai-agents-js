@@ -1,4 +1,4 @@
-import type { ZodObject } from 'zod/v3';
+import type { ZodObject } from 'zod';
 
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
@@ -514,9 +514,16 @@ export class Agent<
    * Fetches the available tools from the MCP servers.
    * @returns the MCP powered tools
    */
-  async getMcpTools(): Promise<Tool<TContext>[]> {
+  async getMcpTools(
+    runContext: RunContext<TContext>,
+  ): Promise<Tool<TContext>[]> {
     if (this.mcpServers.length > 0) {
-      return getAllMcpTools(this.mcpServers);
+      return getAllMcpTools({
+        mcpServers: this.mcpServers,
+        runContext,
+        agent: this,
+        convertSchemasToStrict: false,
+      });
     }
 
     return [];
@@ -527,8 +534,10 @@ export class Agent<
    *
    * @returns all configured tools
    */
-  async getAllTools(): Promise<Tool<TContext>[]> {
-    return [...(await this.getMcpTools()), ...this.tools];
+  async getAllTools(
+    runContext: RunContext<TContext>,
+  ): Promise<Tool<TContext>[]> {
+    return [...(await this.getMcpTools(runContext)), ...this.tools];
   }
 
   /**

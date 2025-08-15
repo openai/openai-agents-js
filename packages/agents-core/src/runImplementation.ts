@@ -31,7 +31,7 @@ import { safeExecute } from './utils/safeExecute';
 import { addErrorToCurrentSpan } from './tracing/context';
 import { RunItemStreamEvent, RunItemStreamEventName } from './events';
 import { StreamedRunResult } from './result';
-import { z } from '@openai/zod/v3';
+import { z } from 'zod';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
 import { Computer } from './computer';
@@ -1025,6 +1025,7 @@ export async function executeHandoffCalls<
             : originalInput,
           preHandoffItems: [...preStepItems],
           newItems: [...newStepItems],
+          runContext,
         };
 
         const filtered = inputFilter(handoffInputData);

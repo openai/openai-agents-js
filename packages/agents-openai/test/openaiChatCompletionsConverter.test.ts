@@ -204,6 +204,23 @@ describe('itemsToMessages', () => {
     ];
     expect(() => itemsToMessages(bad)).toThrow(UserError);
   });
+
+  test('converts reasoning items into assistant reasoning', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        reasoning: 'why',
+      },
+    ]);
+  });
 });
 
 describe('tool helpers', () => {
@@ -236,6 +253,7 @@ describe('tool helpers', () => {
           required: [],
           additionalProperties: false,
         },
+        strict: true,
       },
     });
   });

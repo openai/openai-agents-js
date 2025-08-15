@@ -1,0 +1,65 @@
+name: "Update Translated Docs"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - '!docs/src/content/docs/ja/**'
+
+jobs:
+  update-docs:
+    if: "!contains(github.event.head_commit.message, 'Update all translated document pages')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+          run_install: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace packages
+        run: pnpm build
+
+      - name: Translate docs
+        env:
+          OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
+        run: |
+          pnpm docs:translate
+          pnpm docs:build  # to make sure if the generated docs are valid
+
+      - name: Commit changes
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update all translated document pages"
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes to commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.commit.outputs.committed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Update all translated document pages"
+          title: "Update all translated document pages"
+          body: "Automated update of translated documentation"
+          branch: update-translated-docs-${{ github.run_id }}
+          delete-branch: true
