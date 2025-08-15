@@ -9,28 +9,19 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "require": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.mjs"
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
     },
     "./realtime": {
-      "require": {
-        "types": "./dist/realtime/index.d.ts",
-        "default": "./dist/realtime/index.js"
-      },
       "types": "./dist/realtime/index.d.ts",
-      "default": "./dist/realtime/index.mjs"
+      "import": "./dist/realtime/index.mjs",
+      "require": "./dist/realtime/index.js"
     },
     "./utils": {
-      "require": {
-        "types": "./dist/utils/index.d.ts",
-        "default": "./dist/utils/index.js"
-      },
       "types": "./dist/utils/index.d.ts",
-      "default": "./dist/utils/index.mjs"
+      "import": "./dist/utils/index.mjs",
+      "require": "./dist/utils/index.js"
     }
   },
   "scripts": {
