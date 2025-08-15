@@ -1,4 +1,4 @@
-import type { ZodObject } from 'zod/v3';
+import type { ZodObject } from 'zod';
 
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';

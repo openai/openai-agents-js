@@ -1,4 +1,4 @@
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { Agent } from './agent';
 import {
   RunMessageOutputItem,

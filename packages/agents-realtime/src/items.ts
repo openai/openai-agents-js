@@ -1,4 +1,4 @@
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 export const baseItemSchema = z.object({
   itemId: z.string(),

@@ -1,6 +1,6 @@
 import { HostedTool } from '@openai/agents-core';
 import type OpenAI from 'openai';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import * as ProviderData from './types/providerData';
 
 // -----------------------------------------------------

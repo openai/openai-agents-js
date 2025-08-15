@@ -25,7 +25,7 @@ import {
   ToolChoiceOptions,
   ToolChoiceTypes,
 } from 'openai/resources/responses/responses';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { HEADERS } from './defaults';
 import {
   CodeInterpreterStatus,

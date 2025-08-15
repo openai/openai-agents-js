@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isZodObject, isAgentToolInput } from '../../src/utils/typeGuards';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 describe('type guards', () => {
   it('isZodObject detects zod objects', () => {
