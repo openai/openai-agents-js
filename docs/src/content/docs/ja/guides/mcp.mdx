@@ -12,35 +12,35 @@ import streamableHttpExample from '../../../../../../examples/docs/mcp/streamabl
 import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
 
-[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールやコンテキストを提供する方法を標準化するオープンなプロトコルです。MCP のドキュメントより：
+The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールとコンテキストを提供する方法を標準化するオープンなプロトコルです。MCP のドキュメントより:
 
-> MCP は、アプリケーションが LLM にコンテキストを提供する方法を標準化するオープンなプロトコルです。MCP は AI アプリケーション向けの USB‑C ポートのようなものだと考えてください。USB‑C がデバイスをさまざまな周辺機器やアクセサリに接続する標準化された方法を提供するのと同様に、MCP は AI モデルをさまざまなデータソースやツールに接続する標準化された方法を提供します。
+> MCP は、アプリケーションが LLM にコンテキストを提供する方法を標準化するオープンなプロトコルです。MCP を AI アプリケーション向けの USB-C ポートだと考えてください。USB-C がデバイスをさまざまな周辺機器やアクセサリに接続する標準化された方法を提供するのと同様に、MCP は AI モデルをさまざまなデータソースやツールに接続する標準化された方法を提供します
 
-この SDK がサポートする MCP サーバーは 3 種類あります：
+この SDK がサポートする MCP サーバーは 3 種類あります:
 
-1. **リモート MCP サーバーツール** – [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) によってツールとして利用されるリモート MCP サーバー
+1. **リモート MCP サーバーツール** – [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) によってツールとして利用されるリモートの MCP サーバー
 2. **Streamable HTTP MCP サーバー** – [Streamable HTTP トランスポート](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http) を実装するローカルまたはリモートのサーバー
-3. **Stdio MCP サーバー** – 標準入出力でアクセスされるサーバー（最も簡単な選択肢）
+3. **Stdio MCP サーバー** – 標準入出力経由でアクセスするサーバー（最も簡単な選択肢）
 
-ユースケースに応じてサーバータイプを選択してください：
+ユースケースに基づいてサーバータイプを選択してください:
 
-| 必要なこと                                                                 | 推奨オプション          |
-| -------------------------------------------------------------------------- | ----------------------- |
-| 一般公開のリモートサーバーを既定の OpenAI Responses モデルで呼び出す       | **1. Hosted MCP tools** |
-| 一般公開のリモートサーバーを使うがツール呼び出しはローカルでトリガーしたい | **2. Streamable HTTP**  |
-| ローカルで動作する Streamable HTTP サーバーを使う                          | **2. Streamable HTTP**  |
-| OpenAI Responses 以外のモデルで任意の Streamable HTTP サーバーを使う       | **2. Streamable HTTP**  |
-| 標準入出力プロトコルのみをサポートするローカル MCP サーバーを扱う          | **3. Stdio**            |
+| 必要なこと                                                                     | 推奨オプション                     |
+| ------------------------------------------------------------------------------ | ---------------------------------- |
+| 既定の OpenAI Responses モデルで公開アクセス可能なリモートサーバーを呼び出す   | **1. リモート MCP サーバーツール** |
+| 公開アクセス可能なリモートサーバーを使うが、ツール呼び出しはローカルでトリガー | **2. Streamable HTTP**             |
+| ローカルで稼働する Streamable HTTP サーバーを使用                              | **2. Streamable HTTP**             |
+| OpenAI Responses 以外のモデルで任意の Streamable HTTP サーバーを使用           | **2. Streamable HTTP**             |
+| 標準 I/O プロトコルのみをサポートするローカルの MCP サーバーを扱う             | **3. Stdio**                       |
 
 ## 1. リモート MCP サーバーツール
 
-リモート ツールでは、往復の処理全体をモデル側で完結させます。あなたのコードが MCP サーバーを呼び出す代わりに、OpenAI Responses API がリモートのツールエンドポイントを呼び出し、その結果をモデルへストリーミングで返します。
+組み込みツール（Hosted）は、往復の処理をすべてモデル内で完結させます。あなたのコードが MCP サーバーを呼び出す代わりに、OpenAI Responses API がリモートのツールエンドポイントを起動し、その結果をモデルへストリーミングで返します。
 
-以下はリモート MCP サーバーツールを使う最も簡単な例です。`hostedMcpTool` ユーティリティ関数にリモート MCP サーバーのラベルと URL を渡すことで、リモート MCP サーバーツールの作成に便利です。
+以下は hosted MCP ツールを使う最も簡単な例です。リモートの MCP サーバーのラベルと URL を `hostedMcpTool` ユーティリティ関数に渡せます。これは hosted MCP サーバーツールを作成するのに便利です。
 
 <Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
 
-次に、`run` 関数（またはカスタマイズした `Runner` インスタンスの `run` メソッド）で エージェント を実行できます：
+続いて、`run` 関数（またはカスタマイズした `Runner` インスタンスの `run` メソッド）でエージェントを実行できます:
 
 <Code
   lang="typescript"
@@ -48,7 +48,7 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="リモート MCP サーバーツールで実行"
 />
 
-増分の MCP 結果を ストリーミング するには、`Agent` を実行するときに `stream: true` を渡します：
+増分の MCP 結果をストリーミングするには、`Agent` を実行する際に `stream: true` を指定します:
 
 <Code
   lang="typescript"
@@ -56,23 +56,23 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="リモート MCP サーバーツールで実行（ストリーミング）"
 />
 
-#### 承認フロー（オプション）
+#### 任意の承認フロー
 
-センシティブな操作については、個々のツール呼び出しに人間による承認を要求できます。`requireApproval: 'always'` を渡すか、ツール名を `'never'`/`'always'` にマッピングするきめ細かなオブジェクトを渡してください。
+機微な操作については、個々のツール呼び出しに対して人による承認を必須にできます。`requireApproval: 'always'` または、ツール名ごとに `'never'`/`'always'` を割り当てるきめ細かなオブジェクトのいずれかを渡してください。
 
-プログラムでツール呼び出しの安全性を判定できる場合は、[`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) を使って承認または却下できます。人による承認が必要な場合は、ローカルの 関数ツール と同様に `interruptions` を使った同じ [人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop/) のアプローチを使えます。
+ツール呼び出しが安全かどうかをプログラムで判定できる場合は、ツール呼び出しを承認または却下するために [`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) を使用できます。人による承認が必要な場合は、ローカルの 関数ツール と同様に `interruptions` を使って、同じ [人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop/) のアプローチを利用できます。
 
 <Code
   lang="typescript"
   code={hostedHITLExample}
-  title="リモート MCP ツールでの Human in the loop (人間の介入)"
+  title="リモート MCP サーバーツールでの Human in the loop（人間の介入）"
 />
 
-完全に動作するサンプル（Hosted tools / Streamable HTTP / stdio + Streaming、HITL、onApproval）は、GitHub リポジトリの [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
+フルに動作するサンプル（Hosted ツール / Streamable HTTP / stdio + ストリーミング、HITL、onApproval）は、GitHub リポジトリの [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
 
 ## 2. Streamable HTTP MCP サーバー
 
-エージェント がローカルまたはリモートの Streamable HTTP MCP サーバーと直接対話する場合は、サーバーの `url`、`name`、および任意の設定を指定して `MCPServerStreamableHttp` をインスタンス化します：
+エージェントがローカルまたはリモートの Streamable HTTP MCP サーバーと直接やり取りする場合、サーバーの `url`、`name`、必要に応じたオプション設定を指定して `MCPServerStreamableHttp` をインスタンス化します:
 
 <Code
   lang="typescript"
@@ -80,23 +80,23 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Streamable HTTP MCP サーバーで実行"
 />
 
-コンストラクターは、`authProvider`、`requestInit`、`fetch`、`reconnectionOptions`、`sessionId` などの追加の MCP TypeScript SDK オプションも受け付けます。詳細は [MCP TypeScript SDK リポジトリ](https://github.com/modelcontextprotocol/typescript-sdk) とそのドキュメントを参照してください。
+コンストラクターは、`authProvider`、`requestInit`、`fetch`、`reconnectionOptions`、`sessionId` などの追加の MCP TypeScript‑SDK オプションも受け付けます。詳細は [MCP TypeScript SDK リポジトリ](https://github.com/modelcontextprotocol/typescript-sdk) とそのドキュメントを参照してください。
 
 ## 3. Stdio MCP サーバー
 
-標準入出力のみを公開するサーバーの場合は、`fullCommand` を指定して `MCPServerStdio` をインスタンス化します：
+標準 I/O のみを公開するサーバーの場合は、`fullCommand` を指定して `MCPServerStdio` をインスタンス化します:
 
 <Code lang="typescript" code={stdioExample} title="Stdio MCP サーバーで実行" />
 
-## 知っておくとよいこと
+## その他の注意点
 
-Streamable HTTP と Stdio のサーバーでは、`Agent` が実行されるたびに、利用可能なツールを見つけるために `list_tools()` を呼び出すことがあります。この往復はレイテンシを追加する可能性があり（特にリモートサーバーに対して）、`MCPServerStdio` または `MCPServerStreamableHttp` に `cacheToolsList: true` を渡してメモリ内に結果をキャッシュできます。
+Streamable HTTP と Stdio のサーバーでは、`Agent` を実行するたびに、利用可能なツールを検出するために `list_tools()` を呼び出す場合があります。特にリモートサーバーでは、この往復がレイテンシの原因となるため、`MCPServerStdio` または `MCPServerStreamableHttp` に `cacheToolsList: true` を渡して、結果をメモリにキャッシュできます。
 
-ツールリストが変わらない自信がある場合にのみ有効化してください。後からキャッシュを無効化するには、サーバーインスタンスで `invalidateToolsCache()` を呼び出します。
+ツール一覧が変わらないと確信できる場合にのみ有効化してください。後でキャッシュを無効化するには、サーバーインスタンスで `invalidateToolsCache()` を呼び出します。
 
 ### ツールのフィルタリング
 
-各サーバーから公開するツールを制限するには、`createMCPToolStaticFilter` による静的フィルター、またはカスタム関数を渡します。両方のアプローチを示す統合例を次に示します：
+各サーバーから公開するツールを制限するには、`createMCPToolStaticFilter` による静的フィルター、またはカスタム関数を渡します。両方のアプローチを組み合わせた例を次に示します:
 
 <Code
   lang="typescript"
@@ -107,4 +107,5 @@ Streamable HTTP と Stdio のサーバーでは、`Agent` が実行されるた�
 ## 参考資料
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – 公式仕様
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上記で参照した実行可能なデモ
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上記で参照した実行可能な
+  デモ
