@@ -12,6 +12,8 @@
     "start:chat": "tsx chat.ts",
     "start:dynamic-system-prompt": "tsx dynamic-system-prompt.ts",
     "start:hello-world": "tsx hello-world.ts",
+    "start:hello-world-gpt5": "tsx hello-world-gpt5.ts",
+    "start:hello-world-gpt-oss": "tsx hello-world-gpt-oss.ts",
     "start:lifecycle-example": "tsx lifecycle-example.ts",
     "start:local-image": "tsx local-image.ts",
     "start:previous-response-id": "tsx previous-response-id.ts",
