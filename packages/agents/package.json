@@ -15,13 +15,13 @@
     },
     "./realtime": {
       "types": "./dist/realtime/index.d.ts",
-      "import": "./dist/realtime/index.mjs",
-      "require": "./dist/realtime/index.js"
+      "require": "./dist/realtime/index.js",
+      "import": "./dist/realtime/index.mjs"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",
-      "import": "./dist/utils/index.mjs",
-      "require": "./dist/utils/index.js"
+      "require": "./dist/utils/index.js",
+      "import": "./dist/utils/index.mjs"
     }
   },
   "scripts": {
