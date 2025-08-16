@@ -1,5 +1,18 @@
 # @openai/agents
 
+## 0.0.17
+
+### Patch Changes
+
+- f825f71: Fix #187 Agent outputType type error with zod@3.25.68+
+- 5d247a5: Fix #245 CJS resolution failure
+- Updated dependencies [1cd3266]
+- Updated dependencies [f825f71]
+- Updated dependencies [5d247a5]
+  - @openai/agents-core@0.0.17
+  - @openai/agents-realtime@0.0.17
+  - @openai/agents-openai@0.0.17
+
 ## 0.0.16
 
 ### Patch Changes

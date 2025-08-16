@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.0.17
+
+### Patch Changes
+
+- 1cd3266: feat: expose the `history` getter on `RunState` to access input and generated items.
+- f825f71: Fix #187 Agent outputType type error with zod@3.25.68+
+- 5d247a5: Fix #245 CJS resolution failure
+
 ## 0.0.16
 
 ### Patch Changes
