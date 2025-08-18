@@ -1,5 +1,11 @@
 # @openai/agents-realtime
 
+## 0.0.18
+
+### Patch Changes
+
+- 8cf5356: Fix: ensure assistant message items from `response.output_item.done` preserve API status and default to `"completed"` when missing, so `history_updated` no longer stays `"in_progress"` after completion.
+
 ## 0.0.17
 
 ### Patch Changes
