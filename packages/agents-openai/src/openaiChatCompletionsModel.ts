@@ -149,24 +149,27 @@ export class OpenAIChatCompletionsModel implements Model {
         });
       } else if (message.tool_calls) {
         for (const tool_call of message.tool_calls) {
-          const { id: callId, ...remainingToolCallData } = tool_call;
-          const {
-            arguments: args,
-            name,
-            ...remainingFunctionData
-          } = tool_call.function;
-          output.push({
-            id: response.id,
-            type: 'function_call',
-            arguments: args,
-            name: name,
-            callId: callId,
-            status: 'completed',
-            providerData: {
-              ...remainingToolCallData,
-              ...remainingFunctionData,
-            },
-          });
+          if (tool_call.type === 'function') {
+            // Note: custom tools are not supported for now
+            const { id: callId, ...remainingToolCallData } = tool_call;
+            const {
+              arguments: args,
+              name,
+              ...remainingFunctionData
+            } = tool_call.function;
+            output.push({
+              id: response.id,
+              type: 'function_call',
+              arguments: args,
+              name: name,
+              callId: callId,
+              status: 'completed',
+              providerData: {
+                ...remainingToolCallData,
+                ...remainingFunctionData,
+              },
+            });
+          }
         }
       }
     }
