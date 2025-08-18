@@ -1,12 +1,11 @@
 {
   "private": true,
-  "name": "ai-sdk",
+  "name": "ai-sdk-v1",
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.15",
+    "@ai-sdk/openai": "1",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
-    "@openrouter/ai-sdk-provider": "^1.1.2",
-    "zod": "3.25.62"
+    "zod": "3"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

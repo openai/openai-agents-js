@@ -13,7 +13,7 @@
     "build-check": "tsc --noEmit -p ./tsconfig.test.json"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^1.1.3",
+    "@ai-sdk/provider": "^2.0.0",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
   },
