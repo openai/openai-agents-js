@@ -33,8 +33,8 @@
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^5.10.1",
-    "debug": "^4.4.0"
+    "debug": "^4.4.0",
+    "openai": "^5.12.2"
   },
   "keywords": [
     "openai",
