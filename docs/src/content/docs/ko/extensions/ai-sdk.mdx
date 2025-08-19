@@ -1,5 +1,5 @@
 ---
-title: Vercel의 AI SDK로 모든 모델 사용하기
+title: AI SDK로 임의 모델 사용
 description: Connect your Agents SDK agents to any model through the Vercel's AI SDK
 ---
 
@@ -7,38 +7,38 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  이 어댑터는 아직 베타 단계입니다. 특히 규모가 작은 모델 제공자의 경우 문제를
-  겪을 수 있습니다. 문제가 있으면 [GitHub
+  이 어댑터는 아직 베타 단계입니다. 특히 규모가 작은 일부 모델 제공자와 함께
+  사용할 때 문제가 발생할 수 있습니다. 문제가 있으면 [GitHub
   이슈](https://github.com/openai/openai-agents-js/issues)로 보고해 주세요.
   신속히 수정하겠습니다.
 </Aside>
 
-기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 작동합니다. 그러나 다른 모델을 사용하려면, [Vercel의 AI SDK](https://sdk.vercel.ai/)에서 지원하는 다양한 모델을 이 어댑터를 통해 Agents SDK에 연결할 수 있습니다.
+기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 작동합니다. 하지만 다른 모델을 사용하려면, [Vercel의 AI SDK](https://sdk.vercel.ai/)에서 지원하는 다양한 모델을 이 어댑터를 통해 Agents SDK에 연결할 수 있습니다.
 
 ## 설정
 
 <Steps>
 
-1. extensions 패키지를 설치하여 AI SDK 어댑터를 설치합니다:
+1. 확장 패키지를 설치하여 AI SDK 어댑터를 설치하세요:
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel의 AI SDK](https://sdk.vercel.ai/docs/models/overview)에서 원하는 모델 패키지를 선택해 설치합니다:
+2. [Vercel의 AI SDK](https://sdk.vercel.ai/docs/models/overview)에서 원하는 모델 패키지를 선택하여 설치하세요:
 
    ```bash
    npm install @ai-sdk/openai@"^1.0.0"
    ```
 
-3. 에이전트에 연결하기 위해 어댑터와 모델을 가져옵니다:
+3. 어댑터와 모델을 가져와 에이전트에 연결하세요:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
    import { aisdk } from '@openai/agents-extensions';
    ```
 
-4. 에이전트가 사용할 모델 인스턴스를 초기화합니다:
+4. 에이전트가 사용할 모델 인스턴스를 초기화하세요:
 
    ```typescript
    const model = aisdk(openai('o4-mini'));
@@ -47,17 +47,18 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  Vercel의 AI SDK는 최근 v2로 마이그레이션했지만, openai agent extensions 는
-  아직 v2와 호환되지 않습니다. 따라서 Vercel의 AI SDK v1 버전을 설치해야 합니다.
+  Vercel의 AI SDK는 최근 v2로 마이그레이션되었지만, openai agent
+  extensions(OpenAI Agents SDK 확장)은 아직 v2와 호환되지 않습니다. 따라서
+  Vercel의 AI SDK는 v1 버전을 설치해야 합니다.
 </Aside>
 
-## 예제
+## 예시
 
 <Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 설정" />
 
-## 제공자 메타데이터 전달
+## 프로바이더 메타데이터 전달
 
-메시지와 함께 제공자별 옵션을 보내야 한다면, `providerMetadata`를 통해 전달하세요. 이 값들은 기반이 되는 AI SDK 모델로 직접 전달됩니다. 예를 들어, Agents SDK에서 다음과 같은 `providerData`는
+메시지와 함께 프로바이더별 옵션을 전송해야 하는 경우 `providerMetadata`를 통해 전달하세요. 값은 기저 AI SDK 모델로 직접 전달됩니다. 예를 들어, Agents SDK에서 다음과 같은 `providerData`는
 
 ```ts
 providerData: {
@@ -69,7 +70,7 @@ providerData: {
 }
 ```
 
-다음과 같이 변환됩니다
+AI SDK 통합을 사용할 때 다음과 같이 변환됩니다
 
 ```ts
 providerMetadata: {
@@ -80,5 +81,3 @@ providerMetadata: {
   }
 }
 ```
-
-AI SDK 통합을 사용할 때.

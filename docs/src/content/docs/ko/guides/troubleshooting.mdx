@@ -13,21 +13,21 @@ OpenAI Agents SDK는 다음 서버 환경에서 지원됩니다:
 
 ### 제한적 지원
 
-- **Cloudflare Workers**: Agents SDK는 Cloudflare Workers에서 사용할 수 있지만, 현재 다음과 같은 제한이 있습니다:
-  - 현재 SDK는 `nodejs_compat` 활성화가 필요합니다
-  - 요청 종료 시 트레이스를 수동으로 flush 해야 합니다. 자세한 내용은 [Tracing](/openai-agents-js/ko/guides/tracing#export-loop-lifecycle)을 참고하세요.
+- **Cloudflare Workers**: Agents SDK는 Cloudflare Workers에서 사용할 수 있으나, 현재 다음과 같은 제한 사항이 있습니다:
+  - SDK는 현재 `nodejs_compat`를 활성화해야 합니다
+  - 요청이 끝날 때 트레이스를 수동으로 플러시해야 합니다. 자세한 내용은 [트레이싱](/openai-agents-js/ko/guides/tracing#export-loop-lifecycle)을 참조하세요.
   - Cloudflare Workers의 `AsyncLocalStorage` 지원이 제한적이므로 일부 트레이스가 정확하지 않을 수 있습니다
-- **Browsers**:
-  - 브라우저에서는 현재 트레이싱이 지원되지 않습니다
+- **브라우저**:
+  - 현재 브라우저에서는 트레이싱이 지원되지 않습니다
 - **v8 isolates**:
-  - 적절한 브라우저 폴리필을 포함하는 번들러를 사용한다면 v8 isolates용으로 SDK를 번들링할 수 있지만, 트레이싱은 동작하지 않습니다
+  - 적절한 브라우저 폴리필이 포함된 번들러를 사용하면 v8 isolates용으로 SDK를 번들링할 수 있으나, 트레이싱은 동작하지 않습니다
   - v8 isolates는 광범위하게 테스트되지 않았습니다
 
 ## 디버그 로깅
 
-SDK 사용 중 문제가 발생하면, 디버그 로깅을 활성화하여 동작에 대한 더 많은 정보를 확인할 수 있습니다.
+SDK 사용 중 문제가 발생하면, 디버그 로깅을 활성화하여 동작 내용을 더 자세히 확인할 수 있습니다
 
-`DEBUG` 환경 변수를 `openai-agents:*`로 설정하면 디버그 로깅을 활성화할 수 있습니다.
+`DEBUG` 환경 변수를 `openai-agents:*`로 설정하여 디버그 로깅을 활성화하세요
 
 ```bash
 DEBUG=openai-agents:*
@@ -37,4 +37,4 @@ DEBUG=openai-agents:*
 
 - `openai-agents:core` — SDK의 주요 실행 로직
 - `openai-agents:openai` — OpenAI API 호출
-- `openai-agents:realtime` — 실시간 에이전트 구성 요소
+- `openai-agents:realtime` — Realtime Agents 구성 요소

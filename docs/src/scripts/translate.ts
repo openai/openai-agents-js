@@ -198,6 +198,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     user: '사용자',
     parameter: '매개변수',
     processor: '프로세서',
+    'orchestrating multiple agents': '멀티 에이전트 오케스트레이션',
     server: '서버',
     'web search': '웹 검색',
     'file search': '파일 검색',
@@ -230,7 +231,7 @@ const engToNonEngInstructions: Record<string, string[]> = {
   ],
   ko: [
     '* 공손하고 중립적인 문체(합니다/입니다체)를 일관되게 사용하세요.',
-    '* 개발자를 위한 페이지이므로 보통 개발자 문서 형식으로 번역하세요',
+    '* 개발자를 위한 페이지이므로 보통 개발자 문서 형식으로 의역하세요, 특히 영문 그대로 번역했을 경우 어색한 부분은 반드시 한국어에 맞게 표현하도록 합니다.',
     "* 'instructions', 'tools'와 같은 API 매개변수 이름과 temperature, top_p, max_tokens, presence_penalty, frequency_penalty 등은 영문 그대로 유지하세요.",
     '* 문장이 아닌 불릿 항목 끝에는 마침표를 찍지 마세요.',
   ],
