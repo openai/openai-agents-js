@@ -1,0 +1,129 @@
+---
+title: 에이전트 실행
+description: Configure and execute agent workflows with the Runner class
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import helloWorldWithRunnerExample from '../../../../../../examples/docs/hello-world-with-runner.ts?raw';
+import helloWorldExample from '../../../../../../examples/docs/hello-world.ts?raw';
+import runningAgentsExceptionExample from '../../../../../../examples/docs/running-agents/exceptions1.ts?raw';
+import chatLoopExample from '../../../../../../examples/docs/running-agents/chatLoop.ts?raw';
+
+에이전트는 스스로 아무것도 하지 않습니다. `Runner` 클래스나 `run()` 유틸리티로 에이전트를 실행합니다.
+
+<Code lang="typescript" code={helloWorldExample} title="간단 실행" />
+
+커스텀 러너가 필요하지 않다면 `run()` 유틸리티를 사용할 수 있으며, 이는 기본 `Runner` 싱글톤 인스턴스를 실행합니다.
+
+또는 자체 러너 인스턴스를 만들 수 있습니다:
+
+<Code lang="typescript" code={helloWorldWithRunnerExample} title="간단 실행" />
+
+에이전트를 실행한 후에는 최종 출력과 전체 실행 이력을 포함하는 [Results](/openai-agents-js/ko/guides/results) 객체를 받게 됩니다.
+
+## 에이전트 루프
+
+Runner에서 run 메서드를 사용할 때 시작 에이전트와 입력을 전달합니다. 입력은 문자열(사용자 메시지로 간주) 또는 OpenAI Responses API의 항목인 입력 항목 목록일 수 있습니다.
+
+러너는 다음과 같은 루프를 실행합니다:
+
+1. 현재 입력으로 현재 에이전트의 모델을 호출
+2. LLM 응답을 검사
+   - **Final output** → 반환
+   - **Handoff** → 새로운 에이전트로 전환하고, 누적된 대화 기록을 유지한 채 1로 이동
+   - **Tool calls** → 도구를 실행하고, 그 결과를 대화에 추가한 뒤 1로 이동
+3. `maxTurns`에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 발생시킵니다.
+
+<Aside type="note">
+  LLM 출력이 "최종 출력"으로 간주되는 규칙은, 원하는 타입의 텍스트 출력을
+  생성하고 도구 호출이 없어야 한다는 것입니다.
+</Aside>
+
+### Runner 라이프사이클
+
+앱이 시작될 때 `Runner`를 만들고 요청 간에 재사용하세요. 인스턴스는 모델 프로바이더와 트레이싱 옵션 같은 전역 구성을 저장합니다. 완전히 다른 설정이 필요하지 않다면 다른 `Runner`를 만들지 마세요. 간단한 스크립트의 경우 내부적으로 기본 러너를 사용하는 `run()`을 호출해도 됩니다.
+
+## 실행 인수
+
+`run()` 메서드의 입력은 실행을 시작할 초기 에이전트, 실행 입력, 그리고 옵션 집합입니다.
+
+입력은 문자열(사용자 메시지로 간주) 또는 [입력 항목](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) 목록, 혹은 [Human-in-the-loop](/openai-agents-js/ko/guides/human-in-the-loop) 에이전트를 구축하는 경우 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 객체일 수 있습니다.
+
+추가 옵션은 다음과 같습니다:
+
+| Option     | Default | Description                                                                                                                            |
+| ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`   | `false` | `true`이면 호출은 `StreamedRunResult`를 반환하고 모델에서 도착하는 대로 이벤트를 방출합니다.                                           |
+| `context`  | –       | 모든 tool / guardrail / handoff에 전달되는 컨텍스트 객체. 자세한 내용은 [Context management](/openai-agents-js/ko/guides/context) 참고 |
+| `maxTurns` | `10`    | 안전 제한 – 도달 시 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 던집니다.          |
+| `signal`   | –       | 취소를 위한 `AbortSignal`                                                                                                              |
+
+## 스트리밍
+
+스트리밍을 사용하면 LLM이 실행되는 동안 스트리밍 이벤트를 추가로 받을 수 있습니다. 스트림이 시작되면 `StreamedRunResult`에는 실행에 대한 완전한 정보와 새로 생성된 모든 출력이 포함됩니다. `for await` 루프로 스트리밍 이벤트를 순회할 수 있습니다. 자세한 내용은 [Streaming](/openai-agents-js/ko/guides/streaming)을 참조하세요.
+
+## 실행 구성
+
+자신의 `Runner` 인스턴스를 생성하는 경우 러너를 구성하기 위해 `RunConfig` 객체를 전달할 수 있습니다.
+
+| Field                       | Type                  | Purpose                                                                         |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------------- |
+| `model`                     | `string \| Model`     | 실행 내 **모든** 에이전트에 대해 특정 모델을 강제 적용합니다.                   |
+| `modelProvider`             | `ModelProvider`       | 모델 이름을 해석 – 기본값은 OpenAI 프로바이더입니다.                            |
+| `modelSettings`             | `ModelSettings`       | 에이전트별 설정을 덮어쓰는 전역 튜닝 매개변수.                                  |
+| `handoffInputFilter`        | `HandoffInputFilter`  | 핸드오프 수행 시 입력 항목을 변형(핸드오프 자체에 정의되어 있지 않은 경우에만). |
+| `inputGuardrails`           | `InputGuardrail[]`    | _초기_ 사용자 입력에 적용되는 가드레일.                                         |
+| `outputGuardrails`          | `OutputGuardrail[]`   | _최종_ 출력에 적용되는 가드레일.                                                |
+| `tracingDisabled`           | `boolean`             | OpenAI 트레이싱을 완전히 비활성화.                                              |
+| `traceIncludeSensitiveData` | `boolean`             | 스팬은 계속 내보내면서 트레이스에서 LLM/도구 입력과 출력을 제외.                |
+| `workflowName`              | `string`              | Traces 대시보드에 표시 – 관련 실행을 그룹화하는 데 도움.                        |
+| `traceId` / `groupId`       | `string`              | SDK가 생성하도록 두는 대신 트레이스 또는 그룹 ID를 수동으로 지정.               |
+| `traceMetadata`             | `Record<string, any>` | 모든 스팬에 첨부할 임의의 메타데이터.                                           |
+
+## 대화 / 채팅 스레드
+
+`runner.run()`(또는 `run()` 유틸리티) 호출은 애플리케이션 수준 대화에서 하나의 **턴**을 나타냅니다. 최종 사용자에게 `RunResult` 중 어느 정도를 보여줄지 선택하세요 – 때로는 `finalOutput`만, 때로는 생성된 모든 항목입니다.
+
+<Code
+  lang="typescript"
+  code={chatLoopExample}
+  title="대화 기록을 이어가는 예시"
+/>
+
+대화형 버전은 [채팅 예제](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)를 참고하세요.
+
+## 예외
+
+SDK는 다음과 같은 소수의 오류를 던지며, 이를 캐치할 수 있습니다:
+
+- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns`에 도달함
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 모델이 잘못된 출력 생성(예: 잘못된 형식의 JSON, 알 수 없는 도구)
+- [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – 가드레일 위반
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – 가드레일 실행 실패
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 함수 도구 호출 중 일부 실패
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 구성 또는 사용자 입력에 기반해 발생한 오류
+
+이 모든 오류는 기본 `AgentsError` 클래스를 확장하며, 현재 실행 상태에 접근할 수 있는 `state` 속성을 제공할 수 있습니다.
+
+다음은 `GuardrailExecutionError`를 처리하는 코드 예제입니다:
+
+<Code
+  lang="typescript"
+  code={runningAgentsExceptionExample}
+  title="가드레일 실행 오류"
+/>
+
+위 예제를 실행하면 다음과 같은 출력이 표시됩니다:
+
+```
+Guardrail execution failed: Error: Input guardrail failed to complete: Error: Something is wrong!
+Math homework guardrail tripped
+```
+
+---
+
+## 다음 단계
+
+- [Models](/openai-agents-js/ko/guides/models) 구성 방법을 알아보세요.
+- 에이전트에 [Tools](/openai-agents-js/ko/guides/tools)를 제공하세요.
+- 프로덕션 준비를 위해 [Guardrails](/openai-agents-js/ko/guides/guardrails) 또는 [Tracing](/openai-agents-js/ko/guides/tracing)을 추가하세요.

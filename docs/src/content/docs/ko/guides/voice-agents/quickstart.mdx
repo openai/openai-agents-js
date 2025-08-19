@@ -1,0 +1,125 @@
+---
+title: 음성 에이전트 빠른 시작
+description: Build your first realtime voice assistant using the OpenAI Agents SDK in minutes.
+---
+
+import { Steps, Aside, Code } from '@astrojs/starlight/components';
+import helloWorldExample from '../../../../../../../examples/docs/voice-agents/helloWorld.ts?raw';
+import createAgentExample from '../../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
+import createSessionExample from '../../../../../../../examples/docs/voice-agents/createSession.ts?raw';
+import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
+import sessionHistoryExample from '../../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
+import historyUpdatedExample from '../../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
+import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+
+<Steps>
+
+0. **프로젝트 생성**
+
+   이 Quickstart에서는 브라우저에서 사용할 수 있는 음성 에이전트를 만듭니다. 새 프로젝트를 시작하려면 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 또는 [`Vite`](https://vite.dev/guide/installation.html)를 사용해 보세요.
+
+   ```bash
+   npm create vite@latest my-project --template vanilla-ts
+   ```
+
+1. **Agents SDK 설치**
+
+   ```bash
+   npm install @openai/agents zod@3
+   ```
+
+   또는 독립 실행형 브라우저 패키지인 `@openai/agents-realtime`를 설치할 수 있습니다.
+
+2. **클라이언트 임시 토큰 생성**
+
+   이 애플리케이션은 사용자의 브라우저에서 실행되므로 Realtime API를 통해 모델에 안전하게 연결할 방법이 필요합니다. 이를 위해 백엔드 서버에서 생성해야 하는 [클라이언트 임시 키](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token)를 사용할 수 있습니다. 테스트 목적이라면 `curl`과 일반 OpenAI API 키를 사용해 키를 생성해도 됩니다.
+
+   ```bash
+   curl -X POST https://api.openai.com/v1/realtime/sessions \
+      -H "Authorization: Bearer $OPENAI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "gpt-4o-realtime-preview-2025-06-03"
+      }'
+   ```
+
+   응답에는 이후에 연결에 사용할 수 있는 `client_secret.value` 값이 포함됩니다. 이 키는 유효 기간이 짧으므로 다시 생성해야 합니다.
+
+3. **첫 에이전트 생성**
+
+   새로운 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/)를 만드는 것은 일반 [`Agent`](/openai-agents-js/ko/guides/agents)를 만드는 것과 매우 유사합니다.
+
+   ```typescript
+   import { RealtimeAgent } from '@openai/agents-realtime';
+
+   const agent = new RealtimeAgent({
+     name: 'Assistant',
+     instructions: 'You are a helpful assistant.',
+   });
+   ```
+
+4. **세션 생성**
+
+   일반 에이전트와 달리 음성 에이전트는 대화와 모델 연결을 시간에 따라 처리하는 `RealtimeSession` 안에서 지속적으로 실행되고 청취합니다. 이 세션은 오디오 처리, 인터럽션(중단 처리), 그리고 이후에 다룰 많은 다른 라이프사이클 기능도 처리합니다.
+
+   ```typescript
+   import { RealtimeSession } from '@openai/agents-realtime';
+
+   const session = new RealtimeSession(agent, {
+     model: 'gpt-4o-realtime-preview-2025-06-03',
+   });
+   ```
+
+   `RealtimeSession` 생성자는 첫 번째 인수로 `agent`를 받습니다. 이 에이전트가 사용자가 처음 상호작용하게 될 에이전트입니다.
+
+5. **세션에 연결**
+
+   세션에 연결하려면 앞에서 생성한 클라이언트 임시 토큰을 전달해야 합니다.
+
+   ```typescript
+   await session.connect({ apiKey: '<client-api-key>' });
+   ```
+
+   이렇게 하면 브라우저에서 WebRTC를 사용해 Realtime API에 연결하고 오디오 입력과 출력을 위해 마이크와 스피커를 자동으로 구성합니다. `RealtimeSession`을 백엔드 서버(예: Node.js)에서 실행하는 경우 SDK는 자동으로 WebSocket을 연결로 사용합니다. 다양한 전송 계층에 대해서는 [Transport Mechanisms](/openai-agents-js/ko/guides/voice-agents/transport) 가이드를 참고하세요.
+
+6. **모두 통합하기**
+
+   <Code lang="typescript" code={helloWorldExample} />
+
+7. **엔진을 가동하고 대화를 시작하기**
+
+   웹 서버를 시작하고 새 실시간 에이전트 코드가 포함된 페이지로 이동하세요. 마이크 접근 권한 요청이 표시될 것입니다. 접근을 허용하면 에이전트와 대화를 시작할 수 있습니다.
+
+   ```bash
+   npm run dev
+   ```
+
+</Steps>
+
+## 다음 단계
+
+여기부터는 자신만의 음성 에이전트를 설계하고 구축할 수 있습니다. 음성 에이전트는 일반 에이전트와 동일한 기능을 많이 포함하지만, 고유한 기능도 일부 포함합니다.
+
+- 음성 에이전트에 다음을 제공하는 방법을 알아보세요
+  - [Tools](/openai-agents-js/ko/guides/voice-agents/build#tools)
+  - [Handoffs](/openai-agents-js/ko/guides/voice-agents/build#handoffs)
+  - [Guardrails](/openai-agents-js/ko/guides/voice-agents/build#guardrails)
+  - [오디오 인터럽션(중단 처리) 처리](/openai-agents-js/ko/guides/voice-agents/build#audio-interruptions)
+  - [세션 기록 관리](/openai-agents-js/ko/guides/voice-agents/build#session-history)
+
+- 다양한 전송 계층에 대해 더 알아보세요
+  - [WebRTC](/openai-agents-js/ko/guides/voice-agents/transport#connecting-over-webrtc)
+  - [WebSocket](/openai-agents-js/ko/guides/voice-agents/transport#connecting-over-websocket)
+  - [전송 메커니즘 직접 구축](/openai-agents-js/ko/guides/voice-agents/transport#building-your-own-transport-mechanism)

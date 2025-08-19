@@ -118,9 +118,15 @@ export async function extractSidebarTranslations(
 const sourceDir = path.resolve(__dirname, '../../src/content/docs');
 const languages: Record<string, string> = {
   ja: 'Japanese',
+  ko: 'Korean',
   // Add more languages here
 };
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
+// Comma-separated list to restrict which languages to translate (e.g. "ko" or "ja,ko")
+const ONLY_LANGS = (process.env.ONLY_LANG || process.env.LANGS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 setDefaultOpenAIKey(process.env.OPENAI_API_KEY || '');
 const ENABLE_CODE_SNIPPET_EXCLUSION = true;
 
@@ -175,6 +181,39 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
       'ほんの数分ではじめてのエージェントをつくることができます。',
     "Let's build": 'はじめる',
   },
+  ko: {
+    agents: '에이전트',
+    'computer use': '컴퓨터 사용',
+    'OAI hosted tools': 'OpenAI 호스트하는 도구',
+    'well formed data': '적절한 형식의 데이터',
+    guardrail: '가드레일',
+    handoffs: '핸드오프',
+    'function tools': '함수 도구',
+    'function calling': '함수 호출',
+    tracing: '트레이싱',
+    'code examples': '코드 예제',
+    'vector store': '벡터 스토어',
+    'deep research': '딥 리서치',
+    category: '카테고리',
+    user: '사용자',
+    parameter: '매개변수',
+    processor: '프로세서',
+    server: '서버',
+    'web search': '웹 검색',
+    'file search': '파일 검색',
+    streaming: '스트리밍',
+    'system prompt': '시스템 프롬프트',
+    interruption: '인터럽션(중단 처리)',
+    'TypeScript-first': 'TypeScript 우선',
+    'Human in the loop': '휴먼인더루프 (HITL)',
+    'Hosted tool': '호스티드 툴',
+    'Hosted MCP server tools': '호스티드 MCP 서버 도구',
+    raw: '원문',
+    'Realtime Agents': '실시간 에이전트',
+    'Build your first agent in minutes.':
+      '단 몇 분 만에 첫 에이전트를 만들 수 있습니다',
+    "Let's build": '시작하기',
+  },
 };
 
 const engToNonEngInstructions: Record<string, string[]> = {
@@ -189,7 +228,36 @@ const engToNonEngInstructions: Record<string, string[]> = {
     '* You must consistently use polite wording such as です/ます rather than である/なのだ.',
     "* Don't put 。 at the end for non-sentence bullet points",
   ],
+  ko: [
+    '* 공손하고 중립적인 문체(합니다/입니다체)를 일관되게 사용하세요.',
+    '* 개발자를 위한 페이지이므로 보통 개발자 문서 형식으로 번역하세요',
+    "* 'instructions', 'tools'와 같은 API 매개변수 이름과 temperature, top_p, max_tokens, presence_penalty, frequency_penalty 등은 영문 그대로 유지하세요.",
+    '* 문장이 아닌 불릿 항목 끝에는 마침표를 찍지 마세요.',
+  ],
 };
+
+function languageSpecificBlock(
+  targetLanguage: string,
+  langCode: string,
+): string {
+  if (langCode === 'ja') {
+    return `#########################
+##  LANGUAGE‑SPECIFIC  ##
+#########################
+*(applies only when ${targetLanguage} = Japanese)*  
+- Insert a half‑width space before and after all alphanumeric terms.  
+- Add a half‑width space just outside markdown emphasis markers: \` **太字** \` (good) vs \`** 太字 **\` (bad).`;
+  }
+  if (langCode === 'ko') {
+    return `#########################
+##  LANGUAGE‑SPECIFIC  ##
+#########################
+*(applies only when ${targetLanguage} = Korean)*  
+- 영문 식별자, 코드, 약어 주변의 공백은 원문을 유지하고 임의로 추가/삭제하지 마세요.  
+- 마크다운 강조 표식 주변에 불필요한 공백을 넣지 마세요: \`**굵게**\` (good) vs \`** 굵게 **\` (bad).`;
+  }
+  return '';
+}
 
 async function ensureDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
@@ -226,12 +294,7 @@ You must return **only** the translated markdown. Do not include any commentary,
 - Treat the **Do‑Not‑Translate list** and **Term‑Specific list** as case‑insensitive; preserve the original casing you see.
 - No markdown tags.
 
-#########################
-##  LANGUAGE‑SPECIFIC  ##
-#########################
-*(applies only when ${targetLanguage} = Japanese)*  
-- Insert a half‑width space before and after all alphanumeric terms.  
-- Add a half‑width space just outside markdown emphasis markers: \` **太字** \` (good) vs \`** 太字 **\` (bad).
+${languageSpecificBlock(targetLanguage, langCode)}
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -324,12 +387,7 @@ You must return **only** the translated markdown. Do not include any commentary,
   - Link URLs inside \`[label](URL)\` – translate the label, never the URL.
   - The internal links like [{label here}](path here) must be kept as-is.
 
-#########################
-##  LANGUAGE‑SPECIFIC  ##
-#########################
-*(applies only when ${targetLanguage} = Japanese)*  
-- Insert a half‑width space before and after all alphanumeric terms.  
-- Add a half‑width space just outside markdown emphasis markers: \` **太字** \` (good) vs \`** 太字 **\` (bad). Review this rule again before returning the translated text.
+${languageSpecificBlock(targetLanguage, langCode)}
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -555,6 +613,7 @@ function shouldSkipFile(filePath: string): boolean {
   const rel = path.relative(sourceDir, filePath);
   if (
     rel.startsWith('ja/') ||
+    rel.startsWith('ko/') ||
     rel.startsWith('fr/') ||
     (!filePath.endsWith('.md') && !filePath.endsWith('.mdx'))
   ) {
@@ -567,7 +626,13 @@ async function translateSingleSourceFile(filePath: string): Promise<void> {
   if (shouldSkipFile(filePath)) return;
   // Always compute rel as the path relative to docs/src/content/docs
   const rel = path.relative(sourceDir, filePath);
-  for (const langCode of Object.keys(languages)) {
+  const targetLangs =
+    ONLY_LANGS.length > 0
+      ? ONLY_LANGS.filter((code) =>
+          Object.prototype.hasOwnProperty.call(languages, code),
+        )
+      : Object.keys(languages);
+  for (const langCode of targetLangs) {
     // Output should always be docs/src/content/docs/<langCode>/<rel>
     const targetPath = path.join(sourceDir, langCode, rel);
     await translateFile(filePath, targetPath, langCode);
@@ -577,6 +642,9 @@ async function translateSingleSourceFile(filePath: string): Promise<void> {
 async function main() {
   const concurrency = 6;
   const args = process.argv.slice(2);
+  if (ONLY_LANGS.length > 0) {
+    console.log('Translating only for languages:', ONLY_LANGS.join(', '));
+  }
   const filePaths: string[] = [];
   if (args.length > 0) {
     for (const arg of args) {

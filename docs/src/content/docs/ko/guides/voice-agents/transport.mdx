@@ -1,0 +1,66 @@
+---
+title: 실시간 전송 계층
+description: Learn about the different transport layers that can be used with Realtime Agents.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+
+import createAgentExample from '../../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
+import createSessionExample from '../../../../../../../examples/docs/voice-agents/createSession.ts?raw';
+import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
+import sessionHistoryExample from '../../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
+import historyUpdatedExample from '../../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
+import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+
+## 기본 전송 계층
+
+### WebRTC 연결
+
+기본 전송 계층은 WebRTC를 사용합니다. 오디오는 마이크에서 녹음되어 자동으로 재생됩니다.
+
+자신의 미디어 스트림이나 오디오 요소를 사용하려면 세션을 생성할 때 `OpenAIRealtimeWebRTC` 인스턴스를 제공하세요.
+
+<Code lang="typescript" code={customWebRTCTransportExample} />
+
+### WebSocket 연결
+
+WebRTC 대신 WebSocket 연결을 사용하려면 세션 생성 시 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하세요. 이는 서버 측 사용 사례에 적합하며, 예를 들어 Twilio로 전화 에이전트를 구축할 때 유용합니다.
+
+<Code lang="typescript" code={websocketSessionExample} />
+
+원문 PCM16 오디오 바이트를 처리하려면 임의의 녹음/재생 라이브러리를 사용하세요.
+
+### 사용자 지정 전송 메커니즘 구축
+
+다른 음성-음성 API를 사용하거나 고유한 전송 메커니즘이 필요한 경우, `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 발생시켜 직접 만들 수 있습니다.
+
+## Realtime API와 더 직접적인 상호작용
+
+OpenAI Realtime API를 사용하되 Realtime API에 더 직접 접근하고 싶다면, 두 가지 옵션이 있습니다:
+
+### 옵션 1 - 전송 계층 액세스
+
+`RealtimeSession`의 모든 기능을 계속 활용하고 싶다면 `session.transport`를 통해 전송 계층에 액세스할 수 있습니다.
+
+전송 계층은 수신한 모든 이벤트를 `*` 이벤트로 방출하고, `sendEvent()` 메서드를 사용해 원문 이벤트를 전송할 수 있습니다.
+
+<Code lang="typescript" code={transportEventsExample} />
+
+### 옵션 2 — 전송 계층만 사용
+
+도구 자동 실행, 가드레일 등이 필요 없다면, 전송 계층을 연결 및 인터럽션(중단 처리)만 관리하는 "얇은(thin) 클라이언트"로 사용할 수도 있습니다.
+
+<Code lang="typescript" code={thinClientExample} />
