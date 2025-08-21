@@ -4,6 +4,11 @@ import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
 import { getAllMcpTools, type MCPServer } from './mcp';
 import type { Model, ModelSettings, Prompt } from './model';
+import {
+  getDefaultModelSettings,
+  gpt5ReasoningSettingsRequired,
+  isGpt5Default,
+} from './defaultModel';
 import type { RunContext } from './runContext';
 import {
   type FunctionTool,
@@ -165,8 +170,10 @@ export interface AgentConfiguration<
   handoffOutputTypeWarningEnabled?: boolean;
 
   /**
-   * The model implementation to use when invoking the LLM. By default, if not set, the agent will
-   * use the default model configured in modelSettings.defaultModel
+   * The model implementation to use when invoking the LLM.
+   *
+   * By default, if not set, the agent will use the default model returned by
+   * getDefaultModel (currently "gpt-4.1").
    */
   model: string | Model;
 
@@ -348,7 +355,7 @@ export class Agent<
     this.handoffDescription = config.handoffDescription ?? '';
     this.handoffs = config.handoffs ?? [];
     this.model = config.model ?? '';
-    this.modelSettings = config.modelSettings ?? {};
+    this.modelSettings = config.modelSettings ?? getDefaultModelSettings();
     this.tools = config.tools ?? [];
     this.mcpServers = config.mcpServers ?? [];
     this.inputGuardrails = config.inputGuardrails ?? [];
@@ -358,6 +365,23 @@ export class Agent<
     }
     this.toolUseBehavior = config.toolUseBehavior ?? 'run_llm_again';
     this.resetToolChoice = config.resetToolChoice ?? true;
+
+    if (
+      // The user sets a non-default model
+      config.model !== undefined &&
+      // The default model is gpt-5
+      isGpt5Default() &&
+      // However, the specified model is not a gpt-5 model
+      (typeof config.model !== 'string' ||
+        !gpt5ReasoningSettingsRequired(config.model)) &&
+      // The model settings are not customized for the specified model
+      config.modelSettings === undefined
+    ) {
+      // In this scenario, we should use a generic model settings
+      // because non-gpt-5 models are not compatible with the default gpt-5 model settings.
+      // This is a best-effort attempt to make the agent work with non-gpt-5 models.
+      this.modelSettings = {};
+    }
 
     // --- Runtime warning for handoff output type compatibility ---
     if (

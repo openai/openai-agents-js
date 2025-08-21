@@ -1,7 +1,6 @@
-import { Model, ModelProvider } from '@openai/agents-core';
+import { Model, ModelProvider, getDefaultModel } from '@openai/agents-core';
 import OpenAI from 'openai';
 import {
-  DEFAULT_OPENAI_MODEL,
   getDefaultOpenAIClient,
   getDefaultOpenAIKey,
   shouldUseResponsesByDefault,
@@ -65,7 +64,7 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async getModel(modelName?: string | undefined): Promise<Model> {
-    const model = modelName || DEFAULT_OPENAI_MODEL;
+    const model = modelName || getDefaultModel();
     const useResponses = this.#useResponses ?? shouldUseResponsesByDefault();
 
     if (useResponses) {

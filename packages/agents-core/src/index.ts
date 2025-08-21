@@ -94,6 +94,13 @@ export {
   SerializedTool,
   SerializedOutputType,
 } from './model';
+export {
+  OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME,
+  gpt5ReasoningSettingsRequired,
+  getDefaultModel,
+  getDefaultModelSettings,
+  isGpt5Default,
+} from './defaultModel';
 export { setDefaultModelProvider } from './providers';
 export { RunResult, StreamedRunResult } from './result';
 export {

@@ -21,7 +21,8 @@ async function main() {
     outputType: output,
   });
 
-  const prompt = 'Tell me about recursion in programming.';
+  const prompt =
+    'Tell me about recursion in programming. Quickly responding with a single answer is fine.';
   const result = await run(agent, prompt);
   console.log(result.finalOutput);
 
