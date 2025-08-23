@@ -76,7 +76,7 @@ export class ConsoleSpanExporter implements TracingExporter {
     for (const item of items) {
       if (item.type === 'trace') {
         console.log(
-          `[Exporter] Export trace traceId=${item.traceId} name=${item.name}`,
+          `[Exporter] Export trace traceId=${item.traceId} name=${item.name}${item.groupId ? ` groupId=${item.groupId}` : ''}`,
         );
       } else {
         console.log(`[Exporter] Export span: ${JSON.stringify(item)}`);
