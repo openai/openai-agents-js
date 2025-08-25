@@ -25,7 +25,7 @@ async function main() {
     console.log('Generating image, this may take a while...');
     const result = await run(
       agent,
-      'Create an image of a frog eating a pizza, comic book style.',
+      'Create an image of a frog eating a pizza, comic book style. Return a text description of the image as a message too.',
     );
     console.log(result.finalOutput);
 

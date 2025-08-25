@@ -254,6 +254,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
+          const explictlyModelSet =
+            (state._currentAgent.model !== undefined &&
+              state._currentAgent.model !== '') ||
+            (this.config.model !== undefined && this.config.model !== '');
           let model = selectModel(state._currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
@@ -370,10 +374,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ...this.config.modelSettings,
               ...state._currentAgent.modelSettings,
             };
-            const agentModel = state._currentAgent.model;
             const agentModelSettings = state._currentAgent.modelSettings;
-            modelSettings = sanitizeModelSettingsForNonGpt5Runner(
-              agentModel,
+            modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+              explictlyModelSet,
               agentModelSettings,
               model,
               modelSettings,
@@ -704,6 +707,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
+          const explictlyModelSet =
+            (currentAgent.model !== undefined && currentAgent.model !== '') ||
+            (this.config.model !== undefined && this.config.model !== '');
           let model = selectModel(currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
@@ -718,10 +724,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             ...this.config.modelSettings,
             ...currentAgent.modelSettings,
           };
-          const agentModel = currentAgent.model;
           const agentModelSettings = currentAgent.modelSettings;
-          modelSettings = sanitizeModelSettingsForNonGpt5Runner(
-            agentModel,
+          modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+            explictlyModelSet,
             agentModelSettings,
             model,
             modelSettings,
@@ -1053,8 +1058,8 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
  * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
  * are incompatible and should be stripped to avoid runtime errors.
  */
-function sanitizeModelSettingsForNonGpt5Runner(
-  agentModel: string | Model,
+function adjustModelSettingsForNonGPT5RunnerModel(
+  explictlyModelSet: boolean,
   agentModelSettings: ModelSettings,
   runnerModel: string | Model,
   modelSettings: ModelSettings,
@@ -1062,9 +1067,8 @@ function sanitizeModelSettingsForNonGpt5Runner(
   if (
     // gpt-5 is enabled for the default model for agents
     isGpt5Default() &&
-    // no explicitly set model for the agent
-    typeof agentModel === 'string' &&
-    agentModel === Agent.DEFAULT_MODEL_PLACEHOLDER &&
+    // explicitly set model for the agent
+    explictlyModelSet &&
     // this runner uses a non-gpt-5 model
     (typeof runnerModel !== 'string' ||
       !gpt5ReasoningSettingsRequired(runnerModel)) &&
