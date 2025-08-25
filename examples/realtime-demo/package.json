@@ -10,13 +10,12 @@
     "generate-token": "tsx token.ts"
   },
   "devDependencies": {
-    "@openai/agents-realtime": "workspace:*",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"
   },
   "dependencies": {
+    "@openai/agents-realtime": "workspace:*",
     "@tailwindcss/vite": "^4.1.7",
-    "openai": "^4.91.0",
     "tailwindcss": "^4.1.7"
   }
 }

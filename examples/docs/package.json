@@ -2,12 +2,12 @@
   "private": true,
   "name": "docs",
   "dependencies": {
-    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/openai": "^2.0.15",
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^5.10.1",
+    "openai": "5.10.1",
     "server-only": "^0.0.1",
     "zod": "^3.25.40"
   },

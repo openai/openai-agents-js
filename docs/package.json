@@ -16,6 +16,7 @@
     "@openai/agents": "workspace:*",
     "@tailwindcss/vite": "^4.0.17",
     "astro": "^5.13.0",
+    "openai": "^5.12.2",
     "sharp": "^0.34.2",
     "starlight-llms-txt": "^0.6.0",
     "starlight-typedoc": "^0.21.3",

@@ -1,13 +1,13 @@
 import type {
   JSONSchema7,
-  LanguageModelV2,
-  LanguageModelV2CallOptions,
-  LanguageModelV2FunctionTool,
-  LanguageModelV2Message,
-  LanguageModelV2Prompt,
-  LanguageModelV2ProviderDefinedTool,
-  LanguageModelV2ToolCallPart,
-  LanguageModelV2ToolResultPart,
+  LanguageModelV1,
+  LanguageModelV1CallOptions,
+  LanguageModelV1FunctionTool,
+  LanguageModelV1Message,
+  LanguageModelV1Prompt,
+  LanguageModelV1ProviderDefinedTool,
+  LanguageModelV1ToolCallPart,
+  LanguageModelV1ToolResultPart,
 } from '@ai-sdk/provider';
 import {
   createGenerationSpan,
@@ -30,18 +30,18 @@ import { isZodObject } from '@openai/agents/utils';
 
 /**
  * @internal
- * Converts a list of model items to a list of language model V2 messages.
+ * Converts a list of model items to a list of language model v1 messages.
  *
  * @param model - The model to use.
  * @param items - The items to convert.
- * @returns The list of language model V2 messages.
+ * @returns The list of language model v1 messages.
  */
-export function itemsToLanguageV2Messages(
-  model: LanguageModelV2,
+export function itemsToLanguageV1Messages(
+  model: LanguageModelV1,
   items: protocol.ModelItem[],
-): LanguageModelV2Message[] {
-  const messages: LanguageModelV2Message[] = [];
-  let currentAssistantMessage: LanguageModelV2Message | undefined;
+): LanguageModelV1Message[] {
+  const messages: LanguageModelV1Message[] = [];
+  let currentAssistantMessage: LanguageModelV1Message | undefined;
 
   for (const item of items) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
@@ -50,7 +50,7 @@ export function itemsToLanguageV2Messages(
         messages.push({
           role: 'system',
           content: content,
-          providerOptions: {
+          providerMetadata: {
             ...(providerData ?? {}),
           },
         });
@@ -69,21 +69,28 @@ export function itemsToLanguageV2Messages(
                     return {
                       type: 'text',
                       text: c.text,
-                      providerOptions: {
+                      providerMetadata: {
                         ...(contentProviderData ?? {}),
                       },
                     };
                   }
                   if (c.type === 'input_image') {
-                    const url = new URL(c.image);
-                    return {
-                      type: 'file',
-                      data: url,
-                      mediaType: 'image/*',
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
-                    };
+                    if (typeof c.image === 'string') {
+                      const url = new URL(c.image);
+                      return {
+                        type: 'image',
+                        image: url,
+                      };
+                    } else if (c.image instanceof Uint8Array) {
+                      return {
+                        type: 'image',
+                        image: c.image,
+                      };
+                    } else {
+                      throw new UserError(
+                        'Image must be a URL string or Uint8Array',
+                      );
+                    }
                   }
                   if (c.type === 'input_file') {
                     if (typeof c.file !== 'string') {
@@ -92,16 +99,16 @@ export function itemsToLanguageV2Messages(
                     return {
                       type: 'file',
                       file: c.file,
-                      mediaType: 'application/octet-stream',
+                      mimeType: 'application/octet-stream',
                       data: c.file,
-                      providerOptions: {
+                      providerMetadata: {
                         ...(contentProviderData ?? {}),
                       },
                     };
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
-          providerOptions: {
+          providerMetadata: {
             ...(providerData ?? {}),
           },
         });
@@ -123,12 +130,12 @@ export function itemsToLanguageV2Messages(
               return {
                 type: 'text',
                 text: c.text,
-                providerOptions: {
+                providerMetadata: {
                   ...(contentProviderData ?? {}),
                 },
               };
             }),
-          providerOptions: {
+          providerMetadata: {
             ...(providerData ?? {}),
           },
         });
@@ -142,7 +149,7 @@ export function itemsToLanguageV2Messages(
         currentAssistantMessage = {
           role: 'assistant',
           content: [],
-          providerOptions: {
+          providerMetadata: {
             ...(item.providerData ?? {}),
           },
         };
@@ -152,12 +159,12 @@ export function itemsToLanguageV2Messages(
         Array.isArray(currentAssistantMessage.content) &&
         currentAssistantMessage.role === 'assistant'
       ) {
-        const content: LanguageModelV2ToolCallPart = {
+        const content: LanguageModelV1ToolCallPart = {
           type: 'tool-call',
           toolCallId: item.callId,
           toolName: item.name,
-          input: parseArguments(item.arguments),
-          providerOptions: {
+          args: parseArguments(item.arguments),
+          providerMetadata: {
             ...(item.providerData ?? {}),
           },
         };
@@ -169,19 +176,19 @@ export function itemsToLanguageV2Messages(
         messages.push(currentAssistantMessage);
         currentAssistantMessage = undefined;
       }
-      const toolResult: LanguageModelV2ToolResultPart = {
+      const toolResult: LanguageModelV1ToolResultPart = {
         type: 'tool-result',
         toolCallId: item.callId,
         toolName: item.name,
-        output: convertToAiSdkOutput(item.output),
-        providerOptions: {
+        result: item.output,
+        providerMetadata: {
           ...(item.providerData ?? {}),
         },
       };
       messages.push({
         role: 'tool',
         content: [toolResult],
-        providerOptions: {
+        providerMetadata: {
           ...(item.providerData ?? {}),
         },
       });
@@ -211,10 +218,10 @@ export function itemsToLanguageV2Messages(
           {
             type: 'reasoning',
             text: item.content[0].text,
-            providerOptions: { ...(item.providerData ?? {}) },
+            providerMetadata: { ...(item.providerData ?? {}) },
           },
         ],
-        providerOptions: {
+        providerMetadata: {
           ...(item.providerData ?? {}),
         },
       });
@@ -222,7 +229,7 @@ export function itemsToLanguageV2Messages(
     }
 
     if (item.type === 'unknown') {
-      messages.push({ ...(item.providerData ?? {}) } as LanguageModelV2Message);
+      messages.push({ ...(item.providerData ?? {}) } as LanguageModelV1Message);
       continue;
     }
 
@@ -243,79 +250,40 @@ export function itemsToLanguageV2Messages(
 
 /**
  * @internal
- * Converts a handoff to a language model V2 tool.
+ * Converts a handoff to a language model v1 tool.
  *
  * @param model - The model to use.
  * @param handoff - The handoff to convert.
  */
-function handoffToLanguageV2Tool(
-  model: LanguageModelV2,
+function handoffToLanguageV1Tool(
+  model: LanguageModelV1,
   handoff: SerializedHandoff,
-): LanguageModelV2FunctionTool {
+): LanguageModelV1FunctionTool {
   return {
     type: 'function',
     name: handoff.toolName,
     description: handoff.toolDescription,
-    inputSchema: handoff.inputJsonSchema as JSONSchema7,
+    parameters: handoff.inputJsonSchema as JSONSchema7,
   };
-}
-
-function convertToAiSdkOutput(
-  output:
-    | {
-        type: 'text';
-        text: string;
-        providerData?: Record<string, any> | undefined;
-      }
-    | {
-        type: 'image';
-        data: string;
-        mediaType: string;
-        providerData?: Record<string, any> | undefined;
-      },
-): LanguageModelV2ToolResultPart['output'] {
-  const anyOutput = output as any;
-  if (anyOutput?.type === 'text' && typeof anyOutput.text === 'string') {
-    return { type: 'text', value: anyOutput.text } as const;
-  }
-  if (
-    anyOutput?.type === 'image' &&
-    typeof anyOutput.data === 'string' &&
-    typeof anyOutput.mediaType === 'string'
-  ) {
-    return {
-      type: 'content',
-      value: [
-        {
-          type: 'media',
-          data: anyOutput.data,
-          mediaType: anyOutput.mediaType,
-        },
-      ],
-    };
-  }
-  throw new UserError(
-    `Unsupported tool output type: ${String(anyOutput?.type)}`,
-  );
 }
 
 /**
  * @internal
- * Converts a tool to a language model V2 tool.
+ * Converts a tool to a language model v1 tool.
  *
  * @param model - The model to use.
  * @param tool - The tool to convert.
  */
-export function toolToLanguageV2Tool(
-  model: LanguageModelV2,
+export function toolToLanguageV1Tool(
+  model: LanguageModelV1,
   tool: SerializedTool,
-): LanguageModelV2FunctionTool | LanguageModelV2ProviderDefinedTool {
+): LanguageModelV1FunctionTool | LanguageModelV1ProviderDefinedTool {
   if (tool.type === 'function') {
     return {
       type: 'function',
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.parameters as JSONSchema7,
+      parameters: tool.parameters as JSONSchema7,
     };
   }
 
@@ -347,14 +315,14 @@ export function toolToLanguageV2Tool(
 
 /**
  * @internal
- * Converts an output type to a language model V2 response format.
+ * Converts an output type to a language model v1 response format.
  *
  * @param outputType - The output type to convert.
- * @returns The language model V2 response format.
+ * @returns The language model v1 response format.
  */
 export function getResponseFormat(
   outputType: SerializedOutputType,
-): LanguageModelV2CallOptions['responseFormat'] {
+): LanguageModelV1CallOptions['responseFormat'] {
   if (outputType === 'text') {
     return {
       type: 'text',
@@ -369,7 +337,7 @@ export function getResponseFormat(
 }
 
 /**
- * Wraps a model from the AI SDK that adheres to the LanguageModelV2 spec to be used used as a model
+ * Wraps a model from the AI SDK that adheres to the LanguageModelV1 spec to be used used as a model
  * in the OpenAI Agents SDK to use other models.
  *
  * While you can use this with the OpenAI models, it is recommended to use the default OpenAI model
@@ -393,9 +361,9 @@ export function getResponseFormat(
  * @returns The wrapped model.
  */
 export class AiSdkModel implements Model {
-  #model: LanguageModelV2;
+  #model: LanguageModelV1;
   #logger = getLogger('openai-agents:extensions:ai-sdk');
-  constructor(model: LanguageModelV2) {
+  constructor(model: LanguageModelV1) {
     this.#model = model;
   }
 
@@ -408,7 +376,7 @@ export class AiSdkModel implements Model {
           model_impl: 'ai-sdk',
         };
 
-        let input: LanguageModelV2Prompt =
+        let input: LanguageModelV1Prompt =
           typeof request.input === 'string'
             ? [
                 {
@@ -416,7 +384,7 @@ export class AiSdkModel implements Model {
                   content: [{ type: 'text', text: request.input }],
                 },
               ]
-            : itemsToLanguageV2Messages(this.#model, request.input);
+            : itemsToLanguageV1Messages(this.#model, request.input);
 
         if (request.systemInstructions) {
           input = [
@@ -429,11 +397,11 @@ export class AiSdkModel implements Model {
         }
 
         const tools = request.tools.map((tool) =>
-          toolToLanguageV2Tool(this.#model, tool),
+          toolToLanguageV1Tool(this.#model, tool),
         );
 
         request.handoffs.forEach((handoff) => {
-          tools.push(handoffToLanguageV2Tool(this.#model, handoff));
+          tools.push(handoffToLanguageV1Tool(this.#model, handoff));
         });
 
         if (span && request.tracing === true) {
@@ -444,17 +412,21 @@ export class AiSdkModel implements Model {
           throw new UserError('Zod output type is not yet supported');
         }
 
-        const responseFormat: LanguageModelV2CallOptions['responseFormat'] =
+        const responseFormat: LanguageModelV1CallOptions['responseFormat'] =
           getResponseFormat(request.outputType);
 
-        const aiSdkRequest: LanguageModelV2CallOptions = {
-          tools,
+        const aiSdkRequest: LanguageModelV1CallOptions = {
+          inputFormat: 'messages',
+          mode: {
+            type: 'regular',
+            tools,
+          },
           prompt: input,
           temperature: request.modelSettings.temperature,
           topP: request.modelSettings.topP,
           frequencyPenalty: request.modelSettings.frequencyPenalty,
           presencePenalty: request.modelSettings.presencePenalty,
-          maxOutputTokens: request.modelSettings.maxTokens,
+          maxTokens: request.modelSettings.maxTokens,
           responseFormat,
           abortSignal: request.signal,
 
@@ -464,49 +436,39 @@ export class AiSdkModel implements Model {
         if (this.#logger.dontLogModelData) {
           this.#logger.debug('Request sent');
         } else {
-          this.#logger.debug('Request:', JSON.stringify(aiSdkRequest, null, 2));
+          this.#logger.debug('Request:', aiSdkRequest);
         }
 
         const result = await this.#model.doGenerate(aiSdkRequest);
 
         const output: ModelResponse['output'] = [];
 
-        const resultContent = (result as any).content ?? [];
-        const toolCalls = resultContent.filter(
-          (c: any) => c && c.type === 'tool-call',
-        );
-        const hasToolCalls = toolCalls.length > 0;
-        for (const toolCall of toolCalls) {
+        result.toolCalls?.forEach((toolCall) => {
           output.push({
             type: 'function_call',
             callId: toolCall.toolCallId,
             name: toolCall.toolName,
-            arguments:
-              typeof toolCall.input === 'string'
-                ? toolCall.input
-                : JSON.stringify(toolCall.input ?? {}),
+            arguments: toolCall.args,
             status: 'completed',
-            providerData: hasToolCalls ? result.providerMetadata : undefined,
+            providerData: !result.text ? result.providerMetadata : undefined,
           });
-        }
+        });
 
         // Some of other platforms may return both tool calls and text.
         // Putting a text message here will let the agent loop to complete,
         // so adding this item only when the tool calls are empty.
         // Note that the same support is not available for streaming mode.
-        if (!hasToolCalls) {
-          const textItem = resultContent.find(
-            (c: any) => c && c.type === 'text' && typeof c.text === 'string',
-          );
-          if (textItem) {
-            output.push({
-              type: 'message',
-              content: [{ type: 'output_text', text: textItem.text }],
-              role: 'assistant',
-              status: 'completed',
-              providerData: (result as any).providerMetadata,
-            });
-          }
+        if (
+          (!result.toolCalls || result.toolCalls.length === 0) &&
+          result.text
+        ) {
+          output.push({
+            type: 'message',
+            content: [{ type: 'output_text', text: result.text }],
+            role: 'assistant',
+            status: 'completed',
+            providerData: result.providerMetadata,
+          });
         }
 
         if (span && request.tracing === true) {
@@ -514,21 +476,21 @@ export class AiSdkModel implements Model {
         }
 
         const response = {
-          responseId: (result as any).response?.id ?? 'FAKE_ID',
+          responseId: result.response?.id ?? 'FAKE_ID',
           usage: new Usage({
-            inputTokens: Number.isNaN((result as any).usage?.inputTokens)
+            inputTokens: Number.isNaN(result.usage?.promptTokens)
               ? 0
-              : ((result as any).usage?.inputTokens ?? 0),
-            outputTokens: Number.isNaN((result as any).usage?.outputTokens)
+              : (result.usage?.promptTokens ?? 0),
+            outputTokens: Number.isNaN(result.usage?.completionTokens)
               ? 0
-              : ((result as any).usage?.outputTokens ?? 0),
+              : (result.usage?.completionTokens ?? 0),
             totalTokens:
-              (Number.isNaN((result as any).usage?.inputTokens)
+              (Number.isNaN(result.usage?.promptTokens)
                 ? 0
-                : ((result as any).usage?.inputTokens ?? 0)) +
-                (Number.isNaN((result as any).usage?.outputTokens)
-                  ? 0
-                  : ((result as any).usage?.outputTokens ?? 0)) || 0,
+                : (result.usage?.promptTokens ?? 0)) +
+              (Number.isNaN(result.usage?.completionTokens)
+                ? 0
+                : (result.usage?.completionTokens ?? 0)),
           }),
           output,
           providerData: result,
@@ -546,7 +508,7 @@ export class AiSdkModel implements Model {
         if (this.#logger.dontLogModelData) {
           this.#logger.debug('Response ready');
         } else {
-          this.#logger.debug('Response:', JSON.stringify(response, null, 2));
+          this.#logger.debug('Response:', response);
         }
 
         return response;
@@ -599,7 +561,7 @@ export class AiSdkModel implements Model {
         };
       }
 
-      let input: LanguageModelV2Prompt =
+      let input: LanguageModelV1Prompt =
         typeof request.input === 'string'
           ? [
               {
@@ -607,7 +569,7 @@ export class AiSdkModel implements Model {
                 content: [{ type: 'text', text: request.input }],
               },
             ]
-          : itemsToLanguageV2Messages(this.#model, request.input);
+          : itemsToLanguageV1Messages(this.#model, request.input);
 
       if (request.systemInstructions) {
         input = [
@@ -620,28 +582,32 @@ export class AiSdkModel implements Model {
       }
 
       const tools = request.tools.map((tool) =>
-        toolToLanguageV2Tool(this.#model, tool),
+        toolToLanguageV1Tool(this.#model, tool),
       );
 
       request.handoffs.forEach((handoff) => {
-        tools.push(handoffToLanguageV2Tool(this.#model, handoff));
+        tools.push(handoffToLanguageV1Tool(this.#model, handoff));
       });
 
       if (span && request.tracing === true) {
         span.spanData.input = input;
       }
 
-      const responseFormat: LanguageModelV2CallOptions['responseFormat'] =
+      const responseFormat: LanguageModelV1CallOptions['responseFormat'] =
         getResponseFormat(request.outputType);
 
-      const aiSdkRequest: LanguageModelV2CallOptions = {
-        tools,
+      const aiSdkRequest: LanguageModelV1CallOptions = {
+        inputFormat: 'messages',
+        mode: {
+          type: 'regular',
+          tools,
+        },
         prompt: input,
         temperature: request.modelSettings.temperature,
         topP: request.modelSettings.topP,
         frequencyPenalty: request.modelSettings.frequencyPenalty,
         presencePenalty: request.modelSettings.presencePenalty,
-        maxOutputTokens: request.modelSettings.maxTokens,
+        maxTokens: request.modelSettings.maxTokens,
         responseFormat,
         abortSignal: request.signal,
         ...(request.modelSettings.providerData ?? {}),
@@ -650,10 +616,7 @@ export class AiSdkModel implements Model {
       if (this.#logger.dontLogModelData) {
         this.#logger.debug('Request received (streamed)');
       } else {
-        this.#logger.debug(
-          'Request (streamed):',
-          JSON.stringify(aiSdkRequest, null, 2),
-        );
+        this.#logger.debug('Request (streamed):', aiSdkRequest);
       }
 
       const { stream } = await this.#model.doStream(aiSdkRequest);
@@ -665,59 +628,78 @@ export class AiSdkModel implements Model {
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
 
-      for await (const part of stream) {
-        if (!started) {
-          started = true;
-          yield { type: 'response_started' };
-        }
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { value: part, done } = await reader.read();
+          if (done) break;
 
-        yield { type: 'model', event: part };
+          if (!started) {
+            started = true;
+            yield { type: 'response_started' };
+          }
 
-        switch (part.type) {
-          case 'text-delta': {
-            if (!textOutput) {
-              textOutput = { type: 'output_text', text: '' };
+          yield { type: 'model', event: part };
+
+          switch (part.type) {
+            case 'text-delta': {
+              if (!textOutput) {
+                textOutput = { type: 'output_text', text: '' };
+              }
+              textOutput.text += part.textDelta;
+              yield { type: 'output_text_delta', delta: part.textDelta };
+              break;
             }
-            textOutput.text += (part as any).delta;
-            yield { type: 'output_text_delta', delta: (part as any).delta };
-            break;
-          }
-          case 'tool-call': {
-            const toolCallId = (part as any).toolCallId;
-            if (toolCallId) {
-              functionCalls[toolCallId] = {
-                type: 'function_call',
-                callId: toolCallId,
-                name: (part as any).toolName,
-                arguments: (part as any).input ?? '',
-                status: 'completed',
-              };
+            case 'tool-call': {
+              if (part.toolCallType === 'function') {
+                functionCalls[part.toolCallId] = {
+                  type: 'function_call',
+                  callId: part.toolCallId,
+                  name: part.toolName,
+                  arguments: part.args,
+                  status: 'completed',
+                };
+              }
+              break;
             }
-            break;
-          }
-          case 'response-metadata': {
-            if ((part as any).id) {
-              responseId = (part as any).id;
+            case 'tool-call-delta': {
+              if (part.toolCallType === 'function') {
+                const fc = functionCalls[part.toolCallId] ?? {
+                  type: 'function_call',
+                  callId: part.toolCallId,
+                  name: '',
+                  arguments: '',
+                };
+                fc.name += part.toolName;
+                fc.arguments += part.argsTextDelta;
+                functionCalls[part.toolCallId] = fc;
+              }
+              break;
             }
-            break;
+            case 'response-metadata': {
+              if (part.id) {
+                responseId = part.id;
+              }
+              break;
+            }
+            case 'finish': {
+              usagePromptTokens = Number.isNaN(part.usage?.promptTokens)
+                ? 0
+                : (part.usage?.promptTokens ?? 0);
+              usageCompletionTokens = Number.isNaN(part.usage?.completionTokens)
+                ? 0
+                : (part.usage?.completionTokens ?? 0);
+              break;
+            }
+            case 'error': {
+              throw part.error;
+            }
+            default:
+              break;
           }
-          case 'finish': {
-            usagePromptTokens = Number.isNaN((part as any).usage?.inputTokens)
-              ? 0
-              : ((part as any).usage?.inputTokens ?? 0);
-            usageCompletionTokens = Number.isNaN(
-              (part as any).usage?.outputTokens,
-            )
-              ? 0
-              : ((part as any).usage?.outputTokens ?? 0);
-            break;
-          }
-          case 'error': {
-            throw part.error;
-          }
-          default:
-            break;
         }
+      } finally {
+        reader.releaseLock();
       }
 
       const outputs: protocol.OutputModelItem[] = [];
@@ -759,10 +741,7 @@ export class AiSdkModel implements Model {
       if (this.#logger.dontLogModelData) {
         this.#logger.debug('Response ready (streamed)');
       } else {
-        this.#logger.debug(
-          'Response (streamed):',
-          JSON.stringify(finalEvent.response, null, 2),
-        );
+        this.#logger.debug('Response (streamed):', finalEvent.response);
       }
 
       yield finalEvent;
@@ -791,7 +770,7 @@ export class AiSdkModel implements Model {
 }
 
 /**
- * Wraps a model from the AI SDK that adheres to the LanguageModelV2 spec to be used used as a model
+ * Wraps a model from the AI SDK that adheres to the LanguageModelV1 spec to be used used as a model
  * in the OpenAI Agents SDK to use other models.
  *
  * While you can use this with the OpenAI models, it is recommended to use the default OpenAI model
@@ -814,7 +793,7 @@ export class AiSdkModel implements Model {
  * @param model - The Vercel AI SDK model to wrap.
  * @returns The wrapped model.
  */
-export function aisdk(model: LanguageModelV2) {
+export function aisdk(model: LanguageModelV1) {
   return new AiSdkModel(model);
 }
 
