@@ -13,9 +13,7 @@ import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-se
   quickly.
 </Aside>
 
-Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat
-Completions API. However, if you would like to use another model, the [Vercel's AI SDK](https://sdk.vercel.ai/) offers a range
-of supported models that can be brought into the Agents SDK through this adapter.
+Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel's AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
 
 ## Setup
 
@@ -52,8 +50,8 @@ of supported models that can be brought into the Agents SDK through this adapter
   We currently support ai-sdk's model provider v2 modules, which are compatible
   with Vercel AI SDK v5. If you have a specific reason to continue using the v1
   model providers, you can copy the module from
-  https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1 and
-  include it in your project.
+  [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
+  and include it in your project.
 </Aside>
 
 ## Example
@@ -62,9 +60,7 @@ of supported models that can be brought into the Agents SDK through this adapter
 
 ## Passing provider metadata
 
-If you need to send provider-specific options with a message, pass them through
-`providerMetadata`. The values are forwarded directly to the underlying AI SDK
-model. For example, the following `providerData` in the Agents SDK
+If you need to send provider-specific options with a message, pass them through `providerMetadata`. The values are forwarded directly to the underlying AI SDK model. For example, the following `providerData` in the Agents SDK
 
 ```ts
 providerData: {
