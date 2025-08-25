@@ -930,4 +930,47 @@ describe('executeToolsAndSideEffects', () => {
       expect(result.nextStep.output).toBe('Hello World');
     }
   });
+
+  it('returns final output when final message text is empty', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const imageCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'img1',
+      name: 'image_generation_call',
+      status: 'completed',
+      output: 'iVBORw0KGgoAAAANSUhEUgAABAAAAAYACAIAAABn4K39AAHH1....', // base64 encoded image
+      providerData: { type: 'image_generation_call' },
+    };
+    const emptyMessage: protocol.AssistantMessageItem = {
+      id: 'msg1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: '' }],
+    };
+    const response: ModelResponse = {
+      output: [imageCall, emptyMessage],
+      usage: new Usage(),
+    } as any;
+    const processedResponse = processModelResponse(response, textAgent, [], []);
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('');
+    }
+  });
 });

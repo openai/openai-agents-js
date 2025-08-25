@@ -54,6 +54,7 @@ import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import { RunState } from './runState';
 import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
+import { gpt5ReasoningSettingsRequired, isGpt5Default } from './defaultModel';
 
 const DEFAULT_MAX_TURNS = 10;
 
@@ -253,6 +254,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
+          const explictlyModelSet =
+            (state._currentAgent.model !== undefined &&
+              state._currentAgent.model !== '') ||
+            (this.config.model !== undefined && this.config.model !== '');
           let model = selectModel(state._currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
@@ -369,6 +374,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ...this.config.modelSettings,
               ...state._currentAgent.modelSettings,
             };
+            const agentModelSettings = state._currentAgent.modelSettings;
+            modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+              explictlyModelSet,
+              agentModelSettings,
+              model,
+              modelSettings,
+            );
             modelSettings = maybeResetToolChoice(
               state._currentAgent,
               state._toolUseTracker,
@@ -695,6 +707,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
+          const explictlyModelSet =
+            (currentAgent.model !== undefined && currentAgent.model !== '') ||
+            (this.config.model !== undefined && this.config.model !== '');
           let model = selectModel(currentAgent.model, this.config.model);
 
           if (typeof model === 'string') {
@@ -709,6 +724,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             ...this.config.modelSettings,
             ...currentAgent.modelSettings,
           };
+          const agentModelSettings = currentAgent.modelSettings;
+          modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+            explictlyModelSet,
+            agentModelSettings,
+            model,
+            modelSettings,
+          );
           modelSettings = maybeResetToolChoice(
             currentAgent,
             result.state._toolUseTracker,
@@ -1028,4 +1050,36 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   } else {
     return await runner.run(agent, input, options);
   }
+}
+
+/**
+ * When the default model is a GPT-5 variant, agents may carry GPT-5-specific providerData
+ * (e.g., reasoning effort, text verbosity). If a run resolves to a non-GPT-5 model and the
+ * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
+ * are incompatible and should be stripped to avoid runtime errors.
+ */
+function adjustModelSettingsForNonGPT5RunnerModel(
+  explictlyModelSet: boolean,
+  agentModelSettings: ModelSettings,
+  runnerModel: string | Model,
+  modelSettings: ModelSettings,
+): ModelSettings {
+  if (
+    // gpt-5 is enabled for the default model for agents
+    isGpt5Default() &&
+    // explicitly set model for the agent
+    explictlyModelSet &&
+    // this runner uses a non-gpt-5 model
+    (typeof runnerModel !== 'string' ||
+      !gpt5ReasoningSettingsRequired(runnerModel)) &&
+    (agentModelSettings.providerData?.reasoning ||
+      agentModelSettings.providerData?.text?.verbosity ||
+      (agentModelSettings.providerData as any)?.reasoning_effort)
+  ) {
+    // the incompatible parameters should be removed to avoid runtime errors
+    delete modelSettings.providerData?.reasoning;
+    delete (modelSettings.providerData as any)?.text?.verbosity;
+    delete (modelSettings.providerData as any)?.reasoning_effort;
+  }
+  return modelSettings;
 }

@@ -7,12 +7,15 @@ const THINKING_PREFIX = styleText(['bgGray', 'black'], 'Thought');
 async function main() {
   const agent = new Agent({
     name: 'Agent',
-    model: 'o3',
+    model: 'gpt-5',
     modelSettings: {
       providerData: {
         reasoning: {
           effort: 'high',
           summary: 'auto',
+        },
+        text: {
+          verbosity: 'high',
         },
       },
     },

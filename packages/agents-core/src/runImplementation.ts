@@ -573,7 +573,7 @@ export async function executeToolsAndSideEffects<TContext>(
       : undefined;
 
   // if there is no output we just run again
-  if (!potentialFinalOutput) {
+  if (typeof potentialFinalOutput === 'undefined') {
     return new SingleStepResult(
       originalInput,
       newResponse,

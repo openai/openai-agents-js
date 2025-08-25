@@ -1,11 +1,32 @@
 import { Agent, run, fileSearchTool, withTrace } from '@openai/agents';
+import OpenAI, { toFile } from 'openai';
 
 async function main() {
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+
+  const text = `Arrakis, the desert planet in Frank Herbert's "Dune," was inspired by the scarcity of water
+    as a metaphor for oil and other finite resources.`;
+  const upload = await client.files.create({
+    file: await toFile(Buffer.from(text, 'utf-8'), 'cafe.txt'),
+    purpose: 'assistants',
+  });
+  const vectorStore = await client.vectorStores.create({
+    name: 'Arrakis',
+  });
+  console.log(vectorStore);
+  const indexed = await client.vectorStores.files.createAndPoll(
+    vectorStore.id,
+    { file_id: upload.id },
+  );
+  console.log(indexed);
+
   const agent = new Agent({
     name: 'File searcher',
     instructions: 'You are a helpful agent.',
     tools: [
-      fileSearchTool(['vs_67bf88953f748191be42b462090e53e7'], {
+      fileSearchTool([vectorStore.id], {
         maxNumResults: 3,
         includeSearchResults: true,
       }),

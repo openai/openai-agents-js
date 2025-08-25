@@ -13,6 +13,7 @@ const getWeatherTool = tool({
   description: 'Get the weather for a given city',
   parameters: z.object({ city: z.string() }),
   execute: async (input) => {
+    console.log(`[debug] Getting weather for ${input.city}\n`);
     return `The weather in ${input.city} is sunny`;
   },
 });
@@ -28,7 +29,7 @@ const agent = new Agent({
 async function main() {
   await withTrace('ChatCompletions Assistant Example', async () => {
     const result = await run(agent, "What's the weather in Tokyo?");
-    console.log(`\n\nFinal response:\n${result.finalOutput}`);
+    console.log(`[Final response]\n${result.finalOutput}`);
   });
 }
 

@@ -16,7 +16,7 @@ async function main() {
       await mcpServer.connect();
       const result = await run(
         agent,
-        'Which language is this repo written in?',
+        'Which language is this repo written in? The MCP server knows which repo to investigate.',
       );
       console.log(result.finalOutput);
     });

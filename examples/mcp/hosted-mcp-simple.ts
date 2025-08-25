@@ -4,7 +4,8 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
   withTrace('Hosted MCP Example', async () => {
     const agent = new Agent({
       name: 'MCP Assistant',
-      instructions: 'You must always use the MCP tools to answer questions.',
+      instructions:
+        'You must always use the MCP tools to answer questions. The mcp server knows which repo to investigate, so you do not need to ask the user about it.',
       tools: [
         hostedMcpTool({
           serverLabel: 'gitmcp',
