@@ -605,13 +605,14 @@ export async function executeToolsAndSideEffects<TContext>(
     );
     const [error] = await safeExecute(() => parser(potentialFinalOutput));
     if (error) {
+      const errorMessage = String(error);
       addErrorToCurrentSpan({
         message: 'Invalid output type',
         data: {
-          error: String(error),
+          error: errorMessage,
         },
       });
-      throw new ModelBehaviorError('Invalid output type');
+      throw new ModelBehaviorError(errorMessage);
     }
 
     return new SingleStepResult(
