@@ -13,29 +13,29 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-既定では、 SDK は最初にインポートされたときに `OPENAI_API_KEY` 環境変数を読み込みます。環境変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出せます。
+デフォルトで SDK は、最初にインポートされたときに `OPENAI_API_KEY` 環境変数を読み込みます。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="既定の OpenAI キーを設定"
+  title="デフォルトの OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。そうでない場合は、 SDK が既定のキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。そうでない場合、 SDK はデフォルトキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIClientExample}
-  title="既定の OpenAI クライアントを設定"
+  title="デフォルトの OpenAI クライアントを設定"
 />
 
-最後に、 Responses API と Chat Completions API を切り替えることができます。
+最後に、 Responses API と Chat Completions API を切り替えられます。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API を設定" />
 
 ## トレーシング
 
-トレーシングは既定で有効化されており、上記の OpenAI キーを使用します。別のキーは `setTracingExportApiKey()` で設定できます。
+トレーシングはデフォルトで有効になっており、上のセクションの OpenAI キーを使用します。別キーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
@@ -43,7 +43,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングのエクスポート API キーを設定"
 />
 
-トレーシングを完全に無効化することもできます。
+トレーシングは完全に無効化することもできます。
 
 <Code
   lang="typescript"
@@ -51,29 +51,29 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングを無効化"
 />
 
-## デバッグログ
+## デバッグロギング
 
-SDK はデバッグ用ログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
+SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。冗長なログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使用して、自分のモジュール向けの名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使うと、独自のモジュール向けに名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーを取得" />
 
-### ログ内の機微なデータ
+### ログ内の機微情報
 
-一部のログにはユーザーデータが含まれる場合があります。次の環境変数を設定して無効化できます。
+一部のログにはユーザー データが含まれる場合があります。次の環境変数を設定して無効化できます。
 
-LLM の入力と出力のロギングを無効化するには：
+LLM の入力と出力のログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力と出力のロギングを無効化するには：
+ツールの入力と出力のログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
