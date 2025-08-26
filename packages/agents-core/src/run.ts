@@ -832,6 +832,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
             result.state._currentStep.output,
           );
+          this.emit(
+            'agent_end',
+            result.state._context,
+            currentAgent,
+            result.state._currentStep.output,
+          );
+          currentAgent.emit(
+            'agent_end',
+            result.state._context,
+            result.state._currentStep.output,
+          );
           return;
         } else if (
           result.state._currentStep.type === 'next_step_interruption'
