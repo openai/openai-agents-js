@@ -466,6 +466,14 @@ describe('RealtimeSession', () => {
 
     await session.connect({ apiKey: 'test' });
 
+    // Trigger an agent update to cause updateSessionConfig to be called
+    const newAgent = new RealtimeAgent({
+      name: 'UpdatedAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+    await session.updateAgent(newAgent);
+
     // Check that updateSessionConfig calls include tools
     expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
     const lastUpdateCall = transport.updateSessionConfigCalls[transport.updateSessionConfigCalls.length - 1];
@@ -490,6 +498,14 @@ describe('RealtimeSession', () => {
     });
 
     await session.connect({ apiKey: 'test' });
+
+    // Trigger an agent update to cause updateSessionConfig to be called
+    const newAgent = new RealtimeAgent({
+      name: 'UpdatedAgent',
+      handoffs: [],
+      tools: [] // No tools
+    });
+    await session.updateAgent(newAgent);
 
     // Check that updateSessionConfig calls do not include tools field
     expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
@@ -521,6 +537,14 @@ describe('RealtimeSession', () => {
     expect(connectCall?.initialSessionConfig?.tools).toBeDefined();
     expect(connectCall?.initialSessionConfig?.tools).toHaveLength(1);
     expect(connectCall?.initialSessionConfig?.tools?.[0]?.name).toBe('test');
+
+    // Trigger an agent update to cause updateSessionConfig to be called
+    const newAgent = new RealtimeAgent({
+      name: 'UpdatedAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+    await session.updateAgent(newAgent);
 
     // Verify that subsequent updates also include tools
     expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);

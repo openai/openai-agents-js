@@ -337,7 +337,8 @@ export class RealtimeSession<
     const fullConfig: Partial<RealtimeSessionConfig> = {
       ...base,
       instructions,
-      voice: this.#currentAgent.voice,
+      // Use session config voice if provided, otherwise fall back to agent voice
+      voice: base.voice ?? this.#currentAgent.voice,
       model: this.options.model,
       tools: this.#currentTools,
       tracing: tracingConfig,
