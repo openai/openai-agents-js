@@ -494,7 +494,7 @@ describe('RealtimeSession', () => {
     // Check that updateSessionConfig calls do not include tools field
     expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
     const lastUpdateCall = transport.updateSessionConfigCalls[transport.updateSessionConfigCalls.length - 1];
-    expect(lastUpdateCall.hasOwnProperty('tools')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(lastUpdateCall, 'tools')).toBe(false);
   });
 
   it('reproduces the original issue - tools work with config provided', async () => {
