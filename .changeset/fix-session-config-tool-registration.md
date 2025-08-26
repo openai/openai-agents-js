@@ -2,4 +2,4 @@
 '@openai/agents-realtime': patch
 ---
 
-Fix session config breaking tool registration
+Fix #339 session config breaking tool registration
