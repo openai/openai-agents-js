@@ -340,9 +340,13 @@ export class RealtimeSession<
       // Use session config voice if provided, otherwise fall back to agent voice
       voice: base.voice ?? this.#currentAgent.voice,
       model: this.options.model,
-      tools: this.#currentTools,
       tracing: tracingConfig,
     };
+
+    // Only include tools field if there are actually tools
+    if (this.#currentTools.length > 0) {
+      fullConfig.tools = this.#currentTools;
+    }
 
     // Update our cache so subsequent updates inherit the full set including any
     // dynamic fields we just overwrote.
