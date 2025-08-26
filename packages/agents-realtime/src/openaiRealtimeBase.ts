@@ -387,7 +387,7 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _getMergedSessionConfig(config: Partial<RealtimeSessionConfig>) {
-    const sessionData = {
+    const sessionData: any = {
       instructions: config.instructions,
       model:
         config.model ??
@@ -414,14 +414,19 @@ export abstract class OpenAIRealtimeBase
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.turnDetection,
       tool_choice:
         config.toolChoice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.toolChoice,
-      tools: config.tools?.map((tool) => ({
-        ...tool,
-        strict: undefined,
-      })),
       // We don't set tracing here to make sure that we don't try to override it on every
       // session.update as it might lead to errors
       ...(config.providerData ?? {}),
     };
+
+    // Only include tools if they are explicitly provided and not empty
+    // This prevents sending an empty tools array which would disable tool calls
+    if (config.tools && config.tools.length > 0) {
+      sessionData.tools = config.tools.map((tool) => ({
+        ...tool,
+        strict: undefined,
+      }));
+    }
 
     return sessionData;
   }

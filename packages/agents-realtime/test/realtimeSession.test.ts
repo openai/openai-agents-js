@@ -318,84 +318,219 @@ describe('RealtimeSession', () => {
     expect(last.outputAudioFormat).toBe('g711_ulaw');
   });
 
-it('defaults item status to completed for done output items without status', async () => {
-  class TestTransport extends OpenAIRealtimeBase {
-    status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
-      'connected';
-    connect = vi.fn(async () => {});
-    sendEvent = vi.fn();
-    mute = vi.fn();
-    close = vi.fn();
-    interrupt = vi.fn();
-    get muted() {
-      return false;
+  it('defaults item status to completed for done output items without status', async () => {
+    class TestTransport extends OpenAIRealtimeBase {
+      status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
+        'connected';
+      connect = vi.fn(async () => { });
+      sendEvent = vi.fn();
+      mute = vi.fn();
+      close = vi.fn();
+      interrupt = vi.fn();
+      get muted() {
+        return false;
+      }
     }
-  }
-  const transport = new TestTransport();
-  const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
-  const session = new RealtimeSession(agent, { transport });
-  await session.connect({ apiKey: 'test' });
-  const historyEvents: RealtimeItem[][] = [];
-  session.on('history_updated', (h) => historyEvents.push([...h]));
-  (transport as any)._onMessage({
-    data: JSON.stringify({
-      type: 'response.output_item.done',
-      event_id: 'e',
-      item: {
-        id: 'm1',
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'text', text: 'hi' }],
-      },
-      output_index: 0,
-      response_id: 'r1',
-    }),
-  });
-  const latest = historyEvents.at(-1)!;
-  const msg = latest.find(
-    (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
-      i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm1'
-  );
-  expect(msg).toBeDefined();
-  expect(msg!.status).toBe('completed');
-});
-
-it('preserves explicit completed status on done', async () => {
-  class TestTransport extends OpenAIRealtimeBase {
-    status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' = 'connected';
-    connect = vi.fn(async () => {});
-    sendEvent = vi.fn(); mute = vi.fn(); close = vi.fn(); interrupt = vi.fn();
-    get muted() { return false; }
-  }
-  const transport = new TestTransport();
-  const session = new RealtimeSession(new RealtimeAgent({ name: 'A', handoffs: [] }), { transport });
-  await session.connect({ apiKey: 'test' });
-
-  const historyEvents: RealtimeItem[][] = [];
-  session.on('history_updated', (h) => historyEvents.push([...h]));
-
-  (transport as any)._onMessage({
-    data: JSON.stringify({
-      type: 'response.output_item.done',
-      event_id: 'e',
-      item: {
-        id: 'm2',
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'text', text: 'hi again' }],
-      },
-      output_index: 0,
-      response_id: 'r2',
-    }),
+    const transport = new TestTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const session = new RealtimeSession(agent, { transport });
+    await session.connect({ apiKey: 'test' });
+    const historyEvents: RealtimeItem[][] = [];
+    session.on('history_updated', (h) => historyEvents.push([...h]));
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'e',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hi' }],
+        },
+        output_index: 0,
+        response_id: 'r1',
+      }),
+    });
+    const latest = historyEvents.at(-1)!;
+    const msg = latest.find(
+      (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
+        i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm1'
+    );
+    expect(msg).toBeDefined();
+    expect(msg!.status).toBe('completed');
   });
 
-  const latest = historyEvents.at(-1)!;
-  const msg = latest.find(
-    (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
-      i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm2'
-  );
-  expect(msg).toBeDefined();
-  expect(msg!.status).toBe('completed'); // ensure we didn't overwrite server status
-});
+  it('preserves explicit completed status on done', async () => {
+    class TestTransport extends OpenAIRealtimeBase {
+      status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' = 'connected';
+      connect = vi.fn(async () => { });
+      sendEvent = vi.fn(); mute = vi.fn(); close = vi.fn(); interrupt = vi.fn();
+      get muted() { return false; }
+    }
+    const transport = new TestTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'A', handoffs: [] }), { transport });
+    await session.connect({ apiKey: 'test' });
+
+    const historyEvents: RealtimeItem[][] = [];
+    session.on('history_updated', (h) => historyEvents.push([...h]));
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'e',
+        item: {
+          id: 'm2',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'text', text: 'hi again' }],
+        },
+        output_index: 0,
+        response_id: 'r2',
+      }),
+    });
+
+    const latest = historyEvents.at(-1)!;
+    const msg = latest.find(
+      (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
+        i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm2'
+    );
+    expect(msg).toBeDefined();
+    expect(msg!.status).toBe('completed'); // ensure we didn't overwrite server status
+  });
+
+  it('includes tools in session config when session config is provided', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({
+      name: 'TestAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+
+    // Test with session config - tools should still be included
+    const session = new RealtimeSession(agent, {
+      transport,
+      config: {
+        voice: 'alloy',
+        turnDetection: { type: 'server_vad' }
+      }
+    });
+
+    await session.connect({ apiKey: 'test' });
+
+    // Check that the initial session config includes tools
+    const connectCall = transport.connectCalls[0];
+    expect(connectCall?.initialSessionConfig?.tools).toBeDefined();
+    expect(connectCall?.initialSessionConfig?.tools).toHaveLength(1);
+    expect(connectCall?.initialSessionConfig?.tools?.[0]?.name).toBe('test');
+
+    // Check that voice config is also preserved
+    expect(connectCall?.initialSessionConfig?.voice).toBe('alloy');
+    expect(connectCall?.initialSessionConfig?.turnDetection).toEqual({ type: 'server_vad' });
+  });
+
+  it('includes tools in session config when no session config is provided', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({
+      name: 'TestAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+
+    // Test without session config - tools should be included
+    const session = new RealtimeSession(agent, { transport });
+
+    await session.connect({ apiKey: 'test' });
+
+    // Check that the initial session config includes tools
+    const connectCall = transport.connectCalls[0];
+    expect(connectCall?.initialSessionConfig?.tools).toBeDefined();
+    expect(connectCall?.initialSessionConfig?.tools).toHaveLength(1);
+    expect(connectCall?.initialSessionConfig?.tools?.[0]?.name).toBe('test');
+  });
+
+  it('preserves tools when updateSessionConfig is called', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({
+      name: 'TestAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+
+    const session = new RealtimeSession(agent, {
+      transport,
+      config: {
+        voice: 'alloy'
+      }
+    });
+
+    await session.connect({ apiKey: 'test' });
+
+    // Check that updateSessionConfig calls include tools
+    expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
+    const lastUpdateCall = transport.updateSessionConfigCalls[transport.updateSessionConfigCalls.length - 1];
+    expect(lastUpdateCall.tools).toBeDefined();
+    expect(lastUpdateCall.tools).toHaveLength(1);
+    expect(lastUpdateCall.tools?.[0]?.name).toBe('test');
+  });
+
+  it('does not include tools field when no tools are provided', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({
+      name: 'TestAgent',
+      handoffs: [],
+      tools: [] // No tools
+    });
+
+    const session = new RealtimeSession(agent, {
+      transport,
+      config: {
+        voice: 'alloy'
+      }
+    });
+
+    await session.connect({ apiKey: 'test' });
+
+    // Check that updateSessionConfig calls do not include tools field
+    expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
+    const lastUpdateCall = transport.updateSessionConfigCalls[transport.updateSessionConfigCalls.length - 1];
+    expect(lastUpdateCall.hasOwnProperty('tools')).toBe(false);
+  });
+
+  it('reproduces the original issue - tools work with config provided', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({
+      name: 'TestAgent',
+      handoffs: [],
+      tools: [TEST_TOOL]
+    });
+
+    // This is the scenario from the issue - session with config that includes voice setting
+    const session = new RealtimeSession(agent, {
+      transport,
+      config: {
+        voice: 'alloy', // Even just voice setting should not break tools
+        turnDetection: { type: 'server_vad' }
+      }
+    });
+
+    await session.connect({ apiKey: 'test' });
+
+    // Verify that tools are included in both initial and update configs
+    const connectCall = transport.connectCalls[0];
+    expect(connectCall?.initialSessionConfig?.tools).toBeDefined();
+    expect(connectCall?.initialSessionConfig?.tools).toHaveLength(1);
+    expect(connectCall?.initialSessionConfig?.tools?.[0]?.name).toBe('test');
+
+    // Verify that subsequent updates also include tools
+    expect(transport.updateSessionConfigCalls.length).toBeGreaterThan(0);
+    const lastUpdateCall = transport.updateSessionConfigCalls[transport.updateSessionConfigCalls.length - 1];
+    expect(lastUpdateCall.tools).toBeDefined();
+    expect(lastUpdateCall.tools).toHaveLength(1);
+    expect(lastUpdateCall.tools?.[0]?.name).toBe('test');
+
+    // Verify that voice config is preserved
+    expect(connectCall?.initialSessionConfig?.voice).toBe('alloy');
+    expect(lastUpdateCall.voice).toBe('alloy');
+  });
 });
