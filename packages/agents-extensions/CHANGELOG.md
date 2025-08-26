@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 1.0.0
+
+### Minor Changes
+
+- 2e6933a: Fix #283 #291 #300 migrate ai-sdk/provider to v2
+
+### Patch Changes
+
+- Updated dependencies [2260e21]
+- Updated dependencies [ad322bb]
+  - @openai/agents@0.1.0
+
 ## 0.0.17
 
 ### Patch Changes
