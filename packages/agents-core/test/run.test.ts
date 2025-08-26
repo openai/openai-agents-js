@@ -161,10 +161,13 @@ describe('Runner.run', () => {
 
       const result = await runner.run(agent, 'test input');
 
+      // Verify the result has the expected output
+      expect(result.finalOutput).toBe('Hello World');
+
       // Verify agent_end was called on both agent and runner
       expect(agentEndEvents).toHaveLength(1);
       expect(agentEndEvents[0].output).toBe('Hello World');
-      
+
       expect(runnerEndEvents).toHaveLength(1);
       expect(runnerEndEvents[0].agent).toBe(agent);
       expect(runnerEndEvents[0].output).toBe('Hello World');
@@ -404,7 +407,7 @@ describe('Runner.run', () => {
         usage: new Usage(),
       };
       class SimpleStreamingModel implements Model {
-        constructor(private resps: ModelResponse[]) {}
+        constructor(private resps: ModelResponse[]) { }
         async getResponse(_req: ModelRequest): Promise<ModelResponse> {
           const r = this.resps.shift();
           if (!r) {
