@@ -4,7 +4,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Agent, Runner, setDefaultOpenAIKey } from '@openai/agents';
+import {
+  Agent,
+  getDefaultModelSettings,
+  Runner,
+  setDefaultOpenAIKey,
+} from '@openai/agents';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -227,11 +232,32 @@ You must return **only** the translated markdown. Do not include any commentary,
 - No markdown tags.
 
 #########################
+##  HARD CONSTRAINTS   ##
+#########################
+- Never insert spaces immediately inside emphasis markers. Use \`**bold**\`, not \`** bold **\`.
+- Preserve the number of emphasis markers from the source: if the source uses \`**\` or \`__\`, keep the same pair count.
+- Ensure one space after heading markers: \`##Heading\` -> \`## Heading\`.
+- Ensure one space after list markers: \`-Item\` -> \`- Item\`, \`*Item\` -> \`* Item\` (does not apply to \`**\`).
+- Trim spaces inside link/image labels: \`[ Label ](url)\` -> \`[Label](url)\`.
+
+###########################
+##  GOOD / BAD EXAMPLES  ##
+###########################
+- Good: This is **bold** text.
+- Bad:  This is ** bold ** text.
+- Good: ## Heading
+- Bad:  ##Heading
+- Good: - Item
+- Bad:  -Item
+- Good: [Label](https://example.com)
+- Bad:  [ Label ](https://example.com)
+
+#########################
 ##  LANGUAGE‑SPECIFIC  ##
 #########################
 *(applies only when ${targetLanguage} = Japanese)*  
 - Insert a half‑width space before and after all alphanumeric terms.  
-- Add a half‑width space just outside markdown emphasis markers: \` **太字** \` (good) vs \`** 太字 **\` (bad).
+- Add a half‑width space just outside markdown emphasis markers: \` **bold** \` (good) vs \`** bold **\` (bad).
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -250,6 +276,15 @@ ${specificTerms}
 #########################
 ${specificInstructions}
 - When translating Markdown tables, preserve the exact table structure, including all delimiters (|), header separators (---), and row/column counts. Only translate the cell contents. Do not add, remove, or reorder columns or rows.
+
+#########################
+##  VALIDATION STEPS   ##
+#########################
+Before returning the final title, run this mental checklist and fix issues if any:
+- No occurrences of: \`**\\s+[^*]*\\s+**\`, \`__\\s+[^_]*\\s+__\`.
+- No heading without a space: lines starting with \`#{1,6}\` must be followed by a space.
+- No list marker without a space: lines starting with \`-\`, \`+\`, or a single \`*\` must be followed by a space.
+- No spaces just inside \`[ ... ]\` or \`![ ... ]\` labels.
 
 #########################
 ##  IF UNSURE          ##
@@ -325,11 +360,32 @@ You must return **only** the translated markdown. Do not include any commentary,
   - The internal links like [{label here}](path here) must be kept as-is.
 
 #########################
+##  HARD CONSTRAINTS   ##
+#########################
+- Never insert spaces immediately inside emphasis markers. Use \`**bold**\`, not \`** bold **\`.
+- Preserve the number of emphasis markers from the source: if the source uses \`**\` or \`__\`, keep the same pair count.
+- Ensure one space after heading markers: \`##Heading\` -> \`## Heading\`.
+- Ensure one space after list markers: \`-Item\` -> \`- Item\`, \`*Item\` -> \`* Item\` (does not apply to \`**\`).
+- Trim spaces inside link/image labels: \`[ Label ](url)\` -> \`[Label](url)\`.
+
+###########################
+##  GOOD / BAD EXAMPLES  ##
+###########################
+- Good: This is **bold** text.
+- Bad:  This is ** bold ** text.
+- Good: ## Heading
+- Bad:  ##Heading
+- Good: - Item
+- Bad:  -Item
+- Good: [Label](https://example.com)
+- Bad:  [ Label ](https://example.com)
+
+#########################
 ##  LANGUAGE‑SPECIFIC  ##
 #########################
 *(applies only when ${targetLanguage} = Japanese)*  
 - Insert a half‑width space before and after all alphanumeric terms.  
-- Add a half‑width space just outside markdown emphasis markers: \` **太字** \` (good) vs \`** 太字 **\` (bad). Review this rule again before returning the translated text.
+- Add a half‑width space just outside markdown emphasis markers: \` **bold** \` (good) vs \`** bold **\` (bad). Review this rule again before returning the translated text.
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -373,6 +429,11 @@ Follow the following workflow to translate the given markdown text data:
   - any errors or rooms for improvements in terms of Markdown text format -- A common error is to have spaces within special syntax like * or _. You must have spaces after special syntax like * or _, but it's NOT the same for the parts inside special syntax (e.g., ** bold ** must be **bold**)
   - you should not have any unnecessary spaces outside of tags; especially for the ones you replace with the "TERM-SPECIFIC" list
   - any parts that are not compatible with *.mdx files -- In the past, you've generated an expression with acorn like {#title-here} in h2 (##) level but it was neither necessary nor valid
+  - Run a final regex check in your head and fix if any of these patterns appear in your output:
+    - \`**\\s+[^*]*\\s+**\` or \`__\\s+[^_]*\\s+__\` (spaces inside emphasis)
+    - Lines starting with \`#{1,6}\` not followed by a space
+    - Lines starting with \`-\`, \`+\`, or a single \`*\` not followed by a space
+    - Avoid spaces directly inside link or image labels: use \`[Label](url)\`, not \`[ Label ](url)\` or \`![ Label ](url)\`.
 4. If improvements are necessary, refine the content without changing the original meaning.
 5. Continue improving the translation until you are fully satisfied with the result.
 6. Once the final output is ready, return **only** the translated markdown text. No extra commentary.
@@ -386,7 +447,13 @@ async function callAgent(
   instructions: string,
   model: string = OPENAI_MODEL,
 ): Promise<string> {
-  const agent = new Agent({ name: 'translator', instructions, model });
+  const modelSettings = getDefaultModelSettings(model);
+  const agent = new Agent({
+    name: 'translator',
+    instructions,
+    model,
+    modelSettings,
+  });
   const result = await runner.run(agent, content);
   const output = result.finalOutput;
   if (!output) {
@@ -537,6 +604,7 @@ async function translateFile(
     const translated = await callAgent(chunk, instructions);
     translatedContent.push(translated);
   }
+  // Join translated chunks back together; formatting is guided by prompt constraints
   let translatedText = translatedContent.join('\n');
   for (let idx = 0; idx < codeBlocks.length; ++idx) {
     translatedText = translatedText.replace(
