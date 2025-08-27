@@ -9,11 +9,11 @@ import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nod
 import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 
-Agents SDKは、モデルおよびその他の実行ステップからの出力を段階的に配信できます。ストリーミングを使うと UI を応答性良く保ち、ユーザーを更新する前に最終結果のすべてが出そろうのを待つ必要がなくなります。
+Agents SDKは、モデルからの出力や他の実行ステップの結果を段階的に配信できます。ストリーミングは UI を応答性良く保ち、最終的な実行結果のすべてが揃うまで ユーザー を更新できないという待ち時間を避けます。
 
 ## ストリーミングの有効化
 
-完全な実行結果ではなくストリーミングオブジェクトを取得するには、`Runner.run()` に `{ stream: true }` オプションを渡します:
+`Runner.run()` に `{ stream: true }` オプションを渡すと、完全な実行結果の代わりにストリーミング用のオブジェクトが得られます:
 
 <Code
   lang="typescript"
@@ -21,36 +21,36 @@ Agents SDKは、モデルおよびその他の実行ステップからの出力�
   title="ストリーミングの有効化"
 />
 
-ストリーミングが有効な場合、返される `stream` は `AsyncIterable` インターフェースを実装します。逐次生成される各イベントは、実行中に何が起きたかを説明するオブジェクトです。ストリームは 3 種類のイベントタイプのいずれかを出力し、それぞれがエージェントの実行の異なる部分を記述します。多くのアプリケーションはモデルのテキストだけを必要とするので、ストリームにはそのためのヘルパーが用意されています。
+ストリーミングを有効にすると、返される `stream` は `AsyncIterable` インターフェースを実装します。生成される各イベントは、実行内で何が起きたかを記述するオブジェクトです。ストリームは 3 種類のイベントタイプを生成し、それぞれがエージェントの実行の異なる部分を表します。多くのアプリケーションはモデルのテキストだけを必要とするため、ストリームにはそのためのヘルパーがあります。
 
 ### テキスト出力の取得
 
-`stream.toTextStream()` を呼び出すと、生成されたテキストのストリームを取得できます。`compatibleWithNodeStreams` が `true` のとき、戻り値は通常の Node.js の `Readable` です。`process.stdout` などの出力先にそのままパイプできます。
+`stream.toTextStream()` を呼ぶと、生成されたテキストのストリームを取得できます。`compatibleWithNodeStreams` が `true` のとき、戻り値は通常の Node.js `Readable` です。`process.stdout` など任意の出力先に直接パイプできます。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="テキストを到着順にログ出力"
+  title="到着したテキストを逐次ログ出力する"
   meta={`{13-17}`}
 />
 
-実行および保留中のコールバックがすべて完了すると、`stream.completed` の Promise が解決されます。これ以上出力がないことを確実にするには、必ず待機してください。
+`stream.completed` の Promise は、実行と未処理のコールバックがすべて完了すると解決されます。出力がもうないことを確実にしたい場合は、必ず待機してください。
 
 ### すべてのイベントの監視
 
-到着した各イベントを確認するには、`for await` ループを使えます。有用な情報には、低レベルのモデルイベント、エージェントの切り替え、そして SDK 固有の実行情報などが含まれます:
+`for await` ループを使って、到着した各イベントを確認できます。役立つ情報には、低レベルのモデルイベント、エージェントの切り替え、そして SDK 固有の実行情報などが含まれます:
 
 <Code
   lang="typescript"
   code={handleAllEventsExample}
-  title="すべてのイベントを監視"
+  title="すべてのイベントをリッスンする"
 />
 
-プレーンなテキストストリームと元のイベントストリームの両方を出力する、完成したスクリプトについては [ストリーミングの例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。
+プレーンテキストのストリームと 元 のイベントストリームの両方を出力する完成したスクリプトは、[ストリーミングのサンプルコード](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。
 
 ## イベントタイプ
 
-このストリームは 3 種類のイベントタイプを出力します:
+このストリームは 3 種類のイベントタイプを生成します:
 
 ### raw_model_stream_event
 
@@ -118,22 +118,22 @@ type RunAgentUpdatedStreamEvent = {
 }
 ```
 
-## ストリーミング中のHuman in the loop (人間の介入)
+## ストリーミング中の Human in the loop（人間の介入）
 
-ストリーミングは、実行を一時停止するハンドオフ（たとえばツールに承認が必要な場合）と併用できます。ストリームオブジェクトの `interruption` フィールドで割り込みを取得でき、各割り込みに対して `state.approve()` または `state.reject()` を呼び出すことで実行を続行できます。`{ stream: true }` を指定して再実行すると、ストリーミング出力が再開します。
+ストリーミングは、実行を一時停止する ハンドオフ（たとえばツールに承認が必要な場合）と両立します。ストリームオブジェクト上の `interruption` フィールドで中断を取得でき、それぞれに対して `state.approve()` または `state.reject()` を呼び出すことで実行を継続できます。`{ stream: true }` で再度実行すると、ストリーミングの出力が再開されます。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="ストリーミング中の承認の処理"
+  title="ストリーミング中の人手承認の処理"
 />
 
-ユーザーと対話する、より充実した例は [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts) にあります。
+ユーザー と対話する、より充実した例は [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts) にあります。
 
 ## ヒント
 
-- すべての出力がフラッシュされていることを保証するため、終了前に `stream.completed` を待機することを忘れないでください
-- 最初の `{ stream: true }` オプションは、それを指定した呼び出しにのみ適用されます。`RunState` で再実行する場合は、もう一度このオプションを指定する必要があります
-- アプリケーションがテキストの実行結果だけを扱えばよい場合は、個々のイベントオブジェクトを扱わずに済むよう `toTextStream()` を優先してください
+- すべての出力がフラッシュされたことを保証するため、終了前に `stream.completed` を待機することを忘れないでください
+- 最初の `{ stream: true }` オプションは、それを指定した呼び出しにのみ適用されます。`RunState` で再実行する場合は、再度このオプションを指定する必要があります
+- テキストの実行結果だけが必要なアプリケーションでは、個々のイベントオブジェクトを扱わずに済むように `toTextStream()` を優先してください
 
-ストリーミングとイベントシステムを使うことで、エージェントをチャットインターフェースやターミナルアプリケーションなど、ユーザーが段階的な更新の恩恵を受けられるあらゆる場所に統合できます。
+ストリーミングとイベントシステムを使えば、エージェント をチャットインターフェースやターミナルアプリケーション、あるいは ユーザー が段階的な更新の利点を得られるあらゆる場所に統合できます。
