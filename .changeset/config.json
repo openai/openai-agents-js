@@ -3,9 +3,20 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [],
-  "linked": [["@openai/agents-*"]],
+  "linked": [
+    [
+      "@openai/agents",
+      "@openai/agents-core",
+      "@openai/agents-openai",
+      "@openai/agents-realtime",
+      "@openai/agents-extensions"
+    ]
+  ],
   "access": "restricted",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
+    "onlyUpdatePeerDependentsWhenOutOfRange": true
+  },
   "ignore": []
 }
