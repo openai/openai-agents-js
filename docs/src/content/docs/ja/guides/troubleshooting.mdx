@@ -3,9 +3,9 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポート対象の環境
+## 対応環境
 
-OpenAI Agents SDK は、以下の サーバー 環境でサポートされています:
+OpenAI Agents SDK は以下の サーバー 環境でサポートされています:
 
 - Node.js 22+
 - Deno 2.35+
@@ -13,27 +13,27 @@ OpenAI Agents SDK は、以下の サーバー 環境でサポートされてい
 
 ### 制限付きサポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers でも利用できますが、現時点ではいくつかの制限があります:
-  - 現在、SDK では `nodejs_compat` を有効化する必要があります
-  - トレースはリクエストの最後に手動でフラッシュする必要があります。詳しくは [トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で利用できますが、現時点ではいくつかの制限があります:
+  - 現在、SDK では `nodejs_compat` を有効にする必要があります
+  - リクエストの最後にトレースを手動でフラッシュする必要があります。[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください
   - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースが正確でない可能性があります
 - **Browsers**:
-  - ブラウザでは現在 トレーシング はサポートされていません
+  - ブラウザでは現時点でトレーシングはサポートされていません
 - **v8 isolates**:
-  - 適切なブラウザ用ポリフィルを備えたバンドラを使えば SDK を v8 isolates 向けにバンドルできますが、トレーシングは動作しません
+  - 適切なブラウザポリフィルを備えたバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
   - v8 isolates は広範にはテストされていません
 
-## デバッグログ
+## デバッグロギング
 
-SDK の利用時に問題が発生した場合、デバッグログを有効にすると、内部で何が起きているかの情報を得られます。
+SDK の問題に直面している場合、デバッグロギングを有効にすると挙動の詳細を確認できます。
 
-デバッグログは、環境変数 `DEBUG` を `openai-agents:*` に設定して有効化します。
+`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグロギングを有効にします。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-また、SDK の特定部分にデバッグ対象を絞り込むこともできます:
+または、SDK の特定の部分にデバッグ対象を絞ることもできます:
 
 - `openai-agents:core` — SDK のメイン実行ロジック
 - `openai-agents:openai` — OpenAI API 呼び出し
