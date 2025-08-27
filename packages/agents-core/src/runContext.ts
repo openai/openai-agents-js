@@ -13,7 +13,7 @@ type ApprovalRecord = {
  */
 export class RunContext<TContext = UnknownContext> {
   /**
-   * The context object passed by you to the `Runner.run()`
+   * The context object you passed to the `Runner.run()` method.
    */
   context: TContext;
 

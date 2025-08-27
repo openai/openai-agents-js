@@ -44,7 +44,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 2. **Generate a client ephemeral token**
 
-   As this application will run in the users browser, we need a secure way to connect to the model through the Realtime API. For this we can use a [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) that should get generated on your backend server. For testing purposes you can also generate a key using `curl` and your regular OpenAI API key.
+   As this application will run in the user's browser, we need a secure way to connect to the model through the Realtime API. For this we can use an [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) that should be generated on your backend server. For testing purposes you can also generate a key using `curl` and your regular OpenAI API key.
 
    ```bash
    curl -X POST https://api.openai.com/v1/realtime/sessions \

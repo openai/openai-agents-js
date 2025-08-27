@@ -24,7 +24,7 @@ Explore the [`examples/`](examples/) directory to see the SDK in action.
 - [x] **Guardrails**: Input and output validation for safety and reliability.
 - [x] **Parallelization**: Run agents or tool calls in parallel and aggregate results.
 - [x] **Human-in-the-Loop**: Integrate human approval or intervention into workflows.
-- [x] **Realtime Voice Agents**: Build realtime voice agents using WebRTC or Websockets
+- [x] **Realtime Voice Agents**: Build realtime voice agents using WebRTC or WebSockets
 - [x] **Local MCP Server Support**: Give an Agent access to a locally running MCP server to provide tools
 - [x] **Separate optimized browser package**: Dedicated package meant to run in the browser for Realtime agents.
 - [x] **Broader model support**: Use non-OpenAI models through the Vercel AI SDK adapter
@@ -160,11 +160,11 @@ const agent = new RealtimeAgent({
   tools: [getWeatherTool],
 });
 
-// Intended to be run the browser
-const { apiKey } = await fetch('/path/to/ephemerial/key/generation').then(
+// Intended to run in the browser
+const { apiKey } = await fetch('/path/to/ephemeral/key/generation').then(
   (resp) => resp.json(),
 );
-// automatically configures audio input/output so start talking
+// Automatically configures audio input/output — start talking
 const session = new RealtimeSession(agent);
 await session.connect({ apiKey });
 ```
@@ -197,34 +197,6 @@ The final output is the last thing the agent produces in the loop.
 
 - If the maximum number of turns is exceeded, a `MaxTurnsExceededError` is thrown.
 - If a guardrail is triggered, a `GuardrailTripwireTriggered` exception is raised.
-
-## Documentation
-
-To view the documentation locally:
-
-```bash
-pnpm docs:dev
-```
-
-Then visit [http://localhost:4321](http://localhost:4321) in your browser.
-
-## Development
-
-If you want to contribute or edit the SDK/examples:
-
-1. Install dependencies
-
-   ```bash
-   pnpm install
-   ```
-
-2. Build the project
-
-   ```bash
-   pnpm build
-   ```
-
-3. Run tests, linter, etc. (add commands as appropriate for your project)
 
 ## Acknowledgements
 

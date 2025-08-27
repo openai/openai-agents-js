@@ -15,6 +15,7 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 7.  [Pull Request & Commit Guidelines](#pull-request--commit-guidelines)
 8.  [Review Process & What Reviewers Look For](#review-process--what-reviewers-look-for)
 9.  [Tips for Navigating the Repo](#tips-for-navigating-the-repo)
+10. [Prerequisites](#prerequisites)
 
 ## Overview
 
@@ -27,15 +28,15 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `packages/agents-extensions`: Extensions for agent workflows.
 - `docs`: Documentation site powered by Astro.
 - `examples`: Sample projects demonstrating usage patterns.
-- `scripts`: Automation scripts (`dev.ts`, `embedMeta.ts`).
+- `scripts`: Automation scripts (`dev.mts`, `embedMeta.ts`).
 - `helpers`: Shared utilities for testing and other internal use.
 
 ## Repo Structure & Important Files
 
 - `packages/agents-core/`, `packages/agents-openai/`, `packages/agents-realtime/`, `packages/agents-extensions/`: Each has its own `package.json`, `src/`, `test/`, and build scripts.
-- `docs/`: Documentation source; run with `pnpm docs:dev` or build with `pnpm -F docs build`.
+- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
-- `scripts/dev.ts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
+- `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
 - `helpers/tests/`: Shared test utilities.
 - `README.md`: High-level overview and installation instructions.
@@ -50,7 +51,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 Before submitting changes, ensure all checks pass:
 
-### Unit Tests and Type Checking Examples
+### Unit Tests and Type Checking
 
 - Check the compilation across all packages and examples:
   ```bash
@@ -61,11 +62,19 @@ Before submitting changes, ensure all checks pass:
   CI=1 pnpm test
   ```
 - Tests are located under each package in `packages/<pkg>/test/`.
-- Using `CI=1` makes sure that the tests don't automatically run in watch mode
+- The test script already sets `CI=1` to avoid watch mode.
 
 ### Integration Tests
 
-- Do NOT try to run them. Integration tests currently require a valid OpenAI Account.
+- Not required for typical contributions. These tests rely on a local npm registry (Verdaccio) and other environment setup.
+- To run locally only if needed:
+  ```bash
+  pnpm local-npm:start   # starts Verdaccio on :4873
+  pnpm local-npm:publish # public pacakges to the local repo
+  pnpm test:integration  # runs integration tests
+  ```
+
+See [this README](integration-tests/README.md) for details.
 
 ### Code Coverage
 
@@ -106,7 +115,7 @@ Before submitting changes, ensure all checks pass:
 - Documentation site:
   ```bash
   pnpm docs:dev
-  pnpm -F docs build
+  pnpm docs:build
   ```
 - Examples:
   ```bash
@@ -131,6 +140,11 @@ Before submitting changes, ensure all checks pass:
 - Follow ESLint rules (`eslint.config.mjs`), no unused imports, adhere to Prettier.
 - Run `pnpm lint` and fix all errors locally.
 - Use `pnpm build` to catch type errors.
+
+## Prerequisites
+
+- Node.js 22+ recommended.
+- pnpm 10+ (`corepack enable` is recommended to manage versions).
 
 ## Development Workflow
 
@@ -160,7 +174,8 @@ Before submitting changes, ensure all checks pass:
   - `build`: changes that affect the build system
   - `ci`: CI configuration
   - `style`: code style (formatting, missing semicolons, etc.)
-  - `TYP`: type-related changes
+  - `types`: type-related changes
+  - `revert`: reverts a previous commit
 - Commit message format:
 
   ```
@@ -191,4 +206,4 @@ Before submitting changes, ensure all checks pass:
 - Study `vitest.config.ts` for test patterns (e.g., setup files, aliasing).
 - Explore `scripts/embedMeta.ts` for metadata generation logic.
 - Examples in `examples/` are fully functional apps—run them to understand usage.
-- Docs in `docs/src/` use Astro and Starlight; pages mirror package APIs under `docs/src/openai/agents`.
+- Docs in `docs/src/` use Astro and Starlight; authored content lives under `docs/src/content/docs/` and mirrors package APIs.

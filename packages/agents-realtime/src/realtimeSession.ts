@@ -135,12 +135,12 @@ export type RealtimeSessionConnectOptions = {
 };
 
 /**
- * A `RealtimeSession` is the corner piece of building Voice Agents. It's the equivalent of a
+ * A `RealtimeSession` is the cornerstone of building Voice Agents. It's the equivalent of a
  * Runner in text-based agents except that it automatically handles multiple turns by maintaining a
  * connection with the underlying transport layer.
  *
  * The session handles managing the local history copy, executes tools, runs output guardrails, and
- * facilities handoffs.
+ * facilitates handoffs.
  *
  * The actual audio handling and generation of model responses is handled by the underlying
  * transport layer. By default if you are using a browser with WebRTC support, the session will

@@ -17,11 +17,11 @@ const agent = new RealtimeAgent({
 });
 
 async function main() {
-  // Intended to be run the browser
-  const { apiKey } = await fetch('/path/to/ephemerial/key/generation').then(
+  // Intended to run in the browser
+  const { apiKey } = await fetch('/path/to/ephemeral/key/generation').then(
     (resp) => resp.json(),
   );
-  // automatically configures audio input/output so start talking
+  // Automatically configures audio input/output — start talking
   const session = new RealtimeSession(agent);
   await session.connect({ apiKey });
 }

@@ -152,7 +152,7 @@ export class OpenAIRealtimeWebRTC
     const isClientKey = typeof apiKey === 'string' && apiKey.startsWith('ek_');
     if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
       throw new UserError(
-        'Using the WebRTC connection in a browser environment requires an insecure API key. Please use a WebSocket connection instead or set the useInsecureApiKey option to true.',
+        'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
       );
     }
 

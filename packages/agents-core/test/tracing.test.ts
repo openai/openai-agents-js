@@ -73,7 +73,7 @@ class TestProcessor implements TracingProcessor {
 }
 
 // -----------------------------------------------------------------------------------------
-// Tests for utils.ts
+// Tests for utils.ts.
 // -----------------------------------------------------------------------------------------
 
 describe('tracing/utils', () => {
@@ -107,7 +107,7 @@ describe('tracing/utils', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for Span / Trace core behaviour
+// Tests for Span / Trace core behavior.
 // -----------------------------------------------------------------------------------------
 
 describe('Trace & Span lifecycle', () => {
@@ -161,7 +161,7 @@ describe('Trace & Span lifecycle', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for BatchTraceProcessor (happy‑path)
+// Tests for BatchTraceProcessor (happy‑path).
 // -----------------------------------------------------------------------------------------
 
 describe('BatchTraceProcessor', () => {
@@ -194,7 +194,7 @@ describe('BatchTraceProcessor', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for high‑level context helpers
+// Tests for high‑level context helpers.
 // -----------------------------------------------------------------------------------------
 
 describe('withTrace & span helpers (integration)', () => {
@@ -262,7 +262,7 @@ describe('withTrace & span helpers (integration)', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for MultiTracingProcessor
+// Tests for MultiTracingProcessor.
 // -----------------------------------------------------------------------------------------
 
 describe('MultiTracingProcessor', () => {
@@ -286,10 +286,10 @@ describe('MultiTracingProcessor', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for TraceProvider disabled flag
+// Tests for TraceProvider disabled flag.
 // -----------------------------------------------------------------------------------------
 
-describe('TraceProvider disabled behaviour', () => {
+describe('TraceProvider disabled behavior', () => {
   it('returns NoopTrace/NoopSpan when disabled', () => {
     const provider = new TraceProvider();
     provider.setDisabled(true);
@@ -308,7 +308,7 @@ describe('TraceProvider disabled behaviour', () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Tests for ResponseSpanData serialization
+// Tests for ResponseSpanData serialization.
 // -----------------------------------------------------------------------------------------
 
 describe('ResponseSpanData serialization', () => {

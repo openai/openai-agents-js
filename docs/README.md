@@ -23,5 +23,5 @@ pnpm docs:translate
 The docs are automatically built and deployed using GitHub Actions. To build them locally run:
 
 ```bash
-pnpm -F docs build
+pnpm docs:build
 ```

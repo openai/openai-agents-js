@@ -30,7 +30,7 @@ Explore the [`examples/`](examples/) directory to see the SDK in action.
 - [x] **Guardrails**: Input and output validation for safety and reliability.
 - [x] **Parallelization**: Run agents or tool calls in parallel and aggregate results.
 - [x] **Human-in-the-Loop**: Integrate human approval or intervention into workflows.
-- [x] **Realtime Voice Agents**: Build realtime voice agents using WebRTC or Websockets
+- [x] **Realtime Voice Agents**: Build realtime voice agents using WebRTC or WebSockets
 - [x] **Local MCP Server Support**: Give an Agent access to a locally running MCP server to provide tools
 - [x] **Separate optimized browser package**: Dedicated package meant to run in the browser for Realtime agents.
 - [x] **Broader model support**: Use non-OpenAI models through the Vercel AI SDK adapter
@@ -166,11 +166,11 @@ const agent = new RealtimeAgent({
   tools: [getWeatherTool],
 });
 
-// Intended to be run the browser
-const { apiKey } = await fetch('/path/to/ephemerial/key/generation').then(
+// Intended to run in the browser
+const { apiKey } = await fetch('/path/to/ephemeral/key/generation').then(
   (resp) => resp.json(),
 );
-// automatically configures audio input/output so start talking
+// Automatically configures audio input/output — start talking
 const session = new RealtimeSession(agent);
 await session.connect({ apiKey });
 ```
@@ -181,8 +181,8 @@ The [`examples/`](examples/) directory contains a series of examples to get star
 
 - `pnpm examples:basic` - Basic example with handoffs and tool calling
 - `pnpm examples:agents-as-tools` - Using agents as tools for translation
-- `pnpm examples:web-search` - Using the web search tool
-- `pnpm examples:file-search` - Using the file search tool
+- `pnpm examples:tools-web-search` - Using the web search tool
+- `pnpm examples:tools-file-search` - Using the file search tool
 - `pnpm examples:deterministic` - Deterministic multi-agent workflow
 - `pnpm examples:parallelization` - Running agents in parallel and picking the best result
 - `pnpm examples:human-in-the-loop` - Human approval for certain tool calls
@@ -244,10 +244,16 @@ If you want to contribute or edit the SDK/examples:
 2. Build the project
 
    ```bash
-   pnpm build
+   pnpm build && pnpm -r build-check
    ```
 
-3. Run tests, linter, etc. (add commands as appropriate for your project)
+3. Run tests and linter
+
+   ```bash
+   pnpm test && pnpm lint
+   ```
+
+See `AGENTS.md` and `CONTRIBUTING.md` for the full contributor guide.
 
 ## Acknowledgements
 
