@@ -7,32 +7,32 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-このガイドでは、 SDK に組み込まれた Human in the loop (人間の介入) サポートを使用して、人による介入に基づいてエージェントの実行を一時停止および再開する方法を紹介します。
+このガイドでは、SDK に組み込まれた Human in the loop (人間の介入) サポートを使って、人による介入に基づきエージェントの実行を一時停止・再開する方法を説明します。
 
-現時点での主なユースケースは、機微なツール実行について承認を求めることです。
+現在の主なユースケースは、機密性の高いツール実行に対する承認を求めることです。
 
 ## 承認リクエスト
 
-承認が必要なツールは、`needsApproval` オプションを `true` に設定するか、真偽値を返す非同期関数を指定して定義できます。
+`needsApproval` オプションを `true` または真偽値を返す非同期関数に設定することで、承認が必要なツールを定義できます。
 
 <Code
   lang="typescript"
   code={toolApprovalDefinition}
-  title="ツール承認の定義"
+  title="Tool approval definition"
   meta={`{10}`}
 />
 
 ### フロー
 
-1. エージェントが 1 つ以上のツール呼び出しを決定した場合、`needsApproval` を評価してそのツールに承認が必要かどうかを確認します。
-2. 承認が必要な場合、エージェントは承認がすでに許可または却下されているかを確認します。
-   - 承認がまだ許可も却下もされていない場合、ツールはツール呼び出しを実行できないことを示す固定メッセージをエージェントに返します。
-   - 承認／却下が未決の場合は、ツール承認リクエストがトリガーされます。
-3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します。
-4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/result) には、保留中のステップを説明する `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは、`type: "tool_approval_item"` を持つ `ToolApprovalItem` が現れます。
-5. ツール呼び出しを承認または拒否するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出せます。
-6. すべての中断を処理した後、`result.state` を `runner.run(agent, state)` に渡し直すことで実行を再開できます。ここで `agent` は全体の実行を開始した元のエージェントです。
-7. フローは手順 1 から再開します。
+1. エージェントがツール（複数の可能性あり）を呼び出すと判断した場合、`needsApproval` を評価してそのツールに承認が必要か確認します
+2. 承認が必要な場合、エージェントはすでに承認または却下されているかを確認します
+   - 承認または却下が行われていない場合、ツール呼び出しを実行できない旨の固定メッセージがエージェントに返されます
+   - 承認 / 却下が未処理である場合、ツール承認リクエストが発火します
+3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します
+4. 中断がある場合、[実行結果](/openai-agents-js/ja/guides/result) には保留中のステップを表す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要な場合、`type: "tool_approval_item"` の `ToolApprovalItem` が現れます
+5. ツール呼び出しを承認または却下するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出します
+6. すべての中断を処理した後、`result.state` を `runner.run(agent, state)` に渡して実行を再開できます。ここで `agent` は全体の実行を開始した元のエージェントです
+7. フローは手順 1 から再開されます
 
 ## 例
 
@@ -41,25 +41,26 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 <Code
   lang="typescript"
   code={humanInTheLoopExample}
-  title="Human in the loop (人間の介入)"
+  title="Human in the loop"
 />
 
-動作するエンドツーエンド版については [完全なサンプルスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) を参照してください。
+動作するエンドツーエンド版は [the full example script](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) を参照してください。
 
-## 長い承認待ち時間への対応
+## より長い承認待ち時間への対応
 
-Human in the loop (人間の介入) フローは、サーバーを起動し続けなくても長時間中断できるように設計されています。リクエストをいったん終了して後で続行する必要がある場合は、状態をシリアライズして後から再開できます。
+Human in the loop (人間の介入) フローは、サーバーを稼働し続けることなく長時間中断可能なように設計されています。リクエストをいったん終了して後から再開したい場合は、状態をシリアライズして後で再開できます。
 
-状態は `JSON.stringify(result.state)` を使ってシリアライズでき、後でシリアライズ済み状態を `RunState.fromString(agent, serializedState)` に渡すことで再開できます。ここで `agent` は全体の実行を開始したエージェントのインスタンスです。
+`JSON.stringify(result.state)` を使って状態をシリアライズし、後でシリアライズ済み状態を `RunState.fromString(agent, serializedState)` に渡すことで再開できます。ここで `agent` は全体の実行を開始したエージェントのインスタンスです。
 
-この方法なら、シリアライズした状態をデータベースやリクエストと一緒に保存できます。
+この方法により、シリアライズした状態をデータベースやリクエストと一緒に保存できます。
 
-### 保留タスクのバージョニング
+### 保留タスクのバージョン管理
 
 <Aside>
-  これは主に、エージェントに変更を加えながら、シリアライズした状態を長期間保存しようとしている場合に該当します。
+  これは主に、エージェントに変更を加えながら、シリアライズした状態を
+  長期間保存しようとしている場合に該当します。
 </Aside>
 
-承認リクエストに時間がかかり、エージェント定義に意味のあるバージョニングを行いたい、または Agents SDK のバージョンを上げたい場合は、現在のところ、パッケージエイリアスを使って 2 つの Agents SDK のバージョンを並行インストールし、独自のブランチングロジックを実装することを推奨します。
+承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい、または Agents SDK のバージョンを上げたい場合は、パッケージのエイリアスを使用して 2 つの Agents SDK バージョンを並行インストールし、独自の分岐ロジックを実装することを現時点では推奨します。
 
-実務上は、独自コードにバージョン番号を付与してシリアライズ済みの状態と一緒に保存し、復元時に自分のコードの正しいバージョンへ誘導することを意味します。
+実務的には、自身のコードにバージョン番号を割り当て、それをシリアライズした状態とともに保存し、デシリアライズ時に適切なコードのバージョンへ誘導することを意味します。
