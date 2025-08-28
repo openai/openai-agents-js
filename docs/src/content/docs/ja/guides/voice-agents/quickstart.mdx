@@ -51,8 +51,10 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
       -H "Authorization: Bearer $OPENAI_API_KEY" \
       -H "Content-Type: application/json" \
       -d '{
-        "type": "realtime",
-        "model": "gpt-realtime"
+        "session": {
+          "type": "realtime",
+          "model": "gpt-realtime"
+        }
       }'
    ```
 
