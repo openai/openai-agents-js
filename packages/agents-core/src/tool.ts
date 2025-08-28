@@ -134,52 +134,126 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
  */
 export function hostedMcpTool<Context = UnknownContext>(
   options: {
-    serverLabel: string;
-    serverUrl: string;
     allowedTools?: string[] | { toolNames?: string[] };
-    headers?: Record<string, string>;
-  } & (
-    | { requireApproval?: never }
-    | { requireApproval: 'never' }
-    | {
-        requireApproval:
-          | 'always'
-          | {
-              never?: { toolNames: string[] };
-              always?: { toolNames: string[] };
-            };
-        onApproval?: HostedMCPApprovalFunction<Context>;
-      }
-  ),
-): HostedMCPTool<Context> {
-  const providerData: ProviderData.HostedMCPTool<Context> =
-    typeof options.requireApproval === 'undefined' ||
-    options.requireApproval === 'never'
-      ? {
-          type: 'mcp',
-          server_label: options.serverLabel,
-          server_url: options.serverUrl,
-          require_approval: 'never',
-          allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
-          headers: options.headers,
+  } &
+    // MCP server
+    (| {
+          serverLabel: string;
+          serverUrl?: string;
+          authorization?: string;
+          headers?: Record<string, string>;
         }
-      : {
-          type: 'mcp',
-          server_label: options.serverLabel,
-          server_url: options.serverUrl,
-          allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
-          headers: options.headers,
-          require_approval:
-            typeof options.requireApproval === 'string'
-              ? 'always'
-              : buildRequireApproval(options.requireApproval),
-          on_approval: options.onApproval,
-        };
-  return {
-    type: 'hosted_tool',
-    name: 'hosted_mcp',
-    providerData,
-  };
+      // OpenAI Connector
+      | {
+          serverLabel: string;
+          connectorId: string;
+          authorization?: string;
+          headers?: Record<string, string>;
+        }
+    ) &
+    (
+      | { requireApproval?: never }
+      | { requireApproval: 'never' }
+      | {
+          requireApproval:
+            | 'always'
+            | {
+                never?: { toolNames: string[] };
+                always?: { toolNames: string[] };
+              };
+          onApproval?: HostedMCPApprovalFunction<Context>;
+        }
+    ),
+): HostedMCPTool<Context> {
+  if ('serverUrl' in options) {
+    // the MCP servers comaptible with the specification
+    const providerData: ProviderData.HostedMCPTool<Context> =
+      typeof options.requireApproval === 'undefined' ||
+      options.requireApproval === 'never'
+        ? {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            server_url: options.serverUrl,
+            require_approval: 'never',
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            headers: options.headers,
+          }
+        : {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            server_url: options.serverUrl,
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            headers: options.headers,
+            require_approval:
+              typeof options.requireApproval === 'string'
+                ? 'always'
+                : buildRequireApproval(options.requireApproval),
+            on_approval: options.onApproval,
+          };
+    return {
+      type: 'hosted_tool',
+      name: 'hosted_mcp',
+      providerData,
+    };
+  } else if ('connectorId' in options) {
+    // OpenAI's connectors
+    const providerData: ProviderData.HostedMCPTool<Context> =
+      typeof options.requireApproval === 'undefined' ||
+      options.requireApproval === 'never'
+        ? {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            connector_id: options.connectorId,
+            authorization: options.authorization,
+            require_approval: 'never',
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            headers: options.headers,
+          }
+        : {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            connector_id: options.connectorId,
+            authorization: options.authorization,
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            headers: options.headers,
+            require_approval:
+              typeof options.requireApproval === 'string'
+                ? 'always'
+                : buildRequireApproval(options.requireApproval),
+            on_approval: options.onApproval,
+          };
+    return {
+      type: 'hosted_tool',
+      name: 'hosted_mcp',
+      providerData,
+    };
+  } else {
+    // the MCP servers comaptible with the specification
+    const providerData: ProviderData.HostedMCPTool<Context> =
+      typeof options.requireApproval === 'undefined' ||
+      options.requireApproval === 'never'
+        ? {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            require_approval: 'never',
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+          }
+        : {
+            type: 'mcp',
+            server_label: options.serverLabel,
+            allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            require_approval:
+              typeof options.requireApproval === 'string'
+                ? 'always'
+                : buildRequireApproval(options.requireApproval),
+            on_approval: options.onApproval,
+          };
+    return {
+      type: 'hosted_tool',
+      name: 'hosted_mcp',
+      providerData,
+    };
+  }
 }
 
 /**

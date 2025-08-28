@@ -194,6 +194,8 @@ function converTool<_TContext = unknown>(
           type: 'mcp',
           server_label: tool.providerData.server_label,
           server_url: tool.providerData.server_url,
+          connector_id: tool.providerData.connector_id,
+          authorization: tool.providerData.authorization,
           allowed_tools: tool.providerData.allowed_tools,
           headers: tool.providerData.headers,
           require_approval: convertMCPRequireApproval(
