@@ -11,6 +11,7 @@
     "start:computer-use": "tsx computer-use.ts",
     "start:file-search": "tsx file-search.ts",
     "start:web-search": "tsx web-search.ts",
+    "start:web-search-filters": "tsx web-search-filters.ts",
     "start:code-interpreter": "tsx code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts"
   }

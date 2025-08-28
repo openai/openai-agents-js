@@ -29,16 +29,25 @@ export const ImageGenerationStatus = z
 
 /**
  * The built-in Web search tool
+ *
+ * see https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses
  */
 export type WebSearchTool = {
   type: 'web_search';
-  name?: 'web_search_preview' | string;
+  name?: 'web_search' | 'web_search_preview' | string;
   /**
    * Optional location for the search. Lets you customize results to be relevant to a location.
    */
-  userLocation?: OpenAI.Responses.WebSearchTool.UserLocation;
+  userLocation?: OpenAI.Responses.Tool.WebSearchTool.UserLocation;
+
   /**
-   * The amount of context to use for the search.
+   * Optional filters for the search.
+   */
+  filters?: { allowedDomains?: Array<string> | null };
+
+  /**
+   * High level guidance for the amount of context window space to use for the
+   * search. One of `low`, `medium`, or `high`. `medium` is the default.
    */
   searchContextSize: 'low' | 'medium' | 'high';
 };
@@ -53,13 +62,16 @@ export function webSearchTool(
 ): HostedTool {
   const providerData: ProviderData.WebSearchTool = {
     type: 'web_search',
-    name: options.name ?? 'web_search_preview',
+    name: options.name ?? 'web_search',
     user_location: options.userLocation,
+    filters: options.filters?.allowedDomains
+      ? { allowed_domains: options.filters.allowedDomains }
+      : undefined,
     search_context_size: options.searchContextSize ?? 'medium',
   };
   return {
     type: 'hosted_tool',
-    name: options.name ?? 'web_search_preview',
+    name: options.name ?? 'web_search',
     providerData,
   };
 }

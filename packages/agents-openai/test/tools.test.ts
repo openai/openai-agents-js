@@ -8,7 +8,7 @@ describe('Tool', () => {
     });
     expect(t).toBeDefined();
     expect(t.type).toBe('hosted_tool');
-    expect(t.name).toBe('web_search_preview');
+    expect(t.name).toBe('web_search');
   });
 
   it('fileSearchTool', () => {

@@ -16,6 +16,9 @@ describe('getToolChoice', () => {
 
   it('handles hosted tool choices', () => {
     expect(getToolChoice('file_search')).toEqual({ type: 'file_search' });
+    expect(getToolChoice('web_search')).toEqual({
+      type: 'web_search',
+    });
     expect(getToolChoice('web_search_preview')).toEqual({
       type: 'web_search_preview',
     });
@@ -77,7 +80,7 @@ describe('converTool', () => {
       },
     } as any);
     expect(web.tool).toEqual({
-      type: 'web_search_preview',
+      type: 'web_search',
       user_location: {},
       search_context_size: 'low',
     });

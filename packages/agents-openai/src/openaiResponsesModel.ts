@@ -36,10 +36,16 @@ import {
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { ProviderData } from '@openai/agents-core/types';
 
-type ToolChoice = ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction;
+type ToolChoice =
+  | ToolChoiceOptions
+  | ToolChoiceTypes
+  // TOOD: remove this once the underlying ToolChoiceTypes include this
+  | { type: 'web_search' }
+  | ToolChoiceFunction;
 
 const HostedToolChoice = z.enum([
   'file_search',
+  'web_search',
   'web_search_preview',
   'computer_use_preview',
   'code_interpreter',
@@ -137,6 +143,16 @@ function converTool<_TContext = unknown>(
     };
   } else if (tool.type === 'hosted_tool') {
     if (tool.providerData?.type === 'web_search') {
+      return {
+        tool: {
+          type: 'web_search',
+          user_location: tool.providerData.user_location,
+          filters: tool.providerData.filters,
+          search_context_size: tool.providerData.search_context_size,
+        },
+        include: undefined,
+      };
+    } else if (tool.providerData?.type === 'web_search_preview') {
       return {
         tool: {
           type: 'web_search_preview',
