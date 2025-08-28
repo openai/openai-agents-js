@@ -26,6 +26,7 @@
     "start:tool-use-behavior": "tsx tool-use-behavior.ts",
     "start:tools": "tsx tools.ts",
     "start:reasoning": "tsx reasoning.ts",
-    "start:local-file": "tsx local-file.ts"
+    "start:local-file": "tsx local-file.ts",
+    "start:conversations": "tsx conversations.ts"
   }
 }

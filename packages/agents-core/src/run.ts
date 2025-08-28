@@ -136,6 +136,7 @@ type SharedRunOptions<TContext = undefined> = {
   maxTurns?: number;
   signal?: AbortSignal;
   previousResponseId?: string;
+  conversationId?: string;
 };
 
 export type StreamRunOptions<TContext = undefined> =
@@ -393,6 +394,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               prompt: await state._currentAgent.getPrompt(state._context),
               input: turnInput,
               previousResponseId: options.previousResponseId,
+              conversationId: options.conversationId,
               modelSettings,
               tools: serializedTools,
               outputType: convertAgentOutputTypeToSerializable(
@@ -757,6 +759,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             prompt: await currentAgent.getPrompt(result.state._context),
             input: turnInput,
             previousResponseId: options.previousResponseId,
+            conversationId: options.conversationId,
             modelSettings,
             tools: serializedTools,
             handoffs: serializedHandoffs,

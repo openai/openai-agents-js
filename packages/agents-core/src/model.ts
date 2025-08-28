@@ -178,6 +178,14 @@ export type ModelRequest = {
   previousResponseId?: string;
 
   /**
+   * The ID of stored conversation to use for the model.
+   *
+   * see https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#openai-apis-for-conversation-state
+   * see https://platform.openai.com/docs/api-reference/conversations/create
+   */
+  conversationId?: string;
+
+  /**
    * The model settings to use for the model.
    */
   modelSettings: ModelSettings;
