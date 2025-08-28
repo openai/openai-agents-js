@@ -26,7 +26,7 @@ describe('realtime utils', () => {
       type: 'message',
       role: 'assistant',
       status: 'completed',
-      content: [{ type: 'audio', transcript: 'hello there' }],
+      content: [{ type: 'output_audio', transcript: 'hello there' }],
     };
 
     const text = getLastTextFromAudioOutputMessage(message);
@@ -39,7 +39,7 @@ describe('realtime utils', () => {
       type: 'message',
       role: 'assistant',
       status: 'completed',
-      content: [{ type: 'text', text: 'hi!' }],
+      content: [{ type: 'output_text', text: 'hi!' }],
     };
 
     const text = getLastTextFromAudioOutputMessage(message);
@@ -54,16 +54,28 @@ describe('realtime utils', () => {
       getLastTextFromAudioOutputMessage({ type: 'text', text: 'hi' }),
     ).toBeUndefined();
     expect(
-      getLastTextFromAudioOutputMessage({ type: 'audio', transcript: 'hello' }),
+      getLastTextFromAudioOutputMessage({
+        type: 'output_audio',
+        transcript: 'hello',
+      }),
     ).toBeUndefined();
     expect(
-      getLastTextFromAudioOutputMessage({ type: 'audio', transcript: 123 }),
+      getLastTextFromAudioOutputMessage({
+        type: 'output_audio',
+        transcript: 123,
+      }),
     ).toBeUndefined();
     expect(
-      getLastTextFromAudioOutputMessage({ type: 'audio', transcript: true }),
+      getLastTextFromAudioOutputMessage({
+        type: 'output_audio',
+        transcript: true,
+      }),
     ).toBeUndefined();
     expect(
-      getLastTextFromAudioOutputMessage({ type: 'audio', transcript: {} }),
+      getLastTextFromAudioOutputMessage({
+        type: 'output_audio',
+        transcript: {},
+      }),
     ).toBeUndefined();
     expect(
       getLastTextFromAudioOutputMessage({ type: 'message', content: [] }),
@@ -74,13 +86,13 @@ describe('realtime utils', () => {
     expect(
       getLastTextFromAudioOutputMessage({
         type: 'message',
-        content: [{ type: 'text', text: 123 }],
+        content: [{ type: 'output_text', text: 123 } as any],
       }),
     ).toBeUndefined();
     expect(
       getLastTextFromAudioOutputMessage({
         type: 'message',
-        content: [{ type: 'audio', transcript: 123 }],
+        content: [{ type: 'output_audio', transcript: 123 } as any],
       }),
     ).toBeUndefined();
   });
@@ -99,7 +111,7 @@ describe('realtime utils', () => {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'text', text: 'there' }],
+        content: [{ type: 'output_text', text: 'there' }],
       },
     ];
 
@@ -116,7 +128,7 @@ describe('realtime utils', () => {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'text', text: 'new' }],
+        content: [{ type: 'output_text', text: 'new' }],
       },
     ];
 
@@ -133,7 +145,7 @@ describe('realtime utils', () => {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'text', text: 'hi' }],
+        content: [{ type: 'output_text', text: 'hi' }],
       },
     ];
 
@@ -143,7 +155,7 @@ describe('realtime utils', () => {
       type: 'message',
       role: 'assistant',
       status: 'completed',
-      content: [{ type: 'audio', transcript: 'hello', audio: 'abc' }],
+      content: [{ type: 'output_audio', transcript: 'hello', audio: 'abc' }],
     };
 
     const result = updateRealtimeHistory(history, newItem, false);
@@ -164,7 +176,7 @@ describe('realtime utils', () => {
       type: 'message',
       role: 'assistant',
       status: 'completed',
-      content: [{ type: 'audio', audio: 'out', transcript: 'bye' }],
+      content: [{ type: 'output_audio', audio: 'out', transcript: 'bye' }],
     };
     expect(
       (removeAudioFromContent(userItem).content[0] as any).audio,

@@ -56,6 +56,7 @@ export {
   RealtimeToolCallItem,
   RealtimeMessageItem,
   RealtimeBaseItem,
+  RealtimeMcpCallItem,
 } from './items';
 
 export {
@@ -80,3 +81,5 @@ export {
   tool,
   UserError,
 } from '@openai/agents-core';
+
+export { backgroundResult, isBackgroundResult } from './tool';

@@ -9,7 +9,7 @@ const myRecordedArrayBuffer = new ArrayBuffer(0);
 
 const wsSession = new RealtimeSession(agent, {
   transport: 'websocket',
-  model: 'gpt-4o-realtime-preview-2025-06-03',
+  model: 'gpt-realtime',
 });
 await wsSession.connect({ apiKey: process.env.OPENAI_API_KEY! });
 

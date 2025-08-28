@@ -2,7 +2,7 @@
 
 import { TransportEvent, OpenAIRealtimeWebRTC } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
-import { getToken } from '../server/token';
+import { getToken } from '../server/token.action';
 import { App } from '@/components/App';
 
 export default function Home() {
@@ -32,7 +32,7 @@ export default function Home() {
         model: 'gpt-4o-mini-realtime-preview',
         initialSessionConfig: {
           instructions: 'Speak like a pirate',
-          voice: 'ash',
+          voice: 'marin',
           modalities: ['text', 'audio'],
           inputAudioFormat: 'pcm16',
           outputAudioFormat: 'pcm16',

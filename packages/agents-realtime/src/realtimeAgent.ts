@@ -69,12 +69,12 @@ export class RealtimeAgent<TContext = UnknownContext> extends Agent<
    * The voice intended to be used by the agent. If another agent already spoke during the
    * RealtimeSession, changing the voice during a handoff will fail.
    */
-  readonly voice: string;
+  readonly voice?: string;
 
   constructor(config: RealtimeAgentConfiguration<TContext>) {
     super(
       config as AgentConfiguration<RealtimeContextData<TContext>, TextOutput>,
     );
-    this.voice = config.voice ?? 'ash';
+    this.voice = config.voice;
   }
 }

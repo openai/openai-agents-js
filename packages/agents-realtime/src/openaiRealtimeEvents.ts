@@ -10,10 +10,23 @@ export const realtimeResponse = z.object({
   conversation_id: z.string().optional().nullable(),
   max_output_tokens: z.number().or(z.literal('inf')).optional().nullable(),
   metadata: z.record(z.string(), z.any()).optional().nullable(),
-  modalities: z.array(z.string()).optional().nullable(),
+  // GA rename: modalities -> output_modalities
+  output_modalities: z.array(z.string()).optional().nullable(),
   object: z.literal('realtime.response').optional().nullable(),
   output: z.array(z.any()).optional().nullable(),
-  output_audio_format: z.string().optional().nullable(),
+  // GA grouping: audio.output.{format,voice}
+  audio: z
+    .object({
+      output: z
+        .object({
+          format: z.any().optional().nullable(),
+          voice: z.string().optional().nullable(),
+        })
+        .optional()
+        .nullable(),
+    })
+    .optional()
+    .nullable(),
   status: z
     .enum(['completed', 'incomplete', 'failed', 'cancelled', 'in_progress'])
     .optional()
@@ -31,7 +44,6 @@ export const realtimeResponse = z.object({
     })
     .optional()
     .nullable(),
-  voice: z.string().optional().nullable(),
 });
 
 // Basic content schema used by ConversationItem.
@@ -44,23 +56,51 @@ export const conversationItemContentSchema = z.object({
     z.literal('input_text'),
     z.literal('input_audio'),
     z.literal('item_reference'),
-    z.literal('text'),
-    z.literal('audio'),
+    z.literal('output_text'),
+    z.literal('output_audio'),
   ]),
 });
 
-export const conversationItemSchema = z.object({
-  id: z.string().optional(),
-  arguments: z.string().optional(),
-  call_id: z.string().optional(),
-  content: z.array(conversationItemContentSchema).optional(),
-  name: z.string().optional(),
-  object: z.literal('realtime.item').optional(),
-  output: z.string().optional(),
-  role: z.enum(['user', 'assistant', 'system']).optional(),
-  status: z.enum(['completed', 'incomplete', 'in_progress']).optional(),
-  type: z.enum(['message', 'function_call', 'function_call_output']).optional(),
-});
+export const conversationItemSchema = z
+  .object({
+    id: z.string().optional(),
+    arguments: z.string().optional(),
+    call_id: z.string().optional(),
+    content: z.array(conversationItemContentSchema).optional(),
+    name: z.string().optional(),
+    output: z.string().nullable().optional(),
+    role: z.enum(['user', 'assistant', 'system']).optional(),
+    status: z.enum(['completed', 'incomplete', 'in_progress']).optional(),
+    type: z
+      .enum([
+        'message',
+        'function_call',
+        'function_call_output',
+        'mcp_list_tools',
+        'mcp_tool_call',
+        'mcp_call',
+        'mcp_approval_request',
+        'mcp_approval_response',
+      ])
+      .optional(),
+    approval_request_id: z.string().nullable().optional(),
+    approve: z.boolean().nullable().optional(),
+    reason: z.string().nullable().optional(),
+    server_label: z.string().optional(),
+    error: z.any().nullable().optional(),
+    tools: z
+      .array(
+        z
+          .object({
+            name: z.string(),
+            description: z.string(),
+            input_schema: z.record(z.any()).optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+  })
+  .passthrough();
 
 export const conversationCreatedEventSchema = z.object({
   type: z.literal('conversation.created'),
@@ -71,8 +111,17 @@ export const conversationCreatedEventSchema = z.object({
   }),
 });
 
-export const conversationItemCreatedEventSchema = z.object({
-  type: z.literal('conversation.item.created'),
+// GA rename: conversation.item.created -> conversation.item.added
+export const conversationItemAddedEventSchema = z.object({
+  type: z.literal('conversation.item.added'),
+  event_id: z.string(),
+  item: conversationItemSchema,
+  previous_item_id: z.string().nullable().optional(),
+});
+
+// GA addition: conversation.item.done
+export const conversationItemDoneEventSchema = z.object({
+  type: z.literal('conversation.item.done'),
   event_id: z.string(),
   item: conversationItemSchema,
   previous_item_id: z.string().nullable().optional(),
@@ -241,7 +290,7 @@ export const rateLimitsUpdatedEventSchema = z.object({
 });
 
 export const responseAudioDeltaEventSchema = z.object({
-  type: z.literal('response.audio.delta'),
+  type: z.literal('response.output_audio.delta'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -251,7 +300,7 @@ export const responseAudioDeltaEventSchema = z.object({
 });
 
 export const responseAudioDoneEventSchema = z.object({
-  type: z.literal('response.audio.done'),
+  type: z.literal('response.output_audio.done'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -260,7 +309,7 @@ export const responseAudioDoneEventSchema = z.object({
 });
 
 export const responseAudioTranscriptDeltaEventSchema = z.object({
-  type: z.literal('response.audio_transcript.delta'),
+  type: z.literal('response.output_audio_transcript.delta'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -270,7 +319,8 @@ export const responseAudioTranscriptDeltaEventSchema = z.object({
 });
 
 export const responseAudioTranscriptDoneEventSchema = z.object({
-  type: z.literal('response.audio_transcript.done'),
+  //  GA may introduce response.output_audio_transcript.done
+  type: z.literal('response.output_audio_transcript.done'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -358,7 +408,7 @@ export const responseOutputItemDoneEventSchema = z.object({
 });
 
 export const responseTextDeltaEventSchema = z.object({
-  type: z.literal('response.text.delta'),
+  type: z.literal('response.output_text.delta'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -368,7 +418,8 @@ export const responseTextDeltaEventSchema = z.object({
 });
 
 export const responseTextDoneEventSchema = z.object({
-  type: z.literal('response.text.done'),
+  // No rename specified for done; keep response.text.done
+  type: z.literal('response.output_text.done'),
   event_id: z.string(),
   item_id: z.string(),
   content_index: z.number(),
@@ -407,16 +458,55 @@ export const sessionUpdateEventSchema = z.object({
   session: z.any(),
 });
 
-export const transcriptionSessionUpdateEventSchema = z.object({
-  type: z.literal('transcription_session.update'),
+export const mcpListToolsInProgressEventSchema = z.object({
+  type: z.literal('mcp_list_tools.in_progress'),
   event_id: z.string().optional(),
-  session: z.any(),
+  item_id: z.string().optional(),
 });
 
-export const transcriptionSessionUpdatedEventSchema = z.object({
-  type: z.literal('transcription_session.updated'),
+export const mcpListToolsCompletedEventSchema = z.object({
+  type: z.literal('mcp_list_tools.completed'),
+  event_id: z.string().optional(),
+  item_id: z.string().optional(),
+});
+
+export const responseMcpCallArgumentsDeltaEventSchema = z.object({
+  type: z.literal('response.mcp_call_arguments.delta'),
   event_id: z.string(),
-  session: z.any(),
+  response_id: z.string(),
+  item_id: z.string(),
+  output_index: z.number(),
+  delta: z.string(),
+  obfuscation: z.string(),
+});
+
+export const responseMcpCallArgumentsDoneEventSchema = z.object({
+  type: z.literal('response.mcp_call_arguments.done'),
+  event_id: z.string(),
+  response_id: z.string(),
+  item_id: z.string(),
+  output_index: z.number(),
+  arguments: z.string(),
+});
+
+export const responseMcpCallInProgressEventSchema = z.object({
+  type: z.literal('response.mcp_call.in_progress'),
+  event_id: z.string(),
+  output_index: z.number(),
+  item_id: z.string(),
+});
+
+export const responseMcpCallCompletedEventSchema = z.object({
+  type: z.literal('response.mcp_call.completed'),
+  event_id: z.string(),
+  output_index: z.number(),
+  item_id: z.string(),
+});
+
+export const mcpListToolsFailedEventSchema = z.object({
+  type: z.literal('mcp_list_tools.failed'),
+  event_id: z.string().optional(),
+  item_id: z.string().optional(),
 });
 
 /**
@@ -433,7 +523,8 @@ export const genericEventSchema = z
 
 export const realtimeServerEventSchema = z.discriminatedUnion('type', [
   conversationCreatedEventSchema,
-  conversationItemCreatedEventSchema,
+  conversationItemAddedEventSchema,
+  conversationItemDoneEventSchema,
   conversationItemDeletedEventSchema,
   conversationItemInputAudioTranscriptionCompletedEventSchema,
   conversationItemInputAudioTranscriptionDeltaEventSchema,
@@ -465,7 +556,13 @@ export const realtimeServerEventSchema = z.discriminatedUnion('type', [
   responseTextDoneEventSchema,
   sessionCreatedEventSchema,
   sessionUpdatedEventSchema,
-  transcriptionSessionUpdatedEventSchema,
+  mcpListToolsInProgressEventSchema,
+  mcpListToolsCompletedEventSchema,
+  mcpListToolsFailedEventSchema,
+  responseMcpCallArgumentsDeltaEventSchema,
+  responseMcpCallArgumentsDoneEventSchema,
+  responseMcpCallInProgressEventSchema,
+  responseMcpCallCompletedEventSchema,
 ]);
 
 export const realtimeClientEventSchema = z.discriminatedUnion('type', [
@@ -479,7 +576,6 @@ export const realtimeClientEventSchema = z.discriminatedUnion('type', [
   responseCancelEventSchema,
   responseCreateEventSchema,
   sessionUpdateEventSchema,
-  transcriptionSessionUpdateEventSchema,
 ]);
 
 export type RealtimeServerGenericEvent = z.infer<typeof genericEventSchema> &

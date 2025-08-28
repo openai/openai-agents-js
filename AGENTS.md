@@ -57,6 +57,7 @@ Before submitting changes, ensure all checks pass:
   ```bash
   pnpm -r build-check
   ```
+  NEVER USE `-w` or other watch modes.
 - Run the full test suite:
   ```bash
   CI=1 pnpm test

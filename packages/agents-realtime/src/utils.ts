@@ -1,6 +1,12 @@
-import { RealtimeItem, RealtimeMessageItem } from './items';
+import {
+  RealtimeItem,
+  RealtimeMcpCallApprovalRequestItem,
+  RealtimeMessageItem,
+} from './items';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import METADATA from './metadata';
+import { RunToolApprovalItem } from '@openai/agents-core';
+import { RealtimeAgent } from './realtimeAgent';
 
 /**
  * Converts a base64 string to an ArrayBuffer
@@ -67,13 +73,13 @@ export function getLastTextFromAudioOutputMessage(
     return undefined;
   }
 
-  if (lastContentItem.type === 'text') {
+  if (lastContentItem.type === 'output_text') {
     return typeof lastContentItem.text === 'string'
       ? lastContentItem.text
       : undefined;
   }
 
-  if (lastContentItem.type === 'audio') {
+  if (lastContentItem.type === 'output_audio') {
     return typeof lastContentItem.transcript === 'string'
       ? lastContentItem.transcript
       : undefined;
@@ -145,7 +151,7 @@ export function removeAudioFromContent(
     return {
       ...item,
       content: item.content.map((entry) => {
-        if (entry.type === 'audio') {
+        if ((entry as any).type === 'output_audio') {
           return {
             ...entry,
             audio: null,
@@ -265,3 +271,42 @@ export const HEADERS = {
  * Browser websocket header
  */
 export const WEBSOCKET_META = `openai-agents-sdk.${METADATA.version}`;
+
+export function realtimeApprovalItemToApprovalItem(
+  agent: RealtimeAgent<any>,
+  item: RealtimeMcpCallApprovalRequestItem,
+): RunToolApprovalItem {
+  const { name, arguments: args, ...rest } = item;
+  return new RunToolApprovalItem(
+    {
+      type: 'hosted_tool_call',
+      name,
+      arguments: JSON.stringify(args),
+      status: 'in_progress',
+      providerData: {
+        ...rest,
+      },
+    },
+    agent,
+  );
+}
+
+export function approvalItemToRealtimeApprovalItem(
+  item: RunToolApprovalItem,
+): RealtimeMcpCallApprovalRequestItem {
+  const { name, arguments: args, providerData } = item.rawItem;
+  const { itemId, serverLabel, ...rest } = providerData ?? {};
+  if (!itemId || !serverLabel) {
+    throw new Error('Invalid approval item for Realtime MCP approval request');
+  }
+
+  return {
+    type: 'mcp_approval_request',
+    itemId,
+    serverLabel,
+    ...rest,
+    name,
+    arguments: args ? JSON.parse(args) : {},
+    approved: null,
+  } as RealtimeMcpCallApprovalRequestItem;
+}

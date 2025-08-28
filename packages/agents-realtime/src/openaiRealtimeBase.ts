@@ -4,13 +4,18 @@ import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 import {
   RealtimeClientMessage,
   RealtimeSessionConfig,
+  RealtimeSessionConfigDefinition,
   RealtimeTracingConfig,
   RealtimeTurnDetectionConfig,
   RealtimeTurnDetectionConfigAsIs,
   RealtimeUserInput,
+  toNewSessionConfig,
 } from './clientMessages';
 import {
   RealtimeItem,
+  realtimeMcpCallApprovalRequestItem,
+  RealtimeMcpCallApprovalRequestItem,
+  realtimeMcpCallItem,
   realtimeMessageItemSchema,
   realtimeToolCallItem,
 } from './items';
@@ -41,32 +46,35 @@ export type OpenAIRealtimeModels =
   | 'gpt-4o-realtime-preview-2024-12-17'
   | 'gpt-4o-realtime-preview-2024-10-01'
   | 'gpt-4o-mini-realtime-preview-2024-12-17'
+  | 'gpt-realtime'
+  | 'gpt-realtime-2025-08-28'
   | (string & {}); // ensures autocomplete works
 
 /**
  * The default model that is used during the connection if no model is provided.
  */
 export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
-  'gpt-4o-realtime-preview';
+  'gpt-realtime';
 
 /**
  * The default session config that gets send over during session connection unless overridden
  * by the user.
  */
-export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConfig> =
+export const DEFAULT_OPENAI_REALTIME_SESSION_CONFIG: Partial<RealtimeSessionConfigDefinition> =
   {
-    voice: 'ash',
-    modalities: ['text', 'audio'],
-    inputAudioFormat: 'pcm16',
-    outputAudioFormat: 'pcm16',
-    inputAudioTranscription: {
-      model: 'gpt-4o-mini-transcribe',
+    outputModalities: ['audio'],
+    audio: {
+      input: {
+        format: { type: 'audio/pcm', rate: 24000 },
+        transcription: { model: 'gpt-4o-mini-transcribe' },
+        turnDetection: { type: 'semantic_vad' },
+        noiseReduction: null,
+      },
+      output: {
+        format: { type: 'audio/pcm', rate: 24000 },
+        speed: 1,
+      },
     },
-    turnDetection: {
-      type: 'semantic_vad',
-    },
-    inputAudioNoiseReduction: null,
-    speed: 1,
   };
 
 /**
@@ -233,7 +241,7 @@ export abstract class OpenAIRealtimeBase
       return;
     }
 
-    if (parsed.type === 'response.audio.done') {
+    if (parsed.type === 'response.output_audio.done') {
       this.emit('audio_done');
       return;
     }
@@ -260,11 +268,11 @@ export abstract class OpenAIRealtimeBase
 
     if (
       parsed.type === 'conversation.item.input_audio_transcription.delta' ||
-      parsed.type === 'response.text.delta' ||
-      parsed.type === 'response.audio_transcript.delta' ||
+      parsed.type === 'response.output_text.delta' ||
+      parsed.type === 'response.output_audio_transcript.delta' ||
       parsed.type === 'response.function_call_arguments.delta'
     ) {
-      if (parsed.type === 'response.audio_transcript.delta') {
+      if (parsed.type === 'response.output_audio_transcript.delta') {
         this.emit('audio_transcript_delta', {
           type: 'transcript_delta',
           delta: parsed.delta,
@@ -277,12 +285,32 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (
-      parsed.type === 'conversation.item.created' ||
+      parsed.type === 'conversation.item.added' ||
+      parsed.type === 'conversation.item.done' ||
       parsed.type === 'conversation.item.retrieved'
     ) {
+      // Handle MCP list tools items (only act when done to ensure tools are present)
+      if (
+        parsed.item.type === 'mcp_list_tools' &&
+        parsed.type === 'conversation.item.done'
+      ) {
+        const serverLabel = parsed.item.server_label ?? '';
+        const tools = (parsed.item.tools ?? []) as any[];
+        try {
+          this.emit('mcp_tools_listed', {
+            serverLabel,
+            tools,
+          });
+        } catch (err) {
+          logger.error('Error emitting mcp_tools_listed', err, parsed.item);
+        }
+        // We do not add this item to history; it's a transport-level side-channel.
+        return;
+      }
       if (parsed.item.type === 'message') {
         const previousItemId =
-          parsed.type === 'conversation.item.created'
+          parsed.type === 'conversation.item.added' ||
+          parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
             : null;
         const item = realtimeMessageItemSchema.parse({
@@ -296,6 +324,67 @@ export abstract class OpenAIRealtimeBase
         this.emit('item_update', item);
         return;
       }
+
+      if (
+        parsed.item.type === 'mcp_approval_request' &&
+        parsed.type === 'conversation.item.done'
+      ) {
+        const item = parsed.item;
+        const mcpApprovalRequest = realtimeMcpCallApprovalRequestItem.parse({
+          itemId: item.id,
+          type: item.type,
+          serverLabel: item.server_label,
+          name: item.name,
+          arguments: JSON.parse(item.arguments || '{}'),
+          approved: item.approved,
+        });
+        this.emit('item_update', mcpApprovalRequest);
+        this.emit('mcp_approval_request', mcpApprovalRequest);
+        return;
+      }
+
+      if (
+        parsed.item.type === 'mcp_tool_call' ||
+        parsed.item.type === 'mcp_call'
+      ) {
+        const status =
+          parsed.type === 'conversation.item.done'
+            ? 'completed'
+            : 'in_progress';
+        const mcpCall = realtimeMcpCallItem.parse({
+          itemId: parsed.item.id,
+          type: parsed.item.type,
+          status,
+          arguments: parsed.item.arguments,
+          name: parsed.item.name,
+          output: parsed.item.output,
+        });
+
+        this.emit('item_update', mcpCall);
+        if (parsed.type === 'conversation.item.done') {
+          this.emit('mcp_tool_call_completed', mcpCall);
+        }
+        return;
+      }
+    }
+
+    if (parsed.type === 'response.mcp_call.in_progress') {
+      const item = parsed;
+      this.sendEvent({
+        type: 'conversation.item.retrieve',
+        item_id: item.item_id,
+      });
+      return;
+    }
+    if (parsed.type === 'mcp_list_tools.in_progress') {
+      const item = parsed;
+      if (item.item_id) {
+        this.sendEvent({
+          type: 'conversation.item.retrieve',
+          item_id: item.item_id,
+        });
+      }
+      return;
     }
 
     if (
@@ -323,6 +412,22 @@ export abstract class OpenAIRealtimeBase
         return;
       }
 
+      if (item.type === 'mcp_tool_call' || item.type === 'mcp_call') {
+        const mcpCall = realtimeMcpCallItem.parse({
+          itemId: item.id,
+          type: item.type,
+          status:
+            parsed.type === 'response.output_item.done'
+              ? 'completed'
+              : 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
+          arguments: item.arguments,
+          name: item.name,
+          output: item.output,
+        });
+        this.emit('item_update', mcpCall);
+        return;
+      }
+
       if (item.type === 'message') {
         const realtimeItem = realtimeMessageItemSchema.parse({
           itemId: parsed.item.id,
@@ -332,7 +437,7 @@ export abstract class OpenAIRealtimeBase
           status:
             parsed.type === 'response.output_item.done'
               ? (item.status ?? 'completed')
-              : (item.status ?? 'in_progress')
+              : (item.status ?? 'in_progress'),
         });
         this.emit('item_update', realtimeItem);
         return;
@@ -362,66 +467,123 @@ export abstract class OpenAIRealtimeBase
    * @param message - The message to send.
    * @param otherEventData - Additional event data to send.
    */
-  sendMessage(message: RealtimeUserInput, otherEventData: Record<string, any>) {
+  sendMessage(
+    message: RealtimeUserInput,
+    otherEventData: Record<string, any>,
+    { triggerResponse = true }: { triggerResponse?: boolean } = {},
+  ) {
+    const content =
+      typeof message === 'string'
+        ? [
+            {
+              type: 'input_text',
+              text: message,
+            },
+          ]
+        : message.content.map((content) => {
+            if (content.type === 'input_image') {
+              return {
+                type: 'input_image',
+                image_url: content.image,
+                ...(content.providerData ?? {}),
+              };
+            }
+            return content;
+          });
+
     this.sendEvent({
       type: 'conversation.item.create',
-      item:
-        typeof message === 'string'
-          ? {
-              type: 'message',
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text: message,
-                },
-              ],
-            }
-          : message,
+      item: {
+        type: 'message',
+        role: 'user',
+        content,
+      },
       ...otherEventData,
     });
 
-    this.sendEvent({
-      type: 'response.create',
-    });
+    if (triggerResponse) {
+      this.sendEvent({
+        type: 'response.create',
+      });
+    }
+  }
+
+  addImage(
+    image: string,
+    { triggerResponse = true }: { triggerResponse?: boolean } = {},
+  ) {
+    this.sendMessage(
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_image', image }],
+      },
+      {},
+      { triggerResponse },
+    );
   }
 
   protected _getMergedSessionConfig(config: Partial<RealtimeSessionConfig>) {
-    const sessionData = {
-      instructions: config.instructions,
-      model:
-        config.model ??
-        this.#model ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.model,
-      voice: config.voice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.voice,
-      speed: config.speed ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.speed,
-      modalities:
-        config.modalities ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.modalities,
-      input_audio_format:
-        config.inputAudioFormat ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioFormat,
-      output_audio_format:
-        config.outputAudioFormat ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.outputAudioFormat,
-      input_audio_transcription:
-        config.inputAudioTranscription ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioTranscription,
-      input_audio_noise_reduction:
-        config.inputAudioNoiseReduction ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.inputAudioNoiseReduction,
-      turn_detection:
-        OpenAIRealtimeBase.buildTurnDetectionConfig(config.turnDetection) ??
-        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.turnDetection,
+    const newConfig = toNewSessionConfig(config);
+
+    const sessionData: Record<string, any> = {
+      type: 'realtime',
+      instructions: newConfig.instructions,
+      model: newConfig.model ?? this.#model,
+      output_modalities:
+        newConfig.outputModalities ??
+        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.outputModalities,
+      audio: {
+        input: {
+          format:
+            newConfig.audio?.input?.format ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.format,
+          noise_reduction:
+            newConfig.audio?.input?.noiseReduction ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.noiseReduction,
+          transcription:
+            newConfig.audio?.input?.transcription ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
+          turn_detection:
+            OpenAIRealtimeBase.buildTurnDetectionConfig(
+              newConfig.audio?.input?.turnDetection,
+            ) ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.turnDetection,
+        },
+        output: {
+          format:
+            newConfig.audio?.output?.format ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.output?.format,
+          voice:
+            newConfig.audio?.output?.voice ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.output?.voice,
+          speed:
+            newConfig.audio?.output?.speed ??
+            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.output?.speed,
+        },
+      },
       tool_choice:
-        config.toolChoice ?? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.toolChoice,
-      tools: config.tools?.map((tool) => ({
-        ...tool,
-        strict: undefined,
-      })),
+        newConfig.toolChoice ??
+        DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.toolChoice,
       // We don't set tracing here to make sure that we don't try to override it on every
       // session.update as it might lead to errors
-      ...(config.providerData ?? {}),
+      ...(newConfig.providerData ?? {}),
     };
+
+    if (newConfig.prompt) {
+      sessionData.prompt = {
+        id: newConfig.prompt.promptId,
+        version: newConfig.prompt.version,
+        variables: newConfig.prompt.variables,
+      };
+    }
+
+    if (newConfig.tools && newConfig.tools.length > 0) {
+      sessionData.tools = newConfig.tools.map((tool: any) => ({
+        ...tool,
+        strict: undefined,
+      }));
+    }
 
     return sessionData;
   }
@@ -444,6 +606,8 @@ export abstract class OpenAIRealtimeBase
       silenceDurationMs,
       silence_duration_ms,
       threshold,
+      idleTimeoutMs,
+      idle_timeout_ms,
       ...rest
     } = c;
 
@@ -458,6 +622,7 @@ export abstract class OpenAIRealtimeBase
       silence_duration_ms: silenceDurationMs
         ? silenceDurationMs
         : silence_duration_ms,
+      idle_timeout_ms: idleTimeoutMs ? idleTimeoutMs : idle_timeout_ms,
       threshold,
       ...rest,
     };
@@ -492,6 +657,7 @@ export abstract class OpenAIRealtimeBase
       this.sendEvent({
         type: 'session.update',
         session: {
+          type: 'realtime',
           tracing: 'auto',
         },
       });
@@ -517,6 +683,7 @@ export abstract class OpenAIRealtimeBase
       this.sendEvent({
         type: 'session.update',
         session: {
+          type: 'realtime',
           tracing: null,
         },
       });
@@ -531,6 +698,7 @@ export abstract class OpenAIRealtimeBase
       this.sendEvent({
         type: 'session.update',
         session: {
+          type: 'realtime',
           tracing: tracingConfig,
         },
       });
@@ -553,6 +721,7 @@ export abstract class OpenAIRealtimeBase
     this.sendEvent({
       type: 'session.update',
       session: {
+        type: 'realtime',
         tracing: tracingConfig,
       },
     });
@@ -691,5 +860,20 @@ export abstract class OpenAIRealtimeBase
         );
       }
     }
+  }
+
+  sendMcpResponse(
+    approvalRequest: RealtimeMcpCallApprovalRequestItem,
+    approved: boolean,
+  ): void {
+    this.sendEvent({
+      type: 'conversation.item.create',
+      previous_item_id: approvalRequest.itemId,
+      item: {
+        type: 'mcp_approval_response',
+        approval_request_id: approvalRequest.itemId,
+        approve: approved,
+      },
+    });
   }
 }

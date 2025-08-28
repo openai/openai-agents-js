@@ -134,10 +134,12 @@ export class FakeTransport
   sendMessageCalls: [RealtimeUserInput, Record<string, any>][] = [];
   sendAudioCalls: [ArrayBuffer, { commit?: boolean }][] = [];
   updateSessionConfigCalls: Partial<RealtimeSessionConfig>[] = [];
+  addImageCalls: [string, { triggerResponse?: boolean } | undefined][] = [];
   closeCalls = 0;
   eventEmitter = new RuntimeEventEmitter<RealtimeTransportEventTypes>();
   muteCalls: boolean[] = [];
   sendFunctionCallOutputCalls: [TransportToolCallEvent, string, boolean][] = [];
+  sendMcpResponseCalls: [any, boolean][] = [];
   interruptCalls = 0;
   resetHistoryCalls: [RealtimeItem[], RealtimeItem[]][] = [];
 
@@ -152,8 +154,13 @@ export class FakeTransport
   sendMessage(
     message: RealtimeUserInput,
     otherEventData: Record<string, any>,
+    _options?: { triggerResponse?: boolean },
   ): void {
     this.sendMessageCalls.push([message, otherEventData]);
+  }
+
+  addImage(image: string, options?: { triggerResponse?: boolean }): void {
+    this.addImageCalls.push([image, options]);
   }
 
   sendAudio(audio: ArrayBuffer, options: { commit?: boolean }): void {
@@ -179,6 +186,10 @@ export class FakeTransport
     startResponse: boolean,
   ): void {
     this.sendFunctionCallOutputCalls.push([toolCall, output, startResponse]);
+  }
+
+  sendMcpResponse(approvalRequest: any, approved: boolean): void {
+    this.sendMcpResponseCalls.push([approvalRequest, approved]);
   }
 
   interrupt(): void {

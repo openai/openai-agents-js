@@ -17,6 +17,10 @@ export function History({ history }: HistoryProps) {
           return <FunctionCallMessage message={item} key={item.itemId} />;
         }
 
+        if (item.type === 'mcp_call' || item.type === 'mcp_tool_call') {
+          return <FunctionCallMessage message={item} key={item.itemId} />;
+        }
+
         if (item.type === 'message') {
           return (
             <TextMessage
@@ -25,14 +29,14 @@ export function History({ history }: HistoryProps) {
                   ? item.content
                       .map((content) => {
                         if (
-                          content.type === 'text' ||
+                          content.type === 'output_text' ||
                           content.type === 'input_text'
                         ) {
                           return content.text;
                         }
                         if (
                           content.type === 'input_audio' ||
-                          content.type === 'audio'
+                          content.type === 'output_audio'
                         ) {
                           return content.transcript ?? '⚫︎⚫︎⚫︎';
                         }

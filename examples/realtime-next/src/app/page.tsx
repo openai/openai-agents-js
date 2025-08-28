@@ -9,12 +9,15 @@ import {
   OutputGuardrailTripwireTriggered,
   RealtimeItem,
   RealtimeContextData,
+  backgroundResult,
 } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
-import { handleRefundRequest } from './server/backendAgent';
-import { getToken } from './server/token';
+import { handleRefundRequest } from './server/backendAgent.action';
+import { getToken } from './server/token.action';
 import { App } from '@/components/App';
+import { hostedMcpTool } from '@openai/agents';
+import { CameraCapture } from '@/components/CameraCapture';
 
 const params = z.object({
   request: z.string(),
@@ -36,7 +39,7 @@ const weatherTool = tool({
     location: z.string(),
   }),
   execute: async ({ location }) => {
-    return `The weather in ${location} is sunny.`;
+    return backgroundResult(`The weather in ${location} is sunny.`);
   },
 });
 
@@ -67,9 +70,15 @@ const weatherExpert = new RealtimeAgent({
 
 const agent = new RealtimeAgent({
   name: 'Greeter',
-  instructions:
-    'You are a greeter. Always greet the user with a "top of the morning" at the start of the conversation. When you use a tool always first say what you are about to do.',
-  tools: [refundBackchannel, secretTool],
+  instructions: 'You are a greeter',
+  tools: [
+    refundBackchannel,
+    secretTool,
+    hostedMcpTool({
+      serverLabel: 'deepwiki',
+    }),
+    weatherTool,
+  ],
   handoffs: [weatherExpert],
 });
 
@@ -97,16 +106,28 @@ export default function Home() {
 
   const [events, setEvents] = useState<TransportEvent[]>([]);
   const [history, setHistory] = useState<RealtimeItem[]>([]);
+  const [mcpTools, setMcpTools] = useState<string[]>([]);
 
   useEffect(() => {
     session.current = new RealtimeSession(agent, {
+      model: 'gpt-realtime',
       outputGuardrails: guardrails,
       outputGuardrailSettings: {
         debounceTextLength: 200,
       },
+      config: {
+        audio: {
+          output: {
+            voice: 'cedar',
+          },
+        },
+      },
     });
     session.current.on('transport_event', (event) => {
       setEvents((events) => [...events, event]);
+    });
+    session.current.on('mcp_tools_changed', (tools) => {
+      setMcpTools(tools.map((t) => t.name));
     });
     session.current.on(
       'guardrail_tripped',
@@ -122,7 +143,7 @@ export default function Home() {
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
         const approved = confirm(
-          `Approve tool call to ${approvalRequest.tool.name} with parameters:\n ${JSON.stringify(approvalRequest.tool.parameters, null, 2)}?`,
+          `Approve tool call to ${approvalRequest.approvalItem.rawItem.name} with parameters:\n ${JSON.stringify(approvalRequest.approvalItem.rawItem.arguments, null, 2)}?`,
         );
         if (approved) {
           session.current?.approve(approvalRequest.approvalItem);
@@ -161,14 +182,26 @@ export default function Home() {
   }
 
   return (
-    <App
-      isConnected={isConnected}
-      isMuted={isMuted}
-      toggleMute={toggleMute}
-      connect={connect}
-      history={history}
-      outputGuardrailResult={outputGuardrailResult}
-      events={events}
-    />
+    <div className="relative">
+      <App
+        isConnected={isConnected}
+        isMuted={isMuted}
+        toggleMute={toggleMute}
+        connect={connect}
+        history={history}
+        outputGuardrailResult={outputGuardrailResult}
+        events={events}
+        mcpTools={mcpTools}
+      />
+      <div className="fixed bottom-4 right-4 z-50">
+        <CameraCapture
+          disabled={!isConnected}
+          onCapture={(dataUrl) => {
+            if (!session.current) return;
+            session.current.addImage(dataUrl, { triggerResponse: false });
+          }}
+        />
+      </div>
+    </div>
   );
 }

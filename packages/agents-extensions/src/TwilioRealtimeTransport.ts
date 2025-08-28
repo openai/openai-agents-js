@@ -71,12 +71,16 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   ) {
     let newConfig: Partial<RealtimeSessionConfig> = {};
     if (!partialConfig) {
+      // @ts-expect-error - this is a valid config
       newConfig.inputAudioFormat = 'g711_ulaw';
+      // @ts-expect-error - this is a valid config
       newConfig.outputAudioFormat = 'g711_ulaw';
     } else {
       newConfig = {
         ...partialConfig,
+        // @ts-expect-error - this is a valid config
         inputAudioFormat: partialConfig.inputAudioFormat ?? 'g711_ulaw',
+        // @ts-expect-error - this is a valid config
         outputAudioFormat: partialConfig.outputAudioFormat ?? 'g711_ulaw',
       };
     }

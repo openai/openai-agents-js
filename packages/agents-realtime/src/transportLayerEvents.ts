@@ -1,5 +1,11 @@
 import { protocol, Usage } from '@openai/agents-core';
-import { RealtimeBaseItem, RealtimeItem } from './items';
+import {
+  RealtimeBaseItem,
+  RealtimeItem,
+  RealtimeMcpCallApprovalRequestItem,
+  RealtimeMcpCallItem,
+} from './items';
+import type { RealtimeMcpToolInfo } from './clientMessages';
 
 /**
  * Represents an error that occurred on the transport layer.
@@ -131,6 +137,22 @@ export type RealtimeTransportEventTypes = {
    * Triggered when the model is done generating a response for a turn.
    */
   turn_done: [event: TransportLayerResponseCompleted];
+
+  /**
+   * Triggered when an MCP tool call is completed.
+   */
+  mcp_tool_call_completed: [toolCall: RealtimeMcpCallItem];
+
+  /**
+   * Triggered when a remote MCP tool requires approval.
+   */
+  mcp_approval_request: [approvalRequest: RealtimeMcpCallApprovalRequestItem];
+  /**
+   * Triggered when a remote MCP server lists its tools (via mcp_list_tools).
+   */
+  mcp_tools_listed: [
+    event: { serverLabel: string; tools: RealtimeMcpToolInfo[] },
+  ];
 
   [key: string]: [...args: any[]];
 };

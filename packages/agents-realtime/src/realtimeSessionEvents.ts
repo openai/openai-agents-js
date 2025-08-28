@@ -5,11 +5,12 @@ import {
   RunToolApprovalItem,
 } from '@openai/agents-core';
 import { RealtimeGuardrailMetadata } from './guardrail';
-import { RealtimeItem } from './items';
+import { RealtimeItem, RealtimeMcpCallItem } from './items';
 import { RealtimeAgent } from './realtimeAgent';
 import { TransportEvent, TransportLayerAudio } from './transportLayerEvents';
 import { RealtimeContextData } from './realtimeSession';
 import { protocol } from '@openai/agents-core';
+import type { RealtimeMcpToolInfo } from './clientMessages';
 
 type AgentWithOrWithoutHistory<TContext> =
   | RealtimeAgent<TContext>
@@ -18,6 +19,11 @@ type AgentWithOrWithoutHistory<TContext> =
 export type RealtimeToolApprovalRequest = {
   type: 'function_approval';
   tool: FunctionTool<RealtimeContextData<any>>;
+  approvalItem: RunToolApprovalItem;
+};
+
+export type RealtimeMcpApprovalRequest = {
+  type: 'mcp_approval_request';
   approvalItem: RunToolApprovalItem;
 };
 
@@ -141,6 +147,21 @@ export type RealtimeSessionEventTypes<TContext = unknown> = {
   tool_approval_requested: [
     context: RunContext<RealtimeContextData<TContext>>,
     agent: AgentWithOrWithoutHistory<TContext>,
-    approvalRequest: RealtimeToolApprovalRequest,
+    approvalRequest: RealtimeToolApprovalRequest | RealtimeMcpApprovalRequest,
   ];
+
+  /**
+   * Triggered when an MCP tool call is completed.
+   */
+  mcp_tool_call_completed: [
+    context: RunContext<RealtimeContextData<TContext>>,
+    agent: AgentWithOrWithoutHistory<TContext>,
+    toolCall: RealtimeMcpCallItem,
+  ];
+  /**
+   * Triggered when the set of currently available MCP tools changes
+   * (e.g. after a list-tools result arrives, or when the active agent changes).
+   * Carries the list of available tools filtered by the active agent's server_labels.
+   */
+  mcp_tools_changed: [tools: RealtimeMcpToolInfo[]];
 };

@@ -307,95 +307,113 @@ describe('RealtimeSession', () => {
     const agent = new RealtimeAgent({ name: 'Orig', handoffs: [] });
     const s = new RealtimeSession(agent, {
       transport: t,
-      config: { inputAudioFormat: 'g711_ulaw', outputAudioFormat: 'g711_ulaw' },
+      config: {
+        audio: {
+          input: { format: 'g711_ulaw' },
+          output: { format: 'g711_ulaw' },
+        },
+      },
     });
     await s.connect({ apiKey: 'test' });
     const newAgent = new RealtimeAgent({ name: 'Next', handoffs: [] });
     await s.updateAgent(newAgent);
     // Find the last updateSessionConfig call
     const last = t.updateSessionConfigCalls.at(-1)!;
-    expect(last.inputAudioFormat).toBe('g711_ulaw');
-    expect(last.outputAudioFormat).toBe('g711_ulaw');
+    expect((last as any).audio?.input?.format).toBe('g711_ulaw');
+    expect((last as any).audio?.output?.format).toBe('g711_ulaw');
   });
 
-it('defaults item status to completed for done output items without status', async () => {
-  class TestTransport extends OpenAIRealtimeBase {
-    status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
-      'connected';
-    connect = vi.fn(async () => {});
-    sendEvent = vi.fn();
-    mute = vi.fn();
-    close = vi.fn();
-    interrupt = vi.fn();
-    get muted() {
-      return false;
+  it('defaults item status to completed for done output items without status', async () => {
+    class TestTransport extends OpenAIRealtimeBase {
+      status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
+        'connected';
+      connect = vi.fn(async () => {});
+      sendEvent = vi.fn();
+      mute = vi.fn();
+      close = vi.fn();
+      interrupt = vi.fn();
+      get muted() {
+        return false;
+      }
     }
-  }
-  const transport = new TestTransport();
-  const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
-  const session = new RealtimeSession(agent, { transport });
-  await session.connect({ apiKey: 'test' });
-  const historyEvents: RealtimeItem[][] = [];
-  session.on('history_updated', (h) => historyEvents.push([...h]));
-  (transport as any)._onMessage({
-    data: JSON.stringify({
-      type: 'response.output_item.done',
-      event_id: 'e',
-      item: {
-        id: 'm1',
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'text', text: 'hi' }],
-      },
-      output_index: 0,
-      response_id: 'r1',
-    }),
-  });
-  const latest = historyEvents.at(-1)!;
-  const msg = latest.find(
-    (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
-      i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm1'
-  );
-  expect(msg).toBeDefined();
-  expect(msg!.status).toBe('completed');
-});
-
-it('preserves explicit completed status on done', async () => {
-  class TestTransport extends OpenAIRealtimeBase {
-    status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' = 'connected';
-    connect = vi.fn(async () => {});
-    sendEvent = vi.fn(); mute = vi.fn(); close = vi.fn(); interrupt = vi.fn();
-    get muted() { return false; }
-  }
-  const transport = new TestTransport();
-  const session = new RealtimeSession(new RealtimeAgent({ name: 'A', handoffs: [] }), { transport });
-  await session.connect({ apiKey: 'test' });
-
-  const historyEvents: RealtimeItem[][] = [];
-  session.on('history_updated', (h) => historyEvents.push([...h]));
-
-  (transport as any)._onMessage({
-    data: JSON.stringify({
-      type: 'response.output_item.done',
-      event_id: 'e',
-      item: {
-        id: 'm2',
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'text', text: 'hi again' }],
-      },
-      output_index: 0,
-      response_id: 'r2',
-    }),
+    const transport = new TestTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const session = new RealtimeSession(agent, { transport });
+    await session.connect({ apiKey: 'test' });
+    const historyEvents: RealtimeItem[][] = [];
+    session.on('history_updated', (h) => historyEvents.push([...h]));
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'e',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hi' }],
+        },
+        output_index: 0,
+        response_id: 'r1',
+      }),
+    });
+    const latest = historyEvents.at(-1)!;
+    const msg = latest.find(
+      (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
+        i.type === 'message' &&
+        i.role === 'assistant' &&
+        (i as any).itemId === 'm1',
+    );
+    expect(msg).toBeDefined();
+    expect(msg!.status).toBe('completed');
   });
 
-  const latest = historyEvents.at(-1)!;
-  const msg = latest.find(
-    (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
-      i.type === 'message' && i.role === 'assistant' && (i as any).itemId === 'm2'
-  );
-  expect(msg).toBeDefined();
-  expect(msg!.status).toBe('completed'); // ensure we didn't overwrite server status
-});
+  it('preserves explicit completed status on done', async () => {
+    class TestTransport extends OpenAIRealtimeBase {
+      status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
+        'connected';
+      connect = vi.fn(async () => {});
+      sendEvent = vi.fn();
+      mute = vi.fn();
+      close = vi.fn();
+      interrupt = vi.fn();
+      get muted() {
+        return false;
+      }
+    }
+    const transport = new TestTransport();
+    const session = new RealtimeSession(
+      new RealtimeAgent({ name: 'A', handoffs: [] }),
+      { transport },
+    );
+    await session.connect({ apiKey: 'test' });
+
+    const historyEvents: RealtimeItem[][] = [];
+    session.on('history_updated', (h) => historyEvents.push([...h]));
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'e',
+        item: {
+          id: 'm2',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'hi again' }],
+        },
+        output_index: 0,
+        response_id: 'r2',
+      }),
+    });
+
+    const latest = historyEvents.at(-1)!;
+    const msg = latest.find(
+      (i): i is Extract<RealtimeItem, { type: 'message'; role: 'assistant' }> =>
+        i.type === 'message' &&
+        i.role === 'assistant' &&
+        (i as any).itemId === 'm2',
+    );
+    expect(msg).toBeDefined();
+    expect(msg!.status).toBe('completed'); // ensure we didn't overwrite server status
+  });
 });

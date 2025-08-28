@@ -14,10 +14,12 @@ import {
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import type {
-  FunctionToolDefinition,
   RealtimeSessionConfig,
+  RealtimeToolDefinition,
   RealtimeTracingConfig,
   RealtimeUserInput,
+  HostedMCPToolDefinition,
+  RealtimeMcpToolInfo,
 } from './clientMessages';
 import {
   defineRealtimeOutputGuardrail,
@@ -37,11 +39,18 @@ import type { ApiKey, RealtimeTransportLayer } from './transportLayer';
 import type { TransportToolCallEvent } from './transportLayerEvents';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import {
+  approvalItemToRealtimeApprovalItem,
   getLastTextFromAudioOutputMessage,
   hasWebRTCSupport,
+  realtimeApprovalItemToApprovalItem,
   updateRealtimeHistory,
 } from './utils';
 import logger from './logger';
+import {
+  isBackgroundResult,
+  isValidRealtimeTool,
+  toRealtimeToolDefinition,
+} from './tool';
 
 /**
  * The context data for a realtime session. This is the context data that is passed to the agent.
@@ -114,6 +123,11 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * The workflow name to use for tracing.
    */
   workflowName?: string;
+
+  /**
+   * Whether to automatically trigger a response for MCP tool calls.
+   */
+  automaticallyTriggerResponseForMcpToolCalls?: boolean;
 };
 
 export type RealtimeSessionConnectOptions = {
@@ -174,7 +188,7 @@ export class RealtimeSession<
   #currentAgent:
     | RealtimeAgent<TBaseContext>
     | RealtimeAgent<RealtimeContextData<TBaseContext>>;
-  #currentTools: FunctionToolDefinition[] = [];
+  #currentTools?: RealtimeToolDefinition[];
   #context: RunContext<RealtimeContextData<TBaseContext>>;
   #outputGuardrails: RealtimeOutputGuardrailDefinition[] = [];
   #outputGuardrailSettings: RealtimeOutputGuardrailSettings;
@@ -183,6 +197,10 @@ export class RealtimeSession<
   #shouldIncludeAudioData: boolean;
   #interruptedByGuardrail: Record<string, boolean> = {};
   #audioStarted = false;
+  // Tracks all MCP tools fetched per server label (from mcp_list_tools results).
+  #allMcpToolsByServer: Map<string, RealtimeMcpToolInfo[]> = new Map();
+  // Tracks currently available MCP tools based on the active agent's configured server_labels.
+  #availableMcpTools: RealtimeMcpToolInfo[] = [];
   // Keeps track of the last full session config we sent (camelCase keys) so that
   // subsequent updates (e.g. during agent handoffs) preserve properties that are
   // not explicitly recalculated here (such as inputAudioFormat, outputAudioFormat,
@@ -190,6 +208,7 @@ export class RealtimeSession<
   // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
   // transport defaults causing issues for integrations like Twilio.
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
+  #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
 
   constructor(
     public readonly initialAgent:
@@ -225,6 +244,8 @@ export class RealtimeSession<
       options.outputGuardrailSettings ?? {},
     );
     this.#shouldIncludeAudioData = options.historyStoreAudio ?? false;
+    this.#automaticallyTriggerResponseForMcpToolCalls =
+      options.automaticallyTriggerResponseForMcpToolCalls ?? true;
   }
 
   /**
@@ -272,6 +293,10 @@ export class RealtimeSession<
     return this.#history;
   }
 
+  get availableMcpTools(): RealtimeMcpToolInfo[] {
+    return this.#availableMcpTools;
+  }
+
   async #setCurrentAgent(
     agent:
       | RealtimeAgent<TBaseContext>
@@ -282,13 +307,24 @@ export class RealtimeSession<
     const handoffTools = handoffs.map((handoff) =>
       handoff.getHandoffAsFunctionTool(),
     );
-    const allTools = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getAllTools(this.#context);
-    this.#currentTools = [
-      ...allTools.filter((tool) => tool.type === 'function'),
-      ...handoffTools,
-    ];
+    const allTools = (
+      await (this.#currentAgent as RealtimeAgent<TBaseContext>).getAllTools(
+        this.#context,
+      )
+    )
+      .filter(isValidRealtimeTool)
+      .map(toRealtimeToolDefinition);
+    const hasToolsDefined =
+      typeof this.#currentAgent.tools !== 'undefined' ||
+      typeof this.#currentAgent.mcpServers !== 'undefined';
+    const hasHandoffsDefined = handoffs.length > 0;
+    this.#currentTools =
+      hasToolsDefined || hasHandoffsDefined
+        ? [...allTools, ...handoffTools]
+        : undefined;
+
+    // Recompute currently available MCP tools based on the new agent's active server labels.
+    this.#updateAvailableMcpTools();
   }
 
   async #getSessionConfig(
@@ -341,6 +377,10 @@ export class RealtimeSession<
       model: this.options.model,
       tools: this.#currentTools,
       tracing: tracingConfig,
+      prompt:
+        typeof this.#currentAgent.prompt === 'function'
+          ? await this.#currentAgent.prompt(this.#context, this.#currentAgent)
+          : this.#currentAgent.prompt,
     };
 
     // Update our cache so subsequent updates inherit the full set including any
@@ -447,8 +487,15 @@ export class RealtimeSession<
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     const result = await tool.invoke(this.#context, toolCall.arguments);
-    const stringResult = toSmartString(result);
-    this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
+    let stringResult: string;
+    if (isBackgroundResult(result)) {
+      // Don't generate a new response, just send the result
+      stringResult = toSmartString(result.content);
+      this.#transport.sendFunctionCallOutput(toolCall, stringResult, false);
+    } else {
+      stringResult = toSmartString(result);
+      this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
+    }
     this.emit(
       'agent_tool_end',
       this.#context,
@@ -558,6 +605,14 @@ export class RealtimeSession<
             error: err,
           });
         }
+      }
+    });
+    this.#transport.on('mcp_tools_listed', ({ serverLabel, tools }) => {
+      try {
+        this.#allMcpToolsByServer.set(serverLabel, tools ?? []);
+        this.#updateAvailableMcpTools();
+      } catch (err) {
+        this.emit('error', { type: 'error', error: err });
       }
     });
     this.#transport.on('audio', (event) => {
@@ -695,6 +750,75 @@ export class RealtimeSession<
     this.#transport.on('error', (error) => {
       this.emit('error', error);
     });
+
+    this.#transport.on('mcp_tool_call_completed', (toolCall) => {
+      this.emit(
+        'mcp_tool_call_completed',
+        this.#context,
+        this.#currentAgent,
+        toolCall,
+      );
+
+      if (this.#automaticallyTriggerResponseForMcpToolCalls) {
+        this.#transport.sendEvent({
+          type: 'response.create',
+        });
+      }
+    });
+
+    this.#transport.on('mcp_approval_request', (approvalRequest) => {
+      this.emit('tool_approval_requested', this.#context, this.#currentAgent, {
+        type: 'mcp_approval_request' as const,
+        approvalItem: realtimeApprovalItemToApprovalItem(
+          this.#currentAgent,
+          approvalRequest,
+        ),
+      });
+    });
+  }
+
+  /**
+   * Recomputes the currently available MCP tools based on the current agent's active
+   * MCP server configurations and the cached per-server tool listings. Emits
+   * `mcp_tools_changed` if the set changed.
+   */
+  #updateAvailableMcpTools() {
+    // Collect active MCP server labels and optional allowed filters from the current agent
+    const activeMcpConfigs = this.#currentTools?.filter(
+      (t): t is HostedMCPToolDefinition => (t as any).type === 'mcp',
+    ) as HostedMCPToolDefinition[];
+
+    const allowedFromConfig = (cfg: HostedMCPToolDefinition) => {
+      const allowed = cfg.allowed_tools;
+      if (!allowed) return undefined;
+      if (Array.isArray(allowed)) return allowed;
+      if (allowed && Array.isArray(allowed.tool_names))
+        return allowed.tool_names;
+      return undefined;
+    };
+
+    const dedupByName = new Map<string, RealtimeMcpToolInfo>();
+    for (const cfg of activeMcpConfigs) {
+      const tools = this.#allMcpToolsByServer.get(cfg.server_label) ?? [];
+      const allowed = allowedFromConfig(cfg);
+      for (const tool of tools) {
+        if (allowed && !allowed.includes(tool.name)) continue;
+        if (!dedupByName.has(tool.name)) {
+          dedupByName.set(tool.name, tool);
+        }
+      }
+    }
+
+    const next = Array.from(dedupByName.values());
+    const prev = this.#availableMcpTools;
+    const changed =
+      prev.length !== next.length ||
+      JSON.stringify(prev.map((t) => t.name).sort()) !==
+        JSON.stringify(next.map((t) => t.name).sort());
+    if (changed) {
+      this.#availableMcpTools = next;
+      this.emit('mcp_tools_changed', this.#availableMcpTools);
+    }
   }
 
   /**
@@ -753,6 +877,17 @@ export class RealtimeSession<
   }
 
   /**
+   * Add image to the session
+   * @param image - The image to add.
+   */
+  addImage(
+    image: string,
+    { triggerResponse = true }: { triggerResponse?: boolean } = {},
+  ) {
+    this.#transport.addImage(image, { triggerResponse });
+  }
+
+  /**
    * Mute the session.
    * @param muted - Whether to mute the session.
    */
@@ -806,6 +941,15 @@ export class RealtimeSession<
       approvalItem.rawItem.type === 'function_call'
     ) {
       await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
+      if (options.alwaysApprove) {
+        logger.warn(
+          'Always approving MCP tools is not supported. Use the allowed tools configuration instead.',
+        );
+      }
+      const mcpApprovalRequest =
+        approvalItemToRealtimeApprovalItem(approvalItem);
+      this.#transport.sendMcpResponse(mcpApprovalRequest, true);
     } else {
       throw new ModelBehaviorError(
         `Tool ${approvalItem.rawItem.name} not found`,
@@ -835,6 +979,15 @@ export class RealtimeSession<
       approvalItem.rawItem.type === 'function_call'
     ) {
       await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
+      if (options.alwaysReject) {
+        logger.warn(
+          'Always rejecting MCP tools is not supported. Use the allowed tools configuration instead.',
+        );
+      }
+      const mcpApprovalRequest =
+        approvalItemToRealtimeApprovalItem(approvalItem);
+      this.#transport.sendMcpResponse(mcpApprovalRequest, false);
     } else {
       throw new ModelBehaviorError(
         `Tool ${approvalItem.rawItem.name} not found`,

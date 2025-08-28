@@ -8,13 +8,16 @@ import {
   RealtimeItem,
   OutputGuardrailTripwireTriggered,
   RealtimeOutputGuardrail,
+  backgroundResult,
 } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { WavRecorder, WavStreamPlayer } from 'wavtools';
-import { handleRefundRequest } from '../server/backendAgent';
-import { getToken } from '../server/token';
+import { handleRefundRequest } from '../server/backendAgent.action';
+import { getToken } from '../server/token.action';
 import { App } from '@/components/App';
+import { hostedMcpTool } from '@openai/agents';
+import { CameraCapture } from '@/components/CameraCapture';
 
 const refundBackchannel = tool({
   name: 'refundBackchannel',
@@ -42,11 +45,56 @@ const guardrails: RealtimeOutputGuardrail[] = [
   },
 ];
 
+const weatherTool = tool({
+  name: 'weather',
+  description: 'Get the weather in a given location',
+  parameters: z.object({
+    location: z.string(),
+  }),
+  execute: async ({ location }) => {
+    return backgroundResult(`The weather in ${location} is sunny.`);
+  },
+});
+
+const weatherExpert = new RealtimeAgent({
+  name: 'Weather Expert',
+  instructions:
+    'You are a weather expert. You are able to answer questions about the weather.',
+  tools: [weatherTool],
+});
+
+// To invoke this tool, you can ask a question like "What is the special number?"
+const secretTool = tool({
+  name: 'secret',
+  description: 'A secret tool to tell the special number',
+  parameters: z.object({
+    question: z
+      .string()
+      .describe(
+        'The question to ask the secret tool; mainly about the special number.',
+      ),
+  }),
+  execute: async ({ question }) => {
+    return `The answer to ${question} is 42.`;
+  },
+  // RealtimeAgent handles this approval process within tool_approval_requested events
+  needsApproval: true,
+});
+
 const agent = new RealtimeAgent({
   name: 'Greeter',
   instructions:
-    'You are a greeter. Always greet the user with a "top of the morning". When you use a tool always first say what you are about to do.',
-  tools: [refundBackchannel],
+    'You are a friendly assistant. When you use a tool always first say what you are about to do.',
+  tools: [
+    hostedMcpTool({
+      serverLabel: 'dnd',
+    }),
+    hostedMcpTool({
+      serverLabel: 'deepwiki',
+    }),
+    secretTool,
+  ],
+  handoffs: [weatherExpert],
 });
 
 export default function Home() {
@@ -60,11 +108,21 @@ export default function Home() {
     useState<OutputGuardrailTripwireTriggered<any> | null>(null);
   const [events, setEvents] = useState<TransportEvent[]>([]);
   const [history, setHistory] = useState<RealtimeItem[]>([]);
+  const [mcpTools, setMcpTools] = useState<string[]>([]);
+  // Image capture handled by CameraCapture component.
 
   useEffect(() => {
     session.current = new RealtimeSession(agent, {
       transport: 'websocket',
+      model: 'gpt-realtime',
       outputGuardrails: guardrails,
+      config: {
+        audio: {
+          output: {
+            voice: 'cedar',
+          },
+        },
+      },
     });
     recorder.current = new WavRecorder({ sampleRate: 24000 });
     player.current = new WavStreamPlayer({ sampleRate: 24000 });
@@ -87,10 +145,41 @@ export default function Home() {
       setHistory(history);
     });
 
+    session.current.on('error', (error) => {
+      console.error('error', error);
+    });
+
     session.current.on(
       'guardrail_tripped',
       (_context, _agent, guardrailError) => {
         setOutputGuardrailResult(guardrailError);
+      },
+    );
+    session.current.on('mcp_tools_changed', (tools) => {
+      setMcpTools(tools.map((t) => t.name));
+    });
+
+    session.current.on(
+      'tool_approval_requested',
+      (_context, _agent, approvalRequest) => {
+        // You'll be prompted when making the tool call that requires approval in web browser.
+        const approved = confirm(
+          `Approve tool call to ${approvalRequest.approvalItem.rawItem.name} with parameters:\n ${JSON.stringify(approvalRequest.approvalItem.rawItem.arguments, null, 2)}?`,
+        );
+        if (approved) {
+          session.current?.approve(approvalRequest.approvalItem);
+        } else {
+          session.current?.reject(approvalRequest.approvalItem);
+        }
+      },
+    );
+
+    session.current.on(
+      'mcp_tool_call_completed',
+      (_context, _agent, toolCall) => {
+        session.current?.transport?.sendEvent({
+          type: 'response.create',
+        });
       },
     );
   }, []);
@@ -130,15 +219,27 @@ export default function Home() {
   }
 
   return (
-    <App
-      title="Realtime Demo via WebSocket"
-      isConnected={isConnected}
-      isMuted={isMuted}
-      toggleMute={toggleMute}
-      connect={connect}
-      history={history}
-      outputGuardrailResult={outputGuardrailResult}
-      events={events}
-    />
+    <div className="relative">
+      <App
+        title="Realtime Demo via WebSocket"
+        isConnected={isConnected}
+        isMuted={isMuted}
+        toggleMute={toggleMute}
+        connect={connect}
+        history={history}
+        outputGuardrailResult={outputGuardrailResult}
+        events={events}
+        mcpTools={mcpTools}
+      />
+      <div className="fixed bottom-4 right-4 z-50">
+        <CameraCapture
+          disabled={!isConnected}
+          onCapture={(dataUrl) => {
+            if (!session.current) return;
+            session.current.addImage(dataUrl, { triggerResponse: false });
+          }}
+        />
+      </div>
+    </div>
   );
 }

@@ -8,7 +8,7 @@ function createEvent(payload: any): MessageEvent {
 describe('parseRealtimeEvent', () => {
   it('parses known conversation.item.created event', () => {
     const payload = {
-      type: 'conversation.item.created',
+      type: 'conversation.item.added',
       event_id: 'evt_1',
       item: {},
       previous_item_id: 'evt_prev',
@@ -41,7 +41,7 @@ describe('parseRealtimeEvent', () => {
 
   it('parses event with extra fields', () => {
     const payload = {
-      type: 'conversation.item.created',
+      type: 'conversation.item.added',
       event_id: 'evt_2',
       item: { extra: 'field' },
       previous_item_id: 'evt_prev2',
@@ -51,7 +51,7 @@ describe('parseRealtimeEvent', () => {
 
     expect(result.isGeneric).toBe(false);
     expect(result.data).toMatchObject({
-      type: 'conversation.item.created',
+      type: 'conversation.item.added',
       event_id: 'evt_2',
       item: {},
       previous_item_id: 'evt_prev2',
@@ -59,9 +59,7 @@ describe('parseRealtimeEvent', () => {
   });
 
   it('returns null data for invalid payload', () => {
-    const result = parseRealtimeEvent(
-      createEvent({ notype: true }),
-    );
+    const result = parseRealtimeEvent(createEvent({ notype: true }));
     expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
   });

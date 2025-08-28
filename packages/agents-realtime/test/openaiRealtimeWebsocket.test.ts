@@ -89,7 +89,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     // audio arrives
     lastFakeSocket!.emit('message', {
       data: JSON.stringify({
-        type: 'response.audio.delta',
+        type: 'response.output_audio.delta',
         event_id: '2',
         item_id: 'i',
         content_index: 0,
@@ -133,7 +133,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     });
     lastFakeSocket!.emit('message', {
       data: JSON.stringify({
-        type: 'response.audio.delta',
+        type: 'response.output_audio.delta',
         event_id: '5',
         item_id: 'i2',
         content_index: 0,
@@ -172,7 +172,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     await p;
     lastFakeSocket!.emit('message', {
       data: JSON.stringify({
-        type: 'response.audio.delta',
+        type: 'response.output_audio.delta',
         event_id: '7',
         item_id: 'i',
         content_index: 0,
@@ -313,7 +313,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     });
     lastFakeSocket!.emit('message', {
       data: JSON.stringify({
-        type: 'response.audio.delta',
+        type: 'response.output_audio.delta',
         event_id: '2',
         item_id: 'i',
         content_index: 0,

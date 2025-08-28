@@ -47,11 +47,12 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    このアプリケーションは ユーザー のブラウザで実行されるため、Realtime API を通じてモデルに安全に接続する必要があります。そのために、バックエンド サーバー で生成する [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) を使用できます。テスト目的では、`curl` と通常の OpenAI API キーを使ってキーを生成することもできます。
 
    ```bash
-   curl -X POST https://api.openai.com/v1/realtime/sessions \
+   curl -X POST https://api.openai.com/v1/realtime/client_secrets \
       -H "Authorization: Bearer $OPENAI_API_KEY" \
       -H "Content-Type: application/json" \
       -d '{
-        "model": "gpt-4o-realtime-preview-2025-06-03"
+        "type": "realtime",
+        "model": "gpt-realtime"
       }'
    ```
 
@@ -78,7 +79,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    import { RealtimeSession } from '@openai/agents-realtime';
 
    const session = new RealtimeSession(agent, {
-     model: 'gpt-4o-realtime-preview-2025-06-03',
+     model: 'gpt-realtime',
    });
    ```
 

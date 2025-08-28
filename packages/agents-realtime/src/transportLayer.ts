@@ -4,7 +4,7 @@ import {
   RealtimeSessionConfig,
   RealtimeUserInput,
 } from './clientMessages';
-import { RealtimeItem } from './items';
+import { RealtimeItem, RealtimeMcpCallApprovalRequestItem } from './items';
 import {
   RealtimeTransportEventTypes,
   TransportToolCallEvent,
@@ -71,11 +71,22 @@ export interface RealtimeTransportLayer
    * Sends a text message to the model
    * @param message - The message to send
    * @param otherEventData - Additional event data, will be merged into the event
+   * @param options - Additional options
+   * @param options.triggerResponse - Whether to trigger a response from the model
    */
   sendMessage(
     message: RealtimeUserInput,
     otherEventData: Record<string, any>,
+    options?: { triggerResponse?: boolean },
   ): void;
+
+  /**
+   * Sends an image to the model
+   * @param image - The image to send
+   * @param options - Additional options
+   * @param options.triggerResponse - Whether to trigger a response from the model
+   */
+  addImage(image: string, options?: { triggerResponse?: boolean }): void;
 
   /**
    * Sends a raw audio buffer to the model
@@ -123,4 +134,14 @@ export interface RealtimeTransportLayer
    * @param history - The history to reset to
    */
   resetHistory(oldHistory: RealtimeItem[], newHistory: RealtimeItem[]): void;
+
+  /**
+   * Sends a response for an MCP tool call
+   * @param approvalRequest - The approval request to respond to
+   * @param approved - Whether the tool call was approved or rejected
+   */
+  sendMcpResponse(
+    approvalRequest: RealtimeMcpCallApprovalRequestItem,
+    approved: boolean,
+  ): void;
 }

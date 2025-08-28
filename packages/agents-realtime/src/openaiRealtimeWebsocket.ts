@@ -160,15 +160,12 @@ export class OpenAIRealtimeWebSocket
           'realtime',
           // Auth
           'openai-insecure-api-key.' + this.#apiKey,
-          // Beta protocol, required
-          'openai-beta.realtime-v1',
           // Version header
           WEBSOCKET_META,
         ]
       : {
           headers: {
             Authorization: `Bearer ${this.#apiKey}`,
-            'OpenAI-Beta': 'realtime=v1',
             ...HEADERS,
           },
         };
@@ -207,7 +204,7 @@ export class OpenAIRealtimeWebSocket
         return;
       }
 
-      if (parsed.type === 'response.audio.delta') {
+      if (parsed.type === 'response.output_audio.delta') {
         this.#currentAudioContentIndex = parsed.content_index;
         this.#currentItemId = parsed.item_id;
         if (this._firstAudioTimestamp === undefined) {
@@ -218,14 +215,32 @@ export class OpenAIRealtimeWebSocket
         }
 
         const buff = base64ToArrayBuffer(parsed.delta);
-        // calculate the audio length in milliseconds assuming 24kHz pcm16le
-        const audioFormat =
-          this._rawSessionConfig?.output_audio_format ?? 'pcm16';
-        if (audioFormat.startsWith('g711_')) {
-          // 8kHz * 1 byte per sample
-          this._audioLengthMs += buff.byteLength / 8;
+        // calculate the audio length in milliseconds
+        // GA format: session.audio.output.format supports structured { type: "audio/pcm", rate } or "audio/pcmu" etc.
+        const fmt = this._rawSessionConfig?.audio?.output?.format;
+        if (fmt && typeof fmt === 'object') {
+          // Structured format
+          const t = fmt.type as string;
+          if (t === 'audio/pcmu' || t === 'audio/pcma') {
+            // 8kHz, 1 byte per sample
+            this._audioLengthMs += buff.byteLength / 8;
+          } else if (t === 'audio/pcm') {
+            const rate = (fmt as any).rate ?? 24000;
+            // bytes -> samples (2 bytes per sample) -> ms
+            this._audioLengthMs += (buff.byteLength / 2 / rate) * 1000;
+          } else {
+            // Fallback assumption similar to legacy
+            this._audioLengthMs += buff.byteLength / 24 / 2;
+          }
+        } else if (typeof fmt === 'string') {
+          if (fmt.startsWith('g711_')) {
+            this._audioLengthMs += buff.byteLength / 8;
+          } else {
+            // Assume 24kHz PCM16
+            this._audioLengthMs += buff.byteLength / 24 / 2;
+          }
         } else {
-          // 24kHz * 2 bytes per sample
+          // Default to 24kHz PCM16 behavior if unspecified
           this._audioLengthMs += buff.byteLength / 24 / 2;
         }
 
@@ -237,7 +252,8 @@ export class OpenAIRealtimeWebSocket
         this._onAudio(audioEvent);
       } else if (parsed.type === 'input_audio_buffer.speech_started') {
         const automaticResponseCancellationEnabled =
-          this._rawSessionConfig?.turn_detection?.interrupt_response ?? false;
+          (this._rawSessionConfig as any)?.audio?.input?.turn_detection
+            ?.interrupt_response ?? false;
         this.interrupt(!automaticResponseCancellationEnabled);
       } else if (parsed.type === 'response.created') {
         this.#ongoingResponse = true;

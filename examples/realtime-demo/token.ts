@@ -6,7 +6,7 @@ async function generateToken() {
   });
 
   const session = await openai.beta.realtime.sessions.create({
-    model: 'gpt-4o-realtime-preview',
+    model: 'gpt-realtime',
   });
 
   console.log(session.client_secret.value);

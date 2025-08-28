@@ -1,3 +1,4 @@
+'use client';
 import {
   RealtimeItem,
   OutputGuardrailTripwireTriggered,
@@ -5,6 +6,7 @@ import {
 } from '@openai/agents/realtime';
 import { History } from '@/components/History';
 import { Button } from '@/components/ui/Button';
+import { useEffect, useState } from 'react';
 
 export type AppProps = {
   title?: string;
@@ -15,6 +17,7 @@ export type AppProps = {
   history?: RealtimeItem[];
   outputGuardrailResult?: OutputGuardrailTripwireTriggered<any> | null;
   events: TransportEvent[];
+  mcpTools?: string[];
 };
 
 export function App({
@@ -26,7 +29,11 @@ export function App({
   history,
   outputGuardrailResult,
   events,
+  mcpTools = [],
 }: AppProps) {
+  // Avoid hydration mismatches when layout changes between server and client
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   return (
     <div className="flex justify-center">
       <div className="p-4 md:max-h-screen overflow-hidden h-screen flex flex-col max-w-6xl w-full">
@@ -65,6 +72,24 @@ export function App({
                 <span className="font-semibold">Guardrail:</span>{' '}
                 {outputGuardrailResult?.message ||
                   JSON.stringify(outputGuardrailResult)}
+              </div>
+            )}
+            {mounted && (
+              <div className="flex-0 w-full p-3 border border-zinc-200 dark:border-zinc-700 rounded-md bg-white/60 dark:bg-zinc-900/60 text-xs">
+                <h3 className="text-sm font-semibold mb-2">
+                  Available MCP Tools
+                </h3>
+                {mcpTools.length === 0 ? (
+                  <p className="text-xs text-zinc-500">None</p>
+                ) : (
+                  <ul className="list-disc pl-4 space-y-1">
+                    {mcpTools.map((name) => (
+                      <li className="text-xs" key={name}>
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
             <div
