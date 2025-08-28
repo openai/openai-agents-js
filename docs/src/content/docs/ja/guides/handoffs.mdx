@@ -10,13 +10,13 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-ハンドオフは、ある エージェント が会話の一部を別の エージェント に委譲できるようにします。これは、異なる エージェント が特定分野を専門にしている場合に便利です。たとえばカスタマーサポートアプリでは、予約、返金、FAQ を担当する エージェント を用意できます。
+ハンドオフを使うと、あるエージェントが会話の一部を別のエージェントに委譲できます。異なるエージェントが特定分野を専門化している場合に便利です。例えばカスタマーサポートアプリでは、予約、返金、FAQ を担当するエージェントを用意できます。
 
-ハンドオフは LLM に対してツールとして表現されます。`Refund Agent` という エージェント にハンドオフする場合、ツール名は `transfer_to_refund_agent` になります。
+ハンドオフは LLM からはツールとして表現されます。`Refund Agent` というエージェントに引き継ぐ場合、ツール名は `transfer_to_refund_agent` になります。
 
 ## ハンドオフの作成
 
-すべての エージェント は `handoffs` オプションを受け付けます。ここには、他の `Agent` インスタンスや、`handoff()` ヘルパーが返す `Handoff` オブジェクトを含められます。
+すべてのエージェントは `handoffs` オプションを受け付けます。ここには他の `Agent` インスタンスや、`handoff()` ヘルパーが返す `Handoff` オブジェクトを含められます。
 
 ### 基本的な使い方
 
@@ -24,14 +24,14 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ### `handoff()` によるハンドオフのカスタマイズ
 
-`handoff()` 関数を使うと、生成されるツールを微調整できます。
+`handoff()` 関数で生成されるツールを調整できます。
 
-- `agent` – ハンドオフ先の エージェント
-- `toolNameOverride` – 既定の `transfer_to_<agent_name>` ツール名の上書き
-- `toolDescriptionOverride` – 既定のツール説明の上書き
+- `agent` – 引き継ぎ先のエージェント
+- `toolNameOverride` – 既定の `transfer_to_<agent_name>` ツール名を上書き
+- `toolDescriptionOverride` – 既定のツール説明を上書き
 - `onHandoff` – ハンドオフ発生時のコールバック。`RunContext` と、必要に応じてパース済み入力を受け取ります
-- `inputType` – ハンドオフの期待される入力スキーマ
-- `inputFilter` – 次の エージェント に渡す履歴のフィルター
+- `inputType` – ハンドオフで想定する入力スキーマ
+- `inputFilter` – 次のエージェントへ渡す履歴のフィルター
 
 <Code
   lang="typescript"
@@ -39,22 +39,22 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
   title="Customized handoffs"
 />
 
-## ハンドオフの入力
+## ハンドオフ入力
 
-ハンドオフを呼び出す際に、LLM にデータを提供させたい場合があります。入力スキーマを定義し、`handoff()` で使用します。
+ハンドオフ呼び出し時に LLM にデータ提供させたい場合があります。入力スキーマを定義し、`handoff()` で使用します。
 
 <Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
 ## 入力フィルター
 
-既定では、ハンドオフは会話履歴全体を受け取ります。次の エージェント に渡す内容を変更するには、`inputFilter` を指定します。
-共通のヘルパーは `@openai/agents-core/extensions` にあります。
+既定ではハンドオフは会話履歴全体を受け取ります。次のエージェントに渡す内容を変更するには、`inputFilter` を指定します。
+一般的なヘルパーは `@openai/agents-core/extensions` にあります。
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
 ## 推奨プロンプト
 
-プロンプトでハンドオフについて言及すると、LLM はより確実に応答します。SDK は `RECOMMENDED_PROMPT_PREFIX` を介して推奨のプレフィックスを提供します。
+プロンプトでハンドオフに言及すると LLM の応答がより安定します。SDK は `RECOMMENDED_PROMPT_PREFIX` として推奨の接頭辞を提供しています。
 
 <Code
   lang="typescript"

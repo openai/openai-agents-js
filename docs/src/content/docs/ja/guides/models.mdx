@@ -12,12 +12,12 @@ import agentWithModelExample from '../../../../../../examples/docs/models/agentW
 import runnerWithModelExample from '../../../../../../examples/docs/models/runnerWithModel.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
-最終的にすべてのエージェントは LLM を呼び出します。SDK は 2 つの軽量なインターフェースの背後にモデルを抽象化します:
+最終的にすべての エージェント は LLM を呼び出します。SDK は 2 つの軽量インターフェースの背後にモデルを抽象化します:
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 特定の API に対して _1 回_ のリクエストを行う方法を知っています
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人間が読めるモデルの **names**（例: `'gpt‑4o'`）を `Model` インスタンスに解決します
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人間が読みやすいモデルの **名前**（例 `'gpt‑4o'`）を `Model` インスタンスに解決します
 
-日常的な作業では、通常はモデルの **names** と、時には `ModelSettings` にだけ触れます。
+日々の作業では通常、モデルの **名前** と、時折 `ModelSettings` のみを扱います。
 
 <Code
   lang="typescript"
@@ -29,22 +29,22 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 
 ## OpenAI プロバイダー
 
-デフォルトの `ModelProvider` は OpenAI APIs を使って名前を解決します。2 つの異なるエンドポイントをサポートします:
+デフォルトの `ModelProvider` は OpenAI API を使って名前を解決します。2 つの異なるエンドポイントをサポートします:
 
-| API              | 用途                                                            | `setOpenAIAPI()` を呼ぶ                 |
-| ---------------- | --------------------------------------------------------------- | --------------------------------------- |
-| Chat Completions | 標準的なチャットと関数呼び出し                                  | `setOpenAIAPI('chat_completions')`      |
-| Responses        | 新しい streaming‑first な生成 API（ツール呼び出し、柔軟な出力） | `setOpenAIAPI('responses')` _(default)_ |
+| API              | 用途                                                                         | `setOpenAIAPI()` の呼び出し             |
+| ---------------- | ---------------------------------------------------------------------------- | --------------------------------------- |
+| Chat Completions | 標準的なチャットと関数呼び出し                                               | `setOpenAIAPI('chat_completions')`      |
+| Responses        | ツール呼び出しや柔軟な出力に対応する新しい ストリーミング ファースト生成 API | `setOpenAIAPI('responses')` _(default)_ |
 
 ### 認証
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="既定の OpenAI キーを設定"
+  title="デフォルトの OpenAI キーを設定"
 />
 
-カスタムのネットワーク設定が必要な場合は、`setDefaultOpenAIClient(client)` で独自の `OpenAI` クライアントを差し込むこともできます。
+独自のネットワーキング設定が必要な場合は、`setDefaultOpenAIClient(client)` を介して独自の `OpenAI` クライアントを差し込むこともできます。
 
 ### デフォルトモデル
 
@@ -62,36 +62,36 @@ OpenAI プロバイダーのデフォルトは `gpt‑4o` です。エージェ�
 
 `ModelSettings` は OpenAI のパラメーターを反映しますが、プロバイダーに依存しません。
 
-| Field               | Type                                       | Notes                                                                          |
-| ------------------- | ------------------------------------------ | ------------------------------------------------------------------------------ |
-| `temperature`       | `number`                                   | 創造性と決定性のトレードオフ                                                   |
-| `topP`              | `number`                                   | Nucleus サンプリング                                                           |
-| `frequencyPenalty`  | `number`                                   | 繰り返しトークンへのペナルティ                                                 |
-| `presencePenalty`   | `number`                                   | 新しいトークンの促進                                                           |
-| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string` | [forcing tool use](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照 |
-| `parallelToolCalls` | `boolean`                                  | サポートされる場合に並列の関数呼び出しを許可                                   |
-| `truncation`        | `'auto' \| 'disabled'`                     | トークン切り捨て戦略                                                           |
-| `maxTokens`         | `number`                                   | レスポンスの最大トークン数                                                     |
-| `store`             | `boolean`                                  | レスポンスを永続化して取得や RAG ワークフローで利用                            |
+| フィールド          | 型                                         | メモ                                                                             |
+| ------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `temperature`       | `number`                                   | 創造性と決定性のトレードオフ                                                     |
+| `topP`              | `number`                                   | Nucleus サンプリング                                                             |
+| `frequencyPenalty`  | `number`                                   | 繰り返し出現するトークンを減点                                                   |
+| `presencePenalty`   | `number`                                   | 新しいトークンの出現を促進                                                       |
+| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string` | [強制的なツール使用](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照 |
+| `parallelToolCalls` | `boolean`                                  | 対応している場合は並列の関数呼び出しを許可                                       |
+| `truncation`        | `'auto' \| 'disabled'`                     | トークンの切り詰め戦略                                                           |
+| `maxTokens`         | `number`                                   | 応答の最大トークン数                                                             |
+| `store`             | `boolean`                                  | 応答を永続化して取得 / RAG ワークフローに利用                                    |
 
 設定はどちらのレベルにも付与できます:
 
 <Code lang="typescript" code={modelSettingsExample} title="モデル設定" />
 
-`Runner` レベルの設定は、競合するエージェント単位の設定よりも優先されます。
+`Runner` レベルの設定は、競合するエージェント単位の設定を上書きします。
 
 ---
 
 ## プロンプト
 
-エージェントには `prompt` パラメーターを設定でき、サーバーに保存されたプロンプト設定を使用してエージェントの動作を制御します。現在、このオプションは OpenAI の
-[Responses API](https://platform.openai.com/docs/api-reference/responses) を使用している場合にのみサポートされます。
+エージェントは `prompt` パラメーターで構成でき、サーバーに保存されたプロンプト構成を使用してエージェントの振る舞いを制御します。現在、このオプションは OpenAI の
+[Responses API](https://platform.openai.com/docs/api-reference/responses) を使用する場合にのみサポートされます。
 
-| Field       | Type     | Notes                                                                                                                 |
+| フィールド  | 型       | メモ                                                                                                                  |
 | ----------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
 | `promptId`  | `string` | プロンプトの一意の識別子                                                                                              |
 | `version`   | `string` | 使用したいプロンプトのバージョン                                                                                      |
-| `variables` | `object` | プロンプトに差し込む変数のキー/値のペア。値は文字列またはテキスト・画像・ファイルなどのコンテンツ入力タイプにできます |
+| `variables` | `object` | プロンプトに代入する変数のキー/値ペア。値は文字列、またはテキスト・画像・ファイルなどのコンテンツ入力タイプを指定可能 |
 
 <Code
   lang="typescript"
@@ -99,18 +99,18 @@ OpenAI プロバイダーのデフォルトは `gpt‑4o` です。エージェ�
   title="プロンプト付きエージェント"
 />
 
-tools や instructions のような追加のエージェント構成は、保存されたプロンプトで設定した値を上書きします。
+tools や instructions などの追加のエージェント構成は、保存済みプロンプトで設定した値を上書きします。
 
 ---
 
 ## カスタムモデルプロバイダー
 
-独自のプロバイダーの実装は簡単です。`ModelProvider` と `Model` を実装し、`Runner` コンストラクターにプロバイダーを渡します:
+独自のプロバイダーの実装は簡単です。`ModelProvider` と `Model` を実装し、プロバイダーを `Runner` コンストラクターに渡します:
 
 <Code
   lang="typescript"
   code={modelCustomProviderExample}
-  title="最小限のカスタムプロバイダー"
+  title="最小のカスタムプロバイダー"
 />
 
 ---
@@ -125,12 +125,12 @@ OpenAI プロバイダーを使用する場合、API キーを指定して自動
   title="トレーシングエクスポーター"
 />
 
-これにより、[OpenAI dashboard](https://platform.openai.com/traces) にトレースが送信され、ワークフローの完全な実行グラフを確認できます。
+これにより [OpenAI dashboard](https://platform.openai.com/traces) にトレースが送信され、ワークフローの完全な実行グラフを確認できます。
 
 ---
 
 ## 次のステップ
 
-- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を探索する
-- [ツール](/openai-agents-js/ja/guides/tools) でモデルに強力な機能を付与する
-- 必要に応じて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加する
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を参照
+- [ツール](/openai-agents-js/ja/guides/tools) でモデルに強力な機能を付与
+- 必要に応じて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加
