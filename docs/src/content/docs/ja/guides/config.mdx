@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-既定では SDK は最初のインポート時に `OPENAI_API_KEY` 環境変数を読み込みます。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
+デフォルトで SDK は初回のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。環境変数の設定が難しい場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。そうでない場合、SDK は既定のキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK は既定のキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
@@ -35,7 +35,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## トレーシング
 
-トレーシングは既定で有効で、上のセクションの OpenAI キーを使用します。別のキーは `setTracingExportApiKey()` で設定できます。
+トレーシングは既定で有効で、上記の OpenAI キーを使用します。別のキーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
@@ -43,7 +43,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングのエクスポート API キーを設定"
 />
 
-トレーシングを完全に無効化することもできます。
+トレーシングは完全に無効化することもできます。
 
 <Code
   lang="typescript"
@@ -53,27 +53,27 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## デバッグログ
 
-SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。冗長なログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使うと、独自モジュール向けの名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使って、独自モジュール用の名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーを取得" />
 
-### ログ中の機微なデータ
+### ログ中の機微データ
 
-いくつかのログにはユーザーデータが含まれる場合があります。次の環境変数を設定して無効化できます。
+一部のログにはユーザーのデータが含まれる場合があります。次の環境変数を設定して無効化してください。
 
-LLM の入力と出力のロギングを無効化するには:
+LLM の入力・出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力と出力のロギングを無効化するには:
+ツールの入力・出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
