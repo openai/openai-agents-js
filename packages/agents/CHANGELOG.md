@@ -1,5 +1,36 @@
 # @openai/agents
 
+## 0.1.0
+
+### Minor Changes
+
+- 80e1fc1: Bump to v0.1 with the following chnages:
+  - gpt-5 model support
+  - opt-in: gpt-5 as default option
+  - ai-sdk model provider v2 migration
+
+  and more
+
+### Patch Changes
+
+- 2260e21: Upgrade openai package to the latest version
+- 79a1999: Make docs and comments more consistent using Codex
+- Updated dependencies [2260e21]
+- Updated dependencies [94f606c]
+- Updated dependencies [79a1999]
+- Updated dependencies [8cf5356]
+- Updated dependencies [47a28ad]
+- Updated dependencies [f1e2f60]
+- Updated dependencies [42702c0]
+- Updated dependencies [ecea142]
+- Updated dependencies [2b10adc]
+- Updated dependencies [f1e2f60]
+- Updated dependencies [8fc01fc]
+- Updated dependencies [6f1677c]
+  - @openai/agents-openai@0.1.0
+  - @openai/agents-core@0.1.0
+  - @openai/agents-realtime@0.1.0
+
 ## 0.0.17
 
 ### Patch Changes

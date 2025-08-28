@@ -1,5 +1,20 @@
 # @openai/agents-extensions
 
+## 0.1.0
+
+### Minor Changes
+
+- 2e6933a: Fix #283 #291 #300 migrate ai-sdk/provider to v2
+- f1e2f60: moving realtime to the new GA API and add MCP support
+
+### Patch Changes
+
+- 03ebbaa: Loosen the `@openai/agents` dep's version range
+- Updated dependencies [80e1fc1]
+- Updated dependencies [2260e21]
+- Updated dependencies [79a1999]
+  - @openai/agents@0.1.0
+
 ## 0.0.17
 
 ### Patch Changes

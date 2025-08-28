@@ -1,5 +1,26 @@
 # @openai/agents-openai
 
+## 0.1.0
+
+### Patch Changes
+
+- 2260e21: Upgrade openai package to the latest version
+- 47a28ad: Fix a bug where responses api does not accept both outputType and verbosity parameter for gpt-5
+- 42702c0: #366 Add conversations API support
+- ecea142: Fix #374 add connector support
+- 2b10adc: Fix #393 add domain filtering and sources to web search tool & upgrade openai package to the latest version
+- 8fc01fc: Add a quick opt-in option to switch to gpt-5
+- Updated dependencies [2260e21]
+- Updated dependencies [94f606c]
+- Updated dependencies [79a1999]
+- Updated dependencies [42702c0]
+- Updated dependencies [ecea142]
+- Updated dependencies [2b10adc]
+- Updated dependencies [f1e2f60]
+- Updated dependencies [8fc01fc]
+- Updated dependencies [6f1677c]
+  - @openai/agents-core@0.1.0
+
 ## 0.0.17
 
 ### Patch Changes
