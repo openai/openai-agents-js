@@ -83,3 +83,13 @@ export {
 } from '@openai/agents-core';
 
 export { backgroundResult, isBackgroundResult } from './tool';
+
+// Voice Pipeline Orchestration exports
+export {
+  VoicePipeline,
+  VoicePipelineConfig,
+  VoicePipelineEvents,
+  VoicePipelineMetrics,
+  VoicePipelinePlugin,
+  createVoicePipeline,
+} from './voicePipeline';
