@@ -1,0 +1,19 @@
+{
+  "name": "voice-pipeline-example",
+  "version": "0.1.0",
+  "description": "Voice Pipeline Orchestration example for OpenAI Agents SDK",
+  "main": "voice-pipeline-example.ts",
+  "scripts": {
+    "start": "tsx voice-pipeline-example.ts",
+    "dev": "tsx watch voice-pipeline-example.ts"
+  },
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "openai": "^4.79.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

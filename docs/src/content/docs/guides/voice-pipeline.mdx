@@ -1,0 +1,412 @@
+---
+title: Voice Pipeline Orchestration
+description: Learn how to implement TTS/STT orchestration for gpt-realtime voice agents
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Voice Pipeline Orchestration provides seamless Text-to-Speech and Speech-to-Text capabilities for the gpt-realtime model, enabling natural voice interactions with ultra-low latency through WebRTC.
+
+## Overview
+
+The Voice Pipeline feature enables:
+
+- **gpt-realtime Integration**: Native support for OpenAI's realtime model
+- **Realtime Voices**: Marin and Cedar voices optimized for conversation
+- **Whisper STT**: High-quality speech recognition
+- **WebRTC Support**: Ultra-low latency (<100ms) audio streaming
+- **Voice Activity Detection**: Automatic speech detection and segmentation
+- **Audio Optimization**: Echo suppression, noise reduction, and gain control
+
+## Quick Start
+
+<Tabs>
+<TabItem label="Basic Setup">
+
+```typescript
+import { RealtimeSession, createVoicePipeline } from '@openai/agents/realtime';
+
+// Create a voice pipeline for gpt-realtime
+const pipeline = createVoicePipeline({
+  model: 'gpt-realtime',
+  voice: 'marin',
+  stt: {
+    model: 'whisper-1',
+    language: 'en',
+  },
+});
+
+// Initialize with a session
+const session = new RealtimeSession({
+  model: 'gpt-realtime',
+  voice: 'marin',
+});
+
+await pipeline.initialize(session);
+```
+
+</TabItem>
+
+<TabItem label="WebRTC Configuration">
+
+```typescript
+import {
+  createVoicePipeline,
+  VoicePipelineConfig,
+} from '@openai/agents/realtime';
+
+const config: VoicePipelineConfig = {
+  model: 'gpt-realtime',
+  voice: 'cedar', // or 'marin'
+  stt: {
+    model: 'whisper-1',
+    language: 'en',
+    temperature: 0,
+  },
+  webrtc: {
+    enabled: true,
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  },
+  audio: {
+    sampleRate: 24000,
+    channels: 1,
+    encoding: 'pcm16',
+  },
+  vad: {
+    enabled: true,
+    threshold: 0.5,
+    maxSilenceMs: 2000,
+  },
+  behavior: {
+    interruptible: true,
+    echoSuppression: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  },
+};
+
+const pipeline = createVoicePipeline(config);
+```
+
+</TabItem>
+</Tabs>
+
+## Processing Audio
+
+### Speech-to-Text with Whisper
+
+Process incoming audio through Whisper:
+
+```typescript
+// Process raw audio data
+pipeline.on('audio.data', (audioData) => {
+  console.log('Received audio data:', audioData.byteLength);
+});
+
+pipeline.on('speech.partial', (text) => {
+  console.log('Partial transcription:', text);
+});
+
+pipeline.on('speech.final', (text) => {
+  console.log('Final transcription:', text);
+});
+
+// Send audio for processing
+const audioBuffer = new ArrayBuffer(1024);
+await pipeline.processAudio(audioBuffer);
+```
+
+### Realtime Voice Response
+
+Handle voice responses with gpt-realtime voices:
+
+```typescript
+// Listen for voice events
+pipeline.on('voice.start', () => {
+  console.log('Starting voice response');
+});
+
+pipeline.on('voice.chunk', (audioChunk) => {
+  // Play audio chunk through your audio system
+  playAudio(audioChunk);
+});
+
+pipeline.on('voice.end', () => {
+  console.log('Voice response complete');
+});
+
+// Generate voice response
+await pipeline.handleVoiceResponse('Hello, how can I help you today?', 'marin');
+
+// Switch voice during conversation
+await pipeline.switchVoice('cedar');
+```
+
+## Voice Activity Detection
+
+The pipeline includes automatic voice activity detection:
+
+```typescript
+pipeline.on('speech.start', () => {
+  console.log('User started speaking');
+});
+
+pipeline.on('speech.end', () => {
+  console.log('User stopped speaking');
+});
+
+// Manual VAD control
+pipeline.handleVoiceActivity(true); // Voice detected
+pipeline.handleVoiceActivity(false); // Silence detected
+```
+
+## WebRTC Integration
+
+Enable ultra-low latency with WebRTC:
+
+```typescript
+const pipeline = createVoicePipeline({
+  model: 'gpt-realtime',
+  voice: 'marin',
+  webrtc: {
+    enabled: true,
+    audioConstraints: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  },
+});
+
+// Listen for WebRTC events
+pipeline.on('webrtc.connected', () => {
+  console.log('WebRTC connection established');
+});
+
+pipeline.on('webrtc.disconnected', () => {
+  console.log('WebRTC connection lost');
+});
+
+// Monitor latency
+pipeline.on('metrics', (metrics) => {
+  console.log('WebRTC Latency:', metrics.webrtcLatency, 'ms');
+});
+```
+
+## Realtime Voices
+
+The gpt-realtime model supports two optimized voices:
+
+### Marin
+
+- Natural, conversational tone
+- Optimized for clarity
+- Default voice for realtime interactions
+
+### Cedar
+
+- Warm, friendly tone
+- Excellent for longer conversations
+- Natural prosody and emotion
+
+```typescript
+// Use Marin voice
+const pipeline = createVoicePipeline({
+  model: 'gpt-realtime',
+  voice: 'marin',
+});
+
+// Switch to Cedar during conversation
+await pipeline.switchVoice('cedar');
+```
+
+## Plugin Usage
+
+Use the Voice Pipeline as a plugin for automatic session enhancement:
+
+```typescript
+import { RealtimeSession, VoicePipelinePlugin } from '@openai/agents/realtime';
+
+// Create plugin
+const voicePlugin = new VoicePipelinePlugin({
+  model: 'gpt-realtime',
+  voice: 'marin',
+  stt: { model: 'whisper-1' },
+});
+
+// Apply to session
+const session = new RealtimeSession({
+  model: 'gpt-realtime',
+});
+
+await voicePlugin.apply(session);
+
+// Session now has enhanced methods
+await session.processAudio(audioData);
+await session.handleVoiceResponse('Hello world', 'cedar');
+await session.switchVoice('marin');
+```
+
+## Monitoring and Metrics
+
+Track pipeline performance with built-in metrics:
+
+```typescript
+pipeline.on('metrics', (metrics) => {
+  console.log('STT Latency:', metrics.sttLatency, 'ms');
+  console.log('TTS Latency:', metrics.ttsLatency, 'ms');
+  console.log('Processing Time:', metrics.processingTime, 'ms');
+  console.log('Buffer Size:', metrics.audioBufferSize);
+  console.log('WebRTC Latency:', metrics.webrtcLatency, 'ms');
+  console.log('Accuracy:', metrics.transcriptionAccuracy);
+});
+```
+
+## Error Handling
+
+```typescript
+pipeline.on('error', (error) => {
+  console.error('Pipeline error:', error);
+
+  if (error.message.includes('WebRTC')) {
+    // Handle WebRTC-specific errors
+    console.log('Falling back to standard connection');
+  }
+});
+```
+
+## Complete Example
+
+Here's a complete example integrating voice pipeline with a realtime agent:
+
+```typescript
+import {
+  RealtimeAgent,
+  RealtimeSession,
+  createVoicePipeline,
+  tool,
+} from '@openai/agents/realtime';
+
+// Define agent with tools
+const agent = new RealtimeAgent({
+  name: 'Voice Assistant',
+  instructions: 'You are a helpful voice assistant using gpt-realtime.',
+  tools: [
+    tool({
+      name: 'get_weather',
+      description: 'Get current weather',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' },
+        },
+      },
+      execute: async ({ location }) => {
+        return `The weather in ${location} is sunny and 72°F`;
+      },
+    }),
+  ],
+});
+
+// Create voice pipeline for gpt-realtime
+const pipeline = createVoicePipeline({
+  model: 'gpt-realtime',
+  voice: 'marin',
+  stt: {
+    model: 'whisper-1',
+    language: 'en',
+  },
+  webrtc: {
+    enabled: true,
+  },
+  vad: {
+    enabled: true,
+    threshold: 0.5,
+    maxSilenceMs: 2000,
+  },
+});
+
+// Create and connect session
+const session = new RealtimeSession({
+  agent,
+  transport: 'webrtc',
+});
+
+await pipeline.initialize(session);
+await session.connect();
+
+// Handle voice interactions
+pipeline.on('speech.final', async (text) => {
+  console.log('User said:', text);
+
+  // Process through agent
+  const response = await session.sendMessage({
+    type: 'message',
+    message: { type: 'input_text', text },
+  });
+
+  // Response will be automatically synthesized with realtime voice
+});
+
+pipeline.on('voice.chunk', (audio) => {
+  // Play audio to user
+  audioPlayer.play(audio);
+});
+
+// Start listening for audio
+navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+  const audioContext = new AudioContext();
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (e) => {
+    const audioData = e.inputBuffer.getChannelData(0);
+    const buffer = new ArrayBuffer(audioData.length * 2);
+    const view = new Int16Array(buffer);
+
+    for (let i = 0; i < audioData.length; i++) {
+      view[i] = Math.max(-32768, Math.min(32767, audioData[i] * 32768));
+    }
+
+    pipeline.processAudio(buffer);
+  };
+
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+});
+```
+
+## Best Practices
+
+1. **Use WebRTC**: Enable WebRTC for ultra-low latency voice interactions
+2. **Optimize Audio Settings**: Use 24kHz sample rate for optimal quality/bandwidth balance
+3. **Handle Interruptions**: Enable interruptible mode for natural conversations
+4. **Monitor Metrics**: Track latency to ensure good user experience
+5. **Test VAD Settings**: Tune voice activity detection for your environment
+6. **Use Appropriate Voice**: Choose Marin for clarity or Cedar for warmth
+
+## Migration from Standard API
+
+If you're currently using standard OpenAI APIs, migrate to the voice pipeline:
+
+```typescript
+// Before: Direct API calls
+const response = await openai.audio.transcriptions.create({
+  file: audioFile,
+  model: 'whisper-1',
+});
+
+// After: Voice Pipeline with gpt-realtime
+const pipeline = createVoicePipeline({
+  model: 'gpt-realtime',
+  voice: 'marin',
+  stt: { model: 'whisper-1' },
+});
+await pipeline.processAudio(audioBuffer);
+```
+
+## Next Steps
+
+- Explore [Voice Agents Guide](/guides/voice-agents) for more voice features
+- Learn about [WebRTC Transport](/guides/voice-agents/transport) for ultra-low latency
+- Check out [Realtime API Documentation](https://platform.openai.com/docs/guides/realtime) for details
