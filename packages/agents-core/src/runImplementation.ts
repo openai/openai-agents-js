@@ -741,6 +741,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           const result = await toolRun.tool.invoke(
             state._context,
             toolRun.toolCall.arguments,
+            { toolCall: toolRun.toolCall },
           );
           // Use string data for tracing and event emitter
           const stringResult = toSmartString(result);

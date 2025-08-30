@@ -17,6 +17,7 @@ import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
 import * as ProviderData from './types/providerData';
+import * as protocol from './types/protocol';
 
 /**
  * A function that determines if a tool call should be approved.
@@ -67,6 +68,7 @@ export type FunctionTool<
   invoke: (
     runContext: RunContext<Context>,
     input: string,
+    details: { toolCall: protocol.FunctionCallItem },
   ) => Promise<string | Result>;
 
   /**
@@ -411,6 +413,7 @@ type ToolExecuteFunction<
 > = (
   input: ToolExecuteArgument<TParameters>,
   context?: RunContext<Context>,
+  details?: { toolCall: protocol.FunctionCallItem },
 ) => Promise<unknown> | unknown;
 
 /**
@@ -591,6 +594,7 @@ export function tool<
   async function _invoke(
     runContext: RunContext<Context>,
     input: string,
+    details: { toolCall: protocol.FunctionCallItem },
   ): Promise<Result> {
     const [error, parsed] = await safeExecute(() => parser(input));
     if (error !== null) {
@@ -608,7 +612,7 @@ export function tool<
       logger.debug(`Invoking tool ${name} with input ${input}`);
     }
 
-    const result = await options.execute(parsed, runContext);
+    const result = await options.execute(parsed, runContext, details);
     const stringResult = toSmartString(result);
 
     if (logger.dontLogToolData) {
@@ -623,8 +627,9 @@ export function tool<
   async function invoke(
     runContext: RunContext<Context>,
     input: string,
+    details: { toolCall: protocol.FunctionCallItem },
   ): Promise<string | Result> {
-    return _invoke(runContext, input).catch<string>((error) => {
+    return _invoke(runContext, input, details).catch<string>((error) => {
       if (toolErrorFunction) {
         const currentSpan = getCurrentSpan();
         currentSpan?.setError({
