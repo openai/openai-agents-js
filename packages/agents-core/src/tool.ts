@@ -68,7 +68,7 @@ export type FunctionTool<
   invoke: (
     runContext: RunContext<Context>,
     input: string,
-    details: { toolCall: protocol.FunctionCallItem },
+    details?: { toolCall: protocol.FunctionCallItem },
   ) => Promise<string | Result>;
 
   /**
@@ -594,7 +594,7 @@ export function tool<
   async function _invoke(
     runContext: RunContext<Context>,
     input: string,
-    details: { toolCall: protocol.FunctionCallItem },
+    details?: { toolCall: protocol.FunctionCallItem },
   ): Promise<Result> {
     const [error, parsed] = await safeExecute(() => parser(input));
     if (error !== null) {
@@ -627,7 +627,7 @@ export function tool<
   async function invoke(
     runContext: RunContext<Context>,
     input: string,
-    details: { toolCall: protocol.FunctionCallItem },
+    details?: { toolCall: protocol.FunctionCallItem },
   ): Promise<string | Result> {
     return _invoke(runContext, input, details).catch<string>((error) => {
       if (toolErrorFunction) {
