@@ -486,7 +486,9 @@ export class RealtimeSession<
     });
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
-    const result = await tool.invoke(this.#context, toolCall.arguments);
+    const result = await tool.invoke(this.#context, toolCall.arguments, {
+      toolCall,
+    });
     let stringResult: string;
     if (isBackgroundResult(result)) {
       // Don't generate a new response, just send the result
