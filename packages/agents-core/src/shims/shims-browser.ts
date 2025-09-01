@@ -18,7 +18,7 @@ export class BrowserEventEmitter<
   #target = new EventTarget();
   #listenerWrappers = new Map<
     string,
-    Map<(...args: unknown[]) => void, EventListener>
+    Map<(...args: EventTypes[any]) => void, EventListener>
   >();
 
   on<K extends keyof EventTypes>(
