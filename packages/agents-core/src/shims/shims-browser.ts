@@ -16,16 +16,28 @@ export class BrowserEventEmitter<
 > implements EventEmitter<EventTypes>
 {
   #target = new EventTarget();
+  #listenerWrappers = new Map<
+    string,
+    Map<(...args: unknown[]) => void, EventListener>
+  >();
 
   on<K extends keyof EventTypes>(
     type: K,
     listener: (...args: EventTypes[K]) => void,
   ) {
-    this.#target.addEventListener(
-      type as string,
-      ((event: CustomEvent) =>
-        listener(...(event.detail ?? []))) as EventListener,
-    );
+    const eventType = type as string;
+    let listenersForType = this.#listenerWrappers.get(eventType);
+    if (!listenersForType) {
+      listenersForType = new Map();
+      this.#listenerWrappers.set(eventType, listenersForType);
+    }
+    let wrapper = listenersForType.get(listener);
+    if (!wrapper) {
+      wrapper = ((event: CustomEvent) =>
+        listener(...(event.detail ?? []))) as EventListener;
+      listenersForType.set(listener, wrapper);
+    }
+    this.#target.addEventListener(eventType, wrapper);
     return this;
   }
 
@@ -33,11 +45,16 @@ export class BrowserEventEmitter<
     type: K,
     listener: (...args: EventTypes[K]) => void,
   ) {
-    this.#target.removeEventListener(
-      type as string,
-      ((event: CustomEvent) =>
-        listener(...(event.detail ?? []))) as EventListener,
-    );
+    const eventType = type as string;
+    const listenersForType = this.#listenerWrappers.get(eventType);
+    const wrapper = listenersForType?.get(listener);
+    if (wrapper) {
+      this.#target.removeEventListener(eventType, wrapper);
+      listenersForType?.delete(listener);
+      if (listenersForType?.size === 0) {
+        this.#listenerWrappers.delete(eventType);
+      }
+    }
     return this;
   }
 
