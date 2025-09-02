@@ -5,6 +5,8 @@ import {
   MaxTurnsExceededError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
+  Session,
+  type AgentInputItem,
   run,
   Runner,
   setDefaultModelProvider,
@@ -148,7 +150,11 @@ describe('Runner.run', () => {
 
       // Track agent_end events on both the agent and runner
       const agentEndEvents: Array<{ context: any; output: string }> = [];
-      const runnerEndEvents: Array<{ context: any; agent: any; output: string }> = [];
+      const runnerEndEvents: Array<{
+        context: any;
+        agent: any;
+        output: string;
+      }> = [];
 
       agent.on('agent_end', (context, output) => {
         agentEndEvents.push({ context, output });
@@ -407,7 +413,7 @@ describe('Runner.run', () => {
         usage: new Usage(),
       };
       class SimpleStreamingModel implements Model {
-        constructor(private resps: ModelResponse[]) { }
+        constructor(private resps: ModelResponse[]) {}
         async getResponse(_req: ModelRequest): Promise<ModelResponse> {
           const r = this.resps.shift();
           if (!r) {
@@ -522,6 +528,117 @@ describe('Runner.run', () => {
       await run(agentB, '2');
       expect(spy.mock.instances[0]).toBe(spy.mock.instances[1]);
       spy.mockRestore();
+    });
+
+    describe('sessions', () => {
+      class MemorySession implements Session {
+        #history: AgentInputItem[];
+        #added: AgentInputItem[][] = [];
+        sessionId?: string;
+
+        constructor(history: AgentInputItem[] = []) {
+          this.#history = [...history];
+        }
+
+        get added(): AgentInputItem[][] {
+          return this.#added;
+        }
+
+        async getSessionId(): Promise<string> {
+          if (!this.sessionId) {
+            this.sessionId = 'conv_test';
+          }
+          return this.sessionId;
+        }
+
+        async getItems(limit?: number): Promise<AgentInputItem[]> {
+          if (limit == null) {
+            return [...this.#history];
+          }
+          return this.#history.slice(-limit);
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.#added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+          this.sessionId = undefined;
+        }
+      }
+
+      class RecordingModel extends FakeModel {
+        lastRequest: ModelRequest | undefined;
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.lastRequest = request;
+          return super.getResponse(request);
+        }
+      }
+
+      it('uses session history and stores run results', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'SessionAgent', model });
+        const historyItem = fakeModelMessage(
+          'earlier message',
+        ) as AgentInputItem;
+        const session = new MemorySession([historyItem]);
+        const runner = new Runner();
+
+        await runner.run(agent, 'How are you?', { session });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(Array.isArray(recordedInput)).toBe(true);
+        expect(recordedInput[0]).toEqual(historyItem);
+        expect(recordedInput[1]).toMatchObject({
+          role: 'user',
+          content: 'How are you?',
+        });
+
+        expect(session.added).toHaveLength(1);
+        expect(session.added[0][0]).toMatchObject({
+          role: 'user',
+          content: 'How are you?',
+        });
+        expect(session.added[0][1]).toMatchObject({ role: 'assistant' });
+      });
+
+      it('rejects list inputs when using session history', async () => {
+        const runner = new Runner();
+        const agent = new Agent({ name: 'ListSession' });
+        const session = new MemorySession();
+
+        await expect(
+          runner.run(
+            agent,
+            [
+              {
+                type: 'message',
+                role: 'user',
+                content: 'Hello',
+              } as AgentInputItem,
+            ],
+            {
+              session,
+            },
+          ),
+        ).rejects.toThrow(
+          'Cannot provide both a session and a list of input items.',
+        );
+      });
     });
   });
 
