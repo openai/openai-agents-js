@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "appsec-agent",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "zod": "^3.25.40"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "tsx main.ts"
+  }
+}
