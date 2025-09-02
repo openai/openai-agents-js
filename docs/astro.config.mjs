@@ -329,6 +329,14 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'OpenAI Agents SDK',
+      // Exclude generated TypeDoc pages that lack frontmatter.
+      // These are still linked via the Starlight TypeDoc plugin sidebar.
+      content: {
+        exclude: [
+          // Problematic namespace output without frontmatter.
+          'openai/agents/@openai/**/*.md',
+        ],
+      },
       components: {
         SiteTitle: './src/components/Title.astro',
         PageTitle: './src/components/PageTitle.astro',
