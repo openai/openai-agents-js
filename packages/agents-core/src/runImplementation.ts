@@ -42,7 +42,7 @@ import { encodeUint8ArrayToBase64 } from './utils/base64';
 import { safeExecute } from './utils/safeExecute';
 import { addErrorToCurrentSpan } from './tracing/context';
 import { RunItemStreamEvent, RunItemStreamEventName } from './events';
-import { StreamedRunResult } from './result';
+import { RunResult, StreamedRunResult } from './result';
 import { z } from 'zod';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
@@ -50,6 +50,7 @@ import { Computer } from './computer';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
 import * as ProviderData from './types/providerData';
+import type { Session } from './memory/session';
 
 type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -1685,4 +1686,120 @@ export class AgentToolUseTracker {
       }),
     );
   }
+}
+
+/**
+ * @internal
+ * Convert a user-provided input into a list of input items.
+ */
+export function toInputItemList(
+  input: string | AgentInputItem[],
+): AgentInputItem[] {
+  if (typeof input === 'string') {
+    return [
+      {
+        role: 'user',
+        content: input,
+      } as AgentInputItem,
+    ];
+  }
+  return [...input];
+}
+
+/**
+ * @internal
+ * Extract model output items from run items, excluding tool approval items.
+ */
+export function extractOutputItemsFromRunItems(
+  items: RunItem[],
+): AgentInputItem[] {
+  return items
+    .filter((item) => item.type !== 'tool_approval_item')
+    .map((item) => item.rawItem as AgentInputItem);
+}
+
+/**
+ * @internal
+ * Persist full turn (input + outputs) for non-streaming runs.
+ */
+export async function saveToSession(
+  session: Session | undefined,
+  originalInput: string | AgentInputItem[] | undefined,
+  result: RunResult<any, any>,
+): Promise<void> {
+  if (!session) {
+    return;
+  }
+  if (!originalInput) {
+    return;
+  }
+  const itemsToSave = [
+    ...toInputItemList(originalInput),
+    ...extractOutputItemsFromRunItems(result.newItems),
+  ];
+  if (itemsToSave.length === 0) {
+    return;
+  }
+  await session.addItems(itemsToSave);
+}
+
+/**
+ * @internal
+ * Persist only the user input for streaming runs at start.
+ */
+export async function saveStreamInputToSession(
+  session: Session | undefined,
+  originalInput: string | AgentInputItem[] | undefined,
+): Promise<void> {
+  if (!session) {
+    return;
+  }
+  if (!originalInput) {
+    return;
+  }
+  const itemsToSave = toInputItemList(originalInput);
+  if (itemsToSave.length === 0) {
+    return;
+  }
+  await session.addItems(itemsToSave);
+}
+
+/**
+ * @internal
+ * Persist only the model outputs for streaming runs at the end of a turn.
+ */
+export async function saveStreamResultToSession(
+  session: Session | undefined,
+  result: StreamedRunResult<any, any>,
+): Promise<void> {
+  if (!session) {
+    return;
+  }
+  const itemsToSave = extractOutputItemsFromRunItems(result.newItems);
+  if (itemsToSave.length === 0) {
+    return;
+  }
+  await session.addItems(itemsToSave);
+}
+
+/**
+ * @internal
+ * If a session is provided, expands the input with session history; otherwise returns the input.
+ */
+export async function prepareInputItemsWithSession(
+  input: string | AgentInputItem[],
+  session?: Session,
+): Promise<string | AgentInputItem[]> {
+  if (!session) {
+    return input;
+  }
+
+  if (Array.isArray(input)) {
+    throw new UserError(
+      'Cannot provide both a session and a list of input items. When using session memory, pass a single string input.',
+    );
+  }
+
+  const history = await session.getItems();
+  return [...history, ...toInputItemList(input)];
 }

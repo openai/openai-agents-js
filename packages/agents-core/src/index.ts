@@ -161,6 +161,7 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { Usage } from './usage';
+export type { Session } from './memory/session';
 
 /**
  * Exporting the whole protocol as an object here. This contains both the types

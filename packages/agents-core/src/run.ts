@@ -40,6 +40,10 @@ import {
   ProcessedResponse,
   processModelResponse,
   streamStepItemsToRunResult,
+  saveStreamInputToSession,
+  saveStreamResultToSession,
+  saveToSession,
+  prepareInputItemsWithSession,
 } from './runImplementation';
 import { RunItem } from './items';
 import {
@@ -56,6 +60,7 @@ import { RunState } from './runState';
 import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from './defaultModel';
+import type { Session } from './memory/session';
 
 const DEFAULT_MAX_TURNS = 10;
 
@@ -138,6 +143,7 @@ type SharedRunOptions<TContext = undefined> = {
   signal?: AbortSignal;
   previousResponseId?: string;
   conversationId?: string;
+  session?: Session;
 };
 
 export type StreamRunOptions<TContext = undefined> =
@@ -1046,6 +1052,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_final_output') {
+          await saveStreamResultToSession(options.session, result);
           await this.#runOutputGuardrails(
             result.state,
             result.state._currentStep.output,
@@ -1066,6 +1073,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._currentStep.type === 'next_step_interruption'
         ) {
           // we are done for now. Don't run any output guardrails
+          await saveStreamResultToSession(options.session, result);
           return;
         } else if (result.state._currentStep.type === 'next_step_handoff') {
           result.state._currentAgent = result.state._currentStep
@@ -1194,7 +1202,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options?: StreamRunOptions<TContext>,
   ): Promise<StreamedRunResult<TContext, TAgent>>;
-  run<TAgent extends Agent<any, any>, TContext = undefined>(
+  async run<TAgent extends Agent<any, any>, TContext = undefined>(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: IndividualRunOptions<TContext> = {
@@ -1204,35 +1212,59 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
-    if (input instanceof RunState && input._trace) {
-      return withTrace(input._trace, async () => {
-        if (input._currentAgentSpan) {
-          setCurrentSpan(input._currentAgentSpan);
-        }
+    const resolvedOptions = options ?? { stream: false, context: undefined };
+    const session = resolvedOptions.session;
+    const sessionOriginalInput =
+      input instanceof RunState
+        ? undefined
+        : (input as string | AgentInputItem[]);
 
-        if (options?.stream) {
-          return this.#runIndividualStream(agent, input, options);
-        } else {
-          return this.#runIndividualNonStream(agent, input, options);
-        }
-      });
+    let preparedInput: typeof input = input;
+    if (!(preparedInput instanceof RunState)) {
+      preparedInput = await prepareInputItemsWithSession(
+        preparedInput,
+        session,
+      );
+    } else if (session) {
+      throw new UserError(
+        'Cannot provide a session when resuming from a previous RunState.',
+      );
     }
 
-    return getOrCreateTrace(
-      async () => {
-        if (options?.stream) {
-          return this.#runIndividualStream(agent, input, options);
-        } else {
-          return this.#runIndividualNonStream(agent, input, options);
+    const executeRun = async () => {
+      if (resolvedOptions.stream) {
+        const streamResult = await this.#runIndividualStream(
+          agent,
+          preparedInput,
+          resolvedOptions,
+        );
+        // for streaming runs, the outputs will be save later on
+        await saveStreamInputToSession(session, sessionOriginalInput);
+        return streamResult;
+      }
+      const runResult = await this.#runIndividualNonStream(
+        agent,
+        preparedInput,
+        resolvedOptions,
+      );
+      await saveToSession(session, sessionOriginalInput, runResult);
+      return runResult;
+    };
+
+    if (preparedInput instanceof RunState && preparedInput._trace) {
+      return withTrace(preparedInput._trace, async () => {
+        if (preparedInput._currentAgentSpan) {
+          setCurrentSpan(preparedInput._currentAgentSpan);
         }
-      },
-      {
-        traceId: this.config.traceId,
-        name: this.config.workflowName,
-        groupId: this.config.groupId,
-        metadata: this.config.traceMetadata,
-      },
-    );
+        return executeRun();
+      });
+    }
+    return getOrCreateTrace(async () => executeRun(), {
+      traceId: this.config.traceId,
+      name: this.config.workflowName,
+      groupId: this.config.groupId,
+      metadata: this.config.traceMetadata,
+    });
   }
 }
 
