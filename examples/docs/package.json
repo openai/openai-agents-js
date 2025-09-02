@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "docs",
+  "name": "docs-code",
   "dependencies": {
     "@ai-sdk/openai": "^2.0.15",
     "@openai/agents": "workspace:*",
