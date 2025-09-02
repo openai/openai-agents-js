@@ -23,7 +23,11 @@ const typeDocConfig = {
   parametersFormat: 'htmlTable',
   propertyMembersFormat: 'htmlTable',
   disableSources: true,
-  plugin: ['typedoc-plugin-zod'],
+  plugin: [
+    'typedoc-plugin-zod',
+    'typedoc-plugin-frontmatter',
+    './src/plugins/typedoc-frontmatter.js',
+  ],
 };
 
 const plugins = [

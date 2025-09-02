@@ -25,6 +25,7 @@
   "devDependencies": {
     "tailwindcss": "^3.3.3",
     "tsx": "^4.19.4",
+    "typedoc-plugin-frontmatter": "^1.3.0",
     "typedoc-plugin-zod": "^1.4.1"
   }
 }
