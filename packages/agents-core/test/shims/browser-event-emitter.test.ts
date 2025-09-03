@@ -32,4 +32,24 @@ describe('BrowserEventEmitter', () => {
 
     expect(callCount).toBe(1);
   });
+
+  test('multiple identical listeners fire for each registration and are removed by off', () => {
+    const emitter = new BrowserEventEmitter<{ foo: [string] }>();
+    const calls: string[] = [];
+
+    const handler = (value: string) => {
+      calls.push(value);
+    };
+
+    emitter.on('foo', handler);
+    emitter.on('foo', handler);
+
+    emitter.emit('foo', 'first');
+    expect(calls).toEqual(['first', 'first']);
+
+    emitter.off('foo', handler);
+    emitter.emit('foo', 'second');
+
+    expect(calls).toEqual(['first', 'first']);
+  });
 });
