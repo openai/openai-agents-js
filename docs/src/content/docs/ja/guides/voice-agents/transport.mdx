@@ -25,42 +25,42 @@ import websocketSessionExample from '../../../../../../../examples/docs/voice-ag
 import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 
-## デフォルトのトランスポート層
+## 既定のトランスポート層
 
 ### WebRTC 接続
 
-デフォルトのトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動で再生されます。
+既定のトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動的に再生されます。
 
-独自のメディアストリームや audio 要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
+独自のメディアストリームまたはオーディオ要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
 ### WebSocket 接続
 
-WebRTC の代わりに WebSocket 接続を使うには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` インスタンスを渡します。これはサーバーサイドのユースケースに適しており、たとえば Twilio で電話エージェントを構築する場合に有用です。
+WebRTC の代わりに WebSocket 接続を使用するには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これはサーバー側のユースケースに適しており、たとえば Twilio で電話エージェントを構築する場合などです。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-元の PCM16 オーディオバイトを扱うには、任意の録音/再生ライブラリを使用してください。
+録音/再生ライブラリは任意のものを使用して、元の PCM16 オーディオバイトを処理できます。
 
 ### 独自のトランスポート機構の構築
 
-別の speech-to-speech API を使いたい場合や独自のトランスポート機構がある場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発行して、自作できます。
+別の音声対音声 API を使用したい場合や、独自のカスタムトランスポート機構を持ちたい場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発火することで作成できます。
 
-## Realtime API とのより直接的な対話
+## Realtime API とのより直接的なやり取り
 
-OpenAI Realtime API を使いつつ、Realtime API により直接アクセスしたい場合は、次の 2 つの選択肢があります。
+OpenAI Realtime API を使用しつつ、Realtime API へのアクセスをより直接的に行いたい場合は、次の 2 つの方法があります。
 
 ### オプション 1 - トランスポート層へのアクセス
 
-`RealtimeSession` の機能をすべて活用したい場合は、`session.transport` を通じてトランスポート層にアクセスできます。
+`RealtimeSession` のあらゆる機能の恩恵を受けつつ、`session.transport` を通じてトランスポート層にアクセスできます。
 
-トランスポート層は受信したすべてのイベントを `*` イベントで発行し、`sendEvent()` メソッドで元のイベントを送信できます。
+トランスポート層は受信したすべてのイベントを `*` イベントで発火し、`sendEvent()` メソッドで元のイベントを送信できます。
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### オプション 2 — トランスポート層のみを使用
+### オプション 2 — トランスポート層のみの使用
 
-自動ツール実行やガードレールなどが不要な場合は、接続と割り込みのみを管理する「薄い (thin) クライアント」としてトランスポート層だけを利用することもできます。
+ツールの自動実行やガードレールなどが不要な場合は、接続と割り込みのみを管理する「薄い」クライアントとして、トランスポート層だけを使用できます。
 
 <Code lang="typescript" code={thinClientExample} />
