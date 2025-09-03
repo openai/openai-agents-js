@@ -39,3 +39,23 @@ export function setButtonStates(newState: ButtonState) {
     connectButton.style.display = 'block';
   }
 }
+
+const mcpToolsList = document.querySelector<HTMLUListElement>('#mcpToolsList')!;
+const mcpToolsEmptyState = document.querySelector<HTMLParagraphElement>(
+  '#mcpToolsEmptyState',
+)!;
+
+export function setMcpTools(toolNames: string[]) {
+  mcpToolsList.innerHTML = '';
+  if (toolNames.length === 0) {
+    mcpToolsEmptyState.style.display = 'block';
+    return;
+  }
+  mcpToolsEmptyState.style.display = 'none';
+  for (const name of toolNames) {
+    const item = document.createElement('li');
+    item.className = 'text-xs';
+    item.innerText = name;
+    mcpToolsList.appendChild(item);
+  }
+}
