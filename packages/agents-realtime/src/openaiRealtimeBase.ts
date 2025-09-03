@@ -665,6 +665,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (
+      this.#tracingConfig !== null && 
       typeof this.#tracingConfig !== 'string' &&
       typeof tracingConfig !== 'string'
     ) {
