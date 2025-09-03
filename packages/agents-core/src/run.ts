@@ -1014,14 +1014,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     const executeRun = async () => {
       if (resolvedOptions.stream) {
-        const streamResult = await this.#runIndividualStream(
-          agent,
-          preparedInput,
-          resolvedOptions,
-        );
-        // for streaming runs, the outputs will be save later on
+        // Persist the user's input before streaming outputs so the session
+        // transcript preserves the turn order.
         await saveStreamInputToSession(session, sessionOriginalInput);
-        return streamResult;
+        return this.#runIndividualStream(agent, preparedInput, resolvedOptions);
       }
       const runResult = await this.#runIndividualNonStream(
         agent,
