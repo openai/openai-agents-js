@@ -102,11 +102,11 @@ Only enable this if you're confident the tool list won't change. To invalidate t
 
 You can restrict which tools are exposed from each server by passing either a static filter via `createMCPToolStaticFilter` or a custom function. Here’s a combined example showing both approaches:
 
-<Code 
-  lang="typescript" 
-  code={toolFilterExample} 
-  title="Tool filtering" 
-/>
+<Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
+
+## Connectors
+
+The TypeScript SDK also supports [connectors](https://platform.openai.com/docs/guides/tools-connectors-mcp#connectors) so you can expose existing systems or data sources as MCP tools. The [connectors example](https://github.com/openai/openai-agents-js/blob/main/examples/connectors/index.ts) shows how to register connectors alongside other MCP servers in an agent.
 
 ## Further reading
 
