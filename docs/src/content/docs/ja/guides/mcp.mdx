@@ -8,6 +8,7 @@ import hostedAgentExample from '../../../../../../examples/docs/mcp/hostedAgent.
 import hostedExample from '../../../../../../examples/docs/mcp/hosted.ts?raw';
 import hostedStreamExample from '../../../../../../examples/docs/mcp/hostedStream.ts?raw';
 import hostedHITLExample from '../../../../../../examples/docs/mcp/hostedHITL.ts?raw';
+import hostedConnectorExample from '../../../../../../examples/docs/mcp/hostedConnector.ts?raw';
 import streamableHttpExample from '../../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
@@ -67,6 +68,18 @@ Hosted ツールは、往復の処理全体をモデル側に任せます。あ�
   code={hostedHITLExample}
   title="Human in the loop with hosted MCP tools"
 />
+
+### コネクター対応の Hosted サーバー
+
+Hosted MCP は OpenAI コネクターにも対応しています。`serverUrl` の代わりにコネクターの `connectorId` と `authorization` トークンを指定すると、Responses API が認証を処理し、コネクターが公開するツールを hosted MCP インターフェース経由で利用できます。
+
+<Code
+  lang="typescript"
+  code={hostedConnectorExample}
+  title="Connector-backed hosted MCP tool"
+/>
+
+この例では、`GOOGLE_CALENDAR_AUTHORIZATION` 環境変数に Google OAuth Playground で取得した OAuth トークンを保存し、コネクター経由で Calendar API を呼び出しています。ストリーミングを含む実行可能なサンプルは [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors) を参照してください。
 
 完全に動作するサンプル（Hosted ツール/Streamable HTTP/stdio + Streaming、HITL、onApproval）は、GitHub リポジトリの [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
 

@@ -8,6 +8,7 @@ import hostedAgentExample from '../../../../../examples/docs/mcp/hostedAgent.ts?
 import hostedExample from '../../../../../examples/docs/mcp/hosted.ts?raw';
 import hostedStreamExample from '../../../../../examples/docs/mcp/hostedStream.ts?raw';
 import hostedHITLExample from '../../../../../examples/docs/mcp/hostedHITL.ts?raw';
+import hostedConnectorExample from '../../../../../examples/docs/mcp/hostedConnector.ts?raw';
 import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../examples/docs/mcp/tool-filter.ts?raw';
@@ -68,6 +69,18 @@ If you can programmatically determine whether a tool call is safe, you can use t
   title="Human in the loop with hosted MCP tools"
 />
 
+### Connector-backed hosted servers
+
+Hosted MCP also supports OpenAI connectors. Instead of providing a `serverUrl`, pass the connector's `connectorId` and an `authorization` token. The Responses API then handles authentication and exposes the connector's tools through the hosted MCP interface.
+
+<Code
+  lang="typescript"
+  code={hostedConnectorExample}
+  title="Connector-backed hosted MCP tool"
+/>
+
+In this example the `GOOGLE_CALENDAR_AUTHORIZATION` environment variable holds an OAuth token obtained from the Google OAuth Playground, which authorizes the connector-backed server to call the Calendar API. For a runnable sample that also demonstrates streaming, see [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors).
+
 Fully working samples (Hosted tools/Streamable HTTP/stdio + Streaming, HITL, onApproval) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
 
 ## 2. Streamable HTTP MCP servers
@@ -102,11 +115,7 @@ Only enable this if you're confident the tool list won't change. To invalidate t
 
 You can restrict which tools are exposed from each server by passing either a static filter via `createMCPToolStaticFilter` or a custom function. Here’s a combined example showing both approaches:
 
-<Code 
-  lang="typescript" 
-  code={toolFilterExample} 
-  title="Tool filtering" 
-/>
+<Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
 
 ## Further reading
 
