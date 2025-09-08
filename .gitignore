@@ -149,3 +149,4 @@ bundled/
 
 .wrangler/
 .dev.vars
+.idea

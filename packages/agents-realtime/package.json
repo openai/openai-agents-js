@@ -35,6 +35,11 @@
         "require": "./dist/shims/shims-node.js",
         "import": "./dist/shims/shims-node.mjs"
       },
+      "react-native": {
+        "require": "./dist/shims/shims-react-native.js",
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "default": "./dist/shims/shims-react-native.mjs"
+      },
       "types": "./dist/shims/shims.d.ts",
       "require": "./dist/shims/shims.js",
       "import": "./dist/shims/shims.mjs"
@@ -67,7 +72,8 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "zod": "^3.25.40"
+    "zod": "^3.25.40",
+    "react-native-webrtc": "^124.0.5"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
