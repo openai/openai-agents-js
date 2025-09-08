@@ -1,5 +1,16 @@
 # @openai/agents-realtime
 
+## 0.1.1
+
+### Patch Changes
+
+- b4d315b: feat: Fix #412 add optional details data to function tool execution
+- 1cb6188: fix: allow setting an initial tracing configuration for Realtime
+- Updated dependencies [b4d315b]
+- Updated dependencies [a1c43dd]
+- Updated dependencies [2c43bcc]
+  - @openai/agents-core@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes

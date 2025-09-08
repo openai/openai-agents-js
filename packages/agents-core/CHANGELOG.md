@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.1.1
+
+### Patch Changes
+
+- b4d315b: feat: Fix #412 add optional details data to function tool execution
+- a1c43dd: feat: enable mcp exports for cloudflare workers
+- 2c43bcc: fix: #417 ensure BrowserEventEmitter off removes listeners
+
 ## 0.1.0
 
 ### Minor Changes
