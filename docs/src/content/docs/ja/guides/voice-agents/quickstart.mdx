@@ -28,7 +28,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 0. **プロジェクトの作成**
 
-   このクイックスタートでは、ブラウザで使える音声エージェントを作成します。新しいプロジェクトを試したい場合は、[`Next.js`](https://nextjs.org/docs/getting-started/installation) や [`Vite`](https://vite.dev/guide/installation.html) をお試しください。
+   この クイックスタート では、ブラウザで使える音声エージェントを作成します。新規プロジェクトを試したい場合は、[`Next.js`](https://nextjs.org/docs/getting-started/installation) や [`Vite`](https://vite.dev/guide/installation.html) を試すことができます。
 
    ```bash
    npm create vite@latest my-project --template vanilla-ts
@@ -42,9 +42,9 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
    代わりに、スタンドアロンのブラウザ向けパッケージである `@openai/agents-realtime` をインストールすることもできます。
 
-2. **クライアント向けエフェメラルトークンの生成**
+2. **クライアント用エフェメラルトークンの生成**
 
-   このアプリケーションは ユーザー のブラウザで実行されるため、Realtime API を通じてモデルに安全に接続する方法が必要です。そのために、バックエンド サーバー で生成すべき [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) を使用できます。テスト目的であれば、`curl` と通常の OpenAI API キーを使ってキーを生成しても構いません。
+   このアプリケーションは ユーザー のブラウザ内で実行されるため、Realtime API を通してモデルに安全に接続する必要があります。そのために、バックエンド サーバー 上で生成される [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) を使用します。テスト用途では、`curl` と通常の OpenAI API キーを使ってキーを生成することもできます。
 
    ```bash
    curl -X POST https://api.openai.com/v1/realtime/client_secrets \
@@ -58,11 +58,11 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
       }'
    ```
 
-   レスポンスには、後で接続に使用できる `client_secret.value` が含まれます。このキーは短時間のみ有効で、再生成が必要になる点に注意してください。
+   レスポンスには、後で接続に使用できる `client_secret.value` の値が含まれます。このキーは短時間のみ有効で、再生成が必要になる点に注意してください。
 
 3. **最初のエージェントの作成**
 
-   新しい [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) の作成は、通常の [`Agent`](/openai-agents-js/ja/guides/agents) の作成と非常によく似ています。
+   新しい [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) の作成は、通常の [`エージェント`](/openai-agents-js/ja/guides/agents) の作成ととてもよく似ています。
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents-realtime';
@@ -75,7 +75,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 4. **セッションの作成**
 
-   通常のエージェントと異なり、音声エージェントは `RealtimeSession` 内で継続的に稼働し、会話とモデルへの接続を継続的に処理します。このセッションは、音声の処理、割り込み、その他多くのライフサイクル機能も扱います。これらは後ほど説明します。
+   通常のエージェントと異なり、Voice Agent は会話とモデルへの接続を継続的に扱う `RealtimeSession` 内で常時実行・待機します。このセッションは、音声処理、割り込み、その他多くのライフサイクル機能も処理します。これらは後で詳しく説明します。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents-realtime';
@@ -85,25 +85,25 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    });
    ```
 
-   `RealtimeSession` コンストラクターは、最初の引数として `agent` を受け取ります。このエージェントが、 ユーザー が最初に対話できるエージェントになります。
+   `RealtimeSession` のコンストラクターは、最初の引数として `agent` を受け取ります。このエージェントが ユーザー が最初に対話できるエージェントになります。
 
 5. **セッションへの接続**
 
-   セッションに接続するには、先ほど生成したクライアント向けエフェメラルトークンを渡します。
+   セッションに接続するには、先ほど生成したクライアント用エフェメラルトークンを渡します。
 
    ```typescript
    await session.connect({ apiKey: '<client-api-key>' });
    ```
 
-   これにより、ブラウザで WebRTC を使って Realtime API に接続し、音声の入出力のためにマイクとスピーカーを自動的に設定します。`RealtimeSession` をバックエンド サーバー（例えば Node.js）で実行している場合、SDK は接続として自動的に WebSocket を使用します。さまざまなトランスポート層の詳細は、[リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport) ガイドをご覧ください。
+   これにより、ブラウザでは WebRTC を用いて Realtime API に接続し、マイクとスピーカーが自動的に音声入出力に設定されます。`RealtimeSession` をバックエンド サーバー（たとえば Node.js）で実行している場合、SDK は自動的に WebSocket を接続に使用します。異なるトランスポート層の詳細は、[リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport) ガイドをご覧ください。
 
-6. **全体の組み立て**
+6. **まとめ**
 
    <Code lang="typescript" code={helloWorldExample} />
 
-7. **起動して会話を開始**
+7. **起動して話しかける**
 
-   Web サーバー を起動し、新しい Realtime Agent のコードを含むページにアクセスします。マイクへのアクセス許可を求めるリクエストが表示されるはずです。許可すると、エージェントと話し始めることができます。
+   Web サーバー を起動し、新しい Realtime Agent のコードを含むページに移動します。マイクへのアクセス許可を求めるリクエストが表示されるはずです。許可すると、エージェントに話しかけられるようになります。
 
    ```bash
    npm run dev
@@ -113,16 +113,16 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 ## 次のステップ
 
-ここからは、独自の音声エージェントの設計と構築を始められます。音声エージェントは通常のエージェントと多くの機能を共有しますが、固有の機能もいくつかあります。
+ここからは、独自の音声エージェントの設計と構築を始められます。音声エージェントは通常のエージェントと多くの機能を共有しますが、独自の機能もいくつか備えています。
 
-- 音声エージェントに次の機能を追加する方法を学ぶ
+- 音声エージェントに以下を追加する方法を学ぶ
   - [ツール](/openai-agents-js/ja/guides/voice-agents/build#tools)
   - [ハンドオフ](/openai-agents-js/ja/guides/voice-agents/build#handoffs)
   - [ガードレール](/openai-agents-js/ja/guides/voice-agents/build#guardrails)
-  - [音声の割り込み処理](/openai-agents-js/ja/guides/voice-agents/build#audio-interruptions)
+  - [音声の割り込みへの対応](/openai-agents-js/ja/guides/voice-agents/build#audio-interruptions)
   - [セッション履歴の管理](/openai-agents-js/ja/guides/voice-agents/build#session-history)
 
 - さまざまなトランスポート層についてさらに学ぶ
   - [WebRTC](/openai-agents-js/ja/guides/voice-agents/transport#connecting-over-webrtc)
   - [WebSocket](/openai-agents-js/ja/guides/voice-agents/transport#connecting-over-websocket)
-  - [独自のトランスポートメカニズムの構築](/openai-agents-js/ja/guides/voice-agents/transport#building-your-own-transport-mechanism)
+  - [独自のトランスポート機構の構築](/openai-agents-js/ja/guides/voice-agents/transport#building-your-own-transport-mechanism)
