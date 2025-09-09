@@ -583,7 +583,11 @@ export async function executeToolsAndSideEffects<TContext>(
     );
   }
 
-  if (!processedResponse.hasToolsOrApprovalsToRun()) {
+  const hasPendingToolsOrApprovals = functionResults.some(
+    (result) => result.type !== 'function_output',
+  );
+
+  if (!hasPendingToolsOrApprovals) {
     if (agent.outputType === 'text') {
       return new SingleStepResult(
         originalInput,
