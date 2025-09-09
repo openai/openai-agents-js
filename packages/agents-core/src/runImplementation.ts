@@ -583,44 +583,45 @@ export async function executeToolsAndSideEffects<TContext>(
     );
   }
 
-  if (
-    agent.outputType === 'text' &&
-    !processedResponse.hasToolsOrApprovalsToRun()
-  ) {
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      {
-        type: 'next_step_final_output',
-        output: potentialFinalOutput,
-      },
-    );
-  } else if (agent.outputType !== 'text' && potentialFinalOutput) {
-    // Structured output schema => always leads to a final output if we have text
-    const { parser } = getSchemaAndParserFromInputType(
-      agent.outputType,
-      'final_output',
-    );
-    const [error] = await safeExecute(() => parser(potentialFinalOutput));
-    if (error) {
-      addErrorToCurrentSpan({
-        message: 'Invalid output type',
-        data: {
-          error: String(error),
+  if (!processedResponse.hasToolsOrApprovalsToRun()) {
+    if (agent.outputType === 'text') {
+      return new SingleStepResult(
+        originalInput,
+        newResponse,
+        preStepItems,
+        newItems,
+        {
+          type: 'next_step_final_output',
+          output: potentialFinalOutput,
         },
-      });
-      throw new ModelBehaviorError('Invalid output type');
+      );
     }
 
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      { type: 'next_step_final_output', output: potentialFinalOutput },
-    );
+    if (agent.outputType !== 'text' && potentialFinalOutput) {
+      // Structured output schema => always leads to a final output if we have text.
+      const { parser } = getSchemaAndParserFromInputType(
+        agent.outputType,
+        'final_output',
+      );
+      const [error] = await safeExecute(() => parser(potentialFinalOutput));
+      if (error) {
+        addErrorToCurrentSpan({
+          message: 'Invalid output type',
+          data: {
+            error: String(error),
+          },
+        });
+        throw new ModelBehaviorError('Invalid output type');
+      }
+
+      return new SingleStepResult(
+        originalInput,
+        newResponse,
+        preStepItems,
+        newItems,
+        { type: 'next_step_final_output', output: potentialFinalOutput },
+      );
+    }
   }
 
   return new SingleStepResult(

@@ -41,6 +41,7 @@ import {
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
   TEST_TOOL,
   FakeModelProvider,
+  fakeModelMessage,
 } from './stubs';
 import { computerTool } from '../src/tool';
 import * as protocol from '../src/types/protocol';
@@ -897,6 +898,53 @@ describe('executeToolsAndSideEffects', () => {
         processedResponse,
         runner,
         state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('continues execution when structured agent has tools pending', async () => {
+    const structuredAgent = new Agent({
+      name: 'StructuredAgent',
+      outputType: z.object({
+        foo: z.string(),
+      }),
+    });
+
+    const structuredResponse: ModelResponse = {
+      output: [
+        { ...TEST_MODEL_FUNCTION_CALL },
+        fakeModelMessage('{"foo":"bar"}'),
+      ],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      structuredResponse,
+      structuredAgent,
+      [TEST_TOOL],
+      [],
+    );
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
+
+    const structuredState = new RunState(
+      new RunContext(),
+      'test input',
+      structuredAgent,
+      1,
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        structuredAgent,
+        'test input',
+        [],
+        structuredResponse,
+        processedResponse,
+        runner,
+        structuredState,
       ),
     );
 
