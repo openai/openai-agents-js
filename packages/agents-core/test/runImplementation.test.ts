@@ -27,7 +27,13 @@ import {
   executeHandoffCalls,
   executeToolsAndSideEffects,
 } from '../src/runImplementation';
-import { FunctionTool, FunctionToolResult, tool } from '../src/tool';
+import {
+  FunctionTool,
+  FunctionToolResult,
+  tool,
+  computerTool,
+  hostedMcpTool,
+} from '../src/tool';
 import { handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
 import { Computer } from '../src/computer';
@@ -41,8 +47,8 @@ import {
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
   TEST_TOOL,
   FakeModelProvider,
+  fakeModelMessage,
 } from './stubs';
-import { computerTool } from '../src/tool';
 import * as protocol from '../src/types/protocol';
 import { Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
@@ -877,7 +883,7 @@ describe('executeToolsAndSideEffects', () => {
     state = new RunState(new RunContext(), 'test input', TEST_AGENT, 1);
   });
 
-  it('continues execution when text agent has tools pending', async () => {
+  it('returns final output for text agent once tools finish in the same turn', async () => {
     const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
     const processedResponse = processModelResponse(
       TEST_MODEL_RESPONSE_WITH_FUNCTION,
@@ -900,7 +906,60 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_run_again');
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
+  });
+
+  it('returns final output for structured agent once tools finish in the same turn', async () => {
+    const structuredAgent = new Agent({
+      name: 'StructuredAgent',
+      outputType: z.object({
+        foo: z.string(),
+      }),
+    });
+
+    const structuredResponse: ModelResponse = {
+      output: [
+        { ...TEST_MODEL_FUNCTION_CALL },
+        fakeModelMessage('{"foo":"bar"}'),
+      ],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      structuredResponse,
+      structuredAgent,
+      [TEST_TOOL],
+      [],
+    );
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
+
+    const structuredState = new RunState(
+      new RunContext(),
+      'test input',
+      structuredAgent,
+      1,
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        structuredAgent,
+        'test input',
+        [],
+        structuredResponse,
+        processedResponse,
+        runner,
+        structuredState,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('{"foo":"bar"}');
+    }
   });
 
   it('returns final output when text agent has no tools pending', async () => {
@@ -971,6 +1030,198 @@ describe('executeToolsAndSideEffects', () => {
     expect(result.nextStep.type).toBe('next_step_final_output');
     if (result.nextStep.type === 'next_step_final_output') {
       expect(result.nextStep.output).toBe('');
+    }
+  });
+
+  it('returns final output after computer actions complete in the same turn', async () => {
+    const computerAgent = new Agent({
+      name: 'ComputerAgent',
+      outputType: 'text',
+    });
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    };
+    const computer = computerTool({
+      computer: fakeComputer as unknown as Computer,
+    });
+    const computerCall: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      id: 'comp1',
+      callId: 'comp1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    } as protocol.ComputerUseCallItem;
+
+    const computerResponse: ModelResponse = {
+      output: [computerCall, { ...TEST_MODEL_MESSAGE }],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      computerResponse,
+      computerAgent,
+      [computer],
+      [],
+    );
+
+    const computerState = new RunState(
+      new RunContext(),
+      'test input',
+      computerAgent,
+      1,
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        computerAgent,
+        'test input',
+        [],
+        computerResponse,
+        processedResponse,
+        runner,
+        computerState,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
+  });
+
+  it('returns final output when hosted MCP approval resolves immediately', async () => {
+    const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'demo_server',
+      serverUrl: 'https://example.com',
+      requireApproval: {
+        always: { toolNames: ['demo_tool'] },
+      },
+      onApproval: async () => ({ approve: true, reason: 'approved in test' }),
+    });
+
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval1',
+      name: 'mcp_approval_request',
+      status: 'completed',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'demo_server',
+        name: 'demo_tool',
+        id: 'approval1',
+        arguments: '{}',
+      },
+    } as protocol.HostedToolCallItem;
+
+    const approvalResponse: ModelResponse = {
+      output: [approvalCall, { ...TEST_MODEL_MESSAGE }],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      approvalResponse,
+      approvalAgent,
+      [mcpTool],
+      [],
+    );
+
+    const approvalState = new RunState(
+      new RunContext(),
+      'test input',
+      approvalAgent,
+      1,
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        approvalAgent,
+        'test input',
+        [],
+        approvalResponse,
+        processedResponse,
+        runner,
+        approvalState,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
+  });
+
+  it('returns interruption when hosted MCP approval requires user input', async () => {
+    const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'demo_server',
+      serverUrl: 'https://example.com',
+      requireApproval: {
+        always: { toolNames: ['demo_tool'] },
+      },
+    });
+
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval1',
+      name: 'mcp_approval_request',
+      status: 'completed',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'demo_server',
+        name: 'demo_tool',
+        id: 'approval1',
+        arguments: '{}',
+      },
+    } as protocol.HostedToolCallItem;
+
+    const approvalResponse: ModelResponse = {
+      output: [approvalCall, { ...TEST_MODEL_MESSAGE }],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      approvalResponse,
+      approvalAgent,
+      [mcpTool],
+      [],
+    );
+
+    const approvalState = new RunState(
+      new RunContext(),
+      'test input',
+      approvalAgent,
+      1,
+    );
+
+    const result = await withTrace('test', () =>
+      executeToolsAndSideEffects(
+        approvalAgent,
+        'test input',
+        [],
+        approvalResponse,
+        processedResponse,
+        runner,
+        approvalState,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_interruption');
+    if (result.nextStep.type === 'next_step_interruption') {
+      expect(result.nextStep.data.interruptions).toHaveLength(1);
+      expect(result.nextStep.data.interruptions[0].rawItem).toMatchObject({
+        providerData: { id: 'approval1', type: 'mcp_approval_request' },
+      });
     }
   });
 });
