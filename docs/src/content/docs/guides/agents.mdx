@@ -8,6 +8,7 @@ import simpleAgent from '../../../../../examples/docs/agents/simpleAgent.ts?raw'
 import agentWithTools from '../../../../../examples/docs/agents/agentWithTools.ts?raw';
 import agentWithContext from '../../../../../examples/docs/agents/agentWithContext.ts?raw';
 import agentWithAodOutputType from '../../../../../examples/docs/agents/agentWithAodOutputType.ts?raw';
+import agentsAsTools from '../../../../../examples/docs/agents/agentsAsTools.ts?raw';
 import agentWithHandoffs from '../../../../../examples/docs/agents/agentWithHandoffs.ts?raw';
 import agentWithDynamicInstructions from '../../../../../examples/docs/agents/agentWithDynamicInstructions.ts?raw';
 import agentWithLifecycleHooks from '../../../../../examples/docs/agents/agentWithLifecycleHooks.ts?raw';
@@ -76,14 +77,27 @@ plain text.
 
 ---
 
-## Handoffs
+## Multi-agent system design patterns
 
-An Agent can **delegate** to other Agents via the `handoffs` property. A common pattern is to
-use a _triage agent_ that routes the conversation to a more specialised sub‑agent.
+There are many ways to compose agents together. Two patterns we regularly see in
+production apps are:
+
+1. **Manager (agents as tools)** – a central agent owns the conversation and invokes specialized agents that are exposed as tools.
+2. **Handoffs** – the initial agent delegates the entire conversation to a specialist once it has identified the user's request.
+
+These approaches are complementary. Managers give you a single place to enforce guardrails or rate limits, while handoffs let each agent focus on a single task without retaining control of the conversation.
+
+### Manager (agents as tools)
+
+In this pattern the manager never hands over control—the LLM uses the tools and the manager summarizes the final answer. Read more in the [tools guide](/openai-agents-js/guides/tools#agents-as-tools).
+
+<Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
+
+### Handoffs
+
+With handoffs the triage agent routes requests, but once a handoff occurs the specialist agent owns the conversation until it produces a final output. This keeps prompts short and lets you reason about each agent independently. Learn more in the [handoffs guide](/openai-agents-js/guides/handoffs).
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
-
-You can read more about this pattern in the [handoffs guide](/openai-agents-js/guides/handoffs).
 
 ---
 
