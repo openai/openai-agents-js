@@ -159,12 +159,14 @@ export function itemsToMessages(
           ...providerData,
         };
 
-        const audio = content.find((c) => c.type === 'audio');
-        if (audio) {
-          assistant.audio = {
-            id: '', // setting this to empty ID and expecting that the user sets providerData.id
-            ...audio.providerData,
-          };
+        if (Array.isArray(content)) {
+          const audio = content.find((c) => c.type === 'audio');
+          if (audio) {
+            assistant.audio = {
+              id: '', // setting this to empty ID and expecting that the user sets providerData.id
+              ...audio.providerData,
+            };
+          }
         }
 
         result.push(assistant);
