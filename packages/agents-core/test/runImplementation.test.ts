@@ -878,7 +878,7 @@ describe('executeToolsAndSideEffects', () => {
     state = new RunState(new RunContext(), 'test input', TEST_AGENT, 1);
   });
 
-  it('continues execution when text agent has tools pending', async () => {
+  it('returns final output for text agent once tools finish in the same turn', async () => {
     const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
     const processedResponse = processModelResponse(
       TEST_MODEL_RESPONSE_WITH_FUNCTION,
@@ -901,10 +901,13 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_run_again');
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
   });
 
-  it('continues execution when structured agent has tools pending', async () => {
+  it('returns final output for structured agent once tools finish in the same turn', async () => {
     const structuredAgent = new Agent({
       name: 'StructuredAgent',
       outputType: z.object({
@@ -948,7 +951,10 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_run_again');
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('{"foo":"bar"}');
+    }
   });
 
   it('returns final output when text agent has no tools pending', async () => {
