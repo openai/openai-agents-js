@@ -191,7 +191,7 @@ describe('Agent', () => {
       needsApproval: approval,
     });
 
-    const rawArgs = '{"input":"hello"}';
+    const rawArgs = { input: 'hello' };
     const decision = await tool.needsApproval(
       new RunContext(),
       rawArgs,
