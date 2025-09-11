@@ -883,7 +883,7 @@ describe('executeToolsAndSideEffects', () => {
     state = new RunState(new RunContext(), 'test input', TEST_AGENT, 1);
   });
 
-  it('returns final output for text agent once tools finish in the same turn', async () => {
+  it('does not finalize when tools are used in the same turn (text output); runs again', async () => {
     const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
     const processedResponse = processModelResponse(
       TEST_MODEL_RESPONSE_WITH_FUNCTION,
@@ -906,13 +906,10 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_final_output');
-    if (result.nextStep.type === 'next_step_final_output') {
-      expect(result.nextStep.output).toBe('Hello World');
-    }
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
-  it('returns final output for structured agent once tools finish in the same turn', async () => {
+  it('does not finalize when tools are used in the same turn (structured output); runs again', async () => {
     const structuredAgent = new Agent({
       name: 'StructuredAgent',
       outputType: z.object({
@@ -956,10 +953,7 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_final_output');
-    if (result.nextStep.type === 'next_step_final_output') {
-      expect(result.nextStep.output).toBe('{"foo":"bar"}');
-    }
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
   it('returns final output when text agent has no tools pending', async () => {
@@ -1033,7 +1027,7 @@ describe('executeToolsAndSideEffects', () => {
     }
   });
 
-  it('returns final output after computer actions complete in the same turn', async () => {
+  it('does not finalize after computer actions in the same turn; runs again', async () => {
     const computerAgent = new Agent({
       name: 'ComputerAgent',
       outputType: 'text',
@@ -1093,13 +1087,10 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_final_output');
-    if (result.nextStep.type === 'next_step_final_output') {
-      expect(result.nextStep.output).toBe('Hello World');
-    }
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
-  it('returns final output when hosted MCP approval resolves immediately', async () => {
+  it('does not finalize when hosted MCP approval happens in the same turn; runs again', async () => {
     const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
     const mcpTool = hostedMcpTool({
       serverLabel: 'demo_server',
@@ -1155,10 +1146,7 @@ describe('executeToolsAndSideEffects', () => {
       ),
     );
 
-    expect(result.nextStep.type).toBe('next_step_final_output');
-    if (result.nextStep.type === 'next_step_final_output') {
-      expect(result.nextStep.output).toBe('Hello World');
-    }
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
   it('returns interruption when hosted MCP approval requires user input', async () => {

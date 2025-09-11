@@ -559,7 +559,24 @@ export async function executeToolsAndSideEffects<TContext>(
     );
   }
 
-  // check if the agent produced any messages
+  // If the model issued any tool calls or handoffs in this turn,
+  // we must NOT treat any assistant message in the same turn as the final output.
+  // We should run the loop again so the model can see the tool results and respond.
+  const hadToolCallsOrActions =
+    (processedResponse.functions?.length ?? 0) > 0 ||
+    (processedResponse.computerActions?.length ?? 0) > 0 ||
+    (processedResponse.mcpApprovalRequests?.length ?? 0) > 0 ||
+    (processedResponse.handoffs?.length ?? 0) > 0;
+  if (hadToolCallsOrActions) {
+    return new SingleStepResult(
+      originalInput,
+      newResponse,
+      preStepItems,
+      newItems,
+      { type: 'next_step_run_again' },
+    );
+  }
+  // No tool calls/actions in this turn; safe to consider a plain assistant message as final.
   const messageItems = newItems.filter(
     (item) => item instanceof RunMessageOutputItem,
   );
