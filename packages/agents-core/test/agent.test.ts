@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
@@ -178,6 +178,32 @@ describe('Agent', () => {
       '{"input":"hey how are you?"}',
     );
     expect(result2).toBe('Hello World');
+  });
+
+  it('allows configuring needsApproval when using an agent as a tool', async () => {
+    const approval = vi.fn().mockResolvedValue(true);
+    const agent = new Agent({
+      name: 'Approver Agent',
+      instructions: 'Check approvals.',
+    });
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+      needsApproval: approval,
+    });
+
+    const rawArgs = '{"input":"hello"}';
+    const decision = await tool.needsApproval(
+      new RunContext(),
+      rawArgs,
+      'call-id',
+    );
+
+    expect(approval).toHaveBeenCalledWith(
+      expect.any(RunContext),
+      rawArgs,
+      'call-id',
+    );
+    expect(decision).toBe(true);
   });
 
   it('should process final output (text)', async () => {

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest';
 import { z } from 'zod';
 
-import { Agent } from '../src/agent';
+import { Agent, saveAgentToolRunResult } from '../src/agent';
+import type { AgentOutputType } from '../src/agent';
 import {
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
@@ -12,7 +13,7 @@ import {
   RunToolApprovalItem as ToolApprovalItem,
 } from '../src/items';
 import { ModelResponse } from '../src/model';
-import { StreamedRunResult } from '../src/result';
+import { RunResult, StreamedRunResult } from '../src/result';
 import { getTracing } from '../src/run';
 import { RunState } from '../src/runState';
 import {
@@ -550,6 +551,45 @@ describe('executeFunctionToolCalls', () => {
     expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
     expect(invokeSpy).toHaveBeenCalled();
   });
+
+  it('propagates nested run result interruptions when provided by agent tools', async () => {
+    const t = makeTool(false);
+    const nestedAgent = new Agent({ name: 'Nested' }) as Agent<
+      unknown,
+      AgentOutputType
+    >;
+    const nestedState = new RunState(new RunContext(), '', nestedAgent, 1);
+    const approval = new ToolApprovalItem(
+      TEST_MODEL_FUNCTION_CALL,
+      nestedAgent,
+    );
+    nestedState._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approval] },
+    } as any;
+    const nestedRunResult = new RunResult(nestedState);
+
+    vi.spyOn(t, 'invoke').mockImplementation(async (_ctx, _args, details) => {
+      saveAgentToolRunResult(details?.toolCall, nestedRunResult);
+      return 'ok';
+    });
+
+    const res = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ),
+    );
+
+    const firstResult = res[0];
+    if (firstResult.type !== 'function_output') {
+      throw new Error('Expected function_output result.');
+    }
+    expect(firstResult.agentRunResult).toBe(nestedRunResult);
+    expect(firstResult.interruptions).toEqual([approval]);
+  });
 });
 
 describe('executeComputerActions', () => {
@@ -753,6 +793,43 @@ describe('checkForFinalOutputFromTools interruptions and errors', () => {
     );
     expect(res.isInterrupted).toBe(true);
     expect((res as any).interruptions[0]).toBe(approval);
+  });
+
+  it('returns interruptions when nested run results contain approvals', async () => {
+    const agent = new Agent({ name: 'A', toolUseBehavior: 'run_llm_again' });
+    const nestedAgent = new Agent({ name: 'Nested' }) as Agent<
+      unknown,
+      AgentOutputType
+    >;
+    const nestedState = new RunState(new RunContext(), '', nestedAgent, 1);
+    const approval = new ToolApprovalItem(
+      TEST_MODEL_FUNCTION_CALL,
+      nestedAgent,
+    );
+    nestedState._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approval] },
+    } as any;
+    const nestedResult = new RunResult(nestedState);
+
+    const res = await checkForFinalOutputFromTools(
+      agent,
+      [
+        {
+          type: 'function_output',
+          tool: TEST_TOOL,
+          output: 'ok',
+          runItem: {} as any,
+          agentRunResult: nestedResult,
+        },
+      ],
+      state,
+    );
+
+    expect(res.isInterrupted).toBe(true);
+    if (res.isInterrupted) {
+      expect(res.interruptions).toEqual([approval]);
+    }
   });
 
   it('throws on unknown behavior', async () => {

@@ -1,5 +1,10 @@
 import { FunctionCallResultItem } from './types/protocol';
-import { Agent, AgentOutputType, ToolsToFinalOutputResult } from './agent';
+import {
+  Agent,
+  AgentOutputType,
+  ToolsToFinalOutputResult,
+  consumeAgentToolRunResult,
+} from './agent';
 import { ModelBehaviorError, ToolCallError, UserError } from './errors';
 import { getTransferMessage, Handoff, HandoffInputData } from './handoff';
 import {
@@ -738,13 +743,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           agent.emit('agent_tool_start', state._context, toolRun.tool, {
             toolCall: toolRun.toolCall,
           });
-          const result = await toolRun.tool.invoke(
+          const toolOutput = await toolRun.tool.invoke(
             state._context,
             toolRun.toolCall.arguments,
             { toolCall: toolRun.toolCall },
           );
           // Use string data for tracing and event emitter
-          const stringResult = toSmartString(result);
+          const stringResult = toSmartString(toolOutput);
 
           runner.emit(
             'agent_tool_end',
@@ -766,16 +771,27 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
             span.spanData.output = stringResult;
           }
 
-          return {
+          const functionResult: FunctionToolResult = {
             type: 'function_output' as const,
             tool: toolRun.tool,
-            output: result,
+            output: toolOutput,
             runItem: new RunToolCallOutputItem(
-              getToolCallOutputItem(toolRun.toolCall, result),
+              getToolCallOutputItem(toolRun.toolCall, toolOutput),
               agent,
-              result,
+              toolOutput,
             ),
           };
+
+          const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall);
+          if (nestedRunResult) {
+            functionResult.agentRunResult = nestedRunResult;
+            const nestedInterruptions = nestedRunResult.interruptions;
+            if (nestedInterruptions.length > 0) {
+              functionResult.interruptions = nestedInterruptions;
+            }
+          }
+
+          return functionResult;
         } catch (error) {
           span.setError({
             message: 'Error running tool',
@@ -1072,9 +1088,23 @@ export async function checkForFinalOutputFromTools<
     return NOT_FINAL_OUTPUT;
   }
 
-  const interruptions: RunToolApprovalItem[] = toolResults
-    .filter((r) => r.runItem instanceof RunToolApprovalItem)
-    .map((r) => r.runItem as RunToolApprovalItem);
+  const interruptions: RunToolApprovalItem[] = [];
+  for (const result of toolResults) {
+    if (result.runItem instanceof RunToolApprovalItem) {
+      interruptions.push(result.runItem);
+    }
+
+    if (result.type === 'function_output') {
+      if (Array.isArray(result.interruptions)) {
+        interruptions.push(...result.interruptions);
+      } else if (result.agentRunResult) {
+        const nestedInterruptions = result.agentRunResult.interruptions;
+        if (nestedInterruptions.length > 0) {
+          interruptions.push(...nestedInterruptions);
+        }
+      }
+    }
+  }
 
   if (interruptions.length > 0) {
     return {
