@@ -282,6 +282,13 @@ const sidebar = [
           ja: 'Realtime Agent を Twilio に接続',
         },
       },
+      {
+        label: 'Connect Realtime Agents to Plivo',
+        link: '/extensions/plivo',
+        translations: {
+          ja: 'Realtime Agent を Plivo に接続',
+        },
+      },
     ],
   },
   {

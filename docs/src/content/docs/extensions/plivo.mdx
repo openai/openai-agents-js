@@ -1,0 +1,86 @@
+---
+title: Using Realtime Agents with Plivo
+description: Connect your Agents SDK agents to Plivo to use voice agents
+---
+
+import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import plivoBasicExample from '../../../../../examples/docs/extensions/plivo-basic.ts?raw';
+import plivoServerExample from '../../../../../examples/realtime-plivo/index.ts?raw';
+
+Plivo offers an [Audio Streaming API](https://www.plivo.com/docs/voice/audio-streaming/overview) that sends the
+raw audio from a phone call to a WebSocket server. This set up can be used to connect your
+[voice agents](/openai-agents-js/guides/voice-agents) to Plivo. You can use the default Realtime Session transport
+in `websocket` mode to connect the events coming from Plivo to your Realtime Session. However,
+this requires you to set the right audio format and adjust your own interruption timing as phone
+calls will naturally introduce more latency than a web-based conversation.
+
+To improve the set up experience, we've created a dedicated transport layer that handles the
+connection to Plivo for you, including handling interruptions and audio forwarding for you.
+
+<Aside type="caution">
+  This adapter is still in beta. You may run into edge case issues or bugs.
+  Please report any issues via [GitHub
+  issues](https://github.com/openai/openai-agents-js/issues) and we'll fix
+  quickly.
+</Aside>
+
+## Setup
+
+<Steps>
+
+1. **Make sure you have a Plivo account and a Plivo phone number.**
+
+2. **Set up a WebSocket server that can receive events from Plivo.**
+
+   If you are developing locally, this will require you to configure a local tunnel like
+   this will require you to configure a local tunnel like [`ngrok`](https://ngrok.io/) or
+   [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
+   to make your local server accessible to Plivo. You can use the `PlivoRealtimeTransportLayer`
+   to connect to Plivo.
+
+3. **Install the Plivo adapter by installing the extensions package:**
+
+   ```bash
+   npm install @openai/agents-extensions
+   ```
+
+4. **Import the adapter and model to connect to your `RealtimeSession`:**
+
+   <Code
+     lang="typescript"
+     code={plivoBasicExample.replace(
+       /\n\s+\/\/ @ts-expect-error - this is not defined/g,
+       '',
+     )}
+   />
+
+5. **Connect your `RealtimeSession` to Plivo:**
+
+   ```typescript
+   session.connect({ apiKey: 'your-openai-api-key' });
+   ```
+
+</Steps>
+
+Any event and behavior that you would expect from a `RealtimeSession` will work as expected
+including tool calls, guardrails, and more. Read the [voice agents guide](/openai-agents-js/guides/voice-agents)
+for more information on how to use the `RealtimeSession` with voice agents.
+
+## Tips and Considerations
+
+1. **Speed is the name of the game.**
+
+   In order to receive all the necessary events and audio from Plivo, you should create your
+   `PlivoRealtimeTransportLayer` instance as soon as you have a reference to the WebSocket
+   connection and immediately call `session.connect()` afterwards.
+
+## Full example server
+
+Below is an example of a full end-to-end example of a WebSocket server that receives requests from
+Plivo and forwards them to a `RealtimeSession`.
+
+<Code
+  lang="typescript"
+  code={plivoServerExample}
+  title="Example server using Fastify"
+/>
