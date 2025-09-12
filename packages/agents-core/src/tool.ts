@@ -1,3 +1,4 @@
+import type { Agent } from './agent';
 import type { Computer } from './computer';
 import type { infer as zInfer, ZodObject } from 'zod';
 import {
@@ -11,6 +12,7 @@ import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
 import { RunContext } from './runContext';
+import type { RunResult } from './result';
 import { ModelBehaviorError, UserError } from './errors';
 import logger from './logger';
 import { getCurrentSpan } from './tracing';
@@ -311,6 +313,16 @@ export type FunctionToolResult<
        * The run item representing the tool call output.
        */
       runItem: RunToolCallOutputItem;
+      /**
+       * The result returned when the tool execution runs another agent. Populated when the
+       * invocation originated from {@link Agent.asTool} and the nested agent completed a run.
+       */
+      agentRunResult?: RunResult<Context, Agent<Context, any>>;
+      /**
+       * Any interruptions collected while the nested agent executed. These are surfaced to allow
+       * callers to pause and resume workflows that require approvals.
+       */
+      interruptions?: RunToolApprovalItem[];
     }
   | {
       /**

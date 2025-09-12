@@ -19,10 +19,6 @@ async function main() {
     name: 'get_weather',
     description: 'Get the weather for a given city',
     parameters: z.object({ city: z.string() }),
-    needsApproval: async (_ctx, { city }) => {
-      // forces approval to look up the weather in San Francisco
-      return city === 'San Francisco';
-    },
     async execute({ city }) {
       return `The weather in ${city} is sunny.`;
     },
@@ -35,15 +31,38 @@ async function main() {
     tools: [getWeatherTool],
   });
 
+  const getTemperatureTool = tool({
+    name: 'get_temperature',
+    description: 'Get the temperature for a given city',
+    parameters: z.object({
+      city: z.string(),
+    }),
+    needsApproval: async (_ctx, { city }) => city.includes('Oakland'),
+    execute: async ({ city }) => {
+      return `The temperature in ${city} is 20° Celsius`;
+    },
+  });
+
   const mainAgent = new Agent({
     name: 'Main agent',
-    instructions: 'You are a general assistant.',
-    handoffs: [weatherAgent],
+    instructions:
+      'You are a general assistant. For weather questions, call the weather agent tool with a short input string and then answer.',
+    tools: [
+      getTemperatureTool,
+      weatherAgent.asTool({
+        toolName: 'ask_weather_agent',
+        toolDescription:
+          'Ask the weather agent about locations by passing a short input.',
+        // Require approval when the generated input mentions San Francisco.
+        needsApproval: async (_ctx, { input }) =>
+          input.includes('San Francisco'),
+      }),
+    ],
   });
 
   let stream = await run(
     mainAgent,
-    'What is the weather in San Francisco and Oakland?',
+    'What is the weather and temperature in San Francisco and Oakland? Use available tools as needed.',
     { stream: true },
   );
   stream.toTextStream({ compatibleWithNodeStreams: true }).pipe(process.stdout);

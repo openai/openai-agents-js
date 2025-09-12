@@ -1,4 +1,5 @@
 import type { ZodObject } from 'zod';
+import { z } from 'zod';
 
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
@@ -15,6 +16,7 @@ import {
   type FunctionToolResult,
   tool,
   type Tool,
+  type ToolApprovalFunction,
 } from './tool';
 import type {
   ResolvedAgentOutput,
@@ -33,6 +35,36 @@ import { ModelBehaviorError, UserError } from './errors';
 import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import { UnknownContext, TextOutput } from './types';
+import type * as protocol from './types/protocol';
+
+type AnyAgentRunResult = RunResult<any, Agent<any, any>>;
+
+// Per-process, ephemeral map linking a function tool call to its nested
+// Agent run result within the same run; entry is removed after consumption.
+const agentToolRunResults = new WeakMap<
+  protocol.FunctionCallItem,
+  AnyAgentRunResult
+>();
+
+export function saveAgentToolRunResult(
+  toolCall: protocol.FunctionCallItem | undefined,
+  runResult: AnyAgentRunResult,
+): void {
+  if (toolCall) {
+    agentToolRunResults.set(toolCall, runResult);
+  }
+}
+
+export function consumeAgentToolRunResult(
+  toolCall: protocol.FunctionCallItem,
+): AnyAgentRunResult | undefined {
+  const runResult = agentToolRunResults.get(toolCall);
+  if (runResult) {
+    agentToolRunResults.delete(toolCall);
+  }
+
+  return runResult;
+}
 
 export type ToolUseBehaviorFlags = 'run_llm_again' | 'stop_on_first_tool';
 
@@ -283,6 +315,9 @@ export type AgentConfigWithHandoffs<
   >
 >;
 
+// The parameter type fo needApproval function for the tool created by Agent.asTool() method
+const AgentAsToolNeedApprovalSchame = z.object({ input: z.string() });
+
 /**
  * The class representing an AI agent configured with instructions, tools, guardrails, handoffs and more.
  *
@@ -468,37 +503,44 @@ export class Agent<
     customOutputExtractor?: (
       output: RunResult<TContext, Agent<TContext, any>>,
     ) => string | Promise<string>;
-  }): FunctionTool {
-    const { toolName, toolDescription, customOutputExtractor } = options;
+    /**
+     * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
+     * When provided as a function it receives the tool arguments and can implement custom approval
+     * logic.
+     */
+    needsApproval?:
+      | boolean
+      | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
+  }): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
+    const { toolName, toolDescription, customOutputExtractor, needsApproval } =
+      options;
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
       description: toolDescription ?? '',
-      parameters: {
-        type: 'object',
-        properties: {
-          input: {
-            type: 'string',
-          },
-        },
-        required: ['input'],
-        additionalProperties: false,
-      },
+      parameters: AgentAsToolNeedApprovalSchame,
       strict: true,
-      execute: async (data, context) => {
+      needsApproval,
+      execute: async (data, context, details) => {
         if (!isAgentToolInput(data)) {
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
 
         const runner = new Runner();
-        const result = await runner.run(this, data.input, {
-          context: context?.context,
-        });
-        if (typeof customOutputExtractor === 'function') {
-          return customOutputExtractor(result as any);
+        const result = await runner.run(this, data.input, { context });
+        const outputText =
+          typeof customOutputExtractor === 'function'
+            ? await customOutputExtractor(result as any)
+            : getOutputText(
+                result.rawResponses[result.rawResponses.length - 1],
+              );
+
+        if (details?.toolCall) {
+          saveAgentToolRunResult(
+            details.toolCall,
+            result as RunResult<any, Agent<any, any>>,
+          );
         }
-        return getOutputText(
-          result.rawResponses[result.rawResponses.length - 1],
-        );
+        return outputText;
       },
     });
   }
