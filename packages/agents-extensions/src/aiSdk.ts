@@ -7,6 +7,7 @@ import type {
   LanguageModelV2Prompt,
   LanguageModelV2ProviderDefinedTool,
   LanguageModelV2ToolCallPart,
+  LanguageModelV2ToolChoice,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
 import {
@@ -25,6 +26,7 @@ import {
   UserError,
   withGenerationSpan,
   getLogger,
+  ModelSettingsToolChoice,
 } from '@openai/agents';
 import { isZodObject } from '@openai/agents/utils';
 
@@ -449,6 +451,9 @@ export class AiSdkModel implements Model {
 
         const aiSdkRequest: LanguageModelV2CallOptions = {
           tools,
+          toolChoice: toolChoiceToLanguageV2Format(
+            request.modelSettings.toolChoice,
+          ),
           prompt: input,
           temperature: request.modelSettings.temperature,
           topP: request.modelSettings.topP,
@@ -827,5 +832,23 @@ export function parseArguments(args: string | undefined | null): any {
     return JSON.parse(args);
   } catch (_) {
     return {};
+  }
+}
+
+export function toolChoiceToLanguageV2Format(
+  toolChoice: ModelSettingsToolChoice | undefined,
+): LanguageModelV2ToolChoice | undefined {
+  if (!toolChoice) {
+    return undefined;
+  }
+  switch (toolChoice) {
+    case 'auto':
+      return { type: 'auto' };
+    case 'required':
+      return { type: 'required' };
+    case 'none':
+      return { type: 'none' };
+    default:
+      return { type: 'tool', toolName: toolChoice };
   }
 }
