@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.1.2
+
+### Patch Changes
+
+- ffcd204: fix: #239 enable to pass toolChoice through ai-sdk
+  - @openai/agents@0.1.2
+
 ## 0.1.0
 
 ### Minor Changes

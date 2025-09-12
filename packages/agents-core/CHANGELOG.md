@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.1.2
+
+### Patch Changes
+
+- 01fad84: Fix #243 by enabling unified HITL interruptions from both agents and their agents as tools
+- 3d652e8: fix: delay final output until tools complete
+
 ## 0.1.1
 
 ### Patch Changes
