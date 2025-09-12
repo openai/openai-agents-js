@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "memory",
+  "dependencies": {
+    "@openai/agents": "workspace:*"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start:oai": "tsx oai.ts",
+    "start:file": "tsx file.ts"
+  }
+}
