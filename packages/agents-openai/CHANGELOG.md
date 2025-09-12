@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.1.2
+
+### Patch Changes
+
+- 7fa0434: Refactor audio extraction logic in converter
+- Updated dependencies [01fad84]
+- Updated dependencies [3d652e8]
+  - @openai/agents-core@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes
