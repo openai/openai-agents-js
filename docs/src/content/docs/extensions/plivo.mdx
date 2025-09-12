@@ -95,7 +95,7 @@ If you want to run the complete example application locally, follow these detail
 1. **Clone the repository and checkout the Plivo support branch:**
 
    ```bash
-   git clone https://github.com/openai/openai-agents-js.git
+   git clone https://github.com/anshagrawal-plivo/openai-agents-js.git
    cd openai-agents-js
    git checkout ansh/realtime-plivo-support
    ```
@@ -103,8 +103,19 @@ If you want to run the complete example application locally, follow these detail
 2. **Install dependencies and build the monorepo:**
 
    ```bash
-   pnpm i
+   # Install dependencies
+   pnpm istall
+   # Or using npm
+   npm install
+   # Or using yarn
+   yarn install
+
+   # Build the monorepo
    pnpm build
+   # Or using npm
+   npm build
+   # Or using yarn
+   yarn build
    ```
 
 3. **Prerequisites:**
@@ -118,20 +129,7 @@ If you want to run the complete example application locally, follow these detail
    cd examples/realtime-plivo
    ```
 
-5. **Install dependencies:**
-
-   ```bash
-   # Using pnpm
-   pnpm install
-
-   # Or using npm
-   npm install
-
-   # Or using yarn
-   yarn install
-   ```
-
-6. **Set up environment variables:**
+5. **Set up environment variables:**
 
    Create a `.env` file in the `examples/realtime-plivo` directory with the following variables:
 
@@ -151,7 +149,7 @@ If you want to run the complete example application locally, follow these detail
    PORT=5050
    ```
 
-7. **Create a tunnel to your local server:**
+6. **Create a tunnel to your local server:**
 
    Since Plivo needs to reach your local server, create a tunnel using ngrok or another service:
 
@@ -162,7 +160,7 @@ If you want to run the complete example application locally, follow these detail
 
    Copy the tunnel URL (e.g., `https://abc123.ngrok-free.app`) and set it as `LOCAL_TUNNEL_URL` in your `.env` file.
 
-8. **Configure your Plivo number:**
+7. **Configure your Plivo number:**
 
    Run the setup script to create a Plivo application and configure your phone number:
 
@@ -181,7 +179,7 @@ If you want to run the complete example application locally, follow these detail
    - Create a Plivo application pointing to your tunnel URL
    - Update your Plivo phone number to use the new application
 
-9. **Start the server:**
+8. **Start the server:**
 
    ```bash
    # Using pnpm
@@ -200,9 +198,9 @@ If you want to run the complete example application locally, follow these detail
    Server is listening on port 5050
    ```
 
-10. **Test the voice agent:**
+9. **Test the voice agent:**
 
-    Call your Plivo phone number. You should hear "You can now chat with Plivogue" followed by the AI agent (Plivogue) greeting you.
+   Call your Plivo phone number. You should hear "You can now chat with Plivogue" followed by the AI agent (Plivogue) greeting you.
 
 </Steps>
 
