@@ -8,6 +8,10 @@ on:
       - 'docs/src/content/**'
       - '!docs/src/content/docs/ja/**'
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   update-docs:
     if: "!contains(github.event.head_commit.message, 'Update all translated document pages')"
@@ -20,7 +24,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.15.0
+          version: 10.15.1
           run_install: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
