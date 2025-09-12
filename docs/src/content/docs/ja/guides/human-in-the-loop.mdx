@@ -7,60 +7,59 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-このガイドでは、SDK に組み込まれた Human in the loop (人間の介入) のサポートを使い、人的介入に基づいて エージェント の実行を一時停止・再開する方法を示します。
+このガイドでは、SDK に組み込まれた Human in the loop (人間の介入) サポートを使用して、人的介入に基づきエージェントの実行を一時停止および再開する方法を説明します。
 
-現在の主なユースケースは、センシティブなツール実行に対する承認の取得です。
+現在の主なユースケースは、センシティブなツール実行に対する承認を求めることです。
 
 ## 承認リクエスト
 
-`needsApproval` オプションを `true` または真偽値を返す非同期関数に設定することで、承認が必要なツールを定義できます。
+`needsApproval` オプションを `true`、または真偽値を返す非同期関数に設定することで、承認が必要なツールを定義できます。
 
 <Code
   lang="typescript"
   code={toolApprovalDefinition}
-  title="ツール承認の定義"
+  title="ツールの承認定義"
   meta={`{10}`}
 />
 
 ### フロー
 
-1. エージェント がツール（複数可）を呼び出すと判断した場合、`needsApproval` を評価してそのツールに承認が必要かを確認します
-2. 承認が必要な場合、エージェント は承認がすでに許可または拒否されているかを確認します
-   - 承認が許可または拒否されていない場合、ツールは「ツール呼び出しを実行できない」という静的メッセージを エージェント に返します
-   - 承認 / 拒否が未処理の場合、ツール承認リクエストをトリガーします
-3. エージェント はすべてのツール承認リクエストを収集し、実行を中断します
-4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/results) に未処理のステップを示す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは、`type: "tool_approval_item"` を持つ `ToolApprovalItem` が現れます
+1. エージェントがツール（複数の場合あり）を呼び出すと判断した場合、`needsApproval` を評価して、そのツールに承認が必要かを確認します
+2. 承認が必要な場合、エージェントは承認がすでに許可または拒否されているかを確認します
+   - 承認が許可または拒否されていない場合、ツールはツール呼び出しを実行できないことを示す静的メッセージをエージェントに返します
+   - 承認 / 拒否が欠けている場合、ツールの承認リクエストがトリガーされます
+3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します
+4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/results) には、保留中のステップを説明する `interruptions` 配列が含まれます。ツール呼び出しに確認が必要な場合、`type: "tool_approval_item"` の `ToolApprovalItem` が表示されます
 5. ツール呼び出しを承認または拒否するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出します
-6. すべての中断を処理したら、`result.state` を `runner.run(agent, state)` に渡して実行を再開できます。ここで `agent` は全体の実行をトリガーした元の エージェント です
-7. フローはステップ 1 から再開します
+6. すべての中断を処理した後、`result.state` を `runner.run(agent, state)` に渡して実行を再開できます。ここで `agent` は全体の実行をトリガーした元のエージェントです
+7. フローは手順 1 から再開されます
 
 ## 例
 
-以下は、ターミナルで承認を促し、状態を一時的にファイルへ保存する Human in the loop (人間の介入) フローの、より完全な例です。
+以下は、ターミナルで承認を促し、状態を一時的にファイルに保存する Human in the loop (人間の介入) フローの、より完全な例です。
 
 <Code
   lang="typescript"
   code={humanInTheLoopExample}
-  title="Human in the loop (人間の介入)"
+  title="Human in the loop"
 />
 
-エンドツーエンドで動作する版については、[完全なサンプルスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)をご覧ください。
+エンドツーエンドで動作する完全版は [the full example script](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) を参照してください。
 
-## 長時間の承認待ちへの対応
+## 長時間の承認に対処する方法
 
-Human in the loop (人間の介入) フローは、サーバー を稼働し続けることなく長時間の中断に対応できるように設計されています。リクエストをいったん停止し、後で再開したい場合は、状態を直列化して後から復元できます。
+Human in the loop (人間の介入) フローは、サーバーを起動したままにしなくても長時間中断可能なように設計されています。リクエストを終了して後で続行する必要がある場合は、状態をシリアライズして後で再開できます。
 
-`JSON.stringify(result.state)` を使って状態を直列化し、後で `RunState.fromString(agent, serializedState)` に直列化した状態を渡すことで再開できます。ここで `agent` は全体の実行をトリガーした エージェント のインスタンスです。
+`JSON.stringify(result.state)` を使用して状態をシリアライズし、後で `RunState.fromString(agent, serializedState)` にシリアライズ済みの状態を渡すことで再開できます。ここで `agent` は全体の実行をトリガーしたエージェントのインスタンスです。
 
-この方法により、直列化した状態をデータベースやリクエストと一緒に保存できます。
+その方法で、シリアライズした状態をデータベースやリクエストと一緒に保存できます。
 
-### 保留タスクのバージョニング
+### 保留タスクのバージョン管理
 
 <Aside>
-  これは主に、直列化した状態を長時間保存しつつ、エージェント
-  に変更を加えようとしている場合に該当します。
+  これは主に、エージェントに変更を加えながら、シリアライズした状態を長期間保存しようとしている場合に該当します。
 </Aside>
 
-承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい、あるいは Agents SDK のバージョンを上げたい場合は、パッケージのエイリアスを使って Agents SDK の 2 つのバージョンを並行インストールし、独自のブランチロジックを実装することを現時点では推奨します。
+承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい場合や Agents SDK のバージョンを上げたい場合は、パッケージエイリアスを使用して 2 つのバージョンの Agents SDK を並行してインストールし、独自の分岐ロジックを実装することを現時点では推奨します。
 
-実務的には、自分のコードにバージョン番号を割り当て、それを直列化した状態とともに保存し、復元時に正しいコードのバージョンへ誘導することを意味します。
+実務上は、自身のコードにバージョン番号を付与してシリアライズした状態とともに保存し、デシリアライズを適切なバージョンのコードへ誘導することを意味します。
