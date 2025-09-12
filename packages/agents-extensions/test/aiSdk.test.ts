@@ -4,6 +4,7 @@ import {
   getResponseFormat,
   itemsToLanguageV2Messages,
   parseArguments,
+  toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../src/aiSdk';
 import { protocol, withTrace, UserError } from '@openai/agents';
@@ -161,6 +162,19 @@ describe('itemsToLanguageV2Messages', () => {
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow();
   });
 
+  test('throws on computer tool calls and results', () => {
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        { type: 'computer_call' } as any,
+      ]),
+    ).toThrow(UserError);
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        { type: 'computer_call_result' } as any,
+      ]),
+    ).toThrow(UserError);
+  });
+
   test('converts user images, function results and reasoning items', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -265,6 +279,61 @@ describe('itemsToLanguageV2Messages', () => {
       UserError,
     );
   });
+
+  test('supports input_file string and rejects non-string file id', () => {
+    const ok: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'file_123',
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), ok);
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            file: 'file_123',
+            mediaType: 'application/octet-stream',
+            data: 'file_123',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+
+    const bad: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: { not: 'a-string' },
+          },
+        ],
+      } as any,
+    ];
+    expect(() => itemsToLanguageV2Messages(stubModel({}), bad)).toThrow(
+      /File ID is not supported/,
+    );
+  });
+
+  test('passes through unknown items via providerData', () => {
+    const custom = { role: 'system', content: 'x', providerOptions: { a: 1 } };
+    const items: protocol.ModelItem[] = [
+      { type: 'unknown', providerData: custom } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([custom]);
+  });
 });
 
 describe('toolToLanguageV2Tool', () => {
@@ -355,6 +424,77 @@ describe('AiSdkModel.getResponse', () => {
         status: 'completed',
         providerData: { p: 1 },
       },
+    ]);
+  });
+
+  test('forwards toolChoice to AI SDK (generate)', async () => {
+    const seen: any[] = [];
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate(options) {
+          seen.push(options.toolChoice);
+          return {
+            content: [{ type: 'text', text: 'ok' }],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    // auto
+    await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: { toolChoice: 'auto' },
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+    // required
+    await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: { toolChoice: 'required' },
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+    // none
+    await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: { toolChoice: 'none' },
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+    // specific tool
+    await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: { toolChoice: 'myTool' as any },
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(seen).toEqual([
+      { type: 'auto' },
+      { type: 'required' },
+      { type: 'none' },
+      { type: 'tool', toolName: 'myTool' },
     ]);
   });
 
@@ -735,6 +875,48 @@ describe('AiSdkModel.getStreamedResponse', () => {
     }
 
     expect(final).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  });
+
+  test('prepends system instructions to prompt for doStream', async () => {
+    let received: any;
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(options) {
+          received = options.prompt;
+          return { stream: partsStream([]) } as any;
+        },
+      }),
+    );
+
+    for await (const _ of model.getStreamedResponse({
+      systemInstructions: 'inst',
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      // drain
+    }
+
+    expect(received[0]).toEqual({ role: 'system', content: 'inst' });
+  });
+});
+
+describe('toolChoiceToLanguageV2Format', () => {
+  test('maps default choices and specific tool', () => {
+    expect(toolChoiceToLanguageV2Format(undefined)).toBeUndefined();
+    expect(toolChoiceToLanguageV2Format(null as any)).toBeUndefined();
+    expect(toolChoiceToLanguageV2Format('auto')).toEqual({ type: 'auto' });
+    expect(toolChoiceToLanguageV2Format('required')).toEqual({
+      type: 'required',
+    });
+    expect(toolChoiceToLanguageV2Format('none')).toEqual({ type: 'none' });
+    expect(toolChoiceToLanguageV2Format('runTool' as any)).toEqual({
+      type: 'tool',
+      toolName: 'runTool',
+    });
   });
 });
 
