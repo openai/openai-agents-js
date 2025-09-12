@@ -7,15 +7,15 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio は、通話の元音声を WebSocket サーバーへ送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。このセットアップを使うと、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を Twilio に接続できます。Twilio からのイベントを Realtime Session に接続するには、`websocket` モードのデフォルトの Realtime Session トランスポートを使えます。ただし、通話は Web ベースの会話より遅延が大きくなりがちなため、適切な音声フォーマットの設定と、割り込みタイミングの調整が必要です。
+Twilio は、電話の通話からの元音声を WebSocket サーバーへ送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。このセットアップを使って、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を Twilio に接続できます。`websocket` モードのデフォルトの Realtime Session トランスポートを使用して、Twilio から来るイベントを Realtime Session に接続できます。ただし、Web ベースの会話よりも通話では自然にレイテンシが増えるため、適切な音声フォーマットの設定や、割り込みタイミングの調整が必要になります。
 
-セットアップ体験を向上させるため、Twilio への接続、割り込み処理、音声転送を代行する専用のトランスポートレイヤーを用意しました。
+セットアップ体験を改善するために、Twilio への接続、割り込み処理、音声転送などを代わりに処理する専用のトランスポートレイヤーを作成しました。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。まれにエッジケースの問題やバグに遭遇する可能性があります。
+  このアダプターはまだベータ版です。レアケースの問題やバグに遭遇する可能性があります。
   問題があれば [GitHub
   issues](https://github.com/openai/openai-agents-js/issues)
-  からご報告ください。迅速に修正します。
+  に報告してください。迅速に修正します。
 </Aside>
 
 ## セットアップ
@@ -24,14 +24,14 @@ Twilio は、通話の元音声を WebSocket サーバーへ送信する [Media 
 
 1. **Twilio アカウントと Twilio の電話番号を用意します。**
 
-2. **Twilio からのイベントを受け取れる WebSocket サーバーを用意します。**
+2. **Twilio からのイベントを受け取れる WebSocket サーバーをセットアップします。**
 
-   ローカル開発中は、[`ngrok`](https://ngrok.io/) や
+   ローカル開発の場合、[`ngrok`](https://ngrok.io/) や
    [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
-   などでローカルトンネルを設定して、ローカルサーバーを Twilio から参照できるようにする必要があります。`TwilioRealtimeTransportLayer`
+   のようなローカルトンネルを設定して、ローカルサーバーを Twilio からアクセス可能にする必要があります。`TwilioRealtimeTransportLayer`
    を使って Twilio に接続できます。
 
-3. **拡張パッケージをインストールして Twilio アダプターを導入します:**
+3. **extensions パッケージをインストールして Twilio アダプターを導入します:**
 
    ```bash
    npm install @openai/agents-extensions
@@ -55,32 +55,33 @@ Twilio は、通話の元音声を WebSocket サーバーへ送信する [Media 
 
 </Steps>
 
-`RealtimeSession` に期待されるあらゆるイベントや動作は、ツール呼び出し、ガードレールなどを含め、期待どおりに動作します。音声エージェントとの併用方法は、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を参照してください。
+`RealtimeSession` に期待されるイベントや動作は、ツール呼び出し、ガードレールなどを含め、期待どおりに機能します。`RealtimeSession` を音声エージェントで使う方法については、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を参照してください。
 
 ## ヒントと考慮事項
 
 1. **スピードが最重要です。**
 
-   Twilio から必要なイベントと音声をすべて受け取るには、WebSocket 接続の参照を得たらすぐに
+   Twilio から必要なすべてのイベントと音声を受け取るには、WebSocket 接続の参照を取得したらすぐに
    `TwilioRealtimeTransportLayer` インスタンスを作成し、その直後に `session.connect()` を呼び出してください。
 
 2. **Twilio の元イベントにアクセスします。**
 
    Twilio が送信する元イベントにアクセスしたい場合は、`RealtimeSession` インスタンスの `transport_event`
-   をリッスンします。Twilio からの各イベントは `twilio_message` の type を持ち、元イベントデータを含む
-   `message` プロパティがあります。
+   をリッスンできます。Twilio からのすべてのイベントは `twilio_message` タイプで、元イベントデータを含む
+   `message` プロパティを持ちます。
 
 3. **デバッグログを確認します。**
 
-   状況を詳しく把握したい場合は、環境変数 `DEBUG=openai-agents*` を使うと Agents SDK のすべてのデバッグログが表示されます。
-   あるいは、`DEBUG=openai-agents:extensions:twilio*` で Twilio アダプターのデバッグログだけを有効化できます。
+   状況を詳しく知りたい問題に遭遇することがあります。環境変数 `DEBUG=openai-agents*` を使うと Agents SDK の
+   すべてのデバッグログが表示されます。あるいは、`DEBUG=openai-agents:extensions:twilio*`
+   を使って Twilio アダプターのデバッグログだけを有効化できます。
 
-## サーバーのフルサンプル
+## 完全なサーバー例
 
-以下は、Twilio からのリクエストを受け取り、`RealtimeSession` に転送する WebSocket サーバーのエンドツーエンドのサンプルです。
+以下は、Twilio からのリクエストを受け取り、`RealtimeSession` に転送する WebSocket サーバーのエンドツーエンドの例です。
 
 <Code
   lang="typescript"
   code={twilioServerExample}
-  title="Example server using Fastify"
+  title="Fastify を使用したサーバーの例"
 />
