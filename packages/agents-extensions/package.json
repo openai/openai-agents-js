@@ -15,7 +15,9 @@
   "dependencies": {
     "@ai-sdk/provider": "^2.0.0",
     "@types/ws": "^8.18.1",
-    "debug": "^4.4.0"
+    "debug": "^4.4.0",
+    "plivo": "^4.75.1",
+    "realtime": "link:@openai/agents/realtime"
   },
   "exports": {
     ".": {

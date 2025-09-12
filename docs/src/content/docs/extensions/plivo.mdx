@@ -7,24 +7,24 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import plivoBasicExample from '../../../../../examples/docs/extensions/plivo-basic.ts?raw';
 import plivoServerExample from '../../../../../examples/realtime-plivo/index.ts?raw';
 
-Plivo offers an [Audio Streaming API](https://www.plivo.com/docs/voice/audio-streaming/overview) that sends the
-raw audio from a phone call to a WebSocket server. This set up can be used to connect your
-[voice agents](/openai-agents-js/guides/voice-agents) to Plivo. You can use the default Realtime Session transport
-in `websocket` mode to connect the events coming from Plivo to your Realtime Session. However,
-this requires you to set the right audio format and adjust your own interruption timing as phone
-calls will naturally introduce more latency than a web-based conversation.
+Plivo's [Audio Streaming API](https://www.plivo.com/docs/voice/audio-streaming/overview) enables real-time bidirectional audio streaming during phone calls through WebSocket connections. This powerful feature allows you to build sophisticated [voice agents](/openai-agents-js/guides/voice-agents) that can interact naturally with callers over traditional phone networks.
 
-To improve the set up experience, we've created a dedicated transport layer that handles the
-connection to Plivo for you, including handling interruptions and audio forwarding for you.
+While you could manually configure the WebSocket transport and handle audio format conversions (G.711 µ-law), manage interruptions, and deal with telephony-specific latency challenges, we've built a specialized `PlivoRealtimeTransportLayer` that abstracts these complexities. This transport layer seamlessly integrates with OpenAI's Realtime API, providing automatic audio format handling, intelligent interruption management, and optimized buffering for telephone conversations.
 
 <Aside type="caution">
-  This adapter is still in beta. You may run into edge case issues or bugs.
-  Please report any issues via [GitHub
-  issues](https://github.com/openai/openai-agents-js/issues) and we'll fix
-  quickly.
+  The Plivo integration is currently in beta and under active development. While
+  core functionality is stable, you may encounter edge cases specific to
+  different telephony providers or network conditions. We're actively collecting
+  feedback to improve the integration - please share your experiences via
+  [GitHub issues](https://github.com/openai/openai-agents-js/issues).
 </Aside>
 
 ## Setup
+
+<Aside type="note">
+  If you want to run the complete example application locally, follow the
+  [Running the example locally](#running-the-example-locally) section below.
+</Aside>
 
 <Steps>
 
@@ -33,7 +33,7 @@ connection to Plivo for you, including handling interruptions and audio forwardi
 2. **Set up a WebSocket server that can receive events from Plivo.**
 
    If you are developing locally, this will require you to configure a local tunnel like
-   this will require you to configure a local tunnel like [`ngrok`](https://ngrok.io/) or
+   [`ngrok`](https://ngrok.io/) or
    [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
    to make your local server accessible to Plivo. You can use the `PlivoRealtimeTransportLayer`
    to connect to Plivo.
@@ -66,21 +66,199 @@ Any event and behavior that you would expect from a `RealtimeSession` will work 
 including tool calls, guardrails, and more. Read the [voice agents guide](/openai-agents-js/guides/voice-agents)
 for more information on how to use the `RealtimeSession` with voice agents.
 
-## Tips and Considerations
+## Plivo-Specific Features
 
-1. **Speed is the name of the game.**
+The Plivo integration provides several telephony-specific capabilities that you can leverage in your voice agents:
 
-   In order to receive all the necessary events and audio from Plivo, you should create your
-   `PlivoRealtimeTransportLayer` instance as soon as you have a reference to the WebSocket
-   connection and immediately call `session.connect()` afterwards.
+### Call Context & Metadata
 
-## Full example server
+Access rich call information including caller ID, destination number, call duration, and network quality metrics through the transport layer events.
 
-Below is an example of a full end-to-end example of a WebSocket server that receives requests from
-Plivo and forwards them to a `RealtimeSession`.
+### DTMF Tone Detection
+
+Automatically detect and respond to keypad inputs (DTMF tones) during calls, enabling menu navigation and numeric input collection.
+
+### International Calling Support
+
+Plivo's global infrastructure supports voice agents for international numbers with automatic handling of different audio codecs and network conditions.
+
+### Call Recording Integration
+
+Seamlessly integrate with Plivo's call recording APIs to capture voice agent conversations for quality assurance and training purposes.
+
+## Running the example locally
+
+If you want to run the complete example application locally, follow these detailed steps:
+
+<Steps>
+
+1. **Clone the repository and checkout the Plivo support branch:**
+
+   ```bash
+   git clone https://github.com/openai/openai-agents-js.git
+   cd openai-agents-js
+   git checkout ansh/realtime-plivo-support
+   ```
+
+2. **Prerequisites:**
+   - A Plivo account with a Plivo phone number
+   - OpenAI API key with Realtime API access
+   - Node.js and pnpm installed
+
+3. **Navigate to the Plivo example directory:**
+
+   ```bash
+   cd examples/realtime-plivo
+   ```
+
+4. **Install dependencies:**
+
+   ```bash
+   # Using pnpm
+   pnpm install
+
+   # Or using npm
+   npm install
+
+   # Or using yarn
+   yarn install
+   ```
+
+5. **Set up environment variables:**
+
+   Create a `.env` file in the `examples/realtime-plivo` directory with the following variables:
+
+   ```bash
+   # Plivo credentials (get these from your Plivo dashboard)
+   PLIVO_AUTH_ID=your_plivo_auth_id
+   PLIVO_AUTH_TOKEN=your_plivo_auth_token
+   PLIVO_NUMBER=your_plivo_phone_number
+
+   # OpenAI API key (must have Realtime API access)
+   OPENAI_API_KEY=your_openai_api_key
+
+   # Your tunnel URL (include https://) (see step 6)
+   LOCAL_TUNNEL_URL=https://your_tunnel_url
+
+   # Optional: Server port (defaults to 5050)
+   PORT=5050
+   ```
+
+6. **Create a tunnel to your local server:**
+
+   Since Plivo needs to reach your local server, create a tunnel using ngrok or another service:
+
+   ```bash
+   # Using ngrok (install first if you haven't: https://ngrok.com/)
+   ngrok http 5050
+   ```
+
+   Copy the tunnel URL (e.g., `https://abc123.ngrok-free.app`) and set it as `LOCAL_TUNNEL_URL` in your `.env` file.
+
+7. **Configure your Plivo number:**
+
+   Run the setup script to create a Plivo application and configure your phone number:
+
+   ```bash
+   # Using pnpm
+   pnpm run setup
+
+   # Or using npm
+   npm run setup
+
+   # Or using yarn
+   yarn setup
+   ```
+
+   This script will:
+   - Create a Plivo application pointing to your tunnel URL
+   - Update your Plivo phone number to use the new application
+
+8. **Start the server:**
+
+   ```bash
+   # Using pnpm
+   pnpm start
+
+   # Or using npm
+   npm start
+
+   # Or using yarn
+   yarn start
+   ```
+
+   You should see:
+
+   ```
+   Server is listening on port 5050
+   ```
+
+9. **Test the voice agent:**
+
+   Call your Plivo phone number. You should hear "You can now chat with Plivogue" followed by the AI agent (Plivogue) greeting you.
+
+</Steps>
+
+## Architecture Overview
+
+The Plivo integration creates a sophisticated voice agent pipeline that handles the complexities of telephony audio streaming:
+
+### Audio Flow
+
+1. **Caller dials** your Plivo number
+2. **Plivo initiates** a WebSocket connection to your server with call metadata
+3. **Audio streaming begins** - Plivo sends G.711 µ-law encoded audio chunks at 8kHz
+4. **Transport layer converts** audio to OpenAI's preferred format and manages buffering
+5. **OpenAI Realtime API** processes speech and generates responses in real-time
+6. **Response audio** is converted back to G.711 µ-law and streamed to Plivo
+7. **Plivo delivers** the agent's voice to the caller
+
+### Key Technical Considerations
+
+- **Audio Format**: Automatic conversion between G.711 µ-law (telephony standard) and linear PCM
+- **Latency Optimization**: Smart buffering to minimize delay while maintaining audio quality
+- **Interruption Handling**: Advanced logic to detect when callers speak over the agent
+- **Connection Management**: Robust handling of network issues and call termination scenarios
+
+The `PlivoRealtimeTransportLayer` abstracts all these telephony-specific challenges, letting you focus on building great conversational experiences.
+
+## Best Practices & Troubleshooting
+
+1. **Optimize for telephony latency.**
+
+   Phone networks introduce inherent delay (typically 100-300ms). Initialize your
+   `PlivoRealtimeTransportLayer` immediately when the WebSocket connects and call `session.connect()`
+   without delay. Consider implementing conversation starters or brief acknowledgments to manage
+   caller expectations during initial connection setup.
+
+2. **Handle Plivo-specific call events.**
+
+   Beyond audio streaming, Plivo sends rich call metadata and events. Listen to `transport_event`
+   on your `RealtimeSession` to access raw Plivo events (type: `plivo_message`) including call
+   duration, DTMF tones, call transfers, and connection quality indicators. This data can enhance
+   your agent's contextual awareness.
+
+3. **Audio quality optimization.**
+
+   Plivo's G.711 µ-law encoding at 8kHz is optimized for voice but has limitations. For better
+   speech recognition, ensure your agent speaks clearly with appropriate pauses. Consider
+   implementing voice activity detection to minimize audio artifacts from background noise on
+   phone calls.
+
+4. **Graceful call handling.**
+
+   Implement proper cleanup when calls end - Plivo will send disconnection events that should
+   trigger session cleanup. Handle unexpected disconnections gracefully as cellular networks
+   can be unpredictable.
+
+## Complete Implementation
+
+The example below demonstrates a production-ready Express server that handles Plivo's audio streaming webhooks. This implementation includes proper error handling, call state management, and demonstrates how to integrate custom business logic with your voice agent.
 
 <Code
   lang="typescript"
   code={plivoServerExample}
-  title="Example server using Fastify"
+  title="Production-ready Plivo voice agent server"
 />
+
+This server handles the complete call lifecycle from initial connection through audio streaming to call termination, making it a solid foundation for building sophisticated voice agents with Plivo.

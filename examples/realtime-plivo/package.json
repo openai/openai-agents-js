@@ -7,6 +7,7 @@
     "dotenv": "^16.5.0",
     "express": "^4.20.0",
     "express-ws": "^5.0.2",
+    "plivo": "^4.75.1",
     "ws": "^8.18.1",
     "zod": "^3.25.40"
   },
@@ -17,6 +18,7 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
+    "setup": "tsx number_setup.ts",
     "start": "tsx index.ts"
   }
 }

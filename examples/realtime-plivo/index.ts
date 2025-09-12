@@ -6,9 +6,9 @@ import dotenv from 'dotenv';
 import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
 import { PlivoRealtimeTransportLayer } from '@openai/agents-extensions';
 import process from 'node:process';
-
 // Load environment variables from .env file
 dotenv.config();
+const LOCAL_TUNNEL_URL = process.env.LOCAL_TUNNEL_URL;
 
 // Retrieve the OpenAI API key from environment variables. You must have OpenAI Realtime API access.
 const { OPENAI_API_KEY } = process.env;
@@ -37,6 +37,22 @@ const agent = new RealtimeAgent({
 app.get('/', (_: Request, res: Response) => {
   res.json({ message: 'Plivo Media Stream Server is running!' });
 });
+app.get('/client', (_: Request, res: Response) => {
+  let modifiedUrl = LOCAL_TUNNEL_URL;
+  if (modifiedUrl?.includes(`https://`) || modifiedUrl?.includes(`http://`)) {
+    modifiedUrl = modifiedUrl.replace(`https://`, ``).replace(`http://`, ``);
+  }
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Speak>You can now chat with Plivogue</Speak>
+    <Stream bidirectional="true" contentType="audio/x-mulaw;rate=8000" keepCallAlive="true">wss://${modifiedUrl}/stream</Stream>
+</Response>`;
+  res.header('Content-Type', 'application/xml');
+  res.header('Content-Length', xml.length.toString());
+  res.header('Connection', 'keep-alive');
+  res.header('Keep-Alive', 'timeout=60');
+  res.send(xml);
+});
 
 // WebSocket route for media-stream
 expressWsApp.ws('/stream', async (ws: WebSocket, _: Request) => {
@@ -47,7 +63,7 @@ expressWsApp.ws('/stream', async (ws: WebSocket, _: Request) => {
   const session = new RealtimeSession(agent, {
     apiKey: OPENAI_API_KEY,
     transport: plivoTransportLayer,
-    model: 'gpt-realtime',
+    model: 'gpt-4o-realtime-preview',
     config: {
       audio: {
         output: {
