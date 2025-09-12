@@ -31,7 +31,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    In this quickstart we will create a voice agent you can use in the browser. If you want to check out a new project, you can try out [`Next.js`](https://nextjs.org/docs/getting-started/installation) or [`Vite`](https://vite.dev/guide/installation.html).
 
    ```bash
-   npm create vite@latest my-project --template vanilla-ts
+   npm create vite@latest my-project -- --template vanilla-ts
    ```
 
 1. **Install the Agents SDK**
@@ -47,6 +47,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    As this application will run in the user's browser, we need a secure way to connect to the model through the Realtime API. For this we can use an [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) that should be generated on your backend server. For testing purposes you can also generate a key using `curl` and your regular OpenAI API key.
 
    ```bash
+   export OPENAI_API_KEY="sk-proj-...(your own key here)"
    curl -X POST https://api.openai.com/v1/realtime/client_secrets \
       -H "Authorization: Bearer $OPENAI_API_KEY" \
       -H "Content-Type: application/json" \
@@ -58,7 +59,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
       }'
    ```
 
-   The response will contain a `client_secret.value` value that you can use to connect later on. Note that this key is only valid for a short period of time and will need to be regenerated.
+   The response will contain a "value" string a the top level, which starts with "ek\_" prefix. You can use this ephemeral key to establish a WebRTC connection later on. Note that this key is only valid for a short period of time and will need to be regenerated.
 
 3. **Create your first Agent**
 
@@ -92,7 +93,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    To connect to the session you need to pass the client ephemeral token you generated earlier on.
 
    ```typescript
-   await session.connect({ apiKey: '<client-api-key>' });
+   await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
    This will connect to the Realtime API using WebRTC in the browser and automatically configure your microphone and speaker for audio input and output. If you are running your `RealtimeSession` on a backend server (like Node.js) the SDK will automatically use WebSocket as a connection. You can learn more about the different transport layers in the [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) guide.
