@@ -103,6 +103,21 @@ export default function Home() {
   const [isMuted, setIsMuted] = useState(false);
   const [outputGuardrailResult, setOutputGuardrailResult] =
     useState<OutputGuardrailTripwireTriggered<any> | null>(null);
+  // Config: enable continuous image input at a fixed FPS (default 1)
+  // Set NEXT_PUBLIC_REALTIME_CONTINUOUS_IMAGE_INPUT=true to enable.
+  // Optionally set NEXT_PUBLIC_REALTIME_IMAGE_FPS to change FPS (default 1).
+  const CONTINUOUS_IMAGE_INPUT =
+    (process.env.NEXT_PUBLIC_REALTIME_CONTINUOUS_IMAGE_INPUT ?? '')
+      .toString()
+      .toLowerCase() === 'true' ||
+    (process.env.NEXT_PUBLIC_REALTIME_CONTINUOUS_IMAGE_INPUT ?? '') === '1';
+  const CONTINUOUS_IMAGE_FPS = Math.max(
+    0.2,
+    Math.min(
+      30,
+      Number(process.env.NEXT_PUBLIC_REALTIME_IMAGE_FPS ?? '1') || 1,
+    ),
+  );
 
   const [events, setEvents] = useState<TransportEvent[]>([]);
   const [history, setHistory] = useState<RealtimeItem[]>([]);
@@ -196,6 +211,8 @@ export default function Home() {
       <div className="fixed bottom-4 right-4 z-50">
         <CameraCapture
           disabled={!isConnected}
+          continuous={CONTINUOUS_IMAGE_INPUT}
+          fps={CONTINUOUS_IMAGE_FPS}
           onCapture={(dataUrl) => {
             if (!session.current) return;
             session.current.addImage(dataUrl, { triggerResponse: false });
