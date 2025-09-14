@@ -64,12 +64,12 @@ describe('MCP structuredContent handling', () => {
       false,
     );
 
-    const out = await tool.invoke({} as any, {});
+    const out = await tool.invoke({} as any, '{}');
     // when not using structured content, return the single content object
     expect(out).toEqual({ type: 'text', text: 'hello' });
   });
 
-  it('includes structuredContent when enabled: single content -> newline-concatenated string', async () => {
+  it('includes structuredContent when enabled: single content -> array with structuredContent appended', async () => {
     const server = new StubServer(
       's',
       [
@@ -106,8 +106,8 @@ describe('MCP structuredContent handling', () => {
       false,
     );
 
-    const out = await tool.invoke({} as any, {});
-    expect(out).toBe('{"type":"text","text":"hello"}\n{"foo":1}');
+    const out = await tool.invoke({} as any, '{}');
+    expect(out).toEqual([{ type: 'text', text: 'hello' }, { foo: 1 }]);
   });
 
   it('includes structuredContent when enabled: no content -> structuredContent only', async () => {
@@ -147,7 +147,7 @@ describe('MCP structuredContent handling', () => {
       false,
     );
 
-    const out = await tool.invoke({} as any, {});
+    const out = await tool.invoke({} as any, '{}');
     expect(out).toEqual({ foo: 1 });
   });
 
@@ -191,7 +191,7 @@ describe('MCP structuredContent handling', () => {
       false,
     );
 
-    const out = await tool.invoke({} as any, {});
+    const out = await tool.invoke({} as any, '{}');
     expect(out).toEqual([
       { type: 'text', text: 'a' },
       { type: 'text', text: 'b' },
