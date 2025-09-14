@@ -3,7 +3,7 @@ import { getAllMcpTools } from '../src/mcp';
 import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
-import type { CallToolResultContent } from '../src/mcp';
+import type { CallToolResult } from '../src/mcp';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 
@@ -27,8 +27,8 @@ class StubServer extends NodeMCPServerStdio {
   async callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent> {
-    return [];
+  ): Promise<CallToolResult> {
+    return { content: [] } as CallToolResult;
   }
 }
 
@@ -97,7 +97,7 @@ describe('MCP tools cache invalidation', () => {
       let called = false;
       (serverB as any).callTool = async () => {
         called = true;
-        return [];
+        return { content: [] } as CallToolResult;
       };
 
       const cachedTools = (await getAllMcpTools({
