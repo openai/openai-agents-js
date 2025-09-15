@@ -35,11 +35,21 @@ const updatePhoneNumber = async (phoneNumber: string, appId: string) => {
   }
 };
 (async () => {
+  const listApplications = await client.applications.list();
+  await Promise.all(
+    (listApplications as any).map(async (app: any) => {
+      if (app.appName === APPLICATION_NAME) {
+        // delete the application
+        await client.applications.delete(app.appId);
+      }
+    }),
+  );
   // create application
   const application = await client.applications.create(APPLICATION_NAME, {
     answerUrl: `${LOCAL_TUNNEL_URL}/client`,
     answerMethod: 'GET',
   });
+  console.log('Application created', application);
 
   // update phone number
   const updatedPhoneNumber = await updatePhoneNumber(

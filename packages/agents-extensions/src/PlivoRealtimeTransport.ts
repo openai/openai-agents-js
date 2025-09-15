@@ -61,6 +61,11 @@ export class PlivoRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     return newConfig;
   }
 
+  updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
+    const newConfig = this._setInputAndOutputAudioFormat(config);
+    super.updateSessionConfig(newConfig);
+  }
+
   /**
    * This event is fired when the model sends audio to the transport layer.
    * @param audioEvent

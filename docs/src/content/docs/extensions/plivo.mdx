@@ -86,6 +86,37 @@ Plivo's global infrastructure supports voice agents for international numbers wi
 
 Seamlessly integrate with Plivo's call recording APIs to capture voice agent conversations for quality assurance and training purposes.
 
+### Dynamic Agent Configuration
+
+Update your voice agent's behavior in real-time during active calls using the session update API. This allows you to modify instructions and prompts without ending the current conversation.
+
+```typescript
+// Update agent configuration during an active session
+const updateResponse = await fetch('/update-agent', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    instructions:
+      'You are now a technical support specialist. Help users with technical issues.',
+    prompt: 'How can I assist you with your technical question today?',
+  }),
+});
+```
+
+The transport layer's `updateSessionConfig()` method allows you to:
+
+- **Modify system instructions** to change the agent's role or behavior
+- **Update conversation prompts** to guide the interaction in new directions
+- **Adapt to caller needs** based on conversation context or external systems
+
+This is particularly useful for:
+
+- **Escalation scenarios** where the agent needs to switch roles (e.g., from sales to technical support)
+- **Context-aware responses** based on caller history or CRM data
+- **A/B testing** different agent personalities or response styles during live calls
+
 ## Running the example locally
 
 If you want to run the complete example application locally, follow these detailed steps:

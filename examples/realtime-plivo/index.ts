@@ -6,9 +6,12 @@ import dotenv from 'dotenv';
 import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
 import { PlivoRealtimeTransportLayer } from '@openai/agents-extensions';
 import process from 'node:process';
+import * as Plivo from 'plivo';
 // Load environment variables from .env file
 dotenv.config();
 const LOCAL_TUNNEL_URL = process.env.LOCAL_TUNNEL_URL;
+let realtimeSession: RealtimeSession | null = null;
+let plivoTransportLayer: PlivoRealtimeTransportLayer | null = null;
 
 // Retrieve the OpenAI API key from environment variables. You must have OpenAI Realtime API access.
 const { OPENAI_API_KEY } = process.env;
@@ -37,30 +40,53 @@ const agent = new RealtimeAgent({
 app.get('/', (_: Request, res: Response) => {
   res.json({ message: 'Plivo Media Stream Server is running!' });
 });
+
+app.post(`/update-agent`, async (req: Request, res: Response) => {
+  try {
+    const { instructions, prompt } = req.body;
+    if (!realtimeSession) {
+      return res.status(400).json({ message: 'Session not found' });
+    }
+    plivoTransportLayer?.updateSessionConfig({
+      instructions,
+      prompt,
+    });
+
+    return res.json({ message: 'Agent updated', agent: prompt });
+  } catch (error) {
+    console.error('Error updating agent', error);
+    return res.status(500).json({ message: 'Error updating agent' });
+  }
+});
+
 app.get('/client', (_: Request, res: Response) => {
   let modifiedUrl = LOCAL_TUNNEL_URL;
   if (modifiedUrl?.includes(`https://`) || modifiedUrl?.includes(`http://`)) {
-    modifiedUrl = modifiedUrl.replace(`https://`, ``).replace(`http://`, ``);
+    modifiedUrl = modifiedUrl.replace(/^https?:\/\//, '');
   }
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Speak>You can now chat with Plivogue</Speak>
-    <Stream bidirectional="true" contentType="audio/x-mulaw;rate=8000" keepCallAlive="true">wss://${modifiedUrl}/stream</Stream>
-</Response>`;
+  const plivoResponse = new (Plivo as any).Response();
+  plivoResponse.addSpeak('You can now chat with Plivogue');
+  const params = {
+    contentType: 'audio/x-mulaw;rate=8000',
+    keepCallAlive: true,
+    bidirectional: true,
+  };
+  plivoResponse.addStream(`wss://${modifiedUrl}/stream`, params);
   res.header('Content-Type', 'application/xml');
-  res.header('Content-Length', xml.length.toString());
+  res.header('Content-Length', plivoResponse.toString().length.toString());
   res.header('Connection', 'keep-alive');
   res.header('Keep-Alive', 'timeout=60');
+  const xml = plivoResponse.toXML();
   res.send(xml);
 });
 
 // WebSocket route for media-stream
 expressWsApp.ws('/stream', async (ws: WebSocket, _: Request) => {
-  const plivoTransportLayer = new PlivoRealtimeTransportLayer({
+  plivoTransportLayer = new PlivoRealtimeTransportLayer({
     plivoWebSocket: ws,
   });
 
-  const session = new RealtimeSession(agent, {
+  realtimeSession = new RealtimeSession(agent, {
     apiKey: OPENAI_API_KEY,
     transport: plivoTransportLayer,
     model: 'gpt-4o-realtime-preview',
@@ -72,11 +98,11 @@ expressWsApp.ws('/stream', async (ws: WebSocket, _: Request) => {
       },
     },
   });
-  session.on('error', (error: any) => {
+  realtimeSession.on('error', (error: any) => {
     console.error('Error', error);
   });
 
-  await session.connect({
+  await realtimeSession.connect({
     apiKey: OPENAI_API_KEY,
   });
   console.log('Connected to the OpenAI Realtime API');
