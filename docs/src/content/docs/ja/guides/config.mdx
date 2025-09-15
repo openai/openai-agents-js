@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-既定で SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。変数を設定できない場合は `setDefaultOpenAIKey()` を手動で呼び出せます。
+デフォルトでは、SDK は初回のインポート時に `OPENAI_API_KEY` 環境変数を読み込みます。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアント インスタンスを渡すこともできます。そうでない場合は、既定のキーを使って自動的に作成されます。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK は既定のキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
@@ -29,7 +29,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI クライアントを設定"
 />
 
-最後に Responses API と Chat Completions API を切り替えられます。
+最後に、Responses API と Chat Completions API を切り替えられます。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API を設定" />
 
@@ -51,29 +51,29 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングを無効化"
 />
 
-## デバッグログ
+## デバッグロギング
 
-SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを見るには、`DEBUG` 環境変数を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使うと、独自モジュール用の名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使って、独自モジュール用の名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーを取得" />
 
-### ログ内の機密データ
+### ログ内の機微データ
 
-一部のログには ユーザー データが含まれる場合があります。次の環境変数を設定して無効にできます。
+一部のログにはユーザー データが含まれる場合があります。次の環境変数を設定して無効化できます。
 
-LLM の入出力のロギングを無効にするには:
+LLM の入力と出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入出力のロギングを無効にするには:
+ツールの入力と出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
