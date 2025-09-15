@@ -1,9 +1,6 @@
 import OpenAI from 'openai';
 
-export type WebSearchTool = Omit<
-  OpenAI.Responses.Tool.WebSearchTool,
-  'type'
-> & {
+export type WebSearchTool = Omit<OpenAI.Responses.WebSearchTool, 'type'> & {
   type: 'web_search';
   name: 'web_search' | 'web_search_preview' | string;
 };

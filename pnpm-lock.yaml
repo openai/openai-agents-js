@@ -461,8 +461,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^5.16.0
-        version: 5.16.0(ws@8.18.2)(zod@3.25.62)
+        specifier: ^5.20.2
+        version: 5.20.2(ws@8.18.2)(zod@3.25.62)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -477,8 +477,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^5.16.0
-        version: 5.16.0(ws@8.18.2)(zod@3.25.62)
+        specifier: ^5.20.2
+        version: 5.20.2(ws@8.18.2)(zod@3.25.62)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -525,8 +525,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^5.16.0
-        version: 5.16.0(ws@8.18.2)(zod@3.25.62)
+        specifier: ^5.20.2
+        version: 5.20.2(ws@8.18.2)(zod@3.25.62)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -4516,8 +4516,8 @@ packages:
   oniguruma-to-es@4.3.3:
     resolution: {integrity: sha512-rPiZhzC3wXwE59YQMRDodUwwT9FZ9nNBwQQfsd1wfdtlKEyCdRV0avrTcSZ5xlIvGRVPd/cx6ZN45ECmS39xvg==}
 
-  openai@5.16.0:
-    resolution: {integrity: sha512-hoEH8ZNvg1HXjU9mp88L/ZH8O082Z8r6FHCXGiWAzVRrEv443aI57qhch4snu07yQydj+AUAWLenAiBXhu89Tw==}
+  openai@5.20.2:
+    resolution: {integrity: sha512-ZeBIEazj6W/XOulMw92L8iU5FblQeM5IxjPRCZNVArNXsoF+bLPnS7B2X4O0JSmpCM+F5Gdajr6bn4nAUj4LFQ==}
     hasBin: true
     peerDependencies:
       ws: ^8.18.0
@@ -10617,7 +10617,7 @@ snapshots:
       regex: 6.0.1
       regex-recursion: 6.0.2
 
-  openai@5.16.0(ws@8.18.2)(zod@3.25.62):
+  openai@5.20.2(ws@8.18.2)(zod@3.25.62):
     optionalDependencies:
       ws: 8.18.2
       zod: 3.25.62
