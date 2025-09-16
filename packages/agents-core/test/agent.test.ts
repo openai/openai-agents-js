@@ -259,7 +259,7 @@ describe('Agent', () => {
       previousResponseId: runOptions.previousResponseId,
     });
 
-    const runnerInstance = runSpy.mock.instances[0] as Runner;
+    const runnerInstance = runSpy.mock.instances[0] as unknown as Runner;
     expect(runnerInstance.config.model).toBe(runConfig.model);
     expect(runnerInstance.config.modelSettings).toEqual(
       runConfig.modelSettings,
