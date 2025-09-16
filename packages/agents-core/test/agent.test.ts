@@ -1,12 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
+import { Runner } from '../src/run';
 
 describe('Agent', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('should create an agent with default values', () => {
     const agent = new Agent({ name: 'TestAgent' });
 
@@ -204,6 +209,61 @@ describe('Agent', () => {
       'call-id',
     );
     expect(decision).toBe(true);
+  });
+
+  it('passes runConfig and runOptions to the runner when used as a tool', async () => {
+    const agent = new Agent({
+      name: 'Configurable Agent',
+      instructions: 'You do tests.',
+    });
+    const mockResult = {} as any;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async () => mockResult);
+
+    const runConfig = {
+      model: 'gpt-5',
+      modelSettings: {
+        providerData: {
+          reasoning: { effort: 'low' },
+        },
+      },
+    };
+    const runOptions = {
+      maxTurns: 3,
+      previousResponseId: 'prev-response',
+    };
+    const customOutputExtractor = vi.fn().mockReturnValue('custom output');
+
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      runConfig,
+      runOptions,
+      customOutputExtractor,
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const result = await tool.invoke(runContext, JSON.stringify(inputPayload));
+
+    expect(result).toBe('custom output');
+    expect(customOutputExtractor).toHaveBeenCalledWith(mockResult);
+    expect(runSpy).toHaveBeenCalledTimes(1);
+
+    const [calledAgent, calledInput, calledOptions] = runSpy.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(calledInput).toBe(inputPayload.input);
+    expect(calledOptions).toMatchObject({
+      context: runContext,
+      maxTurns: runOptions.maxTurns,
+      previousResponseId: runOptions.previousResponseId,
+    });
+
+    const runnerInstance = runSpy.mock.instances[0] as Runner;
+    expect(runnerInstance.config.model).toBe(runConfig.model);
+    expect(runnerInstance.config.modelSettings).toEqual(
+      runConfig.modelSettings,
+    );
   });
 
   it('should process final output (text)', async () => {
