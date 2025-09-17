@@ -271,7 +271,7 @@ export class OpenAIRealtimeWebRTC
           },
         });
 
-        callId = sdpResponse.headers.get('Location')?.split('/').pop();
+        callId = sdpResponse.headers?.get('Location')?.split('/').pop();
         this.#state = { ...this.#state, callId };
 
         const answer: RTCSessionDescriptionInit = {
