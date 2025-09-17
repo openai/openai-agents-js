@@ -254,12 +254,6 @@ export class StreamedRunResult<
 
     this.#signal = result.signal;
 
-    if (this.#signal) {
-      this.#signal.addEventListener('abort', async () => {
-        await this.#readableStream.cancel();
-      });
-    }
-
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
         this.#readableController = controller;
@@ -273,6 +267,43 @@ export class StreamedRunResult<
       this.#completedPromiseResolve = resolve;
       this.#completedPromiseReject = reject;
     });
+
+    if (this.#signal) {
+      const handleAbort = () => {
+        if (this.#cancelled) {
+          return;
+        }
+
+        this.#cancelled = true;
+
+        const controller = this.#readableController;
+        this.#readableController = undefined;
+
+        if (this.#readableStream.locked) {
+          if (controller) {
+            try {
+              controller.close();
+            } catch (err) {
+              logger.debug(`Failed to close readable stream on abort: ${err}`);
+            }
+          }
+        } else {
+          void this.#readableStream
+            .cancel(this.#signal?.reason)
+            .catch((err) => {
+              logger.debug(`Failed to cancel readable stream on abort: ${err}`);
+            });
+        }
+
+        this.#completedPromiseResolve?.();
+      };
+
+      if (this.#signal.aborted) {
+        handleAbort();
+      } else {
+        this.#signal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
   }
 
   /**
