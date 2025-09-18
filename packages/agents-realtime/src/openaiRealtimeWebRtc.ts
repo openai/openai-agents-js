@@ -24,16 +24,19 @@ export type WebRTCState =
       status: 'disconnected';
       peerConnection: undefined;
       dataChannel: undefined;
+      callId: string | undefined;
     }
   | {
       status: 'connecting';
       peerConnection: RTCPeerConnection;
       dataChannel: RTCDataChannel;
+      callId: string | undefined;
     }
   | {
       status: 'connected';
       peerConnection: RTCPeerConnection;
       dataChannel: RTCDataChannel;
+      callId: string | undefined;
     };
 
 /**
@@ -88,6 +91,7 @@ export class OpenAIRealtimeWebRTC
     status: 'disconnected',
     peerConnection: undefined,
     dataChannel: undefined,
+    callId: undefined,
   };
   #useInsecureApiKey: boolean;
   #ongoingResponse: boolean = false;
@@ -100,6 +104,13 @@ export class OpenAIRealtimeWebRTC
     super(options);
     this.#url = options.baseUrl ?? `https://api.openai.com/v1/realtime/calls`;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
+  }
+
+  /**
+   * The current call ID of the WebRTC connection.
+   */
+  get callId() {
+    return this.#state.callId;
   }
 
   /**
@@ -168,11 +179,13 @@ export class OpenAIRealtimeWebRTC
 
         let peerConnection: RTCPeerConnection = new RTCPeerConnection();
         const dataChannel = peerConnection.createDataChannel('oai-events');
+        let callId: string | undefined = undefined;
 
         this.#state = {
           status: 'connecting',
           peerConnection,
           dataChannel,
+          callId,
         };
         this.emit('connection_change', this.#state.status);
 
@@ -181,6 +194,7 @@ export class OpenAIRealtimeWebRTC
             status: 'connected',
             peerConnection,
             dataChannel,
+            callId,
           };
           // Sending the session config again here once the channel is connected to ensure
           // that the session config is sent to the server before the first response is received
@@ -257,6 +271,9 @@ export class OpenAIRealtimeWebRTC
           },
         });
 
+        callId = sdpResponse.headers?.get('Location')?.split('/').pop();
+        this.#state = { ...this.#state, callId };
+
         const answer: RTCSessionDescriptionInit = {
           type: 'answer',
           sdp: await sdpResponse.text(),
@@ -326,6 +343,7 @@ export class OpenAIRealtimeWebRTC
         status: 'disconnected',
         peerConnection: undefined,
         dataChannel: undefined,
+        callId: undefined,
       };
       this.emit('connection_change', this.#state.status);
       this._onClose();

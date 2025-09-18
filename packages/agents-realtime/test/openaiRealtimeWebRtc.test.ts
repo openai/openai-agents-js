@@ -61,7 +61,17 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
       writable: true,
     });
     Object.defineProperty(globalThis, 'fetch', {
-      value: async () => ({ text: async () => 'answer' }),
+      value: async () => ({
+        text: async () => 'answer',
+        headers: {
+          get: (headerKey: string) => {
+            if (headerKey === 'Location') {
+              return 'https://api.openai.com/v1/calls/rtc_u1_1234567890';
+            }
+            return null;
+          },
+        },
+      }),
       configurable: true,
       writable: true,
     });
@@ -143,6 +153,7 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
 
     await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow();
     expect(rtc.status).toBe('disconnected');
+    expect(rtc.callId).toBeUndefined();
     expect(events).toEqual(['connecting', 'disconnected']);
   });
 
@@ -173,6 +184,7 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
 
     expect(stop).toHaveBeenCalled();
     expect(rtc.status).toBe('disconnected');
+    expect(rtc.callId).toBeUndefined();
   });
 
   it('mute toggles sender tracks', async () => {
@@ -204,5 +216,78 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     });
     await rtc.connect({ apiKey: 'ek_test' });
     expect(rtc.connectionState.peerConnection).toBe(custom as any);
+  });
+});
+
+describe('OpenAIRealtimeWebRTC.callId', () => {
+  const originals: Record<string, any> = {};
+  const callId = 'rtc_u1_1234567890';
+  beforeEach(() => {
+    originals.RTCPeerConnection = (global as any).RTCPeerConnection;
+    originals.navigator = (global as any).navigator;
+    originals.document = (global as any).document;
+    originals.fetch = (global as any).fetch;
+
+    (global as any).RTCPeerConnection = FakeRTCPeerConnection as any;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        mediaDevices: {
+          getUserMedia: async () => ({
+            getAudioTracks: () => [{ enabled: true }],
+          }),
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: { createElement: () => ({ autoplay: true }) },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      value: async () => ({
+        text: async () => 'answer',
+        headers: {
+          get: (headerName: string) => {
+            if (headerName === 'Location') {
+              return 'https://api.openai.com/v1/calls/' + callId;
+            }
+            return null;
+          },
+        },
+      }),
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    (global as any).RTCPeerConnection = originals.RTCPeerConnection;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: originals.navigator,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: originals.document,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      value: originals.fetch,
+      configurable: true,
+      writable: true,
+    });
+    lastChannel = null;
+  });
+
+  it('returns the callId', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    expect(rtc.callId).toBeUndefined();
+    await rtc.connect({ apiKey: 'ek_test' });
+    expect(rtc.callId).toBe(callId);
+    rtc.close();
+    expect(rtc.callId).toBeUndefined();
   });
 });
