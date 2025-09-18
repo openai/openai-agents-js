@@ -38,7 +38,7 @@ export type WebSearchTool = {
   /**
    * Optional location for the search. Lets you customize results to be relevant to a location.
    */
-  userLocation?: OpenAI.Responses.Tool.WebSearchTool.UserLocation;
+  userLocation?: OpenAI.Responses.WebSearchTool.UserLocation;
 
   /**
    * Optional filters for the search.

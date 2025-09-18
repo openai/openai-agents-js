@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.1.3
+
+### Patch Changes
+
+- 74dd52e: fix: #473 upgrade openai package to the latest and fix breaking errors
+
 ## 0.1.2
 
 ### Patch Changes
