@@ -26,7 +26,7 @@ import type {
 } from './types';
 import type { RunResult } from './result';
 import type { Handoff } from './handoff';
-import { Runner } from './run';
+import { NonStreamRunOptions, RunConfig, Runner } from './run';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isAgentToolInput } from './utils/typeGuards';
@@ -511,9 +511,23 @@ export class Agent<
     needsApproval?:
       | boolean
       | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
+    /**
+     * Run configuration for initializing the internal agent runner.
+     */
+    runConfig?: Partial<RunConfig>;
+    /**
+     * Additional run options for the agent (as tool) execution.
+     */
+    runOptions?: NonStreamRunOptions<TContext>;
   }): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
-    const { toolName, toolDescription, customOutputExtractor, needsApproval } =
-      options;
+    const {
+      toolName,
+      toolDescription,
+      customOutputExtractor,
+      needsApproval,
+      runConfig,
+      runOptions,
+    } = options;
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
       description: toolDescription ?? '',
@@ -524,9 +538,11 @@ export class Agent<
         if (!isAgentToolInput(data)) {
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
-
-        const runner = new Runner();
-        const result = await runner.run(this, data.input, { context });
+        const runner = new Runner(runConfig ?? {});
+        const result = await runner.run(this, data.input, {
+          context,
+          ...(runOptions ?? {}),
+        });
         const outputText =
           typeof customOutputExtractor === 'function'
             ? await customOutputExtractor(result as any)
