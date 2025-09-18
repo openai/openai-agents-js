@@ -254,6 +254,12 @@ importers:
         specifier: ^3.25.40
         version: 3.25.62
 
+  examples/memory:
+    dependencies:
+      '@openai/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
+
   examples/model-providers:
     dependencies:
       '@openai/agents':
@@ -6050,9 +6056,6 @@ packages:
   zod@3.25.62:
     resolution: {integrity: sha512-YCxsr4DmhPcrKPC9R1oBHQNlQzlJEyPAId//qTau/vBee9uO8K6prmRq4eMkOyxvBfH4wDPIPdLx9HVMWIY3xA==}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
-
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -6229,7 +6232,7 @@ snapshots:
     dependencies:
       sitemap: 8.0.0
       stream-replace-string: 2.0.0
-      zod: 3.25.76
+      zod: 3.25.62
 
   '@astrojs/starlight-tailwind@4.0.1(@astrojs/starlight@0.35.2(astro@5.13.7(@types/node@24.3.1)(jiti@2.4.2)(lightningcss@1.30.1)(rollup@4.50.1)(tsx@4.20.1)(typescript@5.8.3)(yaml@2.7.1)))(tailwindcss@3.4.17)':
     dependencies:
@@ -12368,7 +12371,5 @@ snapshots:
       zod: 3.25.76
 
   zod@3.25.62: {}
-
-  zod@3.25.76: {}
 
   zwitch@2.0.4: {}
