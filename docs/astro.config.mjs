@@ -87,7 +87,7 @@ const plugins = [
         paths: ['api/**'],
       },
     ],
-    exclude: ['ja/**'],
+    exclude: ['ja/**', 'zh/**'],
   }),
 ];
 
@@ -97,6 +97,7 @@ const sidebar = [
     link: '/',
     translations: {
       ja: '概要',
+      zh: '概述',
     },
   },
   {
@@ -104,12 +105,14 @@ const sidebar = [
     link: '/guides/quickstart',
     translations: {
       ja: 'クイックスタート',
+      zh: '快速开始',
     },
   },
   {
     label: 'Guides',
     translations: {
       ja: 'ガイド',
+      zh: '指南',
     },
     items: [
       {
@@ -117,6 +120,7 @@ const sidebar = [
         link: '/guides/agents',
         translations: {
           ja: 'エージェント',
+          zh: '智能体',
         },
       },
       {
@@ -124,6 +128,7 @@ const sidebar = [
         link: '/guides/running-agents',
         translations: {
           ja: 'エージェントの実行',
+          zh: '运行智能体',
         },
       },
       {
@@ -131,6 +136,7 @@ const sidebar = [
         link: '/guides/results',
         translations: {
           ja: 'エージェントの実行結果',
+          zh: '执行结果',
         },
       },
       {
@@ -138,6 +144,7 @@ const sidebar = [
         link: '/guides/tools',
         translations: {
           ja: 'ツール',
+          zh: '工具',
         },
       },
       {
@@ -145,6 +152,7 @@ const sidebar = [
         link: '/guides/multi-agent',
         translations: {
           ja: 'マルチエージェント',
+          zh: '多智能体编排',
         },
       },
       {
@@ -152,6 +160,7 @@ const sidebar = [
         link: '/guides/handoffs',
         translations: {
           ja: 'ハンドオフ',
+          zh: '交接',
         },
       },
       {
@@ -159,6 +168,7 @@ const sidebar = [
         link: '/guides/context',
         translations: {
           ja: 'コンテキスト管理',
+          zh: '上下文管理',
         },
       },
       {
@@ -166,6 +176,7 @@ const sidebar = [
         link: '/guides/models',
         translations: {
           ja: 'モデル',
+          zh: '模型',
         },
       },
       {
@@ -173,6 +184,7 @@ const sidebar = [
         link: '/guides/guardrails',
         translations: {
           ja: 'ガードレール',
+          zh: '护栏',
         },
       },
       {
@@ -180,6 +192,7 @@ const sidebar = [
         link: '/guides/streaming',
         translations: {
           ja: 'ストリーミング',
+          zh: '流式传输',
         },
       },
       {
@@ -187,6 +200,7 @@ const sidebar = [
         link: '/guides/human-in-the-loop',
         translations: {
           ja: '人間の介入（HITL）',
+          zh: '人机协作',
         },
       },
       {
@@ -194,6 +208,7 @@ const sidebar = [
         link: '/guides/mcp',
         translations: {
           ja: 'MCP 連携',
+          zh: 'MCP 集成',
         },
       },
       {
@@ -201,6 +216,7 @@ const sidebar = [
         link: '/guides/tracing',
         translations: {
           ja: 'トレーシング',
+          zh: '追踪',
         },
       },
       {
@@ -208,6 +224,7 @@ const sidebar = [
         link: '/guides/config',
         translations: {
           ja: 'SDK の設定',
+          zh: 'SDK 配置',
         },
       },
       {
@@ -215,6 +232,7 @@ const sidebar = [
         link: '/guides/troubleshooting',
         translations: {
           ja: 'トラブルシューティング',
+          zh: '故障排除',
         },
       },
       {
@@ -222,6 +240,7 @@ const sidebar = [
         link: '/guides/release',
         translations: {
           ja: 'リリースプロセス',
+          zh: '发布流程',
         },
       },
     ],
@@ -230,6 +249,7 @@ const sidebar = [
     label: 'Voice Agents',
     translations: {
       ja: '音声エージェント',
+      zh: '语音智能体',
     },
     items: [
       {
@@ -237,6 +257,7 @@ const sidebar = [
         link: '/guides/voice-agents',
         translations: {
           ja: '音声エージェントの概要',
+          zh: '语音智能体概述',
         },
       },
       {
@@ -244,6 +265,7 @@ const sidebar = [
         link: '/guides/voice-agents/quickstart',
         translations: {
           ja: 'クイックスタート',
+          zh: '快速开始',
         },
       },
       {
@@ -251,6 +273,7 @@ const sidebar = [
         link: '/guides/voice-agents/build',
         translations: {
           ja: '音声エージェントの構築',
+          zh: '构建语音智能体',
         },
       },
       {
@@ -258,6 +281,7 @@ const sidebar = [
         link: '/guides/voice-agents/transport',
         translations: {
           ja: 'リアルタイムトランスポート',
+          zh: '传输机制',
         },
       },
     ],
@@ -266,6 +290,7 @@ const sidebar = [
     label: 'Extensions',
     translations: {
       ja: '拡張機能',
+      zh: '扩展',
     },
     items: [
       {
@@ -273,6 +298,7 @@ const sidebar = [
         link: '/extensions/ai-sdk',
         translations: {
           ja: 'AI SDK で任意モデルを指定',
+          zh: '使用 AI SDK 指定任意模型',
         },
       },
       {
@@ -280,6 +306,7 @@ const sidebar = [
         link: '/extensions/twilio',
         translations: {
           ja: 'Realtime Agent を Twilio に接続',
+          zh: '将实时智能体连接到 Twilio',
         },
       },
     ],
@@ -288,6 +315,7 @@ const sidebar = [
     label: 'API Reference',
     translations: {
       ja: 'APIリファレンス',
+      zh: 'API 参考',
     },
     collapsed: false,
     items: [
