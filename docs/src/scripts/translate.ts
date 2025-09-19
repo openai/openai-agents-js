@@ -123,6 +123,7 @@ export async function extractSidebarTranslations(
 const sourceDir = path.resolve(__dirname, '../../src/content/docs');
 const languages: Record<string, string> = {
   ja: 'Japanese',
+  zh: 'Chinese',
   // Add more languages here
 };
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
@@ -180,6 +181,36 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
       'ほんの数分ではじめてのエージェントをつくることができます。',
     "Let's build": 'はじめる',
   },
+  zh: {
+    agents: '智能体',
+    'computer use': '计算机操作',
+    'OAI hosted tools': 'OpenAI 托管工具',
+    'well formed data': '格式良好的数据',
+    guardrail: '护栏',
+    handoffs: '交接',
+    'function tools': '函数工具',
+    tracing: '追踪',
+    'code examples': '代码示例',
+    'vector store': '向量存储',
+    'deep research': '深度研究',
+    category: '类别',
+    user: '用户',
+    parameter: '参数',
+    processor: '处理器',
+    server: '服务器',
+    'web search': 'Web 搜索',
+    'file search': '文件搜索',
+    streaming: '流式传输',
+    'system prompt': '系统提示',
+    'TypeScript-first': 'TypeScript 优先',
+    'Human in the loop': '人工干预',
+    'Hosted tool': '托管工具',
+    'Hosted MCP server tools': '远程 MCP 服务器工具',
+    raw: '原始',
+    'Realtime Agents': '实时智能体',
+    'Build your first agent in minutes.': '几分钟内构建您的第一个智能体。',
+    "Let's build": '开始构建',
+  },
 };
 
 const engToNonEngInstructions: Record<string, string[]> = {
@@ -193,6 +224,13 @@ const engToNonEngInstructions: Record<string, string[]> = {
     "* The term 'result' in the Runner guide context must be translated like an 'execution result'",
     '* You must consistently use polite wording such as です/ます rather than である/なのだ.',
     "* Don't put 。 at the end for non-sentence bullet points",
+  ],
+  zh: [
+    "* The term 'result' in the Runner guide context must be translated as '运行结果' or '执行结果'",
+    '* Use clear and concise Chinese expressions, avoiding overly formal or archaic language',
+    '* For technical terms, prefer commonly accepted Chinese translations over literal translations',
+    '* Use Chinese punctuation marks appropriately (。，；：""\'\'（）)',
+    '* When translating code-related content, maintain consistency with established Chinese programming terminology',
   ],
 };
 
@@ -258,6 +296,12 @@ You must return **only** the translated markdown. Do not include any commentary,
 *(applies only when ${targetLanguage} = Japanese)*  
 - Insert a half‑width space before and after all alphanumeric terms.  
 - Add a half‑width space just outside markdown emphasis markers: \` **bold** \` (good) vs \`** bold **\` (bad).
+
+*(applies only when ${targetLanguage} = Chinese)*
+- Use proper Chinese punctuation marks (。，；：""''（）) instead of English ones
+- For technical terms mixed with Chinese text, add appropriate spacing for readability
+- Use simplified Chinese characters consistently
+- Follow Chinese grammar and sentence structure patterns
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -385,7 +429,13 @@ You must return **only** the translated markdown. Do not include any commentary,
 #########################
 *(applies only when ${targetLanguage} = Japanese)*  
 - Insert a half‑width space before and after all alphanumeric terms.  
-- Add a half‑width space just outside markdown emphasis markers: \` **bold** \` (good) vs \`** bold **\` (bad). Review this rule again before returning the translated text.
+- Add a half‑width space just outside markdown emphasis markers: \` **bold** \` (good) vs \`** bold **\` (bad).
+
+*(applies only when ${targetLanguage} = Chinese)*
+- Use proper Chinese punctuation marks (。，；：""''（）) instead of English ones
+- For technical terms mixed with Chinese text, add appropriate spacing for readability
+- Use simplified Chinese characters consistently
+- Follow Chinese grammar and sentence structure patterns Review this rule again before returning the translated text.
 
 #########################
 ##  DO NOT TRANSLATE   ##

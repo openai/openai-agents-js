@@ -350,6 +350,10 @@ export default defineConfig({
           label: '日本語',
           lang: 'ja',
         },
+        zh: {
+          label: '中文',
+          lang: 'zh',
+        },
       },
       social: [
         {
