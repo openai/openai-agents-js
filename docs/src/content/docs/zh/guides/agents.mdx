@@ -1,0 +1,169 @@
+---
+title: 智能体
+description: Learn more about how to define agents in the OpenAI Agents SDK for JavaScript / TypeScript
+---
+
+import { Code } from '@astrojs/starlight/components';
+import simpleAgent from '../../../../../../examples/docs/agents/simpleAgent.ts?raw';
+import agentWithTools from '../../../../../../examples/docs/agents/agentWithTools.ts?raw';
+import agentWithContext from '../../../../../../examples/docs/agents/agentWithContext.ts?raw';
+import agentWithAodOutputType from '../../../../../../examples/docs/agents/agentWithAodOutputType.ts?raw';
+import agentsAsTools from '../../../../../../examples/docs/agents/agentsAsTools.ts?raw';
+import agentWithHandoffs from '../../../../../../examples/docs/agents/agentWithHandoffs.ts?raw';
+import agentWithDynamicInstructions from '../../../../../../examples/docs/agents/agentWithDynamicInstructions.ts?raw';
+import agentWithLifecycleHooks from '../../../../../../examples/docs/agents/agentWithLifecycleHooks.ts?raw';
+import agentCloning from '../../../../../../examples/docs/agents/agentCloning.ts?raw';
+import agentForcingToolUse from '../../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
+
+智能体是 OpenAI Agents SDK 的主要构建模块。**智能体** 是一个大型语言模型（LLM），它被配置了：
+
+- **Instructions** —— 告诉模型*它是谁*以及*应如何响应*的系统提示。
+- **Model** —— 要调用的 OpenAI 模型，以及可选的模型调优参数。
+- **Tools** —— LLM 为完成任务可调用的一组函数或 API。
+
+<Code lang="typescript" code={simpleAgent} title="基础智能体定义" />
+
+本页其余部分将更详细地介绍每个智能体特性。
+
+---
+
+## 基础配置
+
+`Agent` 构造函数接收一个配置对象。最常用的属性如下所示。
+
+| 属性            | 必填 | 描述                                                                                       |
+| --------------- | ---- | ------------------------------------------------------------------------------------------ |
+| `name`          | 是   | 简短、易读的标识符。                                                                       |
+| `instructions`  | 是   | 系统提示（字符串**或**函数——参见[动态 instructions](#dynamic-instructions)）。             |
+| `model`         | 否   | 模型名称**或**自定义的 [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 实现。 |
+| `modelSettings` | 否   | 调优参数（temperature、top_p 等）。                                                        |
+| `tools`         | 否   | 模型可调用的 [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) 实例数组。       |
+
+<Code lang="typescript" code={agentWithTools} title="带有工具的智能体" />
+
+---
+
+## 上下文
+
+智能体在其上下文类型上是**泛型化**的——即 `Agent<TContext, TOutput>`。_上下文_ 是一个依赖注入对象，由您创建并传递给 `Runner.run()`。它会被转发到每个工具、护栏、交接等组件，对于存储状态或提供共享服务（数据库连接、用户元数据、功能开关等）很有用。
+
+<Code lang="typescript" code={agentWithContext} title="带有上下文的智能体" />
+
+---
+
+## 输出类型
+
+默认情况下，智能体返回**纯文本**（`string`）。如果希望模型返回结构化对象，可以指定 `outputType` 属性。SDK 接受：
+
+1. [Zod](https://github.com/colinhacks/zod) 模式（`z.object({...})`）。
+2. 任意兼容 JSON Schema 的对象。
+
+<Code
+  lang="typescript"
+  code={agentWithAodOutputType}
+  title="使用 Zod 的结构化输出"
+/>
+
+当提供了 `outputType` 时，SDK 会自动使用
+[structured outputs](https://platform.openai.com/docs/guides/structured-outputs) 而非纯文本。
+
+---
+
+## 多智能体系统设计模式
+
+组合智能体有很多方式。我们在生产应用中经常看到两种模式：
+
+1. **管理器（智能体作为工具）**——一个中心智能体掌控对话，并调用以工具形式暴露的专业智能体。
+2. **交接**——初始智能体在识别出用户的请求后，将整个对话委托给某个专家智能体。
+
+这两种方法是互补的。管理器为您提供一个集中位置来实施护栏或速率限制，而交接让每个智能体专注于单一任务，而不必保留对对话的控制权。
+
+### 管理器（智能体作为工具）
+
+在这种模式下，管理器从不移交控制权——LLM 使用工具，且由管理器汇总最终答案。详见 [Tools](/openai-agents-js/zh/guides/tools#agents-as-tools)。
+
+<Code lang="typescript" code={agentsAsTools} title="作为工具的智能体" />
+
+### 交接
+
+使用交接时，分流智能体负责路由请求，但一旦发生交接，专家智能体就拥有对话的控制权，直到产生最终输出。这使提示更短，并让您可以独立地推理每个智能体。了解更多请参阅 [Handoffs](/openai-agents-js/zh/guides/handoffs)。
+
+<Code lang="typescript" code={agentWithHandoffs} title="带有交接的智能体" />
+
+---
+
+## 动态 instructions
+
+`instructions` 可以是**函数**而非字符串。该函数接收当前的 `RunContext` 和 Agent 实例，并且可以返回字符串 _或_ `Promise<string>`。
+
+<Code
+  lang="typescript"
+  code={agentWithDynamicInstructions}
+  title="带有动态 instructions 的智能体"
+/>
+
+同时支持同步和 `async` 函数。
+
+---
+
+## 生命周期钩子
+
+对于高级用例，您可以通过监听事件来观察智能体的生命周期
+
+<Code
+  lang="typescript"
+  code={agentWithLifecycleHooks}
+  title="带有生命周期钩子的智能体"
+/>
+
+---
+
+## 护栏
+
+护栏允许您验证或转换用户输入与智能体输出。通过 `inputGuardrails` 和 `outputGuardrails` 数组进行配置。详见 [Guardrails](/openai-agents-js/zh/guides/guardrails)。
+
+---
+
+## 智能体的克隆 / 复制
+
+需要在现有智能体基础上做些小修改？使用 `clone()` 方法，它会返回一个全新的 `Agent` 实例。
+
+<Code lang="typescript" code={agentCloning} title="克隆智能体" />
+
+---
+
+## 强制工具使用
+
+提供工具并不保证 LLM 会调用它。您可以通过 `modelSettings.tool_choice` **强制**使用工具：
+
+1. `'auto'`（默认）——LLM 决定是否使用工具。
+2. `'required'`——LLM _必须_ 调用某个工具（可自行选择哪个）。
+3. `'none'`——LLM **不得** 调用任何工具。
+4. 指定工具名，例如 `'calculator'` ——LLM 必须调用该特定工具。
+
+<Code lang="typescript" code={agentForcingToolUse} title="强制工具使用" />
+
+### 防止无限循环
+
+在一次工具调用后，SDK 会自动将 `tool_choice` 重置为 `'auto'`。这可防止模型进入反复尝试调用工具的无限循环。您可以通过 `resetToolChoice` 标志或配置
+`toolUseBehavior` 来覆盖该行为：
+
+- `'run_llm_again'`（默认）——使用工具结果再次运行 LLM。
+- `'stop_on_first_tool'` ——将第一个工具结果视为最终答案。
+- `{ stopAtToolNames: ['my_tool'] }` ——当任一列出的工具被调用时停止。
+- `(context, toolResults) => ...` ——返回运行是否应结束的自定义函数。
+
+```typescript
+const agent = new Agent({
+  ...,
+  toolUseBehavior: 'stop_on_first_tool',
+});
+```
+
+---
+
+## 后续步骤
+
+- 了解如何 [Running Agents](/openai-agents-js/zh/guides/running-agents)。
+- 深入了解 [Tools](/openai-agents-js/zh/guides/tools)、[Guardrails](/openai-agents-js/zh/guides/guardrails) 和 [Models](/openai-agents-js/zh/guides/models)。
+- 在侧边栏的 **@openai/agents** 下查阅完整的 TypeDoc 参考。

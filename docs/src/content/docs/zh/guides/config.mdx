@@ -1,0 +1,76 @@
+---
+title: 配置 SDK
+description: Customize API keys, tracing and logging behavior
+---
+
+import { Code } from '@astrojs/starlight/components';
+import setDefaultOpenAIKeyExample from '../../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
+import setDefaultOpenAIClientExample from '../../../../../../examples/docs/config/setDefaultOpenAIClient.ts?raw';
+import setOpenAIAPIExample from '../../../../../../examples/docs/config/setOpenAIAPI.ts?raw';
+import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
+import setTracingDisabledExample from '../../../../../../examples/docs/config/setTracingDisabled.ts?raw';
+import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
+
+## API 密钥与客户端
+
+默认情况下，SDK 在首次导入时会读取环境变量 `OPENAI_API_KEY`。如果无法设置该变量，您可以手动调用 `setDefaultOpenAIKey()`。
+
+<Code
+  lang="typescript"
+  code={setDefaultOpenAIKeyExample}
+  title="设置默认 OpenAI 密钥"
+/>
+
+您也可以传入自己的 `OpenAI` 客户端实例。否则 SDK 将使用默认密钥自动创建一个。
+
+<Code
+  lang="typescript"
+  code={setDefaultOpenAIClientExample}
+  title="设置默认 OpenAI 客户端"
+/>
+
+最后，您可以在 Responses API 和 Chat Completions API 之间切换。
+
+<Code lang="typescript" code={setOpenAIAPIExample} title="设置 OpenAI API" />
+
+## 追踪
+
+追踪默认启用，并使用上文的 OpenAI 密钥。可以通过 `setTracingExportApiKey()` 设置单独的密钥。
+
+<Code
+  lang="typescript"
+  code={setTracingExportApiKeyExample}
+  title="设置追踪导出 API 密钥"
+/>
+
+也可以完全禁用追踪。
+
+<Code lang="typescript" code={setTracingDisabledExample} title="禁用追踪" />
+
+## 调试日志
+
+SDK 使用 [`debug`](https://www.npmjs.com/package/debug) 包进行调试日志记录。将环境变量 `DEBUG` 设为 `openai-agents*` 以查看详细日志。
+
+```bash
+export DEBUG=openai-agents*
+```
+
+您可以使用 `@openai/agents` 中的 `getLogger(namespace)` 为自己的模块获取一个带命名空间的日志记录器。
+
+<Code lang="typescript" code={getLoggerExample} title="获取日志记录器" />
+
+### 日志中的敏感数据
+
+某些日志可能包含用户数据。可通过设置以下环境变量来禁用。
+
+要禁用记录 LLM 的输入和输出：
+
+```bash
+export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
+```
+
+要禁用记录工具的输入和输出：
+
+```bash
+export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
+```
