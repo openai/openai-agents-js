@@ -210,6 +210,8 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Realtime Agents': '实时智能体',
     'Build your first agent in minutes.': '几分钟内构建您的第一个智能体。',
     "Let's build": '开始构建',
+    Overview: '概述',
+    Quickstart: '快速上手',
   },
 };
 

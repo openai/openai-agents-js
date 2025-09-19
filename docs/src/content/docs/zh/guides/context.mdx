@@ -1,0 +1,43 @@
+---
+title: 上下文管理
+description: Learn how to provide local data via RunContext and expose context to the LLM
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
+
+“上下文”是一个被广泛使用的术语。你可能关心两大类上下文：
+
+1. 你的代码在一次运行期间可访问的**本地上下文**：工具所需的依赖或数据、像 `onHandoff` 这样的回调，以及生命周期钩子。
+2. 语言模型在生成响应时可见的**智能体/LLM 上下文**。
+
+## 本地上下文
+
+本地上下文由 `RunContext<T>` 类型表示。你可以创建任意对象来保存状态或依赖，并将其传给 `Runner.run()`。所有工具调用和钩子都会接收一个 `RunContext` 包装器，以便它们读取或修改该对象。
+
+<Code
+  lang="typescript"
+  code={localContextExample}
+  title="Local context example"
+/>
+
+参与同一次运行的每个智能体、工具和钩子必须使用相同的**类型**的上下文。
+
+将本地上下文用于如下场景：
+
+- 关于本次运行的数据（用户名、ID 等）
+- 诸如日志记录器或数据获取器等依赖项
+- 辅助函数
+
+<Aside type="note">
+  上下文对象**不会**被发送给 LLM。它纯属本地，你可以自由读取或写入。
+</Aside>
+
+## 智能体/LLM 上下文
+
+当调用 LLM 时，它能看到的数据仅来自会话历史。若要提供更多信息，你有几种选择：
+
+1. 将其添加到智能体的 `instructions` —— 也称为系统或开发者消息。这可以是一个静态字符串，或一个接收上下文并返回字符串的函数。
+2. 在调用 `Runner.run()` 时将其包含在 `input` 中。这与 instructions 技术类似，但允许你将消息放在更低的[指挥链](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)位置。
+3. 通过函数工具暴露它，让 LLM 按需获取数据。
+4. 使用检索或 Web 搜索工具，将回答建立在来自文件、数据库或 Web 的相关数据之上。

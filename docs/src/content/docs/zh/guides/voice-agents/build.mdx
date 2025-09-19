@@ -1,0 +1,163 @@
+---
+title: 构建语音智能体
+description: Learn how to build voice agents using the OpenAI Agents SDK, what features are available, how to architecture your application, and more.
+---
+
+import { Steps, Aside, Code } from '@astrojs/starlight/components';
+import createAgentExample from '../../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
+import createSessionExample from '../../../../../../../examples/docs/voice-agents/createSession.ts?raw';
+import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
+import sessionHistoryExample from '../../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
+import historyUpdatedExample from '../../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
+import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import toolHistoryExample from '../../../../../../../examples/docs/voice-agents/toolHistory.ts?raw';
+import sendMessageExample from '../../../../../../../examples/docs/voice-agents/sendMessage.ts?raw';
+import serverAgentExample from '../../../../../../../examples/docs/voice-agents/serverAgent.ts?raw';
+import delegationAgentExample from '../../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
+import turnDetectionExample from '../../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
+
+## 音频处理
+
+某些传输层（例如默认的 `OpenAIRealtimeWebRTC`）会自动为您处理音频输入和输出。对于其他传输机制（例如 `OpenAIRealtimeWebSocket`），您需要自行处理会话音频：
+
+<Code lang="typescript" code={handleAudioExample} />
+
+## 会话配置
+
+您可以在构造期间向 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) 传递其他选项，或在调用 `connect(...)` 时进行配置。
+
+<Code lang="typescript" code={configureSessionExample} />
+
+这些传输层允许您传入任何与[会话](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update)匹配的参数。
+
+对于尚无对应项的新增参数（在 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) 中没有匹配的参数），您可以使用 `providerData`。传入 `providerData` 的任何内容都会直接作为 `session` 对象的一部分传递。
+
+## 交接
+
+与常规智能体类似，您可以使用交接将智能体拆分为多个智能体并在它们之间编排，从而提升智能体的性能并更好地限定问题范围。
+
+<Code lang="typescript" code={multiAgentsExample} />
+
+与常规智能体不同，交接在 Realtime Agents 中的行为略有差异。执行交接时，正在进行的会话会被更新为新的智能体配置。因此，智能体会自动访问正在进行的对话历史，并且当前不会应用输入过滤器。
+
+此外，这意味着在交接中无法更改 `voice` 或 `model`。您也只能连接到其他 Realtime Agents。如果您需要使用不同的模型，例如像 `o4-mini` 这样的推理模型，可以使用[通过工具进行委派](#delegation-through-tools)。
+
+## 工具
+
+与常规智能体相同，Realtime Agents 可以调用工具来执行操作。您可以使用与常规智能体相同的 `tool()` 函数来定义工具。
+
+<Code lang="typescript" code={defineToolExample} />
+
+Realtime Agents 只能使用函数工具，并且这些工具会在与您的 Realtime 会话相同的位置执行。这意味着如果您在浏览器中运行 Realtime 会话，您的工具也会在浏览器中执行。如果需要执行更敏感的操作，您可以在工具内向后端服务器发起 HTTP 请求。
+
+在工具执行期间，智能体将无法处理来自用户的新请求。改善体验的一种方式是，让智能体在即将执行工具时进行提示，或使用特定短语为执行工具争取一些时间。
+
+### 访问对话历史
+
+除了智能体调用特定工具时传入的参数之外，您还可以访问由 Realtime 会话跟踪的当前对话历史的快照。如果您需要基于当前对话状态执行更复杂的操作，或计划[使用工具进行委派](#delegation-through-tools)，这将非常有用。
+
+<Code lang="typescript" code={toolHistoryExample} />
+
+<Aside type="note">
+  传入的历史是工具调用当下的快照。用户最后一句话的转录可能尚不可用。
+</Aside>
+
+### 工具执行前的审批
+
+如果您将工具定义为 `needsApproval: true`，智能体会在执行工具之前发出 `tool_approval_requested` 事件。
+
+通过监听此事件，您可以向用户展示一个 UI 以批准或拒绝工具调用。
+
+<Code lang="typescript" code={toolApprovalEventExample} />
+
+<Aside type="note">
+  当语音智能体等待工具调用的审批时，智能体将无法处理来自用户的新请求。
+</Aside>
+
+## 护栏
+
+护栏提供了一种方式，用于监测智能体的输出是否违反了一组规则，并可立即切断响应。这些护栏检查会基于智能体响应的转录文本执行，因此要求启用模型的文本输出（默认已启用）。
+
+当模型响应返回时，您提供的护栏会异步运行，使您可以基于预定义的分类触发条件（例如“提到某个特定禁用词”）来切断响应。
+
+当护栏被触发时，会话会发出 `guardrail_tripped` 事件。该事件还会提供一个包含触发护栏的 `itemId` 的 `details` 对象。
+
+<Code lang="typescript" code={guardrailsExample} />
+
+默认情况下，护栏每 100 个字符运行一次，或在响应文本生成结束时运行一次。由于朗读文本通常更耗时，这意味着在大多数情况下，护栏应能在用户听到之前捕获违规内容。
+
+如果您想修改此行为，可以向会话传入一个 `outputGuardrailSettings` 对象。
+
+<Code lang="typescript" code={guardrailSettingsExample} />
+
+## 回合检测 / 语音活动检测
+
+Realtime 会话将使用 Realtime API 内置的[语音活动检测模式](https://platform.openai.com/docs/guides/realtime-vad)，自动检测用户何时在说话并触发新的回合。
+
+您可以通过向会话传入 `turnDetection` 对象来更改语音活动检测模式。
+
+<Code lang="typescript" code={turnDetectionExample} />
+
+调整回合检测设置可以帮助校准不必要的打断并处理静默。请查阅[Realtime API 文档以了解不同设置的更多细节](https://platform.openai.com/docs/guides/realtime-vad)。
+
+## 中断
+
+使用内置的语音活动检测时，打断智能体说话会自动触发智能体基于所听到的内容进行检测并更新其上下文。同时会发出一个 `audio_interrupted` 事件。这可用于立即停止所有音频播放（仅适用于 WebSocket 连接）。
+
+<Code lang="typescript" code={audioInterruptedExample} />
+
+如果您想执行手动中断，例如在 UI 中提供一个“停止”按钮，可以手动调用 `interrupt()`：
+
+<Code lang="typescript" code={sessionInterruptExample} />
+
+无论采用哪种方式，Realtime 会话都会处理对智能体生成的中断，截断其对已对用户所述内容的认知，并更新历史。
+
+如果您使用 WebRTC 连接到智能体，还会清空音频输出。如果您使用 WebSocket，则需要自行通过停止已排队待播放的音频的播放来处理这一点。
+
+## 文本输入
+
+如果您想向智能体发送文本输入，可以使用 `RealtimeSession` 的 `sendMessage` 方法。
+
+这对于让用户以两种模态与智能体交互，或为对话提供额外上下文非常有用。
+
+<Code lang="typescript" code={sendMessageExample} />
+
+## 对话历史管理
+
+`RealtimeSession` 会在 `history` 属性中自动管理对话历史：
+
+您可以使用它向用户渲染历史或对其执行其他操作。由于该历史会在对话过程中持续变化，您可以监听 `history_updated` 事件。
+
+如果您想修改历史，例如完全删除一条消息或更新其转录文本，可以使用 `updateHistory` 方法。
+
+<Code lang="typescript" code={updateHistoryExample} />
+
+### 限制
+
+1. 目前无法在事后更新/更改函数工具调用
+2. 历史中的文本输出需要启用转录与文本模态
+3. 由于中断而被截断的响应没有转录文本
+
+## 通过工具委派
+
+![通过工具委派](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
+
+通过将对话历史与一次工具调用相结合，您可以将对话委派给另一个后端智能体以执行更复杂的操作，然后将其结果返回给用户。
+
+<Code lang="typescript" code={delegationAgentExample} />
+
+下面的代码将会在服务器上执行。本示例通过 Next.js 的 Server Actions 实现。
+
+<Code lang="typescript" code={serverAgentExample} />

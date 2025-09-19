@@ -1,0 +1,159 @@
+---
+title: 快速上手
+description: Create your first AI Agent from scratch
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+import quickstartExample from '../../../../../../examples/docs/quickstart/index.ts?raw';
+
+## 项目设置
+
+<Steps>
+
+1. 创建项目并初始化 npm。这一步只需执行一次。
+
+   ```bash
+   mkdir my_project
+   cd my_project
+   npm init -y
+   ```
+
+2. 安装 Agents SDK。
+
+   ```bash
+   npm install @openai/agents zod@3
+   ```
+
+3. 设置 OpenAI API 密钥。如果还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建一个 OpenAI API key。
+
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   ```
+
+   或者，你也可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置密钥，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
+   参见 [Configuring the SDK](/openai-agents-js/zh/guides/config) 了解更多详情。
+
+</Steps>
+
+## 第一个智能体创建
+
+智能体由 instructions 和名称定义。
+
+```typescript
+import { Agent } from '@openai/agents';
+
+const agent = new Agent({
+  name: 'History Tutor',
+  instructions:
+    'You provide assistance with historical queries. Explain important events and context clearly.',
+});
+```
+
+## 第一个智能体运行
+
+可以使用 `run` 方法来运行智能体。通过同时传入要启动的智能体以及要传递的输入来触发一次运行。
+
+这将返回一个运行结果，其中包含最终输出以及该次运行期间执行的任何操作。
+
+```typescript
+import { Agent, run } from '@openai/agents';
+
+const agent = new Agent({
+  name: 'History Tutor',
+  instructions:
+    'You provide assistance with historical queries. Explain important events and context clearly.',
+});
+
+const result = await run(agent, 'When did sharks first appear?');
+
+console.log(result.finalOutput);
+```
+
+## 智能体工具配置
+
+你可以为智能体提供工具，用于查找信息或执行操作。
+
+```typescript
+import { Agent, tool } from '@openai/agents';
+
+const historyFunFact = tool({
+  // The name of the tool will be used by the agent to tell what tool to use.
+  name: 'history_fun_fact',
+  // The description is used to describe **when** to use the tool by telling it **what** it does.
+  description: 'Give a fun fact about a historical event',
+  // This tool takes no parameters, so we provide an empty Zod Object.
+  parameters: z.object({}),
+  execute: async () => {
+    // The output will be returned back to the Agent to use
+    return 'Sharks are older than trees.';
+  },
+});
+
+const agent = new Agent({
+  name: 'History Tutor',
+  instructions:
+    'You provide assistance with historical queries. Explain important events and context clearly.',
+  // Adding the tool to the agent
+  tools: [historyFunFact],
+});
+```
+
+## 更多智能体添加
+
+可以以类似方式定义更多智能体，将问题拆解为更小的部分，使智能体更专注于当前任务。同时，你也可以在智能体上指定所用模型，从而针对不同问题使用不同的模型。
+
+```typescript
+const historyTutorAgent = new Agent({
+  name: 'History Tutor',
+  instructions:
+    'You provide assistance with historical queries. Explain important events and context clearly.',
+});
+
+const mathTutorAgent = new Agent({
+  name: 'Math Tutor',
+  instructions:
+    'You provide help with math problems. Explain your reasoning at each step and include examples',
+});
+```
+
+## 交接定义
+
+为了在多个智能体之间进行编排，你可以为某个智能体定义 `handoffs`。这样，该智能体就可以将对话传递给下一个智能体。这将在一次运行过程中自动发生。
+
+运行结束后，你可以通过查看运行结果中的 `finalAgent` 属性来了解是哪一个智能体生成了最终响应。
+
+## 智能体编排运行
+
+Runner 用于处理各个智能体的执行、可能发生的交接以及工具的执行。
+
+```typescript
+import { run } from '@openai/agents';
+
+async function main() {
+  const result = await run(triageAgent, 'What is the capital of France?');
+  console.log(result.finalOutput);
+}
+
+main().catch((err) => console.error(err));
+```
+
+## 综合示例
+
+把以上内容整合成一个完整示例。将其放入 `index.js` 文件并运行。
+
+<Code lang="typescript" code={quickstartExample} title="Quickstart" />
+
+## 追踪查看
+
+Agents SDK 会为你自动生成追踪。这使你能够审阅智能体的运行情况、它们调用了哪些工具、以及它们将对话交接给了哪个智能体。
+
+要查看一次智能体运行期间发生的情况，请前往 [OpenAI Dashboard 中的 Trace viewer](https://platform.openai.com/traces)。
+
+## 后续步骤
+
+了解如何构建更复杂的智能体流程：
+
+- 了解如何配置 [Agents](/openai-agents-js/zh/guides/agents)。
+- 了解 [Running Agents](/openai-agents-js/zh/guides/running-agents)。
+- 了解 [Tools](/openai-agents-js/zh/guides/tools)、[Guardrails](/openai-agents-js/zh/guides/guardrails) 和 [Models](/openai-agents-js/zh/guides/models)。
