@@ -133,6 +133,12 @@ export type RealtimeSessionConfigCommon = {
 export type RealtimeSessionConfigDefinition = RealtimeSessionConfigCommon & {
   outputModalities?: ('text' | 'audio')[];
   audio?: RealtimeAudioConfig;
+  /**
+   * TODO: We'll eventually migrate to audio.output.voice instead of this property.
+   * Until we fully migrate to audio.output.voice for all session implementations,
+   * using this top-level voice property helps with backwards compatibility.
+   */
+  voice?: string;
 };
 
 // Deprecated config (legacy) — cannot be mixed with new fields
@@ -175,7 +181,6 @@ function isDeprecatedConfig(
 ): config is Partial<RealtimeSessionConfigDeprecated> {
   return (
     isDefined('modalities', config) ||
-    isDefined('voice', config) ||
     isDefined('inputAudioFormat', config) ||
     isDefined('outputAudioFormat', config) ||
     isDefined('inputAudioTranscription', config) ||
@@ -193,6 +198,25 @@ export function toNewSessionConfig(
   config: Partial<RealtimeSessionConfig>,
 ): Partial<RealtimeSessionConfigDefinition> {
   if (!isDeprecatedConfig(config)) {
+    const inputConfig = config.audio?.input
+      ? {
+          format: normalizeAudioFormat(config.audio.input.format),
+          noiseReduction: config.audio.input.noiseReduction ?? null,
+          transcription: config.audio.input.transcription,
+          turnDetection: config.audio.input.turnDetection,
+        }
+      : undefined;
+
+    const requestedOutputVoice = config.audio?.output?.voice ?? config.voice;
+    const outputConfig =
+      config.audio?.output || typeof requestedOutputVoice !== 'undefined'
+        ? {
+            format: normalizeAudioFormat(config.audio?.output?.format),
+            voice: requestedOutputVoice,
+            speed: config.audio?.output?.speed,
+          }
+        : undefined;
+
     return {
       model: config.model,
       instructions: config.instructions,
@@ -202,25 +226,13 @@ export function toNewSessionConfig(
       providerData: config.providerData,
       prompt: config.prompt,
       outputModalities: config.outputModalities,
-      audio: config.audio
-        ? {
-            input: config.audio.input
-              ? {
-                  format: normalizeAudioFormat(config.audio.input.format),
-                  noiseReduction: config.audio.input.noiseReduction ?? null,
-                  transcription: config.audio.input.transcription,
-                  turnDetection: config.audio.input.turnDetection,
-                }
-              : undefined,
-            output: config.audio.output
-              ? {
-                  format: normalizeAudioFormat(config.audio.output.format),
-                  voice: config.audio.output.voice,
-                  speed: config.audio.output.speed,
-                }
-              : undefined,
-          }
-        : undefined,
+      audio:
+        inputConfig || outputConfig
+          ? {
+              input: inputConfig,
+              output: outputConfig,
+            }
+          : undefined,
     };
   }
 
