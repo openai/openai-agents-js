@@ -175,7 +175,6 @@ function isDeprecatedConfig(
 ): config is Partial<RealtimeSessionConfigDeprecated> {
   return (
     isDefined('modalities', config) ||
-    isDefined('voice', config) ||
     isDefined('inputAudioFormat', config) ||
     isDefined('outputAudioFormat', config) ||
     isDefined('inputAudioTranscription', config) ||
@@ -215,12 +214,17 @@ export function toNewSessionConfig(
             output: config.audio.output
               ? {
                   format: normalizeAudioFormat(config.audio.output.format),
-                  voice: config.audio.output.voice,
+                  // Prefer GA output.voice; if absent, lift top-level voice into GA.
+                  voice: config.audio.output.voice ?? (config as any).voice,
                   speed: config.audio.output.speed,
                 }
-              : undefined,
+              : ((config as any).voice
+                  ? ({ voice: (config as any).voice } as RealtimeAudioOutputConfig)
+                  : undefined),
           }
-        : undefined,
+        : ((config as any).voice
+            ? ({ output: { voice: (config as any).voice } } as RealtimeAudioConfig)
+            : undefined),
     };
   }
 
