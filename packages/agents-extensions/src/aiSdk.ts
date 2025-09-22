@@ -301,6 +301,36 @@ function convertToAiSdkOutput(
   );
 }
 
+function schemaAcceptsObject(schema: JSONSchema7 | undefined): boolean {
+  if (!schema) {
+    return false;
+  }
+  const schemaType = schema.type;
+  if (Array.isArray(schemaType)) {
+    if (schemaType.includes('object')) {
+      return true;
+    }
+  } else if (schemaType === 'object') {
+    return true;
+  }
+  return Boolean(schema.properties || schema.additionalProperties);
+}
+
+function expectsObjectArguments(
+  tool: SerializedTool | SerializedHandoff | undefined,
+): boolean {
+  if (!tool) {
+    return false;
+  }
+  if ('toolName' in tool) {
+    return schemaAcceptsObject(tool.inputJsonSchema as JSONSchema7 | undefined);
+  }
+  if (tool.type === 'function') {
+    return schemaAcceptsObject(tool.parameters as JSONSchema7 | undefined);
+  }
+  return false;
+}
+
 /**
  * @internal
  * Converts a tool to a language model V2 tool.
@@ -481,15 +511,41 @@ export class AiSdkModel implements Model {
           (c: any) => c && c.type === 'tool-call',
         );
         const hasToolCalls = toolCalls.length > 0;
+
+        const toolsNameToToolMap = new Map<
+          string,
+          SerializedTool | SerializedHandoff
+        >(request.tools.map((tool) => [tool.name, tool] as const));
+
+        for (const handoff of request.handoffs) {
+          toolsNameToToolMap.set(handoff.toolName, handoff);
+        }
         for (const toolCall of toolCalls) {
+          const requestedTool =
+            typeof toolCall.toolName === 'string'
+              ? toolsNameToToolMap.get(toolCall.toolName)
+              : undefined;
+
+          if (!requestedTool && toolCall.toolName) {
+            this.#logger.warn(
+              `Received tool call for unknown tool '${toolCall.toolName}'.`,
+            );
+          }
+
+          let toolCallArguments: string;
+          if (typeof toolCall.input === 'string') {
+            toolCallArguments =
+              toolCall.input === '' && expectsObjectArguments(requestedTool)
+                ? JSON.stringify({})
+                : toolCall.input;
+          } else {
+            toolCallArguments = JSON.stringify(toolCall.input ?? {});
+          }
           output.push({
             type: 'function_call',
             callId: toolCall.toolCallId,
             name: toolCall.toolName,
-            arguments:
-              typeof toolCall.input === 'string'
-                ? toolCall.input
-                : JSON.stringify(toolCall.input ?? {}),
+            arguments: toolCallArguments,
             status: 'completed',
             providerData: hasToolCalls ? result.providerMetadata : undefined,
           });
