@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.1.4
+
+### Patch Changes
+
+- 5f4e139: fix: #485 Abort during streaming throws “ReadableStream is locked” in StreamedRunResult
+- 9147a6a: feat: #460 Enable to customize the internal runner for an agent as tool
+
 ## 0.1.3
 
 ### Patch Changes

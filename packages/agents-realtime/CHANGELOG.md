@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.1.4
+
+### Patch Changes
+
+- 18fd902: fix: #495 Realtime session config falls back to legacy format when voice is set
+- 1d4984b: Realtime: expose Call ID in OpenAIRealtimeWebRTC
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-core@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes
