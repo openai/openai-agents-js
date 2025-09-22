@@ -1,5 +1,5 @@
 ---
-title: 实时传输层
+title: 传输机制
 description: Learn about the different transport layers that can be used with Realtime Agents.
 ---
 
@@ -27,40 +27,40 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 ## 默认传输层
 
-### WebRTC 连接
+### 通过 WebRTC 连接
 
-默认传输层使用 WebRTC。音频会从麦克风进行录制并自动回放。
+默认传输层使用 WebRTC。音频会从麦克风录制并自动回放。
 
-如果要使用你自己的媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
+如需使用自有媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### WebSocket 连接
+### 通过 WebSocket 连接
 
-在创建会话时传入 `transport: 'websocket'` 或提供 `OpenAIRealtimeWebSocket` 的实例，以使用 WebSocket 连接替代 WebRTC。这非常适合服务器端用例，例如使用 Twilio 构建电话智能体。
+在创建会话时传入 `transport: 'websocket'` 或一个 `OpenAIRealtimeWebSocket` 实例，以使用 WebSocket 连接替代 WebRTC。这非常适用于服务器端用例，例如使用 Twilio 构建电话智能体。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-使用任意录制/播放库处理原始 PCM16 音频字节。
+使用任意录制/回放库处理原始 PCM16 音频字节。
 
 ### 自定义传输机制
 
-如果你想使用不同的语音到语音 API，或有自己的自定义传输机制，你可以通过实现 `RealtimeTransportLayer` 接口并触发 `RealtimeTransportEventTypes` 事件来创建你自己的实现。
+如果你想使用不同的语音到语音 API，或拥有自定义的传输机制，可以通过实现 `RealtimeTransportLayer` 接口并触发 `RealtimeTransportEventTypes` 事件来创建你自己的实现。
 
-## 更直接的 Realtime API 交互
+## 更直接地与 Realtime API 交互
 
-如果你想使用 OpenAI Realtime API，但需要更直接地访问 Realtime API，有两种选项：
+如果你想使用 OpenAI Realtime API，同时对 Realtime API 拥有更直接的控制，你有两种方式：
 
-### 选项 1 - 访问传输层
+### 选项 1 —— 访问传输层
 
 如果你仍希望受益于 `RealtimeSession` 的全部能力，可以通过 `session.transport` 访问你的传输层。
 
-传输层会将其接收到的每个事件以 `*` 事件的形式发出，你也可以使用 `sendEvent()` 方法发送原始事件。
+传输层会在 `*` 事件下发出其接收到的每个事件，你也可以使用 `sendEvent()` 方法发送原始事件。
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### 选项 2 — 仅使用传输层
+### 选项 2 —— 仅使用传输层
 
-如果你不需要自动工具执行、护栏等，也可以将传输层用作仅管理连接和中断的轻量客户端。
+如果你不需要自动工具执行、护栏等功能，也可以将传输层作为仅管理连接与中断的“薄”客户端来使用。
 
 <Code lang="typescript" code={thinClientExample} />

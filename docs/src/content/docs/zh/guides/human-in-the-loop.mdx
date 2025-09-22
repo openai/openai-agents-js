@@ -1,5 +1,5 @@
 ---
-title: 人工干预
+title: 人机协作
 description: Add a human in the loop check for your agent executions
 ---
 
@@ -7,55 +7,59 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-本指南演示如何使用 SDK 内置的人工干预支持，根据人工介入暂停和恢复智能体的运行。
+本指南演示如何使用 SDK 内置的人工干预支持，根据人工介入来暂停和恢复智能体运行。
 
-当前的主要用例是：在执行敏感的工具调用前请求批准。
+当前的主要用例是对敏感的工具执行请求批准。
 
-## 批准请求
+## 审批请求
 
-您可以通过将 `needsApproval` 选项设置为 `true`，或设置为返回布尔值的异步函数，来定义需要批准的工具。
+您可以通过将 `needsApproval` 选项设置为 `true`，或设置为返回布尔值的异步函数，来定义一个需要审批的工具。
 
 <Code
   lang="typescript"
   code={toolApprovalDefinition}
-  title="工具批准定义"
+  title="工具审批定义"
   meta={`{10}`}
 />
 
 ### 流程
 
-1. 如果智能体决定调用一个（或多个）工具，它会通过评估 `needsApproval` 来检查该工具是否需要批准。
-2. 如果需要批准，智能体将检查是否已批准或已拒绝。
-   - 如果既未批准也未拒绝，工具会向智能体返回一条静态消息，说明该工具调用无法执行。
-   - 如果缺少批准/拒绝，它将触发一个工具批准请求。
-3. 智能体将收集所有工具批准请求并中断执行。
-4. 如果存在中断，[Results](/openai-agents-js/zh/guides/results) 将包含一个 `interruptions` 数组，用于描述待处理步骤。当某个工具调用需要确认时，会出现一个 `type: "tool_approval_item"` 的 `ToolApprovalItem`。
-5. 您可以调用 `result.state.approve(interruption)` 或 `result.state.reject(interruption)` 来批准或拒绝该工具调用。
-6. 在处理完所有中断后，您可以将 `result.state` 传回 `runner.run(agent, state)` 以恢复执行，其中 `agent` 是触发此次整体运行的原始智能体。
-7. 流程将从第 1 步重新开始。
+1. 如果智能体决定调用一个（或多个）工具，它会通过评估 `needsApproval` 来检查该工具是否需要审批。
+2. 如果需要审批，智能体将检查是否已被批准或拒绝。
+   - 如果尚未批准或拒绝，该工具会向智能体返回一条静态消息，表示该工具调用无法执行。
+   - 如果缺少批准/拒绝，将触发工具审批请求。
+3. 智能体会收集所有工具审批请求并中断执行。
+4. 如果有中断，[执行结果](/openai-agents-js/zh/guides/results)将包含一个描述待处理步骤的 `interruptions` 数组。当某个工具调用需要确认时，会出现一个 `type: "tool_approval_item"` 的 `ToolApprovalItem`。
+5. 您可以调用 `result.state.approve(interruption)` 或 `result.state.reject(interruption)` 来批准或拒绝工具调用。
+6. 处理完所有中断后，您可以将 `result.state` 传回 `runner.run(agent, state)` 来恢复执行，其中 `agent` 是触发整个运行的原始智能体。
+7. 流程从第 1 步重新开始。
 
 ## 示例
 
-下面是一个更完整的人工干预流程示例，它会在终端中提示进行批准，并临时将状态存储到文件中。
+下面是一个更完整的人工干预流程示例：它会在终端中提示审批，并将状态临时存储在文件中。
 
-<Code lang="typescript" code={humanInTheLoopExample} title="人工干预" />
+<Code
+  lang="typescript"
+  code={humanInTheLoopExample}
+  title="Human in the loop"
+/>
 
-有关可运行的端到端版本，请参阅[完整示例脚本](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)。
+有关可运行的端到端版本，请参见[完整示例脚本](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)。
 
-## 更长批准时长的处理
+## 处理较长审批时间
 
-人工干预流程被设计为可在较长时间内中断，而无需让您的服务器持续运行。如果您需要中止请求并稍后继续，可以序列化状态，之后再恢复。
+人工干预流程被设计为可在较长时间内中断，而无需保持您的服务器运行。如果您需要终止请求并稍后继续，可以序列化状态，稍后再恢复。
 
-您可以使用 `JSON.stringify(result.state)` 序列化状态，并在之后将序列化的状态传入 `RunState.fromString(agent, serializedState)` 以恢复，其中 `agent` 是触发此次整体运行的智能体实例。
+您可以使用 `JSON.stringify(result.state)` 序列化状态，稍后通过将序列化后的状态传入 `RunState.fromString(agent, serializedState)` 来恢复，其中 `agent` 是触发整个运行的智能体实例。
 
-这样，您可以将序列化后的状态存储在数据库中，或与请求一起保存。
+这样，您可以将序列化状态存储在数据库中，或与请求一同存储。
 
-### 待处理任务的版本控制
+### 待处理任务的版本管理
 
 <Aside>
-  这主要适用于：当您在对智能体进行更改的同时，计划将序列化状态长期保存的情况。
+  这主要适用于在对智能体进行更改的同时，打算将序列化状态长时间存储的情况。
 </Aside>
 
-如果您的批准请求需要较长时间，并且您打算以有意义的方式对智能体定义进行版本化，或升级您的 Agents SDK 版本，我们目前建议您通过使用包别名并行安装两个版本的 Agents SDK，来实现自定义的分支逻辑。
+如果您的审批请求耗时较长，并且您打算以有意义的方式为智能体定义进行版本管理或升级您的 Agents SDK 版本，我们目前建议您使用包别名并行安装两个版本的 Agents SDK，自行实现分支逻辑。
 
-在实践中，这意味着：为您的代码指定一个版本号，并将其与序列化状态一同存储，同时在反序列化时引导其使用正确版本的代码。
+实际操作中，这意味着为您的代码分配一个版本号，并与序列化状态一起存储，并在反序列化时引导到正确的代码版本。

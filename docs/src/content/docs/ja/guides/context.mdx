@@ -6,14 +6,14 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-コンテキストは多義的な用語です。主に次の 2 つのコンテキストがあります。
+コンテキストという語は多義的です。ここで重要になるコンテキストは主に 2 つのクラスに分かれます:
 
-1. 実行中にコードがアクセスできる **ローカルコンテキスト**：ツールに必要な依存関係やデータ、`onHandoff` のようなコールバック、ライフサイクルフック
-2. 応答生成時に言語モデルが参照できる **エージェント/LLM コンテキスト**
+1. **ローカルコンテキスト** 実行中にコードからアクセスできるもの: ツールが必要とする依存関係やデータ、`onHandoff` のようなコールバック、ライフサイクルフック
+2. **エージェント/LLM コンテキスト** 応答生成時に言語モデルが参照できるもの
 
 ## ローカルコンテキスト
 
-ローカルコンテキストは `RunContext<T>` 型で表現されます。状態や依存関係を保持する任意のオブジェクトを作成して `Runner.run()` に渡します。すべてのツール呼び出しとフックは `RunContext` ラッパーを受け取り、そのオブジェクトを読み書きできます。
+ローカルコンテキストは `RunContext<T>` 型で表されます。状態や依存関係を保持する任意のオブジェクトを作成し、それを `Runner.run()` に渡します。すべてのツール呼び出しとフックは `RunContext` ラッパーを受け取り、そのオブジェクトを読み書きできます。
 
 <Code
   lang="typescript"
@@ -21,9 +21,9 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
   title="ローカルコンテキストの例"
 />
 
-単一の実行に参加するすべてのエージェント、ツール、フックは、同じ種類のコンテキスト（同じ **type**）を使用する必要があります。
+単一の実行に参加するすべてのエージェント、ツール、フックは同じ**型**のコンテキストを使用する必要があります。
 
-ローカルコンテキストの用途例:
+ローカルコンテキストの用途:
 
 - 実行に関するデータ（ユーザー名、ID など）
 - ロガーやデータフェッチャーなどの依存関係
@@ -36,9 +36,9 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
 
 ## エージェント/LLM コンテキスト
 
-LLM が呼び出されるとき、参照できるのは会話履歴からのデータのみです。追加情報を利用可能にするには、次の方法があります。
+LLM が呼び出されるとき、参照できるデータは会話履歴のみです。追加情報を利用可能にするには、次の方法があります:
 
-1. エージェントの `instructions` に追加する — system または developer メッセージとも呼ばれます。これは静的な文字列でも、コンテキストを受け取って文字列を返す関数でもかまいません
-2. `Runner.run()` 呼び出し時の `input` に含める。この方法は instructions に似ていますが、メッセージを[chain of command](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command) の下位に配置できます
-3. 関数ツール経由で公開し、LLM がオンデマンドでデータを取得できるようにする
-4. リトリーバルや Web 検索ツールを使って、ファイル、データベース、Web などの関連データに基づいて応答を根拠づける
+1. エージェントの `instructions` に追加する（system または developer メッセージとも呼ばれます）。これは静的な文字列でも、コンテキストを受け取って文字列を返す関数でも構いません
+2. `Runner.run()` 呼び出し時の `input` に含める。instructions と同様の手法ですが、メッセージを [chain of command](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command) の下位に配置できます
+3. 関数ツールを通じて公開し、LLM がオンデマンドでデータ取得できるようにする
+4. リトリーバルや Web 検索ツールを使い、ファイル、データベース、またはウェブの関連データに基づいて応答をグラウンディングする

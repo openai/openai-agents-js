@@ -10,46 +10,54 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-交接允许一个智能体将对话的一部分委托给另一个智能体。这在不同智能体专注于特定领域时很有用。比如在客服应用中，您可能会有处理预订、退款或常见问题的智能体。
+交接使一个智能体可以将对话的一部分委托给另一个智能体。当不同智能体在特定领域各有所长时，这非常有用。例如，在客服应用中，你可能有处理预订、退款或常见问题的智能体。
 
-对于 LLM，交接会被表示为工具。如果您将对话交接给名为 `Refund Agent` 的智能体，对应的工具名称将是 `transfer_to_refund_agent`。
+交接在 LLM 中表示为工具。如果你将对话交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
 
-## 交接的创建
+## 创建交接
 
-每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例，或由 `handoff()` 辅助函数返回的 `Handoff` 对象。
+每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例或由 `handoff()` 辅助函数返回的 `Handoff` 对象。
 
 ### 基础用法
 
-<Code lang="typescript" code={basicUsageExample} title="基础交接" />
+<Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
 
-### 通过 `handoff()` 的交接自定义
+### 通过 `handoff()` 自定义交接
 
-`handoff()` 函数允许您调整生成的工具。
+`handoff()` 函数允许你微调生成的工具。
 
-- `agent` — 交接目标智能体。
-- `toolNameOverride` — 覆盖默认的 `transfer_to_<agent_name>` 工具名称。
-- `toolDescriptionOverride` — 覆盖默认的工具描述。
-- `onHandoff` — 交接发生时的回调。接收一个 `RunContext`，以及可选的已解析输入。
-- `inputType` — 交接期望的输入 schema。
-- `inputFilter` — 过滤传递给下一个智能体的历史记录。
+- `agent` – 要交接给的智能体。
+- `toolNameOverride` – 覆盖默认的 `transfer_to_<agent_name>` 工具名称。
+- `toolDescriptionOverride` – 覆盖默认的工具描述。
+- `onHandoff` – 发生交接时的回调。接收一个 `RunContext`，以及可选的解析后输入。
+- `inputType` – 交接期望的输入 schema。
+- `inputFilter` – 过滤传递给下一个智能体的历史记录。
 
-<Code lang="typescript" code={customizeHandoffExample} title="自定义交接" />
+<Code
+  lang="typescript"
+  code={customizeHandoffExample}
+  title="Customized handoffs"
+/>
 
 ## 交接输入
 
-有时您希望在调用交接时由 LLM 提供数据。定义一个输入 schema，并在 `handoff()` 中使用它。
+有时你希望 LLM 在调用交接时提供数据。定义一个输入 schema，并在 `handoff()` 中使用它。
 
-<Code lang="typescript" code={handoffInputExample} title="交接输入" />
+<Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
 ## 输入过滤器
 
 默认情况下，交接会接收整个对话历史。若要修改传递给下一个智能体的内容，请提供一个 `inputFilter`。
-常用辅助函数位于 `@openai/agents-core/extensions`。
+常用的 helper 位于 `@openai/agents-core/extensions`。
 
-<Code lang="typescript" code={inputFilterExample} title="输入过滤器" />
+<Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
-## 推荐提示词
+## 推荐的提示词
 
-当您的提示词提及交接时，LLM 的响应会更稳定。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了一个推荐前缀。
+当你的提示词提到交接时，LLM 的响应更稳定。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供推荐前缀。
 
-<Code lang="typescript" code={recommendedPromptExample} title="推荐提示词" />
+<Code
+  lang="typescript"
+  code={recommendedPromptExample}
+  title="Recommended prompts"
+/>
