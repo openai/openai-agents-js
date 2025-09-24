@@ -1,10 +1,6 @@
-import {
-  Agent,
-  run,
-  withTrace,
-  AgentInputItem,
-  StreamedRunResult,
-} from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
+import type { StreamedRunResult } from '@openai/agents';
 import readline from 'node:readline/promises';
 import { randomUUID } from 'node:crypto';
 

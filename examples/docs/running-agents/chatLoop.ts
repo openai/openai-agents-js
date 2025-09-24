@@ -1,4 +1,5 @@
-import { Agent, AgentInputItem, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 
 let thread: AgentInputItem[] = [];
 
