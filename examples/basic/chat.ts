@@ -1,11 +1,5 @@
-import {
-  Agent,
-  AgentInputItem,
-  run,
-  tool,
-  user,
-  withTrace,
-} from '@openai/agents';
+import { Agent, run, tool, user, withTrace } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 import { createInterface } from 'node:readline/promises';
 import { z } from 'zod';
 
