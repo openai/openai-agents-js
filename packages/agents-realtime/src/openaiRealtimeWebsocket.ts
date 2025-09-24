@@ -35,6 +35,11 @@ export type WebSocketState =
       websocket: WebSocket;
     };
 
+export interface CreateWebSocketOptions {
+  url: string;
+  apiKey: string;
+}
+
 /**
  * The options for the OpenAI Realtime WebSocket transport layer.
  */
@@ -51,6 +56,22 @@ export type OpenAIRealtimeWebSocketOptions = {
    * The URL to use for the WebSocket connection.
    */
   url?: string;
+  /**
+   * Builds a new WebSocket connection.
+   * @param options - The options for the WebSocket connection.
+   * @returns The WebSocket connection.
+   */
+  createWebSocket?: (options: CreateWebSocketOptions) => Promise<WebSocket>;
+  /**
+   * When you pass your own createWebSocket function, which completes the connection state transition,
+   * you can set this to true to skip registering the `open` event listener for the same purpose.
+   * If this flag is set to true, the constructor will immediately call the internal operation
+   * to mark the internal connection state to `connected`. Otherwise, the constructor will register
+   * the `open` event listener and wait for it to be triggered.
+   *
+   * By default (meaning if this property is absent), this is set to false.
+   */
+  skipOpenEventListeners?: boolean;
 } & OpenAIRealtimeBaseOptions;
 
 /**
@@ -81,11 +102,19 @@ export class OpenAIRealtimeWebSocket
   protected _firstAudioTimestamp: number | undefined;
   protected _audioLengthMs: number = 0;
   #ongoingResponse: boolean = false;
+  #createWebSocket?: (options: CreateWebSocketOptions) => Promise<WebSocket>;
+  #skipOpenEventListeners?: boolean;
 
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
     super(options);
     this.#url = options.url;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
+    this.#createWebSocket = options.createWebSocket;
+    this.#skipOpenEventListeners = options.skipOpenEventListeners ?? false;
+  }
+
+  protected getCommonRequestHeaders() {
+    return HEADERS;
   }
 
   /**
@@ -128,7 +157,7 @@ export class OpenAIRealtimeWebSocket
     this.emit('audio', audioEvent);
   }
 
-  #setupWebSocket(
+  async #setupWebSocket(
     resolve: (value: void) => void,
     reject: (reason?: any) => void,
     sessionConfig: Partial<RealtimeSessionConfig>,
@@ -154,30 +183,39 @@ export class OpenAIRealtimeWebSocket
       );
     }
 
-    // browsers and workerd should use the protocols argument, node should use the headers argument
-    const websocketArguments = useWebSocketProtocols
-      ? [
-          'realtime',
-          // Auth
-          'openai-insecure-api-key.' + this.#apiKey,
-          // Version header
-          WEBSOCKET_META,
-        ]
-      : {
-          headers: {
-            Authorization: `Bearer ${this.#apiKey}`,
-            ...HEADERS,
-          },
-        };
+    let ws: WebSocket | null = null;
 
-    const ws = new WebSocket(this.#url!, websocketArguments as any);
+    if (this.#createWebSocket) {
+      ws = await this.#createWebSocket({
+        url: this.#url!,
+        apiKey: this.#apiKey,
+      });
+    } else {
+      // browsers and workerd should use the protocols argument, node should use the headers argument
+      const websocketArguments = useWebSocketProtocols
+        ? [
+            'realtime',
+            // Auth
+            'openai-insecure-api-key.' + this.#apiKey,
+            // Version header
+            WEBSOCKET_META,
+          ]
+        : {
+            headers: {
+              Authorization: `Bearer ${this.#apiKey}`,
+              ...this.getCommonRequestHeaders(),
+            },
+          };
+
+      ws = new WebSocket(this.#url!, websocketArguments as any);
+    }
     this.#state = {
       status: 'connecting',
       websocket: ws,
     };
     this.emit('connection_change', this.#state.status);
 
-    ws.addEventListener('open', () => {
+    const onSocketOpenReady = () => {
       this.#state = {
         status: 'connected',
         websocket: ws,
@@ -185,7 +223,13 @@ export class OpenAIRealtimeWebSocket
       this.emit('connection_change', this.#state.status);
       this._onOpen();
       resolve();
-    });
+    };
+
+    if (this.#skipOpenEventListeners === true) {
+      onSocketOpenReady();
+    } else {
+      ws.addEventListener('open', onSocketOpenReady);
+    }
 
     ws.addEventListener('error', (error) => {
       this._onError(error);
@@ -292,11 +336,7 @@ export class OpenAIRealtimeWebSocket
     };
 
     await new Promise<void>((resolve, reject) => {
-      try {
-        this.#setupWebSocket(resolve, reject, sessionConfig);
-      } catch (error) {
-        reject(error);
-      }
+      this.#setupWebSocket(resolve, reject, sessionConfig).catch(reject);
     });
 
     await this.updateSessionConfig(sessionConfig);
