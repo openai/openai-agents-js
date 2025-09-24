@@ -1,6 +1,6 @@
 ---
-'@openai/agents-realtime': minor
-'@openai/agents-extensions': minor
+'@openai/agents-realtime': patch
+'@openai/agents-extensions': patch
 ---
 
 feat: add factory-based Cloudflare support.
