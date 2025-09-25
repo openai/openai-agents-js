@@ -3,7 +3,7 @@ import { Agent } from '@openai/agents';
 const pirateAgent = new Agent({
   name: 'Pirate',
   instructions: 'Respond like a pirate – lots of “Arrr!”',
-  model: 'o4-mini',
+  model: 'gpt-5-mini',
 });
 
 const robotAgent = pirateAgent.clone({

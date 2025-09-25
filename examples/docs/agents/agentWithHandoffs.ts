@@ -13,10 +13,8 @@ const refundAgent = new Agent({
 // Use Agent.create method to ensure the finalOutput type considers handoffs
 const triageAgent = Agent.create({
   name: 'Triage Agent',
-  instructions: [
-    'Help the user with their questions.',
-    'If the user asks about booking, hand off to the booking agent.',
-    'If the user asks about refunds, hand off to the refund agent.',
-  ].join('\n'),
+  instructions: `Help the user with their questions. 
+  If the user asks about booking, hand off to the booking agent. 
+  If the user asks about refunds, hand off to the refund agent.`.trimStart(),
   handoffs: [bookingAgent, refundAgent],
 });

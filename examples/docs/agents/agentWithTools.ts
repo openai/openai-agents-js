@@ -13,6 +13,6 @@ const getWeather = tool({
 const agent = new Agent({
   name: 'Weather bot',
   instructions: 'You are a helpful weather bot.',
-  model: 'o4-mini',
+  model: 'gpt-4.1',
   tools: [getWeather],
 });

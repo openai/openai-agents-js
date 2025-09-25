@@ -5,7 +5,7 @@ interface UserContext {
 }
 
 function buildInstructions(runContext: RunContext<UserContext>) {
-  return `The user's name is ${runContext.context.name}.  Be extra friendly!`;
+  return `The user's name is ${runContext.context.name}. Be extra friendly!`;
 }
 
 const agent = new Agent<UserContext>({
