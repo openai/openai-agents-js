@@ -13,34 +13,36 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-デフォルトでは SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。変数を設定できない場合は手動で `setDefaultOpenAIKey()` を呼び出せます。
+既定では SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。環境変数を設定できない場合は `setDefaultOpenAIKey()` を手動で呼び出します。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="Set default OpenAI key"
+  title="既定の OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。そうでない場合、SDK はデフォルトキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK は既定のキーで自動的に作成します。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIClientExample}
-  title="Set default OpenAI client"
+  title="既定の OpenAI クライアントを設定"
 />
 
 最後に、Responses API と Chat Completions API を切り替えられます。
 
-<Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
+<Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API を設定" />
 
 ## トレーシング
 
-トレーシングはデフォルトで有効で、上記の OpenAI キーを使用します。別のキーは `setTracingExportApiKey()` で設定できます。
+トレーシングは既定で有効で、上記の OpenAI キーを使用します。
+
+別のキーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
   code={setTracingExportApiKeyExample}
-  title="Set tracing export API key"
+  title="トレーシングのエクスポート API キーを設定"
 />
 
 トレーシングは完全に無効化することもできます。
@@ -48,32 +50,34 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 <Code
   lang="typescript"
   code={setTracingDisabledExample}
-  title="Disable tracing"
+  title="トレーシングを無効化"
 />
+
+トレーシング機能の詳細は [トレーシング](/openai-agents-js/ja/guides/tracing) をご覧ください。
 
 ## デバッグログ
 
-SDK はデバッグログ記録に [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使って自分のモジュール用に名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使って、独自モジュール用の名前空間付きロガーを取得できます。
 
-<Code lang="typescript" code={getLoggerExample} title="Get logger" />
+<Code lang="typescript" code={getLoggerExample} title="ロガーの取得" />
 
-### ログ内の機微情報
+### ログ内の機微データ
 
-一部のログには ユーザー データが含まれる場合があります。次の環境変数を設定して無効化できます。
+一部のログにはユーザー データが含まれる場合があります。以下の環境変数を設定して無効化します。
 
-LLM の入力と出力のログ記録を無効化するには:
+LLM の入力と出力のログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力と出力のログ記録を無効化するには:
+ツールの入力と出力のログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
