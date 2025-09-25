@@ -24,6 +24,7 @@ import customWebRTCTransportExample from '../../../../../../examples/docs/voice-
 import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
 import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import cloudflareTransportExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
 ## Default transport layers
 
@@ -45,6 +46,12 @@ building a phone agent with Twilio.
 <Code lang="typescript" code={websocketSessionExample} />
 
 Use any recording/playback library to handle the raw PCM16 audio bytes.
+
+#### Cloudflare Workers (workerd) note
+
+Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets using the global `WebSocket` constructor. Use the Cloudflare transport from the extensions package, which performs the `fetch()`-based upgrade internally.
+
+<Code lang="typescript" code={cloudflareTransportExample} />
 
 ### Building your own transport mechanism
 

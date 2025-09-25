@@ -309,6 +309,14 @@ const sidebar = [
           zh: '将实时智能体连接到 Twilio',
         },
       },
+      {
+        label: 'Cloudflare Workers Transport',
+        link: '/extensions/cloudflare',
+        translations: {
+          ja: 'Cloudflare Workers 用トランスポート',
+          zh: 'Cloudflare Workers 传输',
+        },
+      },
     ],
   },
   {

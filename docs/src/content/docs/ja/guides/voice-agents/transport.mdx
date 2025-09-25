@@ -24,6 +24,7 @@ import customWebRTCTransportExample from '../../../../../../../examples/docs/voi
 import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
 import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
 ## 既定のトランスポート層
 
@@ -42,6 +43,12 @@ WebRTC の代わりに WebSocket 接続を使用するには、セッション�
 <Code lang="typescript" code={websocketSessionExample} />
 
 任意の録音/再生ライブラリを使用して、元の PCM16 オーディオバイトを処理できます。
+
+#### Cloudflare Workers (workerd) に関する注意
+
+Cloudflare Workers やその他の workerd ランタイムでは、グローバルの `WebSocket` コンストラクターを使ってアウトバウンド WebSocket を開けません。`fetch()` ベースのアップグレードを内部で行う extensions パッケージの Cloudflare トランスポートを使用してください。
+
+<Code lang="typescript" code={cloudflareTransportExample} />
 
 ### 独自のトランスポート機構の構築
 

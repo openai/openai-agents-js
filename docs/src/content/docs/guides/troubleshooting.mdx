@@ -17,6 +17,7 @@ The OpenAI Agents SDK is supported on the following server environments:
   - The SDK current requires `nodejs_compat` to be enabled
   - Traces need to be manually flushed at the end of the request. [See the tracing guide](/openai-agents-js/guides/tracing#export-loop-lifecycle) for more details.
   - Due to Cloudflare Workers' limited support for `AsyncLocalStorage` some traces might not be accurate
+  - Outbound WebSocket connections must use a fetch-based upgrade (not the global `WebSocket` constructor). For Realtime, use the Cloudflare transport in `@openai/agents-extensions` (`CloudflareRealtimeTransportLayer`).
 - **Browsers**:
   - Tracing is currently not supported in browsers
 - **v8 isolates**:
