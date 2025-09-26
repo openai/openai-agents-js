@@ -19,6 +19,46 @@ export type ModelSettingsToolChoice =
   | (string & {});
 
 /**
+ * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
+ * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+ * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
+ */
+export type ModelSettingsReasoningEffort =
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | null;
+
+/**
+ * Configuration options for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
+ */
+export type ModelSettingsReasoning = {
+  /**
+   * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
+   * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+   * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
+   */
+  effort?: ModelSettingsReasoningEffort | null;
+
+  /**
+   * A summary of the reasoning performed by the model.
+   * This can be useful for debugging and understanding the model's reasoning process.
+   * One of `auto`, `concise`, or `detailed`.
+   */
+  summary?: 'auto' | 'concise' | 'detailed' | null;
+};
+
+export interface ModelSettingsText {
+  /**
+   * Constrains the verbosity of the model's response.
+   * Lower values will result in more concise responses, while higher values will result in more verbose responses.
+   * Currently supported values are `low`, `medium`, and `high`.
+   */
+  verbosity?: 'low' | 'medium' | 'high' | null;
+}
+
+/**
  * Settings to use when calling an LLM.
  *
  * This class holds optional model configuration parameters (e.g. temperature,
@@ -74,6 +114,16 @@ export type ModelSettings = {
    * Defaults to true if not provided.
    */
   store?: boolean;
+
+  /**
+   * The reasoning settings to use when calling the model.
+   */
+  reasoning?: ModelSettingsReasoning;
+
+  /**
+   * The text settings to use when calling the model.
+   */
+  text?: ModelSettingsText;
 
   /**
    * Additional provider specific settings to be passed directly to the model
