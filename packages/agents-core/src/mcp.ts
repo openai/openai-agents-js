@@ -35,6 +35,11 @@ export const DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME =
 export interface MCPServer {
   cacheToolsList: boolean;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+
+  /**
+   * Whether to include structuredContent in tool outputs when available.
+   */
+  useStructuredContent?: boolean;
   connect(): Promise<void>;
   readonly name: string;
   close(): Promise<void>;
@@ -42,7 +47,7 @@ export interface MCPServer {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent>;
+  ): Promise<CallToolResult>;
   invalidateToolsCache(): Promise<void>;
 }
 
@@ -50,6 +55,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public useStructuredContent?: boolean;
 
   protected logger: Logger;
   constructor(options: MCPServerStdioOptions) {
@@ -57,6 +63,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.useStructuredContent = options.useStructuredContent ?? false;
   }
 
   abstract get name(): string;
@@ -66,7 +73,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent>;
+  ): Promise<CallToolResult>;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -85,6 +92,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public useStructuredContent?: boolean;
 
   protected logger: Logger;
   constructor(options: MCPServerStreamableHttpOptions) {
@@ -93,6 +101,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
       getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.useStructuredContent = options.useStructuredContent ?? false;
   }
 
   abstract get name(): string;
@@ -102,7 +111,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent>;
+  ): Promise<CallToolResult>;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -121,6 +130,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public useStructuredContent?: boolean;
 
   protected logger: Logger;
   constructor(options: MCPServerSSEOptions) {
@@ -128,6 +138,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
       options.logger ?? getLogger(DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.useStructuredContent = options.useStructuredContent ?? false;
   }
 
   abstract get name(): string;
@@ -137,7 +148,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent>;
+  ): Promise<CallToolResult>;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -201,7 +212,7 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent> {
+  ): Promise<CallToolResult> {
     return this.underlying.callTool(toolName, args);
   }
   invalidateToolsCache(): Promise<void> {
@@ -237,7 +248,7 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent> {
+  ): Promise<CallToolResult> {
     return this.underlying.callTool(toolName, args);
   }
   invalidateToolsCache(): Promise<void> {
@@ -273,7 +284,7 @@ export class MCPServerSSE extends BaseMCPServerSSE {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResultContent> {
+  ): Promise<CallToolResult> {
     return this.underlying.callTool(toolName, args);
   }
   invalidateToolsCache(): Promise<void> {
@@ -446,6 +457,7 @@ export async function getAllMcpTools<TContext = UnknownContext>(
 
 /**
  * Converts an MCP tool definition to a function tool for the Agents SDK.
+ * When useStructuredContent is enabled, returns JSON strings for consistency with Python SDK.
  */
 export function mcpToFunctionTool(
   mcpTool: MCPTool,
@@ -463,8 +475,36 @@ export function mcpToFunctionTool(
     if (currentSpan) {
       currentSpan.spanData['mcp_data'] = { server: server.name };
     }
-    const content = await server.callTool(mcpTool.name, args);
-    return content.length === 1 ? content[0] : content;
+    const result = await server.callTool(mcpTool.name, args);
+
+    if (result.content && result.content.length === 1) {
+      if (
+        server.useStructuredContent &&
+        'structuredContent' in result &&
+        result.structuredContent !== undefined
+      ) {
+        return JSON.stringify([result.content[0], result.structuredContent]);
+      }
+      return result.content[0];
+    } else if (result.content && result.content.length > 1) {
+      if (
+        server.useStructuredContent &&
+        'structuredContent' in result &&
+        result.structuredContent !== undefined
+      ) {
+        const outputs = [...result.content, result.structuredContent];
+        return JSON.stringify(outputs);
+      }
+      return result.content;
+    } else if (
+      server.useStructuredContent &&
+      'structuredContent' in result &&
+      result.structuredContent !== undefined
+    ) {
+      return JSON.stringify(result.structuredContent);
+    }
+    // Preserve backward compatibility: return empty array when no content
+    return result.content || [];
   }
 
   const schema: JsonObjectSchema<any> = {
@@ -533,6 +573,11 @@ export interface BaseMCPServerStdioOptions {
   encodingErrorHandler?: 'strict' | 'ignore' | 'replace';
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+
+  /**
+   * Whether to include structuredContent in tool outputs when available.
+   */
+  useStructuredContent?: boolean;
   timeout?: number;
 }
 export interface DefaultMCPServerStdioOptions
@@ -555,6 +600,11 @@ export interface MCPServerStreamableHttpOptions {
   name?: string;
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+
+  /**
+   * Whether to include structuredContent in tool outputs when available.
+   */
+  useStructuredContent?: boolean;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -579,6 +629,11 @@ export interface MCPServerSSEOptions {
   name?: string;
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+
+  /**
+   * Whether to include structuredContent in tool outputs when available.
+   */
+  useStructuredContent?: boolean;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -621,9 +676,22 @@ export interface JsonRpcResponse {
   error?: any;
 }
 
+/**
+ * Structured content that can be returned by MCP tools.
+ * Supports various data types including objects, arrays, primitives, and null.
+ */
+export type StructuredContent =
+  | Record<string, unknown>
+  | unknown[]
+  | string
+  | number
+  | boolean
+  | null;
+
 export interface CallToolResponse extends JsonRpcResponse {
   result: {
     content: { type: string; text: string }[];
+    structuredContent?: StructuredContent;
   };
 }
 export type CallToolResult = CallToolResponse['result'];
