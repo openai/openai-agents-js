@@ -17,6 +17,7 @@ import {
   tool,
   type Tool,
   type ToolApprovalFunction,
+  type ToolEnabledFunction,
 } from './tool';
 import type {
   ResolvedAgentOutput,
@@ -636,7 +637,16 @@ export class Agent<
 
     for (const candidate of this.tools) {
       if (candidate.type === 'function') {
-        const enabled = await candidate.isEnabled(runContext, this);
+        const maybeIsEnabled = (
+          candidate as { isEnabled?: ToolEnabledFunction<TContext> | boolean }
+        ).isEnabled;
+
+        const enabled =
+          typeof maybeIsEnabled === 'function'
+            ? await maybeIsEnabled(runContext, this)
+            : typeof maybeIsEnabled === 'boolean'
+              ? maybeIsEnabled
+              : true;
         if (!enabled) {
           continue;
         }
