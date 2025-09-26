@@ -10,6 +10,7 @@ import modelSettingsExample from '../../../../../examples/docs/models/modelSetti
 import promptIdExample from '../../../../../examples/basic/prompt-id.ts?raw';
 import agentWithModelExample from '../../../../../examples/docs/models/agentWithModel.ts?raw';
 import runnerWithModelExample from '../../../../../examples/docs/models/runnerWithModel.ts?raw';
+import gpt5DefaultModelSettingsExample from '../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight
@@ -54,21 +55,11 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
 
 When you use any of GPT-5's reasoning models ([`gpt-5`](https://platform.openai.com/docs/models/gpt-5), [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini), or [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano)) this way, the SDK applies sensible `modelSettings` by default. Specifically, it sets both `reasoning.effort` and `verbosity` to `"low"`. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
-```ts
-import { Agent } from '@openai/agents';
-
-const myAgent = new Agent({
-  name: 'My Agent',
-  instructions: "You're a helpful agent.",
-  modelSettings: {
-    reasoning: { effort: 'minimal' },
-    text: { verbosity: 'low' },
-  },
-  // If OPENAI_DEFAULT_MODEL=gpt-5 is set, passing only modelSettings works.
-  // It's also fine to pass a GPT-5 model name explicitly:
-  // model: 'gpt-5',
-});
-```
+<Code
+  lang="typescript"
+  code={gpt5DefaultModelSettingsExample}
+  title="Customize GPT-5 default settings"
+/>
 
 For lower latency, using either [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) or [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano) with `reasoning.effort="minimal"` will often return responses faster than the default settings. However, some built-in tools (such as file search and image generation) in Responses API do not support `"minimal"` reasoning effort, which is why this Agents SDK defaults to `"low"`.
 

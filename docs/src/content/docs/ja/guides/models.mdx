@@ -10,6 +10,7 @@ import modelSettingsExample from '../../../../../../examples/docs/models/modelSe
 import promptIdExample from '../../../../../../examples/basic/prompt-id.ts?raw';
 import agentWithModelExample from '../../../../../../examples/docs/models/agentWithModel.ts?raw';
 import runnerWithModelExample from '../../../../../../examples/docs/models/runnerWithModel.ts?raw';
+import gpt5DefaultModelSettingsExample from '../../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
 すべてのエージェントは最終的に LLM を呼び出します。SDK はモデルを 2 つの軽量インターフェースの背後に抽象化します:
@@ -50,21 +51,11 @@ node my-awesome-agent.js
 
 この方法で GPT-5 の reasoning モデル（[`gpt-5`](https://platform.openai.com/docs/models/gpt-5)、[`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini)、[`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano)）を使用する場合、SDK は妥当な `modelSettings` を既定で適用します。具体的には、`reasoning.effort` と `verbosity` の両方を `"low"` に設定します。既定モデルの reasoning effort を調整するには、独自の `modelSettings` を渡します:
 
-```ts
-import { Agent } from '@openai/agents';
-
-const myAgent = new Agent({
-  name: 'My Agent',
-  instructions: "You're a helpful agent.",
-  modelSettings: {
-    reasoning: { effort: 'minimal' },
-    text: { verbosity: 'low' },
-  },
-  // If OPENAI_DEFAULT_MODEL=gpt-5 is set, passing only modelSettings works.
-  // It's also fine to pass a GPT-5 model name explicitly:
-  // model: 'gpt-5',
-});
-```
+<Code
+  lang="typescript"
+  code={gpt5DefaultModelSettingsExample}
+  title="GPT-5 の既定設定をカスタマイズ"
+/>
 
 より低レイテンシを求める場合、[`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) または [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano) に `reasoning.effort="minimal"` を指定すると、既定設定より高速に応答が返ることが多いです。ただし、Responses API にある一部の組み込みツール（ファイル検索や画像生成など）は `"minimal"` の reasoning effort をサポートしていないため、この Agents SDK の既定は `"low"` になっています。
 
