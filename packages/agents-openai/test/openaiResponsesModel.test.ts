@@ -74,6 +74,65 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('merges top-level reasoning and text settings into provider data for Responses API', async () => {
+    withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-settings',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-settings');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hi',
+        modelSettings: {
+          reasoning: { effort: 'medium', summary: 'concise' },
+          text: { verbosity: 'low' },
+          providerData: {
+            reasoning: { summary: 'override', note: 'provider' },
+            text: { tone: 'playful' },
+            customFlag: true,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.reasoning).toEqual({
+        effort: 'medium',
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(args.text).toEqual({ verbosity: 'low', tone: 'playful' });
+      expect(args.customFlag).toBe(true);
+
+      // ensure original provider data object was not mutated
+      expect(request.modelSettings.providerData.reasoning).toEqual({
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(request.modelSettings.providerData.text).toEqual({
+        tone: 'playful',
+      });
+    });
+  });
+
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
     withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };

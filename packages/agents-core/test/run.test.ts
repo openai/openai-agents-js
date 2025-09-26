@@ -1,4 +1,13 @@
-import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import {
+  beforeAll,
+  beforeEach,
+  afterEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -32,7 +41,7 @@ import {
   TEST_MODEL_RESPONSE_BASIC,
   TEST_TOOL,
 } from './stubs';
-import { Model, ModelRequest } from '../src/model';
+import { Model, ModelProvider, ModelRequest } from '../src/model';
 
 describe('Runner.run', () => {
   beforeAll(() => {
@@ -148,7 +157,11 @@ describe('Runner.run', () => {
 
       // Track agent_end events on both the agent and runner
       const agentEndEvents: Array<{ context: any; output: string }> = [];
-      const runnerEndEvents: Array<{ context: any; agent: any; output: string }> = [];
+      const runnerEndEvents: Array<{
+        context: any;
+        agent: any;
+        output: string;
+      }> = [];
 
       agent.on('agent_end', (context, output) => {
         agentEndEvents.push({ context, output });
@@ -407,7 +420,7 @@ describe('Runner.run', () => {
         usage: new Usage(),
       };
       class SimpleStreamingModel implements Model {
-        constructor(private resps: ModelResponse[]) { }
+        constructor(private resps: ModelResponse[]) {}
         async getResponse(_req: ModelRequest): Promise<ModelResponse> {
           const r = this.resps.shift();
           if (!r) {
@@ -522,6 +535,124 @@ describe('Runner.run', () => {
       await run(agentB, '2');
       expect(spy.mock.instances[0]).toBe(spy.mock.instances[1]);
       spy.mockRestore();
+    });
+  });
+
+  describe('gpt-5 default model adjustments', () => {
+    class InspectableModel extends FakeModel {
+      lastRequest: ModelRequest | undefined;
+
+      constructor(response: ModelResponse) {
+        super([response]);
+      }
+
+      override async getResponse(
+        request: ModelRequest,
+      ): Promise<ModelResponse> {
+        this.lastRequest = request;
+        return await super.getResponse(request);
+      }
+    }
+
+    class InspectableModelProvider implements ModelProvider {
+      constructor(private readonly model: Model) {}
+
+      async getModel(_name: string): Promise<Model> {
+        return this.model;
+      }
+    }
+
+    let originalDefaultModel: string | undefined;
+
+    beforeEach(() => {
+      originalDefaultModel = process.env.OPENAI_DEFAULT_MODEL;
+      process.env.OPENAI_DEFAULT_MODEL = 'gpt-5o';
+    });
+
+    afterEach(() => {
+      if (originalDefaultModel === undefined) {
+        delete process.env.OPENAI_DEFAULT_MODEL;
+      } else {
+        process.env.OPENAI_DEFAULT_MODEL = originalDefaultModel;
+      }
+    });
+
+    function createGpt5ModelSettings() {
+      return {
+        temperature: 0.42,
+        providerData: {
+          reasoning: { effort: 'high' },
+          text: { verbosity: 'high' },
+          reasoning_effort: 'medium',
+          keep: 'value',
+        },
+        reasoning: { effort: 'high', summary: 'detailed' },
+        text: { verbosity: 'medium' },
+      };
+    }
+
+    it('strips GPT-5-only settings when the runner model is not a GPT-5 string', async () => {
+      const modelResponse: ModelResponse = {
+        output: [fakeModelMessage('Hello non GPT-5')],
+        usage: new Usage(),
+      };
+      const inspectableModel = new InspectableModel(modelResponse);
+      const agent = new Agent({
+        name: 'NonGpt5Runner',
+        model: inspectableModel,
+        modelSettings: createGpt5ModelSettings(),
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('Hello non GPT-5');
+      expect(inspectableModel.lastRequest).toBeDefined();
+
+      const requestSettings = inspectableModel.lastRequest!.modelSettings;
+      expect(requestSettings.temperature).toBe(0.42);
+      expect(requestSettings.providerData?.keep).toBe('value');
+      expect(requestSettings.providerData?.reasoning).toBeUndefined();
+      expect(requestSettings.providerData?.text?.verbosity).toBeUndefined();
+      expect(
+        (requestSettings.providerData as any)?.reasoning_effort,
+      ).toBeUndefined();
+      expect(requestSettings.reasoning?.effort).toBeUndefined();
+      expect(requestSettings.reasoning?.summary).toBeUndefined();
+      expect(requestSettings.text?.verbosity).toBeUndefined();
+    });
+
+    it('keeps GPT-5-only settings when the agent relies on the default model', async () => {
+      const modelResponse: ModelResponse = {
+        output: [fakeModelMessage('Hello default GPT-5')],
+        usage: new Usage(),
+      };
+      const inspectableModel = new InspectableModel(modelResponse);
+      const runner = new Runner({
+        modelProvider: new InspectableModelProvider(inspectableModel),
+      });
+
+      const agent = new Agent({
+        name: 'DefaultModelAgent',
+        modelSettings: createGpt5ModelSettings(),
+      });
+
+      const result = await runner.run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('Hello default GPT-5');
+      expect(inspectableModel.lastRequest).toBeDefined();
+
+      const requestSettings = inspectableModel.lastRequest!.modelSettings;
+      expect(requestSettings.providerData?.reasoning).toEqual({
+        effort: 'high',
+      });
+      expect(requestSettings.providerData?.text?.verbosity).toBe('high');
+      expect((requestSettings.providerData as any)?.reasoning_effort).toBe(
+        'medium',
+      );
+      expect(requestSettings.reasoning?.effort).toBe('high');
+      expect(requestSettings.reasoning?.summary).toBe('detailed');
+      expect(requestSettings.text?.verbosity).toBe('medium');
     });
   });
 
