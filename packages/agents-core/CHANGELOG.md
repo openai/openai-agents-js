@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- 8516799: fix(randomUUID): add fallback when crypto.randomUUID is unavailable
+
 ## 0.1.4
 
 ### Patch Changes

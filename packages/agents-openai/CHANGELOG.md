@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-core@0.1.6
+
 ## 0.1.4
 
 ### Patch Changes
