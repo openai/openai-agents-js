@@ -426,6 +426,7 @@ function getPrompt(prompt: ModelRequest['prompt']):
 
 function getInputItems(
   input: ModelRequest['input'],
+  conversationId?: string,
 ): OpenAI.Responses.ResponseInputItem[] {
   if (typeof input === 'string') {
     return [
@@ -436,7 +437,33 @@ function getInputItems(
     ];
   }
 
-  return input.map((item) => {
+  // When using conversationId, the OpenAI Responses API automatically retrieves
+  // the conversation history. To avoid duplicate items with the same IDs,
+  // we need to filter out items that would already be present in the conversation.
+  // We keep only the items from the current turn (typically the last few items).
+  let filteredInput = input;
+  if (conversationId) {
+    // Find the last user message to identify the start of the current turn
+    let lastUserMessageIndex = -1;
+    for (let i = input.length - 1; i >= 0; i--) {
+      const item = input[i];
+      if (isMessageItem(item) && item.role === 'user') {
+        lastUserMessageIndex = i;
+        break;
+      }
+    }
+
+    // If we found a user message, only include items from that point onwards
+    // This represents the current turn's conversation
+    if (lastUserMessageIndex >= 0) {
+      filteredInput = input.slice(lastUserMessageIndex);
+    } else {
+      // If no user message found, include all items (fallback)
+      filteredInput = input;
+    }
+  }
+
+  return filteredInput.map((item) => {
     if (isMessageItem(item)) {
       return getMessageItem(item);
     }
@@ -847,7 +874,7 @@ export class OpenAIResponsesModel implements Model {
   ): Promise<
     Stream<OpenAI.Responses.ResponseStreamEvent> | OpenAI.Responses.Response
   > {
-    const input = getInputItems(request.input);
+    const input = getInputItems(request.input, request.conversationId);
     const { tools, include } = getTools(request.tools, request.handoffs);
     const toolChoice = getToolChoice(request.modelSettings.toolChoice);
     const { text, ...restOfProviderData } =
