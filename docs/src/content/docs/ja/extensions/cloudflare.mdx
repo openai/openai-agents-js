@@ -6,13 +6,13 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使ったアウトバウンド WebSocket を開けません。これらの環境から リアルタイムエージェント に接続しやすくするために、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
+Cloudflare Workers およびその他の workerd ランタイムでは、グローバルの `WebSocket` コンストラクターを使って外向きの WebSocket を開くことはできません。これらの環境から リアルタイムエージェント に接続しやすくするために、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。エッジケースの問題やバグに遭遇する可能性があります。
+  このアダプターはまだベータ版です。まれなケースでの問題やバグに遭遇する可能性があります。
   問題は [GitHub issues](https://github.com/openai/openai-agents-js/issues)
-  からご報告ください。迅速に修正します。Workers で Node.js スタイルの API
-  が必要な場合は、`nodejs_compat` の有効化をご検討ください。
+  からご報告ください。迅速に修正します。Workers で Node.js 風 API
+  を使う場合は、`nodejs_compat` の有効化を検討してください。
 </Aside>
 
 ## セットアップ
@@ -39,6 +39,6 @@ Cloudflare Workers やその他の workerd ランタイムでは、グローバ�
 
 ## 注意事項
 
-- Cloudflare トランスポートは内部で `fetch()` と `Upgrade: websocket` を使用し、ソケットの `open` イベントを待たずに処理します。これは workerd APIs に一致します
+- Cloudflare トランスポートは内部的に `fetch()` と `Upgrade: websocket` を使用し、ソケットの `open` イベントを待たないため、workerd の API に一致します
 - このトランスポートを使用しても、`RealtimeSession` のすべての機能（ツール、ガードレールなど）は通常どおり動作します
-- 開発中の詳細ログを確認するには、`DEBUG=openai-agents*` を使用します
+- 開発時の詳細ログの確認には `DEBUG=openai-agents*` を使用します
