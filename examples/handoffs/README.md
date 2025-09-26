@@ -7,3 +7,9 @@ pnpm -F handoffs start
 ```
 
 `types.ts` demonstrates typed outputs. A triage agent inspects the message and hands off to either `firstAgent` or `secondAgent`, each with their own Zod schema for structured output. The script logs which agent produced the final result.
+
+`is-enabled.ts` demonstrates gating handoffs with feature-like preferences. Run it with:
+
+```bash
+pnpm -F handoffs start:is-enabled
+```

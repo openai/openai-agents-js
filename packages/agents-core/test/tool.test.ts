@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { computerTool, hostedMcpTool, tool } from '../src/tool';
 import { z } from 'zod';
 import { Computer } from '../src';
+import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 
 interface Bar {
@@ -84,5 +85,49 @@ describe('tool.invoke', () => {
     });
     const approved = await t.needsApproval(new RunContext(), '', 'id');
     expect(approved).toBe(true);
+  });
+
+  it('isEnabled boolean becomes function', async () => {
+    const t = tool({
+      name: 'enabled',
+      description: 'enabled',
+      parameters: z.object({}),
+      execute: async () => 'x',
+      isEnabled: false,
+    });
+    const enabled = await t.isEnabled(
+      new RunContext(),
+      new Agent({ name: 'Test Agent' }),
+    );
+    expect(enabled).toBe(false);
+  });
+
+  it('supports object argument in isEnabled option', async () => {
+    const t = tool({
+      name: 'predicate',
+      description: 'predicate',
+      parameters: z.object({}),
+      execute: async () => 'x',
+      isEnabled: ({
+        runContext,
+        agent,
+      }: {
+        runContext: RunContext<unknown>;
+        agent: Agent<any, any>;
+      }) => {
+        expect(agent.name).toBe('Dynamic Agent');
+        return (runContext.context as { feature: boolean }).feature;
+      },
+    });
+
+    const agent = new Agent<{ feature: boolean }>({ name: 'Dynamic Agent' });
+    const enabled = await t.isEnabled(new RunContext({ feature: true }), agent);
+    const disabled = await t.isEnabled(
+      new RunContext({ feature: false }),
+      agent,
+    );
+
+    expect(enabled).toBe(true);
+    expect(disabled).toBe(false);
   });
 });

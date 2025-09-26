@@ -46,7 +46,7 @@ import * as ProviderData from './types/providerData';
 
 type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
-  handoff: Handoff;
+  handoff: Handoff<any, any>;
 };
 
 type ToolRunFunction<TContext = UnknownContext> = {
@@ -81,7 +81,7 @@ export function processModelResponse<TContext>(
   modelResponse: ModelResponse,
   agent: Agent<any, any>,
   tools: Tool<TContext>[],
-  handoffs: Handoff[],
+  handoffs: Handoff<any, any>[],
 ): ProcessedResponse<TContext> {
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];

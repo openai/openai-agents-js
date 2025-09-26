@@ -91,6 +91,20 @@ function defaultHandoffToolDescription<
  * @template TContext The context of the handoff
  * @template TOutput The output type of the handoff
  */
+type HandoffEnabledPredicate<TContext = UnknownContext> = (args: {
+  runContext: RunContext<TContext>;
+  agent: Agent<any, any>;
+}) => boolean | Promise<boolean>;
+
+type HandoffEnabledOption<TContext> =
+  | boolean
+  | HandoffEnabledPredicate<TContext>;
+
+export type HandoffEnabledFunction<TContext = UnknownContext> = (args: {
+  runContext: RunContext<TContext>;
+  agent: Agent<any, any>;
+}) => Promise<boolean>;
+
 export class Handoff<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
@@ -169,6 +183,8 @@ export class Handoff<
     };
   }
 
+  public isEnabled: HandoffEnabledFunction<TContext> = async () => true;
+
   constructor(
     agent: Agent<TContext, TOutput>,
     onInvokeHandoff: (
@@ -195,7 +211,10 @@ export type OnHandoffCallback<TInputType extends ToolInputParameters> = (
 /**
  * Configuration for a handoff.
  */
-export type HandoffConfig<TInputType extends ToolInputParameters> = {
+export type HandoffConfig<
+  TInputType extends ToolInputParameters,
+  TContext = UnknownContext,
+> = {
   /**
    * Optional override for the name of the tool that represents the handoff.
    */
@@ -221,6 +240,11 @@ export type HandoffConfig<TInputType extends ToolInputParameters> = {
    * A function that filters the inputs that are passed to the next agent.
    */
   inputFilter?: HandoffInputFilter;
+
+  /**
+   * Determines whether the handoff should be available to the model for the current run.
+   */
+  isEnabled?: HandoffEnabledOption<TContext>;
 };
 
 /**
@@ -236,7 +260,10 @@ export function handoff<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
   TInputType extends ToolInputParameters = ToolInputParameters,
->(agent: Agent<TContext, TOutput>, config: HandoffConfig<TInputType> = {}) {
+>(
+  agent: Agent<TContext, TOutput>,
+  config: HandoffConfig<TInputType, TContext> = {},
+) {
   let parser: ((input: string) => Promise<any>) | undefined = undefined;
 
   const hasOnHandoff = !!config.onHandoff;
@@ -291,6 +318,16 @@ export function handoff<
   }
 
   const handoff = new Handoff(agent, onInvokeHandoff);
+
+  if (typeof config.isEnabled === 'function') {
+    const predicate = config.isEnabled as HandoffEnabledPredicate<TContext>;
+    handoff.isEnabled = async ({ runContext, agent }) => {
+      const result = await predicate({ runContext, agent });
+      return Boolean(result);
+    };
+  } else if (typeof config.isEnabled === 'boolean') {
+    handoff.isEnabled = async () => config.isEnabled as boolean;
+  }
 
   if (config.inputType) {
     const result = getSchemaAndParserFromInputType(

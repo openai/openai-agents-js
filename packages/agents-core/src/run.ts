@@ -9,7 +9,7 @@ import {
   OutputGuardrailFunctionArgs,
   OutputGuardrailMetadata,
 } from './guardrail';
-import { getHandoff, Handoff, HandoffInputFilter } from './handoff';
+import { Handoff, HandoffInputFilter } from './handoff';
 import {
   Model,
   ModelProvider,
@@ -308,12 +308,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const handoffs: Handoff<any>[] = [];
-            if (state._currentAgent.handoffs) {
-              // While this array usually must not be undefined,
-              // we've added this check to prevent unexpected runtime errors like https://github.com/openai/openai-agents-js/issues/138
-              handoffs.push(...state._currentAgent.handoffs.map(getHandoff));
-            }
+            const handoffs = await state._currentAgent.getEnabledHandoffs(
+              state._context,
+            );
 
             if (!state._currentAgentSpan) {
               const handoffNames = handoffs.map((h) => h.agentName);
@@ -628,7 +625,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     try {
       while (true) {
         const currentAgent = result.state._currentAgent;
-        const handoffs = currentAgent.handoffs.map(getHandoff);
+        const handoffs = await currentAgent.getEnabledHandoffs(
+          result.state._context,
+        );
         const tools = await currentAgent.getAllTools(result.state._context);
         const serializedTools = tools.map((t) => serializeTool(t));
         const serializedHandoffs = handoffs.map((h) => serializeHandoff(h));

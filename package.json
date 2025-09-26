@@ -21,6 +21,7 @@
     "lint:fix": "eslint --fix",
     "examples:basic": "pnpm -F basic start",
     "examples:agents-as-tools": "pnpm -F agent-patterns start:agents-as-tools",
+    "examples:agents-as-tools-conditional": "pnpm -F agent-patterns start:agents-as-tools-conditional",
     "examples:deterministic": "pnpm -F agent-patterns start:deterministic",
     "examples:parallelization": "pnpm -F agent-patterns start:parallelization",
     "examples:human-in-the-loop": "pnpm -F agent-patterns start:human-in-the-loop",

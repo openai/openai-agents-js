@@ -52,6 +52,7 @@ export {
   Handoff,
   handoff,
   HandoffInputData,
+  HandoffEnabledFunction,
 } from './handoff';
 export { assistant, system, user } from './helpers/message';
 export {
@@ -124,6 +125,7 @@ export {
   Tool,
   tool,
   ToolExecuteArgument,
+  ToolEnabledFunction,
 } from './tool';
 export * from './tracing';
 export { getGlobalTraceProvider, TraceProvider } from './tracing/provider';

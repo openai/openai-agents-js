@@ -35,6 +35,20 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
   callId?: string,
 ) => Promise<boolean>;
 
+export type ToolEnabledFunction<Context = UnknownContext> = (
+  runContext: RunContext<Context>,
+  agent: Agent<any, any>,
+) => Promise<boolean>;
+
+type ToolEnabledPredicate<Context = UnknownContext> = (args: {
+  runContext: RunContext<Context>;
+  agent: Agent<any, any>;
+}) => boolean | Promise<boolean>;
+
+type ToolEnabledOption<Context = UnknownContext> =
+  | boolean
+  | ToolEnabledPredicate<Context>;
+
 /**
  * Exposes a function to the agent as a tool to be called
  *
@@ -78,6 +92,11 @@ export type FunctionTool<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval: ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be made available to the model for the current run.
+   */
+  isEnabled: ToolEnabledFunction<Context>;
 };
 
 /**
@@ -501,6 +520,11 @@ type StrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be exposed to the model for the current run.
+   */
+  isEnabled?: ToolEnabledOption<Context>;
 };
 
 /**
@@ -548,6 +572,11 @@ type NonStrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be exposed to the model for the current run.
+   */
+  isEnabled?: ToolEnabledOption<Context>;
 };
 
 /**
@@ -666,6 +695,16 @@ export function tool<
             ? options.needsApproval
             : false;
 
+  const isEnabled: ToolEnabledFunction<Context> =
+    typeof options.isEnabled === 'function'
+      ? async (runContext, agent) => {
+          const predicate = options.isEnabled as ToolEnabledPredicate<Context>;
+          const result = await predicate({ runContext, agent });
+          return Boolean(result);
+        }
+      : async () =>
+          typeof options.isEnabled === 'boolean' ? options.isEnabled : true;
+
   return {
     type: 'function',
     name,
@@ -674,6 +713,7 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
+    isEnabled,
   };
 }
 

@@ -1,6 +1,5 @@
 import {
   Agent,
-  getHandoff,
   getTransferMessage,
   Handoff,
   ModelBehaviorError,
@@ -303,7 +302,9 @@ export class RealtimeSession<
       | RealtimeAgent<RealtimeContextData<TBaseContext>>,
   ) {
     this.#currentAgent = agent;
-    const handoffs = this.#currentAgent.handoffs.map(getHandoff);
+    const handoffs = await (
+      this.#currentAgent as RealtimeAgent<TBaseContext>
+    ).getEnabledHandoffs(this.#context);
     const handoffTools = handoffs.map((handoff) =>
       handoff.getHandoffAsFunctionTool(),
     );
@@ -516,10 +517,11 @@ export class RealtimeSession<
   }
 
   async #handleFunctionCall(toolCall: TransportToolCallEvent) {
+    const enabledHandoffs = await (
+      this.#currentAgent as RealtimeAgent<TBaseContext>
+    ).getEnabledHandoffs(this.#context);
     const handoffMap = new Map(
-      this.#currentAgent.handoffs
-        .map(getHandoff)
-        .map((handoff) => [handoff.toolName, handoff]),
+      enabledHandoffs.map((handoff) => [handoff.toolName, handoff]),
     );
 
     const allTools = await (

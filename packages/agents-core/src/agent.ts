@@ -25,7 +25,7 @@ import type {
   Expand,
 } from './types';
 import type { RunResult } from './result';
-import type { Handoff } from './handoff';
+import { getHandoff, type Handoff } from './handoff';
 import { NonStreamRunOptions, RunConfig, Runner } from './run';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
@@ -519,6 +519,16 @@ export class Agent<
      * Additional run options for the agent (as tool) execution.
      */
     runOptions?: NonStreamRunOptions<TContext>;
+
+    /**
+     * Determines whether this tool should be exposed to the model for the current run.
+     */
+    isEnabled?:
+      | boolean
+      | ((args: {
+          runContext: RunContext<TContext>;
+          agent: Agent<TContext, TOutput>;
+        }) => boolean | Promise<boolean>);
   }): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
     const {
       toolName,
@@ -527,6 +537,7 @@ export class Agent<
       needsApproval,
       runConfig,
       runOptions,
+      isEnabled,
     } = options;
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
@@ -534,6 +545,7 @@ export class Agent<
       parameters: AgentAsToolNeedApprovalSchame,
       strict: true,
       needsApproval,
+      isEnabled,
       execute: async (data, context, details) => {
         if (!isAgentToolInput(data)) {
           throw new ModelBehaviorError('Agent tool called with invalid input');
@@ -619,7 +631,38 @@ export class Agent<
   async getAllTools(
     runContext: RunContext<TContext>,
   ): Promise<Tool<TContext>[]> {
-    return [...(await this.getMcpTools(runContext)), ...this.tools];
+    const mcpTools = await this.getMcpTools(runContext);
+    const enabledTools: Tool<TContext>[] = [];
+
+    for (const candidate of this.tools) {
+      if (candidate.type === 'function') {
+        const enabled = await candidate.isEnabled(runContext, this);
+        if (!enabled) {
+          continue;
+        }
+      }
+      enabledTools.push(candidate);
+    }
+
+    return [...mcpTools, ...enabledTools];
+  }
+
+  /**
+   * Returns the handoffs that should be exposed to the model for the current run.
+   *
+   * Handoffs that provide an `isEnabled` function returning `false` are omitted.
+   */
+  async getEnabledHandoffs(
+    runContext: RunContext<TContext>,
+  ): Promise<Handoff<any, any>[]> {
+    const handoffs = this.handoffs?.map((h) => getHandoff(h)) ?? [];
+    const enabled: Handoff<any, any>[] = [];
+    for (const handoff of handoffs) {
+      if (await handoff.isEnabled({ runContext, agent: this })) {
+        enabled.push(handoff);
+      }
+    }
+    return enabled;
   }
 
   /**

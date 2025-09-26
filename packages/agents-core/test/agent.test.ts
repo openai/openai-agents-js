@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
+import { tool } from '../src/tool';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
@@ -262,6 +263,139 @@ describe('Agent', () => {
     expect(runnerInstance.config.modelSettings).toEqual(
       runConfig.modelSettings,
     );
+  });
+
+  it('filters tools using isEnabled predicates', async () => {
+    const conditionalTool = tool({
+      name: 'conditional',
+      description: 'conditionally available',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+      isEnabled: ({
+        runContext,
+      }: {
+        runContext: RunContext<unknown>;
+        agent: Agent<any, any>;
+      }) => (runContext.context as { allowed: boolean }).allowed,
+    });
+    const agent = new Agent<{ allowed: boolean }>({
+      name: 'Conditional Agent',
+      instructions: 'test',
+      tools: [conditionalTool],
+    });
+
+    const disabledTools = await agent.getAllTools(
+      new RunContext({ allowed: false }),
+    );
+    expect(disabledTools).toEqual([]);
+
+    const enabledTools = await agent.getAllTools(
+      new RunContext({ allowed: true }),
+    );
+    expect(enabledTools.map((t) => t.name)).toEqual(['conditional']);
+  });
+
+  it('respects isEnabled option on Agent.asTool', async () => {
+    const nestedAgent = new Agent({
+      name: 'Nested',
+      instructions: 'nested',
+    });
+    const nestedTool = nestedAgent.asTool({
+      toolDescription: 'nested',
+      isEnabled: ({
+        runContext,
+        agent,
+      }: {
+        runContext: RunContext<unknown>;
+        agent: Agent<any, any>;
+      }) => {
+        expect(agent).toBe(hostAgent);
+        return (runContext.context as { enabled: boolean }).enabled;
+      },
+    });
+
+    const hostAgent = new Agent<{ enabled: boolean }>({
+      name: 'Host',
+      instructions: 'host',
+      tools: [nestedTool],
+    });
+
+    const disabled = await hostAgent.getAllTools(
+      new RunContext({ enabled: false }),
+    );
+    expect(disabled).toEqual([]);
+
+    const enabled = await hostAgent.getAllTools(
+      new RunContext({ enabled: true }),
+    );
+    expect(enabled.map((t) => t.name)).toEqual([nestedTool.name]);
+  });
+
+  it('enables agent tools based on language preference predicates', async () => {
+    type LanguagePreference = 'spanish_only' | 'french_spanish' | 'european';
+
+    type AppContext = {
+      languagePreference: LanguagePreference;
+    };
+
+    const spanishAgent = new Agent<AppContext>({
+      name: 'spanish_agent',
+      instructions: 'Always respond in Spanish.',
+    });
+
+    const frenchAgent = new Agent<AppContext>({
+      name: 'french_agent',
+      instructions: 'Always respond in French.',
+    });
+
+    const italianAgent = new Agent<AppContext>({
+      name: 'italian_agent',
+      instructions: 'Always respond in Italian.',
+    });
+
+    const orchestrator = new Agent<AppContext>({
+      name: 'orchestrator',
+      instructions: 'Use language specialists.',
+      tools: [
+        spanishAgent.asTool({
+          toolName: 'respond_spanish',
+          toolDescription: 'Respond in Spanish.',
+          isEnabled: true,
+        }),
+        frenchAgent.asTool({
+          toolName: 'respond_french',
+          toolDescription: 'Respond in French.',
+          isEnabled: ({ runContext }) =>
+            ['french_spanish', 'european'].includes(
+              runContext.context.languagePreference,
+            ),
+        }),
+        italianAgent.asTool({
+          toolName: 'respond_italian',
+          toolDescription: 'Respond in Italian.',
+          isEnabled: ({ runContext }) =>
+            runContext.context.languagePreference === 'european',
+        }),
+      ],
+    });
+
+    const collect = async (preference: LanguagePreference) =>
+      (
+        await orchestrator.getAllTools(
+          new RunContext<AppContext>({ languagePreference: preference }),
+        )
+      ).map((toolInstance) => toolInstance.name);
+
+    await expect(collect('spanish_only')).resolves.toEqual(['respond_spanish']);
+    await expect(collect('french_spanish')).resolves.toEqual([
+      'respond_spanish',
+      'respond_french',
+    ]);
+    await expect(collect('european')).resolves.toEqual([
+      'respond_spanish',
+      'respond_french',
+      'respond_italian',
+    ]);
   });
 
   it('should process final output (text)', async () => {
