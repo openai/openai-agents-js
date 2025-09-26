@@ -427,6 +427,110 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('normalizes empty string tool input for object schemas', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'objectTool',
+                input: '',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            providerMetadata: { meta: true },
+            response: { id: 'id' },
+            finishReason: 'tool-calls',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'objectTool',
+            description: 'accepts object',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toHaveLength(1);
+    expect(res.output[0]).toMatchObject({
+      type: 'function_call',
+      arguments: '{}',
+    });
+  });
+
+  test('normalizes empty string tool input for handoff schemas', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'handoff-call',
+                toolName: 'handoffTool',
+                input: '',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            providerMetadata: { meta: true },
+            response: { id: 'id' },
+            finishReason: 'tool-calls',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [
+          {
+            toolName: 'handoffTool',
+            toolDescription: 'handoff accepts object',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          } as any,
+        ],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toHaveLength(1);
+    expect(res.output[0]).toMatchObject({
+      type: 'function_call',
+      arguments: '{}',
+    });
+  });
+
   test('forwards toolChoice to AI SDK (generate)', async () => {
     const seen: any[] = [];
     const model = new AiSdkModel(
