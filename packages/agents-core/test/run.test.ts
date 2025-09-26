@@ -41,7 +41,12 @@ import {
   TEST_MODEL_RESPONSE_BASIC,
   TEST_TOOL,
 } from './stubs';
-import { Model, ModelProvider, ModelRequest } from '../src/model';
+import {
+  Model,
+  ModelProvider,
+  ModelRequest,
+  ModelSettings,
+} from '../src/model';
 
 describe('Runner.run', () => {
   beforeAll(() => {
@@ -577,7 +582,7 @@ describe('Runner.run', () => {
       }
     });
 
-    function createGpt5ModelSettings() {
+    function createGpt5ModelSettings(): ModelSettings {
       return {
         temperature: 0.42,
         providerData: {
