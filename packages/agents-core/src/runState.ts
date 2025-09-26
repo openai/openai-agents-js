@@ -21,7 +21,7 @@ import {
 } from './runImplementation';
 import type { AgentSpanData } from './tracing/spans';
 import type { Span } from './tracing/spans';
-import { SystemError, UserError } from './errors';
+import { SystemError, UserError, createErrorContext } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
 import { Usage } from './usage';
 import { Trace } from './tracing/traces';
@@ -436,6 +436,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     if (!parsed.success) {
       throw new SystemError(
         `Failed to serialize run state. ${parsed.error.message}`,
+        this,
+        createErrorContext('run_state_serialization'),
       );
     }
 

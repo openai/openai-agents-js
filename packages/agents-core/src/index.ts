@@ -24,6 +24,11 @@ export {
   ToolCallError,
   UserError,
   SystemError,
+  AgentDebugger,
+  createErrorContext,
+  addOperationToContext,
+  EnhancedErrorContext,
+  RecoveryAction,
 } from './errors';
 export {
   RunAgentUpdatedStreamEvent,
@@ -152,6 +157,17 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { Usage } from './usage';
+export * as testing from './testing';
+
+/**
+ * Performance monitoring utilities for tracking agent execution metrics.
+ */
+export * as performance from './performance';
+
+/**
+ * Enhanced MCP implementations with improved error handling and retry logic.
+ */
+export * as mcpEnhanced from './index-mcp-enhanced';
 
 /**
  * Exporting the whole protocol as an object here. This contains both the types

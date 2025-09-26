@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getAllMcpTools } from '../src/mcp';
 import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
@@ -33,6 +33,13 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tools cache invalidation', () => {
+  beforeEach(() => {
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
   it('fetches fresh tools after cache invalidation', async () => {
     await withTrace('test', async () => {
       const toolsA = [

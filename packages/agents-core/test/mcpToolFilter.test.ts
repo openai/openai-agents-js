@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import { createMCPToolStaticFilter } from '../src/mcpUtil';
@@ -20,6 +20,13 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tool filtering', () => {
+  beforeEach(() => {
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
   it('static allow/block lists', async () => {
     await withTrace('test', async () => {
       const tools = [

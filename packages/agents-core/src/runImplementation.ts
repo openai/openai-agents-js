@@ -5,7 +5,12 @@ import {
   ToolsToFinalOutputResult,
   consumeAgentToolRunResult,
 } from './agent';
-import { ModelBehaviorError, ToolCallError, UserError } from './errors';
+import {
+  ModelBehaviorError,
+  ToolCallError,
+  UserError,
+  createErrorContext,
+} from './errors';
 import { getTransferMessage, Handoff, HandoffInputData } from './handoff';
 import {
   RunHandoffCallItem,
@@ -127,7 +132,11 @@ export function processModelResponse<TContext>(
             message,
             data: { mcp_server_label: mcpServerLabel },
           });
-          throw new ModelBehaviorError(message);
+          throw new ModelBehaviorError(
+            message,
+            undefined,
+            createErrorContext('mcp_server_validation'),
+          );
         }
 
         // Do this approval later:
@@ -167,6 +176,8 @@ export function processModelResponse<TContext>(
         });
         throw new ModelBehaviorError(
           'Model produced computer action without a computer tool.',
+          undefined,
+          createErrorContext('computer_action_validation'),
         );
       }
       runComputerActions.push({
@@ -201,6 +212,8 @@ export function processModelResponse<TContext>(
 
         throw new ModelBehaviorError(
           `Tool ${output.name} not found in agent ${agent.name}.`,
+          undefined,
+          createErrorContext('tool_validation'),
         );
       }
       items.push(new RunToolCallItem(output, agent));
@@ -637,7 +650,11 @@ export async function executeToolsAndSideEffects<TContext>(
             error: String(error),
           },
         });
-        throw new ModelBehaviorError('Invalid output type');
+        throw new ModelBehaviorError(
+          'Invalid output type',
+          undefined,
+          createErrorContext('output_type_validation'),
+        );
       }
 
       return new SingleStepResult(
@@ -841,6 +858,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       `Failed to run function tools: ${e}`,
       e as Error,
       state,
+      createErrorContext('function_tools_execution', state),
     );
   }
 }
@@ -1173,7 +1191,11 @@ export async function checkForFinalOutputFromTools<
     return toolUseBehavior(state._context, toolResults);
   }
 
-  throw new UserError(`Invalid toolUseBehavior: ${toolUseBehavior}`, state);
+  throw new UserError(
+    `Invalid toolUseBehavior: ${toolUseBehavior}`,
+    state,
+    createErrorContext('tool_use_behavior_validation', state),
+  );
 }
 
 export function addStepToRunResult(

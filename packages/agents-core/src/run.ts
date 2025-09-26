@@ -31,6 +31,7 @@ import {
   ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
   UserError,
+  createErrorContext,
 } from './errors';
 import {
   addStepToRunResult,
@@ -276,6 +277,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               throw new UserError(
                 'No model response found in previous state',
                 state,
+                createErrorContext('state_validation', state),
               );
             }
 
@@ -346,6 +348,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               throw new MaxTurnsExceededError(
                 `Max turns (${state._maxTurns}) exceeded`,
                 state,
+                createErrorContext('turn_limit_check', state),
               );
             }
 
@@ -552,6 +555,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           `Input guardrail failed to complete: ${e}`,
           e as Error,
           state,
+          {
+            ...createErrorContext('input_guardrail_execution', state),
+            guardrailType: 'input',
+          },
         );
       }
     }
@@ -610,6 +617,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           `Output guardrail failed to complete: ${e}`,
           e as Error,
           state,
+          {
+            ...createErrorContext('output_guardrail_execution', state),
+            guardrailType: 'output',
+          },
         );
       }
     }

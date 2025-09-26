@@ -1,55 +1,85 @@
+# Agent Patterns Examples
 
-# Agent Pattern Examples
+This directory contains practical examples demonstrating common patterns and best practices for building robust OpenAI Agent applications.
 
-This directory contains small scripts that demonstrate different agent patterns.
-Run them with `pnpm` using the commands shown below.
+## Files
 
-- `agents-as-tools.ts` – Orchestrate translator agents using them as tools.
-  ```bash
-  pnpm examples:agents-as-tools
-  ```
-- `deterministic.ts` – Fixed agent flow with gating and quality checks.
-  ```bash
-  pnpm examples:deterministic
-  ```
-- `forcing-tool-use.ts` – Require specific tools before final output.
-  ```bash
-  pnpm -F agent-patterns start:forcing-tool-use
-  ```
-- `human-in-the-loop.ts` – Manually approve certain tool calls.
-  ```bash
-  pnpm examples:human-in-the-loop
-  ```
-- `human-in-the-loop-stream.ts` – Streaming version of human approval.
-  ```bash
-  pnpm examples:streamed:human-in-the-loop
-  ```
-- `input-guardrails.ts` – Reject unwanted requests with guardrails.
-  ```bash
-  pnpm examples:input-guardrails
-  ```
-- `llm-as-a-judge.ts` – Evaluate and iterate on story outlines.
-  ```bash
-  pnpm -F agent-patterns start:llm-as-a-judge
-  ```
-- `output-guardrails.ts` – Block unsafe output using guardrails.
-  ```bash
-  pnpm examples:output-guardrails
-  ```
-- `parallelization.ts` – Run translations in parallel and pick the best.
-  ```bash
-  pnpm examples:parallelization
-  ```
-- `routing.ts` – Route messages to language-specific agents.
-  ```bash
-  pnpm examples:routing
-  ```
-- `streamed.ts` – Stream agent output, both text and events.
-  ```bash
-  pnpm examples:streamed
-  ```
-- `streaming-guardrails.ts` – Check streaming output against guardrails.
-  ```bash
-  pnpm -F agent-patterns start:streaming-guardrails
-  ```
+### `retry-patterns.ts`
 
+Demonstrates various retry and resilience patterns:
+
+- **Exponential Backoff Retry**: Basic retry with exponential backoff
+- **Circuit Breaker Pattern**: Prevents cascading failures
+- **Resilient Agent**: Agent with built-in retry logic
+- **Tool Retry**: Retry logic for tool calls
+- **Multi-Agent Workflow**: Retry patterns in complex workflows
+
+**Key Features:**
+
+- Configurable retry attempts and delays
+- Circuit breaker with automatic recovery
+- Error classification and handling
+- Production-ready implementations
+
+**Usage:**
+
+```bash
+cd examples/agent-patterns
+npm install
+npx tsx retry-patterns.ts
+```
+
+## Pattern Categories
+
+### 1. Retry Patterns
+
+- **Basic Retry**: Simple retry with fixed or exponential backoff
+- **Circuit Breaker**: Fail-fast pattern to prevent system overload
+- **Bulkhead**: Isolate failures to prevent system-wide issues
+
+### 2. Error Recovery
+
+- **Graceful Degradation**: Provide reduced functionality when errors occur
+- **Fallback Strategies**: Alternative approaches when primary methods fail
+- **Context-Aware Recovery**: Tailor recovery based on error context
+
+### 3. Resilience Patterns
+
+- **Timeout Handling**: Prevent hanging operations
+- **Resource Management**: Proper cleanup and resource allocation
+- **Health Monitoring**: Continuous system health checks
+
+## Best Practices Demonstrated
+
+1. **Always implement retry logic** for production agents
+2. **Use exponential backoff** to avoid overwhelming services
+3. **Implement circuit breakers** for external dependencies
+4. **Provide meaningful error messages** to users
+5. **Log errors with context** for debugging
+6. **Test failure scenarios** thoroughly
+7. **Monitor system health** continuously
+
+## Integration with OpenAI Agents
+
+These patterns work seamlessly with:
+
+- Basic agent operations (`agent.run()`)
+- Tool execution and chaining
+- Multi-agent handoffs
+- Streaming responses
+- MCP integrations
+
+## Production Considerations
+
+- **Monitoring**: Implement comprehensive logging and metrics
+- **Configuration**: Make retry parameters configurable
+- **Testing**: Test with various failure scenarios
+- **Documentation**: Document retry behavior for users
+- **Alerting**: Set up alerts for high failure rates
+
+## Related Documentation
+
+- [Troubleshooting Guide](../../docs/troubleshooting/)
+- [API Examples](../../docs/api-examples/)
+- [Streaming Patterns](../docs/practical-patterns/streaming-patterns.ts)
+- [Error Recovery](../docs/practical-patterns/error-recovery.ts)

@@ -1,7 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  beforeAll,
+  afterAll,
+} from 'vitest';
 import { OpenAITracingExporter } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
 import { createCustomSpan } from '@openai/agents-core';
+
+import { setTracingDisabled } from '@openai/agents-core';
+
+// Disable tracing to prevent stderr output
+beforeAll(() => {
+  setTracingDisabled(true);
+});
+
+afterAll(() => {
+  setTracingDisabled(false);
+});
 
 describe('OpenAITracingExporter', () => {
   const fakeSpan = createCustomSpan({
@@ -22,6 +41,10 @@ describe('OpenAITracingExporter', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   it('skips export when no apiKey', async () => {
@@ -91,9 +114,15 @@ describe('OpenAITracingExporter', () => {
 
   it('stops on client error', async () => {
     const item = fakeSpan;
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
     vi.stubGlobal('fetch', fetchMock);
-    const exporter = new OpenAITracingExporter({ apiKey: 'key3', endpoint: 'u', maxRetries: 2 });
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

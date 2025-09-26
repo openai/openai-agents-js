@@ -28,6 +28,10 @@ describe('RealtimeSession', () => {
   let session: RealtimeSession;
 
   beforeEach(async () => {
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
     transport = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     session = new RealtimeSession(agent, { transport });

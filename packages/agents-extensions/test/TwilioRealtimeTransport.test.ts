@@ -48,6 +48,10 @@ const base64 = (data: string) => Buffer.from(data).toString('base64');
 describe('TwilioRealtimeTransportLayer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {

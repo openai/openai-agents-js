@@ -38,6 +38,16 @@
       "require": "./dist/types/index.js",
       "import": "./dist/types/index.mjs"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "import": "./dist/testing/index.mjs"
+    },
+    "./performance": {
+      "types": "./dist/performance/index.d.ts",
+      "require": "./dist/performance/index.js",
+      "import": "./dist/performance/index.mjs"
+    },
     "./_shims": {
       "workerd": {
         "types": "./dist/shims/shims-workerd.d.ts",
@@ -94,6 +104,12 @@
       ],
       "types": [
         "dist/types/index.d.ts"
+      ],
+      "testing": [
+        "dist/testing/index.d.ts"
+      ],
+      "performance": [
+        "dist/performance/index.d.ts"
       ],
       "_shims": [
         "dist/shims/shims-node.d.ts"

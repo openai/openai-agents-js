@@ -22,6 +22,11 @@
       "types": "./dist/utils/index.d.ts",
       "require": "./dist/utils/index.js",
       "import": "./dist/utils/index.mjs"
+    },
+    "./performance": {
+      "types": "./dist/performance/index.d.ts",
+      "require": "./dist/performance/index.js",
+      "import": "./dist/performance/index.mjs"
     }
   },
   "scripts": {
@@ -60,6 +65,9 @@
       ],
       "utils": [
         "dist/utils/index.d.ts"
+      ],
+      "performance": [
+        "dist/performance/index.d.ts"
       ]
     }
   }

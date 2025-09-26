@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Agent } from '../src/agent';
 import { handoff, getHandoff, Handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
@@ -7,6 +7,13 @@ import { z } from 'zod';
 const agent = new Agent({ name: 'A' });
 
 describe('handoff()', () => {
+  beforeEach(() => {
+    // Suppress console output during tests to reduce noise
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
   it('throws UserError when only onHandoff or inputType provided', () => {
     expect(() => handoff(agent, { onHandoff: () => {} })).toThrow(UserError);
     expect(() => handoff(agent, { inputType: z.object({}) })).toThrow(

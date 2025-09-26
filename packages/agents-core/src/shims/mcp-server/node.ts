@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
+// Define default timeout constant (30 seconds)
+const DEFAULT_REQUEST_TIMEOUT_MSEC = 30000;
 
 import {
   BaseMCPServerStdio,
@@ -15,6 +16,12 @@ import {
   invalidateServerToolsCache,
 } from '../../mcp';
 import logger from '../../logger';
+import {
+  MCPConnectionError,
+  MCPRetryManager,
+  MCPRetryConfig,
+  createErrorContext,
+} from '../../errors';
 
 export interface SessionMessage {
   message: any;
@@ -38,15 +45,20 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
+  protected retryManager: MCPRetryManager;
 
   params: DefaultMCPServerStdioOptions;
   private _name: string;
   private transport: any = null;
 
-  constructor(params: MCPServerStdioOptions) {
+  constructor(
+    params: MCPServerStdioOptions & { retryConfig?: Partial<MCPRetryConfig> },
+  ) {
     super(params);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    this.retryManager = new MCPRetryManager(params.retryConfig);
+
     if ('fullCommand' in params) {
       const elements = params.fullCommand.split(' ');
       const command = elements.shift();
@@ -67,33 +79,66 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async connect(): Promise<void> {
-    try {
-      const { StdioClientTransport } = await import(
-        '@modelcontextprotocol/sdk/client/stdio.js'
-      ).catch(failedToImport);
-      const { Client } = await import(
-        '@modelcontextprotocol/sdk/client/index.js'
-      ).catch(failedToImport);
-      this.transport = new StdioClientTransport({
-        command: this.params.command,
-        args: this.params.args,
-        env: this.params.env,
-        cwd: this.params.cwd,
-      });
-      this.session = new Client({
-        name: this._name,
-        version: '1.0.0', // You may want to make this configurable
-      });
-      await this.session.connect(this.transport);
-      this.serverInitializeResult = {
-        serverInfo: { name: this._name, version: '1.0.0' },
-      } as InitializeResult;
-    } catch (e) {
-      this.logger.error('Error initializing MCP server:', e);
-      await this.close();
-      throw e;
-    }
-    this.debugLog(() => `Connected to MCP server: ${this._name}`);
+    const connectionDetails = {
+      command: this.params.command,
+      args: this.params.args,
+      env: this.params.env,
+      cwd: this.params.cwd,
+      encoding: this.params.encoding,
+      encodingErrorHandler: this.params.encodingErrorHandler,
+    };
+
+    return this.retryManager.executeWithRetry(
+      async () => {
+        try {
+          const { StdioClientTransport } = await import(
+            '@modelcontextprotocol/sdk/client/stdio.js'
+          ).catch(failedToImport);
+          const { Client } = await import(
+            '@modelcontextprotocol/sdk/client/index.js'
+          ).catch(failedToImport);
+
+          this.transport = new StdioClientTransport({
+            command: this.params.command,
+            args: this.params.args,
+            env: this.params.env,
+            cwd: this.params.cwd,
+          });
+
+          this.session = new Client({
+            name: this._name,
+            version: '1.0.0', // You may want to make this configurable
+          });
+
+          await this.session.connect(this.transport);
+
+          this.serverInitializeResult = {
+            serverInfo: { name: this._name, version: '1.0.0' },
+          } as InitializeResult;
+
+          this.debugLog(() => `Connected to MCP server: ${this._name}`);
+        } catch (error) {
+          this.logger.error('Error initializing MCP server:', error);
+          await this.close();
+
+          // Throw enhanced error with connection details
+          throw new MCPConnectionError(
+            `Failed to connect to MCP stdio server: ${error instanceof Error ? error.message : String(error)}`,
+            this._name,
+            'stdio',
+            connectionDetails,
+            error instanceof Error ? error : new Error(String(error)),
+            undefined,
+            createErrorContext('mcp_stdio_connection'),
+          );
+        }
+      },
+      'mcp_stdio_connection',
+      {
+        serverName: this._name,
+        errorContext: createErrorContext('mcp_stdio_connection'),
+      },
+    );
   }
 
   async invalidateToolsCache(): Promise<void> {
