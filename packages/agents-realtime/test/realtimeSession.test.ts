@@ -11,7 +11,10 @@ import {
 } from '@openai/agents-core';
 import * as utils from '../src/utils';
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
-import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
+import {
+  DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
+  OpenAIRealtimeBase,
+} from '../src/openaiRealtimeBase';
 
 function createMessage(id: string, text: string): RealtimeItem {
   return {
@@ -120,6 +123,19 @@ describe('RealtimeSession', () => {
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test', url: 'ws://example' });
     expect(t.connectCalls[0]?.url).toBe('ws://example');
+  });
+
+  it('includes default transcription config when connecting', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    expect(
+      t.connectCalls[0]?.initialSessionConfig?.audio?.input?.transcription,
+    ).toEqual(
+      DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
+    );
   });
 
   it('updateHistory accepts callback', () => {

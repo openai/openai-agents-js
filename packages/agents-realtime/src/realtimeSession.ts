@@ -29,7 +29,10 @@ import {
   RealtimeOutputGuardrailSettings,
 } from './guardrail';
 import { RealtimeItem } from './items';
-import { OpenAIRealtimeModels } from './openaiRealtimeBase';
+import {
+  DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
+  OpenAIRealtimeModels,
+} from './openaiRealtimeBase';
 import { OpenAIRealtimeWebRTC } from './openaiRealtimeWebRtc';
 import { OpenAIRealtimeWebSocket } from './openaiRealtimeWebsocket';
 import { RealtimeAgent } from './realtimeAgent';
@@ -147,6 +150,12 @@ export type RealtimeSessionConnectOptions = {
   url?: string;
 };
 
+function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
+  return JSON.parse(
+    JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
+  ) as Partial<RealtimeSessionConfig>;
+}
+
 /**
  * A `RealtimeSession` is the cornerstone of building Voice Agents. It's the equivalent of a
  * Runner in text-based agents except that it automatically handles multiple turns by maintaining a
@@ -206,7 +215,8 @@ export class RealtimeSession<
   // modalities, speed, toolChoice, turnDetection, etc.). Without this, updating
   // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
   // transport defaults causing issues for integrations like Twilio.
-  #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
+  #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
+    cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
 
   constructor(
