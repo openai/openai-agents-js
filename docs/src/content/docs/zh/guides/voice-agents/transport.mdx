@@ -1,0 +1,73 @@
+---
+title: 传输机制
+description: Learn about the different transport layers that can be used with Realtime Agents.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+
+import createAgentExample from '../../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
+import createSessionExample from '../../../../../../../examples/docs/voice-agents/createSession.ts?raw';
+import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
+import sessionHistoryExample from '../../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
+import historyUpdatedExample from '../../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
+import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+
+## 默认传输层
+
+### WebRTC 连接
+
+默认的传输层使用 WebRTC。音频会从麦克风录制并自动播放。
+
+若要使用您自己的媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
+
+<Code lang="typescript" code={customWebRTCTransportExample} />
+
+### WebSocket 连接
+
+在创建会话时传入 `transport: 'websocket'` 或一个 `OpenAIRealtimeWebSocket` 实例，以使用 WebSocket 连接而非 WebRTC。这非常适合服务端用例，例如使用 Twilio 构建电话智能体。
+
+<Code lang="typescript" code={websocketSessionExample} />
+
+可使用任意录制/回放库来处理原始 PCM16 音频字节。
+
+#### Cloudflare Workers（workerd）注意事项
+
+Cloudflare Workers 以及其他 workerd 运行时无法使用全局 `WebSocket` 构造函数发起出站 WebSocket。请使用扩展包中的 Cloudflare 传输，它会在内部执行基于 `fetch()` 的升级。
+
+<Code lang="typescript" code={cloudflareTransportExample} />
+
+### 自定义传输机制
+
+如果您想使用不同的语音到语音 API，或拥有自定义的传输机制，可通过实现 `RealtimeTransportLayer` 接口并发出 `RealtimeTransportEventTypes` 事件来创建自己的传输层。
+
+## 更直接地与 Realtime API 交互
+
+如果您想使用 OpenAI Realtime API，同时更直接地访问 Realtime API，有两种方式：
+
+### 选项 1 - 访问传输层
+
+如果仍希望获得 `RealtimeSession` 的全部能力，可以通过 `session.transport` 访问传输层。
+
+传输层会将其接收到的每个事件都以 `*` 事件形式发出，您也可以使用 `sendEvent()` 方法发送原始事件。
+
+<Code lang="typescript" code={transportEventsExample} />
+
+### 选项 2 — 仅使用传输层
+
+如果您不需要自动工具执行、护栏等功能，也可以将传输层作为仅管理连接和中断的“薄”客户端来使用。
+
+<Code lang="typescript" code={thinClientExample} />

@@ -29,6 +29,17 @@ const orchestratorAgent = new Agent({
     spanishAgent.asTool({
       toolName: 'translate_to_spanish',
       toolDescription: "Translate the user's message to Spanish",
+      // You can customize both runner init options and additional options for its execution
+      runConfig: {
+        model: 'gpt-5',
+        modelSettings: {
+          reasoning: { effort: 'low' },
+          text: { verbosity: 'low' },
+        },
+      },
+      runOptions: {
+        maxTurns: 3,
+      },
     }),
     frenchAgent.asTool({
       toolName: 'translate_to_french',

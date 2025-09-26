@@ -35,7 +35,9 @@ Finally you can switch between the Responses API and the Chat Completions API.
 
 ## Tracing
 
-Tracing is enabled by default and uses the OpenAI key from the section above. A separate key may be set via `setTracingExportApiKey()`.
+Tracing is enabled by default and uses the OpenAI key from the section above.
+
+A separate key may be set via `setTracingExportApiKey()`:
 
 <Code
   lang="typescript"
@@ -43,13 +45,15 @@ Tracing is enabled by default and uses the OpenAI key from the section above. A 
   title="Set tracing export API key"
 />
 
-Tracing can also be disabled entirely.
+Tracing can also be disabled entirely:
 
 <Code
   lang="typescript"
   code={setTracingDisabledExample}
   title="Disable tracing"
 />
+
+If you’d like to learn more about the tracing feature, please check out [Tracing guide](/openai-agents-js/guides/tracing).
 
 ## Debug logging
 

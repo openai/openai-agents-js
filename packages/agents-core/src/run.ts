@@ -1090,10 +1090,19 @@ function adjustModelSettingsForNonGPT5RunnerModel(
       agentModelSettings.providerData?.text?.verbosity ||
       (agentModelSettings.providerData as any)?.reasoning_effort)
   ) {
+    const copiedModelSettings = { ...modelSettings };
     // the incompatible parameters should be removed to avoid runtime errors
-    delete modelSettings.providerData?.reasoning;
-    delete (modelSettings.providerData as any)?.text?.verbosity;
-    delete (modelSettings.providerData as any)?.reasoning_effort;
+    delete copiedModelSettings.providerData?.reasoning;
+    delete (copiedModelSettings.providerData as any)?.text?.verbosity;
+    delete (copiedModelSettings.providerData as any)?.reasoning_effort;
+    if (copiedModelSettings.reasoning) {
+      delete copiedModelSettings.reasoning.effort;
+      delete copiedModelSettings.reasoning.summary;
+    }
+    if (copiedModelSettings.text) {
+      delete copiedModelSettings.text.verbosity;
+    }
+    return copiedModelSettings;
   }
   return modelSettings;
 }

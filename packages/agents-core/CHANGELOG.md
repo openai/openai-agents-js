@@ -1,5 +1,25 @@
 # @openai/agents-core
 
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- 8516799: fix(randomUUID): add fallback when crypto.randomUUID is unavailable
+
+## 0.1.4
+
+### Patch Changes
+
+- 5f4e139: fix: #485 Abort during streaming throws “ReadableStream is locked” in StreamedRunResult
+- 9147a6a: feat: #460 Enable to customize the internal runner for an agent as tool
+
+## 0.1.3
+
+### Patch Changes
+
+- 74dd52e: fix: #473 upgrade openai package to the latest and fix breaking errors
+
 ## 0.1.2
 
 ### Patch Changes

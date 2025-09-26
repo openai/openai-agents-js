@@ -250,6 +250,39 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('merges top-level reasoning and text settings into chat completions request payload', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        reasoning: { effort: 'high' },
+        text: { verbosity: 'medium' },
+        providerData: { customOption: 'keep' },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    const [args, options] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('high');
+    expect(args.verbosity).toBe('medium');
+    expect(args.customOption).toBe('keep');
+    expect(options).toEqual({ headers: HEADERS, signal: undefined });
+  });
+
   it('handles function tool calls', async () => {
     const client = new FakeClient();
     const response = {

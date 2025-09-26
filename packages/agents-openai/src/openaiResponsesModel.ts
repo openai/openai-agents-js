@@ -852,7 +852,20 @@ export class OpenAIResponsesModel implements Model {
     const toolChoice = getToolChoice(request.modelSettings.toolChoice);
     const { text, ...restOfProviderData } =
       request.modelSettings.providerData ?? {};
-    const responseFormat = getResponseFormat(request.outputType, text);
+    if (request.modelSettings.reasoning) {
+      // Merge top-level reasoning settings with provider data
+      restOfProviderData.reasoning = {
+        ...request.modelSettings.reasoning,
+        ...restOfProviderData.reasoning,
+      };
+    }
+    let mergedText = text;
+    if (request.modelSettings.text) {
+      // Merge top-level text settings with provider data
+      mergedText = { ...request.modelSettings.text, ...text };
+    }
+    const responseFormat = getResponseFormat(request.outputType, mergedText);
+
     const prompt = getPrompt(request.prompt);
 
     let parallelToolCalls: boolean | undefined = undefined;

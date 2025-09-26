@@ -5,11 +5,14 @@ async function generateToken() {
     apiKey: process.env.OPENAI_API_KEY,
   });
 
-  const session = await openai.beta.realtime.sessions.create({
-    model: 'gpt-realtime',
+  const session = await openai.realtime.clientSecrets.create({
+    session: {
+      type: 'realtime',
+      model: 'gpt-realtime',
+    },
   });
 
-  console.log(session.client_secret.value);
+  console.log(session.value);
 }
 
 generateToken().catch((err) => {

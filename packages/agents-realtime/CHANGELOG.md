@@ -1,5 +1,40 @@
 # @openai/agents-realtime
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-core@0.1.6
+
+## 0.1.5
+
+### Patch Changes
+
+- 2dfb4fd: feat: add factory-based Cloudflare support.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
+    custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
+    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+
+## 0.1.4
+
+### Patch Changes
+
+- 18fd902: fix: #495 Realtime session config falls back to legacy format when voice is set
+- 1d4984b: Realtime: expose Call ID in OpenAIRealtimeWebRTC
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-core@0.1.4
+
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [74dd52e]
+  - @openai/agents-core@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes
