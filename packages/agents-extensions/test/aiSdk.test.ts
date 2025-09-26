@@ -54,6 +54,20 @@ function partsStream(parts: any[]): ReadableStream<any> {
   );
 }
 
+const jsonOutputType: SerializedOutputType = {
+  type: 'json_schema',
+  name: 'output',
+  strict: false,
+  schema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string' },
+    },
+    required: ['content'],
+    additionalProperties: false,
+  },
+};
+
 describe('getResponseFormat', () => {
   test('converts text output type', () => {
     const outputType: SerializedOutputType = 'text';
@@ -427,6 +441,185 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('appends structured output instructions to existing system message', async () => {
+    let receivedPrompt: any;
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate(options) {
+          receivedPrompt = options.prompt;
+          return {
+            content: [{ type: 'text', text: 'ok' }],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    await withTrace('t', () =>
+      model.getResponse({
+        systemInstructions: 'Act carefully.',
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: jsonOutputType,
+        tracing: false,
+      } as any),
+    );
+
+    expect(receivedPrompt[0].role).toBe('system');
+    expect(typeof receivedPrompt[0].content).toBe('string');
+    expect(receivedPrompt[0].content).toContain('Act carefully.');
+    expect(receivedPrompt[0].content).toContain(
+      'You must respond with a JSON object',
+    );
+    expect(receivedPrompt[0].content).toContain(
+      JSON.stringify(jsonOutputType.schema, null, 2),
+    );
+  });
+
+  test('inserts structured output instructions when no system message provided', async () => {
+    let receivedPrompt: any;
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate(options) {
+          receivedPrompt = options.prompt;
+          return {
+            content: [{ type: 'text', text: 'ok' }],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: jsonOutputType,
+        tracing: false,
+      } as any),
+    );
+
+    expect(receivedPrompt[0]).toEqual(
+      expect.objectContaining({
+        role: 'system',
+        content: expect.stringContaining('You must respond with a JSON object'),
+      }),
+    );
+    expect(receivedPrompt[0].content).toContain(
+      JSON.stringify(jsonOutputType.schema, null, 2),
+    );
+  });
+
+  test('converts tool-call JSON output into assistant message when no tools configured', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'response',
+                input: '{"content":"structured"}',
+              },
+            ],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            providerMetadata: { mark: true },
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: jsonOutputType,
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '{"content":"structured"}' }],
+        status: 'completed',
+        providerData: { mark: true },
+      },
+    ]);
+  });
+
+  test('forwards tool-call JSON when tools are configured', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'response',
+                input: '{"content":"structured"}',
+              },
+            ],
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'response',
+            description: 'handle',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: jsonOutputType,
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'response',
+        arguments: '{"content":"structured"}',
+        status: 'completed',
+        providerData: {},
+      },
+    ]);
+  });
+
   test('forwards toolChoice to AI SDK (generate)', async () => {
     const seen: any[] = [];
     const model = new AiSdkModel(
@@ -684,6 +877,44 @@ describe('AiSdkModel.getResponse', () => {
 });
 
 describe('AiSdkModel.getStreamedResponse', () => {
+  test('adds structured output instructions to streamed prompt', async () => {
+    let receivedPrompt: any;
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(options) {
+          receivedPrompt = options.prompt;
+          return {
+            stream: partsStream([
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 0, outputTokens: 0 },
+              },
+            ]),
+          } as any;
+        },
+      }),
+    );
+
+    for await (const _ of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: jsonOutputType,
+      tracing: false,
+    } as any)) {
+      // drain iterator
+    }
+
+    expect(receivedPrompt[0]).toEqual(
+      expect.objectContaining({
+        role: 'system',
+        content: expect.stringContaining('You must respond with a JSON object'),
+      }),
+    );
+  });
+
   test('streams events and completes', async () => {
     const parts = [
       { type: 'text-delta', delta: 'a' },
@@ -772,6 +1003,106 @@ describe('AiSdkModel.getStreamedResponse', () => {
         }
       }
     }).rejects.toThrow('bad');
+  });
+
+  test('converts streamed tool-call JSON when no tools are configured', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream([
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'response',
+                input: '{"content":"structured"}',
+              },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 0, outputTokens: 0 },
+              },
+            ]),
+          } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: jsonOutputType,
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '{"content":"structured"}' }],
+        status: 'completed',
+      },
+    ]);
+  });
+
+  test('keeps streamed tool-call events when tools are configured', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream([
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'response',
+                input: '{"content":"structured"}',
+              },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 0, outputTokens: 0 },
+              },
+            ]),
+          } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [
+        {
+          type: 'function',
+          name: 'response',
+          description: 'handle',
+          parameters: { type: 'object', properties: {} },
+        },
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: jsonOutputType,
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'response',
+        arguments: '{"content":"structured"}',
+        status: 'completed',
+      },
+    ]);
   });
 
   test('aborts streaming when signal already aborted', async () => {
