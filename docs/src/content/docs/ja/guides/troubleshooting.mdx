@@ -3,9 +3,9 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポート環境
+## サポート対象の実行環境
 
-OpenAI Agents SDK は、以下の サーバー 環境でサポートされています。
+OpenAI Agents SDK は次の サーバー 環境でサポートされます:
 
 - Node.js 22+
 - Deno 2.35+
@@ -13,28 +13,29 @@ OpenAI Agents SDK は、以下の サーバー 環境でサポートされてい
 
 ### 限定的なサポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現在いくつかの制限があります。
-  - 現在、SDK は `nodejs_compat` を有効にする必要があります
-  - トレースはリクエストの最後に手動でフラッシュする必要があります。[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください
-  - Cloudflare Workers における `AsyncLocalStorage` のサポートが限定的なため、一部のトレースが正確でない可能性があります
-- **Browsers**:
-  - 現在、ブラウザではトレーシングはサポートされていません
-- **v8 isolates**:
-  - 適切なブラウザポリフィルを備えたバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは機能しません
-  - v8 isolates は広範にはテストされていません
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で利用できますが、現在いくつかの制限があります
+  - 現在の SDK は `nodejs_compat` を有効化する必要があります
+  - リクエストの最後にトレースを手動でフラッシュする必要があります [トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照
+  - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースは正確でない可能性があります
+  - 外向き WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルな `WebSocket` コンストラクタは不可）Realtime の場合は `@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
+- **ブラウザ**:
+  - ブラウザでは現在トレーシングはサポートされていません
+- **v8 アイソレート**:
+  - 適切なブラウザ ポリフィルを備えたバンドラを使えば SDK を v8 アイソレート向けにバンドルできるはずですが、トレーシングは動作しません
+  - v8 アイソレートでの動作は十分にはテストされていません
 
 ## デバッグログ
 
-SDK で問題が発生した場合、デバッグログを有効にすると、発生している事象に関する詳細情報を取得できます。
+SDK で問題が発生している場合、デバッグログを有効にすると挙動の詳細を確認できます。
 
-`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグログを有効にします。
+`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグログを有効化します。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-または、SDK の特定の部分にスコープを絞ってデバッグできます。
+または、SDK の特定部分に範囲を絞ってデバッグできます:
 
-- `openai-agents:core` — SDK の主要な実行ロジック
+- `openai-agents:core` — SDK のメイン実行ロジック
 - `openai-agents:openai` — OpenAI API 呼び出し
-- `openai-agents:realtime` — Realtime Agents のコンポーネント
+- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント

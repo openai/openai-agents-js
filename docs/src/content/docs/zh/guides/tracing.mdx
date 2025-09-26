@@ -7,22 +7,22 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import customTraceExample from '../../../../../../examples/docs/custom-trace.ts?raw';
 import cloudflareWorkers from '../../../../../../examples/docs/tracing/cloudflareWorkers.ts?raw';
 
-Agents SDK 内置了追踪功能，会在智能体运行期间收集全面的事件记录：LLM 生成、工具调用、交接、护栏，甚至自定义事件。使用 [Traces dashboard](https://platform.openai.com/traces)，你可以在开发和生产环境中调试、可视化并监控工作流。
+Agents SDK 内置了追踪功能，会在一次智能体运行期间收集完整的事件记录：LLM 生成、工具调用、交接、护栏，甚至自定义事件。借助 [Traces 仪表盘](https://platform.openai.com/traces)，你可以在开发与生产环境中调试、可视化和监控工作流。
 
 <Aside type="note">
 
 追踪默认启用。可以通过两种方式禁用追踪：
 
-1. 通过设置环境变量 `OPENAI_AGENTS_DISABLE_TRACING=1` 全局禁用追踪
-2. 通过将 [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) 设为 `true` 来仅对单次运行禁用追踪
+1. 将环境变量设置为 `OPENAI_AGENTS_DISABLE_TRACING=1` 可全局禁用追踪
+2. 你可以通过将 [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) 设为 `true` 来仅对单次运行禁用追踪
 
-**_对于在使用 OpenAI API 且遵循 Zero Data Retention (ZDR) 策略的组织，追踪不可用。_**
+**_对于使用 OpenAI API 且遵循 Zero Data Retention（ZDR）政策的组织，追踪不可用。_**
 
 </Aside>
 
 ## 导出循环生命周期
 
-在大多数环境中，追踪会定期自动导出。在浏览器或 Cloudflare Workers 中，此功能默认禁用。若队列中追踪过多仍会触发导出，但不会按固定间隔导出。你应使用 `getGlobalTraceProvider().forceFlush()` 在代码生命周期中手动导出追踪。
+在大多数环境中，追踪会按固定时间间隔自动导出。在浏览器或 Cloudflare Workers 中，此功能默认禁用。若队列中的追踪过多仍会导出，但不会定期导出。你应在代码生命周期中使用 `getGlobalTraceProvider().forceFlush()` 手动导出追踪。
 
 例如，在 Cloudflare Worker 中，应将代码包裹在 `try/catch/finally` 中，并结合 `waitUntil` 使用强制刷新，确保在 worker 退出前导出追踪。
 
@@ -32,79 +32,79 @@ Agents SDK 内置了追踪功能，会在智能体运行期间收集全面的事
   meta="{13}"
 />
 
-## Trace 与 Span
+## Traces 与 Spans
 
-- **Traces** 表示“工作流”的一次端到端操作，由多个 Span 组成。Trace 具有以下属性：
-  - `workflow_name`：逻辑工作流或应用。例如 “Code generation” 或 “Customer service”。
-  - `trace_id`：Trace 的唯一 ID。如未提供会自动生成。必须符合 `trace_<32_alphanumeric>` 格式。
-  - `group_id`：可选的分组 ID，用于关联同一会话的多个 Trace。例如可使用聊天线程 ID。
+- **Traces** 表示一次“工作流”的端到端操作，由多个 Span 组成。Trace 具有以下属性：
+  - `workflow_name`：逻辑工作流或应用名称。例如“Code generation”或“Customer service”。
+  - `trace_id`：Trace 的唯一 ID。未传入时自动生成。格式必须为 `trace_<32_alphanumeric>`。
+  - `group_id`：可选的组 ID，用于关联同一会话中的多个 Trace。例如可使用聊天线程 ID。
   - `disabled`：若为 True，则不会记录该 Trace。
   - `metadata`：Trace 的可选元数据。
-- **Spans** 表示具有起止时间的操作。Span 具有：
+- **Spans** 表示具有开始和结束时间的操作。Span 具有：
   - `started_at` 和 `ended_at` 时间戳。
-  - `trace_id`，表示其所属的 Trace
+  - `trace_id`，指明其所属的 Trace
   - `parent_id`，指向该 Span 的父 Span（如有）
-  - `span_data`，即关于该 Span 的信息。例如，`AgentSpanData` 包含关于智能体的信息，`GenerationSpanData` 包含关于 LLM 生成的信息，等等。
+  - `span_data`，即关于该 Span 的信息。例如，`AgentSpanData` 包含智能体信息，`GenerationSpanData` 包含 LLM 生成信息等。
 
 ## 默认追踪
 
 默认情况下，SDK 会追踪以下内容：
 
-- 整个 `run()` 或 `Runner.run()` 被包裹在一个 `Trace` 中。
-- 每次智能体运行被包裹在 `AgentSpan` 中
-- LLM 生成被包裹在 `GenerationSpan` 中
-- 每次函数工具调用被包裹在 `FunctionSpan` 中
-- 护栏被包裹在 `GuardrailSpan` 中
-- 交接被包裹在 `HandoffSpan` 中
+- 整个 `run()` 或 `Runner.run()` 会被包裹在一个 `Trace` 中。
+- 每次智能体运行会被包裹在 `AgentSpan` 中
+- LLM 生成会被包裹在 `GenerationSpan` 中
+- 函数工具调用会分别被包裹在 `FunctionSpan` 中
+- 护栏会被包裹在 `GuardrailSpan` 中
+- 交接会被包裹在 `HandoffSpan` 中
 
-默认情况下，Trace 名称为 “Agent workflow”。你可以使用 `withTrace` 设置该名称，或通过 [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname) 配置名称和其他属性。
+默认的 Trace 名称是“Agent workflow”。你可以使用 `withTrace` 设置该名称，或者通过 [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname) 配置名称及其他属性。
 
-此外，你可以设置[自定义追踪处理器](#custom-tracing-processors)，将追踪推送到其他目的地（替代或作为次要目的地）。
+此外，你可以设置[自定义追踪处理器](#custom-tracing-processors)，将追踪推送到其他目的地（作为替代或附加目的地）。
 
 ### 语音智能体追踪
 
-如果你使用 `RealtimeAgent` 和 `RealtimeSession` 搭配默认的 OpenAI Realtime API，追踪会在 Realtime API 端自动进行，除非你在 `RealtimeSession` 中通过 `tracingDisabled: true` 或设置环境变量 `OPENAI_AGENTS_DISABLE_TRACING` 来禁用。
+如果你使用 `RealtimeAgent` 和 `RealtimeSession` 搭配默认的 OpenAI Realtime API，追踪将自动在 Realtime API 侧进行，除非你在 `RealtimeSession` 上通过 `tracingDisabled: true` 或使用环境变量 `OPENAI_AGENTS_DISABLE_TRACING` 来禁用它。
 
-更多详情请查看[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)。
+详见[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)。
 
 ## 更高层级的 Trace
 
-有时你可能希望多次调用 `run()` 属于同一个 Trace。可以通过将整个代码包裹在 `withTrace()` 中来实现。
+有时，你可能希望多次调用 `run()` 都属于同一个 Trace。你可以通过用 `withTrace()` 包裹整段代码来实现。
 
 <Code lang="typescript" code={customTraceExample} />
 
-1. 因为两次 `run` 调用被包裹在 `withTrace()` 中，这些单次运行将作为整体 Trace 的一部分，而不是创建两个 Trace。
+1. 因为两次 `run` 调用都被包裹在 `withTrace()` 中，单次运行会成为整体 Trace 的一部分，而不是创建两个独立的 Trace。
 
 ## 创建 Trace
 
-你可以使用 [`withTrace()`](/openai-agents-js/openai/agents-core/functions/withtrace/) 函数创建一个 Trace。或者，你也可以使用 `getGlobalTraceProvider().createTrace()` 手动创建一个新 Trace，并将其传入 `withTrace()`。
+你可以使用 [`withTrace()`](/openai-agents-js/openai/agents-core/functions/withtrace/) 来创建 Trace。或者，使用 `getGlobalTraceProvider().createTrace()` 手动创建新 Trace 并传入 `withTrace()`。
 
-当前 Trace 通过 [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) 或相应环境的 polyfill 跟踪。这意味着它可以自动适配并发。
+当前 Trace 通过 [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) 或相应环境的 polyfill 进行跟踪。这意味着它能自动适配并发。
 
 ## 创建 Span
 
-你可以使用各类 `create*Span()` 方法（如 `createGenerationSpan()`、`createFunctionSpan()` 等）来创建 Span。一般情况下无需手动创建 Span。提供了 [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) 函数用于记录自定义 Span 信息。
+你可以使用各类 `create*Span()`（例如 `createGenerationSpan()`、`createFunctionSpan()` 等）方法创建 Span。通常无需手动创建 Span。提供了 [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) 用于追踪自定义 Span 信息。
 
-Span 会自动隶属于当前 Trace，并嵌套在最近的当前 Span 下，当前 Span 通过 [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) 或相应环境的 polyfill 跟踪。
+Span 会自动归属到当前 Trace，并嵌套在最近的当前 Span 之下，当前 Span 通过 [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) 或相应环境的 polyfill 进行跟踪。
 
 ## 敏感数据
 
 某些 Span 可能会捕获潜在的敏感数据。
 
-`createGenerationSpan()` 会存储 LLM 生成的输入/输出，`createFunctionSpan()` 会存储函数调用的输入/输出。这些可能包含敏感数据，因此可以通过 [`RunConfig.traceIncludeSensitiveData
-`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata) 禁用对这些数据的捕获。
+`createGenerationSpan()` 会存储 LLM 生成的输入/输出，`createFunctionSpan()` 会存储函数调用的输入/输出。这些可能包含敏感数据，因此你可以通过 [`RunConfig.traceIncludeSensitiveData
+`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata) 禁用对此类数据的捕获。
 
 ## 自定义追踪处理器
 
 追踪的高层架构如下：
 
-- 初始化时，我们会创建全局的 [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider)，负责创建 Trace，并可通过 [`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/) 访问。
-- 我们为 `TraceProvider` 配置 [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/)，该处理器会将追踪/Span 批量发送到 [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/)，由其将 Span 和 Trace 批量导出至 OpenAI 后端。
+- 在初始化时，我们创建一个全局的 [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider)，它负责创建 Trace，并可通过 [`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/) 访问。
+- 我们为 `TraceProvider` 配置了一个 [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/)，它将 Trace/Span 批量发送给 [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/)，后者再将 Span 与 Trace 批量导出到 OpenAI 后端。
 
-若要自定义此默认设置，以将追踪发送至替代或附加的后端，或修改导出器行为，你有两种选择：
+若要自定义默认设置，将追踪发送到替代或附加的后端，或修改导出器行为，你有两个选项：
 
-1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor) 允许添加一个“额外”的追踪处理器，它会在追踪和 Span 就绪时接收它们。这样可在将追踪发送至 OpenAI 后端之外执行你自己的处理。
-2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors) 允许用你自己的追踪处理器“替换”默认处理器。这意味着除非你包含会执行发送的 `TracingProcessor`，否则追踪不会发送到 OpenAI 后端。
+1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor) 允许你添加**额外**的追踪处理器，当 Trace 和 Span 就绪时会接收它们。这样你可以在将追踪发送到 OpenAI 后端之外，进行自己的处理。
+2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors) 允许你**替换**默认处理器为你自己的追踪处理器。这意味着除非你包含一个会执行发送的 `TracingProcessor`，否则追踪将不会被发送到 OpenAI 后端。
 
 ## 外部追踪处理器列表
 

@@ -1,0 +1,44 @@
+---
+title: Cloudflare Workers 用トランスポート
+description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
+---
+
+import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+
+Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使ったアウトバウンド WebSocket を開けません。これらの環境から リアルタイムエージェント に接続しやすくするために、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
+
+<Aside type="caution">
+  このアダプターはまだベータ版です。エッジケースの問題やバグに遭遇する可能性があります。
+  問題は [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  からご報告ください。迅速に修正します。Workers で Node.js スタイルの API
+  が必要な場合は、`nodejs_compat` の有効化をご検討ください。
+</Aside>
+
+## セットアップ
+
+<Steps>
+
+1. **extensions パッケージをインストールします。**
+
+   ```bash
+   npm install @openai/agents-extensions
+   ```
+
+2. **トランスポートを作成し、セッションにアタッチします。**
+
+   <Code lang="typescript" code={cloudflareBasicExample} />
+
+3. **`RealtimeSession` に接続します。**
+
+   ```typescript
+   await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
+   ```
+
+</Steps>
+
+## 注意事項
+
+- Cloudflare トランスポートは内部で `fetch()` と `Upgrade: websocket` を使用し、ソケットの `open` イベントを待たずに処理します。これは workerd APIs に一致します
+- このトランスポートを使用しても、`RealtimeSession` のすべての機能（ツール、ガードレールなど）は通常どおり動作します
+- 開発中の詳細ログを確認するには、`DEBUG=openai-agents*` を使用します
