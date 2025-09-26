@@ -123,6 +123,7 @@ export async function extractSidebarTranslations(
 const sourceDir = path.resolve(__dirname, '../../src/content/docs');
 const languages: Record<string, string> = {
   ja: 'Japanese',
+  ko: 'Korean',
   zh: 'Chinese',
   // Add more languages here
 };
@@ -213,6 +214,40 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     Overview: '概述',
     Quickstart: '快速上手',
   },
+  ko: {
+    agents: '에이전트',
+    'computer use': '컴퓨터 사용',
+    'OAI hosted tools': 'OpenAI 호스트하는 도구',
+    'well formed data': '적절한 형식의 데이터',
+    guardrail: '가드레일',
+    handoffs: '핸드오프',
+    'function tools': '함수 도구',
+    'function calling': '함수 호출',
+    tracing: '트레이싱',
+    'code examples': '코드 예제',
+    'vector store': '벡터 스토어',
+    'deep research': '딥 리서치',
+    category: '카테고리',
+    user: '사용자',
+    parameter: '매개변수',
+    processor: '프로세서',
+    'orchestrating multiple agents': '멀티 에이전트 오케스트레이션',
+    server: '서버',
+    'web search': '웹 검색',
+    'file search': '파일 검색',
+    streaming: '스트리밍',
+    'system prompt': '시스템 프롬프트',
+    interruption: '인터럽션(중단 처리)',
+    'TypeScript-first': 'TypeScript 우선',
+    'Human in the loop': '휴먼인더루프 (HITL)',
+    'Hosted tool': '호스티드 툴',
+    'Hosted MCP server tools': '호스티드 MCP 서버 도구',
+    raw: '원문',
+    'Realtime Agents': '실시간 에이전트',
+    'Build your first agent in minutes.':
+      '단 몇 분 만에 첫 에이전트를 만들 수 있습니다',
+    "Let's build": '시작하기',
+  },
 };
 
 const engToNonEngInstructions: Record<string, string[]> = {
@@ -233,6 +268,12 @@ const engToNonEngInstructions: Record<string, string[]> = {
     '* For technical terms, prefer commonly accepted Chinese translations over literal translations',
     '* Use Chinese punctuation marks appropriately (。，；：""\'\'（）)',
     '* When translating code-related content, maintain consistency with established Chinese programming terminology',
+  ],
+  ko: [
+    '* 공손하고 중립적인 문체(합니다/입니다체)를 일관되게 사용하세요.',
+    '* 개발자를 위한 페이지이므로 보통 개발자 문서 형식으로 번역하세요',
+    "* 'instructions', 'tools'와 같은 API 매개변수 이름과 temperature, top_p, max_tokens, presence_penalty, frequency_penalty 등은 영문 그대로 유지하세요.",
+    '* 문장이 아닌 불릿 항목 끝에는 마침표를 찍지 마세요.',
   ],
 };
 
@@ -304,6 +345,10 @@ You must return **only** the translated markdown. Do not include any commentary,
 - For technical terms mixed with Chinese text, add appropriate spacing for readability
 - Use simplified Chinese characters consistently
 - Follow Chinese grammar and sentence structure patterns
+
+*(applies only when ${targetLanguage} = Korean)*  
+- 영문 식별자, 코드, 약어 주변의 공백은 원문을 유지하고 임의로 추가하거나 삭제하지 마세요.  
+- 마크다운 강조 표식 주변에 불필요한 공백을 넣지 마세요: `**굵게**` (good) vs `** 굵게 **` (bad).
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -438,6 +483,10 @@ You must return **only** the translated markdown. Do not include any commentary,
 - For technical terms mixed with Chinese text, add appropriate spacing for readability
 - Use simplified Chinese characters consistently
 - Follow Chinese grammar and sentence structure patterns Review this rule again before returning the translated text.
+
+*(applies only when ${targetLanguage} = Korean)*  
+- 영문 식별자, 코드, 약어 주변의 공백은 원문을 유지하고 임의로 추가하거나 삭제하지 마세요.  
+- 마크다운 강조 표식 주변에 불필요한 공백을 넣지 마세요: `**굵게**` (good) vs `** 굵게 **` (bad).
 
 #########################
 ##  DO NOT TRANSLATE   ##
@@ -675,6 +724,7 @@ function shouldSkipFile(filePath: string): boolean {
   const rel = path.relative(sourceDir, filePath);
   if (
     rel.startsWith('ja/') ||
+    rel.startsWith('ko/') ||
     rel.startsWith('fr/') ||
     (!filePath.endsWith('.md') && !filePath.endsWith('.mdx'))
   ) {
