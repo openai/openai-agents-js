@@ -15,6 +15,7 @@ import {
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
   OpenAIRealtimeBase,
 } from '../src/openaiRealtimeBase';
+import { toNewSessionConfig } from '../src/clientMessages';
 
 function createMessage(id: string, text: string): RealtimeItem {
   return {
@@ -131,9 +132,11 @@ describe('RealtimeSession', () => {
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test' });
 
-    expect(
-      t.connectCalls[0]?.initialSessionConfig?.audio?.input?.transcription,
-    ).toEqual(
+    const normalizedConfig = toNewSessionConfig(
+      t.connectCalls[0]?.initialSessionConfig ?? {},
+    );
+
+    expect(normalizedConfig.audio?.input?.transcription).toEqual(
       DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
     );
   });
