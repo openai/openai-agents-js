@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { z } from 'zod';
 import {
   Agent,
   run,
@@ -8,12 +9,14 @@ import {
   Usage,
   RunStreamEvent,
   RunAgentUpdatedStreamEvent,
+  RunItemStreamEvent,
   handoff,
   Model,
   ModelRequest,
   ModelResponse,
   StreamEvent,
   FunctionCallItem,
+  tool,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 
@@ -150,7 +153,8 @@ describe('Runner.run (streaming)', () => {
 
     // Track agent_end events on both the agent and runner
     const agentEndEvents: Array<{ context: any; output: string }> = [];
-    const runnerEndEvents: Array<{ context: any; agent: any; output: string }> = [];
+    const runnerEndEvents: Array<{ context: any; agent: any; output: string }> =
+      [];
 
     agent.on('agent_end', (context, output) => {
       agentEndEvents.push({ context, output });
@@ -174,9 +178,220 @@ describe('Runner.run (streaming)', () => {
     // Verify agent_end was called on both agent and runner
     expect(agentEndEvents).toHaveLength(1);
     expect(agentEndEvents[0].output).toBe('Final output');
-    
+
     expect(runnerEndEvents).toHaveLength(1);
     expect(runnerEndEvents[0].agent).toBe(agent);
     expect(runnerEndEvents[0].output).toBe('Final output');
+  });
+
+  it('streams tool_called before the tool finishes executing', async () => {
+    let releaseTool: (() => void) | undefined;
+    const toolExecuted = vi.fn();
+
+    const blockingTool = tool({
+      name: 'blocker',
+      description: 'blocks until released',
+      parameters: z.object({ value: z.string() }),
+      execute: async ({ value }) => {
+        toolExecuted(value);
+        await new Promise<void>((resolve) => {
+          releaseTool = resolve;
+        });
+        return `result:${value}`;
+      },
+    });
+
+    const functionCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: blockingTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: JSON.stringify({ value: 'test' }),
+    };
+
+    const toolResponse: ModelResponse = {
+      output: [functionCall],
+      usage: new Usage(),
+    };
+
+    const finalMessageResponse: ModelResponse = {
+      output: [fakeModelMessage('done')],
+      usage: new Usage(),
+    };
+
+    class BlockingStreamModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return this.#callCount === 0 ? toolResponse : finalMessageResponse;
+      }
+
+      async *getStreamedResponse(
+        _req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const currentCall = this.#callCount++;
+        const response =
+          currentCall === 0 ? toolResponse : finalMessageResponse;
+        yield {
+          type: 'response_done',
+          response: {
+            id: `resp-${currentCall}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'BlockingAgent',
+      model: new BlockingStreamModel(),
+      tools: [blockingTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'hello', { stream: true });
+    const iterator = result.toStream()[Symbol.asyncIterator]();
+
+    const collected: RunStreamEvent[] = [];
+    const firstRunItemPromise: Promise<RunItemStreamEvent> = (async () => {
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) {
+          throw new Error('Stream ended before emitting a run item event');
+        }
+        collected.push(next.value);
+        if (next.value.type === 'run_item_stream_event') {
+          return next.value;
+        }
+      }
+    })();
+
+    let firstRunItemResolved = false;
+    void firstRunItemPromise.then(() => {
+      firstRunItemResolved = true;
+    });
+
+    // Allow the tool execution to start.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(toolExecuted).toHaveBeenCalledWith('test');
+    expect(releaseTool).toBeDefined();
+    expect(firstRunItemResolved).toBe(true);
+
+    const firstRunItem = await firstRunItemPromise;
+    expect(firstRunItem.name).toBe('tool_called');
+
+    releaseTool?.();
+
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        break;
+      }
+      collected.push(next.value);
+    }
+
+    await result.completed;
+
+    const toolCalledIndex = collected.findIndex(
+      (event) =>
+        event.type === 'run_item_stream_event' && event.name === 'tool_called',
+    );
+    const toolOutputIndex = collected.findIndex(
+      (event) =>
+        event.type === 'run_item_stream_event' && event.name === 'tool_output',
+    );
+
+    expect(toolCalledIndex).toBeGreaterThan(-1);
+    expect(toolOutputIndex).toBeGreaterThan(-1);
+    expect(toolCalledIndex).toBeLessThan(toolOutputIndex);
+  });
+
+  it('emits run item events in the order items are generated', async () => {
+    const sequenceTool = tool({
+      name: 'report',
+      description: 'Generate a report',
+      parameters: z.object({}),
+      execute: async () => 'report ready',
+    });
+
+    const functionCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: sequenceTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    const firstTurnResponse: ModelResponse = {
+      output: [fakeModelMessage('Starting work'), functionCall],
+      usage: new Usage(),
+    };
+
+    const secondTurnResponse: ModelResponse = {
+      output: [fakeModelMessage('All done')],
+      usage: new Usage(),
+    };
+
+    class SequencedStreamModel implements Model {
+      #turn = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return this.#turn === 0 ? firstTurnResponse : secondTurnResponse;
+      }
+
+      async *getStreamedResponse(
+        _req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response =
+          this.#turn === 0 ? firstTurnResponse : secondTurnResponse;
+        this.#turn += 1;
+        yield {
+          type: 'response_done',
+          response: {
+            id: `resp-${this.#turn}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'SequencedAgent',
+      model: new SequencedStreamModel(),
+      tools: [sequenceTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'begin', { stream: true });
+
+    const itemEventNames: string[] = [];
+    for await (const event of result.toStream()) {
+      if (event.type === 'run_item_stream_event') {
+        itemEventNames.push(event.name);
+      }
+    }
+    await result.completed;
+
+    expect(itemEventNames).toEqual([
+      'message_output_created',
+      'tool_called',
+      'tool_output',
+      'message_output_created',
+    ]);
   });
 });

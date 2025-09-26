@@ -27,6 +27,7 @@ import {
   executeComputerActions,
   executeHandoffCalls,
   executeToolsAndSideEffects,
+  streamStepItemsToRunResult,
 } from '../src/runImplementation';
 import {
   FunctionTool,
@@ -310,6 +311,63 @@ describe('addStepToRunResult', () => {
       'tool_called',
       'tool_output',
       'reasoning_item_created',
+    ]);
+  });
+
+  it('does not re-emit items that were already streamed', () => {
+    const agent = new Agent({ name: 'StreamOnce' });
+
+    const toolCallItem = new ToolCallItem(TEST_MODEL_FUNCTION_CALL, agent);
+    const toolOutputItem = new ToolCallOutputItem(
+      getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, 'ok'),
+      agent,
+      'ok',
+    );
+
+    const step: any = {
+      newStepItems: [toolCallItem, toolOutputItem],
+    };
+
+    const streamedResult = new StreamedRunResult();
+    const captured: string[] = [];
+    (streamedResult as any)._addItem = (evt: any) => captured.push(evt.name);
+
+    const alreadyStreamed = new Set([toolCallItem]);
+    streamStepItemsToRunResult(streamedResult, [toolCallItem]);
+    addStepToRunResult(streamedResult, step, { skipItems: alreadyStreamed });
+
+    expect(captured).toEqual(['tool_called', 'tool_output']);
+  });
+
+  it('maintains event order when mixing pre-streamed and step items', () => {
+    const agent = new Agent({ name: 'OrderedStream' });
+
+    const messageItem = new MessageOutputItem(TEST_MODEL_MESSAGE, agent);
+    const toolCallItem = new ToolCallItem(TEST_MODEL_FUNCTION_CALL, agent);
+    const toolOutputItem = new ToolCallOutputItem(
+      getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, 'done'),
+      agent,
+      'done',
+    );
+
+    const step: any = {
+      newStepItems: [messageItem, toolCallItem, toolOutputItem],
+    };
+
+    const streamedResult = new StreamedRunResult();
+    const captured: string[] = [];
+    (streamedResult as any)._addItem = (evt: any) => captured.push(evt.name);
+
+    const preStreamed = new Set([messageItem, toolCallItem]);
+    // Simulate the streaming loop emitting early items and then the step emitter
+    // flushing the remainder without duplicating the first two events.
+    streamStepItemsToRunResult(streamedResult, [messageItem, toolCallItem]);
+    addStepToRunResult(streamedResult, step, { skipItems: preStreamed });
+
+    expect(captured).toEqual([
+      'message_output_created',
+      'tool_called',
+      'tool_output',
     ]);
   });
 });

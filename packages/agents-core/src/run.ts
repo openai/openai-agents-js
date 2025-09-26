@@ -39,6 +39,7 @@ import {
   maybeResetToolChoice,
   ProcessedResponse,
   processModelResponse,
+  streamStepItemsToRunResult,
 } from './runImplementation';
 import { RunItem } from './items';
 import {
@@ -807,6 +808,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
           result.state._lastProcessedResponse = processedResponse;
+
+          // Record the items emitted directly from the model response so we do not
+          // stream them again after tools and other side effects finish.
+          const preToolItems = new Set(processedResponse.newItems);
+          if (preToolItems.size > 0) {
+            streamStepItemsToRunResult(result, processedResponse.newItems);
+          }
+
           const turnResult = await executeToolsAndSideEffects<TContext>(
             currentAgent,
             result.state._originalInput,
@@ -817,7 +826,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
           );
 
-          addStepToRunResult(result, turnResult);
+          addStepToRunResult(result, turnResult, {
+            skipItems: preToolItems,
+          });
 
           result.state._toolUseTracker.addToolUse(
             currentAgent,
