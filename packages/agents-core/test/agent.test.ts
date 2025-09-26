@@ -5,7 +5,7 @@ import { Handoff, handoff } from '../src/handoff';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
-import { Runner } from '../src/run';
+import { Runner, RunConfig } from '../src/run';
 
 describe('Agent', () => {
   afterEach(() => {
@@ -221,12 +221,10 @@ describe('Agent', () => {
       .spyOn(Runner.prototype, 'run')
       .mockImplementation(async () => mockResult);
 
-    const runConfig = {
+    const runConfig: Partial<RunConfig> = {
       model: 'gpt-5',
       modelSettings: {
-        providerData: {
-          reasoning: { effort: 'low' },
-        },
+        reasoning: { effort: 'low' },
       },
     };
     const runOptions = {

@@ -33,10 +33,8 @@ const orchestratorAgent = new Agent({
       runConfig: {
         model: 'gpt-5',
         modelSettings: {
-          providerData: {
-            reasoning: { effort: 'low' },
-            text: { verbosity: 'low' },
-          },
+          reasoning: { effort: 'low' },
+          text: { verbosity: 'low' },
         },
       },
       runOptions: {

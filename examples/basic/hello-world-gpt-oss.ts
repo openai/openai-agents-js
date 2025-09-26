@@ -25,9 +25,7 @@ async function main() {
       'gpt-oss:20b',
     ),
     instructions: 'You answer questions concisely and to the point.',
-    modelSettings: {
-      providerData: { reasoning: { effort: 'low' } },
-    },
+    modelSettings: { reasoning: { effort: 'low' } },
   });
 
   const question = 'Tell me about recursion in programming.';

@@ -9,15 +9,8 @@ async function main() {
     name: 'Agent',
     model: 'gpt-5',
     modelSettings: {
-      providerData: {
-        reasoning: {
-          effort: 'high',
-          summary: 'auto',
-        },
-        text: {
-          verbosity: 'high',
-        },
-      },
+      reasoning: { effort: 'high', summary: 'auto' },
+      text: { verbosity: 'high' },
     },
   });
 
