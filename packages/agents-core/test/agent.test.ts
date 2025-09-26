@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
 import { Runner, RunConfig } from '../src/run';
+import logger from '../src/logger';
 
 describe('Agent', () => {
   afterEach(() => {
@@ -184,6 +185,30 @@ describe('Agent', () => {
       '{"input":"hey how are you?"}',
     );
     expect(result2).toBe('Hello World');
+  });
+
+  it('warns when using asTool with stopAtToolNames behavior without custom extractor', async () => {
+    const warnSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [{ output: [] }],
+    } as any);
+
+    const agent = new Agent({
+      name: 'Stopper Agent',
+      instructions: 'Stop instructions.',
+      toolUseBehavior: { stopAtToolNames: ['report'] },
+    });
+
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    await tool.invoke(new RunContext(), '{"input":"value"}');
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      `You're passing the agent (name: Stopper Agent) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
+    );
   });
 
   it('allows configuring needsApproval when using an agent as a tool', async () => {

@@ -556,6 +556,20 @@ export class Agent<
           context,
           ...(runOptions ?? {}),
         });
+
+        const usesStopAtToolNames =
+          typeof this.toolUseBehavior === 'object' &&
+          this.toolUseBehavior !== null &&
+          'stopAtToolNames' in this.toolUseBehavior;
+
+        if (
+          typeof customOutputExtractor !== 'function' &&
+          usesStopAtToolNames
+        ) {
+          logger.debug(
+            `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
+          );
+        }
         const outputText =
           typeof customOutputExtractor === 'function'
             ? await customOutputExtractor(result as any)
