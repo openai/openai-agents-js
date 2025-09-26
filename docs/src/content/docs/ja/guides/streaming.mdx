@@ -9,48 +9,48 @@ import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nod
 import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 
-Agents SDK は、モデルおよびその他の実行ステップからの出力を段階的に配信できます。ストリーミングにより UI を応答性よく保ち、最終的な実行結果全体を待たずにユーザーを更新できます。
+Agents SDK は、モデルおよびその他の実行ステップからの出力を段階的に配信できます。ストリーミングにより UI は応答性を保ち、最終的な実行結果の完成を待たずにユーザー更新が可能になります。
 
 ## ストリーミングの有効化
 
-`Runner.run()` に `{ stream: true }` オプションを渡すと、完全な結果ではなくストリーミングオブジェクトが得られます:
+`Runner.run()` に `{ stream: true }` を渡すと、完全な結果ではなくストリーミングオブジェクトを取得します:
 
 <Code
   lang="typescript"
   code={basicStreamingExample}
-  title="ストリーミングの有効化"
+  title="Enabling streaming"
 />
 
-ストリーミングが有効な場合、返される `stream` は `AsyncIterable` インターフェースを実装します。各イベントは、その実行中に何が起きたかを記述するオブジェクトです。ストリームはエージェントの実行の異なる部分を表す 3 種類のイベントのいずれかを生成します。とはいえ、ほとんどのアプリケーションはモデルのテキストだけが必要なので、ストリームにはヘルパーが用意されています。
+ストリーミングが有効な場合、返される `stream` は `AsyncIterable` インターフェースを実装します。各イベントは実行中に何が起きたかを示すオブジェクトです。ストリームはエージェントの実行の異なる部分を表す 3 種類のイベントのいずれかを送出します。多くのアプリケーションはモデルのテキストだけを必要とするため、ストリームはそのためのヘルパーを提供します。
 
 ### テキスト出力の取得
 
-`stream.toTextStream()` を呼び出すと、生成されたテキストのストリームを取得できます。`compatibleWithNodeStreams` が `true` の場合、戻り値は通常の Node.js `Readable` です。これを `process.stdout` や他の出力先に直接パイプできます。
+`stream.toTextStream()` を呼び出して、生成されたテキストのストリームを取得します。`compatibleWithNodeStreams` が `true` の場合、戻り値は通常の Node.js の `Readable` です。`process.stdout` や他の出力先に直接パイプできます。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="到着したテキストをログ出力する"
+  title="Logging out the text as it arrives"
   meta={`{13-17}`}
 />
 
-`stream.completed` の Promise は、実行と保留中のコールバックがすべて完了すると解決します。出力がもうないことを確実にするには必ず await してください。
+`stream.completed` の Promise は、実行および保留中のすべてのコールバックが完了すると解決されます。出力がもうないことを保証したい場合は必ず待機してください。
 
 ### すべてのイベントの監視
 
-`for await` ループを使って、到着した各イベントを確認できます。役立つ情報には、低レベルなモデルイベント、エージェントの切り替え、および SDK 固有の実行情報が含まれます:
+`for await` ループを使って、到着した各イベントを検査できます。役立つ情報には、低レベルのモデルイベント、エージェントの切り替え、および SDK 固有の実行情報が含まれます:
 
 <Code
   lang="typescript"
   code={handleAllEventsExample}
-  title="すべてのイベントをリッスンする"
+  title="Listening to all events"
 />
 
-[ストリーミングの code examples](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) では、プレーンテキストストリームと元のイベントストリームの両方を出力する完全なスクリプトを確認できます。
+完全なスクリプトについては、プレーンテキストストリームと元のイベントストリームの両方を出力する[ストリーミングの sample code](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)を参照してください。
 
 ## イベントタイプ
 
-ストリームは 3 種類のイベントを生成します:
+ストリームは 3 種類のイベントタイプを送出します:
 
 ### raw_model_stream_event
 
@@ -120,21 +120,21 @@ type RunAgentUpdatedStreamEvent = {
 
 ## ストリーミング中の Human in the loop (人間の介入)
 
-ストリーミングは、実行を一時停止するハンドオフ（たとえばツールに承認が必要な場合）と両立します。ストリームオブジェクトの `interruption` フィールドで割り込みにアクセスでき、各割り込みに対して `state.approve()` または `state.reject()` を呼び出すことで実行を継続できます。`{ stream: true }` で再実行するとストリーミング出力が再開します。
+ストリーミングは、実行を一時停止するハンドオフ（たとえばツールの承認が必要な場合）と互換性があります。ストリームオブジェクト上の `interruption` フィールドは割り込みを公開し、それぞれに対して `state.approve()` または `state.reject()` を呼ぶことで実行を継続できます。`{ stream: true }` を指定して再実行すると、ストリーミング出力が再開されます。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="ストリーミング中の人間による承認の処理"
+  title="Handling human approval while streaming"
 />
 
-ユーザーと対話する、より包括的な例は
+ユーザーと対話する、より完全な例は
 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts) です。
 
 ## ヒント
 
-- すべての出力がフラッシュされるように、終了前に `stream.completed` を待つことを忘れないでください
-- 最初の `{ stream: true }` オプションは、それを指定した呼び出しにのみ適用されます。`RunState` で再実行する場合は、再度オプションを指定する必要があります
-- アプリケーションがテキスト結果だけを気にする場合は、個々のイベントオブジェクトを扱わずに済むように `toTextStream()` を優先してください
+- すべての出力がフラッシュされたことを保証するため、終了前に `stream.completed` を待つことを忘れないでください
+- 最初の `{ stream: true }` オプションは、その呼び出しにのみ適用されます。`RunState` で再実行する場合は、オプションを再度指定する必要があります
+- アプリケーションがテキスト結果だけを必要とする場合は、個々のイベントオブジェクトを扱わずに済むように `toTextStream()` を推奨します
 
-ストリーミングとイベントシステムを使えば、エージェントをチャットインターフェース、ターミナルアプリケーション、またはユーザーが段階的な更新の恩恵を受けるあらゆる場所に統合できます。
+ストリーミングとイベントシステムにより、エージェントをチャットインターフェース、ターミナルアプリケーション、または段階的な更新がユーザーに有益なあらゆる場所に統合できます。

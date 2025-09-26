@@ -1,17 +1,17 @@
 ---
-title: 在 Cloudflare Workers 上使用实时智能体
+title: Cloudflare Workers 传输
 description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers 及其他 workerd 运行时无法使用全局 `WebSocket` 构造函数来发起出站 WebSocket。为便于在这些环境中连接 Realtime Agent，扩展包提供了一个专用传输层，会在内部执行基于 `fetch()` 的升级流程。
+Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数发起出站 WebSocket 连接。为便于在这些环境中连接 Realtime Agents，扩展包提供了一个专用传输，在内部使用基于 `fetch()` 的升级。
 
 <Aside type="caution">
-  此适配器仍处于测试版阶段，可能会遇到边缘场景或漏洞。 如有问题，请在 [GitHub
+  此适配器仍处于测试阶段。您可能会遇到边缘情况或 Bug。 请通过 [GitHub
   issues](https://github.com/openai/openai-agents-js/issues)
-  提交，我们会尽快处理。若需要在 Workers 中使用类似 Node.js 的 API，请考虑启用
+  报告问题，我们会尽快修复。对于在 Workers 中使用 Node.js 风格的 API，可考虑启用
   `nodejs_compat`。
 </Aside>
 
@@ -25,11 +25,11 @@ Cloudflare Workers 及其他 workerd 运行时无法使用全局 `WebSocket` 构
    npm install @openai/agents-extensions
    ```
 
-2. **创建传输层并将其附加到会话。**
+2. **创建传输并将其附加到您的会话。**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **连接 `RealtimeSession`。**
+3. **连接您的 `RealtimeSession`。**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -39,6 +39,6 @@ Cloudflare Workers 及其他 workerd 运行时无法使用全局 `WebSocket` 构
 
 ## 说明
 
-- Cloudflare 传输层在内部使用带有 `Upgrade: websocket` 的 `fetch()`，并跳过等待套接字的 `open` 事件，以符合 workerd 的 API。
-- 使用该传输层时，`RealtimeSession` 的功能（工具、护栏等）仍会照常运行。
-- 在开发过程中如需查看详细日志，请设置 `DEBUG=openai-agents*`。
+- Cloudflare 传输在底层使用带有 `Upgrade: websocket` 的 `fetch()`，并跳过等待套接字 `open` 事件，以匹配 workerd API。
+- 使用此传输时，所有 `RealtimeSession` 功能（工具、护栏等）均可照常工作。
+- 使用 `DEBUG=openai-agents*` 在开发过程中查看详细日志。
