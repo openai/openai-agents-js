@@ -1,5 +1,16 @@
-// How to run this script:
+// ----------------------------------------------------------------------------------
+// ### Translate document pages to non-English languages ####
+// If you want to add a new language, read .github/workflows/update-docs.yml first.
+//
+// For this file:
+//   - Add the new language to `languages` object (required)
+//   - Add the new language to `engToNonEngMapping` object (optional)
+//   - Add the new language to `engToNonEngInstructions` object (optional)
+//   - Add new items to LANGUAGE‑SPECIFIC section in the prompts (optional)
+//
+// ### How to run this script: ###
 // pnpm i && pnpm --filter docs run translate
+// ----------------------------------------------------------------------------------
 
 import fs from 'fs/promises';
 import path from 'path';
@@ -722,10 +733,11 @@ async function translateFile(
 
 function shouldSkipFile(filePath: string): boolean {
   const rel = path.relative(sourceDir, filePath);
+  const isLocalizedDoc = Object.keys(languages).some((code) =>
+    rel.startsWith(`${code}/`),
+  );
   if (
-    rel.startsWith('ja/') ||
-    rel.startsWith('ko/') ||
-    rel.startsWith('zh/') ||
+    isLocalizedDoc ||
     (!filePath.endsWith('.md') && !filePath.endsWith('.mdx'))
   ) {
     return true;
