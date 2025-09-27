@@ -34,6 +34,11 @@ const plugins = [
   mainStarlightTypeDoc({
     sidebar: {
       label: 'Main API',
+      translations: {
+        ja: 'メイン API',
+        zh: '主要 API',
+        ko: '주요 API',
+      },
     },
     entryPoints: ['../packages/agents/src/index.ts'],
     output: 'openai/agents',
@@ -43,6 +48,11 @@ const plugins = [
   mainRealtimeStarlightTypeDoc({
     sidebar: {
       label: '@openai/agents/realtime',
+      translations: {
+        ja: '@openai/agents/realtime',
+        zh: '@openai/agents/realtime',
+        ko: '@openai/agents/realtime',
+      },
     },
     entryPoints: ['../packages/agents/src/realtime/index.ts'],
     output: 'openai/agents/realtime',
@@ -87,7 +97,7 @@ const plugins = [
         paths: ['api/**'],
       },
     ],
-    exclude: ['ja/**', 'zh/**'],
+    exclude: ['ja/**', 'zh/**', 'ko/**'],
   }),
 ];
 
@@ -98,6 +108,7 @@ const sidebar = [
     translations: {
       ja: '概要',
       zh: '概述',
+      ko: '개요',
     },
   },
   {
@@ -106,6 +117,7 @@ const sidebar = [
     translations: {
       ja: 'クイックスタート',
       zh: '快速开始',
+      ko: '빠른 시작',
     },
   },
   {
@@ -113,6 +125,7 @@ const sidebar = [
     translations: {
       ja: 'ガイド',
       zh: '指南',
+      ko: '가이드',
     },
     items: [
       {
@@ -121,6 +134,7 @@ const sidebar = [
         translations: {
           ja: 'エージェント',
           zh: '智能体',
+          ko: '에이전트',
         },
       },
       {
@@ -129,6 +143,7 @@ const sidebar = [
         translations: {
           ja: 'エージェントの実行',
           zh: '运行智能体',
+          ko: '에이전트 실행',
         },
       },
       {
@@ -137,6 +152,7 @@ const sidebar = [
         translations: {
           ja: 'エージェントの実行結果',
           zh: '执行结果',
+          ko: '실행 결과',
         },
       },
       {
@@ -145,6 +161,7 @@ const sidebar = [
         translations: {
           ja: 'ツール',
           zh: '工具',
+          ko: '도구',
         },
       },
       {
@@ -153,6 +170,7 @@ const sidebar = [
         translations: {
           ja: 'マルチエージェント',
           zh: '多智能体编排',
+          ko: '멀티 에이전트 오케스트레이션',
         },
       },
       {
@@ -161,6 +179,7 @@ const sidebar = [
         translations: {
           ja: 'ハンドオフ',
           zh: '交接',
+          ko: '핸드오프',
         },
       },
       {
@@ -169,6 +188,7 @@ const sidebar = [
         translations: {
           ja: 'コンテキスト管理',
           zh: '上下文管理',
+          ko: '컨텍스트 관리',
         },
       },
       {
@@ -177,6 +197,7 @@ const sidebar = [
         translations: {
           ja: 'モデル',
           zh: '模型',
+          ko: '모델',
         },
       },
       {
@@ -185,6 +206,7 @@ const sidebar = [
         translations: {
           ja: 'ガードレール',
           zh: '护栏',
+          ko: '가드레일',
         },
       },
       {
@@ -193,6 +215,7 @@ const sidebar = [
         translations: {
           ja: 'ストリーミング',
           zh: '流式传输',
+          ko: '스트리밍',
         },
       },
       {
@@ -201,6 +224,7 @@ const sidebar = [
         translations: {
           ja: '人間の介入（HITL）',
           zh: '人机协作',
+          ko: '휴먼 인 더 루프 (HITL)',
         },
       },
       {
@@ -209,6 +233,7 @@ const sidebar = [
         translations: {
           ja: 'MCP 連携',
           zh: 'MCP 集成',
+          ko: '모델 컨텍스트 프로토콜 (MCP)',
         },
       },
       {
@@ -217,6 +242,7 @@ const sidebar = [
         translations: {
           ja: 'トレーシング',
           zh: '追踪',
+          ko: '트레이싱',
         },
       },
       {
@@ -225,6 +251,7 @@ const sidebar = [
         translations: {
           ja: 'SDK の設定',
           zh: 'SDK 配置',
+          ko: 'SDK 설정',
         },
       },
       {
@@ -233,6 +260,7 @@ const sidebar = [
         translations: {
           ja: 'トラブルシューティング',
           zh: '故障排除',
+          ko: '문제 해결',
         },
       },
       {
@@ -241,6 +269,7 @@ const sidebar = [
         translations: {
           ja: 'リリースプロセス',
           zh: '发布流程',
+          ko: '릴리스 프로세스',
         },
       },
     ],
@@ -250,6 +279,7 @@ const sidebar = [
     translations: {
       ja: '音声エージェント',
       zh: '语音智能体',
+      ko: '음성 에이전트',
     },
     items: [
       {
@@ -258,6 +288,7 @@ const sidebar = [
         translations: {
           ja: '音声エージェントの概要',
           zh: '语音智能体概述',
+          ko: '음성 에이전트 개요',
         },
       },
       {
@@ -266,6 +297,7 @@ const sidebar = [
         translations: {
           ja: 'クイックスタート',
           zh: '快速开始',
+          ko: '빠른 시작',
         },
       },
       {
@@ -274,6 +306,7 @@ const sidebar = [
         translations: {
           ja: '音声エージェントの構築',
           zh: '构建语音智能体',
+          ko: '음성 에이전트 구축',
         },
       },
       {
@@ -282,6 +315,7 @@ const sidebar = [
         translations: {
           ja: 'リアルタイムトランスポート',
           zh: '传输机制',
+          ko: '전송 방식',
         },
       },
     ],
@@ -291,6 +325,7 @@ const sidebar = [
     translations: {
       ja: '拡張機能',
       zh: '扩展',
+      ko: '확장 기능',
     },
     items: [
       {
@@ -299,6 +334,7 @@ const sidebar = [
         translations: {
           ja: 'AI SDK で任意モデルを指定',
           zh: '使用 AI SDK 指定任意模型',
+          ko: 'AI SDK로 어떤 모델이든 사용',
         },
       },
       {
@@ -307,6 +343,7 @@ const sidebar = [
         translations: {
           ja: 'Realtime Agent を Twilio に接続',
           zh: '将实时智能体连接到 Twilio',
+          ko: 'Realtime 에이전트를 Twilio에 연결',
         },
       },
       {
@@ -315,6 +352,7 @@ const sidebar = [
         translations: {
           ja: 'Cloudflare Workers 用トランスポート',
           zh: 'Cloudflare Workers 传输',
+          ko: 'Cloudflare Workers 전송',
         },
       },
     ],
@@ -324,6 +362,7 @@ const sidebar = [
     translations: {
       ja: 'APIリファレンス',
       zh: 'API 参考',
+      ko: 'API 레퍼런스',
     },
     collapsed: false,
     items: [
@@ -389,6 +428,10 @@ export default defineConfig({
         zh: {
           label: '中文',
           lang: 'zh',
+        },
+        ko: {
+          label: '한국어',
+          lang: 'ko',
         },
       },
       social: [
