@@ -34,11 +34,6 @@ const plugins = [
   mainStarlightTypeDoc({
     sidebar: {
       label: 'Main API',
-      translations: {
-        ja: 'メイン API',
-        zh: '主要 API',
-        ko: '주요 API',
-      },
     },
     entryPoints: ['../packages/agents/src/index.ts'],
     output: 'openai/agents',
@@ -48,11 +43,6 @@ const plugins = [
   mainRealtimeStarlightTypeDoc({
     sidebar: {
       label: '@openai/agents/realtime',
-      translations: {
-        ja: '@openai/agents/realtime',
-        zh: '@openai/agents/realtime',
-        ko: '@openai/agents/realtime',
-      },
     },
     entryPoints: ['../packages/agents/src/realtime/index.ts'],
     output: 'openai/agents/realtime',

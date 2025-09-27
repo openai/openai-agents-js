@@ -725,7 +725,7 @@ function shouldSkipFile(filePath: string): boolean {
   if (
     rel.startsWith('ja/') ||
     rel.startsWith('ko/') ||
-    rel.startsWith('fr/') ||
+    rel.startsWith('zh/') ||
     (!filePath.endsWith('.md') && !filePath.endsWith('.mdx'))
   ) {
     return true;
