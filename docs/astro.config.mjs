@@ -93,7 +93,7 @@ const plugins = [
 
 const sidebar = [
   {
-    label: 'Overview',
+    label: 'Intro',
     link: '/',
     translations: {
       ja: '概要',
