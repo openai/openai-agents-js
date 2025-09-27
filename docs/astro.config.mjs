@@ -427,7 +427,7 @@ export default defineConfig({
       social: [
         {
           icon: 'seti:python',
-          href: 'https://github.com/openai/openai-agents-python',
+          href: 'https://openai.github.io/openai-agents-python/',
           label: 'Python SDK',
         },
       ],
