@@ -1,5 +1,18 @@
 # @openai/agents-core
 
+## 0.1.7
+
+### Patch Changes
+
+- becabb9: fix: #247 logging for a sub-agent w/ stopAtToolNames
+- 0fd8b6e: feat: #478 add isEnabled to handoffs & agents as tools
+- be686e9: feat(mcp): add structuredContent support behind `useStructuredContent`; return full CallToolResult from `callTool`
+  - `MCPServer#callTool` now returns the full `CallToolResult` (was `content[]`), exposing optional `structuredContent`.
+  - Add `useStructuredContent` option to MCP servers (stdio/streamable-http/SSE), default `false` to avoid duplicate data by default.
+  - When enabled, function tool outputs return JSON strings for consistency with Python SDK implementation.
+
+- 74a6ca3: fix: #526 separate tool_call_item and tool_call_output_item in stream events
+
 ## 0.1.6
 
 ### Patch Changes
