@@ -28,7 +28,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 0. **创建项目**
 
-   在本快速上手中，我们将创建一个可在浏览器中使用的语音智能体。如果你想从一个新项目开始，可以尝试使用[`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html)。
+   在本快速开始中，我们将创建一个可在浏览器中使用的语音智能体。若想从一个新项目开始，可以尝试使用[`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html)。
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -40,11 +40,11 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    npm install @openai/agents zod@3
    ```
 
-   或者，你也可以安装 `@openai/agents-realtime` 来使用独立的浏览器版本包。
+   或者，你也可以安装 `@openai/agents-realtime` 来获取独立的浏览器包。
 
 2. **生成客户端临时令牌**
 
-   由于该应用将在用户的浏览器中运行，我们需要一种安全的方式通过 Realtime API 连接到模型。为此，我们可以使用一种[临时客户端密钥](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token)，应在你的后端服务器上生成。出于测试目的，你也可以使用 `curl` 和你常规的 OpenAI API 密钥生成一个密钥。
+   由于此应用将在用户的浏览器中运行，我们需要一种安全的方式通过 Realtime API 连接到模型。为此，我们可以使用在你的后端服务器上生成的[临时客户端密钥](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token)。在测试时，你也可以使用 `curl` 和常规的 OpenAI API key 来生成密钥。
 
    ```bash
    export OPENAI_API_KEY="sk-proj-...(your own key here)"
@@ -59,11 +59,11 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
       }'
    ```
 
-   响应会在顶层包含一个以 "ek\_" 前缀开头的 "value" 字符串。稍后你可以使用该临时密钥建立 WebRTC 连接。请注意，该密钥仅在短时间内有效，需要定期重新生成。
+   响应将在顶层包含一个名为 "value" 的字符串，其以 "ek\_" 前缀开头。稍后你可以使用此临时密钥建立 WebRTC 连接。请注意，此密钥仅在短时间内有效，需要定期重新生成。
 
-3. **创建你的第一个 Agent**
+3. **创建你的第一个智能体**
 
-   创建一个新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规的 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
+   创建新的[`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规的[`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents-realtime';
@@ -76,7 +76,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 4. **创建会话**
 
-   与常规智能体不同，语音智能体会在一个持续运行并监听的 `RealtimeSession` 中工作，它负责在一段时间内处理与模型的对话与连接。该会话还将处理音频处理、打断，以及我们稍后会介绍的许多生命周期功能。
+   与常规智能体不同，语音智能体会持续在一个 `RealtimeSession` 中运行并监听，它负责随着时间推进管理与模型的对话与连接。该会话还将处理音频处理、打断以及稍后会介绍的许多其他生命周期功能。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents-realtime';
@@ -86,7 +86,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    });
    ```
 
-   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。该 agent 将是用户最先可以交互的智能体。
+   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。此智能体将是你的用户首先能够交互的对象。
 
 5. **连接到会话**
 
@@ -96,15 +96,15 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
-   这将在浏览器中通过 WebRTC 连接到 Realtime API，并自动配置你的麦克风和扬声器用于音频输入与输出。如果你在后端服务器（如 Node.js）上运行 `RealtimeSession`，SDK 将自动使用 WebSocket 作为连接方式。你可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中了解更多不同的传输层。
+   这将在浏览器中通过 WebRTC 连接到 Realtime API，并自动配置你的麦克风与扬声器以进行音频输入和输出。如果你在后端服务器（如 Node.js）上运行 `RealtimeSession`，SDK 将自动使用 WebSocket 作为连接。你可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中了解更多不同的传输层。
 
-6. **整合以上所有步骤**
+6. **整合到一起**
 
    <Code lang="typescript" code={helloWorldExample} />
 
-7. **启动并开始交谈**
+7. **启动并开始对话**
 
-   启动你的 Web 服务器并访问包含新 Realtime Agent 代码的页面。你应该会看到麦克风访问权限请求。授予权限后，你就可以开始与智能体对话了。
+   启动你的 Web 服务器并访问包含新 Realtime Agent 代码的页面。你应会看到麦克风访问权限请求。授予权限后，你就可以开始与智能体对话了。
 
    ```bash
    npm run dev
@@ -112,18 +112,18 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
 
 </Steps>
 
-## 下一步
+## 后续步骤
 
-从这里开始，你可以设计并构建你自己的语音智能体。语音智能体包含很多与常规智能体相同的特性，同时也有其独特的功能。
+从这里开始，你可以设计并构建自己的语音智能体。语音智能体与常规智能体具备许多相同的功能，同时也有一些独特特性。
 
-- 了解如何为你的语音智能体添加：
+- 了解如何为语音智能体提供：
   - [工具](/openai-agents-js/zh/guides/voice-agents/build#tools)
   - [交接](/openai-agents-js/zh/guides/voice-agents/build#handoffs)
   - [护栏](/openai-agents-js/zh/guides/voice-agents/build#guardrails)
   - [处理音频打断](/openai-agents-js/zh/guides/voice-agents/build#audio-interruptions)
   - [管理会话历史](/openai-agents-js/zh/guides/voice-agents/build#session-history)
 
-- 进一步了解不同的传输层：
+- 进一步了解不同的传输层。
   - [WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#connecting-over-webrtc)
   - [WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#connecting-over-websocket)
   - [构建你自己的传输机制](/openai-agents-js/zh/guides/voice-agents/transport#building-your-own-transport-mechanism)
