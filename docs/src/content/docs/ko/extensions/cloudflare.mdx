@@ -6,13 +6,14 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers와 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 실시간 에이전트를 더 쉽게 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송을 제공합니다.
+Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 실시간 에이전트를 더 쉽게 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
 
 <Aside type="caution">
-  이 어댑터는 아직 베타입니다. 경계 사례나 버그를 겪을 수 있습니다. 문제는
-  [GitHub issues](https://github.com/openai/openai-agents-js/issues)로 신고해
-  주세요. 신속히 수정하겠습니다. Workers에서 Node.js 스타일 API가 필요하면
-  `nodejs_compat`를 활성화하는 것을 고려하세요.
+  이 어댑터는 아직 베타입니다. 특수한 경우의 문제나 버그가 발생할 수 있습니다.
+  문제가 있으면 [GitHub
+  issues](https://github.com/openai/openai-agents-js/issues)로 보고해 주세요.
+  빠르게 수정하겠습니다. Workers에서 Node.js 스타일 API가 필요하면
+  `nodejs_compat`을 활성화하는 것을 고려하세요.
 </Aside>
 
 ## 설정
@@ -25,11 +26,11 @@ Cloudflare Workers와 기타 workerd 런타임은 전역 `WebSocket` 생성자�
    npm install @openai/agents-extensions
    ```
 
-2. **전송을 생성하고 세션에 연결합니다.**
+2. **전송 방식을 생성하고 세션에 연결합니다.**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **`RealtimeSession`을(를) 연결합니다.**
+3. **`RealtimeSession`을 연결합니다.**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -39,6 +40,6 @@ Cloudflare Workers와 기타 workerd 런타임은 전역 `WebSocket` 생성자�
 
 ## 참고 사항
 
-- Cloudflare 전송은 내부적으로 `Upgrade: websocket`과 함께 `fetch()`를 사용하며, 소켓의 `open` 이벤트를 기다리지 않습니다. 이는 workerd API와 일치합니다.
-- 이 전송을 사용할 때도 모든 `RealtimeSession` 기능(도구, 가드레일 등)은 평소대로 동작합니다.
-- 개발 중 상세 로그 확인을 위해 `DEBUG=openai-agents*`를 사용하세요.
+- Cloudflare 전송은 내부적으로 `Upgrade: websocket` 헤더가 있는 `fetch()`를 사용하며, 소켓 `open` 이벤트를 기다리지 않으므로 workerd API와 일치합니다.
+- 이 전송 방식을 사용할 때도 모든 `RealtimeSession` 기능(tools, guardrails 등)이 평소처럼 동작합니다.
+- 개발 중 자세한 로그를 확인하려면 `DEBUG=openai-agents*`를 사용하세요.

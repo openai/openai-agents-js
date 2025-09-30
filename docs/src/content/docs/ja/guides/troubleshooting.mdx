@@ -3,39 +3,39 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポートされる環境
+## サポート対象の環境
 
-OpenAI Agents SDK は次のサーバー環境でサポートされています:
+OpenAI Agents SDK は以下のサーバー環境でサポートされています:
 
 - Node.js 22+
 - Deno 2.35+
 - Bun 1.2.5+
 
-### 制限付きサポート
+### 限定的なサポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現在いくつかの制限があります:
-  - 現在、SDK では `nodejs_compat` を有効にする必要があります
-  - リクエストの最後にトレースを手動でフラッシュする必要があります。詳細は[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)をご覧ください
-  - Cloudflare Workers の `AsyncLocalStorage` に対するサポートが限定的なため、一部のトレースが正確でない可能性があります
-  - 発信 WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクターは不可）。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
-- **ブラウザ**:
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で利用できますが、現在いくつかの制限があります:
+  - 現在 SDK は `nodejs_compat` を有効にする必要があります
+  - リクエストの最後にトレースを手動でフラッシュする必要があります。[トレーシングガイドを参照](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)
+  - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースが正確でない可能性があります
+  - アウトバウンド WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは使用しない）。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
+- **Browsers**:
   - ブラウザでは現在トレーシングはサポートされていません
 - **v8 isolates**:
-  - 適切なブラウザ用ポリフィルを備えたバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
-  - v8 isolates での動作は広範にはテストされていません
+  - 適切なブラウザ polyfill を持つバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
+  - v8 isolates は十分にテストされていません
 
-## デバッグロギング
+## デバッグログ
 
-SDK に問題が発生している場合、デバッグロギングを有効にすると詳細を確認できます。
+SDK で問題が発生している場合、デバッグログを有効にして詳細な情報を取得できます。
 
-`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグロギングを有効にします。
+`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグログを有効にします。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-または、SDK の特定部分に範囲を絞って有効にできます:
+また、SDK の特定の部分にデバッグのスコープを絞ることもできます:
 
 - `openai-agents:core` — SDK のメイン実行ロジック
 - `openai-agents:openai` — OpenAI API 呼び出し
-- `openai-agents:realtime` — Realtime Agents のコンポーネント
+- `openai-agents:realtime` — リアルタイムエージェント関連のコンポーネント
