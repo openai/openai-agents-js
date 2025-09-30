@@ -66,7 +66,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    새로운 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/)를 생성하는 방법은 일반 [`Agent`](/openai-agents-js/ko/guides/agents)를 만드는 것과 매우 유사합니다.
 
    ```typescript
-   import { RealtimeAgent } from '@openai/agents-realtime';
+   import { RealtimeAgent } from '@openai/agents/realtime';
 
    const agent = new RealtimeAgent({
      name: 'Assistant',
@@ -79,7 +79,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    일반 에이전트와 달리, 음성 에이전트는 대화와 모델 연결을 지속적으로 처리하는 `RealtimeSession` 안에서 계속 실행되며 청취합니다. 이 세션은 오디오 처리, 인터럽션(중단 처리), 그리고 이후 다룰 다양한 라이프사이클 기능도 담당합니다.
 
    ```typescript
-   import { RealtimeSession } from '@openai/agents-realtime';
+   import { RealtimeSession } from '@openai/agents/realtime';
 
    const session = new RealtimeSession(agent, {
      model: 'gpt-realtime',

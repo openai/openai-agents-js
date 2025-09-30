@@ -66,7 +66,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    创建一个新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规的 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
 
    ```typescript
-   import { RealtimeAgent } from '@openai/agents-realtime';
+   import { RealtimeAgent } from '@openai/agents/realtime';
 
    const agent = new RealtimeAgent({
      name: 'Assistant',
@@ -79,7 +79,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    与常规智能体不同，语音智能体会在一个持续运行并监听的 `RealtimeSession` 中工作，它负责在一段时间内处理与模型的对话与连接。该会话还将处理音频处理、打断，以及我们稍后会介绍的许多生命周期功能。
 
    ```typescript
-   import { RealtimeSession } from '@openai/agents-realtime';
+   import { RealtimeSession } from '@openai/agents/realtime';
 
    const session = new RealtimeSession(agent, {
      model: 'gpt-realtime',

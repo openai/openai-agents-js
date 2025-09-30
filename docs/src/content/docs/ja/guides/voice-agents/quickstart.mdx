@@ -66,7 +66,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    新しい [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) の作成は、通常の [`Agent`](/openai-agents-js/ja/guides/agents) の作成と非常によく似ています。
 
    ```typescript
-   import { RealtimeAgent } from '@openai/agents-realtime';
+   import { RealtimeAgent } from '@openai/agents/realtime';
 
    const agent = new RealtimeAgent({
      name: 'Assistant',
@@ -79,7 +79,7 @@ import thinClientExample from '../../../../../../../examples/docs/voice-agents/t
    通常のエージェントと異なり、音声エージェントは会話とモデルへの継続的な接続を扱う `RealtimeSession` 内で常時動作し、リッスンします。このセッションは、音声処理、中断、その他多くのライフサイクル機能も扱います。これらは後ほど説明します。
 
    ```typescript
-   import { RealtimeSession } from '@openai/agents-realtime';
+   import { RealtimeSession } from '@openai/agents/realtime';
 
    const session = new RealtimeSession(agent, {
      model: 'gpt-realtime',
