@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 import {
   Agent,
+  AgentInputItem,
   MaxTurnsExceededError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
@@ -32,6 +33,7 @@ import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
+import { tool } from '../src/tool';
 import {
   FakeModel,
   fakeModelMessage,
@@ -658,6 +660,208 @@ describe('Runner.run', () => {
       expect(requestSettings.reasoning?.effort).toBe('high');
       expect(requestSettings.reasoning?.summary).toBe('detailed');
       expect(requestSettings.text?.verbosity).toBe('medium');
+    });
+  });
+
+  describe('server-managed conversation state', () => {
+    type TurnResponse = ModelResponse;
+
+    class TrackingModel implements Model {
+      public requests: ModelRequest[] = [];
+      public firstRequest: ModelRequest | undefined;
+      public lastRequest: ModelRequest | undefined;
+
+      constructor(private readonly responses: TurnResponse[]) {}
+
+      private recordRequest(request: ModelRequest) {
+        const clonedInput: string | AgentInputItem[] =
+          typeof request.input === 'string'
+            ? request.input
+            : (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[]);
+
+        const recorded: ModelRequest = {
+          ...request,
+          input: clonedInput,
+        };
+
+        this.requests.push(recorded);
+        this.lastRequest = recorded;
+        this.firstRequest ??= recorded;
+      }
+
+      async getResponse(request: ModelRequest): Promise<ModelResponse> {
+        this.recordRequest(request);
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response configured');
+        }
+        return response;
+      }
+
+      getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<protocol.StreamEvent> {
+        throw new Error('Not implemented');
+      }
+    }
+
+    const buildResponse = (
+      items: protocol.ModelItem[],
+      responseId?: string,
+    ): ModelResponse => ({
+      output: JSON.parse(JSON.stringify(items)) as protocol.ModelItem[],
+      usage: new Usage(),
+      responseId,
+    });
+
+    const buildToolCall = (
+      callId: string,
+      arg: string,
+    ): protocol.FunctionCallItem => ({
+      id: callId,
+      type: 'function_call',
+      name: 'test',
+      callId,
+      status: 'completed',
+      arguments: JSON.stringify({ test: arg }),
+    });
+
+    const serverTool = tool({
+      name: 'test',
+      description: 'test tool',
+      parameters: z.object({ test: z.string() }),
+      execute: async ({ test }) => `result:${test}`,
+    });
+
+    it('only sends new items when using conversationId across turns', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('b_message'), buildToolCall('call-2', 'bar')],
+          'resp-2',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-test-123',
+      });
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests.map((req) => req.conversationId)).toEqual([
+        'conv-test-123',
+        'conv-test-123',
+        'conv-test-123',
+      ]);
+
+      const firstInput = model.requests[0].input;
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput as AgentInputItem[]).toHaveLength(1);
+      const userMessage = (firstInput as AgentInputItem[])[0] as any;
+      expect(userMessage.role).toBe('user');
+      expect(userMessage.content).toBe('user_message');
+
+      const secondInput = model.requests[1].input;
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondItems = secondInput as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+
+      const thirdInput = model.requests[2].input;
+      expect(Array.isArray(thirdInput)).toBe(true);
+      const thirdItems = thirdInput as AgentInputItem[];
+      expect(thirdItems).toHaveLength(1);
+      expect(thirdItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
+
+    it('only sends new items and updates previousResponseId across turns', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response-123',
+      });
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      expect(model.requests[0].previousResponseId).toBe('initial-response-123');
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.previousResponseId).toBe('resp-789');
+      expect(Array.isArray(secondRequest.input)).toBe(true);
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+    });
+
+    it('sends full history when no server-managed state is provided', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message');
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondInput = model.requests[1].input;
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondItems = secondInput as AgentInputItem[];
+      expect(secondItems).toHaveLength(4);
+      expect(secondItems[0]).toMatchObject({ role: 'user' });
+      expect(secondItems[1]).toMatchObject({ role: 'assistant' });
+      expect(secondItems[2]).toMatchObject({
+        type: 'function_call',
+        name: 'test',
+      });
+      expect(secondItems[3]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
     });
   });
 
