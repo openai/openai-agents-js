@@ -426,7 +426,8 @@ export class OpenAIRealtimeWebSocket
     }
 
     const length = this._audioLengthMs ?? Number.POSITIVE_INFINITY;
-    const audio_end_ms = Math.max(0, Math.min(Math.floor(elapsedTime), length));
+    // audio_end_ms must be an integer
+    const audio_end_ms = Math.max(0, Math.floor(Math.min(elapsedTime, length)));
 
     this.emit('audio_interrupted');
     this.sendEvent({
