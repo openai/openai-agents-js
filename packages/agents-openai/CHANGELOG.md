@@ -1,5 +1,11 @@
 # @openai/agents-openai
 
+## 0.1.9
+
+### Patch Changes
+
+- 4f27ed5: fix: #558 prompt parameter does not work when being passed via an Agent
+
 ## 0.1.8
 
 ### Patch Changes
