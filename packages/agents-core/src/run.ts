@@ -968,11 +968,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
    * @param agent - The starting agent to run.
    * @param input - The initial input to the agent. You can pass a string or an array of
    * `AgentInputItem`.
-   * @param options - The options for the run.
-   * @param options.stream - Whether to stream the run. If true, the run will emit events as the
-   * model responds.
-   * @param options.context - The context to run the agent with.
-   * @param options.maxTurns - The maximum number of turns to run the agent.
+   * @param options - Options for the run, including streaming behavior, execution context, and the
+   * maximum number of turns.
    * @returns The result of the run.
    */
   run<TAgent extends Agent<any, any>, TContext = undefined>(

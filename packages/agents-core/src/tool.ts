@@ -151,9 +151,8 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
 /**
  * Creates a hosted MCP tool definition.
  *
- * @param serverLabel - The label identifying the MCP server.
- * @param serverUrl - The URL of the MCP server.
- * @param requireApproval - Whether tool calls require approval.
+ * @param options - Configuration for the hosted MCP tool, including server connection details
+ * and approval requirements.
  */
 export function hostedMcpTool<Context = UnknownContext>(
   options: {

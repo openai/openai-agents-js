@@ -47,11 +47,11 @@ export class RunContext<TContext = UnknownContext> {
   /**
    * Check if a tool call has been approved.
    *
-   * @param toolName - The name of the tool.
-   * @param callId - The call ID of the tool call.
+   * @param approval - Details about the tool call being evaluated.
    * @returns `true` if the tool call has been approved, `false` if blocked and `undefined` if not yet approved or rejected.
    */
-  isToolApproved({ toolName, callId }: { toolName: string; callId: string }) {
+  isToolApproved(approval: { toolName: string; callId: string }) {
+    const { toolName, callId } = approval;
     const approvalEntry = this.#approvals.get(toolName);
     if (approvalEntry?.approved === true && approvalEntry.rejected === true) {
       logger.warn(
@@ -96,8 +96,8 @@ export class RunContext<TContext = UnknownContext> {
   /**
    * Approve a tool call.
    *
-   * @param toolName - The name of the tool.
-   * @param callId - The call ID of the tool call.
+   * @param approvalItem - The tool approval item to approve.
+   * @param options - Additional approval behavior options.
    */
   approveTool(
     approvalItem: RunToolApprovalItem,

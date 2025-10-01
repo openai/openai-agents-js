@@ -150,9 +150,6 @@ export interface AgentConfiguration<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
 > {
-  /**
-   * The name of the agent.
-   */
   name: string;
 
   /**
