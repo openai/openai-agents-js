@@ -424,6 +424,48 @@ function getPrompt(prompt: ModelRequest['prompt']):
   };
 }
 
+type InputArray = Exclude<ModelRequest['input'], string>;
+
+const RESPONSE_ITEM_ID_PREFIXES = ['rs_', 'resp_', 'res_', 'msg_'] as const;
+
+function hasStoredConversationMetadata(item: InputArray[number]): boolean {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  const providerData = (item as { providerData?: Record<string, unknown> })
+    .providerData;
+  if (providerData && typeof providerData === 'object') {
+    const responseId =
+      (providerData['response_id'] as string | undefined) ??
+      (providerData['responseId'] as string | undefined);
+    if (typeof responseId === 'string' && responseId.length > 0) {
+      return true;
+    }
+  }
+
+  const id = (item as { id?: unknown }).id;
+  if (typeof id === 'string') {
+    for (const prefix of RESPONSE_ITEM_ID_PREFIXES) {
+      if (id.startsWith(prefix)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getLastStoredIndex(items: InputArray): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (hasStoredConversationMetadata(items[i])) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 function getInputItems(
   input: ModelRequest['input'],
   conversationId?: string,
@@ -437,29 +479,11 @@ function getInputItems(
     ];
   }
 
-  // When using conversationId, the OpenAI Responses API automatically retrieves
-  // the conversation history. To avoid duplicate items with the same IDs,
-  // we need to filter out items that would already be present in the conversation.
-  // We keep only the items from the current turn (typically the last few items).
-  let filteredInput = input;
+  let filteredInput: InputArray = input;
   if (conversationId) {
-    // Find the last user message to identify the start of the current turn
-    let lastUserMessageIndex = -1;
-    for (let i = input.length - 1; i >= 0; i--) {
-      const item = input[i];
-      if (isMessageItem(item) && item.role === 'user') {
-        lastUserMessageIndex = i;
-        break;
-      }
-    }
-
-    // If we found a user message, only include items from that point onwards
-    // This represents the current turn's conversation
-    if (lastUserMessageIndex >= 0) {
-      filteredInput = input.slice(lastUserMessageIndex);
-    } else {
-      // If no user message found, include all items (fallback)
-      filteredInput = input;
+    const lastStoredIndex = getLastStoredIndex(input);
+    if (lastStoredIndex >= 0) {
+      filteredInput = input.slice(lastStoredIndex + 1);
     }
   }
 
