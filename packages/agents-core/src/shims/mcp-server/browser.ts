@@ -2,7 +2,7 @@ import {
   BaseMCPServerSSE,
   BaseMCPServerStdio,
   BaseMCPServerStreamableHttp,
-  CallToolResult,
+  CallToolResultContent,
   MCPServerSSEOptions,
   MCPServerStdioOptions,
   MCPServerStreamableHttpOptions,
@@ -28,7 +28,7 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
   invalidateToolsCache(): Promise<void> {
@@ -55,7 +55,7 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
   invalidateToolsCache(): Promise<void> {
@@ -84,7 +84,7 @@ export class MCPServerSSE extends BaseMCPServerSSE {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
 

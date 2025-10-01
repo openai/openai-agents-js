@@ -60,25 +60,23 @@ class StubFilesystemServer extends NodeMCPServerStdio {
   async callTool(name: string, args: any) {
     const blocked = (this.toolFilter as any)?.blockedToolNames ?? [];
     if (blocked.includes(name)) {
-      return {
-        content: [
-          { type: 'text', text: `Tool "${name}" is blocked by MCP filter` },
-        ],
-      };
+      return [
+        { type: 'text', text: `Tool "${name}" is blocked by MCP filter` },
+      ];
     }
     if (name === 'list_directory') {
       const files = fs.readdirSync(this.dir);
-      return { content: [{ type: 'text', text: files.join('\n') }] };
+      return [{ type: 'text', text: files.join('\n') }];
     }
     if (name === 'read_file') {
       const text = fs.readFileSync(path.join(this.dir, args.path), 'utf8');
-      return { content: [{ type: 'text', text }] };
+      return [{ type: 'text', text }];
     }
     if (name === 'write_file') {
       fs.writeFileSync(path.join(this.dir, args.path), args.text, 'utf8');
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return [{ type: 'text', text: 'ok' }];
     }
-    return { content: [] };
+    return [];
   }
 }
 

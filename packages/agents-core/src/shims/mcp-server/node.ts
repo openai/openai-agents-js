@@ -5,7 +5,7 @@ import {
   BaseMCPServerStdio,
   BaseMCPServerStreamableHttp,
   BaseMCPServerSSE,
-  CallToolResult,
+  CallToolResultContent,
   DefaultMCPServerStdioOptions,
   InitializeResult,
   MCPServerStdioOptions,
@@ -124,7 +124,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
     ).catch(failedToImport);
@@ -144,12 +144,12 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       },
     );
     const parsed = CallToolResultSchema.parse(response);
-    const result = parsed;
+    const result = parsed.content;
     this.debugLog(
       () =>
-        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result.content)})`,
+        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
     );
-    return result as CallToolResult;
+    return result as CallToolResultContent;
   }
 
   get name() {
@@ -245,7 +245,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
     ).catch(failedToImport);
@@ -265,12 +265,12 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       },
     );
     const parsed = CallToolResultSchema.parse(response);
-    const result = parsed;
+    const result = parsed.content;
     this.debugLog(
       () =>
-        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result.content)})`,
+        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
     );
-    return result as CallToolResult;
+    return result as CallToolResultContent;
   }
 
   get name() {
@@ -371,7 +371,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
+  ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
     ).catch(failedToImport);
@@ -391,12 +391,12 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       },
     );
     const parsed = CallToolResultSchema.parse(response);
-    const result = parsed;
+    const result = parsed.content;
     this.debugLog(
       () =>
-        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result.content)})`,
+        `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
     );
-    return result as CallToolResult;
+    return result as CallToolResultContent;
   }
 
   get name() {

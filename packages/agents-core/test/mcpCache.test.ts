@@ -3,7 +3,7 @@ import { getAllMcpTools } from '../src/mcp';
 import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
-import type { CallToolResult } from '../src/mcp';
+import type { CallToolResultContent } from '../src/mcp';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 
@@ -27,8 +27,8 @@ class StubServer extends NodeMCPServerStdio {
   async callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
-  ): Promise<CallToolResult> {
-    return { content: [] };
+  ): Promise<CallToolResultContent> {
+    return [];
   }
 }
 
