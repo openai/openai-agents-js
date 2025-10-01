@@ -1,5 +1,13 @@
 # @openai/agents-realtime
 
+## 0.1.8
+
+### Patch Changes
+
+- bb18a43: fix: #552 WebSocket Realtime Agent: invalid_request_error with decimal audio_end_ms data
+- Updated dependencies [f3d1ff8]
+  - @openai/agents-core@0.1.8
+
 ## 0.1.7
 
 ### Patch Changes

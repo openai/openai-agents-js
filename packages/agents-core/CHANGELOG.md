@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.1.8
+
+### Patch Changes
+
+- f3d1ff8: Revert "feat(mcp): support structuredContent via useStructuredContent; return full CallToolResult"
+
 ## 0.1.7
 
 ### Patch Changes
