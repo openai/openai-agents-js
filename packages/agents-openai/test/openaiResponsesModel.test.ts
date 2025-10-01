@@ -74,6 +74,45 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('omits instructions when systemInstructions is empty or whitespace', async () => {
+    withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-empty-instructions',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-empty');
+
+      for (const instructions of ['', '   ']) {
+        const request = {
+          systemInstructions: instructions,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        await model.getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect('instructions' in args).toBe(true);
+        expect(args.instructions).toBeUndefined();
+        expect(args.instructions).toBeUndefined();
+      }
+    });
+  });
+
   it('merges top-level reasoning and text settings into provider data for Responses API', async () => {
     withTrace('test', async () => {
       const fakeResponse = {

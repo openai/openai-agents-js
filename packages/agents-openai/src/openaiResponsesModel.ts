@@ -878,8 +878,8 @@ export class OpenAIResponsesModel implements Model {
     }
 
     const requestData = {
-      instructions: request.systemInstructions,
       model: this.#model,
+      instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,
       tools,
@@ -1050,4 +1050,22 @@ export class OpenAIResponsesModel implements Model {
       }
     }
   }
+}
+
+/**
+ * Sending an empty string for instructions can override the prompt parameter.
+ * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
+ * @param instructions - The instructions to normalize.
+ * @returns The normalized instructions.
+ */
+function normalizeInstructions(
+  instructions: string | undefined,
+): string | undefined {
+  if (typeof instructions === 'string') {
+    if (instructions.trim() === '') {
+      return undefined;
+    }
+    return instructions;
+  }
+  return undefined;
 }
