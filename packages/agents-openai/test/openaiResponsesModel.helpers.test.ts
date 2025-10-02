@@ -279,6 +279,49 @@ describe('getInputItems', () => {
       ] as any),
     ).toThrow(UserError);
   });
+
+  it('excludes stored items when conversationId is provided', () => {
+    const items = getInputItems(
+      [
+        { role: 'user', content: 'hi' },
+        {
+          type: 'function_call',
+          id: 'rs_123',
+          name: 'tool',
+          callId: 'call_1',
+          arguments: '{}',
+          status: 'in_progress',
+          providerData: { response_id: 'resp_1' },
+        },
+        {
+          type: 'function_call_result',
+          callId: 'call_1',
+          status: 'completed',
+          output: { type: 'text', text: 'done' },
+        },
+      ] as any,
+      'conv_123',
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      output: 'done',
+    });
+  });
+
+  it('retains new items when no stored metadata exists', () => {
+    const items = getInputItems(
+      [{ role: 'user', content: 'hello' }] as any,
+      'conv_123',
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      role: 'user',
+      content: 'hello',
+    });
+  });
 });
 
 describe('convertToOutputItem', () => {
