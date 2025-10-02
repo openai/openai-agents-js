@@ -131,7 +131,8 @@ export interface RealtimeTransportLayer
 
   /**
    * Resets the conversation history / context to a specific state
-   * @param history - The history to reset to
+   * @param oldHistory - The history that is currently stored on the session.
+   * @param newHistory - The history you want the session to use going forward.
    */
   resetHistory(oldHistory: RealtimeItem[], newHistory: RealtimeItem[]): void;
 

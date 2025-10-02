@@ -377,9 +377,9 @@ export class StreamedRunResult<
   /**
    * Returns a readable stream of the final text output of the agent run.
    *
-   * @param options - Options for the stream.
-   * @param options.compatibleWithNodeStreams - Whether to use Node.js streams or web standard streams.
    * @returns A readable stream of the final output of the agent run.
+   * @remarks Pass `{ compatibleWithNodeStreams: true }` to receive a Node.js compatible stream
+   * instance.
    */
   toTextStream(): ReadableStream<string>;
   toTextStream(options?: { compatibleWithNodeStreams: true }): Readable;

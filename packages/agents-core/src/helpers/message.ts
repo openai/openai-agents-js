@@ -9,9 +9,9 @@ import {
 /**
  * Creates a user message entry
  *
- * @param input The input message from the user
- * @param options Any additional options that will be directly passed to the model
- * @returns a message entry
+ * @param input The input message from the user.
+ * @param options Any additional options that will be directly passed to the model.
+ * @returns A message entry.
  */
 export function user(
   input: string | UserContent[],
@@ -36,9 +36,9 @@ export function user(
 /**
  * Creates a system message entry
  *
- * @param input The system prompt
- * @param options Any additional options that will be directly passed to the model
- * @returns a message entry
+ * @param input The system prompt.
+ * @param options Any additional options that will be directly passed to the model.
+ * @returns A message entry.
  */
 export function system(
   input: string,
@@ -55,9 +55,9 @@ export function system(
 /**
  * Creates an assistant message entry for example for multi-shot prompting
  *
- * @param input The assistant response
- * @param options Any additional options that will be directly passed to the model
- * @returns a message entry
+ * @param content The assistant response.
+ * @param options Any additional options that will be directly passed to the model.
+ * @returns A message entry.
  */
 export function assistant(
   content: string | AssistantContent[],
