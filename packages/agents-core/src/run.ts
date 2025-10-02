@@ -192,7 +192,7 @@ function toAgentInputList(
  * Internal module for tracking the items in turns and ensuring that we don't send duplicate items.
  * This logic is vital for properly handling the items to send during multiple turns
  * when you use either `conversationId` or `previousResponseId`.
- * Both scenarios expect an agent loop to send only the new items for each Responses API cal.
+ * Both scenarios expect an agent loop to send only new items for each Responses API call.
  *
  * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
  */
@@ -206,7 +206,7 @@ class ServerConversationTracker {
   // https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#passing-context-from-the-previous-response
   public previousResponseId?: string;
 
-  // Using this flag because WeakSet does not provides a way to check its size
+  // Using this flag because WeakSet does not provide a way to check its size
   private sentInitialInput = false;
   // The items already sent to the model; using WeakSet for memory efficiency
   private sentItems = new WeakSet<object>();
