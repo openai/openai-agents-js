@@ -5,7 +5,6 @@ async function main() {
     name: 'Assistant',
     prompt: {
       promptId: 'pmpt_68d50b26524c81958c1425070180b5e10ab840669e470fc7',
-      version: '1',
       variables: { name: 'Kaz' },
     },
   });
