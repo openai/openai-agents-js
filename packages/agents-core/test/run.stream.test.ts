@@ -583,6 +583,67 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('does not resend prior items when resuming a streamed run with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-stream', 'foo')], 'resp-stream-1'),
+        buildTurn([fakeModelMessage('done')], 'resp-stream-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        stream: true,
+        conversationId: 'conv-stream-approval',
+      });
+
+      await drain(firstResult);
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        stream: true,
+        conversationId: 'conv-stream-approval',
+      });
+
+      await drain(secondResult);
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests.map((req) => req.conversationId)).toEqual([
+        'conv-stream-approval',
+        'conv-stream-approval',
+      ]);
+
+      const firstInput = model.requests[0].input as AgentInputItem[];
+      expect(firstInput).toHaveLength(1);
+      expect(firstInput[0]).toMatchObject({
+        role: 'user',
+        content: 'user_message',
+      });
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toHaveLength(1);
+      expect(secondInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-stream',
+      });
+    });
+
     it('sends full history when no server-managed state is provided', async () => {
       const model = new TrackingStreamingModel([
         buildTurn(
