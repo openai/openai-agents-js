@@ -878,7 +878,7 @@ export class OpenAIResponsesModel implements Model {
     }
 
     const requestData = {
-      model: this.#model,
+      ...(!request.prompt ? { model: this.#model } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,

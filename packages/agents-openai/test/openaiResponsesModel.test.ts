@@ -74,6 +74,36 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('omits model when a prompt is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_123' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_123' });
+    });
+  });
+
   it('normalizes systemInstructions so empty strings are omitted', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {
