@@ -178,6 +178,154 @@ export function getTracing(
   return 'enabled_without_data';
 }
 
+function toAgentInputList(
+  originalInput: string | AgentInputItem[],
+): AgentInputItem[] {
+  if (typeof originalInput === 'string') {
+    return [{ type: 'message', role: 'user', content: originalInput }];
+  }
+
+  return [...originalInput];
+}
+
+/**
+ * Internal module for tracking the items in turns and ensuring that we don't send duplicate items.
+ * This logic is vital for properly handling the items to send during multiple turns
+ * when you use either `conversationId` or `previousResponseId`.
+ * Both scenarios expect an agent loop to send only new items for each Responses API call.
+ *
+ * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
+ */
+class ServerConversationTracker {
+  // Conversation ID:
+  // - https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#using-the-conversations-api
+  // - https://platform.openai.com/docs/api-reference/conversations/create
+  public conversationId?: string;
+
+  // Previous Response ID:
+  // https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#passing-context-from-the-previous-response
+  public previousResponseId?: string;
+
+  // Using this flag because WeakSet does not provide a way to check its size
+  private sentInitialInput = false;
+  // The items already sent to the model; using WeakSet for memory efficiency
+  private sentItems = new WeakSet<object>();
+  // The items received from the server; using WeakSet for memory efficiency
+  private serverItems = new WeakSet<object>();
+
+  constructor({
+    conversationId,
+    previousResponseId,
+  }: {
+    conversationId?: string;
+    previousResponseId?: string;
+  }) {
+    this.conversationId = conversationId ?? undefined;
+    this.previousResponseId = previousResponseId ?? undefined;
+  }
+
+  /**
+   * Pre-populates tracker caches from an existing RunState when resuming server-managed runs.
+   */
+  primeFromState({
+    originalInput,
+    generatedItems,
+    modelResponses,
+  }: {
+    originalInput: string | AgentInputItem[];
+    generatedItems: RunItem[];
+    modelResponses: ModelResponse[];
+  }) {
+    if (this.sentInitialInput) {
+      return;
+    }
+
+    for (const item of toAgentInputList(originalInput)) {
+      if (item && typeof item === 'object') {
+        this.sentItems.add(item);
+      }
+    }
+
+    this.sentInitialInput = true;
+
+    const latestResponse = modelResponses[modelResponses.length - 1];
+    for (const response of modelResponses) {
+      for (const item of response.output) {
+        if (item && typeof item === 'object') {
+          this.serverItems.add(item);
+        }
+      }
+    }
+
+    if (!this.conversationId && latestResponse?.responseId) {
+      this.previousResponseId = latestResponse.responseId;
+    }
+
+    for (const item of generatedItems) {
+      const rawItem = item.rawItem;
+      if (!rawItem || typeof rawItem !== 'object') {
+        continue;
+      }
+      if (this.serverItems.has(rawItem)) {
+        this.sentItems.add(rawItem);
+      }
+    }
+  }
+
+  trackServerItems(modelResponse: ModelResponse | undefined) {
+    if (!modelResponse) {
+      return;
+    }
+    for (const item of modelResponse.output) {
+      if (item && typeof item === 'object') {
+        this.serverItems.add(item);
+      }
+    }
+    if (
+      !this.conversationId &&
+      this.previousResponseId !== undefined &&
+      modelResponse.responseId
+    ) {
+      this.previousResponseId = modelResponse.responseId;
+    }
+  }
+
+  prepareInput(
+    originalInput: string | AgentInputItem[],
+    generatedItems: RunItem[],
+  ): AgentInputItem[] {
+    const inputItems: AgentInputItem[] = [];
+
+    if (!this.sentInitialInput) {
+      const initialItems = toAgentInputList(originalInput);
+      for (const item of initialItems) {
+        inputItems.push(item);
+        if (item && typeof item === 'object') {
+          this.sentItems.add(item);
+        }
+      }
+      this.sentInitialInput = true;
+    }
+
+    for (const item of generatedItems) {
+      if (item.type === 'tool_approval_item') {
+        continue;
+      }
+      const rawItem = item.rawItem;
+      if (!rawItem || typeof rawItem !== 'object') {
+        continue;
+      }
+      if (this.sentItems.has(rawItem) || this.serverItems.has(rawItem)) {
+        continue;
+      }
+      inputItems.push(rawItem as AgentInputItem);
+      this.sentItems.add(rawItem);
+    }
+
+    return inputItems;
+  }
+}
+
 export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
@@ -185,12 +333,7 @@ export function getTurnInput(
   const rawItems = generatedItems
     .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
     .map((item) => item.rawItem);
-
-  if (typeof originalInput === 'string') {
-    originalInput = [{ type: 'message', role: 'user', content: originalInput }];
-  }
-
-  return [...originalInput, ...rawItems];
+  return [...toAgentInputList(originalInput), ...rawItems];
 }
 
 /**
@@ -242,17 +385,33 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
-      const state =
-        input instanceof RunState
-          ? input
-          : new RunState(
-              options.context instanceof RunContext
-                ? options.context
-                : new RunContext(options.context),
-              input,
-              startingAgent,
-              options.maxTurns ?? DEFAULT_MAX_TURNS,
-            );
+      const isResumedState = input instanceof RunState;
+      const state = isResumedState
+        ? input
+        : new RunState(
+            options.context instanceof RunContext
+              ? options.context
+              : new RunContext(options.context),
+            input,
+            startingAgent,
+            options.maxTurns ?? DEFAULT_MAX_TURNS,
+          );
+
+      const serverConversationTracker =
+        options.conversationId || options.previousResponseId
+          ? new ServerConversationTracker({
+              conversationId: options.conversationId,
+              previousResponseId: options.previousResponseId,
+            })
+          : undefined;
+
+      if (serverConversationTracker && isResumedState) {
+        serverConversationTracker.primeFromState({
+          originalInput: state._originalInput,
+          generatedItems: state._generatedItems,
+          modelResponses: state._modelResponses,
+        });
+      }
 
       try {
         while (true) {
@@ -355,10 +514,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               await this.#runInputGuardrails(state);
             }
 
-            const turnInput = getTurnInput(
-              state._originalInput,
-              state._generatedItems,
-            );
+            const turnInput = serverConversationTracker
+              ? serverConversationTracker.prepareInput(
+                  state._originalInput,
+                  state._generatedItems,
+                )
+              : getTurnInput(state._originalInput, state._generatedItems);
 
             if (state._noActiveAgentRun) {
               state._currentAgent.emit(
@@ -385,14 +546,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._toolUseTracker,
               modelSettings,
             );
+            const previousResponseId =
+              serverConversationTracker?.previousResponseId ??
+              options.previousResponseId;
+            const conversationId =
+              serverConversationTracker?.conversationId ??
+              options.conversationId;
+
             state._lastTurnResponse = await model.getResponse({
               systemInstructions: await state._currentAgent.getSystemPrompt(
                 state._context,
               ),
               prompt: await state._currentAgent.getPrompt(state._context),
               input: turnInput,
-              previousResponseId: options.previousResponseId,
-              conversationId: options.conversationId,
+              previousResponseId,
+              conversationId,
               modelSettings,
               tools: serializedTools,
               outputType: convertAgentOutputTypeToSerializable(
@@ -408,6 +576,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
+
+            serverConversationTracker?.trackServerItems(
+              state._lastTurnResponse,
+            );
 
             const processedResponse = processModelResponse(
               state._lastTurnResponse,
@@ -622,7 +794,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   >(
     result: StreamedRunResult<TContext, TAgent>,
     options: StreamRunOptions<TContext>,
+    isResumedState: boolean,
   ): Promise<void> {
+    const serverConversationTracker =
+      options.conversationId || options.previousResponseId
+        ? new ServerConversationTracker({
+            conversationId: options.conversationId,
+            previousResponseId: options.previousResponseId,
+          })
+        : undefined;
+
+    if (serverConversationTracker && isResumedState) {
+      serverConversationTracker.primeFromState({
+        originalInput: result.state._originalInput,
+        generatedItems: result.state._generatedItems,
+        modelResponses: result.state._modelResponses,
+      });
+    }
+
     try {
       while (true) {
         const currentAgent = result.state._currentAgent;
@@ -739,7 +928,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             modelSettings,
           );
 
-          const turnInput = getTurnInput(result.input, result.newItems);
+          const turnInput = serverConversationTracker
+            ? serverConversationTracker.prepareInput(
+                result.input,
+                result.newItems,
+              )
+            : getTurnInput(result.input, result.newItems);
 
           if (result.state._noActiveAgentRun) {
             currentAgent.emit(
@@ -752,14 +946,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           let finalResponse: ModelResponse | undefined = undefined;
 
+          const previousResponseId =
+            serverConversationTracker?.previousResponseId ??
+            options.previousResponseId;
+          const conversationId =
+            serverConversationTracker?.conversationId ?? options.conversationId;
+
           for await (const event of model.getStreamedResponse({
             systemInstructions: await currentAgent.getSystemPrompt(
               result.state._context,
             ),
             prompt: await currentAgent.getPrompt(result.state._context),
             input: turnInput,
-            previousResponseId: options.previousResponseId,
-            conversationId: options.conversationId,
+            previousResponseId,
+            conversationId,
             modelSettings,
             tools: serializedTools,
             handoffs: serializedHandoffs,
@@ -798,6 +998,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           result.state._lastTurnResponse = finalResponse;
+          serverConversationTracker?.trackServerItems(finalResponse);
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
           const processedResponse = processModelResponse(
@@ -915,17 +1116,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
       // Initialize or reuse existing state
-      const state: RunState<TContext, TAgent> =
-        input instanceof RunState
-          ? input
-          : new RunState(
-              options.context instanceof RunContext
-                ? options.context
-                : new RunContext(options.context),
-              input as string | AgentInputItem[],
-              agent,
-              options.maxTurns ?? DEFAULT_MAX_TURNS,
-            );
+      const isResumedState = input instanceof RunState;
+      const state: RunState<TContext, TAgent> = isResumedState
+        ? input
+        : new RunState(
+            options.context instanceof RunContext
+              ? options.context
+              : new RunContext(options.context),
+            input as string | AgentInputItem[],
+            agent,
+            options.maxTurns ?? DEFAULT_MAX_TURNS,
+          );
 
       // Initialize the streamed result with existing state
       const result = new StreamedRunResult<TContext, TAgent>({
@@ -937,7 +1138,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       result.maxTurns = options.maxTurns ?? state._maxTurns;
 
       // Continue the stream loop without blocking
-      this.#runStreamLoop(result, options).then(
+      this.#runStreamLoop(result, options, isResumedState).then(
         () => {
           result._done();
         },

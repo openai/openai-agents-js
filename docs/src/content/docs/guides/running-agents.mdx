@@ -8,6 +8,8 @@ import helloWorldWithRunnerExample from '../../../../../examples/docs/hello-worl
 import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 import runningAgentsExceptionExample from '../../../../../examples/docs/running-agents/exceptions1.ts?raw';
 import chatLoopExample from '../../../../../examples/docs/running-agents/chatLoop.ts?raw';
+import conversationIdExample from '../../../../../examples/docs/running-agents/conversationId.ts?raw';
+import previousResponseIdExample from '../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 
 Agents do nothing by themselves – you **run** them with the `Runner` class or the `run()` utility.
 
@@ -94,6 +96,32 @@ Each call to `runner.run()` (or `run()` utility) represents one **turn** in your
 />
 
 See [the chat example](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) for an interactive version.
+
+### Server-managed conversations
+
+You can let the OpenAI Responses API persist conversation history for you instead of sending your entire local transcript on every turn. This is useful when you are coordinating long conversations or multiple services. See the [Conversation state guide](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses) for details.
+
+OpenAI exposes two ways to reuse server-side state:
+
+#### 1. `conversationId` for an entire conversation
+
+You can create a conversation once using [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) and then reuse its ID for every turn. The SDK automatically includes only the newly generated items.
+
+<Code
+  lang="typescript"
+  code={conversationIdExample}
+  title="Reusing a server conversation"
+/>
+
+#### 2. `previousResponseId` to continue from the last turn
+
+If you want to start only with Responses API anyway, you can chain each request using the ID returned from the previous response. This keeps the context alive across turns without creating a full conversation resource.
+
+<Code
+  lang="typescript"
+  code={previousResponseIdExample}
+  title="Chaining with previousResponseId"
+/>
 
 ## Exceptions
 

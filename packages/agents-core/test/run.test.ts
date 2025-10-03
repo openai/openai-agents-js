@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 import {
   Agent,
+  AgentInputItem,
   MaxTurnsExceededError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
@@ -32,6 +33,7 @@ import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
+import { tool, hostedMcpTool } from '../src/tool';
 import {
   FakeModel,
   fakeModelMessage,
@@ -658,6 +660,489 @@ describe('Runner.run', () => {
       expect(requestSettings.reasoning?.effort).toBe('high');
       expect(requestSettings.reasoning?.summary).toBe('detailed');
       expect(requestSettings.text?.verbosity).toBe('medium');
+    });
+  });
+
+  describe('server-managed conversation state', () => {
+    type TurnResponse = ModelResponse;
+
+    class TrackingModel implements Model {
+      public requests: ModelRequest[] = [];
+      public firstRequest: ModelRequest | undefined;
+      public lastRequest: ModelRequest | undefined;
+
+      constructor(private readonly responses: TurnResponse[]) {}
+
+      private recordRequest(request: ModelRequest) {
+        const clonedInput: string | AgentInputItem[] =
+          typeof request.input === 'string'
+            ? request.input
+            : (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[]);
+
+        const recorded: ModelRequest = {
+          ...request,
+          input: clonedInput,
+        };
+
+        this.requests.push(recorded);
+        this.lastRequest = recorded;
+        this.firstRequest ??= recorded;
+      }
+
+      async getResponse(request: ModelRequest): Promise<ModelResponse> {
+        this.recordRequest(request);
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response configured');
+        }
+        return response;
+      }
+
+      getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<protocol.StreamEvent> {
+        throw new Error('Not implemented');
+      }
+    }
+
+    const buildResponse = (
+      items: protocol.ModelItem[],
+      responseId?: string,
+    ): ModelResponse => ({
+      output: JSON.parse(JSON.stringify(items)) as protocol.ModelItem[],
+      usage: new Usage(),
+      responseId,
+    });
+
+    const buildToolCall = (
+      callId: string,
+      arg: string,
+    ): protocol.FunctionCallItem => ({
+      id: callId,
+      type: 'function_call',
+      name: 'test',
+      callId,
+      status: 'completed',
+      arguments: JSON.stringify({ test: arg }),
+    });
+
+    const serverTool = tool({
+      name: 'test',
+      description: 'test tool',
+      parameters: z.object({ test: z.string() }),
+      execute: async ({ test }) => `result:${test}`,
+    });
+
+    it('only sends new items when using conversationId across turns', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('b_message'), buildToolCall('call-2', 'bar')],
+          'resp-2',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-test-123',
+      });
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests.map((req) => req.conversationId)).toEqual([
+        'conv-test-123',
+        'conv-test-123',
+        'conv-test-123',
+      ]);
+
+      const firstInput = model.requests[0].input;
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput as AgentInputItem[]).toHaveLength(1);
+      const userMessage = (firstInput as AgentInputItem[])[0] as any;
+      expect(userMessage.role).toBe('user');
+      expect(userMessage.content).toBe('user_message');
+
+      const secondInput = model.requests[1].input;
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondItems = secondInput as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+
+      const thirdInput = model.requests[2].input;
+      expect(Array.isArray(thirdInput)).toBe(true);
+      const thirdItems = thirdInput as AgentInputItem[];
+      expect(thirdItems).toHaveLength(1);
+      expect(thirdItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
+
+    it('only sends new items and updates previousResponseId across turns', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response-123',
+      });
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      expect(model.requests[0].previousResponseId).toBe('initial-response-123');
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.previousResponseId).toBe('resp-789');
+      expect(Array.isArray(secondRequest.input)).toBe(true);
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+    });
+
+    it('does not resend prior items when resuming with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-approved', 'foo')], 'resp-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-approval',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-approval',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const firstInput = model.requests[0].input;
+      expect(Array.isArray(firstInput)).toBe(true);
+      const firstItems = firstInput as AgentInputItem[];
+      expect(firstItems).toHaveLength(1);
+      expect(firstItems[0]).toMatchObject({
+        role: 'user',
+        content: 'user_message',
+      });
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.conversationId).toBe('conv-approval');
+      expect(Array.isArray(secondRequest.input)).toBe(true);
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-approved',
+      });
+    });
+
+    it('does not resend prior items when resuming with previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-prev', 'foo')], 'resp-prev-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-prev-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalPrevAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      expect(model.requests[0].previousResponseId).toBe('initial-response');
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.previousResponseId).toBe('resp-prev-1');
+      expect(Array.isArray(secondRequest.input)).toBe(true);
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-prev',
+      });
+    });
+
+    it('does not resend items when resuming multiple times without new approvals', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-repeat', 'foo')], 'resp-repeat-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-repeat-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'RepeatAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-repeat',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-repeat',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+
+      const thirdResult = await runner.run(agent, secondResult.state, {
+        conversationId: 'conv-repeat',
+      });
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+    });
+
+    it('sends newly appended generated items when resuming', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-extra', 'foo')], 'resp-extra-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-extra-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ExtraAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-extra',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+
+      const extraMessage = new MessageOutputItem(
+        fakeModelMessage('cached note'),
+        agent,
+      );
+      firstResult.state._generatedItems.push(extraMessage);
+
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-extra',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(2);
+      expect(secondItems[0]).toMatchObject({
+        type: 'message',
+        content: expect.arrayContaining([
+          expect.objectContaining({ text: 'cached note' }),
+        ]),
+      });
+      expect(secondItems[1]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-extra',
+      });
+    });
+
+    it('sends only approved items when mixing function and MCP approvals', async () => {
+      const functionTool = tool({
+        name: 'test',
+        description: 'function tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'demo_server',
+        serverUrl: 'https://example.com',
+        requireApproval: {
+          always: { toolNames: ['demo_tool'] },
+        },
+      });
+
+      const mcpApprovalCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'approval-id',
+        name: 'mcp_approval_request',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_approval_request',
+          server_label: 'demo_server',
+          name: 'demo_tool',
+          id: 'approval-id',
+          arguments: '{}',
+        },
+      } as protocol.HostedToolCallItem;
+
+      const model = new TrackingModel([
+        buildResponse(
+          [mcpApprovalCall, buildToolCall('call-mixed', 'foo')],
+          'resp-mixed-1',
+        ),
+        buildResponse([fakeModelMessage('still waiting')], 'resp-mixed-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'MixedAgent',
+        model,
+        tools: [functionTool, mcpTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mixed',
+      });
+
+      const functionApproval = firstResult.interruptions.find(
+        (item) => item.rawItem.type === 'function_call',
+      );
+      const mcpApproval = firstResult.interruptions.find(
+        (item) => item.rawItem.type === 'hosted_tool_call',
+      );
+
+      expect(functionApproval).toBeDefined();
+      expect(mcpApproval).toBeDefined();
+
+      firstResult.state.approve(functionApproval!);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mixed',
+      });
+
+      expect(model.requests).toHaveLength(2);
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-mixed',
+      });
+      expect(secondResult.finalOutput).toBe('still waiting');
+    });
+
+    it('sends full history when no server-managed state is provided', async () => {
+      const model = new TrackingModel([
+        buildResponse(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'Test',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message');
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondInput = model.requests[1].input;
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondItems = secondInput as AgentInputItem[];
+      expect(secondItems).toHaveLength(4);
+      expect(secondItems[0]).toMatchObject({ role: 'user' });
+      expect(secondItems[1]).toMatchObject({ role: 'assistant' });
+      expect(secondItems[2]).toMatchObject({
+        type: 'function_call',
+        name: 'test',
+      });
+      expect(secondItems[3]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
     });
   });
 

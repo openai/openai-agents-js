@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  AgentInputItem,
   run,
   Runner,
   setDefaultModelProvider,
@@ -10,6 +11,7 @@ import {
   RunStreamEvent,
   RunAgentUpdatedStreamEvent,
   RunItemStreamEvent,
+  StreamedRunResult,
   handoff,
   Model,
   ModelRequest,
@@ -19,6 +21,7 @@ import {
   tool,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
+import * as protocol from '../src/types/protocol';
 
 // Test for unhandled rejection when stream loop throws
 
@@ -393,5 +396,289 @@ describe('Runner.run (streaming)', () => {
       'tool_output',
       'message_output_created',
     ]);
+  });
+
+  describe('server-managed conversation state', () => {
+    type Turn = { output: protocol.ModelItem[]; responseId?: string };
+
+    class TrackingStreamingModel implements Model {
+      public requests: ModelRequest[] = [];
+      public firstRequest: ModelRequest | undefined;
+      public lastRequest: ModelRequest | undefined;
+
+      constructor(private readonly turns: Turn[]) {}
+
+      private recordRequest(request: ModelRequest) {
+        const clonedInput: string | AgentInputItem[] =
+          typeof request.input === 'string'
+            ? request.input
+            : (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[]);
+
+        const recorded: ModelRequest = {
+          ...request,
+          input: clonedInput,
+        };
+
+        this.requests.push(recorded);
+        this.lastRequest = recorded;
+        this.firstRequest ??= recorded;
+      }
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Not implemented');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.recordRequest(request);
+        const turn = this.turns.shift();
+        if (!turn) {
+          throw new Error('No response configured');
+        }
+
+        const responseId = turn.responseId ?? `resp-${this.requests.length}`;
+        yield {
+          type: 'response_done',
+          response: {
+            id: responseId,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: JSON.parse(
+              JSON.stringify(turn.output),
+            ) as protocol.ModelItem[],
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const buildTurn = (
+      items: protocol.ModelItem[],
+      responseId?: string,
+    ): Turn => ({
+      output: JSON.parse(JSON.stringify(items)) as protocol.ModelItem[],
+      responseId,
+    });
+
+    const buildToolCall = (callId: string, arg: string): FunctionCallItem => ({
+      id: callId,
+      type: 'function_call',
+      name: 'test',
+      callId,
+      status: 'completed',
+      arguments: JSON.stringify({ test: arg }),
+    });
+
+    const serverTool = tool({
+      name: 'test',
+      description: 'test tool',
+      parameters: z.object({ test: z.string() }),
+      execute: async ({ test }) => `result:${test}`,
+    });
+
+    async function drain<TOutput, TAgent extends Agent<any, any>>(
+      result: StreamedRunResult<TOutput, TAgent>,
+    ) {
+      for await (const _ of result.toStream()) {
+        // drain
+      }
+      await result.completed;
+    }
+
+    it('only sends new items when using conversationId across turns', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-1',
+        ),
+        buildTurn(
+          [fakeModelMessage('b_message'), buildToolCall('call-2', 'bar')],
+          'resp-2',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamTest',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        stream: true,
+        conversationId: 'conv-test-123',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests.map((req) => req.conversationId)).toEqual([
+        'conv-test-123',
+        'conv-test-123',
+        'conv-test-123',
+      ]);
+
+      const firstInput = model.requests[0].input;
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput as AgentInputItem[]).toHaveLength(1);
+      const userMessage = (firstInput as AgentInputItem[])[0] as any;
+      expect(userMessage.role).toBe('user');
+      expect(userMessage.content).toBe('user_message');
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+
+      const thirdItems = model.requests[2].input as AgentInputItem[];
+      expect(thirdItems).toHaveLength(1);
+      expect(thirdItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
+
+    it('only sends new items and updates previousResponseId across turns', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamPrev',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        stream: true,
+        previousResponseId: 'initial-response-123',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[0].previousResponseId).toBe('initial-response-123');
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.previousResponseId).toBe('resp-789');
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+    });
+
+    it('does not resend prior items when resuming a streamed run with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-stream', 'foo')], 'resp-stream-1'),
+        buildTurn([fakeModelMessage('done')], 'resp-stream-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        stream: true,
+        conversationId: 'conv-stream-approval',
+      });
+
+      await drain(firstResult);
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        stream: true,
+        conversationId: 'conv-stream-approval',
+      });
+
+      await drain(secondResult);
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests.map((req) => req.conversationId)).toEqual([
+        'conv-stream-approval',
+        'conv-stream-approval',
+      ]);
+
+      const firstInput = model.requests[0].input as AgentInputItem[];
+      expect(firstInput).toHaveLength(1);
+      expect(firstInput[0]).toMatchObject({
+        role: 'user',
+        content: 'user_message',
+      });
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toHaveLength(1);
+      expect(secondInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-stream',
+      });
+    });
+
+    it('sends full history when no server-managed state is provided', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+          'resp-789',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-900'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamDefault',
+        model,
+        tools: [serverTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', { stream: true });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(4);
+      expect(secondItems[0]).toMatchObject({ role: 'user' });
+      expect(secondItems[1]).toMatchObject({ role: 'assistant' });
+      expect(secondItems[2]).toMatchObject({
+        type: 'function_call',
+        name: 'test',
+      });
+      expect(secondItems[3]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+    });
   });
 });
