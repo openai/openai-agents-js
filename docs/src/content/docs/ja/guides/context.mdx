@@ -6,22 +6,22 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-コンテキストは多義的な用語です。考慮すべきコンテキストには主に 2 つのクラスがあります。
+コンテキストは多義的な用語です。主に次の 2 つのコンテキストがあります。
 
-1. 実行中にコードからアクセスできる **ローカルコンテキスト**：ツールに必要な依存関係やデータ、`onHandoff` のようなコールバック、ライフサイクルフック
-2. 応答を生成する際に言語モデルが参照できる **エージェント/LLM コンテキスト**
+1. 実行中にコードがアクセスできる **ローカルコンテキスト**: ツールに必要な依存関係やデータ、`onHandoff` のようなコールバック、ライフサイクルフック
+2. 応答生成時に言語モデルが参照できる **エージェント/LLM コンテキスト**
 
 ## ローカルコンテキスト
 
-ローカルコンテキストは `RunContext<T>` 型で表現します。状態や依存関係を保持する任意のオブジェクトを作成し、それを `Runner.run()` に渡します。すべてのツール呼び出しとフックは `RunContext` ラッパーを受け取り、そのオブジェクトを読み書きできます。
+ローカルコンテキストは `RunContext<T>` 型で表されます。状態や依存関係を保持する任意のオブジェクトを作成し、それを `Runner.run()` に渡します。すべてのツール呼び出しとフックは `RunContext` ラッパーを受け取り、そのオブジェクトを読み書きできます。
 
 <Code
   lang="typescript"
   code={localContextExample}
-  title="Local context example"
+  title="ローカルコンテキストの例"
 />
 
-単一の実行に参加するすべてのエージェント、ツール、フックは、同じコンテキストの**型**を使用する必要があります。
+単一の実行に参加するすべてのエージェント、ツール、フックは同じ **型** のコンテキストを使用する必要があります。
 
 ローカルコンテキストの用途例:
 
@@ -36,9 +36,9 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
 
 ## エージェント/LLM コンテキスト
 
-LLM が呼び出されるとき、参照できるのは会話履歴に含まれるデータだけです。追加情報を利用可能にするには次の方法があります。
+LLM が呼び出されると、参照できるのは会話履歴から来るデータだけです。追加情報を利用可能にするには、いくつかの方法があります。
 
-1. エージェントの `instructions`（システムまたは開発者メッセージとも呼ばれます）に追加する。これは静的な文字列、またはコンテキストを受け取って文字列を返す関数にできます
-2. `Runner.run()` を呼び出す際の `input` に含める。これは instructions と似ていますが、メッセージを[指揮系統](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)の下位に配置できます
+1. エージェントの `instructions` に追加する – system または developer メッセージとしても知られます。これは静的な文字列、またはコンテキストを受け取って文字列を返す関数にできます。
+2. `Runner.run()` を呼び出す際の `input` に含める。この方法は instructions に似ていますが、メッセージを [指揮系統](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command) の下位に配置できます。
 3. 関数ツール経由で公開し、LLM がオンデマンドでデータを取得できるようにする
-4. retrieval ツールや Web 検索ツールを使い、ファイル、データベース、または Web の関連データに基づいて応答を根拠づける
+4. リトリーバルや Web 検索ツールを使用して、ファイル、データベース、または Web の関連データに基づいて応答をグラウンディングする

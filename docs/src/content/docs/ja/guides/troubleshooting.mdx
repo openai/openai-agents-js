@@ -3,39 +3,39 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポート対象の環境
+## サポートされている環境
 
-OpenAI Agents SDK は以下のサーバー環境でサポートされています:
+OpenAI Agents SDK は次のサーバー環境でサポートされています。
 
 - Node.js 22+
 - Deno 2.35+
 - Bun 1.2.5+
 
-### 限定的なサポート
+### 限定サポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で利用できますが、現在いくつかの制限があります:
-  - 現在 SDK は `nodejs_compat` を有効にする必要があります
-  - リクエストの最後にトレースを手動でフラッシュする必要があります。[トレーシングガイドを参照](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)
-  - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースが正確でない可能性があります
-  - アウトバウンド WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは使用しない）。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現在いくつかの制限があります
+  - SDK は現在 `nodejs_compat` の有効化が必要
+  - リクエストの最後に手動でトレースをフラッシュする必要があります。詳しくは[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)を参照してください
+  - Cloudflare Workers における `AsyncLocalStorage` のサポートが限定的なため、一部のトレースが正確ではない可能性があります
+  - アウトバウンド WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは不可）。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
 - **Browsers**:
   - ブラウザでは現在トレーシングはサポートされていません
 - **v8 isolates**:
-  - 適切なブラウザ polyfill を持つバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
-  - v8 isolates は十分にテストされていません
+  - 適切なブラウザポリフィルを備えたバンドラを使用すれば v8 isolates 用に SDK をバンドルできるはずですが、トレーシングは機能しません
+  - v8 isolates は広範にはテストされていません
 
-## デバッグログ
+## デバッグロギング
 
-SDK で問題が発生している場合、デバッグログを有効にして詳細な情報を取得できます。
+SDK で問題が発生している場合、デバッグロギングを有効にして、実行状況に関する詳細情報を取得できます。
 
-`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグログを有効にします。
+`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグロギングを有効化します。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-また、SDK の特定の部分にデバッグのスコープを絞ることもできます:
+または、SDK の特定部分にデバッグ対象を絞ることもできます。
 
-- `openai-agents:core` — SDK のメイン実行ロジック
-- `openai-agents:openai` — OpenAI API 呼び出し
-- `openai-agents:realtime` — リアルタイムエージェント関連のコンポーネント
+- `openai-agents:core` — SDK の主要な実行ロジック向け
+- `openai-agents:openai` — OpenAI API 呼び出し向け
+- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント向け

@@ -7,12 +7,12 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  此适配器仍处于测试版。您在使用某些模型提供方（尤其是较小的提供方）时可能会遇到问题。请通过
+  此适配器仍处于测试阶段。您可能会在某些模型提供商（尤其是较小的提供商）上遇到问题。请通过
   [GitHub issues](https://github.com/openai/openai-agents-js/issues)
-  反馈问题，我们会尽快修复。
+  报告问题，我们会尽快修复。
 </Aside>
 
-开箱即用，Agents SDK 可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。不过，如果您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了一系列受支持的模型，可通过此适配器引入到 Agents SDK 中。
+开箱即用，Agents SDK 可通过 Responses API 或 Chat Completions API 与 OpenAI 模型配合使用。不过，如果您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了多种受支持的模型，可通过此适配器引入到 Agents SDK 中。
 
 ## 设置
 
@@ -37,7 +37,7 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
    import { aisdk } from '@openai/agents-extensions';
    ```
 
-4. 初始化一个模型实例供智能体使用：
+4. 初始化一个将由智能体使用的模型实例：
 
    ```typescript
    const model = aisdk(openai('gpt-5-mini'));
@@ -46,19 +46,19 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  我们目前支持 ai-sdk 的模型提供方 v2 模块，这些模块与 Vercel AI SDK v5
-  兼容。如果您有特定原因需要继续使用 v1 模型提供方，可以从
+  我们目前支持 ai-sdk 的模型提供商 v2 模块，它与 Vercel AI SDK v5
+  兼容。若您有特定原因需要继续使用 v1 模型提供商，可从
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   复制该模块并将其包含到您的项目中。
 </Aside>
 
 ## 示例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 设置" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
 
-## 传递提供方元数据
+## 传递提供商元数据
 
-如果您需要在消息中发送特定于提供方的选项，请通过 `providerMetadata` 传递。其值会直接转发给底层的 AI SDK 模型。例如，以下在 Agents SDK 中的 `providerData`
+如果需要随消息发送提供商特定的选项，请通过 `providerMetadata` 传递。这些值会被直接转发到底层的 AI SDK 模型。例如，以下在 Agents SDK 中的 `providerData`
 
 ```ts
 providerData: {
@@ -70,7 +70,7 @@ providerData: {
 }
 ```
 
-在使用 AI SDK 集成时会变为
+将会在使用 AI SDK 集成时变为
 
 ```ts
 providerMetadata: {

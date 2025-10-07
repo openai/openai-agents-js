@@ -11,7 +11,7 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
 
 <Steps>
 
-1. 프로젝트를 생성하고 npm을 초기화합니다. 이 작업은 한 번만 하면 됩니다.
+1. 프로젝트를 만들고 npm을 초기화하세요. 이 작업은 한 번만 하면 됩니다.
 
    ```bash
    mkdir my_project
@@ -19,27 +19,27 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    npm init -y
    ```
 
-2. Agents SDK를 설치합니다.
+2. Agents SDK를 설치하세요.
 
    ```bash
    npm install @openai/agents zod@3
    ```
 
-3. OpenAI API 키를 설정합니다. 아직 없다면 OpenAI API 키를 만들기 위해 [이 안내를](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) 따르세요.
+3. OpenAI API 키를 설정하세요. 없다면 OpenAI API 키를 생성하려면 [이 가이드](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)를 따라주세요.
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   또는 `setDefaultOpenAIKey('<api key>')`를 호출해 프로그램적으로 키를 설정하고,
-   트레이싱을 위해 `setTracingExportApiKey('<api key>')`를 사용할 수 있습니다.
-   자세한 내용은 [설정 가이드](/openai-agents-js/ko/guides/config)를 참고하세요.
+   또는 `setDefaultOpenAIKey('<api key>')`를 호출하여 프로그래밍 방식으로 키를 설정하고,
+   트레이싱에는 `setTracingExportApiKey('<api key>')`를 사용할 수 있습니다.
+   자세한 내용은 [SDK 설정](/openai-agents-js/ko/guides/config)을 참조하세요.
 
 </Steps>
 
 ## 첫 에이전트 생성
 
-에이전트는 instructions와 이름으로 정의됩니다.
+에이전트는 instructions와 이름으로 정의합니다.
 
 ```typescript
 import { Agent } from '@openai/agents';
@@ -53,9 +53,9 @@ const agent = new Agent({
 
 ## 첫 에이전트 실행
 
-`run` 메서드를 사용해 에이전트를 실행할 수 있습니다. 시작할 에이전트와 전달할 입력을 함께 전달하면 실행이 트리거됩니다.
+`run` 메서드를 사용해 에이전트를 실행할 수 있습니다. 시작할 에이전트와 전달할 입력을 함께 넘기면 실행됩니다.
 
-이 호출은 해당 실행 동안 수행된 모든 동작과 최종 출력을 포함하는 결과를 반환합니다.
+이 메서드는 실행 중 수행된 모든 액션과 최종 출력을 포함한 결과를 반환합니다.
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -73,7 +73,7 @@ console.log(result.finalOutput);
 
 ## 에이전트에 도구 제공
 
-에이전트가 정보를 조회하거나 작업을 수행할 수 있도록 도구를 제공할 수 있습니다.
+정보 조회나 작업 수행을 위해 에이전트에 도구를 제공할 수 있습니다.
 
 ```typescript
 import { Agent, tool } from '@openai/agents';
@@ -102,7 +102,7 @@ const agent = new Agent({
 
 ## 에이전트 몇 개 더 추가
 
-추가 에이전트를 비슷하게 정의하여 문제를 더 작은 부분으로 분해하고, 현재 작업에 더 집중하도록 만들 수 있습니다. 또한 에이전트에 모델을 정의하여 문제마다 다른 모델을 사용할 수도 있습니다.
+추가 에이전트를 비슷한 방식으로 정의해 문제를 더 작은 부분으로 나누고, 각 에이전트가 해당 작업에 더 집중하도록 할 수 있습니다. 또한 에이전트에 모델을 지정하여 문제 유형별로 다른 모델을 사용할 수도 있습니다.
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -120,7 +120,7 @@ const mathTutorAgent = new Agent({
 
 ## 핸드오프 정의
 
-여러 에이전트를 오케스트레이션하기 위해 에이전트에 `handoffs`를 정의할 수 있습니다. 이렇게 하면 에이전트가 대화를 다음 에이전트로 넘길 수 있으며, 이는 실행 과정에서 자동으로 이뤄집니다.
+여러 에이전트를 오케스트레이션하기 위해 에이전트에 `handoffs`를 정의할 수 있습니다. 이렇게 하면 에이전트가 다음 에이전트로 대화를 넘길 수 있으며, 이는 실행 도중 자동으로 발생합니다.
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -132,11 +132,11 @@ const triageAgent = Agent.create({
 });
 ```
 
-실행 후 결과의 `finalAgent` 속성을 확인하면 어떤 에이전트가 최종 응답을 생성했는지 알 수 있습니다.
+실행이 끝난 후 결과의 `finalAgent` 속성을 확인하여 최종 응답을 생성한 에이전트를 볼 수 있습니다.
 
 ## 에이전트 오케스트레이션 실행
 
-Runner는 개별 에이전트 실행, 잠재적인 핸드오프, 도구 실행을 처리합니다.
+Runner는 개별 에이전트 실행, 필요한 핸드오프, 도구 실행을 처리합니다.
 
 ```typescript
 import { run } from '@openai/agents';
@@ -149,15 +149,15 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## 모두 합쳐 보기
+## 전체 예제 통합
 
-이제 모두 하나의 전체 예제로 합쳐 보겠습니다. 이를 `index.js` 파일에 넣고 실행하세요.
+이제 모든 내용을 하나의 전체 예제로 합쳐 보겠습니다. 이를 `index.js` 파일에 넣고 실행하세요.
 
-<Code lang="typescript" code={quickstartExample} title="Quickstart" />
+<Code lang="typescript" code={quickstartExample} title="빠른 시작" />
 
-## 트레이스 확인
+## 트레이스 보기
 
-Agents SDK는 자동으로 트레이스를 생성합니다. 이를 통해 에이전트가 어떻게 동작했는지, 어떤 도구를 호출했는지, 어떤 에이전트로 핸드오프했는지 검토할 수 있습니다.
+Agents SDK는 자동으로 트레이스를 생성합니다. 이를 통해 에이전트가 어떻게 동작했는지, 어떤 도구를 호출했는지, 어느 에이전트로 핸드오프했는지 검토할 수 있습니다.
 
 에이전트 실행 중에 무엇이 일어났는지 확인하려면
 [OpenAI 대시보드의 Trace viewer](https://platform.openai.com/traces)로 이동하세요.
@@ -166,6 +166,6 @@ Agents SDK는 자동으로 트레이스를 생성합니다. 이를 통해 에이
 
 더 복잡한 에이전트 플로우를 만드는 방법을 알아보세요:
 
-- [에이전트](/openai-agents-js/ko/guides/agents) 구성에 대해 알아보기
-- [에이전트 실행](/openai-agents-js/ko/guides/running-agents)에 대해 알아보기
-- [도구](/openai-agents-js/ko/guides/tools), [가드레일](/openai-agents-js/ko/guides/guardrails), [모델](/openai-agents-js/ko/guides/models)에 대해 알아보기
+- [에이전트](/openai-agents-js/ko/guides/agents) 구성 방법 알아보기
+- [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 알아보기
+- [도구](/openai-agents-js/ko/guides/tools), [가드레일](/openai-agents-js/ko/guides/guardrails), [모델](/openai-agents-js/ko/guides/models) 알아보기

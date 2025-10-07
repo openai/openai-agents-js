@@ -30,109 +30,109 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 ## 오디오 처리
 
-기본 `OpenAIRealtimeWebRTC` 같은 일부 전송 계층은 오디오 입력과 출력을 자동으로 처리합니다. `OpenAIRealtimeWebSocket` 같은 다른 전송 방식에서는 세션 오디오를 직접 처리해야 합니다:
+기본 `OpenAIRealtimeWebRTC` 같은 일부 전송 계층은 오디오 입력과 출력을 자동으로 처리합니다. `OpenAIRealtimeWebSocket`과 같은 다른 전송 방식에서는 세션 오디오를 직접 처리해야 합니다:
 
 <Code lang="typescript" code={handleAudioExample} />
 
 ## 세션 구성
 
-생성 시 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)에 추가 옵션을 전달하거나 `connect(...)`를 호출할 때 세션을 구성할 수 있습니다.
+생성 시 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)에 추가 옵션을 전달하거나 `connect(...)` 호출 시 세션을 구성할 수 있습니다.
 
 <Code lang="typescript" code={configureSessionExample} />
 
-이 전송 계층은 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update)과 일치하는 모든 매개변수를 전달할 수 있습니다.
+이 전송 계층에서는 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update)과 일치하는 모든 매개변수를 전달할 수 있습니다.
 
-[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 아직 해당 매개변수가 없는 신규 매개변수의 경우 `providerData`를 사용할 수 있습니다. `providerData`에 전달된 모든 값은 `session` 객체의 일부로 그대로 전달됩니다.
+[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 아직 대응되는 매개변수가 없는 새 매개변수의 경우 `providerData`를 사용할 수 있습니다. `providerData`에 전달된 모든 내용은 `session` 객체의 일부로 그대로 전달됩니다.
 
 ## 핸드오프
 
-일반 에이전트와 마찬가지로 핸드오프를 사용해 에이전트를 여러 에이전트로 분리하고 그 사이를 오케스트레이션하여 성능을 개선하고 문제 범위를 더 잘 한정할 수 있습니다.
+일반 에이전트와 마찬가지로, 핸드오프를 사용해 에이전트를 여러 개로 분리하고 이들 간에 오케스트레이션하여 에이전트 성능을 개선하고 문제 범위를 더 잘 한정할 수 있습니다.
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-일반 에이전트와 달리, 실시간 에이전트의 핸드오프는 약간 다르게 동작합니다. 핸드오프가 수행되면 진행 중인 세션이 새로운 에이전트 구성으로 업데이트됩니다. 이로 인해 에이전트는 진행 중인 대화 기록에 자동으로 접근할 수 있으며 입력 필터는 현재 적용되지 않습니다.
+일반 에이전트와 달리, 실시간 에이전트에서는 핸드오프 동작이 약간 다릅니다. 핸드오프가 수행되면 진행 중인 세션이 새로운 에이전트 구성으로 업데이트됩니다. 이로 인해 에이전트는 진행 중인 대화 히스토리에 자동으로 접근할 수 있고, 입력 필터는 현재 적용되지 않습니다.
 
-또한 `voice` 또는 `model`은 핸드오프의 일부로 변경할 수 없습니다. 다른 실시간 에이전트에만 연결할 수 있습니다. 다른 모델, 예를 들어 `gpt-5-mini` 같은 추론 모델이 필요하다면 [delegation through tools](#delegation-through-tools)를 사용할 수 있습니다.
+또한 이는 핸드오프의 일부로 `voice` 또는 `model`을 변경할 수 없음을 의미합니다. 다른 실시간 에이전트에만 연결할 수 있습니다. 다른 모델이 필요한 경우, 예를 들어 `gpt-5-mini` 같은 reasoning 모델이 필요한 경우 [delegation through tools](#delegation-through-tools)를 사용할 수 있습니다.
 
 ## 도구
 
-일반 에이전트와 마찬가지로 실시간 에이전트는 작업을 수행하기 위해 도구를 호출할 수 있습니다. 일반 에이전트에서 사용하는 것과 동일한 `tool()` 함수로 도구를 정의할 수 있습니다.
+일반 에이전트와 마찬가지로, 실시간 에이전트는 도구를 호출해 작업을 수행할 수 있습니다. 일반 에이전트에서 사용하는 것과 동일한 `tool()` 함수를 사용해 도구를 정의할 수 있습니다.
 
 <Code lang="typescript" code={defineToolExample} />
 
-실시간 에이전트에서는 함수 도구만 사용할 수 있으며, 이러한 도구는 실시간 세션과 동일한 위치에서 실행됩니다. 즉, 실시간 세션을 브라우저에서 실행 중이라면 도구도 브라우저에서 실행됩니다. 더 민감한 작업이 필요하다면, 도구 내부에서 백엔드 서버로 HTTP 요청을 보낼 수 있습니다.
+실시간 에이전트에서는 함수 도구만 사용할 수 있으며, 이러한 도구는 Realtime Session과 동일한 위치에서 실행됩니다. 즉, Realtime Session을 브라우저에서 실행 중이라면 도구도 브라우저에서 실행됩니다. 더 민감한 작업을 수행해야 하는 경우, 도구 내부에서 백엔드 서버로 HTTP 요청을 보낼 수 있습니다.
 
-도구가 실행되는 동안 에이전트는 사용자로부터의 새 요청을 처리할 수 없습니다. 경험을 개선하는 한 방법은 에이전트에게 도구를 실행하려 한다고 알리도록 하거나, 도구 실행 시간을 벌기 위한 특정 문구를 말하도록 지시하는 것입니다.
+도구가 실행되는 동안 에이전트는 user의 새로운 요청을 처리할 수 없습니다. 경험을 개선하는 한 가지 방법은 에이전트가 도구를 실행하기 직전에 이를 알리거나, 도구 실행 시간을 벌기 위한 특정 문구를 말하도록 지시하는 것입니다.
 
 ### 대화 기록 접근
 
-에이전트가 특정 도구를 호출할 때 전달한 인자 외에도, 실시간 세션이 추적하는 현재 대화 기록의 스냅샷에 접근할 수 있습니다. 이는 현재 대화 상태를 기반으로 더 복잡한 작업을 수행하거나 [tools for delegation](#delegation-through-tools)을 사용하려는 경우 유용합니다.
+에이전트가 특정 도구를 호출할 때 전달된 인자 외에도, Realtime Session이 추적하는 현재 대화 히스토리의 스냅샷에 접근할 수 있습니다. 이는 현재 대화 상태에 기반해 더 복잡한 작업을 수행해야 하거나 [tools for delegation](#delegation-through-tools)을 사용할 계획일 때 유용합니다.
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
-  전달되는 history는 도구 호출 시점의 스냅샷입니다. 사용자가 마지막으로 말한
-  내용의 전사는 아직 준비되지 않았을 수 있습니다.
+  전달되는 히스토리는 도구 호출 시점의 히스토리 스냅샷입니다. 사용자가
+  마지막으로 말한 내용의 전사는 아직 제공되지 않았을 수 있습니다.
 </Aside>
 
 ### 도구 실행 전 승인
 
-도구를 `needsApproval: true`로 정의하면, 에이전트는 도구를 실행하기 전에 `tool_approval_requested` 이벤트를 내보냅니다.
+도구를 `needsApproval: true`로 정의하면, 에이전트는 도구를 실행하기 전에 `tool_approval_requested` 이벤트를 발생시킵니다.
 
-이 이벤트를 수신하여 사용자에게 UI를 표시하고 도구 호출을 승인 또는 거부하도록 할 수 있습니다.
+이 이벤트를 수신하여 user에게 도구 호출을 승인 또는 거부하는 UI를 표시할 수 있습니다.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  음성 에이전트가 도구 호출 승인을 기다리는 동안에는 사용자로부터의 새 요청을
-  처리할 수 없습니다.
+  음성 에이전트가 도구 호출 승인을 기다리는 동안, 에이전트는 user의 새로운
+  요청을 처리할 수 없습니다.
 </Aside>
 
 ## 가드레일
 
-가드레일은 에이전트 발화가 규칙을 위반했는지 모니터링하고 즉시 응답을 중단하는 방법을 제공합니다. 이러한 가드레일 검사는 에이전트 응답의 전사를 기반으로 수행되므로 모델의 텍스트 출력이 활성화되어 있어야 합니다(기본적으로 활성화됨).
+가드레일은 에이전트가 말한 내용이 규칙을 위반했는지 모니터링하고 즉시 응답을 차단하는 방법을 제공합니다. 이 가드레일 검사는 에이전트 응답의 전사에 기반해 수행되므로 모델의 텍스트 출력이 활성화되어 있어야 합니다(기본적으로 활성화).
 
-제공한 가드레일은 모델 응답이 반환되는 동안 비동기적으로 실행되어, 예를 들어 "특정 금지어를 언급"과 같은 사전 정의된 분류 트리거에 따라 응답을 차단할 수 있습니다.
+제공한 가드레일은 모델 응답이 반환되는 동안 비동기적으로 실행되어, 예를 들어 "특정 금지어를 언급" 같은 사전 정의된 분류 트리거에 따라 응답을 차단할 수 있습니다.
 
-가드레일이 발동되면 세션은 `guardrail_tripped` 이벤트를 발생시킵니다. 이벤트는 또한 가드레일을 트리거한 `itemId`를 포함하는 `details` 객체를 제공합니다.
+가드레일이 트리거되면 세션은 `guardrail_tripped` 이벤트를 발생시킵니다. 이벤트는 가드레일을 트리거한 `itemId`를 포함하는 `details` 객체도 제공합니다.
 
 <Code lang="typescript" code={guardrailsExample} />
 
-기본적으로 가드레일은 100자마다 또는 응답 텍스트 생성이 끝날 때 실행됩니다. 보통 텍스트를 말하는 데 더 오래 걸리므로 대부분의 경우 사용자에게 들리기 전에 가드레일이 위반을 포착합니다.
+기본적으로 가드레일은 100자마다 또는 응답 텍스트가 끝날 때 실행됩니다. 일반적으로 텍스트를 말하는 데 더 오래 걸리므로, 대부분의 경우 user가 듣기 전에 가드레일이 위반을 잡아낼 수 있습니다.
 
-이 동작을 수정하려면 세션에 `outputGuardrailSettings` 객체를 전달할 수 있습니다.
+이 동작을 수정하려면 세션에 `outputGuardrailSettings` 객체를 전달하면 됩니다.
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
 ## 턴 감지 / 음성 활동 감지
 
-실시간 세션은 사용자가 말할 때를 자동으로 감지하고, Realtime API의 내장 [voice activity detection modes](https://platform.openai.com/docs/guides/realtime-vad)를 사용해 새로운 턴을 트리거합니다.
+Realtime Session은 사용자가 말할 때를 자동으로 감지하고, Realtime API의 내장 [voice activity detection 모드](https://platform.openai.com/docs/guides/realtime-vad)를 사용해 새로운 턴을 트리거합니다.
 
-세션에 `turnDetection` 객체를 전달하여 음성 활동 감지 모드를 변경할 수 있습니다.
+`turnDetection` 객체를 세션에 전달하여 음성 활동 감지 모드를 변경할 수 있습니다.
 
 <Code lang="typescript" code={turnDetectionExample} />
 
-턴 감지 설정을 수정하면 원치 않는 인터럽션(중단 처리)과 무음 처리 보정에 도움이 됩니다. 다양한 설정에 대한 자세한 내용은 [Realtime API 문서](https://platform.openai.com/docs/guides/realtime-vad)를 참고하세요
+턴 감지 설정을 조정하면 원치 않는 인터럽션과 침묵 처리를 보정하는 데 도움이 됩니다. 다양한 설정에 대한 자세한 내용은 [Realtime API 문서](https://platform.openai.com/docs/guides/realtime-vad)를 확인하세요
 
 ## 인터럽션(중단 처리)
 
-내장 음성 활동 감지를 사용할 때, 사용자가 에이전트의 발화 중간에 말하면 에이전트는 자동으로 이를 감지하고, 말한 내용을 바탕으로 컨텍스트를 업데이트합니다. 또한 `audio_interrupted` 이벤트를 내보냅니다. 이는 모든 오디오 재생을 즉시 중지하는 데 사용할 수 있습니다(웹소켓 연결에만 적용).
+내장 음성 활동 감지를 사용할 때, 에이전트가 말하는 중에 사용자가 말을 겹치면 에이전트가 자동으로 이를 감지하고, 말한 내용에 따라 컨텍스트를 업데이트합니다. 또한 `audio_interrupted` 이벤트를 발생시킵니다. 이는 모든 오디오 재생을 즉시 중지하는 데 사용할 수 있습니다(WebSocket 연결에만 적용).
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-수동 인터럽션을 수행하고 싶다면, 예를 들어 UI에 "중지" 버튼을 제공하려는 경우 `interrupt()`를 직접 호출할 수 있습니다:
+UI에 "중지" 버튼을 제공하는 등 수동 인터럽션을 수행하려면, `interrupt()`를 수동으로 호출할 수 있습니다:
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
-어느 경우든, 실시간 세션은 에이전트의 생성 중단, 사용자에게 말한 내용의 절단, 기록 업데이트를 모두 처리합니다.
+두 경우 모두 Realtime Session은 에이전트의 생성을 인터럽트하고, user에게 말하던 내용을 잘라 내며, 히스토리를 업데이트합니다.
 
-에이전트에 WebRTC로 연결하는 경우 오디오 출력도 지웁니다. WebSocket을 사용하는 경우, 대기 중인 오디오 재생을 중지하는 처리는 직접 수행해야 합니다.
+에이전트에 WebRTC로 연결 중인 경우 오디오 출력도 지워집니다. WebSocket을 사용하는 경우, 큐에 재생 대기 중인 오디오의 재생을 중지하는 처리를 직접 수행해야 합니다.
 
 ## 텍스트 입력
 
 에이전트에 텍스트 입력을 보내려면 `RealtimeSession`의 `sendMessage` 메서드를 사용할 수 있습니다.
 
-이는 사용자가 에이전트와 두 가지 모달리티로 상호작용하도록 하거나 대화에 추가 컨텍스트를 제공하려는 경우에 유용합니다.
+이는 user가 에이전트와 두 가지 모달리티 모두로 상호작용하도록 하거나, 대화에 추가 컨텍스트를 제공하려는 경우에 유용합니다.
 
 <Code lang="typescript" code={sendMessageExample} />
 
@@ -140,26 +140,26 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 `RealtimeSession`은 `history` 속성에서 대화 기록을 자동으로 관리합니다:
 
-이를 사용해 고객에게 기록을 렌더링하거나 추가 작업을 수행할 수 있습니다. 대화가 진행되는 동안 이 기록은 지속적으로 변경되므로 `history_updated` 이벤트를 수신할 수 있습니다.
+이를 사용해 고객에게 히스토리를 렌더링하거나 추가 작업을 수행할 수 있습니다. 대화가 진행되는 동안 히스토리는 지속적으로 변경되므로 `history_updated` 이벤트를 수신할 수 있습니다.
 
-기록을 수정하고 싶다면, 예를 들어 메시지를 완전히 제거하거나 전사를 업데이트하려면 `updateHistory` 메서드를 사용할 수 있습니다.
+메시지를 완전히 제거하거나 전사를 업데이트하는 등 히스토리를 수정하려면 `updateHistory` 메서드를 사용할 수 있습니다.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 ### 제한 사항
 
-1. 현재는 사후에 함수 도구 호출을 업데이트/변경할 수 없습니다
-2. 기록의 텍스트 출력에는 전사와 텍스트 모달리티가 활성화되어 있어야 합니다
-3. 인터럽션으로 인해 잘린 응답에는 전사가 없습니다
+1. 현재로서는 사후에 함수 도구 호출을 업데이트/변경할 수 없음
+2. 히스토리의 텍스트 출력에는 전사와 텍스트 모달리티가 활성화되어 있어야 함
+3. 인터럽션으로 잘린 응답에는 전사가 없음
 
 ## 도구를 통한 위임
 
 ![도구를 통한 위임](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-대화 기록과 도구 호출을 결합하여 대화를 다른 백엔드 에이전트에 위임해 더 복잡한 작업을 수행하게 하고, 그 결과를 사용자에게 다시 전달할 수 있습니다.
+대화 기록과 도구 호출을 결합하여, 더 복잡한 작업을 수행하기 위해 대화를 다른 백엔드 에이전트에 위임하고 그 결과를 user에게 다시 전달할 수 있습니다.
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-아래 코드는 서버에서 실행됩니다. 이 예제에서는 Next.js의 server actions를 통해 실행됩니다.
+아래 코드는 서버에서 실행됩니다. 이 예에서는 Next.js의 server actions를 통해 실행됩니다.
 
 <Code lang="typescript" code={serverAgentExample} />

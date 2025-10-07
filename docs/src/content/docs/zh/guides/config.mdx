@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API 密钥与客户端
 
-默认情况下，SDK 在首次导入时读取环境变量 `OPENAI_API_KEY`。如果无法设置该变量，可以手动调用 `setDefaultOpenAIKey()`。
+默认情况下，SDK 在首次导入时会读取环境变量 `OPENAI_API_KEY`。如果无法设置该变量，您可以手动调用 `setDefaultOpenAIKey()`。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="设置默认 OpenAI 密钥"
 />
 
-你也可以传入自定义的 `OpenAI` 客户端实例。否则，SDK 将使用默认密钥自动创建一个实例。
+您也可以传入自定义的 `OpenAI` 客户端实例。否则 SDK 会使用默认密钥自动创建一个。
 
 <Code
   lang="typescript"
@@ -29,15 +29,15 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="设置默认 OpenAI 客户端"
 />
 
-最后，你可以在 Responses API 与 Chat Completions API 之间切换。
+最后，您可以在 Responses API 与 Chat Completions API 之间切换。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="设置 OpenAI API" />
 
 ## 追踪
 
-追踪默认启用，并使用上述部分中的 OpenAI 密钥。
+追踪默认启用，并使用上文中的 OpenAI 密钥。
 
-可以通过 `setTracingExportApiKey()` 设置单独的密钥：
+您可以通过 `setTracingExportApiKey()` 设置单独的密钥：
 
 <Code
   lang="typescript"
@@ -49,23 +49,23 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 <Code lang="typescript" code={setTracingDisabledExample} title="禁用追踪" />
 
-若想进一步了解追踪功能，请查看[追踪](/openai-agents-js/zh/guides/tracing)。
+若想进一步了解追踪功能，请参阅[追踪](/openai-agents-js/zh/guides/tracing)。
 
 ## 调试日志
 
-SDK 使用 [`debug`](https://www.npmjs.com/package/debug) 包进行调试日志记录。将环境变量 `DEBUG` 设置为 `openai-agents*` 以查看详细日志。
+SDK 使用 [`debug`](https://www.npmjs.com/package/debug) 包进行调试日志记录。将环境变量 `DEBUG` 设置为 `openai-agents*` 可查看详细日志。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-你可以通过 `@openai/agents` 中的 `getLogger(namespace)` 为你的模块获取带命名空间的记录器。
+您可以使用 `@openai/agents` 中的 `getLogger(namespace)` 为自己的模块获取带命名空间的日志记录器。
 
 <Code lang="typescript" code={getLoggerExample} title="获取日志记录器" />
 
 ### 日志中的敏感数据
 
-某些日志可能包含用户数据。可通过设置以下环境变量禁用它们。
+某些日志可能包含用户数据。可通过设置以下环境变量禁用这些日志。
 
 要禁用记录 LLM 的输入与输出：
 

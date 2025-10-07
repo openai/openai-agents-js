@@ -11,31 +11,31 @@ OpenAI Agents SDK 支持以下服务器环境：
 - Deno 2.35+
 - Bun 1.2.5+
 
-### 有限支持
+### 限制性支持
 
 - **Cloudflare Workers**：Agents SDK 可用于 Cloudflare Workers，但目前存在一些限制：
-  - SDK 目前要求启用 `nodejs_compat`
-  - 需要在请求结束时手动刷新追踪数据。 [参阅 追踪](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle) 了解详情。
+  - SDK 目前需要启用 `nodejs_compat`
+  - 需要在请求结束时手动刷新追踪数据。有关更多详情，[参阅追踪](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle)。
   - 由于 Cloudflare Workers 对 `AsyncLocalStorage` 的支持有限，部分追踪可能不准确
-  - 出站 WebSocket 连接必须使用基于 fetch 的升级方式（不能使用全局的 `WebSocket` 构造函数）。对于 Realtime，请在 `@openai/agents-extensions` 中使用 Cloudflare 传输（`CloudflareRealtimeTransportLayer`）。
-- **浏览器**：
+  - 出站 WebSocket 连接必须使用基于 fetch 的升级方式（不能使用全局 `WebSocket` 构造函数）。对于 Realtime，请使用 `@openai/agents-extensions` 中的 Cloudflare 传输（`CloudflareRealtimeTransportLayer`）。
+- **Browsers**：
   - 浏览器中当前不支持追踪
-- **v8 隔离环境（v8 isolates）**：
-  - 如果使用带有合适浏览器 polyfill 的打包器，你应该可以为 v8 隔离环境打包 SDK，但追踪将无法工作
-  - v8 隔离环境尚未经过广泛测试
+- **v8 isolates**：
+  - 如果使用带有正确浏览器 polyfill 的打包器，您应该可以为 v8 isolates 打包该 SDK，但追踪将无法工作
+  - v8 isolates 尚未经过广泛测试
 
 ## 调试日志
 
-如果你在使用 SDK 时遇到问题，可以启用调试日志以获取更多信息。
+如果您在使用 SDK 时遇到问题，可以启用调试日志以获取更多信息。
 
-通过将 `DEBUG` 环境变量设置为 `openai-agents:*` 来启用调试日志。
+通过将环境变量 `DEBUG` 设置为 `openai-agents:*` 来启用调试日志。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-或者，你可以将调试限定到 SDK 的特定部分：
+或者，您也可以将调试范围限定到 SDK 的特定部分：
 
-- `openai-agents:core` — 用于 SDK 的主要执行逻辑
-- `openai-agents:openai` — 用于 OpenAI API 调用
-- `openai-agents:realtime` — 用于 实时智能体 组件
+- `openai-agents:core` — SDK 的主要执行逻辑
+- `openai-agents:openai` — OpenAI API 调用
+- `openai-agents:realtime` — 实时智能体组件

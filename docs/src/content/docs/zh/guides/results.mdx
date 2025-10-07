@@ -9,19 +9,19 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 
 当你[运行你的智能体](/openai-agents-js/zh/guides/running-agents)时，你将会收到：
 
-- 如果调用 `run` 且未设置 `stream: true`，则会返回 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- 如果调用 `run` 并设置了 `stream: true`，则会返回 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。关于流式传输的详细信息，请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
+- 如果调用 `run` 且未设置 `stream: true`，则返回 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
+- 如果调用 `run` 且设置了 `stream: true`，则返回 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。关于流式传输的详情，请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
 
 ## 最终输出
 
 `finalOutput` 属性包含最后一个运行的智能体的最终输出。该结果可能是：
 
 - `string` — 任何未定义 `outputType` 的智能体的默认类型
-- `unknown` — 如果智能体将 JSON schema 定义为输出类型。在这种情况下，JSON 已被解析，但你仍需手动验证其类型。
-- `z.infer<outputType>` — 如果智能体将 Zod schema 定义为输出类型。输出将自动根据该 schema 解析。
-- `undefined` — 如果智能体未产生输出（例如在产生输出前已停止）
+- `unknown` — 如果智能体将 JSON schema 定义为输出类型。在这种情况下 JSON 已被解析，但你仍需手动验证其类型。
+- `z.infer<outputType>` — 如果智能体将 Zod schema 定义为输出类型。输出将自动按该 schema 解析。
+- `undefined` — 如果智能体未产生输出（例如在产生输出前被停止）
 
-如果你在使用具有不同输出类型的交接，你应该使用 `Agent.create()` 方法而非 `new Agent()` 构造函数来创建智能体。
+如果你使用了具有不同输出类型的交接，应使用 `Agent.create()` 方法而不是 `new Agent()` 构造函数来创建智能体。
 
 这将使 SDK 能够在所有可能的交接中推断输出类型，并为 `finalOutput` 属性提供联合类型。
 
@@ -30,15 +30,15 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 <Code
   lang="typescript"
   code={handoffFinalOutputTypes}
-  title="交接最终输出类型"
+  title="交接的最终输出类型"
 />
 
-## 下一轮的输入
+## 下一轮输入
 
-有两种方式可以访问你下一轮所需的输入：
+有两种方式可以获取下一轮的输入：
 
 - `result.history` — 包含你的输入和智能体输出的副本。
-- `result.output` — 包含完整智能体运行的输出。
+- `result.output` — 包含整个智能体运行的输出。
 
 在类似聊天的用例中，`history` 是维护完整历史的便捷方式：
 
@@ -46,44 +46,44 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 
 ## 最后一个智能体
 
-`lastAgent` 属性包含最后一个运行的智能体。根据你的应用，这通常对用户下次输入时很有用。例如，如果你有一个一线分诊智能体会交接到特定语言的智能体，你可以存储最后一个智能体，并在用户下次向智能体发消息时复用它。
+`lastAgent` 属性包含最后一个运行的智能体。根据你的应用，这通常对用户下次输入很有用。例如，如果你有一个前线分诊智能体会交接到特定语言的智能体，你可以存储最后一个智能体，并在用户下次给智能体发消息时复用它。
 
-在流式模式下，访问映射到当前正在运行智能体的 `currentAgent` 属性也会很有用。
+在流式模式下，访问 `currentAgent` 属性也很有用，它映射到当前正在运行的智能体。
 
-## 新项
+## 新增项
 
-`newItems` 属性包含运行期间生成的新项。各项为 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem)。运行项包装了由 LLM 生成的原始项。除了访问 LLM 的输出外，你还可以用它们来了解这些事件关联的是哪个智能体。
+`newItems` 属性包含在运行期间生成的新增项。这些项是 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem)。运行项包装了由 LLM 生成的原始项。除了用于访问 LLM 的输出外，还可用于查看这些事件关联的是哪个智能体。
 
-- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) 表示来自 LLM 的消息。原始项为生成的消息。
-- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) 表示 LLM 调用了交接工具。原始项为来自 LLM 的工具调用项。
-- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) 表示发生了交接。原始项为对交接工具调用的工具响应。你也可以从该项访问源/目标智能体。
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) 表示来自 LLM 的消息。原始项是生成的消息。
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) 表示 LLM 调用了交接工具。原始项是来自 LLM 的工具调用项。
+- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) 表示发生了交接。原始项是对交接工具调用的工具响应。你还可以从该项访问源/目标智能体。
 - [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) 表示 LLM 调用了某个工具。
-- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) 表示某个工具被调用。原始项为工具响应。你也可以从该项访问工具输出。
-- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) 表示来自 LLM 的推理项。原始项为生成的推理。
-- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) 表示 LLM 请求对工具调用进行批准。原始项为来自 LLM 的工具调用项。
+- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) 表示某个工具被调用。原始项是工具响应。你还可以从该项访问工具输出。
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) 表示 LLM 的推理项。原始项是生成的推理内容。
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) 表示 LLM 请求对工具调用进行批准。原始项是来自 LLM 的工具调用项。
 
 ## 状态
 
-`state` 属性包含本次运行的状态。附加到 `result` 的大多数内容都派生自 `state`，但 `state` 可序列化/反序列化，并且在你需要[从错误中恢复](/openai-agents-js/zh/guides/running-agents#exceptions)或处理[`中断`](#interruptions)时，也可作为后续调用 `run` 的输入。
+`state` 属性包含本次运行的状态。附加在 `result` 上的大多数信息都来源于 `state`，但 `state` 是可序列化/反序列化的，并且在你需要[从错误中恢复](/openai-agents-js/zh/guides/running-agents#exceptions)或处理[`中断`](#interruptions)时，也可作为后续调用 `run` 的输入。
 
 ## 中断
 
-如果你在智能体中使用了 `needsApproval`，你的 `run` 可能会触发一些你需要在继续之前处理的 `interruptions`。在这种情况下，`interruptions` 将是导致中断的 `ToolApprovalItem` 数组。有关如何处理中断的更多信息，请查看[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)。
+如果你在智能体中使用了 `needsApproval`，你的 `run` 可能会触发一些你需要在继续前处理的 `interruptions`。此时 `interruptions` 将是导致中断的 `ToolApprovalItem` 数组。参阅[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)以了解如何处理中断的更多信息。
 
 ## 其他信息
 
 ### 原始响应
 
-`rawResponses` 属性包含智能体运行期间由模型生成的原始 LLM 响应。
+`rawResponses` 属性包含智能体运行期间模型生成的原始 LLM 响应。
 
-### 最后一次响应 ID
+### 最后一个响应 ID
 
-`lastResponseId` 属性包含智能体运行期间由模型生成的最后一次响应的 ID。
+`lastResponseId` 属性包含智能体运行期间模型生成的最后一个响应的 ID。
 
 ### 护栏结果
 
-`inputGuardrailResults` 和 `outputGuardrailResults` 属性包含护栏的结果（如果有）。护栏结果有时包含你可能想记录或存储的有用信息，因此我们将它们提供给你。
+`inputGuardrailResults` 和 `outputGuardrailResults` 属性包含护栏的运行结果（如果有）。护栏结果有时包含你可能想记录或存储的有用信息，因此我们将其提供给你。
 
 ### 原始输入
 
-`input` 属性包含你提供给 run 方法的原始输入。大多数情况下你不需要它，但在需要时可以使用。
+`input` 属性包含你提供给 run 方法的原始输入。大多数情况下你不需要它，但以防需要我们也提供了它。

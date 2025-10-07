@@ -7,60 +7,60 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-이 가이드는 SDK에 내장된 휴먼인더루프 (HITL) 지원을 사용해 사람의 개입에 따라 에이전트 실행을 일시 중지하고 재개하는 방법을 보여줍니다.
+이 가이드는 SDK의 내장 휴먼인더루프 (HITL) 지원을 사용해 사람 개입에 따라 에이전트 실행을 일시 중지하고 재개하는 방법을 보여줍니다.
 
 현재 주요 사용 사례는 민감한 도구 실행에 대한 승인을 요청하는 것입니다.
 
 ## 승인 요청
 
-`needsApproval` 옵션을 `true` 또는 boolean을 반환하는 async 함수로 설정하여 승인이 필요한 도구를 정의할 수 있습니다.
+`needsApproval` 옵션을 `true` 또는 boolean 을 반환하는 async 함수로 설정하여 승인이 필요한 도구를 정의할 수 있습니다.
 
 <Code
   lang="typescript"
   code={toolApprovalDefinition}
-  title="도구 승인 정의"
+  title="Tool approval definition"
   meta={`{10}`}
 />
 
-### 플로우
+### 흐름
 
-1. 에이전트가 도구(들)를 호출하기로 결정하면 `needsApproval`을 평가하여 해당 도구에 승인이 필요한지 확인합니다.
-2. 승인이 필요한 경우, 에이전트는 이미 승인이 승인 또는 거절되었는지 확인합니다.
-   - 승인 또는 거절이 아직 이루어지지 않았다면, 도구 호출을 실행할 수 없다는 정적 메시지를 에이전트에 반환합니다.
-   - 승인/거절이 없으면 도구 승인 요청을 트리거합니다.
-3. 에이전트는 모든 도구 승인 요청을 수집하고 실행을 인터럽션(중단 처리)합니다.
-4. 인터럽션이 있으면, [실행 결과](/openai-agents-js/ko/guides/results)에 보류 중인 단계를 설명하는 `interruptions` 배열이 포함됩니다. 도구 호출에 확인이 필요한 경우 `type: "tool_approval_item"`을 가진 `ToolApprovalItem`이 나타납니다.
-5. 도구 호출을 승인하거나 거절하려면 `result.state.approve(interruption)` 또는 `result.state.reject(interruption)`를 호출할 수 있습니다.
-6. 모든 인터럽션을 처리한 후, `result.state`를 `runner.run(agent, state)`에 다시 전달하여 실행을 재개할 수 있습니다. 여기서 `agent`는 전체 실행을 트리거한 원래 에이전트입니다.
-7. 플로우는 1단계부터 다시 시작됩니다.
+1. 에이전트가 도구(하나 이상) 호출을 결정하면 `needsApproval` 평가를 통해 이 도구에 승인이 필요한지 확인합니다.
+2. 승인이 필요한 경우, 에이전트는 승인이 이미 승인되었는지 또는 거부되었는지 확인합니다.
+   - 승인 또는 거부가 아직 이루어지지 않았다면, 도구 호출을 실행할 수 없다는 정적 메시지를 에이전트에 반환합니다.
+   - 승인/거부가 누락되어 있으면 도구 승인 요청을 트리거합니다.
+3. 에이전트는 모든 도구 승인 요청을 수집하고 실행을 인터럽트(중단 처리)합니다.
+4. 인터럽션이 있으면, [실행 결과](/openai-agents-js/ko/guides/results)에 보류 중인 단계를 설명하는 `interruptions` 배열이 포함됩니다. 도구 호출에 확인이 필요한 경우 `type: "tool_approval_item"` 인 `ToolApprovalItem` 이 나타납니다.
+5. `result.state.approve(interruption)` 또는 `result.state.reject(interruption)` 을 호출해 도구 호출을 승인하거나 거부할 수 있습니다.
+6. 모든 인터럽션을 처리한 후, `result.state` 를 `runner.run(agent, state)` 에 다시 전달하여 실행을 재개할 수 있습니다. 여기서 `agent` 는 전체 실행을 트리거한 원래 에이전트입니다.
+7. 흐름은 1단계부터 다시 시작됩니다.
 
-## 예제
+## 예시
 
-아래는 터미널에서 승인을 요청하고 상태를 파일에 임시 저장하는 휴먼인더루프 (HITL) 플로우의 좀 더 완전한 예제입니다.
+아래는 터미널에서 승인을 요청하고 상태를 파일에 임시 저장하는 휴먼인더루프 (HITL) 흐름의 더 완전한 예시입니다.
 
 <Code
   lang="typescript"
   code={humanInTheLoopExample}
-  title="휴먼인더루프 (HITL)"
+  title="Human in the loop"
 />
 
 동작하는 엔드 투 엔드 버전은 [전체 예제 스크립트](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)를 참고하세요.
 
-## 긴 승인 시간 처리
+## 더 긴 승인 시간 처리
 
-휴먼인더루프 (HITL) 플로우는 서버를 계속 실행하지 않고도 오랜 시간 동안 인터럽션이 가능하도록 설계되었습니다. 요청을 종료하고 나중에 계속해야 한다면 상태를 직렬화하여 이후에 재개할 수 있습니다.
+휴먼인더루프 흐름은 서버를 계속 실행하지 않고도 오랜 시간 인터럽트될 수 있도록 설계되었습니다. 요청을 종료하고 나중에 계속해야 하는 경우 상태를 직렬화하여 이후에 재개할 수 있습니다.
 
-`JSON.stringify(result.state)`를 사용해 상태를 직렬화하고, 나중에 직렬화된 상태를 `RunState.fromString(agent, serializedState)`에 전달하여 재개할 수 있습니다. 여기서 `agent`는 전체 실행을 트리거한 에이전트 인스턴스입니다.
+`JSON.stringify(result.state)` 를 사용해 상태를 직렬화하고, 직렬화된 상태를 `RunState.fromString(agent, serializedState)` 에 전달해 나중에 재개할 수 있습니다. 여기서 `agent` 는 전체 실행을 트리거한 에이전트 인스턴스입니다.
 
 이렇게 하면 직렬화된 상태를 데이터베이스나 요청과 함께 저장할 수 있습니다.
 
 ### 보류 중 작업의 버전 관리
 
 <Aside>
-  이는 주로 직렬화된 상태를 더 오래 저장하면서 에이전트를 변경하려는 경우에
+  이는 직렬화된 상태를 더 오랜 시간 저장하면서 에이전트를 변경하려는 경우에 주로
   적용됩니다.
 </Aside>
 
-승인 요청에 오랜 시간이 걸리고 에이전트 정의를 의미 있게 버전 관리하거나 Agents SDK 버전을 올릴 계획이라면, 패키지 별칭을 사용해 두 가지 버전의 Agents SDK를 병렬로 설치하여 자체 분기 로직을 구현하는 것을 권장합니다.
+승인 요청에 시간이 오래 걸리고 에이전트 정의의 의미 있는 버전 관리를 하거나 Agents SDK 버전을 올릴 예정이라면, 패키지 별칭을 사용해 두 버전의 Agents SDK 를 병렬로 설치하고 자체 분기 로직을 구현할 것을 권장합니다.
 
-실무적으로는 코드에 자체 버전 번호를 부여하고 이를 직렬화된 상태와 함께 저장한 다음, 역직렬화를 코드의 올바른 버전으로 안내하는 방식을 의미합니다.
+실제로는 코드에 버전 번호를 부여하고 이를 직렬화된 상태와 함께 저장하며, 역직렬화가 코드의 올바른 버전으로 라우팅되도록 하는 방식을 의미합니다.

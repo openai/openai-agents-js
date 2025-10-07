@@ -25,27 +25,27 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 ![실시간 에이전트](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-음성 에이전트는 OpenAI speech-to-speech 모델을 사용해 실시간 음성 채팅을 제공합니다. 이들 모델은 오디오, 텍스트, 도구 호출의 스트리밍을 지원하며 음성/전화 고객 지원, 모바일 앱 경험, 음성 채팅 같은 애플리케이션에 적합합니다.
+음성 에이전트는 OpenAI speech-to-speech 모델을 사용하여 실시간 음성 채팅을 제공합니다. 이들 모델은 스트리밍 오디오, 텍스트, 도구 호출을 지원하며 음성/전화 고객 지원, 모바일 앱 경험, 음성 채팅 같은 애플리케이션에 적합합니다.
 
 Voice Agents SDK는 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)를 위한 TypeScript 클라이언트를 제공합니다.
 
 <LinkCard
   title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="단 몇 분 만에 OpenAI Agents SDK로 첫 실시간 음성 어시스턴트를 구축하세요."
+  description="Agents SDK를 사용해 실시간 음성 어시스턴트를 단 몇 분 만에 만들 수 있습니다."
 />
 
-### 핵심 기능
+### 주요 기능
 
 - WebSocket 또는 WebRTC로 연결
 - 브라우저와 백엔드 연결 모두에서 사용 가능
 - 오디오 및 인터럽션(중단 처리) 처리
 - 핸드오프를 통한 멀티 에이전트 오케스트레이션
 - 도구 정의 및 호출
-- 모델 출력을 모니터링하는 사용자 정의 가드레일
+- 모델 출력 모니터링을 위한 커스텀 가드레일
 - 스트리밍 이벤트용 콜백
-- 텍스트 에이전트와 음성 에이전트에 동일한 컴포넌트 재사용
+- 텍스트와 음성 에이전트 모두에 동일한 컴포넌트 재사용
 
-speech-to-speech 모델을 사용하면, 모델이 동작한 후 텍스트로 전사하고 다시 오디오로 변환할 필요 없이 모델의 실시간 오디오 처리 능력을 활용할 수 있습니다.
+speech-to-speech 모델을 사용하면, 모델이 동작한 뒤 텍스트를 다시 오디오로 변환하기 위해 음성을 전사할 필요 없이 모델의 실시간 오디오 처리 능력을 활용할 수 있습니다.
 
 ![speech-to-speech 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

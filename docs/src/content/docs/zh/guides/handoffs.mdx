@@ -10,46 +10,54 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-交接允许一个智能体将对话的一部分委派给另一个智能体。当不同智能体擅长特定领域时，这很有用。例如，在客服应用中，您可能有处理预订、退款或常见问题的智能体。
+交接使一个智能体可以将对话的一部分委托给另一个智能体。这在不同智能体专精不同领域时很有用。比如在客服应用中，您可能有负责预订、退款或常见问题的智能体。
 
-交接会以工具的形式呈现给 LLM。如果您将对话交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
+交接在 LLM 中被表示为工具。如果您将会话交接给名为 `Refund Agent` 的智能体，工具名将是 `transfer_to_refund_agent`。
 
 ## 创建交接
 
-每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例，或由 `handoff()` 帮助函数返回的 `Handoff` 对象。
+每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例或由 `handoff()` helper 返回的 `Handoff` 对象。
 
 ### 基本用法
 
-<Code lang="typescript" code={basicUsageExample} title="基础交接" />
+<Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
 
 ### 通过 `handoff()` 自定义交接
 
-`handoff()` 函数允许您微调生成的工具。
+`handoff()` 函数允许您调整生成的工具。
 
 - `agent` – 要交接到的智能体。
 - `toolNameOverride` – 覆盖默认的 `transfer_to_<agent_name>` 工具名称。
 - `toolDescriptionOverride` – 覆盖默认的工具描述。
-- `onHandoff` – 发生交接时的回调。接收一个 `RunContext` 和可选的已解析输入。
+- `onHandoff` – 交接发生时的回调。接收 `RunContext` 和可选的已解析输入。
 - `inputType` – 交接所需的输入模式。
 - `inputFilter` – 过滤传递给下一个智能体的历史记录。
 
-<Code lang="typescript" code={customizeHandoffExample} title="自定义交接" />
+<Code
+  lang="typescript"
+  code={customizeHandoffExample}
+  title="Customized handoffs"
+/>
 
 ## 交接输入
 
-有时您希望 LLM 在调用交接时提供数据。定义一个输入模式，并在 `handoff()` 中使用它。
+有时您希望 LLM 在调用交接时提供数据。定义一个输入模式并在 `handoff()` 中使用它。
 
-<Code lang="typescript" code={handoffInputExample} title="交接输入" />
+<Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
 ## 输入过滤器
 
-默认情况下，交接会接收整个对话历史。若要修改传递给下一个智能体的内容，请提供一个 `inputFilter`。
-常用的辅助函数位于 `@openai/agents-core/extensions` 中。
+默认情况下，交接会接收整个对话历史。要修改传递给下一个智能体的内容，请提供一个 `inputFilter`。
+常用的 helper 位于 `@openai/agents-core/extensions`。
 
-<Code lang="typescript" code={inputFilterExample} title="输入过滤器" />
+<Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
 ## 推荐提示词
 
-当您的提示词提及交接时，LLMs 的响应更可靠。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了推荐前缀。
+当提示中提及交接时，LLM 的响应更稳定。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了一个推荐前缀。
 
-<Code lang="typescript" code={recommendedPromptExample} title="推荐提示词" />
+<Code
+  lang="typescript"
+  code={recommendedPromptExample}
+  title="Recommended prompts"
+/>

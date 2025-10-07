@@ -7,58 +7,58 @@ import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 
-가드레일은 에이전트와 _병렬로_ 실행되어, 사용자 입력 또는 에이전트 출력에 대한 점검과 검증을 수행할 수 있습니다. 예를 들어, 비용이 큰 모델을 호출하기 전에 경량 모델을 가드레일로 실행할 수 있습니다. 가드레일이 악의적 사용을 감지하면 오류를 발생시켜 비용이 큰 모델의 실행을 중단할 수 있습니다.
+가드레일은 에이전트와 _병렬로_ 실행되어 사용자 입력이나 에이전트 출력에 대해 점검과 검증을 수행할 수 있습니다. 예를 들어, 비용이 큰 모델을 호출하기 전에 경량 모델을 가드레일로 실행할 수 있습니다. 가드레일이 악의적인 사용을 감지하면 오류를 발생시켜 비용이 큰 모델의 실행을 중단할 수 있습니다.
 
 가드레일에는 두 가지 종류가 있습니다:
 
-1. **입력 가드레일**은 최초 사용자 입력에서 실행됩니다.
-2. **출력 가드레일**은 최종 에이전트 출력에서 실행됩니다.
+1. **입력 가드레일**은 초기 사용자 입력에 대해 실행됩니다.
+2. **출력 가드레일**은 최종 에이전트 출력에 대해 실행됩니다.
 
 ## 입력 가드레일
 
 입력 가드레일은 세 단계로 실행됩니다:
 
 1. 가드레일은 에이전트에 전달된 것과 동일한 입력을 받습니다.
-2. 가드레일 함수가 실행되어 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을(를) [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult)로 감싸 반환합니다.
+2. 가드레일 함수가 실행되어 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을(를) [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) 안에 감싼 형태로 반환합니다.
 3. `tripwireTriggered`가 `true`이면 [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) 오류가 발생합니다.
 
-> **참고**
-> 입력 가드레일은 사용자 입력을 대상으로 하므로, 워크플로에서 에이전트가 _첫 번째_ 에이전트인 경우에만 실행됩니다. 가드레일은 에이전트마다 필요한 가드레일이 다를 수 있으므로 에이전트 자체에 구성합니다.
+> **Note**
+> 입력 가드레일은 사용자 입력을 위한 것이므로, 워크플로에서 에이전트가 _첫 번째_ 에이전트일 때만 실행됩니다. 가드레일은 종종 에이전트마다 다르게 필요하므로 에이전트 자체에 구성합니다.
 
 ## 출력 가드레일
 
-출력 가드레일도 동일한 패턴을 따릅니다:
+출력 가드레일은 동일한 패턴을 따릅니다:
 
 1. 가드레일은 에이전트에 전달된 것과 동일한 입력을 받습니다.
-2. 가드레일 함수가 실행되어 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을(를) [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult)로 감싸 반환합니다.
+2. 가드레일 함수가 실행되어 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을(를) [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 안에 감싼 형태로 반환합니다.
 3. `tripwireTriggered`가 `true`이면 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 오류가 발생합니다.
 
-> **참고**
-> 출력 가드레일은 워크플로에서 에이전트가 _마지막_ 에이전트인 경우에만 실행됩니다. 실시간 음성 상호작용은 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참조하세요.
+> **Note**
+> 출력 가드레일은 워크플로에서 에이전트가 _마지막_ 에이전트일 때만 실행됩니다. 실시간 음성 상호작용의 경우 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참고하세요.
 
 ## 트립와이어
 
-가드레일이 실패하면 트립와이어로 이를 신호합니다. 트립와이어가 트리거되는 즉시, 러너는 해당 오류를 발생시키고 실행을 중단합니다.
+가드레일이 실패하면 트립와이어를 통해 이를 신호합니다. 트립와이어가 트리거되는 즉시 러너는 해당 오류를 발생시키고 실행을 중단합니다.
 
 ## 가드레일 구현
 
-가드레일은 `GuardrailFunctionOutput`을 반환하는 단순한 함수입니다. 아래는 내부적으로 또 다른 에이전트를 실행하여 사용자가 수학 숙제 도움을 요청하는지 여부를 확인하는 최소 예시입니다.
+가드레일은 `GuardrailFunctionOutput`을 반환하는 단순한 함수입니다. 아래는 내부적으로 또 다른 에이전트를 실행해 사용자가 수학 숙제 도움을 요청하는지 확인하는 최소 예시입니다.
 
 <Code
   lang="typescript"
   code={inputGuardrailExample}
-  title="입력 가드레일 예시"
+  title="Input guardrail example"
 />
 
-출력 가드레일도 동일하게 동작합니다.
+출력 가드레일도 동일한 방식으로 동작합니다.
 
 <Code
   lang="typescript"
   code={outputGuardrailExample}
-  title="출력 가드레일 예시"
+  title="Output guardrail example"
 />
 
 1. `guardrailAgent`는 가드레일 함수 내부에서 사용됩니다.
-2. 가드레일 함수는 에이전트 입력 또는 출력을 받아 결과를 반환합니다.
+2. 가드레일 함수는 에이전트 입력 또는 출력을 받고 결과를 반환합니다.
 3. 추가 정보를 가드레일 결과에 포함할 수 있습니다.
 4. `agent`는 가드레일이 적용되는 실제 워크플로를 정의합니다.

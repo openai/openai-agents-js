@@ -28,46 +28,46 @@ import cloudflareTransportExample from '../../../../../../../examples/docs/exten
 
 ## 默认传输层
 
-### WebRTC 连接
+### 通过 WebRTC 连接
 
 默认传输层使用 WebRTC。音频会从麦克风录制并自动回放。
 
-若要使用自定义的媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
+如需使用自定义的媒体流或音频元素，在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### WebSocket 连接
+### 通过 WebSocket 连接
 
-在创建会话时传入 `transport: 'websocket'` 或一个 `OpenAIRealtimeWebSocket` 实例，即可使用 WebSocket 连接替代 WebRTC。这非常适合服务器端用例，例如使用 Twilio 构建电话智能体。
+在创建会话时传入 `transport: 'websocket'` 或 `OpenAIRealtimeWebSocket` 的实例，以使用 WebSocket 连接替代 WebRTC。该方式非常适合服务端场景，例如使用 Twilio 构建电话智能体。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-可使用任意录制/回放库处理原始 PCM16 音频字节。
+使用任意录制/回放库来处理原始 PCM16 音频字节。
 
 #### Cloudflare Workers（workerd）注意事项
 
-Cloudflare Workers 和其他 workerd 运行时无法使用全局的 `WebSocket` 构造函数发起出站 WebSocket。请使用扩展包中的 Cloudflare 传输，它会在内部执行基于 `fetch()` 的升级。
+Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数发起出站 WebSocket。请使用扩展包中的 Cloudflare 传输，它会在内部执行基于 `fetch()` 的升级。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
 ### 自定义传输机制
 
-如果你想使用不同的语音到语音 API，或需要自定义的传输机制，可实现 `RealtimeTransportLayer` 接口并发出 `RealtimeTransportEventTypes` 事件来创建自己的传输层。
+如果你想使用不同的语音到语音 API，或拥有自定义传输机制，可以实现 `RealtimeTransportLayer` 接口并发出 `RealtimeTransportEventTypes` 事件，来自行创建。
 
-## 与 Realtime API 的更直接交互
+## 更直接的 Realtime API 交互
 
 如果你想使用 OpenAI Realtime API，同时更直接地访问 Realtime API，有两种方式：
 
 ### 选项 1 - 访问传输层
 
-如果你仍希望利用 `RealtimeSession` 的全部能力，你可以通过 `session.transport` 访问传输层。
+如果仍希望受益于 `RealtimeSession` 的全部能力，你可以通过 `session.transport` 访问你的传输层。
 
-传输层会在 `*` 事件下发出它接收到的每个事件，你也可以使用 `sendEvent()` 方法发送原始事件。
+传输层会在 `*` 事件下发出其接收的每个事件，你也可以使用 `sendEvent()` 方法发送原始事件。
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 选项 2 — 仅使用传输层
 
-如果不需要自动工具执行、护栏等功能，你也可以把传输层当作仅管理连接与中断的“轻量”客户端来使用。
+如果你不需要自动工具执行、护栏等功能，也可以将传输层作为一个仅管理连接与中断的“薄”客户端来使用。
 
 <Code lang="typescript" code={thinClientExample} />

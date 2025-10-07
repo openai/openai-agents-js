@@ -8,40 +8,42 @@ import helloWorldWithRunnerExample from '../../../../../../examples/docs/hello-w
 import helloWorldExample from '../../../../../../examples/docs/hello-world.ts?raw';
 import runningAgentsExceptionExample from '../../../../../../examples/docs/running-agents/exceptions1.ts?raw';
 import chatLoopExample from '../../../../../../examples/docs/running-agents/chatLoop.ts?raw';
+import conversationIdExample from '../../../../../../examples/docs/running-agents/conversationId.ts?raw';
+import previousResponseIdExample from '../../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 
-에이전트는 스스로 아무것도 하지 않습니다. `Runner` 클래스 또는 `run()` 유틸리티로 에이전트를 실행합니다.
+에이전트는 스스로 아무것도 하지 않습니다. `Runner` 클래스 또는 `run()` 유틸리티로 이를 실행합니다.
 
 <Code lang="typescript" code={helloWorldExample} title="간단 실행" />
 
-커스텀 러너가 필요하지 않다면 싱글톤 기본 `Runner` 인스턴스를 실행하는 `run()` 유틸리티를 사용할 수 있습니다.
+커스텀 러너가 필요하지 않다면 싱글턴 기본 `Runner` 인스턴스를 실행하는 `run()` 유틸리티를 사용할 수 있습니다.
 
-또는 직접 러너 인스턴스를 생성할 수 있습니다:
+또는 자체 러너 인스턴스를 생성할 수 있습니다:
 
 <Code lang="typescript" code={helloWorldWithRunnerExample} title="간단 실행" />
 
-에이전트를 실행하면 최종 출력과 실행 전체 이력을 포함하는 [실행 결과](/openai-agents-js/ko/guides/results) 객체를 받습니다.
+에이전트를 실행하면 최종 출력과 전체 실행 이력이 담긴 [실행 결과](/openai-agents-js/ko/guides/results) 객체를 받게 됩니다.
 
 ## 에이전트 루프
 
-Runner의 run 메서드를 사용할 때 시작 에이전트와 입력을 전달합니다. 입력은 문자열(사용자 메시지로 간주) 또는 OpenAI Responses API의 항목에 해당하는 입력 항목 목록일 수 있습니다.
+Runner에서 run 메서드를 사용할 때 시작 에이전트와 입력을 전달합니다. 입력은 문자열(사용자 메시지로 간주) 또는 OpenAI Responses API의 항목과 동일한 입력 항목 목록일 수 있습니다.
 
-러너는 다음 루프를 실행합니다:
+그런 다음 러너는 다음 루프를 실행합니다:
 
-1. 현재 입력으로 현재 에이전트의 모델을 호출합니다
-2. LLM 응답을 검사합니다
+1. 현재 입력으로 현재 에이전트의 모델을 호출
+2. LLM 응답 검사
    - **최종 출력** → 반환
-   - **핸드오프** → 새로운 에이전트로 전환, 누적된 대화 기록 유지, 1로 이동
+   - **핸드오프** → 새 에이전트로 전환하고 누적된 대화 이력을 유지, 1로 이동
    - **도구 호출** → 도구 실행, 그 결과를 대화에 추가, 1로 이동
-3. `maxTurns`에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 던집니다
+3. `maxTurns`에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) 발생
 
 <Aside type="note">
   LLM 출력이 "최종 출력"으로 간주되는 규칙은 원하는 타입의 텍스트 출력을
-  생성하고, 도구 호출이 없는 경우입니다.
+  생성하고 도구 호출이 없을 때입니다.
 </Aside>
 
 ### Runner 수명 주기
 
-앱 시작 시 `Runner`를 생성하고 요청 간 재사용하세요. 인스턴스는 모델 프로바이더와 트레이싱 옵션 같은 전역 구성을 저장합니다. 완전히 다른 설정이 필요할 때만 다른 `Runner`를 만드세요. 간단한 스크립트에서는 내부적으로 기본 러너를 사용하는 `run()`을 호출할 수도 있습니다.
+앱이 시작될 때 `Runner`를 만들고 요청 간에 재사용하세요. 인스턴스는 모델 제공자와 트레이싱 옵션 같은 전역 구성을 저장합니다. 완전히 다른 설정이 필요할 때만 다른 `Runner`를 생성하세요. 간단한 스크립트에서는 내부적으로 기본 러너를 사용하는 `run()`을 호출할 수도 있습니다.
 
 ## 실행 인수
 
@@ -51,61 +53,83 @@ Runner의 run 메서드를 사용할 때 시작 에이전트와 입력을 전달
 
 추가 옵션은 다음과 같습니다:
 
-| Option     | Default | Description                                                                                                                               |
-| ---------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`   | `false` | `true`이면 호출이 `StreamedRunResult`를 반환하고 모델에서 도착하는 대로 이벤트를 내보냅니다                                               |
-| `context`  | –       | 모든 tool / guardrail / handoff에 전달되는 컨텍스트 객체. 자세한 내용은 [컨텍스트 관리](/openai-agents-js/ko/guides/context)를 참고하세요 |
-| `maxTurns` | `10`    | 안전 한도 – 도달 시 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) 발생                    |
-| `signal`   | –       | 취소를 위한 `AbortSignal`                                                                                                                 |
+| Option     | Default | Description                                                                                                                                       |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`   | `false` | `true`이면 호출이 `StreamedRunResult`를 반환하고 모델로부터 도착하는 대로 이벤트를 내보냅니다.                                                    |
+| `context`  | –       | 모든 tool / guardrail / handoff에 전달되는 컨텍스트 객체. 자세한 내용은 [컨텍스트 관리](/openai-agents-js/ko/guides/context) 가이드를 참고하세요. |
+| `maxTurns` | `10`    | 안전 한도 – 도달 시 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) 발생                            |
+| `signal`   | –       | 취소를 위한 `AbortSignal`                                                                                                                         |
 
 ## 스트리밍
 
-스트리밍을 사용하면 LLM이 실행되는 동안 스트리밍 이벤트를 추가로 받을 수 있습니다. 스트림이 시작되면 `StreamedRunResult`에는 새로 생성된 모든 출력 등을 포함해 실행에 대한 완전한 정보가 담깁니다. `for await` 루프로 스트리밍 이벤트를 순회할 수 있습니다. 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming) 가이드를 참고하세요.
+스트리밍을 사용하면 LLM 실행 중 스트리밍 이벤트를 추가로 받을 수 있습니다. 스트림이 시작되면 `StreamedRunResult`에는 새로 생성된 모든 출력 등을 포함해 실행에 대한 완전한 정보가 담깁니다. `for await` 루프를 사용해 스트리밍 이벤트를 반복 처리할 수 있습니다. 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming) 가이드를 참조하세요.
 
 ## 실행 구성
 
-직접 `Runner` 인스턴스를 생성하는 경우 러너를 구성하기 위해 `RunConfig` 객체를 전달할 수 있습니다.
+자체 `Runner` 인스턴스를 만드는 경우 러너를 구성하기 위해 `RunConfig` 객체를 전달할 수 있습니다.
 
-| Field                       | Type                  | Purpose                                                                    |
-| --------------------------- | --------------------- | -------------------------------------------------------------------------- |
-| `model`                     | `string \| Model`     | 실행의 **모든** 에이전트에 특정 모델을 강제 적용                           |
-| `modelProvider`             | `ModelProvider`       | 모델 이름 해석 – 기본값은 OpenAI 프로바이더                                |
-| `modelSettings`             | `ModelSettings`       | 에이전트별 설정을 재정의하는 전역 튜닝 매개변수                            |
-| `handoffInputFilter`        | `HandoffInputFilter`  | 핸드오프 수행 시 입력 항목을 변환(핸드오프 자체가 이미 정의하지 않은 경우) |
-| `inputGuardrails`           | `InputGuardrail[]`    | 초기 사용자 입력에 적용되는 가드레일                                       |
-| `outputGuardrails`          | `OutputGuardrail[]`   | 최종 출력에 적용되는 가드레일                                              |
-| `tracingDisabled`           | `boolean`             | OpenAI 트레이싱을 완전히 비활성화                                          |
-| `traceIncludeSensitiveData` | `boolean`             | 스팬은 계속 내보내되 트레이스에서 LLM/도구 입력 및 출력을 제외             |
-| `workflowName`              | `string`              | Traces 대시보드에 표시 – 관련 실행을 그룹화하는 데 도움                    |
-| `traceId` / `groupId`       | `string`              | SDK가 생성하게 두는 대신 트레이스 또는 그룹 ID를 수동 지정                 |
-| `traceMetadata`             | `Record<string, any>` | 모든 스팬에 첨부할 임의의 메타데이터                                       |
+| Field                       | Type                  | Purpose                                                                  |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `model`                     | `string \| Model`     | 실행의 **모든** 에이전트에 대해 특정 모델 강제 지정                      |
+| `modelProvider`             | `ModelProvider`       | 모델 이름 확인 – 기본값은 OpenAI 제공자                                  |
+| `modelSettings`             | `ModelSettings`       | 에이전트별 설정을 재정의하는 전역 튜닝 매개변수                          |
+| `handoffInputFilter`        | `HandoffInputFilter`  | 핸드오프 수행 시 입력 항목 변환(핸드오프 자체에 정의되어 있지 않은 경우) |
+| `inputGuardrails`           | `InputGuardrail[]`    | 초기 사용자 입력에 적용되는 가드레일                                     |
+| `outputGuardrails`          | `OutputGuardrail[]`   | 최종 출력에 적용되는 가드레일                                            |
+| `tracingDisabled`           | `boolean`             | OpenAI 트레이싱 완전 비활성화                                            |
+| `traceIncludeSensitiveData` | `boolean`             | 스팬은 내보내되 트레이스에서 LLM/도구 입력 및 출력을 제외                |
+| `workflowName`              | `string`              | Traces 대시보드에 표시 – 관련 실행을 그룹화하는 데 도움                  |
+| `traceId` / `groupId`       | `string`              | SDK가 생성하지 않고 트레이스 또는 그룹 ID를 수동 지정                    |
+| `traceMetadata`             | `Record<string, any>` | 모든 스팬에 첨부할 임의의 메타데이터                                     |
 
 ## 대화 / 채팅 스레드
 
-`runner.run()`(또는 `run()` 유틸리티) 호출은 애플리케이션 수준 대화에서 한 번의 **턴**을 의미합니다. 최종 사용자에게 `RunResult`를 얼마나 보여줄지는 선택할 수 있습니다. 경우에 따라 `finalOutput`만, 다른 때에는 생성된 모든 항목을 보여줄 수 있습니다.
+각 `runner.run()`(또는 `run()` 유틸리티) 호출은 애플리케이션 수준 대화의 한 번의 **턴**을 나타냅니다. 최종 사용자에게 `RunResult` 중 얼마나 보여줄지는 선택 사항입니다. 때로는 `finalOutput`만, 때로는 생성된 모든 항목을 보여줍니다.
 
 <Code
   lang="typescript"
   code={chatLoopExample}
-  title="대화 기록을 이어가는 예시"
+  title="대화 이력 이어가기 예시"
 />
 
-대화형 버전은 [채팅 code examples](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)를 참고하세요.
+대화형 버전은 [채팅 예제](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)를 참고하세요.
+
+### 서버 관리 대화
+
+매 턴마다 전체 로컬 대화 기록을 보내는 대신 OpenAI Responses API가 대화 이력을 유지하도록 할 수 있습니다. 이는 긴 대화나 여러 서비스를 조율할 때 유용합니다. 자세한 내용은 [대화 상태 가이드](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)를 참조하세요.
+
+OpenAI는 서버 측 상태를 재사용하는 두 가지 방법을 제공합니다:
+
+#### 1. 전체 대화를 위한 `conversationId`
+
+[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create)로 한 번 대화를 생성한 후, 매 턴마다 해당 ID를 재사용할 수 있습니다. SDK는 자동으로 새로 생성된 항목만 포함합니다.
+
+<Code lang="typescript" code={conversationIdExample} title="서버 대화 재사용" />
+
+#### 2. 마지막 턴에서 계속하기 위한 `previousResponseId`
+
+어차피 Responses API만으로 시작하려는 경우, 이전 응답에서 반환된 ID를 사용해 각 요청을 체이닝할 수 있습니다. 이렇게 하면 전체 대화 리소스를 생성하지 않고도 턴 간 컨텍스트가 유지됩니다.
+
+<Code
+  lang="typescript"
+  code={previousResponseIdExample}
+  title="previousResponseId로 체이닝"
+/>
 
 ## 예외
 
-SDK는 다음과 같은 소수의 오류를 던지며, 이를 캐치할 수 있습니다:
+SDK는 다음과 같은 소수의 오류를 발생시키며, 이를 캐치할 수 있습니다:
 
-- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns`에 도달
-- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 모델이 잘못된 출력 생성(예: 잘못된 JSON, 알 수 없는 도구)
+- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns`에 도달함
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 모델이 잘못된 출력 생성(예: malformed JSON, 알 수 없는 도구)
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – 가드레일 위반
 - [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – 가드레일 실행 실패
 - [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 함수 도구 호출 중 하나 이상 실패
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 구성 또는 사용자 입력에 기반해 발생한 오류
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 구성 또는 사용자 입력을 기반으로 발생한 오류
 
-모두 기본 `AgentsError` 클래스를 확장하며, 현재 실행 상태에 접근할 수 있는 `state` 속성을 제공할 수 있습니다.
+모두 기본 `AgentsError` 클래스를 확장하며, 현재 실행 상태에 접근하기 위한 `state` 속성을 제공할 수 있습니다.
 
-다음은 `GuardrailExecutionError`를 처리하는 예시 코드입니다:
+다음은 `GuardrailExecutionError`를 처리하는 예제 코드입니다:
 
 <Code
   lang="typescript"
@@ -113,7 +137,7 @@ SDK는 다음과 같은 소수의 오류를 던지며, 이를 캐치할 수 있�
   title="가드레일 실행 오류"
 />
 
-위 예시를 실행하면 다음 출력이 표시됩니다:
+위 예제를 실행하면 다음 출력이 표시됩니다:
 
 ```
 Guardrail execution failed: Error: Input guardrail failed to complete: Error: Something is wrong!
@@ -124,6 +148,6 @@ Math homework guardrail tripped
 
 ## 다음 단계
 
-- [모델 구성](/openai-agents-js/ko/guides/models) 방법을 알아보세요
-- 에이전트에 [도구](/openai-agents-js/ko/guides/tools)를 제공하세요
-- 프로덕션 준비를 위해 [가드레일](/openai-agents-js/ko/guides/guardrails) 또는 [트레이싱](/openai-agents-js/ko/guides/tracing)을 추가하세요
+- [모델 구성](/openai-agents-js/ko/guides/models) 방법을 알아보세요.
+- 에이전트에 [도구](/openai-agents-js/ko/guides/tools)를 제공하세요.
+- 프로덕션 대비를 위해 [가드레일](/openai-agents-js/ko/guides/guardrails) 또는 [트레이싱](/openai-agents-js/ko/guides/tracing)을 추가하세요.

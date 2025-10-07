@@ -13,20 +13,20 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-既定では、SDK は最初にインポートされたときに `OPENAI_API_KEY` 環境変数を読み込みます。変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出せます。
+デフォルトでは、SDK は最初にインポートされた際に環境変数 `OPENAI_API_KEY` を読み取ります。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="既定の OpenAI キーを設定"
+  title="デフォルトの OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK は既定のキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK はデフォルトのキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIClientExample}
-  title="既定の OpenAI クライアントを設定"
+  title="デフォルトの OpenAI クライアントを設定"
 />
 
 最後に、Responses API と Chat Completions API を切り替えられます。
@@ -35,17 +35,17 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## トレーシング
 
-トレーシングは既定で有効で、上のセクションの OpenAI キーを使用します。
+トレーシングはデフォルトで有効で、上記セクションの OpenAI キーを使用します。
 
 別のキーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
   code={setTracingExportApiKeyExample}
-  title="トレーシングのエクスポート用 API キーを設定"
+  title="トレーシングのエクスポート API キーを設定"
 />
 
-トレーシングは完全に無効化することもできます。
+トレーシングは完全に無効化することも可能です。
 
 <Code
   lang="typescript"
@@ -55,19 +55,19 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 トレーシング機能の詳細は、[トレーシング](/openai-agents-js/ja/guides/tracing)をご覧ください。
 
-## デバッグロギング
+## デバッグログ
 
-この SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを見るには、`DEBUG` 環境変数を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使って、独自モジュール用の名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使うと、独自モジュール用の名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーを取得" />
 
-### ログ内の機微データ
+### ログ内の機密データ
 
 一部のログにはユーザーデータが含まれる場合があります。以下の環境変数を設定して無効化できます。
 

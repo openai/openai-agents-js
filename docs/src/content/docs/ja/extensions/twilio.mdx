@@ -7,14 +7,14 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio は、通話からの 元 音声を WebSocket サーバーに送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。このセットアップを使用して、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を Twilio に接続できます。Twilio から届くイベントを Realtime Session に接続するには、`websocket` モードのデフォルトの Realtime Session トランスポートを使用できます。ただし、通話は Web ベースの会話よりもレイテンシーが大きくなるため、適切な音声フォーマットの設定と、割り込みタイミングの調整が必要です。
+Twilio は、電話の通話音声の元オーディオを WebSocket サーバーに送る [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。この構成を使って、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を Twilio に接続できます。デフォルトの Realtime Session のトランスポートを `websocket` モードで使い、Twilio からのイベントを Realtime Session に接続することも可能です。ただし、その場合は適切な音声フォーマットの設定や、Web ベースの会話よりも通話のほうが遅延が大きくなりやすいことを踏まえた割り込みタイミングの調整が必要です。
 
-セットアップ体験を改善するために、Twilio への接続、割り込み処理、音声転送などを代行する専用のトランスポートレイヤーを用意しました。
+セットアップ体験を改善するため、割り込み処理や音声の転送も含め、Twilio への接続を代わりに処理する専用のトランスポート層を用意しました。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。レアケースの問題やバグに遭遇する可能性があります。
-  問題は [GitHub の issues](https://github.com/openai/openai-agents-js/issues)
-  に報告してください。迅速に修正します。
+  このアダプターはまだベータ版です。稀なケースで問題やバグに遭遇する可能性があります。
+  問題は [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  からご報告ください。迅速に対応します。
 </Aside>
 
 ## セットアップ
@@ -23,10 +23,12 @@ Twilio は、通話からの 元 音声を WebSocket サーバーに送信する
 
 1. **Twilio アカウントと Twilio の電話番号を用意します。**
 
-2. **Twilio からのイベントを受信できる WebSocket サーバーをセットアップします。**
+2. **Twilio からのイベントを受け取れる WebSocket サーバーを用意します。**
 
-   ローカルで開発する場合は、[`ngrok`](https://ngrok.io/) や
-   [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/) のようなローカルトンネルを設定して、ローカル サーバーを Twilio から到達可能にする必要があります。Twilio に接続するには `TwilioRealtimeTransportLayer` を使用できます。
+   ローカル開発の場合、[`ngrok`](https://ngrok.io/) や
+   [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
+   のようなローカルトンネルの設定が必要になり、ローカルサーバーを Twilio からアクセス可能にします。`TwilioRealtimeTransportLayer`
+   を使って Twilio に接続できます。
 
 3. **拡張パッケージをインストールして Twilio アダプターを導入します:**
 
@@ -52,30 +54,31 @@ Twilio は、通話からの 元 音声を WebSocket サーバーに送信する
 
 </Steps>
 
-`RealtimeSession` に期待されるあらゆるイベントや動作は、ツール呼び出し、ガードレールなどを含め、期待どおりに機能します。音声エージェントでの `RealtimeSession` の使い方については、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を参照してください。
+`RealtimeSession` に期待されるすべてのイベントと挙動は、そのまま機能します。ツール呼び出し、ガードレールなども含まれます。`RealtimeSession` を音声エージェントと併用する方法の詳細は、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を参照してください。
 
 ## ヒントと考慮事項
 
-1. **スピードが最重要です。**
+1. **速度が最重要です。**
 
-   Twilio から必要なイベントや音声をすべて受け取るため、WebSocket 接続を参照できたらすぐに
-   `TwilioRealtimeTransportLayer` インスタンスを作成し、直ちに `session.connect()` を呼び出してください。
+   Twilio から必要なイベントと音声をすべて受け取るには、WebSocket 接続の参照を得たらすぐに
+   `TwilioRealtimeTransportLayer` インスタンスを作成し、直後に `session.connect()` を呼び出してください。
 
-2. **Twilio の 元 イベントにアクセスします。**
+2. **Twilio の元イベントにアクセスします。**
 
-   Twilio から送信される 元 イベントにアクセスしたい場合は、`RealtimeSession` インスタンスの
-   `transport_event` イベントをリッスンします。Twilio のすべてのイベントは `twilio_message` という type と、 元 イベントデータを含む `message` プロパティを持ちます。
+   Twilio が送信する元イベントにアクセスしたい場合は、`RealtimeSession` インスタンスの
+   `transport_event` をリッスンします。Twilio からのすべてのイベントは `twilio_message` という type と、元のイベントデータを含む `message` プロパティを持ちます。
 
 3. **デバッグログを確認します。**
 
-   何が起きているかの詳細が必要になる場合があります。環境変数 `DEBUG=openai-agents*` を使用すると、Agents SDK のすべてのデバッグログが表示されます。あるいは、`DEBUG=openai-agents:extensions:twilio*` を使用して Twilio アダプターのデバッグログのみに限定できます。
+   状況を詳しく知りたい問題に遭遇することがあります。環境変数 `DEBUG=openai-agents*` を使うと Agents SDK のすべてのデバッグログが表示されます。Twilio アダプターのログだけを有効化する場合は
+   `DEBUG=openai-agents:extensions:twilio*` を使用します。
 
-## サーバーの完全な例
+## サーバーのフル例
 
-以下は、Twilio からのリクエストを受け取り、それを `RealtimeSession` に転送する WebSocket サーバーのエンドツーエンドの例です。
+以下は、Twilio からリクエストを受け取り、それを `RealtimeSession` に転送する、エンドツーエンドの WebSocket サーバーの例です。
 
 <Code
   lang="typescript"
   code={twilioServerExample}
-  title="Fastify を使用したサーバーの例"
+  title="Fastify を使ったサーバー例"
 />

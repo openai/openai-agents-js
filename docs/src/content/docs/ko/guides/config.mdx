@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API 키와 클라이언트
 
-기본적으로 SDK는 처음 임포트될 때 `OPENAI_API_KEY` 환경 변수를 읽습니다. 환경 변수를 설정할 수 없는 경우 `setDefaultOpenAIKey()`를 수동으로 호출할 수 있습니다.
+기본적으로 SDK는 최초 import 시 `OPENAI_API_KEY` 환경 변수를 읽습니다. 해당 변수를 설정할 수 없다면 `setDefaultOpenAIKey()`를 직접 호출할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="기본 OpenAI 키 설정"
 />
 
-직접 생성한 `OpenAI` 클라이언트 인스턴스를 전달할 수도 있습니다. 그렇지 않으면 SDK가 기본 키를 사용해 자동으로 생성합니다.
+사용자 정의 `OpenAI` 클라이언트 인스턴스를 전달할 수도 있습니다. 그렇지 않으면 SDK가 기본 키를 사용하여 자동으로 생성합니다.
 
 <Code
   lang="typescript"
@@ -29,7 +29,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="기본 OpenAI 클라이언트 설정"
 />
 
-마지막으로 Responses API와 Chat Completions API 사이를 전환할 수 있습니다.
+마지막으로 Responses API와 Chat Completions API 간 전환이 가능합니다.
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API 설정" />
 
@@ -63,7 +63,7 @@ SDK는 디버그 로깅을 위해 [`debug`](https://www.npmjs.com/package/debug)
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents`의 `getLogger(namespace)`를 사용해 모듈 전용 네임스페이스 로거를 얻을 수 있습니다.
+`@openai/agents`의 `getLogger(namespace)`를 사용하여 모듈별 네임스페이스 로거를 얻을 수 있습니다.
 
 <Code lang="typescript" code={getLoggerExample} title="로거 가져오기" />
 
@@ -71,13 +71,13 @@ export DEBUG=openai-agents*
 
 일부 로그에는 사용자 데이터가 포함될 수 있습니다. 다음 환경 변수를 설정하여 비활성화하세요.
 
-LLM 입력과 출력을 로깅하지 않으려면:
+LLM 입력 및 출력을 로깅하지 않으려면:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-도구 입력과 출력을 로깅하지 않으려면:
+tool 입력 및 출력을 로깅하지 않으려면:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1

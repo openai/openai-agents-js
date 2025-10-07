@@ -9,21 +9,21 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 
 [エージェントの実行](/openai-agents-js/ja/guides/running-agents)を行うと、次のいずれかを受け取ります:
 
-- `stream: true` なしで `run` を呼び出した場合は [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- `stream: true` を指定して `run` を呼び出した場合は [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。ストリーミングの詳細は[ストリーミング](/openai-agents-js/ja/guides/streaming)も参照してください
+- [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) — `stream: true` を指定せずに `run` を呼び出した場合
+- [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) — `stream: true` を指定して `run` を呼び出した場合。ストリーミングの詳細は[ストリーミング](/openai-agents-js/ja/guides/streaming)も参照してください
 
 ## 最終出力
 
-`finalOutput` プロパティには、最後に実行されたエージェントの最終出力が入ります。この結果は次のいずれかです:
+`finalOutput` プロパティには、最後に実行されたエージェントの最終出力が含まれます。結果は次のいずれかです:
 
 - `string` — `outputType` が定義されていないエージェントのデフォルト
-- `unknown` — 出力タイプとして JSON スキーマが定義されている場合。この場合、JSON はパースされていますが、型の検証は手動で行う必要があります
-- `z.infer<outputType>` — 出力タイプとして Zod スキーマが定義されている場合。出力は自動的にこのスキーマでパースされます
-- `undefined` — エージェントが出力を生成しなかった場合（たとえば出力を生成する前に停止した場合）
+- `unknown` — エージェントが出力タイプとして JSON スキーマを定義している場合。この場合、JSON はパースされていますが、型は手動で検証する必要があります
+- `z.infer<outputType>` — エージェントが出力タイプとして Zod スキーマを定義している場合。このスキーマに対して自動的にパースされます
+- `undefined` — エージェントが出力を生成しなかった場合（たとえば、出力を生成する前に停止した場合）
 
-異なる出力タイプのハンドオフを使用する場合は、エージェントの作成に `new Agent()` コンストラクタではなく `Agent.create()` メソッドを使用してください。
+異なる出力タイプを持つハンドオフを使用している場合は、エージェントの作成に `new Agent()` コンストラクターではなく `Agent.create()` メソッドを使用してください。
 
-これにより、SDK があらゆるハンドオフ経路をまたいで出力タイプを推論し、`finalOutput` プロパティに対してユニオン型を提供できるようになります。
+これにより、SDK がすべての可能なハンドオフにわたって出力タイプを推論し、`finalOutput` プロパティに対して union type を提供できるようになります。
 
 例:
 
@@ -35,10 +35,10 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 
 ## 次ターンの入力
 
-次ターンの入力にアクセスする方法は 2 つあります:
+次ターン用の入力にアクセスする方法は 2 つあります:
 
-- `result.history` — 入力とエージェントの出力の両方のコピーを含む
-- `result.output` — エージェントのフル実行の出力を含む
+- `result.history` — 入力とエージェントの出力の両方のコピーを含みます
+- `result.output` — エージェント全体の実行出力を含みます
 
 `history` は、チャットのようなユースケースで完全な履歴を維持するのに便利です:
 
@@ -46,44 +46,44 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
 
 ## 最後のエージェント
 
-`lastAgent` プロパティには、最後に実行されたエージェントが入ります。アプリケーションによっては、次回の ユーザー 入力時に役立つことがよくあります。たとえば、一次対応のトリアージ エージェントが言語別エージェントにハンドオフする構成の場合、最後のエージェントを保存しておき、次回 ユーザー がメッセージを送るときに再利用できます。
+`lastAgent` プロパティには、最後に実行されたエージェントが含まれます。アプリケーションによっては、次回 ユーザー が何かを入力する際に役立つことがよくあります。たとえば、フロントラインのトリアージ エージェントが言語別のエージェントにハンドオフする場合、最後のエージェントを保存して、次に ユーザー がエージェントにメッセージを送るときに再利用できます。
 
-ストリーミング モードでは、現在実行中のエージェントに対応する `currentAgent` プロパティへアクセスするのも有用です。
+ストリーミング モードでは、現在実行中のエージェントに対応する `currentAgent` プロパティにアクセスするのも有用です。
 
 ## 新規アイテム
 
-`newItems` プロパティには、実行中に生成された新しいアイテムが含まれます。アイテムは [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) です。ランアイテムは LLM が生成した 元 アイテムをラップします。これにより、LLM の出力に加えて、これらのイベントがどのエージェントに関連していたかにアクセスできます。
+`newItems` プロパティには、実行中に生成された新しいアイテムが含まれます。アイテムは [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) です。実行アイテムは、LLM が生成した 元 アイテムをラップします。これにより、LLM の出力に加えて、どのエージェントに関連するイベントだったかにもアクセスできます。
 
-- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) は LLM からのメッセージを示す。 元 アイテムは生成されたメッセージ
-- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) は LLM がハンドオフ ツールを呼び出したことを示す。 元 アイテムは LLM からのツール呼び出しアイテム
-- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) はハンドオフが発生したことを示す。 元 アイテムはハンドオフ ツール呼び出しに対するツール応答。アイテムからソース/ターゲット エージェントにもアクセス可能
-- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) は LLM がツールを呼び出したことを示す
-- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) はツールが呼び出されたことを示す。 元 アイテムはツール応答。アイテムからツール出力にもアクセス可能
-- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) は LLM からの推論アイテムを示す。 元 アイテムは生成された推論
-- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) は LLM がツール呼び出しの承認を要求したことを示す。 元 アイテムは LLM からのツール呼び出しアイテム
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) は LLM からのメッセージを示します。 元 アイテムは生成されたメッセージです
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) は LLM がハンドオフ ツールを呼び出したことを示します。 元 アイテムは LLM からのツール呼び出しアイテムです
+- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) はハンドオフが発生したことを示します。 元 アイテムはハンドオフ ツール呼び出しへのツール応答です。アイテムからソース/ターゲット エージェントにもアクセスできます
+- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) は LLM がツールを呼び出したことを示します
+- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) はツールが呼び出されたことを示します。 元 アイテムはツール応答です。アイテムからツール出力にもアクセスできます
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) は LLM からの推論アイテムを示します。 元 アイテムは生成された推論です
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) は LLM がツール呼び出しの承認を要求したことを示します。 元 アイテムは LLM からのツール呼び出しアイテムです
 
 ## 状態
 
-`state` プロパティには実行の状態が含まれます。`result` に付随する情報の多くは `state` に由来しますが、`state` はシリアライズ/デシリアライズ可能で、[エラーからのリカバリ](/openai-agents-js/ja/guides/running-agents#exceptions)や[`interruption`](#interruptions)への対処が必要な場合に、後続の `run` 呼び出しの入力としても使用できます。
+`state` プロパティには実行の状態が含まれます。`result` に付随する情報の大部分は `state` から導出されていますが、`state` はシリアライズ/デシリアライズ可能で、[エラーからの復旧](/openai-agents-js/ja/guides/running-agents#exceptions)が必要な場合や、[`interruption`](#interruptions) に対処する場合に、後続の `run` 呼び出しの入力としても使用できます。
 
-## 割り込み
+## 中断
 
-エージェントで `needsApproval` を使用している場合、継続する前に処理が必要な `interruptions` が発生することがあります。その場合、`interruptions` は割り込みの原因となった `ToolApprovalItem` の配列になります。割り込みの扱い方については、[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop)を参照してください。
+エージェントで `needsApproval` を使用している場合、続行する前に処理が必要な `interruptions` が発生することがあります。その場合、`interruptions` は中断を引き起こした `ToolApprovalItem` の配列になります。中断への対処方法の詳細は、[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop)を参照してください。
 
 ## その他の情報
 
 ### 元レスポンス
 
-`rawResponses` プロパティには、エージェント実行中にモデルが生成した 元 の LLM レスポンスが含まれます。
+`rawResponses` プロパティには、エージェント実行中にモデルが生成した LLM の 元 レスポンスが含まれます。
 
-### 最終レスポンス ID
+### 最後のレスポンス ID
 
 `lastResponseId` プロパティには、エージェント実行中にモデルが最後に生成したレスポンスの ID が含まれます。
 
 ### ガードレールの結果
 
-`inputGuardrailResults` と `outputGuardrailResults` プロパティには、存在する場合に ガードレール の結果が含まれます。ガードレール の結果には、ログや保存に有用な情報が含まれることがあるため、利用できるようにしています。
+`inputGuardrailResults` と `outputGuardrailResults` プロパティには、存在する場合は ガードレール の結果が含まれます。ガードレールの結果には、ログ記録や保存に役立つ情報が含まれることがあるため、参照できるように提供しています。
 
 ### 元の入力
 
-`input` プロパティには、run メソッドに渡した元の入力が含まれます。ほとんどの場合は不要ですが、必要に応じて参照できます。
+`input` プロパティには、run メソッドに提供した 元 の入力が含まれます。ほとんどの場合は不要ですが、必要なときのために利用できます。

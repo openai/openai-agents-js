@@ -7,38 +7,38 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  이 어댑터는 아직 베타입니다. 특히 소규모 모델 제공자에서는 문제가 발생할 수
+  이 어댑터는 아직 베타 단계입니다. 특히 소규모 모델 제공자에서 문제가 발생할 수
   있습니다. 문제가 있으면 [GitHub
   issues](https://github.com/openai/openai-agents-js/issues)로 보고해 주세요.
   신속히 수정하겠습니다.
 </Aside>
 
-기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 동작합니다. 그러나 다른 모델을 사용하려면, 이 어댑터를 통해 [Vercel의 AI SDK](https://sdk.vercel.ai/)가 지원하는 다양한 모델을 Agents SDK에 연결할 수 있습니다.
+기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 작동합니다. 그러나 다른 모델을 사용하려면, 이 어댑터를 통해 [Vercel의 AI SDK](https://sdk.vercel.ai/)에서 지원하는 다양한 모델을 Agents SDK에 연결할 수 있습니다.
 
 ## 설정
 
 <Steps>
 
-1. extensions 패키지를 설치해 AI SDK 어댑터를 설치합니다:
+1. extensions 패키지를 설치하여 AI SDK 어댑터를 설치합니다:
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel의 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)에서 원하는 모델 패키지를 선택하여 설치합니다:
+2. [Vercel의 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)에서 원하는 모델 패키지를 선택해 설치합니다:
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. 어댑터와 모델을 import 하여 에이전트에 연결합니다:
+3. 어댑터와 모델을 임포트해 에이전트에 연결합니다:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
    import { aisdk } from '@openai/agents-extensions';
    ```
 
-4. 에이전트에서 사용할 모델 인스턴스를 초기화합니다:
+4. 에이전트가 사용할 모델 인스턴스를 초기화합니다:
 
    ```typescript
    const model = aisdk(openai('gpt-5-mini'));
@@ -47,19 +47,19 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  현재 ai-sdk의 model provider v2 모듈을 지원하며, 이는 Vercel AI SDK v5와
-  호환됩니다. 특정한 이유로 v1 model providers를 계속 사용해야 하는 경우,
+  현재 ai-sdk의 모델 프로바이더 v2 모듈을 지원하며, 이는 Vercel AI SDK v5와
+  호환됩니다. 특정 사유로 v1 모델 프로바이더를 계속 사용해야 하는 경우
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   에서 모듈을 복사해 프로젝트에 포함할 수 있습니다.
 </Aside>
 
 ## 예제
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 설정" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
 
 ## 프로바이더 메타데이터 전달
 
-메시지에 프로바이더별 옵션을 보내야 하면 `providerMetadata`를 통해 전달하세요. 값은 기본 AI SDK 모델로 그대로 전달됩니다. 예를 들어, Agents SDK에서 다음 `providerData`는
+메시지에 프로바이더별 옵션을 전송해야 한다면 `providerMetadata`를 통해 전달하세요. 값은 하위 AI SDK 모델에 직접 전달됩니다. 예를 들어, Agents SDK에서 다음과 같은 `providerData`는
 
 ```ts
 providerData: {

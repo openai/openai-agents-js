@@ -18,31 +18,31 @@ import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 ## 概述
 
 [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js)
-让你以轻量、易用、抽象很少的方式构建智能体应用。它是我们此前针对智能体的
-实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的生产级升级版本，并且也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只包含一小组基础组件：
+让你以轻量、易用、极少抽象的方式构建智能体 AI 应用。它是我们此前针对智能体的
+实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的一版可用于生产的升级，也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 仅包含一小组基础组件：
 
-- **智能体（Agents）**：配备 instructions 和工具（tools）的 LLM
+- **智能体（Agents）**：配备指令和工具的 LLM
 - **交接（Handoffs）**：允许智能体将特定任务委派给其他智能体
-- **护栏（Guardrails）**：用于校验传入智能体的输入
+- **护栏（Guardrails）**：用于验证传入智能体的输入
 
-配合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，让你无需陡峭学习曲线就能构建真实世界的应用。此外，SDK 内置了**追踪（tracing）**，可用于可视化与调试你的智能体流程，并支持评估，甚至为你的应用微调模型。
+结合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，让你无需陡峭的学习曲线即可构建真实世界的应用。此外，SDK 内置 **追踪（tracing）**，可用于可视化和调试你的智能体流程，并支持评估，甚至为你的应用微调模型。
 
-## 为什么使用 Agents SDK
+## 使用 Agents SDK 的原因
 
-该 SDK 的两个设计原则：
+该 SDK 遵循两条核心设计原则：
 
-1. 功能足够丰富，值得使用；同时基础组件足够少，便于快速上手。
-2. 开箱即用体验优秀，同时你可以精细定制行为。
+1. 功能足够有用，但基础组件足够精简，便于快速上手。
+2. 开箱即用效果出色，同时可精细定制具体行为。
 
 主要特性包括：
 
-- **智能体循环（Agent loop）**：内置循环，负责调用工具、将结果发送给 LLM，并循环直至 LLM 完成。
-- **TypeScript 优先（TypeScript-first）**：使用语言内建特性编排与串联智能体，无需学习新的抽象。
-- **交接（Handoffs）**：强大的特性，用于在多个智能体之间协调与委派。
-- **护栏（Guardrails）**：与智能体并行运行输入校验与检查，失败时可提前中断。
-- **函数工具（Function tools）**：将任意 TypeScript 函数变成工具，自动生成 schema，并由 Zod 提供校验能力。
-- **追踪（Tracing）**：内置追踪，支持可视化、调试与监控工作流，并可使用 OpenAI 的评估、微调与蒸馏工具。
-- **实时智能体（Realtime Agents）**：构建强大的语音智能体，包括自动打断检测、上下文管理、护栏等。
+- **智能体循环（Agent loop）**：内置循环处理调用工具、将结果返回给 LLM，并循环直至 LLM 完成。
+- **TypeScript 优先（TypeScript-first）**：利用语言内置能力来编排和串联智能体，无需学习新的抽象。
+- **交接（Handoffs）**：强大的机制，用于在多个智能体之间协调与委派。
+- **护栏（Guardrails）**：与智能体并行运行输入校验与检查，如检查失败则提前中止。
+- **函数工具（Function tools）**：将任意 TypeScript 函数变成工具，自动生成 schema，并使用 Zod 进行校验。
+- **追踪（Tracing）**：内置追踪用于可视化、调试与监控工作流，并可使用 OpenAI 的评估、微调与蒸馏工具。
+- **实时智能体（Realtime Agents）**：构建强大的语音智能体，包含自动打断检测、上下文管理、护栏等。
 
 ## 安装
 
@@ -50,11 +50,11 @@ import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 npm install @openai/agents zod@3
 ```
 
-## Hello world 示例
+## Hello World 示例
 
 <Code lang="typescript" code={helloWorldExample} title="Hello World" />
 
-（_如果要运行，请确保设置 `OPENAI_API_KEY` 环境变量_）
+(_如果要运行此示例，请确保已设置 `OPENAI_API_KEY` 环境变量_)
 
 ```bash
 export OPENAI_API_KEY=sk-...
