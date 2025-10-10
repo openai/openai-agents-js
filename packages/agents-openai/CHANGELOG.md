@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.1.10
+
+### Patch Changes
+
+- b07a588: fix: #562 invalid model settings when prompt is set in Agent
+- Updated dependencies [e0b46c4]
+  - @openai/agents-core@0.1.10
+
 ## 0.1.9
 
 ### Patch Changes

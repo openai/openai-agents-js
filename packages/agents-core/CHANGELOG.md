@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.1.10
+
+### Patch Changes
+
+- e0b46c4: fix: improve the compatibility for conversationId / previousResponseId + tool calls
+
+  ref: https://github.com/openai/openai-agents-python/pull/1827
+
 ## 0.1.8
 
 ### Patch Changes
