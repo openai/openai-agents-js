@@ -243,6 +243,7 @@ export class StreamedRunResult<
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
+  #streamLoopPromise: Promise<void> | undefined;
 
   constructor(
     result: {
@@ -412,5 +413,23 @@ export class StreamedRunResult<
 
   [Symbol.asyncIterator](): AsyncIterator<RunStreamEvent> {
     return this.#readableStream[Symbol.asyncIterator]();
+  }
+
+  /**
+   * @internal
+   * Sets the stream loop promise that completes when the internal stream loop finishes.
+   * This is used to defer trace end until all agent work is complete.
+   */
+  _setStreamLoopPromise(promise: Promise<void>) {
+    this.#streamLoopPromise = promise;
+  }
+
+  /**
+   * @internal
+   * Returns a promise that resolves when the stream loop completes.
+   * This is used by the tracing system to wait for all agent work before ending the trace.
+   */
+  _getStreamLoopPromise(): Promise<void> | undefined {
+    return this.#streamLoopPromise;
   }
 }

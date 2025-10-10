@@ -1138,7 +1138,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       result.maxTurns = options.maxTurns ?? state._maxTurns;
 
       // Continue the stream loop without blocking
-      this.#runStreamLoop(result, options, isResumedState).then(
+      const streamLoopPromise = this.#runStreamLoop(
+        result,
+        options,
+        isResumedState,
+      ).then(
         () => {
           result._done();
         },
@@ -1146,6 +1150,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result._raiseError(err);
         },
       );
+
+      // Attach the stream loop promise so trace end waits for the loop to complete
+      result._setStreamLoopPromise(streamLoopPromise);
 
       return result;
     });
