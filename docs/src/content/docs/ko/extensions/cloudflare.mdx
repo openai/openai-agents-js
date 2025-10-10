@@ -6,13 +6,13 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket 을 열 수 없습니다. 이러한 환경에서 실시간 에이전트 연결을 단순화하기 위해, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송(transport)을 제공합니다.
+Cloudflare Workers 및 기타 workerd 런타임에서는 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 실시간 에이전트를 간단히 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
 
 <Aside type="caution">
-  이 어댑터는 아직 베타 상태입니다. 엣지 케이스 문제나 버그를 겪을 수 있습니다.
-  문제가 있으면 [GitHub
-  이슈](https://github.com/openai/openai-agents-js/issues)로 신고해 주시면
-  신속히 수정하겠습니다. Workers 에서 Node.js 스타일 API 가 필요하다면
+  이 어댑터는 아직 베타입니다. 특정 엣지 케이스나 버그가 있을 수 있습니다.
+  문제를 발견하시면 [GitHub
+  issues](https://github.com/openai/openai-agents-js/issues)를 통해 보고해
+  주세요. 신속히 수정하겠습니다. Workers에서 Node.js 스타일 API를 사용하려면
   `nodejs_compat` 활성화를 고려하세요.
 </Aside>
 
@@ -20,17 +20,17 @@ Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자�
 
 <Steps>
 
-1. **extensions 패키지를 설치합니다.**
+1. **extensions 패키지를 설치하세요.**
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. **전송(transport)을 생성하고 세션에 연결합니다.**
+2. **전송 방식을 생성하고 세션에 연결하세요.**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **`RealtimeSession`을 연결합니다.**
+3. **`RealtimeSession`을(를) 연결하세요.**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -40,6 +40,6 @@ Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자�
 
 ## 참고 사항
 
-- Cloudflare 전송(transport)은 내부적으로 `Upgrade: websocket` 헤더와 함께 `fetch()`를 사용하며, workerd API와 동일하게 소켓 `open` 이벤트를 대기하지 않습니다
-- 이 전송을 사용할 때도 모든 `RealtimeSession` 기능(도구, 가드레일 등)이 정상 동작합니다
+- Cloudflare 전송 방식은 내부적으로 `Upgrade: websocket`과 함께 `fetch()`를 사용하며, 소켓의 `open` 이벤트를 기다리지 않아서 workerd API와 동작이 일치합니다
+- 이 전송 방식을 사용할 때도 모든 `RealtimeSession` 기능(도구, 가드레일 등)은 평소와 동일하게 작동합니다
 - 개발 중 상세 로그를 확인하려면 `DEBUG=openai-agents*`를 사용하세요

@@ -10,50 +10,54 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-핸드오프는 에이전트가 대화의 일부를 다른 에이전트에 위임할 수 있게 해 줍니다. 이는 서로 다른 에이전트가 특정 분야를 전문적으로 담당할 때 유용합니다. 예를 들어 고객 지원 앱에서는 예약, 환불 또는 FAQ를 처리하는 에이전트를 둘 수 있습니다.
+핸드오프를 사용하면 한 에이전트가 대화의 일부를 다른 에이전트에 위임할 수 있습니다. 이는 서로 다른 에이전트가 특정 영역을 전문으로 할 때 유용합니다. 예를 들어 고객 지원 앱에서는 예약, 환불 또는 FAQ를 처리하는 에이전트를 둘 수 있습니다.
 
-핸드오프는 LLM에 도구로 표현됩니다. `Refund Agent`로 핸드오프하면 도구 이름은 `transfer_to_refund_agent`가 됩니다.
+핸드오프는 LLM에게 도구로 표현됩니다. `Refund Agent`라는 에이전트로 핸드오프하는 경우, 도구 이름은 `transfer_to_refund_agent`가 됩니다.
 
 ## 핸드오프 생성
 
-모든 에이전트는 `handoffs` 옵션을 받습니다. 여기에는 다른 `Agent` 인스턴스나 `handoff()` 헬퍼가 반환하는 `Handoff` 객체를 포함할 수 있습니다.
+모든 에이전트는 `handoffs` 옵션을 허용합니다. 여기에는 다른 `Agent` 인스턴스나 `handoff()` 헬퍼가 반환하는 `Handoff` 객체를 포함할 수 있습니다.
 
 ### 기본 사용
 
-<Code lang="typescript" code={basicUsageExample} title="기본 핸드오프" />
+<Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
 
 ### `handoff()`를 통한 핸드오프 커스터마이징
 
-`handoff()` 함수로 생성되는 도구를 조정할 수 있습니다.
+`handoff()` 함수는 생성되는 도구를 조정할 수 있게 해줍니다.
 
-- `agent` – 핸드오프할 에이전트
+- `agent` – 핸드오프할 대상 에이전트
 - `toolNameOverride` – 기본 `transfer_to_<agent_name>` 도구 이름 재정의
 - `toolDescriptionOverride` – 기본 도구 설명 재정의
-- `onHandoff` – 핸드오프가 발생할 때 콜백. `RunContext`와 선택적으로 파싱된 입력을 받음
-- `inputType` – 핸드오프에 기대하는 입력 스키마
+- `onHandoff` – 핸드오프 발생 시 콜백. `RunContext`와 선택적으로 파싱된 입력을 받음
+- `inputType` – 핸드오프에 기대되는 입력 스키마
 - `inputFilter` – 다음 에이전트에 전달할 히스토리 필터
 
 <Code
   lang="typescript"
   code={customizeHandoffExample}
-  title="커스터마이즈된 핸드오프"
+  title="Customized handoffs"
 />
 
 ## 핸드오프 입력
 
-때로는 핸드오프를 호출할 때 LLM이 데이터를 제공하도록 하고 싶을 수 있습니다. 입력 스키마를 정의하고 `handoff()`에 사용하세요.
+때로는 핸드오프를 호출할 때 LLM이 데이터를 제공하도록 하고 싶을 수 있습니다. 입력 스키마를 정의하고 `handoff()`에서 사용하세요.
 
-<Code lang="typescript" code={handoffInputExample} title="핸드오프 입력" />
+<Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
 ## 입력 필터
 
-기본적으로 핸드오프는 전체 대화 히스토리를 받습니다. 다음 에이전트에 전달되는 내용을 수정하려면 `inputFilter`를 제공하세요.
-공용 헬퍼는 `@openai/agents-core/extensions`에 있습니다.
+기본적으로 핸드오프는 전체 대화 히스토리를 받습니다. 다음 에이전트에 무엇을 전달할지 수정하려면 `inputFilter`를 제공하세요.
+공통 헬퍼는 `@openai/agents-core/extensions`에 있습니다.
 
-<Code lang="typescript" code={inputFilterExample} title="입력 필터" />
+<Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
 ## 권장 프롬프트
 
-프롬프트에 핸드오프를 언급하면 LLM이 더 안정적으로 응답합니다. SDK는 `RECOMMENDED_PROMPT_PREFIX`를 통해 권장 접두사를 제공합니다.
+프롬프트에 핸드오프를 언급하면 LLM이 더 안정적으로 반응합니다. SDK는 `RECOMMENDED_PROMPT_PREFIX`를 통해 권장 접두사를 제공합니다.
 
-<Code lang="typescript" code={recommendedPromptExample} title="권장 프롬프트" />
+<Code
+  lang="typescript"
+  code={recommendedPromptExample}
+  title="Recommended prompts"
+/>

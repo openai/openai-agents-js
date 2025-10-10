@@ -10,13 +10,13 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-ハンドオフは、会話の一部を別のエージェントに委譲できる機能です。これは、異なるエージェントが特定の分野を専門にする場合に有用です。たとえばカスタマーサポートアプリでは、予約、返金、FAQ を担当するエージェントがあるかもしれません。
+ハンドオフを使うと、あるエージェントが会話の一部を別のエージェントへ委任できます。これは、異なるエージェントが特定の領域に特化している場合に便利です。たとえばカスタマーサポートアプリでは、予約、返金、FAQ を担当するエージェントを用意できます。
 
 ハンドオフは LLM に対してツールとして表現されます。`Refund Agent` というエージェントへハンドオフする場合、ツール名は `transfer_to_refund_agent` になります。
 
 ## ハンドオフの作成
 
-すべてのエージェントは `handoffs` オプションを受け付けます。ここには他の `Agent` インスタンス、または `handoff()` ヘルパーが返す `Handoff` オブジェクトを含めることができます。
+すべてのエージェントは `handoffs` オプションを受け付けます。ここには他の `Agent` インスタンスや、`handoff()` ヘルパーが返す `Handoff` オブジェクトを含められます。
 
 ### 基本的な使い方
 
@@ -27,11 +27,11 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 `handoff()` 関数を使うと、生成されるツールを調整できます。
 
 - `agent` – ハンドオフ先のエージェント
-- `toolNameOverride` – 既定の `transfer_to_<agent_name>` ツール名の上書き
-- `toolDescriptionOverride` – 既定のツール説明の上書き
-- `onHandoff` – ハンドオフ時のコールバック。`RunContext` と、必要に応じてパース済みの入力を受け取ります
-- `inputType` – ハンドオフに期待される入力スキーマ
-- `inputFilter` – 次のエージェントに渡す履歴のフィルター
+- `toolNameOverride` – 既定の `transfer_to_<agent_name>` ツール名を上書き
+- `toolDescriptionOverride` – 既定のツール説明を上書き
+- `onHandoff` – ハンドオフ時のコールバック。`RunContext` と、必要に応じてパース済み入力を受け取ります
+- `inputType` – ハンドオフに期待する入力スキーマ
+- `inputFilter` – 次のエージェントへ渡す履歴のフィルター
 
 <Code
   lang="typescript"
@@ -41,20 +41,20 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ## ハンドオフの入力
 
-ハンドオフ呼び出し時に LLM にデータを提供させたい場合があります。入力スキーマを定義し、`handoff()` で使用します。
+ハンドオフの呼び出し時に LLM にデータを提供させたい場合があります。入力スキーマを定義して `handoff()` で使用します。
 
 <Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
 ## 入力フィルター
 
-既定では、ハンドオフは会話の履歴全体を受け取ります。次のエージェントに渡す内容を変更するには、`inputFilter` を指定します。
-一般的なヘルパーは `@openai/agents-core/extensions` にあります。
+既定では、ハンドオフは会話の全履歴を受け取ります。次のエージェントへ渡す内容を変更するには、`inputFilter` を指定します。
+共通ヘルパーは `@openai/agents-core/extensions` にあります。
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
 ## 推奨プロンプト
 
-プロンプトでハンドオフに言及すると、LLM はより安定して応答します。SDK は `RECOMMENDED_PROMPT_PREFIX` を通じて推奨のプレフィックスを提供します。
+プロンプトでハンドオフに言及すると、LLM はより安定して応答します。SDK は `RECOMMENDED_PROMPT_PREFIX` 経由で推奨のプレフィックスを提供しています。
 
 <Code
   lang="typescript"

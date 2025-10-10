@@ -7,23 +7,23 @@ import { Code } from '@astrojs/starlight/components';
 import handoffFinalOutputTypes from '../../../../../../examples/docs/results/handoffFinalOutputTypes.ts?raw';
 import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?raw';
 
-[에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 하면 다음 중 하나를 받게 됩니다:
+[에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 수행하면 다음 중 하나를 받게 됩니다:
 
 - `stream: true` 없이 `run`을 호출한 경우 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- `stream: true`와 함께 `run`을 호출한 경우 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult). 스트리밍에 대한 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming)도 확인하세요
+- `stream: true`로 `run`을 호출한 경우 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult). 스트리밍에 대한 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming)도 확인하세요.
 
 ## 최종 출력
 
-`finalOutput` 속성은 마지막으로 실행된 에이전트의 최종 출력을 포함합니다. 이 결과는 다음 중 하나입니다:
+`finalOutput` 속성에는 마지막으로 실행된 에이전트의 최종 출력이 포함됩니다. 결과는 다음 중 하나입니다:
 
 - `string` — `outputType`이 정의되지 않은 모든 에이전트의 기본값
-- `unknown` — 에이전트가 출력 타입으로 JSON 스키마를 정의한 경우. 이 경우 JSON 은 파싱되었지만 타입을 수동으로 검증해야 합니다
-- `z.infer<outputType>` — 에이전트가 출력 타입으로 Zod 스키마를 정의한 경우. 출력은 자동으로 해당 스키마에 대해 파싱됩니다
+- `unknown` — 에이전트가 출력 타입으로 JSON 스키마를 정의한 경우. 이 경우 JSON은 파싱되지만 타입은 직접 검증해야 합니다.
+- `z.infer<outputType>` — 에이전트가 출력 타입으로 Zod 스키마를 정의한 경우. 출력은 자동으로 해당 스키마에 맞게 파싱됩니다.
 - `undefined` — 에이전트가 출력을 생성하지 않은 경우(예: 출력을 생성하기 전에 중지된 경우)
 
-서로 다른 출력 타입을 가진 핸드오프를 사용하는 경우, 에이전트를 만들 때 `new Agent()` 생성자 대신 `Agent.create()` 메서드를 사용해야 합니다.
+서로 다른 출력 타입을 갖는 핸드오프를 사용하는 경우, 에이전트를 생성할 때 `new Agent()` 생성자 대신 `Agent.create()` 메서드를 사용해야 합니다.
 
-이렇게 하면 SDK 가 가능한 모든 핸드오프 전반에 걸쳐 출력 타입을 추론하고 `finalOutput` 속성에 대해 유니온 타입을 제공할 수 있습니다.
+이렇게 하면 SDK가 가능한 모든 핸드오프 전반에서 출력 타입을 추론하고 `finalOutput` 속성에 대한 유니온 타입을 제공합니다.
 
 예:
 
@@ -33,56 +33,56 @@ import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?
   title="핸드오프 최종 출력 타입"
 />
 
-## 다음 턴 입력
+## 다음 턴을 위한 입력
 
 다음 턴의 입력에 접근하는 방법은 두 가지가 있습니다:
 
-- `result.history` — 입력과 에이전트의 출력이 모두 복사본으로 포함됨
+- `result.history` — 입력과 에이전트 출력의 사본이 포함됨
 - `result.output` — 전체 에이전트 실행의 출력이 포함됨
 
-`history`는 채팅과 유사한 사용 사례에서 전체 히스토리를 유지하기에 편리합니다:
+`history`는 채팅과 같은 사용 사례에서 전체 히스토리를 유지하기에 편리한 방법입니다:
 
 <Code lang="typescript" code={historyLoop} title="히스토리 루프" />
 
 ## 마지막 에이전트
 
-`lastAgent` 속성에는 마지막으로 실행된 에이전트가 포함됩니다. 애플리케이션에 따라, 이는 다음에 사용자가 무언가를 입력할 때 유용한 경우가 많습니다. 예를 들어, 1차 분류를 담당하는 에이전트가 언어별 에이전트로 핸드오프하는 경우, 마지막 에이전트를 저장해 두고 사용자가 다음에 메시지를 보낼 때 재사용할 수 있습니다.
+`lastAgent` 속성에는 마지막으로 실행된 에이전트가 포함됩니다. 애플리케이션에 따라, 이는 다음 번에 사용자가 무언가를 입력할 때 유용한 경우가 많습니다. 예를 들어, 프런트라인 분류 에이전트가 언어별 에이전트로 핸드오프하는 경우, 마지막 에이전트를 저장해 두었다가 사용자가 다음에 에이전트에게 메시지를 보낼 때 재사용할 수 있습니다.
 
 스트리밍 모드에서는 현재 실행 중인 에이전트에 매핑되는 `currentAgent` 속성에 접근하는 것도 유용할 수 있습니다.
 
 ## 새 항목
 
-`newItems` 속성에는 실행 중에 생성된 새 항목이 포함됩니다. 항목은 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem)입니다. 실행 항목은 LLM 이 생성한 원문 항목을 래핑합니다. 이를 통해 LLM 의 출력 외에도 어떤 에이전트와 연관된 이벤트인지 접근할 수 있습니다.
+`newItems` 속성에는 실행 중에 생성된 새 항목이 포함됩니다. 항목은 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem)s입니다. 실행 항목은 LLM이 생성한 원문 항목을 감쌉니다. 이를 사용해 LLM의 출력 외에도 이러한 이벤트가 어떤 에이전트와 연관되어 있는지 접근할 수 있습니다.
 
-- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)은 LLM 의 메시지를 나타냅니다. 원문 항목은 생성된 메시지입니다
-- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem)은 LLM 이 핸드오프 도구를 호출했음을 나타냅니다. 원문 항목은 LLM 의 도구 호출 항목입니다
-- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)은 핸드오프가 발생했음을 나타냅니다. 원문 항목은 핸드오프 도구 호출에 대한 도구 응답입니다. 또한 항목에서 소스/타깃 에이전트에 접근할 수 있습니다
-- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem)은 LLM 이 도구를 호출했음을 나타냅니다
-- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)은 도구가 호출되었음을 나타냅니다. 원문 항목은 도구 응답입니다. 또한 항목에서 도구 출력을 확인할 수 있습니다
-- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)은 LLM 의 추론 항목을 나타냅니다. 원문 항목은 생성된 추론입니다
-- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)은 LLM 이 도구 호출에 대한 승인을 요청했음을 나타냅니다. 원문 항목은 LLM 의 도구 호출 항목입니다
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)은 LLM의 메시지를 나타냅니다. 원문 항목은 생성된 메시지입니다.
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem)은 LLM이 핸드오프 도구를 호출했음을 나타냅니다. 원문 항목은 LLM의 도구 호출 항목입니다.
+- [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)은 핸드오프가 발생했음을 나타냅니다. 원문 항목은 핸드오프 도구 호출에 대한 도구 응답입니다. 항목에서 소스/타깃 에이전트에도 접근할 수 있습니다.
+- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem)은 LLM이 도구를 호출했음을 나타냅니다.
+- [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)은 도구가 호출되었음을 나타냅니다. 원문 항목은 도구 응답입니다. 항목에서 도구 출력에도 접근할 수 있습니다.
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)은 LLM의 추론 항목을 나타냅니다. 원문 항목은 생성된 추론입니다.
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)은 LLM이 도구 호출에 대한 승인을 요청했음을 나타냅니다. 원문 항목은 LLM의 도구 호출 항목입니다.
 
 ## 상태
 
-`state` 속성은 실행의 상태를 포함합니다. `result`에 첨부된 대부분은 `state`에서 파생되지만, `state`는 직렬화/역직렬화가 가능하며 [오류에서 복구](/openai-agents-js/ko/guides/running-agents#exceptions)가 필요하거나 [`interruption`](#interruptions)을 처리해야 하는 경우 이후 `run` 호출의 입력으로도 사용할 수 있습니다.
+`state` 속성에는 실행의 상태가 포함됩니다. `result`에 첨부된 대부분은 `state`에서 파생되지만, `state`는 직렬화/역직렬화 가능하며 [오류에서 복구](/openai-agents-js/ko/guides/running-agents#exceptions)가 필요하거나 [`interruption`](#interruptions)을 처리해야 하는 경우 이후의 `run` 호출에 대한 입력으로도 사용할 수 있습니다.
 
-## 인터럽션
+## 인터럽션(중단 처리)
 
-에이전트에서 `needsApproval`을 사용하는 경우, 계속하기 전에 처리해야 하는 일부 `interruptions`가 트리거될 수 있습니다. 이 경우 `interruptions`는 인터럽션을 유발한 `ToolApprovalItem`의 배열이 됩니다. 인터럽션을 처리하는 방법에 대한 자세한 내용은 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 가이드를 확인하세요.
+에이전트에서 `needsApproval`을 사용하는 경우, 계속 진행하기 전에 처리해야 하는 `interruptions`가 트리거될 수 있습니다. 이 경우 `interruptions`는 인터럽션을 유발한 `ToolApprovalItem`s의 배열이 됩니다. 인터럽션을 처리하는 방법에 대한 자세한 내용은 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 가이드를 확인하세요.
 
 ## 기타 정보
 
 ### 원문 응답
 
-`rawResponses` 속성에는 에이전트 실행 동안 모델이 생성한 원문 LLM 응답이 포함됩니다.
+`rawResponses` 속성에는 에이전트 실행 중 모델이 생성한 원문 LLM 응답이 포함됩니다.
 
 ### 마지막 응답 ID
 
-`lastResponseId` 속성에는 에이전트 실행 동안 모델이 생성한 마지막 응답의 ID 가 포함됩니다.
+`lastResponseId` 속성에는 에이전트 실행 중 모델이 생성한 마지막 응답의 ID가 포함됩니다.
 
 ### 가드레일 결과
 
-`inputGuardrailResults`와 `outputGuardrailResults` 속성에는 가드레일 결과(있는 경우)가 포함됩니다. 가드레일 결과에는 로그를 남기거나 저장하고 싶은 유용한 정보가 포함되는 경우가 있으므로, 이를 확인할 수 있도록 제공합니다.
+`inputGuardrailResults`와 `outputGuardrailResults` 속성에는(있는 경우) 가드레일 결과가 포함됩니다. 가드레일 결과에는 로깅하거나 저장하고 싶은 유용한 정보가 들어 있는 경우가 있어, 이를 제공해 드립니다.
 
 ### 원본 입력
 

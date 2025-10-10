@@ -6,34 +6,34 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-“上下文”是一个被过载使用的术语。通常有两大类上下文值得关注：
+“上下文”是一个含义很丰富的术语。通常你会关心两大类上下文：
 
-1. 代码在一次运行期间可访问的**本地上下文**：工具所需的依赖或数据、如 `onHandoff` 的回调，以及生命周期钩子。
-2. 语言模型在生成回复时可见的**智能体/LLM 上下文**。
+1. **本地上下文**：你的代码在一次运行期间可以访问的内容，如工具所需的依赖或数据、`onHandoff` 等回调以及生命周期钩子。
+2. **智能体/LLM 上下文**：语言模型在生成响应时能够看到的内容。
 
 ## 本地上下文
 
-本地上下文由 `RunContext<T>` 类型表示。你可以创建任意对象来保存状态或依赖，并将其传给 `Runner.run()`。所有工具调用和钩子都会接收一个 `RunContext` 包装器，从而读取或修改该对象。
+本地上下文由 `RunContext<T>` 类型表示。你可以创建任意对象来保存状态或依赖，并将其传给 `Runner.run()`。所有工具调用和钩子都会接收一个 `RunContext` 包装器，以便读取或修改该对象。
 
 <Code lang="typescript" code={localContextExample} title="本地上下文示例" />
 
 参与同一次运行的每个智能体、工具和钩子都必须使用相同**类型**的上下文。
 
-本地上下文适用于如下场景：
+本地上下文适用于以下场景：
 
 - 关于本次运行的数据（用户名、ID 等）
-- 依赖，如日志器或数据获取器
+- 依赖项，如日志器或数据获取器
 - 帮助函数
 
 <Aside type="note">
-  上下文对象**不会**被发送给 LLM。它是纯本地的，你可以自由读取或写入。
+  上下文对象**不会**发送给 LLM。它纯粹是本地的，你可以自由读取或写入。
 </Aside>
 
 ## 智能体/LLM 上下文
 
-当调用 LLM 时，它只能看到来自对话历史的数据。要提供额外信息，你可以：
+当调用 LLM 时，它只能看到对话历史中的数据。若要提供额外信息，你有以下几种方式：
 
-1. 将其添加到 Agent 的 `instructions`——也称为系统或开发者消息。它可以是静态字符串，或接收上下文并返回字符串的函数。
-2. 在调用 `Runner.run()` 时将其包含在 `input` 中。这与 instructions 技术相似，但允许你把消息放在更低的[指挥链](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)位置。
-3. 通过函数工具暴露，让 LLM 按需获取数据。
-4. 使用检索或 Web 搜索工具，将回复建立在来自文件、数据库或网络的相关数据之上。
+1. 将其添加到智能体的 `instructions`（也称为系统或开发者消息）中。它可以是静态字符串，或一个接收上下文并返回字符串的函数。
+2. 在调用 `Runner.run()` 时将其包含在 `input` 中。这与 instructions 技术类似，但允许你将消息置于[指令链](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)中更靠后的位置。
+3. 通过函数工具暴露出来，使 LLM 能按需获取数据。
+4. 使用检索或 Web 搜索工具，将响应建立在来自文件、数据库或网络的相关数据之上。

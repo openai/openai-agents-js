@@ -9,28 +9,28 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 <Aside type="caution">
   このアダプターはまだベータ版です。特に小規模なモデルプロバイダーでは問題が発生する可能性があります。問題があれば
   [GitHub issues](https://github.com/openai/openai-agents-js/issues)
-  に報告してください。迅速に修正します。
+  から報告してください。迅速に修正します。
 </Aside>
 
-Agents SDK は標準で Responses API または Chat Completions API を通じて OpenAI モデルと連携します。別のモデルを使用したい場合は、[Vercel の AI SDK](https://sdk.vercel.ai/) がサポートする幅広いモデルをこのアダプター経由で Agents SDK に取り込めます。
+Agents SDK は標準で Responses API または Chat Completions API を通じて OpenAI モデルと連携します。ですが、別のモデルを使いたい場合は、[Vercel の AI SDK](https://sdk.vercel.ai/) がサポートする幅広いモデルを、このアダプターを介して Agents SDK で利用できます。
 
 ## セットアップ
 
 <Steps>
 
-1. 拡張パッケージをインストールして AI SDK アダプターを導入します:
+1. extensions パッケージをインストールして AI SDK アダプターを導入します:
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から使用したいモデルパッケージを選び、インストールします:
+2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から目的のモデルパッケージを選び、インストールします:
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. アダプターとモデルをインポートし、エージェントに接続します:
+3. アダプターとモデルをインポートしてエージェントに接続します:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
@@ -46,23 +46,19 @@ Agents SDK は標準で Responses API または Chat Completions API を通じ�
 </Steps>
 
 <Aside type="caution">
-  現在、ai-sdk の model provider v2 モジュール（Vercel AI SDK v5
-  と互換）がサポート対象です。特別な理由で v1 の model provider
+  現在、ai-sdk の model provider v2 モジュールに対応しており、これは Vercel AI
+  SDK v5 と互換性があります。特別な理由で v1 の model providers
   を使い続ける必要がある場合は、[examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   からモジュールをコピーして、プロジェクトに含めてください。
 </Aside>
 
 ## 例
 
-<Code
-  lang="typescript"
-  code={aiSdkSetupExample}
-  title="AI SDK のセットアップ"
-/>
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
 
 ## プロバイダー メタデータの受け渡し
 
-メッセージにプロバイダー固有のオプションを送る必要がある場合は、`providerMetadata` を通して渡してください。値は基盤となる AI SDK のモデルにそのまま転送されます。たとえば、Agents SDK における次の `providerData`
+メッセージにプロバイダー固有のオプションを送る必要がある場合は、`providerMetadata` を通して渡します。値は基盤となる AI SDK モデルにそのまま転送されます。たとえば、Agents SDK で次の `providerData`
 
 ```ts
 providerData: {
@@ -74,7 +70,7 @@ providerData: {
 }
 ```
 
-は、AI SDK 連携を使用する場合には
+は、AI SDK 連携を使用すると
 
 ```ts
 providerMetadata: {
@@ -86,4 +82,4 @@ providerMetadata: {
 }
 ```
 
-のようになります。
+になります。
