@@ -37,6 +37,13 @@ import { withAgentSpan } from '../src/tracing/createSpans';
 
 import { TraceProvider } from '../src/tracing/provider';
 
+import { Runner } from '../src/run';
+import { Agent } from '../src/agent';
+import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
+import { Usage } from '../src/usage';
+import * as protocol from '../src/types/protocol';
+import { setDefaultModelProvider } from '../src/providers';
+
 class TestExporter implements TracingExporter {
   public exported: Array<(Trace | Span<any>)[]> = [];
 
@@ -258,6 +265,97 @@ describe('withTrace & span helpers (integration)', () => {
     const endedIds = processor.spansEnded.map((s) => s.spanId);
     expect(startedIds).toContain(capturedSpanId);
     expect(endedIds).toContain(capturedSpanId);
+  });
+
+  it('streaming run waits for stream loop to complete before calling onTraceEnd', async () => {
+    // Set up model provider
+    setDefaultModelProvider(new FakeModelProvider());
+
+    const traceStartTimes: number[] = [];
+    const traceEndTimes: number[] = [];
+    const spanEndTimes: number[] = [];
+
+    class OrderTrackingProcessor implements TracingProcessor {
+      async onTraceStart(_trace: Trace): Promise<void> {
+        traceStartTimes.push(Date.now());
+      }
+      async onTraceEnd(_trace: Trace): Promise<void> {
+        traceEndTimes.push(Date.now());
+      }
+      async onSpanStart(_span: Span<any>): Promise<void> {
+        // noop
+      }
+      async onSpanEnd(_span: Span<any>): Promise<void> {
+        spanEndTimes.push(Date.now());
+      }
+      async shutdown(): Promise<void> {
+        /* noop */
+      }
+      async forceFlush(): Promise<void> {
+        /* noop */
+      }
+    }
+
+    const orderProcessor = new OrderTrackingProcessor();
+    setTraceProcessors([orderProcessor]);
+
+    // Create a fake model that supports streaming
+    class StreamingFakeModel extends FakeModel {
+      async *getStreamedResponse(
+        _request: any,
+      ): AsyncIterable<protocol.StreamEvent> {
+        const response = await this.getResponse(_request);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-1',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'TestAgent',
+      model: new StreamingFakeModel([
+        {
+          output: [fakeModelMessage('Final output')],
+          usage: new Usage(),
+        },
+      ]),
+    });
+
+    const runner = new Runner({
+      tracingDisabled: false,
+    });
+
+    // Run with streaming
+    const result = await runner.run(agent, 'test input', { stream: true });
+
+    // Consume the stream
+    for await (const _event of result) {
+      // consume all events
+    }
+
+    // Wait for completion
+    await result.completed;
+
+    // onTraceEnd should be called after all spans have ended
+    expect(traceStartTimes.length).toBe(1);
+    expect(traceEndTimes.length).toBe(1);
+    expect(spanEndTimes.length).toBeGreaterThan(0);
+
+    // The trace should end after all spans have ended
+    const lastSpanEndTime = Math.max(...spanEndTimes);
+    const traceEndTime = traceEndTimes[0];
+
+    expect(traceEndTime).toBeGreaterThanOrEqual(lastSpanEndTime);
   });
 });
 

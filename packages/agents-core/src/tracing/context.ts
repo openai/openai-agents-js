@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from '@openai/agents-core/_shims';
 import { Trace, TraceOptions } from './traces';
 import { getGlobalTraceProvider } from './provider';
 import { Span, SpanError } from './spans';
+import { StreamedRunResult } from '../result';
 
 type ContextState = {
   trace?: Trace;
@@ -58,6 +59,17 @@ function _wrapFunctionWithTraceLifecycle<T>(fn: (trace: Trace) => Promise<T>) {
 
     await trace.start();
     const result = await fn(trace);
+
+    // If result is a StreamedRunResult, defer trace end until stream loop completes
+    if (result instanceof StreamedRunResult) {
+      const streamLoopPromise = result._getStreamLoopPromise();
+      if (streamLoopPromise) {
+        streamLoopPromise.finally(() => trace.end());
+        return result;
+      }
+    }
+
+    // For non-streaming results, end trace synchronously
     await trace.end();
 
     return result;
