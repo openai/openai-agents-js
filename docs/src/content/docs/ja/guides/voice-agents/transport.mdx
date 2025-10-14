@@ -26,48 +26,48 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-## 既定のトランスポートレイヤー
+## デフォルトのトランスポート層
 
-### WebRTC 経由での接続
+### WebRTC 接続
 
-既定のトランスポートレイヤーは WebRTC を使用します。音声はマイクから録音され、自動的に再生されます。
+既定のトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動的に再生されます。
 
-独自のメディアストリームや audio 要素を使うには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
+独自のメディアストリームや audio 要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### WebSocket 経由での接続
+### WebSocket 接続
 
-WebRTC の代わりに WebSocket 接続を使用するには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これはサーバーサイドのユースケース、たとえば Twilio で電話エージェントを構築する場合によく適しています。
+WebRTC の代わりに WebSocket 接続を使用するには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これはサーバーサイドのユースケース、たとえば Twilio で電話エージェントを構築する場合に有効です。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-任意の録音/再生ライブラリを使用して、元の PCM16 音声バイトを扱ってください。
+任意の録音/再生ライブラリを使用して、元 PCM16 音声バイトを処理します。
 
-#### Cloudflare Workers (workerd) に関する注意
+#### Cloudflare Workers（workerd）に関する注意
 
-Cloudflare Workers や他の workerd ランタイムは、グローバルな `WebSocket` コンストラクタを使って外向きの WebSocket を開くことができません。拡張機能パッケージの Cloudflare トランスポートを使用してください。これは内部で `fetch()` ベースのアップグレードを実行します。
+Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使って外向きの WebSocket を開くことはできません。extensions パッケージの Cloudflare トランスポートを使用してください。これは内部で `fetch()` ベースのアップグレードを実行します。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### 独自のトランスポート機構の構築
+### 独自トランスポート機構の構築
 
-別の speech-to-speech API を使用する場合や独自のカスタムトランスポート機構がある場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発火して独自に作成できます。
+別の音声対音声 API を使いたい場合や、独自のカスタムトランスポート機構を持っている場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発火することで独自に作成できます。
 
-## Realtime API をより直接的に操作
+## Realtime API とのより直接的なやり取り
 
-OpenAI Realtime API を使用しつつ、Realtime API により直接アクセスしたい場合は次の 2 つの方法があります。
+OpenAI Realtime API を使用しつつ、Realtime API へより直接的にアクセスしたい場合は、次の 2 つの選択肢があります。
 
-### オプション 1 - トランスポートレイヤーへのアクセス
+### オプション 1 - トランスポート層へのアクセス
 
-`RealtimeSession` のすべての機能の恩恵を受けたい場合は、`session.transport` を通じてトランスポートレイヤーにアクセスできます。
+`RealtimeSession` のあらゆる機能を活用したい場合は、`session.transport` からトランスポート層にアクセスできます。
 
-トランスポートレイヤーは、受け取ったすべてのイベントを `*` イベントとして発火し、`sendEvent()` メソッドを使用して元のイベントを送信できます。
+トランスポート層は受信したすべてのイベントを `*` イベントで発火し、`sendEvent()` メソッドを使って元のイベントを送信できます。
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### オプション 2 — トランスポートレイヤーのみを使用
+### オプション 2 — トランスポート層のみの利用
 
-自動ツール実行やガードレールなどが不要な場合、接続と割り込みのみを管理する「薄い」クライアントとしてトランスポートレイヤーを使用することもできます。
+自動ツール実行やガードレールなどが不要な場合は、接続と割り込みのみを管理する「薄い」クライアントとしてトランスポート層だけを使用できます。
 
 <Code lang="typescript" code={thinClientExample} />

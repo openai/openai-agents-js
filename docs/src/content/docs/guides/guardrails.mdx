@@ -27,9 +27,9 @@ Input guardrails run in three steps:
 
 ## Output guardrails
 
-Output guardrails follow the same pattern:
+Output guardrails run in 3 steps:
 
-1. The guardrail receives the same input passed to the agent.
+1. The guardrail receives the output produced by the agent.
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
 3. If `tripwireTriggered` is `true`, an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error is thrown.
 

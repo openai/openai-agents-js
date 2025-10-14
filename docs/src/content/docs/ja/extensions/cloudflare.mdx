@@ -6,14 +6,13 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers とその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使って外向きの WebSocket を開くことができません。これらの環境から リアルタイムエージェント に接続しやすくするために、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
+Cloudflare Workers とその他の workerd ランタイムは、グローバル `WebSocket` コンストラクタを使って外向き WebSocket を開くことができません。これらの環境から リアルタイムエージェント に簡単に接続できるようにするため、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。稀なケースの問題やバグに遭遇する可能性があります。
-  問題があれば [GitHub
-  issues](https://github.com/openai/openai-agents-js/issues)
-  に報告してください。迅速に対応します。Workers で Node.js 風 API
-  を利用する場合は、`nodejs_compat` の有効化を検討してください。
+  このアダプターはまだベータ版です。レアケースの問題やバグに遭遇する可能性があります。
+  問題は [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  から報告してください。迅速に修正します。Workers で Node.js 風の API
+  を使いたい場合は `nodejs_compat` の有効化を検討してください。
 </Aside>
 
 ## セットアップ
@@ -26,11 +25,11 @@ Cloudflare Workers とその他の workerd ランタイムでは、グローバ�
    npm install @openai/agents-extensions
    ```
 
-2. **トランスポートを作成し、セッションにアタッチします。**
+2. **トランスポートを作成してセッションにアタッチします。**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **`RealtimeSession` に接続します。**
+3. **`RealtimeSession` を接続します。**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -38,8 +37,8 @@ Cloudflare Workers とその他の workerd ランタイムでは、グローバ�
 
 </Steps>
 
-## 注意点
+## 注意事項
 
-- Cloudflare トランスポートは内部的に `Upgrade: websocket` を伴う `fetch()` を使用し、ソケットの `open` イベントを待たずに処理を進めます。workerd の API に合わせた挙動です
-- このトランスポート使用時も、`RealtimeSession` のすべての機能（ツール、ガードレール など）は通常どおり動作します
-- 開発中の詳細ログ確認には `DEBUG=openai-agents*` を使用します
+- Cloudflare トランスポートは内部的に `fetch()` と `Upgrade: websocket` を使用し、ソケットの `open` イベント待ちをスキップして workerd API に合わせます
+- このトランスポート使用時も、`RealtimeSession` のすべての機能（tools、ガードレール など）は通常どおり動作します
+- 開発時の詳細ログ確認には `DEBUG=openai-agents*` を使用します

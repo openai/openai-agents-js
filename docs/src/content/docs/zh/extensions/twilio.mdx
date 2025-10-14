@@ -7,12 +7,12 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio 提供了一个 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)，可将电话通话的原始音频发送到 WebSocket 服务器。此设置可用于将您的[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)连接到 Twilio。您可以使用 `websocket` 模式下的默认 Realtime Session 传输，将来自 Twilio 的事件连接到您的 Realtime Session。不过，这需要您设置正确的音频格式并调整中断时机，因为电话通话相较于基于 Web 的对话自然会引入更多延迟。
+Twilio 提供了一个 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)，可以将电话通话中的原始音频发送到一个 WebSocket 服务器。该设置可用于将您的[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)连接到 Twilio。您可以使用默认的 Realtime Session 传输在 `websocket` 模式下，将来自 Twilio 的事件连接到您的 Realtime Session。不过，这需要您设置正确的音频格式，并调整自己的中断时机，因为电话通话相比基于 Web 的对话会自然引入更多延迟。
 
-为了改进设置体验，我们创建了一个专用的传输层，为您处理与 Twilio 的连接，包括处理中断和音频转发。
+为改进设置体验，我们创建了一个专用传输层，替您处理与 Twilio 的连接，包括处理中断和音频转发。
 
 <Aside type="caution">
-  该适配器仍处于测试版。您可能会遇到边缘情况或漏洞。 请通过 [GitHub
+  此适配器仍处于测试版。您可能会遇到边缘情况或 bug。 请通过 [GitHub
   issues](https://github.com/openai/openai-agents-js/issues)
   报告任何问题，我们会尽快修复。
 </Aside>
@@ -21,15 +21,14 @@ Twilio 提供了一个 [Media Streams API](https://www.twilio.com/docs/voice/med
 
 <Steps>
 
-1. **确保您拥有 Twilio 账户和一个 Twilio 电话号码。**
+1. **确保您拥有一个 Twilio 账户和一个 Twilio 电话号码。**
 
-2. **设置一个能接收来自 Twilio 事件的 WebSocket 服务器。**
+2. **设置一个可以接收来自 Twilio 事件的 WebSocket 服务器。**
 
-   如果您在本地开发，这将需要您配置一个本地隧道，比如
-   这将需要您配置一个本地隧道，比如 [`ngrok`](https://ngrok.io/) 或
+   如果您在本地开发，这需要配置一个本地隧道，例如使用 [`ngrok`](https://ngrok.io/) 或
    [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
-   以便让本地服务器能被 Twilio 访问。您可以使用 `TwilioRealtimeTransportLayer`
-   连接到 Twilio。
+   让您的本地服务器可被 Twilio 访问。您可以使用 `TwilioRealtimeTransportLayer`
+   来连接 Twilio。
 
 3. **通过安装扩展包来安装 Twilio 适配器：**
 
@@ -55,28 +54,27 @@ Twilio 提供了一个 [Media Streams API](https://www.twilio.com/docs/voice/med
 
 </Steps>
 
-您对 `RealtimeSession` 的事件和行为预期都将正常工作，包括工具调用、护栏等。阅读[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)，了解如何将 `RealtimeSession` 与语音智能体一起使用的更多信息。
+任何您期望从 `RealtimeSession` 获得的事件和行为都会按预期工作，包括工具调用、护栏等。阅读[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)以了解如何将 `RealtimeSession` 与语音智能体一起使用的更多信息。
 
 ## 提示与注意事项
 
 1. **速度至关重要。**
 
    为了接收来自 Twilio 的所有必要事件和音频，您应在拿到 WebSocket 连接引用后立即创建
-   `TwilioRealtimeTransportLayer` 实例，并立刻调用 `session.connect()`。
+   `TwilioRealtimeTransportLayer` 实例，并紧接着调用 `session.connect()`。
 
 2. **访问原始 Twilio 事件。**
 
-   如果您想访问 Twilio 发送的原始事件，可以在 `RealtimeSession` 实例上监听
-   `transport_event` 事件。来自 Twilio 的每个事件其类型为 `twilio_message`，并带有包含原始事件数据的 `message` 属性。
+   如果您想访问 Twilio 发送的原始事件，您可以在 `RealtimeSession` 实例上监听
+   `transport_event` 事件。来自 Twilio 的每个事件都会有一个类型 `twilio_message`，以及包含原始事件数据的 `message` 属性。
 
 3. **查看调试日志。**
 
-   有时您可能会遇到需要更多信息的问题。使用 `DEBUG=openai-agents*` 环境变量可以显示来自 Agents SDK 的所有调试日志。
-   或者，您也可以使用 `DEBUG=openai-agents:extensions:twilio*` 仅启用 Twilio 适配器的调试日志。
+   有时您可能会遇到需要更多信息的问题。使用环境变量 `DEBUG=openai-agents*` 将显示来自 Agents SDK 的所有调试日志。或者，您也可以仅启用 Twilio 适配器的调试日志：`DEBUG=openai-agents:extensions:twilio*`。
 
 ## 完整示例服务器
 
-下面是一个端到端的 WebSocket 服务器示例，用于接收来自 Twilio 的请求并将其转发到 `RealtimeSession`。
+下面是一个端到端的 WebSocket 服务器示例，它接收来自 Twilio 的请求并将其转发到 `RealtimeSession`。
 
 <Code
   lang="typescript"

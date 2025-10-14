@@ -28,46 +28,46 @@ import cloudflareTransportExample from '../../../../../../../examples/docs/exten
 
 ## 기본 전송 계층
 
-### WebRTC 연결
+### WebRTC를 통한 연결
 
 기본 전송 계층은 WebRTC를 사용합니다. 마이크에서 오디오를 녹음하고 자동으로 재생합니다.
 
-직접 준비한 미디어 스트림 또는 오디오 요소를 사용하려면 세션 생성 시 `OpenAIRealtimeWebRTC` 인스턴스를 전달하세요.
+자신의 미디어 스트림이나 오디오 요소를 사용하려면 세션을 생성할 때 `OpenAIRealtimeWebRTC` 인스턴스를 제공하세요.
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### WebSocket 연결
+### WebSocket을 통한 연결
 
-WebRTC 대신 WebSocket 연결을 사용하려면 세션 생성 시 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하세요. 이는 예를 들어 Twilio로 전화 에이전트를 구축하는 등의 서버 사이드 사용 사례에 적합합니다.
+WebRTC 대신 WebSocket 연결을 사용하려면 세션을 생성할 때 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하세요. 이는 예를 들어 Twilio로 전화 에이전트를 구축하는 등 서버 측 사용 사례에 적합합니다.
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-원문 PCM16 오디오 바이트 처리를 위해 임의의 녹음/재생 라이브러리를 사용하세요.
+원문 PCM16 오디오 바이트를 처리하기 위해 임의의 녹음/재생 라이브러리를 사용하세요.
 
-#### Cloudflare Workers (workerd) 참고
+#### Cloudflare Workers (workerd) 참고 사항
 
 Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 확장 패키지의 Cloudflare 전송을 사용하세요. 내부적으로 `fetch()` 기반 업그레이드를 수행합니다.
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### 자체 전송 메커니즘 구축
+### 사용자 지정 전송 메커니즘 구축
 
-다른 음성-대-음성 API를 사용하거나 커스텀 전송 메커니즘이 필요한 경우, `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 발생시켜 직접 만들 수 있습니다.
+다른 음성 간 API를 사용하거나 사용자 지정 전송 메커니즘이 필요한 경우 `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 발생시켜 직접 만들 수 있습니다.
 
-## Realtime API 직접 상호작용
+## Realtime API와의 보다 직접적인 상호작용
 
-OpenAI Realtime API를 사용하되 Realtime API에 더 직접적으로 접근하고 싶다면 다음 두 가지 옵션이 있습니다.
+OpenAI Realtime API를 사용하면서 Realtime API에 더 직접 접근하려면 두 가지 옵션이 있습니다.
 
-### 옵션 1 - 전송 계층 접근
+### 옵션 1 - 전송 계층 액세스
 
-`RealtimeSession`의 모든 기능을 계속 활용하려면 `session.transport`를 통해 전송 계층에 접근할 수 있습니다.
+`RealtimeSession`의 모든 기능을 활용하면서 전송 계층에 접근하려면 `session.transport`를 통해 접근하세요.
 
-전송 계층은 수신한 모든 이벤트를 `*` 이벤트로 내보내며, `sendEvent()` 메서드를 사용해 원문 이벤트를 전송할 수 있습니다.
+전송 계층은 수신한 모든 이벤트를 `*` 이벤트로 내보내며, `sendEvent()` 메서드를 사용해 원시 이벤트를 전송할 수 있습니다.
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 옵션 2 — 전송 계층만 사용
 
-자동 도구 실행, 가드레일 등이 필요하지 않다면, 연결과 인터럽션(중단 처리)만 관리하는 “얇은(thin)” 클라이언트로 전송 계층만 사용할 수 있습니다.
+자동 도구 실행, 가드레일 등이 필요 없다면 연결과 인터럽션(중단 처리)만 관리하는 "얇은(thin) 클라이언트"로 전송 계층만 사용할 수도 있습니다.
 
 <Code lang="typescript" code={thinClientExample} />

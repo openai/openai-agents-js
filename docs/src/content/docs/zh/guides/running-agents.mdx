@@ -11,80 +11,80 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 import conversationIdExample from '../../../../../../examples/docs/running-agents/conversationId.ts?raw';
 import previousResponseIdExample from '../../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 
-智能体本身不会做任何事——你需要使用 `Runner` 类或 `run()` 工具来**运行**它们。
+智能体本身不会做任何事——需要使用 `Runner` 类或 `run()` 实用函数来**运行**它们。
 
 <Code lang="typescript" code={helloWorldExample} title="Simple run" />
 
-当你不需要自定义 runner 时，也可以使用 `run()` 工具，它会运行一个单例的默认 `Runner` 实例。
+当你不需要自定义 runner 时，也可以使用 `run()` 实用函数，它会运行一个单例的默认 `Runner` 实例。
 
-或者，你也可以创建自己的 runner 实例：
+或者，你可以创建自己的 runner 实例：
 
 <Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
 
-运行智能体后，你会收到一个[执行结果](/openai-agents-js/zh/guides/results)对象，其中包含最终输出以及本次运行的完整历史。
+运行智能体后，你将收到一个[执行结果](/openai-agents-js/zh/guides/results)对象，其中包含最终输出以及本次运行的完整历史记录。
 
 ## 智能体循环
 
-当你在 Runner 中使用 run 方法时，你需要传入一个起始智能体和输入。输入可以是字符串（视为用户消息），也可以是输入项列表，即 OpenAI Responses API 中的各类项目。
+当你使用 Runner 的 run 方法时，你需要传入一个起始智能体和输入。输入可以是字符串（被视为一条用户消息），也可以是输入项列表，即 OpenAI Responses API 中的项目。
 
-随后 runner 会运行一个循环：
+然后 runner 会运行一个循环：
 
 1. 使用当前输入调用当前智能体的模型。
-2. 检查 LLM 响应。
+2. 检查 LLM 的响应。
    - **最终输出** → 返回。
-   - **交接** → 切换到新智能体，保留累积的对话历史，回到步骤 1。
-   - **工具调用** → 执行工具，将其结果追加到对话中，回到步骤 1。
-3. 一旦达到 `maxTurns`，抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)。
+   - **交接** → 切换到新的智能体，保留累积的会话历史，回到步骤 1。
+   - **工具调用** → 执行工具，将其结果追加到会话中，回到步骤 1。
+3. 当达到 `maxTurns` 时抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)。
 
 <Aside type="note">
   判断 LLM
-  输出是否为“最终输出”的规则是：它生成了期望类型的文本输出，且没有工具调用。
+  输出是否为“最终输出”的规则是：它生成了所需类型的文本输出，且没有工具调用。
 </Aside>
 
 ### Runner 生命周期
 
-在应用启动时创建一个 `Runner` 并在各个请求间复用。该实例存储全局配置，如模型提供方与追踪选项。仅当需要完全不同的配置时才创建新的 `Runner`。对于简单脚本，你也可以调用内部使用默认 runner 的 `run()`。
+在应用启动时创建一个 `Runner` 并在各个请求之间复用。该实例存储全局配置，例如模型提供方和追踪选项。只有当你需要完全不同的配置时才创建另一个 `Runner`。对于简单脚本，你也可以调用 `run()`，它会在内部使用默认 runner。
 
 ## 运行参数
 
-`run()` 方法的输入包括：用于开始运行的初始智能体、运行的输入以及一组选项。
+`run()` 方法的输入包括用于启动运行的初始智能体、运行的输入以及一组选项。
 
-输入可以是字符串（视为用户消息），或一组[输入项](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem)，也可以是在你构建[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)智能体时使用的 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 对象。
+输入可以是字符串（被视为一条用户消息）、[输入项](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem)列表，或在构建[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)智能体时使用的 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 对象。
 
-其他可选项如下：
+其他可选项包括：
 
-| Option     | Default | Description                                                                                                          |
-| ---------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `stream`   | `false` | 若为 `true`，调用将返回 `StreamedRunResult`，并在事件从模型到达时逐步发出。                                          |
-| `context`  | –       | 转发给每个 tool / guardrail / handoff 的上下文对象。详见[上下文管理](/openai-agents-js/zh/guides/context)。          |
-| `maxTurns` | `10`    | 安全上限——达到后抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)。 |
-| `signal`   | –       | 用于取消的 `AbortSignal`。                                                                                           |
+| Option     | Default | Description                                                                                                              |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `stream`   | `false` | 如果为 `true`，调用将返回一个 `StreamedRunResult`，并在事件从模型到达时逐步发出。                                        |
+| `context`  | –       | 转发到每个工具 / 护栏 / 交接的上下文对象。详见[上下文管理](/openai-agents-js/zh/guides/context)。                        |
+| `maxTurns` | `10`    | 安全限制——达到该值时抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)。 |
+| `signal`   | –       | 用于取消的 `AbortSignal`。                                                                                               |
 
 ## 流式传输
 
-流式传输允许你在 LLM 运行过程中额外接收流式事件。流启动后，`StreamedRunResult` 将包含关于本次运行的完整信息，包括所有新产生的输出。你可以使用 `for await` 循环迭代流式事件。详见[流式传输](/openai-agents-js/zh/guides/streaming)。
+流式传输允许你在 LLM 运行时接收额外的流式事件。流启动后，`StreamedRunResult` 将包含关于此次运行的完整信息，包括所有新生成的输出。你可以使用 `for await` 循环迭代这些流式事件。阅读[流式传输](/openai-agents-js/zh/guides/streaming)指南了解更多。
 
 ## 运行配置
 
-如果你创建自己的 `Runner` 实例，可以传入 `RunConfig` 对象来配置 runner。
+如果你要创建自己的 `Runner` 实例，可以传入一个 `RunConfig` 对象来配置 runner。
 
 | Field                       | Type                  | Purpose                                                       |
 | --------------------------- | --------------------- | ------------------------------------------------------------- |
 | `model`                     | `string \| Model`     | 为运行中的**所有**智能体强制指定特定模型。                    |
-| `modelProvider`             | `ModelProvider`       | 解析模型名称——默认使用 OpenAI 提供方。                        |
-| `modelSettings`             | `ModelSettings`       | 覆盖按智能体设置的全局调优参数。                              |
-| `handoffInputFilter`        | `HandoffInputFilter`  | 执行交接时修改输入项（如果交接本身尚未定义该逻辑）。          |
+| `modelProvider`             | `ModelProvider`       | 解析模型名称——默认为 OpenAI 提供方。                          |
+| `modelSettings`             | `ModelSettings`       | 覆盖每个智能体设置的全局调优参数。                            |
+| `handoffInputFilter`        | `HandoffInputFilter`  | 执行交接时用于变更输入项（如果交接本身未定义）的过滤器。      |
 | `inputGuardrails`           | `InputGuardrail[]`    | 应用于*初始*用户输入的护栏。                                  |
 | `outputGuardrails`          | `OutputGuardrail[]`   | 应用于*最终*输出的护栏。                                      |
 | `tracingDisabled`           | `boolean`             | 完全禁用 OpenAI 追踪。                                        |
 | `traceIncludeSensitiveData` | `boolean`             | 在仍然发出 span 的同时，将 LLM/工具的输入与输出从追踪中排除。 |
-| `workflowName`              | `string`              | 显示在 Traces 仪表板中——有助于对相关运行进行分组。            |
-| `traceId` / `groupId`       | `string`              | 手动指定 trace 或 group ID，而非由 SDK 自动生成。             |
+| `workflowName`              | `string`              | 显示在 Traces 仪表板中——有助于将相关运行分组。                |
+| `traceId` / `groupId`       | `string`              | 手动指定 trace 或 group ID，而不是交由 SDK 自动生成。         |
 | `traceMetadata`             | `Record<string, any>` | 附加到每个 span 的任意元数据。                                |
 
 ## 会话 / 聊天线程
 
-每次调用 `runner.run()`（或 `run()` 工具）代表你在应用层对话中的一个**轮次**。你可以自行决定向终端用户展示多少 `RunResult` 内容——有时仅展示 `finalOutput`，有时展示每个生成的项目。
+每次调用 `runner.run()`（或 `run()` 实用函数）都代表你的应用层会话中的一个**轮次**。你可以自行决定向终端用户展示多少 `RunResult` 内容——有时仅展示 `finalOutput`，有时展示每一个生成的项目。
 
 <Code
   lang="typescript"
@@ -92,17 +92,17 @@ import previousResponseIdExample from '../../../../../../examples/docs/running-a
   title="Example of carrying over the conversation history"
 />
 
-参见[聊天示例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)以获取交互版本。
+参见[聊天示例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)以获得交互版本。
 
-### 服务器托管的会话
+### 服务器管理的会话
 
-你可以让 OpenAI Responses API 为你持久化会话历史，而无需在每个轮次都发送完整的本地话术。这在协调长对话或多个服务时很有用。详见[会话状态指南](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)。
+你可以让 OpenAI Responses API 为你持久化会话历史，而无需在每个轮次都发送完整的本地记录。当你在协调长会话或多个服务时，这很有用。详见[会话状态指南](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)。
 
 OpenAI 提供两种复用服务器端状态的方式：
 
-#### 1. 使用 `conversationId` 覆盖整段会话
+#### 1. 整个会话使用 `conversationId`
 
-你可以使用 [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) 创建一次会话，然后在每个轮次复用其 ID。SDK 会自动仅包含新生成的项目。
+你可以使用[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) 创建一次会话，然后在每个轮次复用其 ID。SDK 会自动仅包含新生成的项目。
 
 <Code
   lang="typescript"
@@ -110,9 +110,9 @@ OpenAI 提供两种复用服务器端状态的方式：
   title="Reusing a server conversation"
 />
 
-#### 2. 使用 `previousResponseId` 从上个轮次继续
+#### 2. 使用 `previousResponseId` 从上一个轮次继续
 
-如果你无论如何都想仅从 Responses API 开始，你可以通过前一次响应返回的 ID 将每个请求串联起来。这样无需创建完整的会话资源也能在轮次间保持上下文。
+如果你只想从 Responses API 开始，可以使用上一个响应返回的 ID 串联每个请求。这样无需创建完整的会话资源也能在轮次之间保持上下文。
 
 <Code
   lang="typescript"
@@ -124,16 +124,16 @@ OpenAI 提供两种复用服务器端状态的方式：
 
 SDK 会抛出一小组可供捕获的错误：
 
-- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)——达到 `maxTurns`。
-- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror)——模型产生了无效输出（如 JSON 异常、未知工具）。
-- [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered)——护栏违规。
-- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror)——护栏执行失败。
-- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror)——任一函数工具调用失败。
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror)——基于配置或用户输入抛出的任意错误。
+- [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – 达到 `maxTurns`。
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 模型产生无效输出（例如格式错误的 JSON、未知工具）。
+- [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – 违反护栏。
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – 护栏执行失败。
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 任一函数工具调用失败。
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 基于配置或用户输入抛出的错误。
 
-这些错误都继承自基础 `AgentsError` 类，该类可能提供 `state` 属性以访问当前运行状态。
+这些错误都继承自基础类 `AgentsError`，它可能提供 `state` 属性以访问当前运行状态。
 
-下面是处理 `GuardrailExecutionError` 的示例代码：
+下面是一个处理 `GuardrailExecutionError` 的代码示例：
 
 <Code
   lang="typescript"
@@ -152,6 +152,6 @@ Math homework guardrail tripped
 
 ## 后续步骤
 
-- 了解如何配置[模型](/openai-agents-js/zh/guides/models)。
+- 了解如何[配置模型](/openai-agents-js/zh/guides/models)。
 - 为你的智能体提供[工具](/openai-agents-js/zh/guides/tools)。
-- 添加用于生产就绪的[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)。
+- 添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)以满足生产需求。

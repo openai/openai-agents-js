@@ -10,12 +10,12 @@ import nonStrictSchemaTools from '../../../../../../examples/docs/tools/nonStric
 import agentsAsToolsExample from '../../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
-工具让智能体**执行操作**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持四种类别：
+工具让智能体能够**执行操作**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持四种类别：
 
 1. **托管工具**——与模型一起在 OpenAI 服务器上运行。（Web 搜索、文件搜索、计算机操作、Code Interpreter、图像生成）
-2. **函数工具**——用 JSON schema 包装任意本地函数，使 LLM 可调用。
-3. **智能体作为工具**——将整个智能体暴露为可调用的工具。
-4. **本地 MCP 服务器**——挂载运行在你机器上的 Model context protocol 服务器。
+2. **函数工具**——用 JSON schema 包装任意本地函数，让 LLM 可以调用。
+3. **智能体作为工具**——将整个智能体暴露为可调用工具。
+4. **本地 MCP 服务器**——挂载运行在你机器上的 Model Context Protocol 服务器。
 
 ---
 
@@ -23,17 +23,17 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 当你使用 `OpenAIResponsesModel` 时，可以添加以下内置工具：
 
-| 工具                    | 类型字符串           | 作用                             |
-| ----------------------- | -------------------- | -------------------------------- |
-| Web search              | `'web_search'`       | 互联网搜索。                     |
-| File / retrieval search | `'file_search'`      | 查询托管在 OpenAI 上的向量存储。 |
-| 计算机操作              | `'computer'`         | 自动化 GUI 交互。                |
-| Code Interpreter        | `'code_interpreter'` | 在沙盒环境中运行代码。           |
-| 图像生成                | `'image_generation'` | 基于文本生成图像。               |
+| 工具             | 类型字符串           | 目的                         |
+| ---------------- | -------------------- | ---------------------------- |
+| Web 搜索         | `'web_search'`       | 互联网搜索。                 |
+| 文件/检索搜索    | `'file_search'`      | 查询 OpenAI 托管的向量存储。 |
+| 计算机操作       | `'computer'`         | 自动化 GUI 交互。            |
+| Code Interpreter | `'code_interpreter'` | 在沙盒环境中运行代码。       |
+| 图像生成         | `'image_generation'` | 基于文本生成图像。           |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="托管工具" />
 
-具体参数集合与 OpenAI Responses API 保持一致——参见官方文档以获取 `rankingOptions` 或语义过滤等高级选项。
+具体参数与 OpenAI Responses API 完全一致——高级选项如 `rankingOptions` 或语义过滤请参考官方文档。
 
 ---
 
@@ -44,23 +44,23 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 <Code
   lang="typescript"
   code={toolsFunctionExample}
-  title="使用 Zod 参数的函数工具"
+  title="带 Zod 参数的函数工具"
 />
 
 ### 选项参考
 
-| 字段            | 必填 | 描述                                                                                                                                                                                          |
+| 字段            | 必填 | 说明                                                                                                                                                                                          |
 | --------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `name`          | 否   | 默认为函数名（例如 `get_weather`）。                                                                                                                                                          |
 | `description`   | 是   | 清晰、可读的人类描述，展示给 LLM。                                                                                                                                                            |
-| `parameters`    | 是   | 可以是 Zod schema 或原始 JSON schema 对象。使用 Zod 参数会自动启用 **strict** 模式。                                                                                                          |
-| `strict`        | 否   | 当为 `true`（默认）时，如果参数校验不通过，SDK 会返回模型错误。将其设为 `false` 可进行模糊匹配。                                                                                              |
-| `execute`       | 是   | `(args, context) => string                                                                                               \| Promise<string>`——你的业务逻辑。第二个参数可选，为 `RunContext`。 |
+| `parameters`    | 是   | Zod schema 或原始 JSON schema 对象。使用 Zod 参数会自动启用 **strict** 模式。                                                                                                                 |
+| `strict`        | 否   | 当为 `true`（默认）时，如果参数校验失败，SDK 会返回模型错误。将其设为 `false` 以进行模糊匹配。                                                                                                |
+| `execute`       | 是   | `(args, context) => string                                                                                               \| Promise<string>`——你的业务逻辑。可选的第二个参数为 `RunContext`。 |
 | `errorFunction` | 否   | 自定义处理器 `(context, error) => string`，用于将内部错误转换为对用户可见的字符串。                                                                                                           |
 
 ### 非严格 JSON schema 工具
 
-如果你需要模型在输入无效或不完整时进行“猜测”，可以在使用原始 JSON schema 时关闭严格模式：
+如果你需要模型在输入无效或不完整时进行“猜测”，可在使用原始 JSON schema 时禁用严格模式：
 
 <Code
   lang="typescript"
@@ -79,33 +79,33 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 在底层，SDK 会：
 
 - 创建一个只有 `input` 参数的函数工具。
-- 在调用工具时，使用该输入运行子智能体。
+- 在调用工具时使用该输入运行子智能体。
 - 返回最后一条消息，或由 `customOutputExtractor` 提取的输出。
 
-当你将智能体作为工具运行时，Agents SDK 会使用默认设置创建一个 runner，并在函数执行中用它运行该智能体。如果你想提供任何 `runConfig` 或 `runOptions` 的属性，可以将它们传给 `asTool()` 方法以自定义 runner 的行为。
+当你将智能体作为工具运行时，Agents SDK 会使用默认设置创建一个 runner，并在函数执行内用它运行该智能体。如果你想提供任意 `runConfig` 或 `runOptions` 的属性，可以将它们传给 `asTool()` 方法以自定义 runner 的行为。
 
 ---
 
 ## 4. MCP 服务器
 
-你可以通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务器暴露工具，并将其附加到智能体上。
+你可以通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务器暴露工具，并将其挂载到智能体上。
 例如，你可以使用 `MCPServerStdio` 启动并连接到 stdio MCP 服务器：
 
 <Code lang="typescript" code={mcpLocalServer} title="本地 MCP 服务器" />
 
-完整示例见 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果你在寻找关于 MCP 服务器工具集成的综合指南，请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp) 了解详情。
+完整示例见 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果你在寻找有关 MCP 服务器工具集成的全面指南，请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp) 获取详情。
 
 ---
 
 ## 工具使用行为
 
-参见 [智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use) 了解如何控制模型必须何时以及如何使用工具（`tool_choice`、`toolUseBehavior` 等）。
+关于控制模型何时以及如何必须使用工具（`tool_choice`、`toolUseBehavior` 等），请参考[智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
 
 ---
 
 ## 最佳实践
 
-- **简短且明确的描述**——说明工具做什么，以及何时使用它。
+- **简短且明确的描述**——说明工具做什么以及何时使用。
 - **校验输入**——尽可能使用 Zod schema 进行严格的 JSON 校验。
 - **避免在错误处理器中产生副作用**——`errorFunction` 应返回有用的字符串，而不是抛出异常。
 - **单一职责**——小而可组合的工具有助于更好的模型推理。
@@ -114,6 +114,6 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 ## 后续步骤
 
-- 了解[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
+- 了解[强制工具使用](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
 - 添加[护栏](/openai-agents-js/zh/guides/guardrails)以校验工具输入或输出。
-- 查阅 TypeDoc 参考：[`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各种托管工具类型。
+- 查阅 TypeDoc 参考：[`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各类托管工具类型。
