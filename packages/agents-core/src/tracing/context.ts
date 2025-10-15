@@ -118,13 +118,15 @@ export async function getOrCreateTrace<T>(
 
 /**
  * This function will set the current span in the execution context.
+ * If no trace context exists, the operation is skipped.
  *
  * @param span - The span to set as the current span.
  */
 export function setCurrentSpan(span: Span<any>) {
   const context = getContextAsyncLocalStorage().getStore();
   if (!context) {
-    throw new Error('No existing trace found');
+    // No trace context exists, skip setting the span
+    return;
   }
 
   if (context.span) {
@@ -173,13 +175,15 @@ export function cloneCurrentContext(context: ContextState) {
 
 /**
  * This function will run the given function with a new span context.
+ * If no trace context exists, the function will be executed directly without tracing.
  *
  * @param fn - The function to run with the new span context.
  */
 export function withNewSpanContext<T>(fn: () => Promise<T>) {
   const currentContext = getContextAsyncLocalStorage().getStore();
   if (!currentContext) {
-    throw new Error('No existing trace found');
+    // No trace context exists, run the function directly without tracing
+    return fn();
   }
 
   const copyOfContext = cloneCurrentContext(currentContext);
