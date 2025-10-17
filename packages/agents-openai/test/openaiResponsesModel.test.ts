@@ -104,6 +104,37 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('includes model when overridePromptModel is true', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt-override', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-override');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_456' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+        overridePromptModel: true,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.model).toBe('gpt-override');
+      expect(args.prompt).toMatchObject({ id: 'pmpt_456' });
+    });
+  });
+
   it('normalizes systemInstructions so empty strings are omitted', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

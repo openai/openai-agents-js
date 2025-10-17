@@ -269,6 +269,13 @@ export type ModelRequest = {
    * The prompt template to use for the model, if any.
    */
   prompt?: Prompt;
+
+  /**
+   * When true, the resolved model should override the model configured in the prompt template.
+   * Providers that support prompt templates should include the explicit model name in the request
+   * even when a prompt is supplied.
+   */
+  overridePromptModel?: boolean;
 };
 
 export type ModelResponse = {

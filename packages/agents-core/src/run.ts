@@ -558,6 +558,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 state._context,
               ),
               prompt: await state._currentAgent.getPrompt(state._context),
+              // Explicit agent/run config models should take precedence over prompt defaults.
+              ...(explictlyModelSet ? { overridePromptModel: true } : {}),
               input: turnInput,
               previousResponseId,
               conversationId,
@@ -957,6 +959,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               result.state._context,
             ),
             prompt: await currentAgent.getPrompt(result.state._context),
+            // Streaming requests should also honor explicitly chosen models.
+            ...(explictlyModelSet ? { overridePromptModel: true } : {}),
             input: turnInput,
             previousResponseId,
             conversationId,

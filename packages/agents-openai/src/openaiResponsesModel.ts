@@ -877,8 +877,13 @@ export class OpenAIResponsesModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
+    // When a prompt template already declares a model, skip sending the agent's default model.
+    // If the caller explicitly requests an override, include the resolved model name in the request.
+    const shouldSendModel =
+      !request.prompt || request.overridePromptModel === true;
+
     const requestData = {
-      ...(!request.prompt ? { model: this.#model } : {}),
+      ...(shouldSendModel ? { model: this.#model } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,

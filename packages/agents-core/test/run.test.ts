@@ -157,6 +157,39 @@ describe('Runner.run', () => {
       await expect(run(agent, 'fail')).rejects.toThrow('No response found');
     });
 
+    it('sets overridePromptModel when agent supplies a prompt and explicit model', async () => {
+      class CapturingModel implements Model {
+        lastRequest?: ModelRequest;
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.lastRequest = request;
+          return {
+            output: [fakeModelMessage('override')],
+            usage: new Usage(),
+          };
+        }
+        async *getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const capturingModel = new CapturingModel();
+
+      const agent = new Agent({
+        name: 'Prompted',
+        instructions: 'Use the prompt.',
+        model: capturingModel,
+        prompt: { promptId: 'prompt_123' },
+      });
+
+      await run(agent, 'hello');
+
+      expect(capturingModel.lastRequest?.prompt).toBeDefined();
+      expect(capturingModel.lastRequest?.overridePromptModel).toBe(true);
+    });
+
     it('emits agent_end lifecycle event for non-streaming agents', async () => {
       const agent = new Agent({
         name: 'TestAgent',
