@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.1.10
+
+### Patch Changes
+
+- cad0baa: Resolved typo with usage events
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
 ## 0.1.8
 
 ### Patch Changes

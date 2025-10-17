@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- b07a588: fix: #562 invalid model settings when prompt is set in Agent
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
 ## 0.1.9
 
 ### Patch Changes

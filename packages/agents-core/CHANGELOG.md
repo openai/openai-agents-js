@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- e0b46c4: fix: improve the compatibility for conversationId / previousResponseId + tool calls
+
+  ref: https://github.com/openai/openai-agents-python/pull/1827
+
+- 3023dc0: Fixes a bug where `onTraceEnd` was called immediately after `onTraceStart` when streaming is enabled
+
 ## 0.1.8
 
 ### Patch Changes
