@@ -25,6 +25,18 @@ export type TwilioRealtimeTransportLayerOptions =
      * connection gets passed into your request handler when running your WebSocket server.
      */
     twilioWebSocket: WebSocket | NodeWebSocket;
+    // Optional resampler hooks. They can be async or sync.
+    // data: ArrayBuffer audio payload, from: input audio format label, to: target audio format label
+    resampleIncoming?: (
+      data: ArrayBuffer,
+      from?: string,
+      to?: string,
+    ) => Promise<ArrayBuffer> | ArrayBuffer;
+    resampleOutgoing?: (
+      data: ArrayBuffer,
+      from?: string,
+      to?: string,
+    ) => Promise<ArrayBuffer> | ArrayBuffer;
   };
 
 /**
@@ -60,10 +72,24 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
   #logger = getLogger('openai-agents:extensions:twilio');
+  #resampleIncoming?: (
+    data: ArrayBuffer,
+    from?: string,
+    to?: string,
+  ) => Promise<ArrayBuffer> | ArrayBuffer;
+  #resampleOutgoing?: (
+    data: ArrayBuffer,
+    from?: string,
+    to?: string,
+  ) => Promise<ArrayBuffer> | ArrayBuffer;
+  // audio format expected by Twilio (default g711_ulaw)
+  #twilioAudioFormat: string = 'g711_ulaw';
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
     super(options);
     this.#twilioWebSocket = options.twilioWebSocket;
+    this.#resampleIncoming = options.resampleIncoming;
+    this.#resampleOutgoing = options.resampleOutgoing;
   }
 
   _setInputAndOutputAudioFormat(
@@ -91,10 +117,17 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     options.initialSessionConfig = this._setInputAndOutputAudioFormat(
       options.initialSessionConfig,
     );
+
+    // Keep the transport's twilioAudioFormat in sync with initial session config
+    // (outputAudioFormat is what we will send to Twilio)
+    this.#twilioAudioFormat =
+      // @ts-expect-error - this is a valid config
+      options.initialSessionConfig?.outputAudioFormat ?? 'g711_ulaw';
+
     // listen to Twilio messages as quickly as possible
     this.#twilioWebSocket.addEventListener(
       'message',
-      (message: MessageEvent | NodeMessageEvent) => {
+      async (message: MessageEvent | NodeMessageEvent) => {
         try {
           const data = JSON.parse(message.data.toString());
           if (this.#logger.dontLogModelData) {
@@ -109,7 +142,30 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
           switch (data.event) {
             case 'media':
               if (this.status === 'connected') {
-                this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
+                // Twilio sends base64 payloads
+                let buffer = utils.base64ToArrayBuffer(data.media.payload);
+
+                // If user supplied a resampler, call it to convert to the internal Realtime expected format
+                if (this.#resampleIncoming) {
+                  try {
+                    const maybePromise = this.#resampleIncoming(
+                      buffer,
+                      // Twilio payload format (we assume Twilio->transport input)
+                      data.media?.format ?? undefined,
+                      // target format we used for inputAudioFormat
+                      // (we infer from initialSessionConfig or default to g711_ulaw)
+                      // @ts-expect-error - this is a valid config
+                      options.initialSessionConfig?.inputAudioFormat ??
+                        'g711_ulaw',
+                    );
+                    buffer = (await maybePromise) ?? buffer;
+                  } catch (err) {
+                    this.#logger.error('Incoming resampling failed:', err);
+                    // fall back to original buffer
+                  }
+                }
+
+                this.sendAudio(buffer);
               }
               break;
             case 'mark':
@@ -199,15 +255,35 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     super._interrupt(elapsedTime, cancelOngoingResponse);
   }
 
-  protected _onAudio(audioEvent: TransportLayerAudio) {
+  protected async _onAudio(audioEvent: TransportLayerAudio) {
     this.#logger.debug(
       `Sending audio to Twilio ${audioEvent.responseId}: (${audioEvent.data.byteLength} bytes)`,
     );
+    // Allow user-provided resampler to convert outgoing Realtime audio to Twilio format.
+    let twilioPayloadBuffer: ArrayBuffer = audioEvent.data;
+
+    if (this.#resampleOutgoing) {
+      try {
+        const maybePromise = this.#resampleOutgoing(
+          audioEvent.data,
+          // from: Realtime internal audio format (unknown here), leave undefined
+          undefined,
+          // to: format Twilio expects for outgoing audio
+          this.#twilioAudioFormat,
+        );
+        twilioPayloadBuffer = (await maybePromise) ?? audioEvent.data;
+      } catch (err) {
+        this.#logger.error('Outgoing resampling failed:', err);
+        // fall back to original audioEvent.data
+        twilioPayloadBuffer = audioEvent.data;
+      }
+    }
+
     const audioDelta = {
       event: 'media',
       streamSid: this.#streamSid,
       media: {
-        payload: utils.arrayBufferToBase64(audioEvent.data),
+        payload: utils.arrayBufferToBase64(twilioPayloadBuffer),
       },
     };
     if (this.#previousItemId !== this.currentItemId && this.currentItemId) {
@@ -228,3 +304,5 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.emit('audio', audioEvent);
   }
 }
+
+// vim:ts=2 sw=2 et:
