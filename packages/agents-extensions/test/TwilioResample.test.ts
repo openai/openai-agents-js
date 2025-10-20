@@ -54,10 +54,8 @@ describe('TwilioRealtimeTransportLayer resampling hooks', () => {
 
   test('resampleIncoming is called and its result is passed to sendAudio', async () => {
     const resampleIncoming = vi.fn(
-      async (data: ArrayBuffer, from?: string, to?: string) => {
+      async (data: ArrayBuffer, _from?: string, _to?: string) => {
         // ensure we receive the original data (we won't assert exact bytes here, just that the hook was called)
-        _ = from;
-        _ = to;
         return data;
       },
     );
@@ -102,9 +100,7 @@ describe('TwilioRealtimeTransportLayer resampling hooks', () => {
 
   test('resampleOutgoing is called and Twilio receives its result', async () => {
     const resampleOutgoing = vi.fn(
-      async (data: ArrayBuffer, from?: string, to?: string) => {
-        _ = from;
-        _ = to;
+      async (data: ArrayBuffer, _from?: string, _to?: string) => {
         return data;
       },
     );
