@@ -3,7 +3,7 @@
   "name": "tools",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "playwright": "^1.52.0",
+    "playwright": "^1.55.1",
     "zod": "^3.25.40"
   },
   "scripts": {
