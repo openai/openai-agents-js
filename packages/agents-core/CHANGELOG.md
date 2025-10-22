@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.1.11
+
+### Patch Changes
+
+- 3417f25: fix: #597 hostedMcpTool fails to send authorization parameter to Responses API
+
 ## 0.1.10
 
 ### Patch Changes
