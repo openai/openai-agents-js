@@ -196,6 +196,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             server_url: options.serverUrl,
+            authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
             headers: options.headers,
@@ -204,6 +205,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             server_url: options.serverUrl,
+            authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
             headers: options.headers,
             require_approval:

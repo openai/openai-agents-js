@@ -49,6 +49,30 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.providerData.type).toBe('mcp');
     expect(t.providerData.server_label).toBe('gitmcp');
   });
+
+  it('propagates authorization when approval is never required', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      authorization: 'secret-token',
+      requireApproval: 'never',
+    });
+
+    expect(t.providerData.authorization).toBe('secret-token');
+  });
+
+  it('propagates authorization when approval is required', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      authorization: 'secret-token',
+      requireApproval: {
+        always: { toolNames: ['tool-name'] },
+      },
+    });
+
+    expect(t.providerData.authorization).toBe('secret-token');
+  });
 });
 
 describe('tool.invoke', () => {
