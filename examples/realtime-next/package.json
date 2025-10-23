@@ -17,8 +17,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.3.0",
-    "wavtools": "^0.1.5",
-    "zod": "^3.25.40"
+    "wavtools": "^0.1.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

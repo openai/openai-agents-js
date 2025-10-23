@@ -3,8 +3,7 @@
   "name": "mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@openai/agents": "workspace:*",
-    "zod": "^3.25.40"
+    "@openai/agents": "workspace:*"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
