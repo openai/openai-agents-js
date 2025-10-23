@@ -4,8 +4,7 @@
   "dependencies": {
     "@ai-sdk/openai": "1",
     "@openai/agents": "workspace:*",
-    "@openai/agents-extensions": "workspace:*",
-    "zod": "3"
+    "@openai/agents-extensions": "workspace:*"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
