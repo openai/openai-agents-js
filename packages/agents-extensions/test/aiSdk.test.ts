@@ -343,8 +343,8 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('supports input_file string and rejects non-string file id', () => {
-    const ok: protocol.ModelItem[] = [
+  test('rejects input_file content', () => {
+    const items: protocol.ModelItem[] = [
       {
         role: 'user',
         content: [
@@ -356,36 +356,8 @@ describe('itemsToLanguageV2Messages', () => {
       } as any,
     ];
 
-    const msgs = itemsToLanguageV2Messages(stubModel({}), ok);
-    expect(msgs).toEqual([
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'file',
-            file: 'file_123',
-            mediaType: 'text/plain',
-            data: 'file_123',
-            providerOptions: {},
-          },
-        ],
-        providerOptions: {},
-      },
-    ]);
-
-    const bad: protocol.ModelItem[] = [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_file',
-            file: { not: 'a-string' },
-          },
-        ],
-      } as any,
-    ];
-    expect(() => itemsToLanguageV2Messages(stubModel({}), bad)).toThrow(
-      /Unsupported file reference/,
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /File inputs are not supported/,
     );
   });
 

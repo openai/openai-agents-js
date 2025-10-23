@@ -11,6 +11,7 @@
     "build-check": "tsc --noEmit",
     "start": "tsx index.ts",
     "start:gpt-5": "tsx gpt-5.ts",
-    "start:stream": "tsx stream.ts"
+    "start:stream": "tsx stream.ts",
+    "start:image-tool-output": "tsx image-tool-output.ts"
   }
 }

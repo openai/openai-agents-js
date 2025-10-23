@@ -102,39 +102,7 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_file') {
-                    if (typeof c.file === 'string') {
-                      return {
-                        type: 'file',
-                        file: c.file,
-                        mediaType: 'text/plain',
-                        data: c.file,
-                        providerOptions: {
-                          ...(contentProviderData ?? {}),
-                        },
-                      };
-                    }
-
-                    if (c.file && typeof c.file === 'object') {
-                      if ('url' in c.file && typeof c.file.url === 'string') {
-                        return {
-                          type: 'file',
-                          file: c.file.url,
-                          mediaType: 'text/plain',
-                          data: c.file.url,
-                          providerOptions: {
-                            ...(contentProviderData ?? {}),
-                          },
-                        };
-                      }
-
-                      if ('id' in c.file && typeof c.file.id === 'string') {
-                        throw new UserError('File ID is not supported');
-                      }
-                    }
-
-                    throw new UserError(
-                      'Unsupported file reference for chat input',
-                    );
+                    throw new UserError('File inputs are not supported.');
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
@@ -345,10 +313,6 @@ function convertLegacyToolOutputContent(
       structured.detail = output.detail;
     }
 
-    const legacyImageUrl = (output as any).imageUrl;
-    const legacyFileId = (output as any).fileId;
-    const dataValue = (output as any).data;
-
     if (typeof output.image === 'string' && output.image.length > 0) {
       structured.image = output.image;
     } else if (isRecord(output.image)) {
@@ -378,24 +342,6 @@ function convertLegacyToolOutputContent(
           structured.image = { id: referencedId };
         }
       }
-    } else if (
-      typeof legacyImageUrl === 'string' &&
-      legacyImageUrl.length > 0
-    ) {
-      structured.image = legacyImageUrl;
-    } else if (typeof legacyFileId === 'string' && legacyFileId.length > 0) {
-      structured.image = { id: legacyFileId };
-    } else {
-      let base64Data: string | undefined;
-      if (typeof dataValue === 'string' && dataValue.length > 0) {
-        base64Data = dataValue;
-      } else if (dataValue instanceof Uint8Array && dataValue.length > 0) {
-        base64Data = encodeUint8ArrayToBase64(dataValue);
-      }
-
-      if (base64Data) {
-        structured.image = base64Data;
-      }
     }
     if (output.providerData) {
       structured.providerData = output.providerData;
@@ -404,64 +350,7 @@ function convertLegacyToolOutputContent(
   }
 
   if (output.type === 'file') {
-    const structured: protocol.InputFile = { type: 'input_file' };
-    const fileValue = (output as any).file ?? output.file;
-    if (typeof fileValue === 'string') {
-      structured.file = fileValue;
-    } else if (isRecord(fileValue)) {
-      if (typeof fileValue.data === 'string' && fileValue.data.length > 0) {
-        structured.file = formatInlineData(
-          fileValue.data,
-          fileValue.mediaType ?? 'text/plain',
-        );
-      } else if (
-        fileValue.data instanceof Uint8Array &&
-        fileValue.data.length > 0
-      ) {
-        structured.file = formatInlineData(
-          fileValue.data,
-          fileValue.mediaType ?? 'text/plain',
-        );
-      } else if (
-        typeof fileValue.url === 'string' &&
-        fileValue.url.length > 0
-      ) {
-        structured.file = { url: fileValue.url };
-      } else {
-        const referencedId =
-          (typeof fileValue.id === 'string' &&
-            fileValue.id.length > 0 &&
-            fileValue.id) ||
-          (typeof (fileValue as any).fileId === 'string' &&
-          (fileValue as any).fileId.length > 0
-            ? (fileValue as any).fileId
-            : undefined);
-        if (referencedId) {
-          structured.file = { id: referencedId };
-        }
-      }
-
-      if (
-        typeof fileValue.filename === 'string' &&
-        fileValue.filename.length > 0
-      ) {
-        structured.filename = fileValue.filename;
-      }
-    }
-
-    if (!structured.file) {
-      const legacy = normalizeLegacyFileFromOutput(output as any);
-      if (legacy.file) {
-        structured.file = legacy.file;
-      }
-      if (legacy.filename) {
-        structured.filename = legacy.filename;
-      }
-    }
-    if (output.providerData) {
-      structured.providerData = output.providerData;
-    }
-    return [structured];
+    return [];
   }
   throw new UserError(
     `Unsupported tool output type: ${JSON.stringify(output)}`,
@@ -518,40 +407,7 @@ function convertStructuredOutputsToAiSdkOutput(
     }
 
     if (item.type === 'input_file') {
-      let descriptor: string | undefined;
-      if (typeof item.file === 'string') {
-        if (item.file.startsWith('http')) {
-          descriptor = item.file;
-        } else if (item.file.startsWith('data:')) {
-          textParts.push('[file data]');
-          continue;
-        } else {
-          textParts.push('[file]');
-          continue;
-        }
-      } else if (
-        item.file &&
-        typeof item.file === 'object' &&
-        'url' in item.file &&
-        typeof (item.file as { url?: unknown }).url === 'string'
-      ) {
-        descriptor = (item.file as { url: string }).url;
-      }
-
-      if (descriptor) {
-        textParts.push(`[file ${descriptor}]`);
-      } else if (
-        item.file &&
-        typeof item.file === 'object' &&
-        'id' in item.file &&
-        typeof (item.file as { id?: unknown }).id === 'string'
-      ) {
-        textParts.push(`[file file_id=${(item.file as { id: string }).id}]`);
-      } else if ((item as any).fileId) {
-        textParts.push(`[file file_id=${(item as any).fileId}]`);
-      } else if ((item as any).fileData) {
-        textParts.push((item as any).fileData);
-      }
+      textParts.push('[file output skipped]');
       continue;
     }
   }
@@ -592,45 +448,6 @@ function formatInlineData(
   const base64 =
     typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
   return mediaType ? `data:${mediaType};base64,${base64}` : base64;
-}
-
-function normalizeLegacyFileFromOutput(value: Record<string, any>): {
-  file?: protocol.InputFile['file'];
-  filename?: string;
-} {
-  const filename =
-    typeof value.filename === 'string' && value.filename.length > 0
-      ? value.filename
-      : undefined;
-
-  const referencedId =
-    (typeof value.id === 'string' && value.id.length > 0 && value.id) ??
-    (typeof value.fileId === 'string' && value.fileId.length > 0
-      ? value.fileId
-      : undefined);
-  if (referencedId) {
-    return { file: { id: referencedId }, filename };
-  }
-
-  if (typeof value.fileUrl === 'string' && value.fileUrl.length > 0) {
-    return { file: { url: value.fileUrl }, filename };
-  }
-
-  if (typeof value.fileData === 'string' && value.fileData.length > 0) {
-    return {
-      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
-      filename,
-    };
-  }
-
-  if (value.fileData instanceof Uint8Array && value.fileData.length > 0) {
-    return {
-      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
-      filename,
-    };
-  }
-
-  return {};
 }
 
 /**
