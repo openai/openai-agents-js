@@ -74,7 +74,7 @@
     "debug": "^4.4.0"
   },
   "peerDependencies": {
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "peerDependenciesMeta": {
     "zod": {
@@ -102,7 +102,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "files": [
     "dist"

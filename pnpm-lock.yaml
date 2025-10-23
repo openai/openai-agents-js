@@ -423,7 +423,7 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12
       zod:
-        specifier: ^3.25.40
+        specifier: ^3.25.40 || ^4.0
         version: 3.25.76
 
   packages/agents-core:
@@ -439,7 +439,7 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12
       zod:
-        specifier: ^3.25.40
+        specifier: ^3.25.40 || ^4.0
         version: 3.25.76
     optionalDependencies:
       '@modelcontextprotocol/sdk':
@@ -468,7 +468,7 @@ importers:
         specifier: ^8.18.1
         version: 8.18.3
       zod:
-        specifier: ^3.25.40
+        specifier: ^3.25.40 || ^4.0
         version: 3.25.76
 
   packages/agents-openai:
@@ -490,7 +490,7 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12
       zod:
-        specifier: ^3.25.40
+        specifier: ^3.25.40 || ^4.0
         version: 3.25.76
 
   packages/agents-realtime:
@@ -515,7 +515,7 @@ importers:
         specifier: ^6.4.1
         version: 6.4.1(@types/node@24.9.1)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.20.6)(yaml@2.8.1)
       zod:
-        specifier: ^3.25.40
+        specifier: ^3.25.40 || ^4.0
         version: 3.25.76
 
 packages:
