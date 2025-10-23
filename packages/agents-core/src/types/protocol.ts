@@ -79,16 +79,24 @@ export const InputImage = SharedBase.extend({
   type: z.literal('input_image'),
 
   /**
-   * The image input to the model. Could be a URL, base64 or an object with a file ID.
+   * The image input to the model. Could be provided inline (`image`), as a URL, or by reference to a
+   * previously uploaded OpenAI file.
    */
   image: z
+    // 1. image data
     .string()
-    .or(
-      z.object({
-        id: z.string(),
-      }),
+    // 2.file ID for the image
+    .or(z.object({ id: z.string().describe('OpenAI file ID') }))
+    .describe(
+      'Either base64 encoded image data, a data URL, or an object with a file ID.',
     )
-    .describe('Could be a URL, base64 or an object with a file ID.'),
+    .optional(),
+
+  /**
+   * Controls the level of detail requested for image understanding tasks.
+   * Future models may add new values, therefore this accepts any string.
+   */
+  detail: z.string().optional(),
 });
 
 export type InputImage = z.infer<typeof InputImage>;
@@ -97,24 +105,25 @@ export const InputFile = SharedBase.extend({
   type: z.literal('input_file'),
 
   /**
-   * The file input to the model. Could be a URL, base64 or an object with a file ID.
+   * The file input to the model. Could be raw data, a URL, or an OpenAI file ID.
    */
   file: z
+    // 1. file data
     .string()
     .describe(
       'Either base64 encoded file data or a publicly accessible file URL',
     )
-    .or(
-      z.object({
-        id: z.string().describe('OpenAI file ID'),
-      }),
-    )
-    .or(
-      z.object({
-        url: z.string().describe('Publicly accessible PDF file URL'),
-      }),
-    )
-    .describe('Contents of the file or an object with a file ID.'),
+    // 2. file ID
+    .or(z.object({ id: z.string().describe('OpenAI file ID') }))
+    // 3. publicly accessible file URL
+    .or(z.object({ url: z.string().describe('Publicly accessible file URL') }))
+    .describe('Contents of the file or an object with a file ID.')
+    .optional(),
+
+  /**
+   * Optional filename metadata when uploading file data inline.
+   */
+  filename: z.string().optional(),
 });
 
 export type InputFile = z.infer<typeof InputFile>;
@@ -167,19 +176,98 @@ export const ToolOutputText = SharedBase.extend({
   text: z.string(),
 });
 
+export type ToolOutputText = z.infer<typeof ToolOutputText>;
+
+const ImageDataObjectSchema = z.object({
+  data: z
+    .union([z.string(), z.instanceof(Uint8Array)])
+    .describe(
+      'Base64 image data, or raw bytes that will be base64 encoded automatically.',
+    ),
+  mediaType: z.string().optional(),
+});
+
+const ImageUrlObjectSchema = z.object({
+  url: z
+    .string()
+    .describe('Publicly accessible URL pointing to the image content'),
+});
+
+const ImageFileIdObjectSchema = z.object({
+  fileId: z
+    .string()
+    .describe('OpenAI file ID referencing uploaded image content'),
+});
+
+const ImageObjectSchema = z
+  .union([ImageDataObjectSchema, ImageUrlObjectSchema, ImageFileIdObjectSchema])
+  .describe('Inline image data or references to uploaded content.');
+
+const FileDataObjectSchema = z.object({
+  data: z
+    .union([z.string(), z.instanceof(Uint8Array)])
+    .describe(
+      'Base64 encoded file data, or raw bytes that will be encoded automatically.',
+    ),
+  mediaType: z
+    .string()
+    .describe('IANA media type describing the file contents'),
+  filename: z.string().describe('Filename associated with the inline data'),
+});
+
+const FileUrlObjectSchema = z.object({
+  url: z.string().describe('Publicly accessible URL for the file content'),
+  filename: z.string().optional(),
+});
+
+const FileIdObjectSchema = z.object({
+  id: z.string().describe('OpenAI file ID referencing uploaded content'),
+  filename: z.string().optional(),
+});
+
+const FileReferenceSchema = z
+  .union([
+    z.string().describe('Existing data URL or base64 string'),
+    FileDataObjectSchema,
+    FileUrlObjectSchema,
+    FileIdObjectSchema,
+  ])
+  .describe(
+    'Inline data (with metadata) or references pointing to file contents.',
+  );
+
+const zStringWithHints = <T extends string>(..._hints: T[]) =>
+  z.string() as unknown as z.ZodType<T | (string & {})>;
+
 export const ToolOutputImage = SharedBase.extend({
   type: z.literal('image'),
 
   /**
-   * The image data. Could be base64 encoded image data or an object with a file ID.
+   * Inline image content or a reference to an uploaded file. Accepts a URL/data URL string or an
+   * object describing the data/url/fileId source.
    */
-  data: z.string().describe('Base64 encoded image data'),
+  image: z.string().or(ImageObjectSchema).optional(),
 
   /**
-   * The media type of the image.
+   * Controls the requested level of detail for vision models.
+   * Use a string to avoid constraining future model capabilities.
    */
-  mediaType: z.string().describe('IANA media type of the image'),
+  detail: zStringWithHints('low', 'high', 'auto').optional(),
 });
+
+export type ToolOutputImage = z.infer<typeof ToolOutputImage>;
+
+export const ToolOutputFileContent = SharedBase.extend({
+  type: z.literal('file'),
+
+  /**
+   * File output reference. Provide either a string (data URL / base64), a data object (requires
+   * mediaType + filename), or an object pointing to an uploaded file/URL.
+   */
+  file: FileReferenceSchema,
+});
+
+export type ToolOutputFileContent = z.infer<typeof ToolOutputFileContent>;
 
 export const ComputerToolOutput = SharedBase.extend({
   type: z.literal('computer_screenshot'),
@@ -379,6 +467,22 @@ export const FunctionCallItem = ItemBase.extend({
 
 export type FunctionCallItem = z.infer<typeof FunctionCallItem>;
 
+export const ToolCallOutputContent = z.discriminatedUnion('type', [
+  ToolOutputText,
+  ToolOutputImage,
+  ToolOutputFileContent,
+]);
+
+export type ToolCallOutputContent = z.infer<typeof ToolCallOutputContent>;
+
+export const ToolCallStructuredOutput = z.discriminatedUnion('type', [
+  InputText,
+  InputImage,
+  InputFile,
+]);
+
+export type ToolCallStructuredOutput = z.infer<typeof ToolCallStructuredOutput>;
+
 export const FunctionCallResultItem = ItemBase.extend({
   type: z.literal('function_call_result'),
   /**
@@ -399,7 +503,15 @@ export const FunctionCallResultItem = ItemBase.extend({
   /**
    * The output of the tool call.
    */
-  output: z.discriminatedUnion('type', [ToolOutputText, ToolOutputImage]),
+  output: z
+    .union([
+      z.string(),
+      ToolCallOutputContent,
+      z.array(ToolCallStructuredOutput),
+    ])
+    .describe(
+      'Output returned by the tool call. Supports plain strings, legacy ToolOutput items, or structured input_* items.',
+    ),
 });
 
 export type FunctionCallResultItem = z.infer<typeof FunctionCallResultItem>;

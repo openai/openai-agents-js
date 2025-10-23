@@ -35,6 +35,14 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F basic start:local-image
   ```
+- `image-tool-output.ts` – Return an image from a tool and let the agent describe it.
+  ```bash
+  pnpm -F basic start:image-tool-output
+  ```
+- `file-tool-output.ts` – Return a file from a tool and have the agent summarize it.
+  ```bash
+  pnpm -F basic start:file-tool-output
+  ```
 - `remote-image.ts` – Send an image URL to the agent.
   ```bash
   pnpm -F basic start:remote-image

@@ -40,12 +40,20 @@ function processItems(items: AgentInputItem[]): ProcessedItem[] {
       );
 
       if (index !== -1 && processedItems[index].type === 'function_call') {
+        const outputValue = item.output as
+          | string
+          | { type: 'text'; text: string }
+          | { type: 'image'; data?: string }
+          | undefined;
+
         processedItems[index].output =
-          item.output.type === 'text'
-            ? item.output.text
-            : item.output.type === 'image'
-              ? item.output.data
-              : '';
+          typeof outputValue === 'string'
+            ? outputValue
+            : outputValue?.type === 'text'
+              ? outputValue.text
+              : outputValue?.type === 'image'
+                ? (outputValue.data ?? '')
+                : '';
         processedItems[index].status = 'completed';
       }
     }

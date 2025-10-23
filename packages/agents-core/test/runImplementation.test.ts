@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest';
+import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 
 import { Agent, saveAgentToolRunResult } from '../src/agent';
@@ -147,6 +148,155 @@ describe('getToolCallOutputItem', () => {
         text: 'hi',
       },
     });
+  });
+
+  it('converts structured text outputs into input_text items', () => {
+    const output = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'text',
+      text: 'structured',
+    });
+
+    expect(output.output).toEqual([
+      {
+        type: 'input_text',
+        text: 'structured',
+      },
+    ]);
+  });
+
+  it('converts image outputs with URLs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: 'https://example.com/image.png',
+      detail: 'high',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'https://example.com/image.png',
+        detail: 'high',
+      },
+    ]);
+  });
+
+  it('converts image outputs with file IDs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: { fileId: 'file_999' },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: { id: 'file_999' },
+      },
+    ]);
+  });
+
+  it('converts file outputs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        id: 'file_123',
+        filename: 'report.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: { id: 'file_123' },
+        filename: 'report.pdf',
+      },
+    ]);
+  });
+
+  it('respects mediaType for inline file data (string)', () => {
+    const base64 = Buffer.from('pdf binary data').toString('base64');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        data: base64,
+        mediaType: 'application/pdf',
+        filename: 'report.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:application/pdf;base64,${base64}`,
+        filename: 'report.pdf',
+      },
+    ]);
+  });
+
+  it('respects mediaType for inline file data (Uint8Array)', () => {
+    const bytes = Buffer.from('%PDF-1.7');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        data: new Uint8Array(bytes),
+        mediaType: 'application/pdf',
+        filename: 'binary.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:application/pdf;base64,${bytes.toString('base64')}`,
+        filename: 'binary.pdf',
+      },
+    ]);
+  });
+
+  it('converts arrays of structured outputs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, [
+      { type: 'text', text: 'alpha' },
+      { type: 'image', image: 'data:image/png;base64,AAA' },
+    ]);
+
+    expect(result.output).toEqual([
+      { type: 'input_text', text: 'alpha' },
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,AAA',
+      },
+    ]);
+  });
+
+  it('preserves custom image detail values', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: 'https://example.com/image.png',
+      detail: 'ultra',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'https://example.com/image.png',
+        detail: 'ultra',
+      },
+    ]);
+  });
+
+  it('converts Uint8Array image data into base64 strings', () => {
+    const bytes = Buffer.from('image-binary');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      data: new Uint8Array(bytes),
+      mediaType: 'image/png',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: `data:image/png;base64,${bytes.toString('base64')}`,
+      },
+    ]);
   });
 });
 

@@ -29,6 +29,7 @@ import {
   ModelSettingsToolChoice,
 } from '@openai/agents';
 import { isZodObject } from '@openai/agents/utils';
+import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 
 /**
  * @internal
@@ -77,10 +78,23 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_image') {
-                    const url = new URL(c.image);
+                    const imageSource =
+                      typeof c.image === 'string'
+                        ? c.image
+                        : typeof (c as any).imageUrl === 'string'
+                          ? (c as any).imageUrl
+                          : undefined;
+
+                    if (!imageSource) {
+                      throw new UserError(
+                        'Only image URLs are supported for user inputs.',
+                      );
+                    }
+
+                    const url = new URL(imageSource);
                     return {
                       type: 'file',
-                      data: url,
+                      data: url.toString(),
                       mediaType: 'image/*',
                       providerOptions: {
                         ...(contentProviderData ?? {}),
@@ -88,18 +102,39 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_file') {
-                    if (typeof c.file !== 'string') {
-                      throw new UserError('File ID is not supported');
+                    if (typeof c.file === 'string') {
+                      return {
+                        type: 'file',
+                        file: c.file,
+                        mediaType: 'text/plain',
+                        data: c.file,
+                        providerOptions: {
+                          ...(contentProviderData ?? {}),
+                        },
+                      };
                     }
-                    return {
-                      type: 'file',
-                      file: c.file,
-                      mediaType: 'application/octet-stream',
-                      data: c.file,
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
-                    };
+
+                    if (c.file && typeof c.file === 'object') {
+                      if ('url' in c.file && typeof c.file.url === 'string') {
+                        return {
+                          type: 'file',
+                          file: c.file.url,
+                          mediaType: 'text/plain',
+                          data: c.file.url,
+                          providerOptions: {
+                            ...(contentProviderData ?? {}),
+                          },
+                        };
+                      }
+
+                      if ('id' in c.file && typeof c.file.id === 'string') {
+                        throw new UserError('File ID is not supported');
+                      }
+                    }
+
+                    throw new UserError(
+                      'Unsupported file reference for chat input',
+                    );
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
@@ -263,42 +298,339 @@ function handoffToLanguageV2Tool(
 }
 
 function convertToAiSdkOutput(
-  output:
-    | {
-        type: 'text';
-        text: string;
-        providerData?: Record<string, any> | undefined;
-      }
-    | {
-        type: 'image';
-        data: string;
-        mediaType: string;
-        providerData?: Record<string, any> | undefined;
-      },
+  output: protocol.FunctionCallResultItem['output'],
 ): LanguageModelV2ToolResultPart['output'] {
-  const anyOutput = output as any;
-  if (anyOutput?.type === 'text' && typeof anyOutput.text === 'string') {
-    return { type: 'text', value: anyOutput.text } as const;
+  if (typeof output === 'string') {
+    return { type: 'text', value: output };
   }
-  if (
-    anyOutput?.type === 'image' &&
-    typeof anyOutput.data === 'string' &&
-    typeof anyOutput.mediaType === 'string'
-  ) {
-    return {
-      type: 'content',
-      value: [
-        {
-          type: 'media',
-          data: anyOutput.data,
-          mediaType: anyOutput.mediaType,
-        },
-      ],
+  if (Array.isArray(output)) {
+    return convertStructuredOutputsToAiSdkOutput(output);
+  }
+  if (isRecord(output) && typeof output.type === 'string') {
+    if (output.type === 'text' && typeof output.text === 'string') {
+      return { type: 'text', value: output.text };
+    }
+    if (output.type === 'image' || output.type === 'file') {
+      const structuredOutputs = convertLegacyToolOutputContent(
+        output as protocol.ToolCallOutputContent,
+      );
+      return convertStructuredOutputsToAiSdkOutput(structuredOutputs);
+    }
+  }
+  return { type: 'text', value: String(output) };
+}
+
+/**
+ * Normalises legacy ToolOutput* objects into the protocol `input_*` shapes so that the AI SDK
+ * bridge can treat all tool results uniformly.
+ */
+function convertLegacyToolOutputContent(
+  output: protocol.ToolCallOutputContent,
+): protocol.ToolCallStructuredOutput[] {
+  if (output.type === 'text') {
+    const structured: protocol.InputText = {
+      type: 'input_text',
+      text: output.text,
     };
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+    return [structured];
+  }
+
+  if (output.type === 'image') {
+    const structured: protocol.InputImage = { type: 'input_image' };
+
+    if (output.detail) {
+      structured.detail = output.detail;
+    }
+
+    const legacyImageUrl = (output as any).imageUrl;
+    const legacyFileId = (output as any).fileId;
+    const dataValue = (output as any).data;
+
+    if (typeof output.image === 'string' && output.image.length > 0) {
+      structured.image = output.image;
+    } else if (isRecord(output.image)) {
+      const imageObj = output.image as Record<string, any>;
+      const inlineMediaType = getImageInlineMediaType(imageObj);
+      if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
+        structured.image = imageObj.url;
+      } else if (
+        typeof imageObj.data === 'string' &&
+        imageObj.data.length > 0
+      ) {
+        structured.image = formatInlineData(imageObj.data, inlineMediaType);
+      } else if (
+        imageObj.data instanceof Uint8Array &&
+        imageObj.data.length > 0
+      ) {
+        structured.image = formatInlineData(imageObj.data, inlineMediaType);
+      } else {
+        const referencedId =
+          (typeof imageObj.fileId === 'string' &&
+            imageObj.fileId.length > 0 &&
+            imageObj.fileId) ||
+          (typeof imageObj.id === 'string' && imageObj.id.length > 0
+            ? imageObj.id
+            : undefined);
+        if (referencedId) {
+          structured.image = { id: referencedId };
+        }
+      }
+    } else if (
+      typeof legacyImageUrl === 'string' &&
+      legacyImageUrl.length > 0
+    ) {
+      structured.image = legacyImageUrl;
+    } else if (typeof legacyFileId === 'string' && legacyFileId.length > 0) {
+      structured.image = { id: legacyFileId };
+    } else {
+      let base64Data: string | undefined;
+      if (typeof dataValue === 'string' && dataValue.length > 0) {
+        base64Data = dataValue;
+      } else if (dataValue instanceof Uint8Array && dataValue.length > 0) {
+        base64Data = encodeUint8ArrayToBase64(dataValue);
+      }
+
+      if (base64Data) {
+        structured.image = base64Data;
+      }
+    }
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+    return [structured];
+  }
+
+  if (output.type === 'file') {
+    const structured: protocol.InputFile = { type: 'input_file' };
+    const fileValue = (output as any).file ?? output.file;
+    if (typeof fileValue === 'string') {
+      structured.file = fileValue;
+    } else if (isRecord(fileValue)) {
+      if (typeof fileValue.data === 'string' && fileValue.data.length > 0) {
+        structured.file = formatInlineData(
+          fileValue.data,
+          fileValue.mediaType ?? 'text/plain',
+        );
+      } else if (
+        fileValue.data instanceof Uint8Array &&
+        fileValue.data.length > 0
+      ) {
+        structured.file = formatInlineData(
+          fileValue.data,
+          fileValue.mediaType ?? 'text/plain',
+        );
+      } else if (
+        typeof fileValue.url === 'string' &&
+        fileValue.url.length > 0
+      ) {
+        structured.file = { url: fileValue.url };
+      } else {
+        const referencedId =
+          (typeof fileValue.id === 'string' &&
+            fileValue.id.length > 0 &&
+            fileValue.id) ||
+          (typeof (fileValue as any).fileId === 'string' &&
+          (fileValue as any).fileId.length > 0
+            ? (fileValue as any).fileId
+            : undefined);
+        if (referencedId) {
+          structured.file = { id: referencedId };
+        }
+      }
+
+      if (
+        typeof fileValue.filename === 'string' &&
+        fileValue.filename.length > 0
+      ) {
+        structured.filename = fileValue.filename;
+      }
+    }
+
+    if (!structured.file) {
+      const legacy = normalizeLegacyFileFromOutput(output as any);
+      if (legacy.file) {
+        structured.file = legacy.file;
+      }
+      if (legacy.filename) {
+        structured.filename = legacy.filename;
+      }
+    }
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+    return [structured];
   }
   throw new UserError(
-    `Unsupported tool output type: ${String(anyOutput?.type)}`,
+    `Unsupported tool output type: ${JSON.stringify(output)}`,
   );
+}
+
+/**
+ * Maps the protocol-level structured outputs into the Language Model V2 result primitives.
+ * The AI SDK expects either plain text or content parts (text + media), so we merge multiple
+ * items accordingly.
+ */
+function convertStructuredOutputsToAiSdkOutput(
+  outputs: protocol.ToolCallStructuredOutput[],
+): LanguageModelV2ToolResultPart['output'] {
+  const textParts: string[] = [];
+  const mediaParts: Array<{ type: 'media'; data: string; mediaType: string }> =
+    [];
+
+  for (const item of outputs) {
+    if (item.type === 'input_text') {
+      textParts.push(item.text);
+      continue;
+    }
+    if (item.type === 'input_image') {
+      const imageValue =
+        typeof item.image === 'string'
+          ? item.image
+          : isRecord(item.image) && typeof item.image.id === 'string'
+            ? `openai-file:${item.image.id}`
+            : typeof (item as any).imageUrl === 'string'
+              ? (item as any).imageUrl
+              : undefined;
+
+      const legacyFileId = (item as any).fileId;
+      if (!imageValue && typeof legacyFileId === 'string') {
+        textParts.push(`[image file_id=${legacyFileId}]`);
+        continue;
+      }
+      if (!imageValue) {
+        textParts.push('[image]');
+        continue;
+      }
+      try {
+        const url = new URL(imageValue);
+        mediaParts.push({
+          type: 'media',
+          data: url.toString(),
+          mediaType: 'image/*',
+        });
+      } catch {
+        textParts.push(imageValue);
+      }
+      continue;
+    }
+
+    if (item.type === 'input_file') {
+      let descriptor: string | undefined;
+      if (typeof item.file === 'string') {
+        if (item.file.startsWith('http')) {
+          descriptor = item.file;
+        } else if (item.file.startsWith('data:')) {
+          textParts.push('[file data]');
+          continue;
+        } else {
+          textParts.push('[file]');
+          continue;
+        }
+      } else if (
+        item.file &&
+        typeof item.file === 'object' &&
+        'url' in item.file &&
+        typeof (item.file as { url?: unknown }).url === 'string'
+      ) {
+        descriptor = (item.file as { url: string }).url;
+      }
+
+      if (descriptor) {
+        textParts.push(`[file ${descriptor}]`);
+      } else if (
+        item.file &&
+        typeof item.file === 'object' &&
+        'id' in item.file &&
+        typeof (item.file as { id?: unknown }).id === 'string'
+      ) {
+        textParts.push(`[file file_id=${(item.file as { id: string }).id}]`);
+      } else if ((item as any).fileId) {
+        textParts.push(`[file file_id=${(item as any).fileId}]`);
+      } else if ((item as any).fileData) {
+        textParts.push((item as any).fileData);
+      }
+      continue;
+    }
+  }
+
+  if (mediaParts.length === 0) {
+    return { type: 'text', value: textParts.join('') };
+  }
+
+  const value: Array<
+    | { type: 'text'; text: string }
+    | { type: 'media'; data: string; mediaType: string }
+  > = [];
+
+  if (textParts.length > 0) {
+    value.push({ type: 'text', text: textParts.join('') });
+  }
+  value.push(...mediaParts);
+  return { type: 'content', value };
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getImageInlineMediaType(
+  source: Record<string, any>,
+): string | undefined {
+  if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
+    return source.mediaType;
+  }
+  return undefined;
+}
+
+function formatInlineData(
+  data: string | Uint8Array,
+  mediaType?: string,
+): string {
+  const base64 =
+    typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
+  return mediaType ? `data:${mediaType};base64,${base64}` : base64;
+}
+
+function normalizeLegacyFileFromOutput(value: Record<string, any>): {
+  file?: protocol.InputFile['file'];
+  filename?: string;
+} {
+  const filename =
+    typeof value.filename === 'string' && value.filename.length > 0
+      ? value.filename
+      : undefined;
+
+  const referencedId =
+    (typeof value.id === 'string' && value.id.length > 0 && value.id) ??
+    (typeof value.fileId === 'string' && value.fileId.length > 0
+      ? value.fileId
+      : undefined);
+  if (referencedId) {
+    return { file: { id: referencedId }, filename };
+  }
+
+  if (typeof value.fileUrl === 'string' && value.fileUrl.length > 0) {
+    return { file: { url: value.fileUrl }, filename };
+  }
+
+  if (typeof value.fileData === 'string' && value.fileData.length > 0) {
+    return {
+      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
+      filename,
+    };
+  }
+
+  if (value.fileData instanceof Uint8Array && value.fileData.length > 0) {
+    return {
+      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
+      filename,
+    };
+  }
+
+  return {};
 }
 
 /**
