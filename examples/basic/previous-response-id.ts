@@ -1,6 +1,6 @@
 import { Agent, run } from '@openai/agents';
 
-async function main() {
+async function runBasic() {
   const agent = new Agent({
     name: 'Assistant',
     instructions: 'You are a helpful assistant. be VERY concise.',
@@ -18,7 +18,7 @@ async function main() {
   console.log(result.finalOutput); // e.g., Brasilia
 }
 
-async function mainStream() {
+async function runStream() {
   const agent = new Agent({
     name: 'Assistant',
     instructions: 'You are a helpful assistant. be VERY concise.',
@@ -54,7 +54,7 @@ async function mainStream() {
   console.log();
 }
 
-async function promptAndRun() {
+async function main() {
   const readline = await import('node:readline/promises');
   const rl = readline.createInterface({
     input: process.stdin,
@@ -63,12 +63,13 @@ async function promptAndRun() {
   const isStream = await rl.question('Run in stream mode? (y/n): ');
   rl.close();
   if (isStream.trim().toLowerCase() === 'y') {
-    await mainStream();
+    await runStream();
   } else {
-    await main();
+    await runBasic();
   }
 }
 
-if (require.main === module) {
-  promptAndRun().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

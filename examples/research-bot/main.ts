@@ -13,6 +13,7 @@ async function main() {
   });
 }
 
-if (require.main === module) {
-  main();
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

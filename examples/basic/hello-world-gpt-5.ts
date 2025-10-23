@@ -63,6 +63,7 @@ async function main() {
   // console.log(completionsResult2.finalOutput);
 }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

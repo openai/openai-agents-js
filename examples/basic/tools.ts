@@ -32,6 +32,7 @@ async function main() {
   // The weather in Tokyo is sunny with some wind, and the temperature ranges between 14°C and 20°C.
 }
 
-if (require.main === module) {
-  main();
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
