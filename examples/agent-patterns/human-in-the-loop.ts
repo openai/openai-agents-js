@@ -105,5 +105,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.dir(error, { depth: null });
+  console.error(error);
+  process.exit(1);
 });

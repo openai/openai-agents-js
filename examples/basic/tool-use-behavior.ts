@@ -67,4 +67,7 @@ async function main() {
   console.log(finalOutput3);
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
