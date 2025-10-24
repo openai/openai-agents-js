@@ -1,4 +1,3 @@
-import type { ZodObject } from 'zod';
 import { z } from 'zod';
 
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
@@ -37,8 +36,15 @@ import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import { UnknownContext, TextOutput } from './types';
 import type * as protocol from './types/protocol';
+import type { ZodObjectLike } from './utils/zodCompat';
 
 type AnyAgentRunResult = RunResult<any, Agent<any, any>>;
+type CompletedRunResult<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> = RunResult<TContext, TAgent> & {
+  finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
+};
 
 // Per-process, ephemeral map linking a function tool call to its nested
 // Agent run result within the same run; entry is removed after consumption.
@@ -114,7 +120,7 @@ export type ToolsToFinalOutputResult =
  */
 export type AgentOutputType<HandoffOutputType = UnknownContext> =
   | TextOutput
-  | ZodObject<any>
+  | ZodObjectLike
   | JsonSchemaDefinition
   | HandoffsOutput<HandoffOutputType>;
 
@@ -485,49 +491,51 @@ export class Agent<
    * @param options - Options for the tool.
    * @returns A tool that runs the agent and returns the output text.
    */
-  asTool(options: {
-    /**
-     * The name of the tool. If not provided, the name of the agent will be used.
-     */
-    toolName?: string;
-    /**
-     * The description of the tool, which should indicate what the tool does and when to use it.
-     */
-    toolDescription?: string;
-    /**
-     * A function that extracts the output text from the agent. If not provided, the last message
-     * from the agent will be used.
-     */
-    customOutputExtractor?: (
-      output: RunResult<TContext, Agent<TContext, any>>,
-    ) => string | Promise<string>;
-    /**
-     * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
-     * When provided as a function it receives the tool arguments and can implement custom approval
-     * logic.
-     */
-    needsApproval?:
-      | boolean
-      | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
-    /**
-     * Run configuration for initializing the internal agent runner.
-     */
-    runConfig?: Partial<RunConfig>;
-    /**
-     * Additional run options for the agent (as tool) execution.
-     */
-    runOptions?: NonStreamRunOptions<TContext>;
-
-    /**
-     * Determines whether this tool should be exposed to the model for the current run.
-     */
-    isEnabled?:
-      | boolean
-      | ((args: {
-          runContext: RunContext<TContext>;
-          agent: Agent<TContext, TOutput>;
-        }) => boolean | Promise<boolean>);
-  }): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
+  asTool<TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>>(
+    this: TAgent,
+    options: {
+      /**
+       * The name of the tool. If not provided, the name of the agent will be used.
+       */
+      toolName?: string;
+      /**
+       * The description of the tool, which should indicate what the tool does and when to use it.
+       */
+      toolDescription?: string;
+      /**
+       * A function that extracts the output text from the agent. If not provided, the last message
+       * from the agent will be used.
+       */
+      customOutputExtractor?: (
+        output: CompletedRunResult<TContext, TAgent>,
+      ) => string | Promise<string>;
+      /**
+       * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
+       * When provided as a function it receives the tool arguments and can implement custom approval
+       * logic.
+       */
+      needsApproval?:
+        | boolean
+        | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
+      /**
+       * Run configuration for initializing the internal agent runner.
+       */
+      runConfig?: Partial<RunConfig>;
+      /**
+       * Additional run options for the agent (as tool) execution.
+       */
+      runOptions?: NonStreamRunOptions<TContext>;
+      /**
+       * Determines whether this tool should be exposed to the model for the current run.
+       */
+      isEnabled?:
+        | boolean
+        | ((args: {
+            runContext: RunContext<TContext>;
+            agent: Agent<TContext, TOutput>;
+          }) => boolean | Promise<boolean>);
+    },
+  ): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
     const {
       toolName,
       toolDescription,
@@ -553,6 +561,7 @@ export class Agent<
           context,
           ...(runOptions ?? {}),
         });
+        const completedResult = result as CompletedRunResult<TContext, TAgent>;
 
         const usesStopAtToolNames =
           typeof this.toolUseBehavior === 'object' &&
@@ -569,15 +578,17 @@ export class Agent<
         }
         const outputText =
           typeof customOutputExtractor === 'function'
-            ? await customOutputExtractor(result as any)
+            ? await customOutputExtractor(completedResult)
             : getOutputText(
-                result.rawResponses[result.rawResponses.length - 1],
+                completedResult.rawResponses[
+                  completedResult.rawResponses.length - 1
+                ],
               );
 
         if (details?.toolCall) {
           saveAgentToolRunResult(
             details.toolCall,
-            result as RunResult<any, Agent<any, any>>,
+            completedResult as RunResult<any, Agent<any, any>>,
           );
         }
         return outputText;

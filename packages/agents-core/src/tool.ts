@@ -1,6 +1,5 @@
 import type { Agent } from './agent';
 import type { Computer } from './computer';
-import type { infer as zInfer, ZodObject } from 'zod';
 import {
   JsonObjectSchema,
   JsonObjectSchemaNonStrict,
@@ -20,6 +19,7 @@ import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
 import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
+import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
 
 /**
  * A function that determines if a tool call should be approved.
@@ -387,7 +387,7 @@ export type FunctionToolResult<
  */
 export type ToolInputParameters =
   | undefined
-  | ZodObject<any>
+  | ZodObjectLike
   | JsonObjectSchema<any>;
 
 /**
@@ -404,7 +404,7 @@ export type ToolInputParameters =
  */
 export type ToolInputParametersStrict =
   | undefined
-  | ZodObject<any>
+  | ZodObjectLike
   | JsonObjectSchemaStrict<any>;
 
 /**
@@ -427,8 +427,8 @@ export type ToolInputParametersNonStrict =
  * match the inferred Zod type. Otherwise the type is `string`
  */
 export type ToolExecuteArgument<TParameters extends ToolInputParameters> =
-  TParameters extends ZodObject<any>
-    ? zInfer<TParameters>
+  TParameters extends ZodObjectLike
+    ? ZodInfer<TParameters>
     : TParameters extends JsonObjectSchema<any>
       ? unknown
       : string;

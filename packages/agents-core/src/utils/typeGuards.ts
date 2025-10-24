@@ -1,4 +1,5 @@
-import type { ZodObject } from 'zod';
+import type { ZodObjectLike } from './zodCompat';
+import { readZodDefinition, readZodType } from './zodCompat';
 
 /**
  * Verifies that an input is a ZodObject without needing to have Zod at runtime since it's an
@@ -6,21 +7,14 @@ import type { ZodObject } from 'zod';
  * @param input
  * @returns
  */
-export function isZodObject(input: unknown): input is ZodObject<any> {
-  if (
-    typeof input !== 'object' ||
-    input === null ||
-    !('_def' in input) ||
-    typeof input._def !== 'object' ||
-    input._def === null
-  ) {
+export function isZodObject(input: unknown): input is ZodObjectLike {
+  const definition = readZodDefinition(input);
+  if (!definition) {
     return false;
   }
 
-  const def = input._def as Record<string, unknown>;
-  const typeName = typeof def.typeName === 'string' ? def.typeName : undefined;
-  const type = typeof def.type === 'string' ? def.type : undefined;
-  return typeName === 'ZodObject' || type === 'object';
+  const type = readZodType(input);
+  return type === 'object';
 }
 
 /**

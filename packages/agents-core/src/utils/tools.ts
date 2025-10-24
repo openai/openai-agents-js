@@ -1,4 +1,3 @@
-import type { ZodObject } from 'zod';
 import { zodResponsesFunction, zodTextFormat } from 'openai/helpers/zod';
 import { UserError } from '../errors';
 import { ToolInputParameters } from '../tool';
@@ -6,9 +5,11 @@ import { JsonObjectSchema, JsonSchemaDefinition, TextOutput } from '../types';
 import { isZodObject } from './typeGuards';
 import { AgentOutputType } from '../agent';
 import {
-  fallbackJsonSchemaFromZodObject,
+  zodJsonSchemaCompat,
   hasJsonSchemaObjectShape,
-} from './zodFallback';
+} from './zodJsonSchemaCompat';
+import type { ZodObjectLike } from './zodCompat';
+import { asZodType } from './zodCompat';
 
 export type FunctionToolName = string & { __brand?: 'ToolName' } & {
   readonly __pattern?: '^[a-zA-Z0-9_]+$';
@@ -16,11 +17,11 @@ export type FunctionToolName = string & { __brand?: 'ToolName' } & {
 
 // openai/helpers/zod cannot emit strict schemas for every Zod runtime
 // (notably Zod v4), so we delegate to a small local converter living in
-// zodFallback.ts whenever its output is missing the required JSON Schema bits.
+// zodJsonSchemaCompat.ts whenever its output is missing the required JSON Schema bits.
 function buildJsonSchemaFromZod(
-  inputType: ZodObject<any>,
+  inputType: ZodObjectLike,
 ): JsonObjectSchema<any> | undefined {
-  return fallbackJsonSchemaFromZodObject(inputType);
+  return zodJsonSchemaCompat(inputType);
 }
 
 /**
@@ -64,7 +65,7 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
   if (isZodObject(inputType)) {
     const formattedFunction = zodResponsesFunction({
       name,
-      parameters: inputType,
+      parameters: asZodType(inputType),
       function: () => {}, // empty function here to satisfy the OpenAI helper
       description: '',
     });
@@ -108,7 +109,7 @@ export function convertAgentOutputTypeToSerializable(
   }
 
   if (isZodObject(outputType)) {
-    const output = zodTextFormat(outputType, 'output');
+    const output = zodTextFormat(asZodType(outputType), 'output');
     return {
       type: output.type,
       name: output.name,
