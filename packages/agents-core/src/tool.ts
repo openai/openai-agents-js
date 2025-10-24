@@ -21,6 +21,14 @@ import { toSmartString } from './utils/smartString';
 import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
 
+export type {
+  ToolOutputText,
+  ToolOutputImage,
+  ToolOutputFileContent,
+  ToolCallStructuredOutput,
+  ToolCallOutputContent,
+} from './types/protocol';
+
 /**
  * A function that determines if a tool call should be approved.
  *

@@ -72,7 +72,16 @@ export function extractAllUserContent(
     if (c.type === 'input_text') {
       out.push({ type: 'text', text: c.text, ...c.providerData });
     } else if (c.type === 'input_image') {
-      if (typeof c.image !== 'string') {
+      // The Chat Completions API only accepts image URLs. If we see a file reference we reject it
+      // early so callers get an actionable error instead of a cryptic API response.
+      const imageSource =
+        typeof c.image === 'string'
+          ? c.image
+          : typeof (c as any).imageUrl === 'string'
+            ? (c as any).imageUrl
+            : undefined;
+
+      if (!imageSource) {
         throw new Error(
           `Only image URLs are supported for input_image: ${JSON.stringify(c)}`,
         );
@@ -81,7 +90,7 @@ export function extractAllUserContent(
       out.push({
         type: 'image_url',
         image_url: {
-          url: c.image,
+          url: imageSource,
           ...image_url,
         },
         ...rest,
@@ -245,17 +254,12 @@ export function itemsToMessages(
     } else if (item.type === 'function_call_result') {
       flushAssistantMessage();
       const funcOutput = item;
-      if (funcOutput.output.type !== 'text') {
-        throw new UserError(
-          'Only text output is supported for chat completions. Got item: ' +
-            JSON.stringify(item),
-        );
-      }
+      const toolContent = normalizeFunctionCallOutputForChat(funcOutput.output);
 
       result.push({
         role: 'tool',
         tool_call_id: funcOutput.callId,
-        content: funcOutput.output.text,
+        content: toolContent,
         ...funcOutput.providerData,
       });
     } else if (item.type === 'unknown') {
@@ -269,6 +273,41 @@ export function itemsToMessages(
   }
   flushAssistantMessage();
   return result;
+}
+
+function normalizeFunctionCallOutputForChat(
+  output: protocol.FunctionCallResultItem['output'],
+): string {
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  if (Array.isArray(output)) {
+    const textOnly = output.every((item) => item.type === 'input_text');
+    if (!textOnly) {
+      throw new UserError(
+        'Only text tool outputs are supported for chat completions.',
+      );
+    }
+    return output.map((item) => item.text).join('');
+  }
+
+  if (
+    isRecord(output) &&
+    output.type === 'text' &&
+    typeof output.text === 'string'
+  ) {
+    return output.text;
+  }
+
+  throw new UserError(
+    'Only text tool outputs are supported for chat completions. Got item: ' +
+      JSON.stringify(output),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null;
 }
 
 export function toolToOpenAI(tool: SerializedTool): ChatCompletionTool {

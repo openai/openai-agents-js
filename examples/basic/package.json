@@ -15,6 +15,8 @@
     "start:hello-world-gpt-oss": "tsx hello-world-gpt-oss.ts",
     "start:lifecycle-example": "tsx lifecycle-example.ts",
     "start:local-image": "tsx local-image.ts",
+    "start:image-tool-output": "tsx image-tool-output.ts",
+    "start:file-tool-output": "tsx file-tool-output.ts",
     "start:previous-response-id": "tsx previous-response-id.ts",
     "start:prompt": "tsx prompt-id.ts",
     "start:remote-image": "tsx remote-image.ts",

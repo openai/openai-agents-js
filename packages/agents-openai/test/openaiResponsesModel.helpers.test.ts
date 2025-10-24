@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { Buffer } from 'node:buffer';
 import {
   getToolChoice,
   converTool,
@@ -197,6 +198,177 @@ describe('getInputItems', () => {
     expect(items[5]).toMatchObject({ type: 'reasoning' });
   });
 
+  it('converts structured tool outputs into input items', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c2',
+        output: [
+          { type: 'input_text', text: 'hello' },
+          {
+            type: 'input_image',
+            image: 'https://example.com/img.png',
+            detail: 'auto',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c2',
+      output: [
+        { type: 'input_text', text: 'hello' },
+        {
+          type: 'input_image',
+          image_url: 'https://example.com/img.png',
+          detail: 'auto',
+        },
+      ],
+    });
+  });
+
+  it('passes through unknown image detail values', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c3',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/custom.png',
+            detail: 'creative+1',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c3',
+      output: [
+        {
+          type: 'input_image',
+          image_url: 'https://example.com/custom.png',
+          detail: 'creative+1',
+        },
+      ],
+    });
+  });
+
+  it('converts structured image outputs with file ids', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c4',
+        output: [
+          {
+            type: 'input_image',
+            image: { id: 'file_abc' },
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c4',
+      output: [
+        {
+          type: 'input_image',
+          file_id: 'file_abc',
+        },
+      ],
+    });
+  });
+
+  it('converts ToolOutputImage data from Uint8Array', () => {
+    const bytes = Buffer.from('ai-image');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c5',
+        output: {
+          type: 'image',
+          image: {
+            data: new Uint8Array(bytes),
+            mediaType: 'image/png',
+          },
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c5',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/png;base64,${bytes.toString('base64')}`,
+        },
+      ],
+    });
+  });
+
+  it('preserves filenames for inline input_file data', () => {
+    const base64 = Buffer.from('file-payload').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c6',
+        output: [
+          {
+            type: 'input_file',
+            file: `data:application/pdf;base64,${base64}`,
+            filename: 'system-card.pdf',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c6',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/pdf;base64,${base64}`,
+          filename: 'system-card.pdf',
+        },
+      ],
+    });
+  });
+
+  it('preserves filenames for legacy ToolOutputFileContent values', () => {
+    const bytes = Buffer.from('legacy file data');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c7',
+        output: {
+          type: 'file',
+          file: {
+            data: new Uint8Array(bytes),
+            mediaType: 'application/pdf',
+            filename: 'legacy.pdf',
+          },
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c7',
+      output: [
+        {
+          type: 'input_file',
+          file_data: `data:application/pdf;base64,${bytes.toString('base64')}`,
+          filename: 'legacy.pdf',
+        },
+      ],
+    });
+  });
+
   it('converts built-in tool calls', () => {
     const web = getInputItems([
       {
@@ -255,17 +427,26 @@ describe('getInputItems', () => {
     });
   });
 
-  it('errors on unsupported function output type', () => {
-    expect(() =>
-      getInputItems([
+  it('converts legacy tool outputs for functions', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        id: 'f',
+        callId: 'c',
+        output: { type: 'image', image: 'https://example.com/tool.png' },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c',
+      output: [
         {
-          type: 'function_call_result',
-          id: 'f',
-          callId: 'c',
-          output: { type: 'image', data: 'x' },
+          type: 'input_image',
+          image_url: 'https://example.com/tool.png',
         },
-      ] as any),
-    ).toThrow(UserError);
+      ],
+    });
   });
 
   it('errors on unsupported built-in tool', () => {

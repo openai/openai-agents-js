@@ -206,7 +206,7 @@ describe('itemsToLanguageV2Messages', () => {
           { type: 'text', text: 'hi', providerOptions: {} },
           {
             type: 'file',
-            data: new URL('http://x/img'),
+            data: 'http://x/img',
             mediaType: 'image/*',
             providerOptions: {},
           },
@@ -247,6 +247,69 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts structured tool output lists', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            output: {
+              type: 'content',
+              value: [
+                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'media',
+                  data: 'https://example.com/image.png',
+                  mediaType: 'image/*',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('handles undefined providerData without throwing', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -280,8 +343,8 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('supports input_file string and rejects non-string file id', () => {
-    const ok: protocol.ModelItem[] = [
+  test('rejects input_file content', () => {
+    const items: protocol.ModelItem[] = [
       {
         role: 'user',
         content: [
@@ -293,36 +356,8 @@ describe('itemsToLanguageV2Messages', () => {
       } as any,
     ];
 
-    const msgs = itemsToLanguageV2Messages(stubModel({}), ok);
-    expect(msgs).toEqual([
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'file',
-            file: 'file_123',
-            mediaType: 'application/octet-stream',
-            data: 'file_123',
-            providerOptions: {},
-          },
-        ],
-        providerOptions: {},
-      },
-    ]);
-
-    const bad: protocol.ModelItem[] = [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_file',
-            file: { not: 'a-string' },
-          },
-        ],
-      } as any,
-    ];
-    expect(() => itemsToLanguageV2Messages(stubModel({}), bad)).toThrow(
-      /File ID is not supported/,
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /File inputs are not supported/,
     );
   });
 
