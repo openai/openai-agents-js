@@ -1,5 +1,19 @@
 # @openai/agents
 
+## 0.2.0
+
+### Minor Changes
+
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-openai@0.2.0
+  - @openai/agents-core@0.2.0
+  - @openai/agents-realtime@0.2.0
+
 ## 0.1.11
 
 ### Patch Changes

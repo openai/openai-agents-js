@@ -1,5 +1,19 @@
 # @openai/agents-extensions
 
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+  - @openai/agents@0.2.0
+
 ## 0.1.5
 
 ### Patch Changes
