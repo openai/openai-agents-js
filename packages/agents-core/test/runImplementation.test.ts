@@ -180,6 +180,41 @@ describe('getToolCallOutputItem', () => {
     ]);
   });
 
+  it('converts nested image objects with base64 payloads', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: {
+        data: 'AAA',
+        mediaType: 'image/png',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,AAA',
+      },
+    ]);
+  });
+
+  it('converts nested image objects with binary payloads', () => {
+    const bytes = Buffer.from('png-binary');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: {
+        data: new Uint8Array(bytes),
+        mediaType: 'image/png',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: `data:image/png;base64,${bytes.toString('base64')}`,
+      },
+    ]);
+  });
+
   it('converts image outputs with file IDs', () => {
     const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
       type: 'image',
@@ -208,6 +243,24 @@ describe('getToolCallOutputItem', () => {
         type: 'input_file',
         file: { id: 'file_123' },
         filename: 'report.pdf',
+      },
+    ]);
+  });
+
+  it('supports legacy fileData payloads', () => {
+    const base64 = Buffer.from('legacy file').toString('base64');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      fileData: base64,
+      filename: 'legacy.txt',
+      mediaType: 'text/plain',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:text/plain;base64,${base64}`,
+        filename: 'legacy.txt',
       },
     ]);
   });
@@ -265,6 +318,48 @@ describe('getToolCallOutputItem', () => {
         image: 'data:image/png;base64,AAA',
       },
     ]);
+  });
+
+  it('stringifies arrays of primitives', () => {
+    const raw = [1, true, 'alpha'];
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
+  });
+
+  it('stringifies arrays of plain objects', () => {
+    const raw = [{ foo: 'bar' }, { baz: 2 }];
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
+  });
+
+  it('falls back to text output when array contains unsupported items', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, [
+      { type: 'text', text: 'alpha' },
+      { foo: 'bar' },
+    ]);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: '[{"type":"text","text":"alpha"},{"foo":"bar"}]',
+    });
+  });
+
+  it('stringifies plain objects that are not structured outputs', () => {
+    const raw = { foo: 'bar' };
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
   });
 
   it('preserves custom image detail values', () => {
