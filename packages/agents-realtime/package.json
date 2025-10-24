@@ -67,12 +67,12 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
     "vite": "^6.4.1",
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "files": [
     "dist"

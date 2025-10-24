@@ -4,6 +4,7 @@ import {
   getSchemaAndParserFromInputType,
 } from '../../src/utils/tools';
 import { z } from 'zod';
+import { z as z4 } from 'zod/v4';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
 
@@ -35,6 +36,13 @@ describe('utils/tools', () => {
     const res = getSchemaAndParserFromInputType(zodSchema, 'tool');
     expect(res.schema).toHaveProperty('type', 'object');
     expect(res.parser('{"bar":2}')).toEqual({ bar: 2 });
+  });
+
+  it('getSchemaAndParserFromInputType with ZodObject v4', () => {
+    const zodSchema = z4.object({ baz: z4.string() });
+    const res = getSchemaAndParserFromInputType(zodSchema, 'toolv4');
+    expect(res.schema).toHaveProperty('type', 'object');
+    expect(res.parser('{"baz":"ok"}')).toEqual({ baz: 'ok' });
   });
 
   it('getSchemaAndParserFromInputType rejects invalid input', () => {
