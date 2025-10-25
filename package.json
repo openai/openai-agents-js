@@ -68,7 +68,7 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.2",
-    "verdaccio": "^6.2.0",
+    "verdaccio": "^6.2.1",
     "vitest": "^3.2.4"
   },
   "packageManager": "pnpm@10.19.0"
