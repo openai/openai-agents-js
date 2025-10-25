@@ -17,7 +17,9 @@ beforeEach(() => {
 });
 describe('gpt5ReasoningSettingsRequired', () => {
   test('detects GPT-5 models while ignoring chat latest', () => {
-    expect(gpt5ReasoningSettingsRequired('gpt-5.1-mini')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5-mini')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5-nano')).toBe(true);
     expect(gpt5ReasoningSettingsRequired('gpt-5-pro')).toBe(true);
     expect(gpt5ReasoningSettingsRequired('gpt-5-chat-latest')).toBe(false);
   });
@@ -32,9 +34,9 @@ describe('getDefaultModel', () => {
   });
   test('lowercases provided env value', () => {
     mockedLoadEnv.mockReturnValue({
-      [OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]: 'GPT-5-CHAT',
+      [OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]: 'GPT-5-MINI',
     });
-    expect(getDefaultModel()).toBe('gpt-5-chat');
+    expect(getDefaultModel()).toBe('gpt-5-mini');
   });
 });
 describe('isGpt5Default', () => {
@@ -51,7 +53,7 @@ describe('isGpt5Default', () => {
 });
 describe('getDefaultModelSettings', () => {
   test('returns reasoning defaults for GPT-5 models', () => {
-    expect(getDefaultModelSettings('gpt-5.1-mini')).toEqual({
+    expect(getDefaultModelSettings('gpt-5-mini')).toEqual({
       reasoning: { effort: 'low' },
       text: { verbosity: 'low' },
     });
