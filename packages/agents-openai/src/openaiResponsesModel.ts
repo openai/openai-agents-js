@@ -818,8 +818,51 @@ function getPrompt(prompt: ModelRequest['prompt']):
   };
 }
 
+type InputArray = Exclude<ModelRequest['input'], string>;
+
+const RESPONSE_ITEM_ID_PREFIXES = ['rs_', 'resp_', 'res_', 'msg_'] as const;
+
+function hasStoredConversationMetadata(item: InputArray[number]): boolean {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  const providerData = (item as { providerData?: Record<string, unknown> })
+    .providerData;
+  if (providerData && typeof providerData === 'object') {
+    const responseId =
+      (providerData['response_id'] as string | undefined) ??
+      (providerData['responseId'] as string | undefined);
+    if (typeof responseId === 'string' && responseId.length > 0) {
+      return true;
+    }
+  }
+
+  const id = (item as { id?: unknown }).id;
+  if (typeof id === 'string') {
+    for (const prefix of RESPONSE_ITEM_ID_PREFIXES) {
+      if (id.startsWith(prefix)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getLastStoredIndex(items: InputArray): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (hasStoredConversationMetadata(items[i])) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 function getInputItems(
   input: ModelRequest['input'],
+  conversationId?: string,
 ): OpenAI.Responses.ResponseInputItem[] {
   if (typeof input === 'string') {
     return [
@@ -830,7 +873,15 @@ function getInputItems(
     ];
   }
 
-  return input.map((item) => {
+  let filteredInput: InputArray = input;
+  if (conversationId) {
+    const lastStoredIndex = getLastStoredIndex(input);
+    if (lastStoredIndex >= 0) {
+      filteredInput = input.slice(lastStoredIndex + 1);
+    }
+  }
+
+  return filteredInput.map((item) => {
     if (isMessageItem(item)) {
       return getMessageItem(item);
     }
@@ -1239,7 +1290,7 @@ export class OpenAIResponsesModel implements Model {
   ): Promise<
     Stream<OpenAI.Responses.ResponseStreamEvent> | OpenAI.Responses.Response
   > {
-    const input = getInputItems(request.input);
+    const input = getInputItems(request.input, request.conversationId);
     const { tools, include } = getTools(request.tools, request.handoffs);
     const toolChoice = getToolChoice(request.modelSettings.toolChoice);
     const { text, ...restOfProviderData } =
