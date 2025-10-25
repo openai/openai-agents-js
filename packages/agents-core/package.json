@@ -70,7 +70,7 @@
     "@modelcontextprotocol/sdk": "^1.17.2"
   },
   "dependencies": {
-    "openai": "^5.20.2",
+    "openai": "^6",
     "debug": "^4.4.0"
   },
   "peerDependencies": {
