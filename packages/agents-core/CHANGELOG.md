@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+
 ## 0.2.0
 
 ### Minor Changes
