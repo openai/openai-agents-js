@@ -31,8 +31,8 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    export OPENAI_API_KEY=sk-...
    ```
 
-   或者，您也可以调用 `setDefaultOpenAIKey('<api key>')` 在代码中设置 key，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
-   详情参见[SDK 配置](/openai-agents-js/zh/guides/config)。
+   或者，您可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置密钥，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
+   详见[配置指南](/openai-agents-js/zh/guides/config)。
 
 </Steps>
 
@@ -52,9 +52,9 @@ const agent = new Agent({
 
 ## 运行第一个智能体
 
-您可以使用 `run` 方法来运行智能体。通过同时传入要启动的智能体和要传递的输入来触发一次运行。
+您可以使用 `run` 方法来运行智能体。通过同时传入要启动的智能体以及要传入的输入即可触发一次运行。
 
-这将返回包含最终输出以及该次运行期间执行的所有操作的运行结果。
+这将返回包含最终输出以及该次运行期间执行的所有操作的 result。
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -72,7 +72,7 @@ console.log(result.finalOutput);
 
 ## 为智能体提供工具
 
-您可以为智能体提供工具，以查询信息或执行操作。
+您可以为智能体提供工具，以便查找信息或执行操作。
 
 ```typescript
 import { Agent, tool } from '@openai/agents';
@@ -101,7 +101,7 @@ const agent = new Agent({
 
 ## 添加更多智能体
 
-可以以类似方式定义更多智能体，将问题拆分为更小的部分，使智能体更专注于当前任务。通过在智能体上定义模型，也可以针对不同问题使用不同的模型。
+可以以类似方式定义其他智能体，以将问题拆解为更小的部分，让智能体更专注于当前任务。这也允许您通过在智能体上定义模型，为不同问题使用不同的模型。
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -119,7 +119,7 @@ const mathTutorAgent = new Agent({
 
 ## 定义交接
 
-为在多个智能体之间进行编排，您可以为某个智能体定义 `handoffs`。这将使其能够在对话过程中自动将会话交接给下一个智能体。
+为了在多个智能体之间进行编排，您可以为某个智能体定义 `handoffs`。这将使智能体能够将对话交接给下一个智能体。这将在运行过程中自动发生。
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -135,7 +135,7 @@ const triageAgent = Agent.create({
 
 ## 运行智能体编排
 
-Runner 负责处理各个智能体的执行、可能的交接以及工具执行。
+Runner 负责处理各个智能体的执行、可能的交接以及工具调用。
 
 ```typescript
 import { run } from '@openai/agents';
@@ -148,18 +148,18 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## 综合示例
+## 汇总整合
 
-让我们把以上内容整合为一个完整示例。将其放入您的 `index.js` 文件并运行。
+让我们把以上内容整合到一个完整示例中。将其放入您的 `index.js` 文件并运行。
 
 <Code lang="typescript" code={quickstartExample} title="快速上手" />
 
 ## 查看追踪
 
-Agents SDK 会为您自动生成追踪。这使您能够审查智能体的运行方式、调用了哪些工具，或交接给了哪个智能体。
+Agents SDK 会自动为您生成追踪。这使您可以审查智能体的运行情况、所调用的工具以及交接到的智能体。
 
-要查看智能体运行期间发生的事件，请前往
-[OpenAI Dashboard 中的 Trace viewer](https://platform.openai.com/traces)。
+要查看智能体运行期间发生的情况，请前往
+[OpenAI Dashboard 中的 Trace 查看器](https://platform.openai.com/traces)。
 
 ## 后续步骤
 
