@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2021",
+    "lib": ["ES2021"],
+    "noEmit": true,
+    "moduleResolution": "node",
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/scripts/**/*.ts"]
+}

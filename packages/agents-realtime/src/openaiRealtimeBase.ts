@@ -215,10 +215,10 @@ export abstract class OpenAIRealtimeBase
       const usage = new Usage({
         inputTokens,
         inputTokensDetails:
-          response.data.response.usage?.input_tokens_details ?? {},
+          response.data.response.usage?.input_token_details ?? {},
         outputTokens,
         outputTokensDetails:
-          response.data.response.usage?.output_tokens_details ?? {},
+          response.data.response.usage?.output_token_details ?? {},
         totalTokens,
       });
       this.emit('usage_update', usage);
@@ -230,10 +230,10 @@ export abstract class OpenAIRealtimeBase
           usage: {
             inputTokens,
             inputTokensDetails:
-              response.data.response.usage?.input_tokens_details ?? {},
+              response.data.response.usage?.input_token_details ?? {},
             outputTokens,
             outputTokensDetails:
-              response.data.response.usage?.output_tokens_details ?? {},
+              response.data.response.usage?.output_token_details ?? {},
             totalTokens,
           },
         },
@@ -665,7 +665,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (
-      this.#tracingConfig !== null && 
+      this.#tracingConfig !== null &&
       typeof this.#tracingConfig !== 'string' &&
       typeof tracingConfig !== 'string'
     ) {

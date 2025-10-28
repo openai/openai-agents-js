@@ -1,5 +1,68 @@
 # @openai/agents-core
 
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+## 0.1.11
+
+### Patch Changes
+
+- 3417f25: fix: #597 hostedMcpTool fails to send authorization parameter to Responses API
+
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- e0b46c4: fix: improve the compatibility for conversationId / previousResponseId + tool calls
+
+  ref: https://github.com/openai/openai-agents-python/pull/1827
+
+- 3023dc0: Fixes a bug where `onTraceEnd` was called immediately after `onTraceStart` when streaming is enabled
+
+## 0.1.8
+
+### Patch Changes
+
+- f3d1ff8: Revert "feat(mcp): support structuredContent via useStructuredContent; return full CallToolResult"
+
+## 0.1.7
+
+### Patch Changes
+
+- becabb9: fix: #247 logging for a sub-agent w/ stopAtToolNames
+- 0fd8b6e: feat: #478 add isEnabled to handoffs & agents as tools
+- be686e9: feat(mcp): add structuredContent support behind `useStructuredContent`; return full CallToolResult from `callTool`
+  - `MCPServer#callTool` now returns the full `CallToolResult` (was `content[]`), exposing optional `structuredContent`.
+  - Add `useStructuredContent` option to MCP servers (stdio/streamable-http/SSE), default `false` to avoid duplicate data by default.
+  - When enabled, function tool outputs return JSON strings for consistency with Python SDK implementation.
+
+- 74a6ca3: fix: #526 separate tool_call_item and tool_call_output_item in stream events
+
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- 8516799: fix(randomUUID): add fallback when crypto.randomUUID is unavailable
+
+## 0.1.4
+
+### Patch Changes
+
+- 5f4e139: fix: #485 Abort during streaming throws “ReadableStream is locked” in StreamedRunResult
+- 9147a6a: feat: #460 Enable to customize the internal runner for an agent as tool
+
 ## 0.1.3
 
 ### Patch Changes

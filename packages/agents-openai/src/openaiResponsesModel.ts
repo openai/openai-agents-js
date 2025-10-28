@@ -35,6 +35,7 @@ import {
 } from './tools';
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { ProviderData } from '@openai/agents-core/types';
+import { encodeUint8ArrayToBase64 } from '@openai/agents-core/utils';
 
 type ToolChoice =
   | ToolChoiceOptions
@@ -42,6 +43,32 @@ type ToolChoice =
   // TOOD: remove this once the underlying ToolChoiceTypes include this
   | { type: 'web_search' }
   | ToolChoiceFunction;
+
+type ResponseFunctionCallOutputListItem =
+  | {
+      type: 'input_text';
+      text: string;
+    }
+  | {
+      type: 'input_image';
+      image_url?: string;
+      file_id?: string;
+      detail?: 'low' | 'high' | 'auto';
+    }
+  | {
+      type: 'input_file';
+      file_data?: string;
+      file_url?: string;
+      file_id?: string;
+      filename?: string;
+    };
+
+type ExtendedFunctionCallOutput = Omit<
+  OpenAI.Responses.ResponseInputItem.FunctionCallOutput,
+  'output'
+> & {
+  output: string | ResponseFunctionCallOutputListItem[];
+};
 
 const HostedToolChoice = z.enum([
   'file_search',
@@ -87,6 +114,345 @@ function getResponseFormat(
     ...otherProperties,
     format: outputType,
   };
+}
+
+function normalizeFunctionCallOutputForRequest(
+  output: protocol.FunctionCallResultItem['output'],
+): string | ResponseFunctionCallOutputListItem[] {
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  if (Array.isArray(output)) {
+    return output.map(convertStructuredOutputToRequestItem);
+  }
+
+  if (isRecord(output) && typeof output.type === 'string') {
+    if (output.type === 'text' && typeof output.text === 'string') {
+      return output.text;
+    }
+
+    if (output.type === 'image' || output.type === 'file') {
+      const structuredItems = convertLegacyToolOutputContent(
+        output as protocol.ToolCallOutputContent,
+      );
+      return structuredItems.map(convertStructuredOutputToRequestItem);
+    }
+  }
+
+  return String(output);
+}
+
+/**
+ * Older tool integrations (and the Python SDK) still return their own `ToolOutput*` objects.
+ * Translate those into the protocol `input_*` structures so the rest of the pipeline can stay
+ * agnostic about who produced the data.
+ */
+function convertLegacyToolOutputContent(
+  output: protocol.ToolCallOutputContent,
+): protocol.ToolCallStructuredOutput[] {
+  if (output.type === 'text') {
+    const structured: protocol.InputText = {
+      type: 'input_text',
+      text: output.text,
+    };
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+    return [structured];
+  }
+
+  if (output.type === 'image') {
+    const structured: protocol.InputImage = {
+      type: 'input_image',
+    };
+
+    if (output.detail) {
+      structured.detail = output.detail;
+    }
+
+    const legacyImageUrl = (output as any).imageUrl;
+    const legacyFileId = (output as any).fileId;
+    const dataValue = (output as any).data;
+
+    if (typeof output.image === 'string' && output.image.length > 0) {
+      structured.image = output.image;
+    } else if (isRecord(output.image)) {
+      const imageObj = output.image as Record<string, any>;
+      const inlineMediaType = getImageInlineMediaType(imageObj);
+      if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
+        structured.image = imageObj.url;
+      } else if (
+        typeof imageObj.data === 'string' &&
+        imageObj.data.length > 0
+      ) {
+        structured.image = formatInlineData(imageObj.data, inlineMediaType);
+      } else if (
+        imageObj.data instanceof Uint8Array &&
+        imageObj.data.length > 0
+      ) {
+        structured.image = formatInlineData(imageObj.data, inlineMediaType);
+      } else {
+        const referencedId =
+          (typeof imageObj.fileId === 'string' &&
+            imageObj.fileId.length > 0 &&
+            imageObj.fileId) ||
+          (typeof imageObj.id === 'string' && imageObj.id.length > 0
+            ? imageObj.id
+            : undefined);
+        if (referencedId) {
+          structured.image = { id: referencedId };
+        }
+      }
+    } else if (
+      typeof legacyImageUrl === 'string' &&
+      legacyImageUrl.length > 0
+    ) {
+      structured.image = legacyImageUrl;
+    } else if (typeof legacyFileId === 'string' && legacyFileId.length > 0) {
+      structured.image = { id: legacyFileId };
+    } else {
+      let base64Data: string | undefined;
+      if (typeof dataValue === 'string' && dataValue.length > 0) {
+        base64Data = dataValue;
+      } else if (dataValue instanceof Uint8Array && dataValue.length > 0) {
+        base64Data = encodeUint8ArrayToBase64(dataValue);
+      }
+
+      if (base64Data) {
+        structured.image = base64Data;
+      }
+    }
+
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+
+    return [structured];
+  }
+
+  if (output.type === 'file') {
+    const structured: protocol.InputFile = {
+      type: 'input_file',
+    };
+
+    const fileValue = (output as any).file ?? output.file;
+    if (typeof fileValue === 'string') {
+      structured.file = fileValue;
+    } else if (isRecord(fileValue)) {
+      if (typeof fileValue.data === 'string' && fileValue.data.length > 0) {
+        structured.file = formatInlineData(
+          fileValue.data,
+          fileValue.mediaType ?? 'text/plain',
+        );
+      } else if (
+        fileValue.data instanceof Uint8Array &&
+        fileValue.data.length > 0
+      ) {
+        structured.file = formatInlineData(
+          fileValue.data,
+          fileValue.mediaType ?? 'text/plain',
+        );
+      } else if (
+        typeof fileValue.url === 'string' &&
+        fileValue.url.length > 0
+      ) {
+        structured.file = { url: fileValue.url };
+      } else {
+        const referencedId =
+          (typeof fileValue.id === 'string' &&
+            fileValue.id.length > 0 &&
+            fileValue.id) ||
+          (typeof (fileValue as any).fileId === 'string' &&
+          (fileValue as any).fileId.length > 0
+            ? (fileValue as any).fileId
+            : undefined);
+        if (referencedId) {
+          structured.file = { id: referencedId };
+        }
+      }
+
+      if (
+        typeof fileValue.filename === 'string' &&
+        fileValue.filename.length > 0
+      ) {
+        structured.filename = fileValue.filename;
+      }
+    }
+
+    if (!structured.file) {
+      const legacy = normalizeLegacyFileFromOutput(output as any);
+      if (legacy.file) {
+        structured.file = legacy.file;
+      }
+      if (legacy.filename) {
+        structured.filename = legacy.filename;
+      }
+    }
+    if (output.providerData) {
+      structured.providerData = output.providerData;
+    }
+
+    return [structured];
+  }
+
+  throw new UserError(
+    `Unsupported tool output type: ${JSON.stringify(output)}`,
+  );
+}
+
+/**
+ * Converts the protocol-level structured output into the exact wire format expected by the
+ * Responses API. Be careful to keep the snake_case property names the service requires here.
+ */
+function convertStructuredOutputToRequestItem(
+  item: protocol.ToolCallStructuredOutput,
+): ResponseFunctionCallOutputListItem {
+  if (item.type === 'input_text') {
+    return {
+      type: 'input_text',
+      text: item.text,
+    };
+  }
+
+  if (item.type === 'input_image') {
+    const result: ResponseFunctionCallOutputListItem = { type: 'input_image' };
+
+    const imageValue = (item as any).image ?? (item as any).imageUrl;
+    if (typeof imageValue === 'string') {
+      result.image_url = imageValue;
+    } else if (isRecord(imageValue) && typeof imageValue.id === 'string') {
+      result.file_id = imageValue.id;
+    }
+
+    const legacyFileId = (item as any).fileId;
+    if (typeof legacyFileId === 'string') {
+      result.file_id = legacyFileId;
+    }
+
+    if (item.detail) {
+      result.detail = item.detail as any;
+    }
+
+    return result;
+  }
+
+  if (item.type === 'input_file') {
+    const result: ResponseFunctionCallOutputListItem = { type: 'input_file' };
+
+    if (typeof item.file === 'string') {
+      const value = item.file.trim();
+      if (value.startsWith('data:')) {
+        result.file_data = value;
+      } else if (value.startsWith('http://') || value.startsWith('https://')) {
+        result.file_url = value;
+      } else if (/^[A-Za-z0-9+/=]+$/.test(value)) {
+        result.file_data = value;
+      } else {
+        result.file_url = value;
+      }
+    } else if (
+      item.file &&
+      typeof item.file === 'object' &&
+      'id' in item.file &&
+      typeof (item.file as { id?: unknown }).id === 'string'
+    ) {
+      result.file_id = (item.file as { id: string }).id;
+    } else if (
+      item.file &&
+      typeof item.file === 'object' &&
+      'url' in item.file &&
+      typeof (item.file as { url?: unknown }).url === 'string'
+    ) {
+      result.file_url = (item.file as { url: string }).url;
+    }
+
+    const legacyFileData = (item as any).fileData;
+    if (typeof legacyFileData === 'string') {
+      result.file_data = legacyFileData;
+    }
+
+    const legacyFileUrl = (item as any).fileUrl;
+    if (typeof legacyFileUrl === 'string') {
+      result.file_url = legacyFileUrl;
+    }
+
+    const legacyFileId = (item as any).fileId;
+    if (typeof legacyFileId === 'string') {
+      result.file_id = legacyFileId;
+    }
+
+    if (item.filename) {
+      result.filename = item.filename;
+    }
+
+    return result;
+  }
+
+  throw new UserError(
+    `Unsupported structured tool output: ${JSON.stringify(item)}`,
+  );
+}
+
+function normalizeLegacyFileFromOutput(value: Record<string, any>): {
+  file?: protocol.InputFile['file'];
+  filename?: string;
+} {
+  const filename =
+    typeof value.filename === 'string' && value.filename.length > 0
+      ? value.filename
+      : undefined;
+
+  const referencedId =
+    (typeof value.id === 'string' && value.id.length > 0 && value.id) ??
+    (typeof value.fileId === 'string' && value.fileId.length > 0
+      ? value.fileId
+      : undefined);
+  if (referencedId) {
+    return { file: { id: referencedId }, filename };
+  }
+
+  if (typeof value.fileUrl === 'string' && value.fileUrl.length > 0) {
+    return { file: { url: value.fileUrl }, filename };
+  }
+
+  if (typeof value.fileData === 'string' && value.fileData.length > 0) {
+    return {
+      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
+      filename,
+    };
+  }
+
+  if (value.fileData instanceof Uint8Array && value.fileData.length > 0) {
+    return {
+      file: formatInlineData(value.fileData, value.mediaType ?? 'text/plain'),
+      filename,
+    };
+  }
+
+  return {};
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getImageInlineMediaType(
+  source: Record<string, any>,
+): string | undefined {
+  if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
+    return source.mediaType;
+  }
+  return undefined;
+}
+
+function formatInlineData(
+  data: string | Uint8Array,
+  mediaType?: string,
+): string {
+  const base64 =
+    typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
+  return mediaType ? `data:${mediaType};base64,${base64}` : base64;
 }
 
 function getTools<_TContext = unknown>(
@@ -270,12 +636,16 @@ function getInputMessageContent(
   } else if (entry.type === 'input_image') {
     const imageEntry: OpenAI.Responses.ResponseInputImage = {
       type: 'input_image',
-      detail: 'auto',
+      detail: (entry.detail ?? 'auto') as any,
     };
     if (typeof entry.image === 'string') {
       imageEntry.image_url = entry.image;
-    } else {
+    } else if (entry.image && 'id' in entry.image) {
       imageEntry.file_id = entry.image.id;
+    } else if (typeof (entry as any).imageUrl === 'string') {
+      imageEntry.image_url = (entry as any).imageUrl;
+    } else if (typeof (entry as any).fileId === 'string') {
+      imageEntry.file_id = (entry as any).fileId;
     }
     return {
       ...imageEntry,
@@ -295,10 +665,34 @@ function getInputMessageContent(
           `Unsupported string data for file input. If you're trying to pass an uploaded file's ID, use an object with the ID property instead.`,
         );
       }
-    } else if ('id' in entry.file) {
+    } else if (
+      entry.file &&
+      typeof entry.file === 'object' &&
+      'id' in entry.file
+    ) {
       fileEntry.file_id = entry.file.id;
-    } else if ('url' in entry.file) {
+    } else if (
+      entry.file &&
+      typeof entry.file === 'object' &&
+      'url' in entry.file
+    ) {
       fileEntry.file_url = entry.file.url;
+    }
+
+    const legacyFileData = (entry as any).fileData;
+    if (typeof legacyFileData === 'string') {
+      fileEntry.file_data = legacyFileData;
+    }
+    const legacyFileUrl = (entry as any).fileUrl;
+    if (typeof legacyFileUrl === 'string') {
+      fileEntry.file_url = legacyFileUrl;
+    }
+    const legacyFileId = (entry as any).fileId;
+    if (typeof legacyFileId === 'string') {
+      fileEntry.file_id = legacyFileId;
+    }
+    if (entry.filename) {
+      fileEntry.filename = entry.filename;
     }
     return {
       ...fileEntry,
@@ -456,22 +850,20 @@ function getInputItems(
     }
 
     if (item.type === 'function_call_result') {
-      if (item.output.type !== 'text') {
-        throw new UserError(
-          `Unsupported tool result type: ${JSON.stringify(item.output)}`,
-        );
-      }
+      const normalizedOutput = normalizeFunctionCallOutputForRequest(
+        item.output,
+      );
 
-      const entry: OpenAI.Responses.ResponseInputItem.FunctionCallOutput = {
+      const entry: ExtendedFunctionCallOutput = {
         type: 'function_call_output',
         id: item.id,
         call_id: item.callId,
-        output: item.output.text,
+        output: normalizedOutput,
         status: item.status,
         ...camelOrSnakeToSnakeCase(item.providerData),
       };
 
-      return entry;
+      return entry as unknown as OpenAI.Responses.ResponseInputItem.FunctionCallOutput;
     }
 
     if (item.type === 'reasoning') {
@@ -852,7 +1244,20 @@ export class OpenAIResponsesModel implements Model {
     const toolChoice = getToolChoice(request.modelSettings.toolChoice);
     const { text, ...restOfProviderData } =
       request.modelSettings.providerData ?? {};
-    const responseFormat = getResponseFormat(request.outputType, text);
+    if (request.modelSettings.reasoning) {
+      // Merge top-level reasoning settings with provider data
+      restOfProviderData.reasoning = {
+        ...request.modelSettings.reasoning,
+        ...restOfProviderData.reasoning,
+      };
+    }
+    let mergedText = text;
+    if (request.modelSettings.text) {
+      // Merge top-level text settings with provider data
+      mergedText = { ...request.modelSettings.text, ...text };
+    }
+    const responseFormat = getResponseFormat(request.outputType, mergedText);
+
     const prompt = getPrompt(request.prompt);
 
     let parallelToolCalls: boolean | undefined = undefined;
@@ -864,9 +1269,14 @@ export class OpenAIResponsesModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
+    // When a prompt template already declares a model, skip sending the agent's default model.
+    // If the caller explicitly requests an override, include the resolved model name in the request.
+    const shouldSendModel =
+      !request.prompt || request.overridePromptModel === true;
+
     const requestData = {
-      instructions: request.systemInstructions,
-      model: this.#model,
+      ...(shouldSendModel ? { model: this.#model } : {}),
+      instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,
       tools,
@@ -1037,4 +1447,22 @@ export class OpenAIResponsesModel implements Model {
       }
     }
   }
+}
+
+/**
+ * Sending an empty string for instructions can override the prompt parameter.
+ * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
+ * @param instructions - The instructions to normalize.
+ * @returns The normalized instructions.
+ */
+function normalizeInstructions(
+  instructions: string | undefined,
+): string | undefined {
+  if (typeof instructions === 'string') {
+    if (instructions.trim() === '') {
+      return undefined;
+    }
+    return instructions;
+  }
+  return undefined;
 }

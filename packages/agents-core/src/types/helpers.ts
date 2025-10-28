@@ -1,9 +1,9 @@
-import type { ZodObject, infer as zInfer } from 'zod';
 import { Agent, AgentOutputType } from '../agent';
 import { ToolInputParameters } from '../tool';
 import { Handoff } from '../handoff';
 import { ModelItem, StreamEvent } from './protocol';
 import { TextOutput } from './aliases';
+import type { ZodInfer, ZodObjectLike } from '../utils/zodCompat';
 
 /**
  * Item representing an output in a model response.
@@ -17,25 +17,26 @@ export type ResponseStreamEvent = StreamEvent;
 
 export type ResolveParsedToolParameters<
   TInputType extends ToolInputParameters,
-> =
-  TInputType extends ZodObject<any>
-    ? zInfer<TInputType>
-    : TInputType extends JsonObjectSchema<any>
-      ? unknown
-      : string;
+> = TInputType extends ZodObjectLike
+  ? ZodInfer<TInputType>
+  : TInputType extends JsonObjectSchema<any>
+    ? unknown
+    : string;
 
 export type ResolvedAgentOutput<
   TOutput extends AgentOutputType<H>,
   H = unknown,
 > = TOutput extends TextOutput
   ? string
-  : TOutput extends ZodObject<any>
-    ? zInfer<TOutput>
+  : TOutput extends ZodObjectLike
+    ? ZodInfer<TOutput>
     : TOutput extends HandoffsOutput<infer H>
       ? HandoffsOutput<H>
-      : TOutput extends Record<string, any>
-        ? unknown
-        : never;
+      : unknown extends TOutput
+        ? any
+        : TOutput extends Record<string, any>
+          ? unknown
+          : never;
 
 export type JsonSchemaDefinitionEntry = Record<string, any>;
 

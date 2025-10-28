@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start:cjs": "node --no-experimental-require-module index.cjs",
+    "start:esm": "node --no-experimental-require-module index.mjs"
+  },
+  "dependencies": {
+    "@openai/agents": "latest",
+    "typescript": "^5.9.3",
+    "zod": "^4"
+  }
+}

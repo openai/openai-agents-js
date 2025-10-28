@@ -34,6 +34,7 @@ async function main() {
   // The user John is 47 years old.
 }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

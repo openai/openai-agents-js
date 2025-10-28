@@ -7,7 +7,6 @@ const {
   ConsoleSpanExporter,
   BatchTraceProcessor,
 } = require('@openai/agents');
-const { assert } = require('node:console');
 
 setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
 

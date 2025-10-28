@@ -1,5 +1,89 @@
 # @openai/agents-realtime
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [3417f25]
+  - @openai/agents-core@0.1.11
+
+## 0.1.10
+
+### Patch Changes
+
+- cad0baa: Resolved typo with usage events
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
+## 0.1.8
+
+### Patch Changes
+
+- bb18a43: fix: #552 WebSocket Realtime Agent: invalid_request_error with decimal audio_end_ms data
+- Updated dependencies [f3d1ff8]
+  - @openai/agents-core@0.1.8
+
+## 0.1.7
+
+### Patch Changes
+
+- 0fd8b6e: feat: #478 add isEnabled to handoffs & agents as tools
+- 926bc13: fix: #494 Voice input transcription failing in realtime-demo
+- Updated dependencies [becabb9]
+- Updated dependencies [0fd8b6e]
+- Updated dependencies [be686e9]
+- Updated dependencies [74a6ca3]
+  - @openai/agents-core@0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-core@0.1.6
+
+## 0.1.5
+
+### Patch Changes
+
+- 2dfb4fd: feat: add factory-based Cloudflare support.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
+    custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
+    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+
+## 0.1.4
+
+### Patch Changes
+
+- 18fd902: fix: #495 Realtime session config falls back to legacy format when voice is set
+- 1d4984b: Realtime: expose Call ID in OpenAIRealtimeWebRTC
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-core@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes

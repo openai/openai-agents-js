@@ -21,7 +21,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.17.0
+          version: 10.19.0
           run_install: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,6 +34,8 @@ jobs:
         run: pnpm build
       - name: Run linter
         run: pnpm lint
+      - name: Type-check docs scripts
+        run: pnpm docs:scripts:check
       - name: Compile examples
         run: pnpm -r build-check
       - name: Run tests

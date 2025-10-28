@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest';
+import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 
 import { Agent, saveAgentToolRunResult } from '../src/agent';
@@ -27,6 +28,7 @@ import {
   executeComputerActions,
   executeHandoffCalls,
   executeToolsAndSideEffects,
+  streamStepItemsToRunResult,
 } from '../src/runImplementation';
 import {
   FunctionTool,
@@ -146,6 +148,250 @@ describe('getToolCallOutputItem', () => {
         text: 'hi',
       },
     });
+  });
+
+  it('converts structured text outputs into input_text items', () => {
+    const output = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'text',
+      text: 'structured',
+    });
+
+    expect(output.output).toEqual([
+      {
+        type: 'input_text',
+        text: 'structured',
+      },
+    ]);
+  });
+
+  it('converts image outputs with URLs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: 'https://example.com/image.png',
+      detail: 'high',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'https://example.com/image.png',
+        detail: 'high',
+      },
+    ]);
+  });
+
+  it('converts nested image objects with base64 payloads', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: {
+        data: 'AAA',
+        mediaType: 'image/png',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,AAA',
+      },
+    ]);
+  });
+
+  it('converts nested image objects with binary payloads', () => {
+    const bytes = Buffer.from('png-binary');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: {
+        data: new Uint8Array(bytes),
+        mediaType: 'image/png',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: `data:image/png;base64,${bytes.toString('base64')}`,
+      },
+    ]);
+  });
+
+  it('converts image outputs with file IDs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: { fileId: 'file_999' },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: { id: 'file_999' },
+      },
+    ]);
+  });
+
+  it('converts file outputs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        id: 'file_123',
+        filename: 'report.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: { id: 'file_123' },
+        filename: 'report.pdf',
+      },
+    ]);
+  });
+
+  it('supports legacy fileData payloads', () => {
+    const base64 = Buffer.from('legacy file').toString('base64');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      fileData: base64,
+      filename: 'legacy.txt',
+      mediaType: 'text/plain',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:text/plain;base64,${base64}`,
+        filename: 'legacy.txt',
+      },
+    ]);
+  });
+
+  it('respects mediaType for inline file data (string)', () => {
+    const base64 = Buffer.from('pdf binary data').toString('base64');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        data: base64,
+        mediaType: 'application/pdf',
+        filename: 'report.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:application/pdf;base64,${base64}`,
+        filename: 'report.pdf',
+      },
+    ]);
+  });
+
+  it('respects mediaType for inline file data (Uint8Array)', () => {
+    const bytes = Buffer.from('%PDF-1.7');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: {
+        data: new Uint8Array(bytes),
+        mediaType: 'application/pdf',
+        filename: 'binary.pdf',
+      },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: `data:application/pdf;base64,${bytes.toString('base64')}`,
+        filename: 'binary.pdf',
+      },
+    ]);
+  });
+
+  it('converts arrays of structured outputs', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, [
+      { type: 'text', text: 'alpha' },
+      { type: 'image', image: 'data:image/png;base64,AAA' },
+    ]);
+
+    expect(result.output).toEqual([
+      { type: 'input_text', text: 'alpha' },
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,AAA',
+      },
+    ]);
+  });
+
+  it('stringifies arrays of primitives', () => {
+    const raw = [1, true, 'alpha'];
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
+  });
+
+  it('stringifies arrays of plain objects', () => {
+    const raw = [{ foo: 'bar' }, { baz: 2 }];
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
+  });
+
+  it('falls back to text output when array contains unsupported items', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, [
+      { type: 'text', text: 'alpha' },
+      { foo: 'bar' },
+    ]);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: '[{"type":"text","text":"alpha"},{"foo":"bar"}]',
+    });
+  });
+
+  it('stringifies plain objects that are not structured outputs', () => {
+    const raw = { foo: 'bar' };
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, raw);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: JSON.stringify(raw),
+    });
+  });
+
+  it('preserves custom image detail values', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: 'https://example.com/image.png',
+      detail: 'ultra',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: 'https://example.com/image.png',
+        detail: 'ultra',
+      },
+    ]);
+  });
+
+  it('converts Uint8Array image data into base64 strings', () => {
+    const bytes = Buffer.from('image-binary');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      data: new Uint8Array(bytes),
+      mediaType: 'image/png',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: `data:image/png;base64,${bytes.toString('base64')}`,
+      },
+    ]);
   });
 });
 
@@ -310,6 +556,63 @@ describe('addStepToRunResult', () => {
       'tool_called',
       'tool_output',
       'reasoning_item_created',
+    ]);
+  });
+
+  it('does not re-emit items that were already streamed', () => {
+    const agent = new Agent({ name: 'StreamOnce' });
+
+    const toolCallItem = new ToolCallItem(TEST_MODEL_FUNCTION_CALL, agent);
+    const toolOutputItem = new ToolCallOutputItem(
+      getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, 'ok'),
+      agent,
+      'ok',
+    );
+
+    const step: any = {
+      newStepItems: [toolCallItem, toolOutputItem],
+    };
+
+    const streamedResult = new StreamedRunResult();
+    const captured: string[] = [];
+    (streamedResult as any)._addItem = (evt: any) => captured.push(evt.name);
+
+    const alreadyStreamed = new Set([toolCallItem]);
+    streamStepItemsToRunResult(streamedResult, [toolCallItem]);
+    addStepToRunResult(streamedResult, step, { skipItems: alreadyStreamed });
+
+    expect(captured).toEqual(['tool_called', 'tool_output']);
+  });
+
+  it('maintains event order when mixing pre-streamed and step items', () => {
+    const agent = new Agent({ name: 'OrderedStream' });
+
+    const messageItem = new MessageOutputItem(TEST_MODEL_MESSAGE, agent);
+    const toolCallItem = new ToolCallItem(TEST_MODEL_FUNCTION_CALL, agent);
+    const toolOutputItem = new ToolCallOutputItem(
+      getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, 'done'),
+      agent,
+      'done',
+    );
+
+    const step: any = {
+      newStepItems: [messageItem, toolCallItem, toolOutputItem],
+    };
+
+    const streamedResult = new StreamedRunResult();
+    const captured: string[] = [];
+    (streamedResult as any)._addItem = (evt: any) => captured.push(evt.name);
+
+    const preStreamed = new Set([messageItem, toolCallItem]);
+    // Simulate the streaming loop emitting early items and then the step emitter
+    // flushing the remainder without duplicating the first two events.
+    streamStepItemsToRunResult(streamedResult, [messageItem, toolCallItem]);
+    addStepToRunResult(streamedResult, step, { skipItems: preStreamed });
+
+    expect(captured).toEqual([
+      'message_output_created',
+      'tool_called',
+      'tool_output',
     ]);
   });
 });

@@ -1,6 +1,7 @@
 import { JsonObjectSchema } from '../types';
 import { Handoff } from '../handoff';
 import { Tool } from '../tool';
+import { AgentOutputType } from '../agent';
 import { SerializedHandoff, SerializedTool } from '../model';
 
 export function serializeTool(tool: Tool<any>): SerializedTool {
@@ -28,7 +29,9 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
   };
 }
 
-export function serializeHandoff(h: Handoff): SerializedHandoff {
+export function serializeHandoff<TContext, TOutput extends AgentOutputType>(
+  h: Handoff<TContext, TOutput>,
+): SerializedHandoff {
   return {
     toolName: h.toolName,
     toolDescription: h.toolDescription,

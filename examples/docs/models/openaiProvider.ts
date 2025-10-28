@@ -23,11 +23,8 @@ async function main() {
   console.log(result.finalOutput);
 }
 
-if (require.main === module) {
-  main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
-}
-
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 setTracingExportApiKey(process.env.OPENAI_API_KEY!);

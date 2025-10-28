@@ -3,13 +3,13 @@
 
 export const METADATA = {
   "name": "@openai/agents",
-  "version": "0.1.3",
+  "version": "0.2.1",
   "versions": {
-    "@openai/agents": "0.1.3",
+    "@openai/agents": "0.2.1",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^5.20.2"
+    "openai": "^6"
   }
 };
 

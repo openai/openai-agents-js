@@ -39,6 +39,7 @@ async function main() {
   // This image shows a large American bison standing on a grassy hill. The bison has a shaggy brown coat, with parts of its fur shedding, and prominent curved horns. The background is mostly a light, overcast sky, which makes the bison stand out prominently in the image. There is green grass and some small wild plants in the foreground. The overall scene appears natural and serene, likely in a prairie or grassland environment.
 }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

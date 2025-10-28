@@ -1,5 +1,84 @@
 # @openai/agents-openai
 
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [3417f25]
+  - @openai/agents-core@0.1.11
+
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- b07a588: fix: #562 invalid model settings when prompt is set in Agent
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
+## 0.1.9
+
+### Patch Changes
+
+- 4f27ed5: fix: #558 prompt parameter does not work when being passed via an Agent
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [f3d1ff8]
+  - @openai/agents-core@0.1.8
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [becabb9]
+- Updated dependencies [0fd8b6e]
+- Updated dependencies [be686e9]
+- Updated dependencies [74a6ca3]
+  - @openai/agents-core@0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- 3115177: Add typed reasoning / text options to ModelSettings
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-core@0.1.6
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-core@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes

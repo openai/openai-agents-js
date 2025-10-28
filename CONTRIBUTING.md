@@ -23,8 +23,8 @@ Other important directories:
 
 ### Prerequisites
 
-- Node.js v18 or later
-- pnpm v7 or later
+- Node.js 22 or later
+- pnpm 10 or later
 
 ### Setup
 

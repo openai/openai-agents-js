@@ -63,10 +63,8 @@ const agent = new RealtimeAgent({
     'You are a friendly assistant. When you use a tool always first say what you are about to do.',
   tools: [
     hostedMcpTool({
-      serverLabel: 'dnd',
-    }),
-    hostedMcpTool({
       serverLabel: 'deepwiki',
+      serverUrl: 'https://mcp.deepwiki.com/sse',
     }),
     secretTool,
     weatherTool,

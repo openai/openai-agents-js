@@ -2,12 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 
 import { agent } from '@/agents';
-import {
-  AgentInputItem,
-  Runner,
-  RunState,
-  RunToolApprovalItem,
-} from '@openai/agents';
+import { Runner, RunState, RunToolApprovalItem } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 import { db } from '@/db';
 
 function generateConversationId() {

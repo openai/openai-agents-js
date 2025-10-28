@@ -75,8 +75,7 @@ raw JSON schema:
 
 ## 3. Agents as tools
 
-Sometimes you want an Agent to _assist_ another Agent without fully handing off the
-conversation. Use `agent.asTool()`:
+Sometimes you want an Agent to _assist_ another Agent without fully handing off the conversation. Use `agent.asTool()`:
 
 <Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
 
@@ -86,16 +85,18 @@ Under the hood the SDK:
 - Runs the sub‑agent with that input when the tool is called.
 - Returns either the last message or the output extracted by `customOutputExtractor`.
 
+When you run an agent as a tool, Agents SDK creates a runner with the default settings and run the agent with it within the function execution. If you want to provide any properties of `runConfig` or `runOptions`, you can pass them to the `asTool()` method to customize the runner's behavior.
+
 ---
 
-## 4. Local MCP servers
+## 4. MCP servers
 
-You can expose tools via a local [Model Context Protocol](https://modelcontextprotocol.io/) server and attach them to an agent.
-Use `MCPServerStdio` to spawn and connect to the server:
+You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent.
+For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:
 
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
-See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example.
+See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example. Also, if you're looking for a comprehensitve guide for MCP server tool integration, refer to [MCP guide](/openai-agents-js/guides/mcp) for details.
 
 ---
 

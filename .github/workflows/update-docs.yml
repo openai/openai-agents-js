@@ -1,5 +1,19 @@
 name: "Update Translated Docs"
 
+# To add more languages, you will update the following:
+#
+# 1. Update this file
+#   - Add '!docs/src/content/docs/{lang}/**' to `on.push.paths`
+#
+# 2. Update docs/astro.config.mjs
+#   - Add the new language to `plugins.starlightLlmsTxt.exclude` array
+#   - Update `translations` for `sidebar`'s items
+#   - Add the new language to `integrations.starlight.locales` array
+#
+# 3. Update docs/src/scripts/translate.ts
+#   - Various updates for the new language
+#
+
 on:
   push:
     branches:
@@ -7,6 +21,8 @@ on:
     paths:
       - 'docs/src/content/**'
       - '!docs/src/content/docs/ja/**'
+      - '!docs/src/content/docs/zh/**'
+      - '!docs/src/content/docs/ko/**'
 
 permissions:
   contents: write
@@ -24,7 +40,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.17.0
+          version: 10.19.0
           run_install: false
       - name: Setup Node.js
         uses: actions/setup-node@v4

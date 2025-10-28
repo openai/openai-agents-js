@@ -72,6 +72,8 @@ export class OpenAIChatCompletionsModel implements Model {
             top_p: request.modelSettings.topP,
             frequency_penalty: request.modelSettings.frequencyPenalty,
             presence_penalty: request.modelSettings.presencePenalty,
+            reasoning_effort: request.modelSettings.reasoning?.effort,
+            verbosity: request.modelSettings.text?.verbosity,
           }
         : { base_url: this.#client.baseURL };
       const response = await this.#fetchResponse(request, span, false);
@@ -296,6 +298,19 @@ export class OpenAIChatCompletionsModel implements Model {
       span.spanData.input = messages;
     }
 
+    const providerData = request.modelSettings.providerData ?? {};
+    if (
+      request.modelSettings.reasoning &&
+      request.modelSettings.reasoning.effort
+    ) {
+      // merge the top-level reasoning.effort into provider data
+      providerData.reasoning_effort = request.modelSettings.reasoning.effort;
+    }
+    if (request.modelSettings.text && request.modelSettings.text.verbosity) {
+      // merge the top-level text.verbosity into provider data
+      providerData.verbosity = request.modelSettings.text.verbosity;
+    }
+
     const requestData = {
       model: this.#model,
       messages,
@@ -310,7 +325,7 @@ export class OpenAIChatCompletionsModel implements Model {
       parallel_tool_calls: parallelToolCalls,
       stream,
       store: request.modelSettings.store,
-      ...request.modelSettings.providerData,
+      ...providerData,
     };
 
     if (logger.dontLogModelData) {

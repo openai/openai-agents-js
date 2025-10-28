@@ -3,12 +3,12 @@
   "name": "agent-patterns",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "chalk": "^5.4.1",
-    "zod": "^3.25.40"
+    "chalk": "^5.4.1"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
     "start:agents-as-tools": "tsx agents-as-tools.ts",
+    "start:agents-as-tools-conditional": "tsx agents-as-tools-conditional.ts",
     "start:deterministic": "tsx deterministic.ts",
     "start:forcing-tool-use": "tsx forcing-tool-use.ts -t default",
     "start:human-in-the-loop-stream": "tsx human-in-the-loop-stream.ts",

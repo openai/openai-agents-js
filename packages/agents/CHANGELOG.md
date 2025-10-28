@@ -1,5 +1,110 @@
 # @openai/agents
 
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+- Updated dependencies [76e5adb]
+  - @openai/agents-openai@0.2.1
+  - @openai/agents-core@0.2.1
+  - @openai/agents-realtime@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-openai@0.2.0
+  - @openai/agents-core@0.2.0
+  - @openai/agents-realtime@0.2.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [3417f25]
+  - @openai/agents-core@0.1.11
+  - @openai/agents-openai@0.1.11
+  - @openai/agents-realtime@0.1.11
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies [73ee587]
+- Updated dependencies [cad0baa]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+- Updated dependencies [b07a588]
+  - @openai/agents-openai@0.1.10
+  - @openai/agents-core@0.1.10
+  - @openai/agents-realtime@0.1.10
+
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [4f27ed5]
+  - @openai/agents-openai@0.1.9
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [bb18a43]
+- Updated dependencies [f3d1ff8]
+  - @openai/agents-realtime@0.1.8
+  - @openai/agents-core@0.1.8
+  - @openai/agents-openai@0.1.8
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [becabb9]
+- Updated dependencies [0fd8b6e]
+- Updated dependencies [be686e9]
+- Updated dependencies [74a6ca3]
+- Updated dependencies [926bc13]
+  - @openai/agents-core@0.1.7
+  - @openai/agents-realtime@0.1.7
+  - @openai/agents-openai@0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [3115177]
+- Updated dependencies [8516799]
+  - @openai/agents-openai@0.1.6
+  - @openai/agents-core@0.1.6
+  - @openai/agents-realtime@0.1.6
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [2dfb4fd]
+  - @openai/agents-realtime@0.1.5
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [18fd902]
+- Updated dependencies [1d4984b]
+- Updated dependencies [5f4e139]
+- Updated dependencies [9147a6a]
+  - @openai/agents-realtime@0.1.4
+  - @openai/agents-core@0.1.4
+  - @openai/agents-openai@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes

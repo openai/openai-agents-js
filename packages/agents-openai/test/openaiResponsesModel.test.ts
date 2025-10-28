@@ -13,7 +13,7 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
   });
   it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
-    withTrace('test', async () => {
+    await withTrace('test', async () => {
       const fakeResponse = {
         id: 'res1',
         usage: {
@@ -74,8 +74,187 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('omits model when a prompt is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_123' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_123' });
+    });
+  });
+
+  it('includes model when overridePromptModel is true', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt-override', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-override');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_456' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+        overridePromptModel: true,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.model).toBe('gpt-override');
+      expect(args.prompt).toMatchObject({ id: 'pmpt_456' });
+    });
+  });
+
+  it('normalizes systemInstructions so empty strings are omitted', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-empty-instructions',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      for (const systemInstructions of ['', '   ']) {
+        const request = {
+          systemInstructions,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        await new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        ).getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect('instructions' in args).toBe(true);
+        expect(args.instructions).toBeUndefined();
+      }
+
+      for (const systemInstructions of [' a ', 'foo']) {
+        const request = {
+          systemInstructions,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        await new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        ).getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect('instructions' in args).toBe(true);
+        expect(args.instructions).toBe(systemInstructions);
+      }
+    });
+  });
+
+  it('merges top-level reasoning and text settings into provider data for Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-settings',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-settings');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hi',
+        modelSettings: {
+          reasoning: { effort: 'medium', summary: 'concise' },
+          text: { verbosity: 'low' },
+          providerData: {
+            reasoning: { summary: 'override', note: 'provider' },
+            text: { tone: 'playful' },
+            customFlag: true,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.reasoning).toEqual({
+        effort: 'medium',
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(args.text).toEqual({ verbosity: 'low', tone: 'playful' });
+      expect(args.customFlag).toBe(true);
+
+      // ensure original provider data object was not mutated
+      expect(request.modelSettings.providerData.reasoning).toEqual({
+        summary: 'override',
+        note: 'provider',
+      });
+      expect(request.modelSettings.providerData.text).toEqual({
+        tone: 'playful',
+      });
+    });
+  });
+
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
-    withTrace('test', async () => {
+    await withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };
       const events: ResponseStreamEvent[] = [
         { type: 'response.created', response: fakeResponse as any },

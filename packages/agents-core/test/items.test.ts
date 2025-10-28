@@ -148,7 +148,7 @@ describe('items toJSON()', () => {
         type: 'function_call_result',
         callId: 'test',
         name: 'test',
-        output: { text: 'test', type: 'text' },
+        output: { type: 'text', text: 'test' },
         status: 'completed',
       },
       new Agent({ name: 'TestAgent' }),

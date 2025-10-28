@@ -61,4 +61,25 @@ describe('StreamedRunResult', () => {
     await expect(sr.completed).rejects.toBe(err);
     expect(sr.error).toBe(err);
   });
+
+  it('handles abort while iterating without throwing', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+
+    const consumePromise = (async () => {
+      for await (const _ of sr) {
+        // Intentionally empty.
+      }
+    })();
+
+    await Promise.resolve();
+
+    controller.abort();
+
+    await expect(consumePromise).resolves.toBeUndefined();
+    await expect(sr.completed).resolves.toBeUndefined();
+    expect(sr.cancelled).toBe(true);
+    expect(sr.error).toBe(null);
+  });
 });

@@ -52,6 +52,7 @@ export {
   Handoff,
   handoff,
   HandoffInputData,
+  HandoffEnabledFunction,
 } from './handoff';
 export { assistant, system, user } from './helpers/message';
 export {
@@ -124,7 +125,15 @@ export {
   Tool,
   tool,
   ToolExecuteArgument,
+  ToolEnabledFunction,
 } from './tool';
+export type {
+  ToolOutputText,
+  ToolOutputImage,
+  ToolOutputFileContent,
+  ToolCallStructuredOutput,
+  ToolCallOutputContent,
+} from './types/protocol';
 export * from './tracing';
 export { getGlobalTraceProvider, TraceProvider } from './tracing/provider';
 /* only export the types not the parsers */

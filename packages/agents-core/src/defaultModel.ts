@@ -43,13 +43,11 @@ export function getDefaultModelSettings(model?: string): ModelSettings {
   const _model = model ?? getDefaultModel();
   if (gpt5ReasoningSettingsRequired(_model)) {
     return {
-      providerData: {
-        // We chose "low" instead of "minimal" because some of the built-in tools
-        // (e.g., file search, image generation, etc.) do not support "minimal"
-        // If you want to use "minimal" reasoning effort, you can pass your own model settings
-        reasoning: { effort: 'low' },
-        text: { verbosity: 'low' },
-      },
+      // We chose "low" instead of "minimal" because some of the built-in tools
+      // (e.g., file search, image generation, etc.) do not support "minimal"
+      // If you want to use "minimal" reasoning effort, you can pass your own model settings
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
     };
   }
   return {};

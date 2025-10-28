@@ -1,4 +1,5 @@
-import { Agent, AgentInputItem, run, withTrace } from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 import { z } from 'zod';
 import readline from 'node:readline/promises';
 
@@ -72,6 +73,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Error:', error);
+  console.error(error);
   process.exit(1);
 });

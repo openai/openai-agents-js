@@ -1,6 +1,5 @@
 import type { Agent } from './agent';
 import type { Computer } from './computer';
-import type { infer as zInfer, ZodObject } from 'zod';
 import {
   JsonObjectSchema,
   JsonObjectSchemaNonStrict,
@@ -20,6 +19,15 @@ import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
 import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
+import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
+
+export type {
+  ToolOutputText,
+  ToolOutputImage,
+  ToolOutputFileContent,
+  ToolCallStructuredOutput,
+  ToolCallOutputContent,
+} from './types/protocol';
 
 /**
  * A function that determines if a tool call should be approved.
@@ -34,6 +42,20 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
   input: ToolExecuteArgument<TParameters>,
   callId?: string,
 ) => Promise<boolean>;
+
+export type ToolEnabledFunction<Context = UnknownContext> = (
+  runContext: RunContext<Context>,
+  agent: Agent<any, any>,
+) => Promise<boolean>;
+
+type ToolEnabledPredicate<Context = UnknownContext> = (args: {
+  runContext: RunContext<Context>;
+  agent: Agent<any, any>;
+}) => boolean | Promise<boolean>;
+
+type ToolEnabledOption<Context = UnknownContext> =
+  | boolean
+  | ToolEnabledPredicate<Context>;
 
 /**
  * Exposes a function to the agent as a tool to be called
@@ -78,6 +100,11 @@ export type FunctionTool<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval: ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be made available to the model for the current run.
+   */
+  isEnabled: ToolEnabledFunction<Context>;
 };
 
 /**
@@ -132,9 +159,8 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
 /**
  * Creates a hosted MCP tool definition.
  *
- * @param serverLabel - The label identifying the MCP server.
- * @param serverUrl - The URL of the MCP server.
- * @param requireApproval - Whether tool calls require approval.
+ * @param options - Configuration for the hosted MCP tool, including server connection details
+ * and approval requirements.
  */
 export function hostedMcpTool<Context = UnknownContext>(
   options: {
@@ -178,6 +204,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             server_url: options.serverUrl,
+            authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
             headers: options.headers,
@@ -186,6 +213,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             server_url: options.serverUrl,
+            authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
             headers: options.headers,
             require_approval:
@@ -367,7 +395,7 @@ export type FunctionToolResult<
  */
 export type ToolInputParameters =
   | undefined
-  | ZodObject<any>
+  | ZodObjectLike
   | JsonObjectSchema<any>;
 
 /**
@@ -384,7 +412,7 @@ export type ToolInputParameters =
  */
 export type ToolInputParametersStrict =
   | undefined
-  | ZodObject<any>
+  | ZodObjectLike
   | JsonObjectSchemaStrict<any>;
 
 /**
@@ -407,8 +435,8 @@ export type ToolInputParametersNonStrict =
  * match the inferred Zod type. Otherwise the type is `string`
  */
 export type ToolExecuteArgument<TParameters extends ToolInputParameters> =
-  TParameters extends ZodObject<any>
-    ? zInfer<TParameters>
+  TParameters extends ZodObjectLike
+    ? ZodInfer<TParameters>
     : TParameters extends JsonObjectSchema<any>
       ? unknown
       : string;
@@ -501,6 +529,11 @@ type StrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be exposed to the model for the current run.
+   */
+  isEnabled?: ToolEnabledOption<Context>;
 };
 
 /**
@@ -548,6 +581,11 @@ type NonStrictToolOptions<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+
+  /**
+   * Determines whether the tool should be exposed to the model for the current run.
+   */
+  isEnabled?: ToolEnabledOption<Context>;
 };
 
 /**
@@ -666,6 +704,16 @@ export function tool<
             ? options.needsApproval
             : false;
 
+  const isEnabled: ToolEnabledFunction<Context> =
+    typeof options.isEnabled === 'function'
+      ? async (runContext, agent) => {
+          const predicate = options.isEnabled as ToolEnabledPredicate<Context>;
+          const result = await predicate({ runContext, agent });
+          return Boolean(result);
+        }
+      : async () =>
+          typeof options.isEnabled === 'boolean' ? options.isEnabled : true;
+
   return {
     type: 'function',
     name,
@@ -674,6 +722,7 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
+    isEnabled,
   };
 }
 

@@ -13,7 +13,7 @@ describe('Deno', () => {
     await execa`deno install`;
   }, 60000);
 
-  test('should be able to run', async () => {
+  test('should be able to run', { timeout: 60000 }, async () => {
     const { stdout } = await execa`deno --allow-net --allow-env main.ts`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });

@@ -3,12 +3,12 @@
   "name": "handoffs",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "@openai/agents-core": "workspace:*",
-    "zod": "^3.25.40"
+    "@openai/agents-core": "workspace:*"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
     "start": "tsx index.ts",
-    "start:types": "tsx types.ts"
+    "start:types": "tsx types.ts",
+    "start:is-enabled": "tsx is-enabled.ts"
   }
 }

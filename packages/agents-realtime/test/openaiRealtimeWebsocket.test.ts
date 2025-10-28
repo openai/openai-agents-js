@@ -205,6 +205,22 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(baseSpy).toHaveBeenCalled();
   });
 
+  it('_interrupt floors fractional audio length when clamping', () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const sendSpy = vi
+      .spyOn(OpenAIRealtimeWebSocket.prototype as any, 'sendEvent')
+      .mockImplementation(() => {});
+    // @ts-expect-error - testing protected field.
+    ws._audioLengthMs = 42.8;
+    ws._interrupt(100, false);
+    const call = sendSpy.mock.calls.find(
+      (c: unknown[]) => (c[0] as any).type === 'conversation.item.truncate',
+    );
+    expect((call?.[0] as any).audio_end_ms).toBe(42);
+    expect(Number.isInteger((call?.[0] as any).audio_end_ms)).toBe(true);
+    sendSpy.mockRestore();
+  });
+
   it('_interrupt quantizes and clamps elapsedTime', () => {
     const ws = new OpenAIRealtimeWebSocket();
     const sendSpy = vi

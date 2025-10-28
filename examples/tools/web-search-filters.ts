@@ -21,9 +21,9 @@ async function main() {
       }),
     ],
     modelSettings: {
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
       providerData: {
-        reasoning: { effort: 'low' },
-        text: { verbosity: 'low' },
         // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#sources
         include: ['web_search_call.action.sources'],
       },
@@ -55,4 +55,7 @@ async function main() {
   });
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -66,7 +66,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    Creating a new [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) is very similar to creating a regular [`Agent`](/openai-agents-js/guides/agents).
 
    ```typescript
-   import { RealtimeAgent } from '@openai/agents-realtime';
+   import { RealtimeAgent } from '@openai/agents/realtime';
 
    const agent = new RealtimeAgent({
      name: 'Assistant',
@@ -79,7 +79,7 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    Unlike a regular agent, a Voice Agent is continuously running and listening inside a `RealtimeSession` that handles the conversation and connection to the model over time. This session will also handle the audio processing, interruptions, and a lot of the other lifecycle functionality we will cover later on.
 
    ```typescript
-   import { RealtimeSession } from '@openai/agents-realtime';
+   import { RealtimeSession } from '@openai/agents/realtime';
 
    const session = new RealtimeSession(agent, {
      model: 'gpt-realtime',

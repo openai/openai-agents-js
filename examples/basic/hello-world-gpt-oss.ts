@@ -25,9 +25,7 @@ async function main() {
       'gpt-oss:20b',
     ),
     instructions: 'You answer questions concisely and to the point.',
-    modelSettings: {
-      providerData: { reasoning: { effort: 'low' } },
-    },
+    modelSettings: { reasoning: { effort: 'low' } },
   });
 
   const question = 'Tell me about recursion in programming.';
@@ -42,6 +40,7 @@ async function main() {
   // console.log(result.finalOutput);
 }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

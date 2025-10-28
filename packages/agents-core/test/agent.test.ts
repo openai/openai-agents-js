@@ -1,12 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
+import { tool } from '../src/tool';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import { FakeModelProvider } from './stubs';
+import { Runner, RunConfig } from '../src/run';
+import logger from '../src/logger';
 
 describe('Agent', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('should create an agent with default values', () => {
     const agent = new Agent({ name: 'TestAgent' });
 
@@ -180,6 +187,30 @@ describe('Agent', () => {
     expect(result2).toBe('Hello World');
   });
 
+  it('warns when using asTool with stopAtToolNames behavior without custom extractor', async () => {
+    const warnSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [{ output: [] }],
+    } as any);
+
+    const agent = new Agent({
+      name: 'Stopper Agent',
+      instructions: 'Stop instructions.',
+      toolUseBehavior: { stopAtToolNames: ['report'] },
+    });
+
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    await tool.invoke(new RunContext(), '{"input":"value"}');
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      `You're passing the agent (name: Stopper Agent) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
+    );
+  });
+
   it('allows configuring needsApproval when using an agent as a tool', async () => {
     const approval = vi.fn().mockResolvedValue(true);
     const agent = new Agent({
@@ -204,6 +235,192 @@ describe('Agent', () => {
       'call-id',
     );
     expect(decision).toBe(true);
+  });
+
+  it('passes runConfig and runOptions to the runner when used as a tool', async () => {
+    const agent = new Agent({
+      name: 'Configurable Agent',
+      instructions: 'You do tests.',
+    });
+    const mockResult = {} as any;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async () => mockResult);
+
+    const runConfig: Partial<RunConfig> = {
+      model: 'gpt-5',
+      modelSettings: {
+        reasoning: { effort: 'low' },
+      },
+    };
+    const runOptions = {
+      maxTurns: 3,
+      previousResponseId: 'prev-response',
+    };
+    const customOutputExtractor = vi.fn().mockReturnValue('custom output');
+
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      runConfig,
+      runOptions,
+      customOutputExtractor,
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const result = await tool.invoke(runContext, JSON.stringify(inputPayload));
+
+    expect(result).toBe('custom output');
+    expect(customOutputExtractor).toHaveBeenCalledWith(mockResult);
+    expect(runSpy).toHaveBeenCalledTimes(1);
+
+    const [calledAgent, calledInput, calledOptions] = runSpy.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(calledInput).toBe(inputPayload.input);
+    expect(calledOptions).toMatchObject({
+      context: runContext,
+      maxTurns: runOptions.maxTurns,
+      previousResponseId: runOptions.previousResponseId,
+    });
+
+    const runnerInstance = runSpy.mock.instances[0] as unknown as Runner;
+    expect(runnerInstance.config.model).toBe(runConfig.model);
+    expect(runnerInstance.config.modelSettings).toEqual(
+      runConfig.modelSettings,
+    );
+  });
+
+  it('filters tools using isEnabled predicates', async () => {
+    const conditionalTool = tool({
+      name: 'conditional',
+      description: 'conditionally available',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+      isEnabled: ({
+        runContext,
+      }: {
+        runContext: RunContext<unknown>;
+        agent: Agent<any, any>;
+      }) => (runContext.context as { allowed: boolean }).allowed,
+    });
+    const agent = new Agent<{ allowed: boolean }>({
+      name: 'Conditional Agent',
+      instructions: 'test',
+      tools: [conditionalTool],
+    });
+
+    const disabledTools = await agent.getAllTools(
+      new RunContext({ allowed: false }),
+    );
+    expect(disabledTools).toEqual([]);
+
+    const enabledTools = await agent.getAllTools(
+      new RunContext({ allowed: true }),
+    );
+    expect(enabledTools.map((t) => t.name)).toEqual(['conditional']);
+  });
+
+  it('respects isEnabled option on Agent.asTool', async () => {
+    const nestedAgent = new Agent({
+      name: 'Nested',
+      instructions: 'nested',
+    });
+    const nestedTool = nestedAgent.asTool({
+      toolDescription: 'nested',
+      isEnabled: ({
+        runContext,
+        agent,
+      }: {
+        runContext: RunContext<unknown>;
+        agent: Agent<any, any>;
+      }) => {
+        expect(agent).toBe(hostAgent);
+        return (runContext.context as { enabled: boolean }).enabled;
+      },
+    });
+
+    const hostAgent = new Agent<{ enabled: boolean }>({
+      name: 'Host',
+      instructions: 'host',
+      tools: [nestedTool],
+    });
+
+    const disabled = await hostAgent.getAllTools(
+      new RunContext({ enabled: false }),
+    );
+    expect(disabled).toEqual([]);
+
+    const enabled = await hostAgent.getAllTools(
+      new RunContext({ enabled: true }),
+    );
+    expect(enabled.map((t) => t.name)).toEqual([nestedTool.name]);
+  });
+
+  it('enables agent tools based on language preference predicates', async () => {
+    type LanguagePreference = 'spanish_only' | 'french_spanish' | 'european';
+
+    type AppContext = {
+      languagePreference: LanguagePreference;
+    };
+
+    const spanishAgent = new Agent<AppContext>({
+      name: 'spanish_agent',
+      instructions: 'Always respond in Spanish.',
+    });
+
+    const frenchAgent = new Agent<AppContext>({
+      name: 'french_agent',
+      instructions: 'Always respond in French.',
+    });
+
+    const italianAgent = new Agent<AppContext>({
+      name: 'italian_agent',
+      instructions: 'Always respond in Italian.',
+    });
+
+    const orchestrator = new Agent<AppContext>({
+      name: 'orchestrator',
+      instructions: 'Use language specialists.',
+      tools: [
+        spanishAgent.asTool({
+          toolName: 'respond_spanish',
+          toolDescription: 'Respond in Spanish.',
+          isEnabled: true,
+        }),
+        frenchAgent.asTool({
+          toolName: 'respond_french',
+          toolDescription: 'Respond in French.',
+          isEnabled: ({ runContext }) =>
+            ['french_spanish', 'european'].includes(
+              runContext.context.languagePreference,
+            ),
+        }),
+        italianAgent.asTool({
+          toolName: 'respond_italian',
+          toolDescription: 'Respond in Italian.',
+          isEnabled: ({ runContext }) =>
+            runContext.context.languagePreference === 'european',
+        }),
+      ],
+    });
+
+    const collect = async (preference: LanguagePreference) =>
+      (
+        await orchestrator.getAllTools(
+          new RunContext<AppContext>({ languagePreference: preference }),
+        )
+      ).map((toolInstance) => toolInstance.name);
+
+    await expect(collect('spanish_only')).resolves.toEqual(['respond_spanish']);
+    await expect(collect('french_spanish')).resolves.toEqual([
+      'respond_spanish',
+      'respond_french',
+    ]);
+    await expect(collect('european')).resolves.toEqual([
+      'respond_spanish',
+      'respond_french',
+      'respond_italian',
+    ]);
   });
 
   it('should process final output (text)', async () => {

@@ -1,5 +1,38 @@
 # @openai/agents-extensions
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+  - @openai/agents@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+  - @openai/agents@0.2.0
+
+## 0.1.5
+
+### Patch Changes
+
+- 2dfb4fd: feat: add factory-based Cloudflare support.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
+    custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
+    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+  - @openai/agents@0.1.5
+
 ## 0.1.2
 
 ### Patch Changes

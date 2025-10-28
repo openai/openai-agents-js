@@ -35,12 +35,9 @@ export const realtimeResponse = z.object({
   usage: z
     .object({
       input_tokens: z.number().optional(),
-      input_tokens_details: z.record(z.string(), z.any()).optional().nullable(),
+      input_token_details: z.record(z.string(), z.any()).optional().nullable(),
       output_tokens: z.number().optional(),
-      output_tokens_details: z
-        .record(z.string(), z.any())
-        .optional()
-        .nullable(),
+      output_token_details: z.record(z.string(), z.any()).optional().nullable(),
     })
     .optional()
     .nullable(),

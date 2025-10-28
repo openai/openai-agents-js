@@ -1,0 +1,51 @@
+---
+title: 음성 에이전트 개요
+description: Build realtime voice assistants using RealtimeAgent and RealtimeSession
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
+import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
+import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
+import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
+import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
+import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+
+![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+
+Voice Agents는 OpenAI 음성-음성 모델을 사용해 실시간 음성 채팅을 제공합니다. 이 모델들은 오디오, 텍스트, 도구 호출의 스트리밍을 지원하며, 음성/전화 고객 지원, 모바일 앱 경험, 음성 채팅 같은 애플리케이션에 적합합니다.
+
+Voice Agents SDK는 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)를 위한 TypeScript 클라이언트를 제공합니다.
+
+<LinkCard
+  title="빠른 시작"
+  href="/openai-agents-js/ko/guides/voice-agents/quickstart"
+  description="OpenAI Agents SDK를 사용해 단 몇 분 만에 첫 실시간 음성 어시스턴트를 빌드하세요."
+/>
+
+### 주요 기능
+
+- WebSocket 또는 WebRTC 연결
+- 브라우저와 백엔드 연결 모두에서 사용 가능
+- 오디오 및 인터럽션(중단 처리) 처리
+- 핸드오프를 통한 멀티 에이전트 오케스트레이션
+- 도구 정의 및 호출
+- 모델 출력 모니터링을 위한 사용자 정의 가드레일
+- 스트리밍된 이벤트에 대한 콜백
+- 동일한 구성요소를 텍스트 및 음성 에이전트 모두에 재사용
+
+음성-음성 모델을 사용하면, 모델이 동작한 뒤 텍스트를 다시 오디오로 전사 및 재변환할 필요 없이 모델의 실시간 오디오 처리 능력을 활용할 수 있습니다.
+
+![음성-음성 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

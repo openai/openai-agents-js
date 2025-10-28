@@ -1,4 +1,3 @@
-
 # Agent Pattern Examples
 
 This directory contains small scripts that demonstrate different agent patterns.
@@ -7,6 +6,10 @@ Run them with `pnpm` using the commands shown below.
 - `agents-as-tools.ts` – Orchestrate translator agents using them as tools.
   ```bash
   pnpm examples:agents-as-tools
+  ```
+- `agents-as-tools-conditional.ts` – Enable language tools based on user preference.
+  ```bash
+  pnpm examples:agents-as-tools-conditional
   ```
 - `deterministic.ts` – Fixed agent flow with gating and quality checks.
   ```bash
@@ -52,4 +55,3 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F agent-patterns start:streaming-guardrails
   ```
-

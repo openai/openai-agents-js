@@ -59,16 +59,18 @@ function attachHooks(agent: Agent<any, any>) {
       `### ${eventCounter}: ${agent.name} ended with output ${JSON.stringify(output)}. Usage: ${toPrintableUsage(ctx?.usage)}`,
     );
   });
-  agent.on('agent_tool_start', (ctx, tool) => {
+  agent.on('agent_tool_start', (ctx, tool, { toolCall }) => {
     eventCounter++;
+    const args = toolCall.type === 'function_call' ? toolCall.arguments : '';
     console.log(
-      `### ${eventCounter}: Tool ${tool.name} started. Usage: ${toPrintableUsage(ctx?.usage)}`,
+      `### ${eventCounter}: Tool ${tool.name} (args: ${args}) started. Usage: ${toPrintableUsage(ctx?.usage)}`,
     );
   });
-  agent.on('agent_tool_end', (ctx, tool, result) => {
+  agent.on('agent_tool_end', (ctx, tool, result, { toolCall }) => {
     eventCounter++;
+    const args = toolCall.type === 'function_call' ? toolCall.arguments : '';
     console.log(
-      `### ${eventCounter}: Tool ${tool.name} ended with result ${JSON.stringify(result)}. Usage: ${toPrintableUsage(ctx?.usage)}`,
+      `### ${eventCounter}: Tool ${tool.name} (args: ${args}) ended with result ${JSON.stringify(result)}. Usage: ${toPrintableUsage(ctx?.usage)}`,
     );
   });
   agent.on('agent_handoff', (ctx, nextAgent) => {
@@ -87,6 +89,7 @@ async function main() {
   console.log(result.finalOutput);
 }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

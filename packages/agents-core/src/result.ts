@@ -243,6 +243,7 @@ export class StreamedRunResult<
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
+  #streamLoopPromise: Promise<void> | undefined;
 
   constructor(
     result: {
@@ -253,12 +254,6 @@ export class StreamedRunResult<
     super(result.state);
 
     this.#signal = result.signal;
-
-    if (this.#signal) {
-      this.#signal.addEventListener('abort', async () => {
-        await this.#readableStream.cancel();
-      });
-    }
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
@@ -273,6 +268,43 @@ export class StreamedRunResult<
       this.#completedPromiseResolve = resolve;
       this.#completedPromiseReject = reject;
     });
+
+    if (this.#signal) {
+      const handleAbort = () => {
+        if (this.#cancelled) {
+          return;
+        }
+
+        this.#cancelled = true;
+
+        const controller = this.#readableController;
+        this.#readableController = undefined;
+
+        if (this.#readableStream.locked) {
+          if (controller) {
+            try {
+              controller.close();
+            } catch (err) {
+              logger.debug(`Failed to close readable stream on abort: ${err}`);
+            }
+          }
+        } else {
+          void this.#readableStream
+            .cancel(this.#signal?.reason)
+            .catch((err) => {
+              logger.debug(`Failed to cancel readable stream on abort: ${err}`);
+            });
+        }
+
+        this.#completedPromiseResolve?.();
+      };
+
+      if (this.#signal.aborted) {
+        handleAbort();
+      } else {
+        this.#signal.addEventListener('abort', handleAbort, { once: true });
+      }
+    }
   }
 
   /**
@@ -346,9 +378,9 @@ export class StreamedRunResult<
   /**
    * Returns a readable stream of the final text output of the agent run.
    *
-   * @param options - Options for the stream.
-   * @param options.compatibleWithNodeStreams - Whether to use Node.js streams or web standard streams.
    * @returns A readable stream of the final output of the agent run.
+   * @remarks Pass `{ compatibleWithNodeStreams: true }` to receive a Node.js compatible stream
+   * instance.
    */
   toTextStream(): ReadableStream<string>;
   toTextStream(options?: { compatibleWithNodeStreams: true }): Readable;
@@ -381,5 +413,23 @@ export class StreamedRunResult<
 
   [Symbol.asyncIterator](): AsyncIterator<RunStreamEvent> {
     return this.#readableStream[Symbol.asyncIterator]();
+  }
+
+  /**
+   * @internal
+   * Sets the stream loop promise that completes when the internal stream loop finishes.
+   * This is used to defer trace end until all agent work is complete.
+   */
+  _setStreamLoopPromise(promise: Promise<void>) {
+    this.#streamLoopPromise = promise;
+  }
+
+  /**
+   * @internal
+   * Returns a promise that resolves when the stream loop completes.
+   * This is used by the tracing system to wait for all agent work before ending the trace.
+   */
+  _getStreamLoopPromise(): Promise<void> | undefined {
+    return this.#streamLoopPromise;
   }
 }

@@ -80,23 +80,28 @@ async function main(
 }
 
 // CLI argument parsing
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  let toolUseBehavior: 'default' | 'first_tool' | 'custom' = 'default';
-  const idx = args.findIndex((a) => a === '-t' || a === '--tool-use-behavior');
-  if (idx !== -1 && args[idx + 1]) {
-    const val = args[idx + 1];
-    if (val === 'default' || val === 'first_tool' || val === 'custom') {
-      toolUseBehavior = val;
-    } else {
-      console.error('Invalid tool use behavior:', val);
-      process.exit(1);
-    }
+const args = process.argv.slice(2);
+let toolUseBehavior: 'default' | 'first_tool' | 'custom' = 'default';
+const flagIndex = args.findIndex(
+  (arg) => arg === '-t' || arg === '--tool-use-behavior',
+);
+
+if (flagIndex !== -1 && args[flagIndex + 1]) {
+  const value = args[flagIndex + 1];
+  if (value === 'default' || value === 'first_tool' || value === 'custom') {
+    toolUseBehavior = value;
   } else {
-    console.log(
-      'Usage: pnpm run start:forcing-tool-use -t <default|first_tool|custom>',
-    );
+    console.error('Invalid tool use behavior:', value);
     process.exit(1);
   }
-  main(toolUseBehavior).catch(console.error);
+} else {
+  console.log(
+    'Usage: pnpm run start:forcing-tool-use -t <default|first_tool|custom>',
+  );
+  process.exit(1);
 }
+
+main(toolUseBehavior).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

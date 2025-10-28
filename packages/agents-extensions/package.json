@@ -2,7 +2,7 @@
   "name": "@openai/agents-extensions",
   "repository": "https://github.com/openai/openai-agents-js",
   "homepage": "https://openai.github.io/openai-agents-js/",
-  "version": "0.1.2",
+  "version": "0.2.1",
   "description": "Extensions for the OpenAI Agents SDK",
   "author": "OpenAI <support@openai.com>",
   "main": "dist/index.js",
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^2.0.0",
+    "@openai/agents-core": "workspace:*",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
   },
@@ -27,7 +28,7 @@
   "peerDependencies": {
     "@openai/agents": "workspace:>=0.0.0",
     "ws": "^8.18.1",
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "keywords": [
     "openai",
@@ -40,7 +41,7 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@types/debug": "^4.1.12",
     "ws": "^8.18.1",
-    "zod": "^3.25.40"
+    "zod": "^3.25.40 || ^4.0"
   },
   "files": [
     "dist"

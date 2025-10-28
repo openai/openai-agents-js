@@ -1,4 +1,5 @@
-import { AgentInputItem, Agent, user, run } from '@openai/agents';
+import { Agent, user, run } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 
 const agent = new Agent({
   name: 'Assistant',
