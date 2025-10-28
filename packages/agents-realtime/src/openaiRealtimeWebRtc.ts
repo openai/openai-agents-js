@@ -181,17 +181,22 @@ export class OpenAIRealtimeWebRTC
         const dataChannel = peerConnection.createDataChannel('oai-events');
         let callId: string | undefined = undefined;
 
-        peerConnection.onconnectionstatechange = () => {
-          switch (peerConnection.connectionState) {
-            case 'disconnected':
-            case 'failed':
-            case 'closed':
-              this.close();
-              break;
-            // 'connected' state is handled by dataChannel.onopen. So we don't need to handle it here.
-            // 'new' and 'connecting' are intermediate states and don't require action here
-          }
+        const attachConnectionStateHandler = (
+          connection: RTCPeerConnection,
+        ) => {
+          connection.onconnectionstatechange = () => {
+            switch (connection.connectionState) {
+              case 'disconnected':
+              case 'failed':
+              case 'closed':
+                this.close();
+                break;
+              // 'connected' state is handled by dataChannel.onopen. So we don't need to handle it here.
+              // 'new' and 'connecting' are intermediate states and do not require action here.
+            }
+          };
         };
+        attachConnectionStateHandler(peerConnection);
 
         this.#state = {
           status: 'connecting',
@@ -261,8 +266,13 @@ export class OpenAIRealtimeWebRTC
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
         if (this.options.changePeerConnection) {
+          const originalPeerConnection = peerConnection;
           peerConnection =
             await this.options.changePeerConnection(peerConnection);
+          if (originalPeerConnection !== peerConnection) {
+            originalPeerConnection.onconnectionstatechange = null;
+          }
+          attachConnectionStateHandler(peerConnection);
           this.#state = { ...this.#state, peerConnection };
         }
 
