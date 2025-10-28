@@ -324,6 +324,33 @@ describe('OpenAIRealtimeWebRTC.connectionState', () => {
     expect(rtc.status).toBe('disconnected');
     expect(events).toEqual(['connecting', 'connected', 'disconnected']);
   });
+
+  it('migrates connection state handler when peer connection is replaced', async () => {
+    class CustomFakePeerConnection extends FakeRTCPeerConnection {}
+    const customPC = new CustomFakePeerConnection();
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => customPC as any,
+    });
+
+    const closeSpy = vi.spyOn(rtc, 'close');
+    const events: string[] = [];
+    rtc.on('connection_change', (status) => events.push(status));
+
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    expect(rtc.status).toBe('connected');
+    expect(rtc.connectionState.peerConnection).toBe(customPC as any);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(events).toEqual(['connecting', 'connected']);
+
+    customPC._simulateStateChange('failed');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(closeSpy).toHaveBeenCalled();
+    expect(rtc.status).toBe('disconnected');
+    expect(events).toEqual(['connecting', 'connected', 'disconnected']);
+  });
 });
 
 describe('OpenAIRealtimeWebRTC.callId', () => {
