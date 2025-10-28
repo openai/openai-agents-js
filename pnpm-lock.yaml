@@ -399,6 +399,30 @@ importers:
         specifier: ^8.18.1
         version: 8.18.2
 
+  examples/realtime-twilio-sip:
+    dependencies:
+      '@openai/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
+      '@openai/agents-core':
+        specifier: workspace:*
+        version: link:../../packages/agents-core
+      '@openai/agents-realtime':
+        specifier: workspace:*
+        version: link:../../packages/agents-realtime
+      dotenv:
+        specifier: ^16.5.0
+        version: 16.5.0
+      fastify:
+        specifier: ^5.3.3
+        version: 5.3.3
+      fastify-raw-body:
+        specifier: ^5.0.0
+        version: 5.0.0
+      openai:
+        specifier: ^6.7.0
+        version: 6.7.0(ws@8.18.3)(zod@3.25.76)
+
   examples/research-bot:
     dependencies:
       '@openai/agents':
@@ -3050,6 +3074,10 @@ packages:
 
   fastify-plugin@5.0.1:
     resolution: {integrity: sha512-HCxs+YnRaWzCl+cWRYFnHmeRFyR5GVnJTAaCJQiYzQSDwK9MgJdyAsuL3nh0EWRCYMgQ5MeziymvmAhUHYHDUQ==}
+
+  fastify-raw-body@5.0.0:
+    resolution: {integrity: sha512-2qfoaQ3BQDhZ1gtbkKZd6n0kKxJISJGM6u/skD9ljdWItAscjXrtZ1lnjr7PavmXX9j4EyCPmBDiIsLn07d5vA==}
+    engines: {node: '>= 10'}
 
   fastify@5.3.3:
     resolution: {integrity: sha512-nCBiBCw9q6jPx+JJNVgO8JVnTXeUyrGcyTKPQikRkA/PanrFcOIo4R+ZnLeOLPZPGgzjomqfVarzE0kYx7qWiQ==}
@@ -8636,6 +8664,12 @@ snapshots:
   fast-uri@3.1.0: {}
 
   fastify-plugin@5.0.1: {}
+
+  fastify-raw-body@5.0.0:
+    dependencies:
+      fastify-plugin: 5.0.1
+      raw-body: 3.0.1
+      secure-json-parse: 2.7.0
 
   fastify@5.3.3:
     dependencies:

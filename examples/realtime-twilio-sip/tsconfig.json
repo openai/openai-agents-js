@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.examples.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@openai/agents-core/extensions": [
+        "../../packages/agents-core/dist/extensions/index.d.ts"
+      ]
+    }
+  },
+  "include": ["./**/*.ts", "./types.d.ts"]
+}

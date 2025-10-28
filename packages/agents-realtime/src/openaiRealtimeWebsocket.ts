@@ -85,6 +85,7 @@ export class OpenAIRealtimeWebSocket
 {
   #apiKey: string | undefined;
   #url: string | undefined;
+  #defaultUrl: string | undefined;
   #state: WebSocketState = {
     status: 'disconnected',
     websocket: undefined,
@@ -108,6 +109,7 @@ export class OpenAIRealtimeWebSocket
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
     super(options);
     this.#url = options.url;
+    this.#defaultUrl = options.url;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
     this.#createWebSocket = options.createWebSocket;
     this.#skipOpenEventListeners = options.skipOpenEventListeners ?? false;
@@ -324,10 +326,18 @@ export class OpenAIRealtimeWebSocket
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     this.#apiKey = await this._getApiKey(options);
-    const url =
-      options.url ??
-      this.#url ??
-      `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    const callId = options.callId;
+    let url: string;
+    if (options.url) {
+      url = options.url;
+      this.#defaultUrl = options.url;
+    } else if (callId) {
+      url = `wss://api.openai.com/v1/realtime?call_id=${callId}`;
+    } else if (this.#defaultUrl) {
+      url = this.#defaultUrl;
+    } else {
+      url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    }
     this.#url = url;
 
     const sessionConfig: Partial<RealtimeSessionConfig> = {

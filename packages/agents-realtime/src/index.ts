@@ -40,6 +40,8 @@ export {
   WebSocketState,
 } from './openaiRealtimeWebsocket';
 
+export { OpenAIRealtimeSIP } from './openaiRealtimeSip';
+
 export {
   OpenAIRealtimeModels,
   OpenAIRealtimeBase,

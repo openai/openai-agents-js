@@ -148,6 +148,11 @@ export type RealtimeSessionConnectOptions = {
    * The URL to use for the connection.
    */
   url?: string;
+
+  /**
+   * The call ID to attach to when connecting to a SIP-initiated session.
+   */
+  callId?: string;
 };
 
 function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
@@ -852,6 +857,7 @@ export class RealtimeSession<
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
       url: options.url,
+      callId: options.callId,
       initialSessionConfig: await this.#getSessionConfig(this.options.config),
     });
     // Ensure the cached lastSessionConfig includes everything passed as the initial session config

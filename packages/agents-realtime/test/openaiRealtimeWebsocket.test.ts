@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
+import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 
 let lastFakeSocket: any;
 vi.mock('ws', () => {
@@ -359,5 +360,50 @@ describe('OpenAIRealtimeWebSocket', () => {
     sendSpy.mockClear();
     ws.interrupt();
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('connects using callId when provided', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek_test', callId: 'call_abc' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_abc',
+    );
+    ws.close();
+  });
+
+  it('updates cached URL when callId changes', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const first = ws.connect({ apiKey: 'ek_test', callId: 'call_one' });
+    await vi.runAllTimersAsync();
+    await first;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_one',
+    );
+    ws.close();
+
+    const second = ws.connect({ apiKey: 'ek_test', callId: 'call_two' });
+    await vi.runAllTimersAsync();
+    await second;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_two',
+    );
+    ws.close();
+  });
+
+  it('OpenAIRealtimeSIP requires callId', async () => {
+    const sip = new OpenAIRealtimeSIP();
+    await expect(sip.connect({ apiKey: 'ek_test' } as any)).rejects.toThrow(
+      'callId',
+    );
+
+    const p = sip.connect({ apiKey: 'ek_test', callId: 'call_xyz' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_xyz',
+    );
+    sip.close();
   });
 });
