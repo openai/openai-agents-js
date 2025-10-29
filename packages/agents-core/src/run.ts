@@ -663,6 +663,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     startingAgent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: NonStreamRunOptions<TContext>,
+    // sessionInputUpdate lets the caller adjust queued session items after filters run so we
+    // persist exactly what we send to the model (e.g., after redactions or truncation).
+    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -828,6 +831,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
 
             serverConversationTracker?.markInputAsSent(filteredSourceItems);
+            sessionInputUpdate?.(filteredSourceItems);
 
             let modelSettings = {
               ...this.config.modelSettings,
@@ -1095,6 +1099,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: StreamRunOptions<TContext>,
     isResumedState: boolean,
     ensureStreamInputPersisted?: () => Promise<void>,
+    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
   ): Promise<void> {
     const serverConversationTracker =
       options.conversationId || options.previousResponseId
@@ -1270,6 +1275,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
           serverConversationTracker?.markInputAsSent(filteredSourceItems);
+          sessionInputUpdate?.(filteredSourceItems);
+          await ensureStreamInputPersisted?.();
 
           for await (const event of model.getStreamedResponse({
             systemInstructions: filteredModelInput.instructions,
@@ -1437,6 +1444,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options?: StreamRunOptions<TContext>,
     ensureStreamInputPersisted?: () => Promise<void>,
+    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1468,6 +1476,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         options,
         isResumedState,
         ensureStreamInputPersisted,
+        sessionInputUpdate,
       ).then(
         () => {
           result._done();
@@ -1533,6 +1542,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Likewise allow callers to override callModelInputFilter on individual runs.
     const callModelInputFilter =
       resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
+    const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const effectiveOptions = {
       ...resolvedOptions,
       sessionInputCallback,
@@ -1542,6 +1552,46 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const resumingFromState = input instanceof RunState;
     let sessionInputItemsToPersist: AgentInputItem[] | undefined =
       session && resumingFromState ? [] : undefined;
+    let sessionInputItemsFiltered: AgentInputItem[] | undefined = undefined;
+    let sessionNewInputCounts: Map<string, number> | undefined =
+      session && resumingFromState ? new Map() : undefined;
+    const updateSessionInputItems = (
+      sourceItems: (AgentInputItem | undefined)[],
+    ) => {
+      const filtered: AgentInputItem[] = [];
+      const counts = sessionNewInputCounts;
+      for (const item of sourceItems) {
+        if (!item) {
+          continue;
+        }
+        if (!counts) {
+          filtered.push(structuredClone(item));
+          continue;
+        }
+        const key = getAgentInputItemKey(item);
+        const remaining = counts.get(key) ?? 0;
+        if (remaining <= 0) {
+          continue;
+        }
+        counts.set(key, remaining - 1);
+        filtered.push(structuredClone(item));
+      }
+      if (filtered.length > 0) {
+        sessionInputItemsFiltered = filtered;
+      } else if (sessionInputItemsFiltered === undefined) {
+        sessionInputItemsFiltered = [];
+      }
+    };
+
+    const resolveSessionItemsForPersistence = () => {
+      if (sessionInputItemsFiltered !== undefined) {
+        return sessionInputItemsFiltered;
+      }
+      if (hasCallModelInputFilter) {
+        return undefined;
+      }
+      return sessionInputItemsToPersist;
+    };
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
@@ -1555,22 +1605,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         const items = prepared.sessionItems ?? [];
         // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
         sessionInputItemsToPersist = items.map((item) => structuredClone(item));
+        sessionNewInputCounts = new Map();
+        for (const item of items) {
+          const key = getAgentInputItemKey(item);
+          sessionNewInputCounts.set(
+            key,
+            (sessionNewInputCounts.get(key) ?? 0) + 1,
+          );
+        }
       }
     }
 
     let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
-    if (
-      session &&
-      sessionInputItemsToPersist &&
-      sessionInputItemsToPersist.length > 0
-    ) {
+    if (session) {
       let persisted = false;
       ensureStreamInputPersisted = async () => {
         if (persisted) {
           return;
         }
+        const itemsToPersist = resolveSessionItemsForPersistence();
+        if (!itemsToPersist || itemsToPersist.length === 0) {
+          return;
+        }
         persisted = true;
-        await saveStreamInputToSession(session, sessionInputItemsToPersist);
+        await saveStreamInputToSession(session, itemsToPersist);
       };
     }
 
@@ -1581,6 +1639,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preparedInput,
           effectiveOptions,
           ensureStreamInputPersisted,
+          updateSessionInputItems,
         );
         return streamResult;
       }
@@ -1588,8 +1647,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
+        updateSessionInputItems,
       );
-      await saveToSession(session, sessionInputItemsToPersist, runResult);
+      await saveToSession(
+        session,
+        resolveSessionItemsForPersistence(),
+        runResult,
+      );
       return runResult;
     };
 
