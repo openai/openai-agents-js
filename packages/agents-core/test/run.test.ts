@@ -848,6 +848,61 @@ describe('Runner.run', () => {
         expect(getFirstTextContent(persistedUsers[0])).toBe('Fresh input');
       });
 
+      it('persists binary payloads that share prefixes with history', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('binary response')],
+          },
+        ]);
+        const historyPayload = new Uint8Array(32);
+        const newPayload = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) {
+          const value = i < 20 ? 0xaa : i;
+          historyPayload[i] = value;
+          newPayload[i] = value;
+        }
+        historyPayload[31] = 0xbb;
+        newPayload[31] = 0xcc;
+
+        const session = new MemorySession([
+          user('History with binary', { payload: historyPayload }),
+        ]);
+        const agent = new Agent({ name: 'BinarySession', model });
+        const runner = new Runner();
+
+        await runner.run(agent, [user('Binary input')], {
+          session,
+          sessionInputCallback: (history, newItems) => {
+            const clonedHistory = history.map((item) => structuredClone(item));
+            const updatedNewItems = newItems.map((item) => {
+              const cloned = structuredClone(item);
+              cloned.providerData = { payload: newPayload };
+              return cloned;
+            });
+            return clonedHistory.concat(updatedNewItems);
+          },
+        });
+
+        expect(session.added).toHaveLength(1);
+        const [persistedItems] = session.added;
+        const persistedPayloads = persistedItems
+          .filter(
+            (item): item is protocol.UserMessageItem =>
+              item.type === 'message' &&
+              'role' in item &&
+              item.role === 'user' &&
+              item.providerData?.payload,
+          )
+          .map((item) =>
+            Array.from(item.providerData?.payload as Uint8Array | number[]),
+          );
+        expect(persistedPayloads).toContainEqual(Array.from(newPayload));
+        expect(persistedPayloads).not.toContainEqual(
+          Array.from(historyPayload),
+        );
+      });
+
       it('throws when session input callback returns invalid data', async () => {
         const model = new RecordingModel([
           {

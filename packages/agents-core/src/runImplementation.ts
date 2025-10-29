@@ -39,12 +39,17 @@ import { getLastTextFromOutputMessage } from './utils/messages';
 import { withFunctionSpan, withHandoffSpan } from './tracing/createSpans';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { encodeUint8ArrayToBase64 } from './utils/base64';
+import {
+  isArrayBufferView,
+  isNodeBuffer,
+  isSerializedBufferSnapshot,
+  toSmartString,
+} from './utils/smartString';
 import { safeExecute } from './utils/safeExecute';
 import { addErrorToCurrentSpan } from './tracing/context';
 import { RunItemStreamEvent, RunItemStreamEventName } from './events';
 import { RunResult, StreamedRunResult } from './result';
 import { z } from 'zod';
-import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
 import { Computer } from './computer';
 import { RunState } from './runState';
@@ -1858,21 +1863,12 @@ export async function prepareInputItemsWithSession(
     );
   }
 
-  const historyCounts = new Map<string, number>();
-  for (const item of history) {
-    const key = toSmartString(item);
-    historyCounts.set(key, (historyCounts.get(key) ?? 0) + 1);
-  }
-
-  const newInputCounts = new Map<string, number>();
-  for (const item of newInputItems) {
-    const key = toSmartString(item);
-    newInputCounts.set(key, (newInputCounts.get(key) ?? 0) + 1);
-  }
+  const historyCounts = buildItemFrequencyMap(history);
+  const newInputCounts = buildItemFrequencyMap(newInputItems);
 
   const appended: AgentInputItem[] = [];
   for (const item of combined) {
-    const key = toSmartString(item);
+    const key = sessionItemKey(item);
     const historyRemaining = historyCounts.get(key) ?? 0;
     if (historyRemaining > 0) {
       historyCounts.set(key, historyRemaining - 1);
@@ -1893,4 +1889,55 @@ export async function prepareInputItemsWithSession(
     preparedInput: combined,
     sessionItems: appended.length > 0 ? appended : [],
   };
+}
+
+function buildItemFrequencyMap(items: AgentInputItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = sessionItemKey(item);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function sessionItemKey(item: AgentInputItem): string {
+  return JSON.stringify(item, sessionSerializationReplacer);
+}
+
+function sessionSerializationReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: 'ArrayBuffer',
+      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
+    };
+  }
+
+  if (isArrayBufferView(value)) {
+    const view = value as ArrayBufferView;
+    return {
+      __type: view.constructor.name,
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isNodeBuffer(value)) {
+    const view = value as Uint8Array;
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isSerializedBufferSnapshot(value)) {
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
+    };
+  }
+
+  return value;
 }

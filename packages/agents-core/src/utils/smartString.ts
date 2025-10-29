@@ -1,6 +1,7 @@
 const BYTE_PREVIEW_LIMIT = 20;
 
 export function toSmartString(value: unknown): string {
+  // Produce a human-friendly string representation while preserving enough detail for debugging workflows.
   if (value === null || value === undefined) {
     return String(value);
   }
@@ -31,7 +32,8 @@ export function toSmartString(value: unknown): string {
   return String(value);
 }
 
-function isArrayBufferLike(value: unknown): value is ArrayBufferLike {
+export function isArrayBufferLike(value: unknown): value is ArrayBufferLike {
+  // Detect raw ArrayBuffer-backed payloads so callers can generate full previews rather than truncated hashes.
   if (value instanceof ArrayBuffer) {
     return true;
   }
@@ -47,18 +49,36 @@ function isArrayBufferLike(value: unknown): value is ArrayBufferLike {
   );
 }
 
-function isArrayBufferView(value: unknown): value is ArrayBufferView {
+export function isArrayBufferView(value: unknown): value is ArrayBufferView {
+  // Treat typed array views as binary data for consistent serialization.
   return typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value);
 }
 
-function isSerializedBufferSnapshot(
+export function isSerializedBufferSnapshot(
   value: unknown,
 ): value is { type: 'Buffer'; data: number[] } {
+  // Support serialized Buffer snapshots (e.g., from JSON.parse) emitted by some tool outputs.
   return (
     typeof value === 'object' &&
     value !== null &&
     (value as { type?: unknown }).type === 'Buffer' &&
     Array.isArray((value as { data?: unknown }).data)
+  );
+}
+
+export function isNodeBuffer(
+  value: unknown,
+): value is Uint8Array & { toString(encoding: string): string } {
+  // Detect runtime Buffers without importing node-specific shims, handling browser builds gracefully.
+  const bufferCtor = (
+    globalThis as {
+      Buffer?: { isBuffer(input: unknown): boolean };
+    }
+  ).Buffer;
+  return Boolean(
+    bufferCtor &&
+      typeof bufferCtor.isBuffer === 'function' &&
+      bufferCtor.isBuffer(value),
   );
 }
 
