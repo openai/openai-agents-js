@@ -810,6 +810,39 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
+  it('skips streaming session persistence when the server manages the conversation', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamServerManaged',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    // Session is still supplied alongside conversationId to confirm we suppress duplicate persistence while preserving session-based hooks.
+    const result = await runner.run(agent, 'hello world', {
+      stream: true,
+      session,
+      conversationId: 'conv-server-managed',
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).not.toHaveBeenCalled();
+  });
+
   it('skips persisting streaming input when an input guardrail triggers', async () => {
     const saveInputSpy = vi
       .spyOn(runImplementation, 'saveStreamInputToSession')

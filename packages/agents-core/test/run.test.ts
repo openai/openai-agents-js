@@ -1891,6 +1891,30 @@ describe('Runner.run', () => {
   describe('server-managed conversation state', () => {
     type TurnResponse = ModelResponse;
 
+    class RecordingSession implements Session {
+      public added: AgentInputItem[][] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'server-managed-session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.added.push(items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.added = [];
+      }
+    }
+
     class TrackingModel implements Model {
       public requests: ModelRequest[] = [];
       public firstRequest: ModelRequest | undefined;
@@ -1956,6 +1980,48 @@ describe('Runner.run', () => {
       description: 'test tool',
       parameters: z.object({ test: z.string() }),
       execute: async ({ test }) => `result:${test}`,
+    });
+
+    it('skips persisting turns when the server manages conversation history via conversationId', async () => {
+      const model = new TrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('response')],
+        },
+      ]);
+      const agent = new Agent({ name: 'ServerManagedConversation', model });
+      // Deliberately combine session with conversationId to ensure callbacks and state helpers remain usable without duplicating remote history.
+      const session = new RecordingSession();
+      const runner = new Runner();
+
+      await runner.run(agent, 'Hello there', {
+        session,
+        conversationId: 'conv-server-managed',
+      });
+
+      expect(session.added).toHaveLength(0);
+      expect(model.lastRequest?.conversationId).toBe('conv-server-managed');
+    });
+
+    it('skips persisting turns when the server manages conversation history via previousResponseId', async () => {
+      const model = new TrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('response')],
+        },
+      ]);
+      const agent = new Agent({ name: 'ServerManagedPrevious', model });
+      // Deliberately combine session with previousResponseId to ensure we honor server-side transcripts while keeping session utilities available.
+      const session = new RecordingSession();
+      const runner = new Runner();
+
+      await runner.run(agent, 'Hi again', {
+        session,
+        previousResponseId: 'resp-existing',
+      });
+
+      expect(session.added).toHaveLength(0);
+      expect(model.lastRequest?.previousResponseId).toBe('resp-existing');
     });
 
     it('only sends new items when using conversationId across turns', async () => {

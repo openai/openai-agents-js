@@ -482,7 +482,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     }
 
     let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
-    if (session) {
+    // Sessions remain usable alongside server-managed conversations (e.g., OpenAIConversationsSession)
+    // so callers can reuse callbacks, resume-from-state logic, and other helpers without duplicating
+    // remote history, so persistence is gated on serverManagesConversation.
+    if (session && !serverManagesConversation) {
       let persisted = false;
       ensureStreamInputPersisted = async () => {
         if (persisted) {
@@ -514,11 +517,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         effectiveOptions,
         updateSessionInputItems,
       );
-      await saveToSession(
-        session,
-        resolveSessionItemsForPersistence(),
-        runResult,
-      );
+      // See note above: allow sessions to run for callbacks/state but skip writes when the server
+      // is the source of truth for transcript history.
+      if (session && !serverManagesConversation) {
+        await saveToSession(
+          session,
+          resolveSessionItemsForPersistence(),
+          runResult,
+        );
+      }
       return runResult;
     };
 
@@ -842,13 +849,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<void> {
-    const serverConversationTracker =
-      options.conversationId || options.previousResponseId
-        ? new ServerConversationTracker({
-            conversationId: options.conversationId,
-            previousResponseId: options.previousResponseId,
-          })
-        : undefined;
+    const serverManagesConversation =
+      Boolean(options.conversationId) || Boolean(options.previousResponseId);
+    const serverConversationTracker = serverManagesConversation
+      ? new ServerConversationTracker({
+          conversationId: options.conversationId,
+          previousResponseId: options.previousResponseId,
+        })
+      : undefined;
 
     if (serverConversationTracker && isResumedState) {
       serverConversationTracker.primeFromState({
@@ -1057,7 +1065,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
           await ensureStreamInputPersisted?.();
           // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
-          await saveStreamResultToSession(options.session, result);
+          if (!serverManagesConversation) {
+            await saveStreamResultToSession(options.session, result);
+          }
           this.emit(
             'agent_end',
             result.state._context,
@@ -1075,7 +1085,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         ) {
           // we are done for now. Don't run any output guardrails
           await ensureStreamInputPersisted?.();
-          await saveStreamResultToSession(options.session, result);
+          if (!serverManagesConversation) {
+            await saveStreamResultToSession(options.session, result);
+          }
           return;
         } else if (result.state._currentStep.type === 'next_step_handoff') {
           result.state._currentAgent = result.state._currentStep
