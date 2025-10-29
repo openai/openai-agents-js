@@ -1744,6 +1744,55 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
+  it('does not duplicate previously persisted model items when resuming after approvals', async () => {
+    const toolCall = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-resume',
+      callId: 'call-resume',
+    };
+    const message = fakeModelMessage('Tool approval pending');
+    message.id = 'message-resume';
+    const response: ModelResponse = {
+      output: [toolCall, message],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+
+    const priorItems = [...processedResponse.newItems];
+    state._generatedItems = priorItems;
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        TEST_AGENT,
+        'test input',
+        priorItems,
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    const persistedToolCalls = result.generatedItems.filter((item) => {
+      return item instanceof ToolCallItem && item.rawItem.id === 'call-resume';
+    });
+    expect(persistedToolCalls).toHaveLength(1);
+
+    const persistedMessages = result.generatedItems.filter((item) => {
+      return (
+        item instanceof MessageOutputItem &&
+        item.rawItem.id === 'message-resume'
+      );
+    });
+    expect(persistedMessages).toHaveLength(1);
+  });
+
   it('does not finalize when hosted MCP approval happens in the same turn; runs again', async () => {
     const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
     const mcpTool = hostedMcpTool({

@@ -457,7 +457,19 @@ export async function resolveTurnAfterModelResponse<TContext>(
   state: RunState<TContext, Agent<TContext, any>>,
 ): Promise<SingleStepResult> {
   const preStepItems = originalPreStepItems;
-  let newItems = processedResponse.newItems;
+  const seenItems = new Set<RunItem>(originalPreStepItems);
+  const newItems: RunItem[] = [];
+  const appendIfNew = (item: RunItem) => {
+    if (seenItems.has(item)) {
+      return;
+    }
+    newItems.push(item);
+    seenItems.add(item);
+  };
+
+  for (const item of processedResponse.newItems) {
+    appendIfNew(item);
+  }
 
   const [functionResults, computerResults] = await Promise.all([
     executeFunctionToolCalls(
@@ -474,8 +486,12 @@ export async function resolveTurnAfterModelResponse<TContext>(
     ),
   ]);
 
-  newItems = newItems.concat(functionResults.map((r) => r.runItem));
-  newItems = newItems.concat(computerResults);
+  for (const result of functionResults) {
+    appendIfNew(result.runItem);
+  }
+  for (const item of computerResults) {
+    appendIfNew(item);
+  }
 
   // run hosted MCP approval requests
   if (processedResponse.mcpApprovalRequests.length > 0) {
