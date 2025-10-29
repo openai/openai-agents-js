@@ -1337,10 +1337,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       callModelInputFilter,
     };
     const session = effectiveOptions.session;
-    const sessionOriginalInput =
-      input instanceof RunState
-        ? undefined
-        : (input as string | AgentInputItem[]);
+    const resumingFromState = input instanceof RunState;
+    let sessionOriginalInput: string | AgentInputItem[] | undefined;
+    if (resumingFromState) {
+      if (session) {
+        sessionOriginalInput = [] as AgentInputItem[];
+        // Persist new outputs without duplicating the original turn when resuming with memory.
+      }
+    } else {
+      sessionOriginalInput = input as string | AgentInputItem[];
+    }
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
@@ -1348,10 +1354,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         preparedInput,
         session,
         sessionInputCallback,
-      );
-    } else if (session) {
-      throw new UserError(
-        'Cannot provide a session when resuming from a previous RunState.',
       );
     }
 
