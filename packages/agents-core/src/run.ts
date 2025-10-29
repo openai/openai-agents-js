@@ -1164,11 +1164,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_final_output') {
-          await saveStreamResultToSession(options.session, result);
           await this.#runOutputGuardrails(
             result.state,
             result.state._currentStep.output,
           );
+          // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
+          await saveStreamResultToSession(options.session, result);
           this.emit(
             'agent_end',
             result.state._context,
