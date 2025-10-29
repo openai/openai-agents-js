@@ -562,6 +562,31 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Record the relationship between the cloned array passed to filters and the original inputs.
     const cloneMap = new WeakMap<object, AgentInputItem>();
     const originalPool = buildAgentInputPool(inputItems);
+    const fallbackOriginals: AgentInputItem[] = [];
+    // Track any original object inputs so filtered replacements can still mark them as delivered.
+    for (const item of inputItems) {
+      if (item && typeof item === 'object') {
+        fallbackOriginals.push(item);
+      }
+    }
+    const removeFromFallback = (candidate: AgentInputItem | undefined) => {
+      if (!candidate || typeof candidate !== 'object') {
+        return;
+      }
+      const index = fallbackOriginals.findIndex(
+        (original) => original === candidate,
+      );
+      if (index !== -1) {
+        fallbackOriginals.splice(index, 1);
+      }
+    };
+    const takeFallbackOriginal = (): AgentInputItem | undefined => {
+      const next = fallbackOriginals.shift();
+      if (next) {
+        removeAgentInputFromPool(originalPool, next);
+      }
+      return next;
+    };
 
     // Always create a deep copy so downstream mutations inside filters cannot affect
     // the cached turn state.
@@ -598,11 +623,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
         const original = cloneMap.get(item as object);
         if (original) {
+          removeFromFallback(original);
           removeAgentInputFromPool(originalPool, original);
           return original;
         }
         const key = getAgentInputItemKey(item as AgentInputItem);
-        return takeAgentInputFromPool(originalPool, key);
+        const matchedByContent = takeAgentInputFromPool(originalPool, key);
+        if (matchedByContent) {
+          removeFromFallback(matchedByContent);
+          return matchedByContent;
+        }
+        const fallback = takeFallbackOriginal();
+        if (fallback) {
+          return fallback;
+        }
+        return undefined;
       });
 
       const clonedFilteredInput = cloneInputItems(result.input);
