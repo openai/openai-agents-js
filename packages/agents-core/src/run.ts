@@ -462,7 +462,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         },
       );
       if (serverManagesConversation && session) {
-        preparedInput = prepared.sessionItems ?? [];
+        const sessionItems = prepared.sessionItems;
+        if (sessionItems && sessionItems.length > 0) {
+          preparedInput = sessionItems;
+        } else {
+          preparedInput = prepared.preparedInput;
+        }
       } else {
         preparedInput = prepared.preparedInput;
       }

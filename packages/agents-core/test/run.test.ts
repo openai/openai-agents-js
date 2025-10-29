@@ -2025,6 +2025,49 @@ describe('Runner.run', () => {
       expect(model.lastRequest?.previousResponseId).toBe('resp-existing');
     });
 
+    it('preserves user input when the session callback only reuses history with conversationId', async () => {
+      const model = new TrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('response')],
+        },
+      ]);
+      const agent = new Agent({ name: 'ServerManagedReuse', model });
+      const persistedHistory: AgentInputItem[] = [
+        assistant('Persisted reply from history'),
+      ];
+      const session: Session = {
+        async getSessionId() {
+          return 'server-managed-session';
+        },
+        async getItems() {
+          return persistedHistory;
+        },
+        async addItems(items) {
+          persistedHistory.push(...items);
+        },
+        async popItem() {
+          return persistedHistory.pop();
+        },
+        async clearSession() {
+          persistedHistory.length = 0;
+        },
+      };
+      const runner = new Runner();
+
+      await runner.run(agent, 'Latest user input', {
+        session,
+        conversationId: 'conv-history-only',
+        sessionInputCallback: (historyItems) => historyItems,
+      });
+
+      const firstInput = model.firstRequest?.input;
+      expect(Array.isArray(firstInput)).toBe(true);
+      const sentItems = firstInput as AgentInputItem[];
+      expect(sentItems).toHaveLength(1);
+      expect(getFirstTextContent(sentItems[0])).toBe('Latest user input');
+    });
+
     it('only sends new items when using conversationId across turns', async () => {
       const model = new TrackingModel([
         buildResponse(
