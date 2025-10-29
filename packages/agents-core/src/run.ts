@@ -557,6 +557,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         modelInput: base,
         sourceItems: [...inputItems],
         persistedItems: [],
+        filterApplied: false,
       };
     }
 
@@ -599,6 +600,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         persistedItems: clonedFilteredInput.map((item) =>
           structuredClone(item),
         ),
+        filterApplied: true,
       };
     } catch (error) {
       addErrorToCurrentSpan({
@@ -707,7 +709,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     const prompt = await state._currentAgent.getPrompt(state._context);
 
-    const { modelInput, sourceItems, persistedItems } =
+    const { modelInput, sourceItems, persistedItems, filterApplied } =
       await this.#applyCallModelInputFilter(
         state._currentAgent,
         options.callModelInputFilter,
@@ -718,9 +720,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     serverConversationTracker?.markInputAsSent(sourceItems);
     // Provide filtered clones whenever filters run so session history mirrors the model payload.
+    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
+    // instead of falling back to the unfiltered originals when the filter redacts everything.
     sessionInputUpdate?.(
       sourceItems,
-      persistedItems.length > 0 ? persistedItems : undefined,
+      filterApplied ? persistedItems : undefined,
     );
 
     const previousResponseId =
@@ -1571,11 +1575,14 @@ export function getTurnInput(
  *   This lets the conversation tracker know which originals reached the model.
  * - `persistedItems` are the filtered clones we should commit to session memory so the stored
  *   history reflects any redactions or truncation introduced by the filter.
+ * - `filterApplied` signals whether a filter ran so callers can distinguish empty filtered results
+ *   from the filter being skipped entirely.
  */
 type FilterApplicationResult = {
   modelInput: ModelInputData;
   sourceItems: (AgentInputItem | undefined)[];
   persistedItems: AgentInputItem[];
+  filterApplied: boolean;
 };
 
 // Tracks which items have already been sent to or received from the Responses API when the caller

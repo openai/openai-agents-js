@@ -1315,6 +1315,74 @@ describe('Runner.run', () => {
       expect(persistedTexts).not.toContain('Persisted history');
     });
 
+    it('does not persist raw inputs when filters drop every item', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+        #sessionId: string | undefined = 'empty-filter-session';
+
+        async getSessionId(): Promise<string> {
+          if (!this.#sessionId) {
+            this.#sessionId = 'empty-filter-session';
+          }
+          return this.#sessionId;
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+          this.#sessionId = undefined;
+        }
+      }
+
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'EmptyFilterAgent',
+        model,
+      });
+      const session = new RecordingSession();
+
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => ({
+          instructions: modelData.instructions,
+          input: [],
+        }),
+      });
+
+      const secret = 'sensitive payload';
+      const result = await runner.run(agent, secret, { session });
+
+      expect(result.finalOutput).toBe('Hello World');
+      expect(model.lastRequest?.input).toEqual([]);
+
+      expect(session.added).toHaveLength(1);
+      const persisted = session.added[0];
+      const persistedTexts = persisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(persistedTexts).not.toContain(secret);
+      const userItems = persisted.filter(
+        (item) => 'role' in item && item.role === 'user',
+      );
+      expect(userItems).toHaveLength(0);
+    });
+
     it('throws when filter returns invalid data', async () => {
       const model = new FilterTrackingModel([
         {
