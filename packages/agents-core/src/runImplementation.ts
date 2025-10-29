@@ -1656,6 +1656,11 @@ export async function prepareInputItemsWithSession(
     };
   }
 
+  // Capture snapshots before invoking the callback so we can reason about the original state even
+  // if the callback mutates the history array in-place.
+  const historySnapshot = history.slice();
+  const newInputSnapshot = newInputItems.slice();
+
   // Delegate history reconciliation to the user-supplied callback. It must return a concrete list
   // to keep downstream model requests well-typed.
   const combined = await sessionInputCallback(history, newInputItems);
@@ -1665,10 +1670,10 @@ export async function prepareInputItemsWithSession(
     );
   }
 
-  const historyCounts = buildItemFrequencyMap(history);
-  const newInputCounts = buildItemFrequencyMap(newInputItems);
-  const historyRefs = buildItemReferenceMap(history);
-  const newInputRefs = buildItemReferenceMap(newInputItems);
+  const historyCounts = buildItemFrequencyMap(historySnapshot);
+  const newInputCounts = buildItemFrequencyMap(newInputSnapshot);
+  const historyRefs = buildItemReferenceMap(historySnapshot);
+  const newInputRefs = buildItemReferenceMap(newInputSnapshot);
 
   const appended: AgentInputItem[] = [];
   for (const item of combined) {
@@ -1707,7 +1712,7 @@ export async function prepareInputItemsWithSession(
       ? combined
       : appended.length > 0
         ? appended
-        : newInputItems,
+        : newInputSnapshot,
     sessionItems: appended.length > 0 ? appended : [],
   };
 }

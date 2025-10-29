@@ -347,6 +347,46 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems[0]).toBe(newItem);
   });
 
+  it('persists appended copies when callbacks mutate history in place', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'past',
+      id: 'history-1',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'fresh',
+      id: 'new-1',
+    };
+    const session = new StubSession([historyItem]);
+
+    let appendedItems: AgentInputItem[] = [];
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        appendedItems = newItems.map((item) => ({
+          ...item,
+          providerData: { annotated: true },
+        }));
+        history.push(...appendedItems);
+        return history;
+      },
+    );
+
+    expect(appendedItems).toHaveLength(1);
+    expect(result.preparedInput).toEqual([historyItem, ...appendedItems]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual(appendedItems);
+    expect(sessionItems[0]).toBe(appendedItems[0]);
+    expect(sessionItems[0]).not.toBe(newItem);
+  });
+
   it('omits session history from prepared input when includeHistoryInPreparedInput is false', async () => {
     const historyItem: AgentInputItem = {
       type: 'message',
