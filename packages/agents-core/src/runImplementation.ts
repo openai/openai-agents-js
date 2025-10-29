@@ -57,26 +57,32 @@ import { isZodObject } from './utils';
 import * as ProviderData from './types/providerData';
 import type { Session, SessionInputCallback } from './memory/session';
 
+// Represents a single handoff function call that still needs to be executed after the model turn.
 type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
   handoff: Handoff<any, any>;
 };
 
+// Captures a function tool invocation emitted by the model along with the concrete tool to run.
 type ToolRunFunction<TContext = UnknownContext> = {
   toolCall: protocol.FunctionCallItem;
   tool: FunctionTool<TContext>;
 };
 
+// Holds a pending computer-use action so we can dispatch to the configured computer tool.
 type ToolRunComputer = {
   toolCall: protocol.ComputerUseCallItem;
   computer: ComputerTool;
 };
 
+// Tracks hosted MCP approval requests awaiting either automatic or user-driven authorization.
 type ToolRunMCPApprovalRequest = {
   requestItem: RunToolApprovalItem;
   mcpTool: HostedMCPTool;
 };
 
+// Aggregates everything the model produced in a single turn. Downstream logic consumes this
+// structure to decide which follow-up work (tools, handoffs, MCP approvals, computer calls) must run.
 export type ProcessedResponse<TContext = UnknownContext> = {
   newItems: RunItem[];
   handoffs: ToolRunHandoff[];
@@ -89,6 +95,8 @@ export type ProcessedResponse<TContext = UnknownContext> = {
 
 /**
  * @internal
+ * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
+ * Returns both the serializable RunItems (for history/streaming) and the actionable tool metadata.
  */
 export function processModelResponse<TContext>(
   modelResponse: ModelResponse,
@@ -262,6 +270,10 @@ export const nextStepSchema = z.discriminatedUnion('type', [
 
 export type NextStep = z.infer<typeof nextStepSchema>;
 
+/**
+ * Internal convenience wrapper that groups the outcome of a single agent turn. It lets the caller
+ * update the RunState in one shot and decide which step to execute next.
+ */
 class SingleStepResult {
   constructor(
     /**
@@ -296,6 +308,8 @@ class SingleStepResult {
 
 /**
  * @internal
+ * Resets the tool choice when the agent is configured to prefer a fresh tool selection after
+ * any tool usage. This prevents the provider from reusing stale tool hints across turns.
  */
 export function maybeResetToolChoice(
   agent: Agent<any, any>,
@@ -310,6 +324,8 @@ export function maybeResetToolChoice(
 
 /**
  * @internal
+ * Continues a turn that was previously interrupted waiting for tool approval. Executes the now
+ * approved tools and returns the resulting step transition.
  */
 export async function executeInterruptedToolsAndSideEffects<TContext>(
   agent: Agent<TContext, any>,
@@ -453,6 +469,8 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
 
 /**
  * @internal
+ * Executes every follow-up action the model requested (function tools, computer actions, MCP flows),
+ * appends their outputs to the run history, and determines the next step for the agent loop.
  */
 export async function executeToolsAndSideEffects<TContext>(
   agent: Agent<TContext, any>,
@@ -869,6 +887,8 @@ function asDataUrl(base64: string, mediaType?: string): string {
 
 /**
  * @internal
+ * Runs every function tool call requested by the model and returns their outputs alongside
+ * the `RunItem` instances that should be appended to history.
  */
 export async function executeFunctionToolCalls<TContext = UnknownContext>(
   agent: Agent<any, any>,
@@ -1098,6 +1118,8 @@ async function _runComputerActionAndScreenshot(
 
 /**
  * @internal
+ * Executes any computer-use actions emitted by the model and returns the resulting items so the
+ * run history reflects the computer session.
  */
 export async function executeComputerActions(
   agent: Agent<any, any>,
@@ -1153,6 +1175,8 @@ export async function executeComputerActions(
 
 /**
  * @internal
+ * Drives handoff calls by invoking the downstream agent and capturing any generated items so
+ * the current agent can continue with the new context.
  */
 export async function executeHandoffCalls<
   TContext,
@@ -1286,6 +1310,8 @@ const NOT_FINAL_OUTPUT: ToolsToFinalOutputResult = {
 
 /**
  * @internal
+ * Determines whether tool executions produced a final agent output, triggered an interruption,
+ * or whether the agent loop should continue collecting more responses.
  */
 export async function checkForFinalOutputFromTools<
   TContext,
@@ -1485,6 +1511,7 @@ export function extractOutputItemsFromRunItems(
  * @internal
  * Persist full turn (input + outputs) for non-streaming runs.
  */
+// Persists the combination of user inputs (possibly filtered) and model outputs for a completed turn.
 export async function saveToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
@@ -1519,6 +1546,7 @@ export async function saveToSession(
  * @internal
  * Persist only the user input for streaming runs at start.
  */
+// For streaming runs we persist user input as soon as it is sent so reconnections can resume.
 export async function saveStreamInputToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
@@ -1536,6 +1564,7 @@ export async function saveStreamInputToSession(
  * @internal
  * Persist only the model outputs for streaming runs at the end of a turn.
  */
+// Complements saveStreamInputToSession by recording the streaming outputs at the end of the turn.
 export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,

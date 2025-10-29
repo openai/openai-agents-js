@@ -84,9 +84,18 @@ export type ModelInputData = {
   instructions?: string;
 };
 
+/**
+ * Result of applying a `callModelInputFilter`.
+ * - `modelInput` is the payload that goes to the model.
+ * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
+ *   This lets the conversation tracker know which originals reached the model.
+ * - `persistedItems` are the filtered clones we should commit to session memory so the stored
+ *   history reflects any redactions or truncation introduced by the filter.
+ */
 type FilterApplicationResult = {
   modelInput: ModelInputData;
   sourceItems: (AgentInputItem | undefined)[];
+  persistedItems: AgentInputItem[];
 };
 
 /**
@@ -245,174 +254,6 @@ export function getTracing(
  *
  * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
  */
-class ServerConversationTracker {
-  // Conversation ID:
-  // - https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#using-the-conversations-api
-  // - https://platform.openai.com/docs/api-reference/conversations/create
-  public conversationId?: string;
-
-  // Previous Response ID:
-  // https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#passing-context-from-the-previous-response
-  public previousResponseId?: string;
-
-  // Using this flag because WeakSet does not provide a way to check its size
-  private sentInitialInput = false;
-  // The items already sent to the model; using WeakSet for memory efficiency
-  private sentItems = new WeakSet<object>();
-  // The items received from the server; using WeakSet for memory efficiency
-  private serverItems = new WeakSet<object>();
-  // Track initial input items that have not yet been sent so they can be retried on later turns.
-  private remainingInitialInput: AgentInputItem[] | null = null;
-
-  constructor({
-    conversationId,
-    previousResponseId,
-  }: {
-    conversationId?: string;
-    previousResponseId?: string;
-  }) {
-    this.conversationId = conversationId ?? undefined;
-    this.previousResponseId = previousResponseId ?? undefined;
-  }
-
-  /**
-   * Pre-populates tracker caches from an existing RunState when resuming server-managed runs.
-   */
-  primeFromState({
-    originalInput,
-    generatedItems,
-    modelResponses,
-  }: {
-    originalInput: string | AgentInputItem[];
-    generatedItems: RunItem[];
-    modelResponses: ModelResponse[];
-  }) {
-    if (this.sentInitialInput) {
-      return;
-    }
-
-    for (const item of toAgentInputList(originalInput)) {
-      if (item && typeof item === 'object') {
-        this.sentItems.add(item);
-      }
-    }
-
-    this.sentInitialInput = true;
-    this.remainingInitialInput = null;
-
-    const latestResponse = modelResponses[modelResponses.length - 1];
-    for (const response of modelResponses) {
-      for (const item of response.output) {
-        if (item && typeof item === 'object') {
-          this.serverItems.add(item);
-        }
-      }
-    }
-
-    if (!this.conversationId && latestResponse?.responseId) {
-      this.previousResponseId = latestResponse.responseId;
-    }
-
-    for (const item of generatedItems) {
-      const rawItem = item.rawItem;
-      if (!rawItem || typeof rawItem !== 'object') {
-        continue;
-      }
-      if (this.serverItems.has(rawItem)) {
-        this.sentItems.add(rawItem);
-      }
-    }
-  }
-
-  trackServerItems(modelResponse: ModelResponse | undefined) {
-    if (!modelResponse) {
-      return;
-    }
-    for (const item of modelResponse.output) {
-      if (item && typeof item === 'object') {
-        this.serverItems.add(item);
-      }
-    }
-    if (
-      !this.conversationId &&
-      this.previousResponseId !== undefined &&
-      modelResponse.responseId
-    ) {
-      this.previousResponseId = modelResponse.responseId;
-    }
-  }
-
-  prepareInput(
-    originalInput: string | AgentInputItem[],
-    generatedItems: RunItem[],
-  ): AgentInputItem[] {
-    const inputItems: AgentInputItem[] = [];
-
-    if (!this.sentInitialInput) {
-      const initialItems = toAgentInputList(originalInput);
-      // Preserve the full initial payload so a filter can drop items without losing their originals.
-      inputItems.push(...initialItems);
-      this.remainingInitialInput = initialItems.filter(
-        (item): item is AgentInputItem =>
-          Boolean(item) && typeof item === 'object',
-      );
-      this.sentInitialInput = true;
-    } else if (
-      this.remainingInitialInput &&
-      this.remainingInitialInput.length > 0
-    ) {
-      // Re-queue prior initial items until the tracker confirms they were delivered to the API.
-      inputItems.push(...this.remainingInitialInput);
-    }
-
-    for (const item of generatedItems) {
-      if (item.type === 'tool_approval_item') {
-        continue;
-      }
-      const rawItem = item.rawItem;
-      if (!rawItem || typeof rawItem !== 'object') {
-        continue;
-      }
-      if (this.sentItems.has(rawItem) || this.serverItems.has(rawItem)) {
-        continue;
-      }
-      inputItems.push(rawItem as AgentInputItem);
-    }
-
-    return inputItems;
-  }
-
-  markInputAsSent(items: (AgentInputItem | undefined)[]) {
-    if (!items.length) {
-      return;
-    }
-
-    const delivered = new Set<AgentInputItem>();
-    for (const item of items) {
-      if (!item || typeof item !== 'object' || delivered.has(item)) {
-        continue;
-      }
-      // Some inputs may be repeated in the filtered list; only mark unique originals once.
-      delivered.add(item);
-      this.sentItems.add(item);
-    }
-
-    if (
-      !this.remainingInitialInput ||
-      this.remainingInitialInput.length === 0
-    ) {
-      return;
-    }
-
-    this.remainingInitialInput = this.remainingInitialInput.filter(
-      (item) => !delivered.has(item),
-    );
-    if (this.remainingInitialInput.length === 0) {
-      this.remainingInitialInput = null;
-    }
-  }
-}
-
 export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
@@ -488,15 +329,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     // Always create a deep copy so downstream mutations inside filters cannot affect
     // the cached turn state.
+    const clonedBaseInput = cloneInputItems(inputItems, cloneMap);
     const base: ModelInputData = {
-      input: cloneInputItems(inputItems, cloneMap),
+      input: clonedBaseInput,
       instructions: systemInstructions,
     };
-
     if (!callModelInputFilter) {
       return {
         modelInput: base,
         sourceItems: [...inputItems],
+        persistedItems: [],
       };
     }
 
@@ -526,15 +368,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         return takeAgentInputFromPool(originalPool, key);
       });
 
+      const clonedFilteredInput = cloneInputItems(result.input);
       return {
         modelInput: {
-          input: cloneInputItems(result.input),
+          input: clonedFilteredInput,
           instructions:
             typeof result.instructions === 'undefined'
               ? systemInstructions
               : result.instructions,
         },
         sourceItems,
+        persistedItems: clonedFilteredInput.map((item) =>
+          structuredClone(item),
+        ),
       };
     } catch (error) {
       addErrorToCurrentSpan({
@@ -613,7 +459,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     artifacts: AgentArtifacts<TContext>,
     turnInput: AgentInputItem[],
     serverConversationTracker?: ServerConversationTracker,
-    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
+    sessionInputUpdate?: (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => void,
   ): Promise<PreparedModelCall<TContext>> {
     const { model, explictlyModelSet } = await this.#resolveModelForAgent(
       state._currentAgent,
@@ -640,16 +489,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     const prompt = await state._currentAgent.getPrompt(state._context);
 
-    const { modelInput, sourceItems } = await this.#applyCallModelInputFilter(
-      state._currentAgent,
-      options.callModelInputFilter,
-      state._context,
-      turnInput,
-      systemInstructions,
-    );
+    const { modelInput, sourceItems, persistedItems } =
+      await this.#applyCallModelInputFilter(
+        state._currentAgent,
+        options.callModelInputFilter,
+        state._context,
+        turnInput,
+        systemInstructions,
+      );
 
     serverConversationTracker?.markInputAsSent(sourceItems);
-    sessionInputUpdate?.(sourceItems);
+    // Provide filtered clones only when they differ from the originals.
+    sessionInputUpdate?.(
+      sourceItems,
+      persistedItems.length > 0 ? persistedItems : undefined,
+    );
 
     const previousResponseId =
       serverConversationTracker?.previousResponseId ??
@@ -682,7 +536,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: NonStreamRunOptions<TContext>,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
-    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
+    sessionInputUpdate?: (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => void,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -1053,7 +910,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: StreamRunOptions<TContext>,
     isResumedState: boolean,
     ensureStreamInputPersisted?: () => Promise<void>,
-    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
+    sessionInputUpdate?: (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => void,
   ): Promise<void> {
     const serverConversationTracker =
       options.conversationId || options.previousResponseId
@@ -1341,7 +1201,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options?: StreamRunOptions<TContext>,
     ensureStreamInputPersisted?: () => Promise<void>,
-    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
+    sessionInputUpdate?: (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => void,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1452,26 +1315,90 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     let sessionInputItemsFiltered: AgentInputItem[] | undefined = undefined;
     let sessionNewInputCounts: Map<string, number> | undefined =
       session && resumingFromState ? new Map() : undefined;
+    // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
+    // the original objects (so we can respect resume counts) while `filteredItems`, when present,
+    // contains the filtered/redacted clones that must be persisted for history.
     const updateSessionInputItems = (
       sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
     ) => {
-      const filtered: AgentInputItem[] = [];
       const counts = sessionNewInputCounts;
-      for (const item of sourceItems) {
-        if (!item) {
-          continue;
-        }
+      if (filteredItems !== undefined) {
         if (!counts) {
+          sessionInputItemsFiltered = filteredItems.map((item) =>
+            structuredClone(item),
+          );
+          return;
+        }
+        const collected: AgentInputItem[] = [];
+        const allocateFallback = () => {
+          for (const [key, remaining] of counts) {
+            if (remaining > 0) {
+              counts.set(key, remaining - 1);
+              return true;
+            }
+          }
+          return false;
+        };
+        for (let i = 0; i < filteredItems.length; i++) {
+          const filteredItem = filteredItems[i];
+          if (!filteredItem) {
+            continue;
+          }
+          let allocated = false;
+          const source = sourceItems[i];
+          if (source) {
+            const sourceKey = getAgentInputItemKey(source);
+            const remaining = counts.get(sourceKey) ?? 0;
+            if (remaining > 0) {
+              counts.set(sourceKey, remaining - 1);
+              collected.push(structuredClone(filteredItem));
+              allocated = true;
+              continue;
+            }
+          }
+          const filteredKey = getAgentInputItemKey(filteredItem);
+          const filteredRemaining = counts.get(filteredKey) ?? 0;
+          if (filteredRemaining > 0) {
+            counts.set(filteredKey, filteredRemaining - 1);
+            collected.push(structuredClone(filteredItem));
+            allocated = true;
+            continue;
+          }
+          if (allocateFallback()) {
+            collected.push(structuredClone(filteredItem));
+            allocated = true;
+          }
+          if (!allocated && sessionInputItemsFiltered === undefined) {
+            collected.push(structuredClone(filteredItem));
+          }
+        }
+        if (collected.length > 0 || sessionInputItemsFiltered === undefined) {
+          sessionInputItemsFiltered = collected;
+        }
+        return;
+      }
+      const filtered: AgentInputItem[] = [];
+      if (!counts) {
+        for (const item of sourceItems) {
+          if (!item) {
+            continue;
+          }
           filtered.push(structuredClone(item));
-          continue;
         }
-        const key = getAgentInputItemKey(item);
-        const remaining = counts.get(key) ?? 0;
-        if (remaining <= 0) {
-          continue;
+      } else {
+        for (const item of sourceItems) {
+          if (!item) {
+            continue;
+          }
+          const key = getAgentInputItemKey(item);
+          const remaining = counts.get(key) ?? 0;
+          if (remaining <= 0) {
+            continue;
+          }
+          counts.set(key, remaining - 1);
+          filtered.push(structuredClone(item));
         }
-        counts.set(key, remaining - 1);
-        filtered.push(structuredClone(item));
       }
       if (filtered.length > 0) {
         sessionInputItemsFiltered = filtered;
@@ -1662,6 +1589,7 @@ function adjustModelSettingsForNonGPT5RunnerModel(
 }
 
 // Package turn metadata so both run loops share identical serialization.
+// Each field mirrors the information we ship to the model for the current agent turn.
 type AgentArtifacts<TContext = unknown> = {
   handoffs: Handoff<any, any>[];
   tools: Tool<TContext>[];
@@ -1670,6 +1598,8 @@ type AgentArtifacts<TContext = unknown> = {
 };
 
 // Captures everything required to call the model once so we avoid recomputing precedence or filters.
+// The values here are the "final say" for a turn; every loop simply consumes the structure rather
+// than attempting to rebuild model settings, filters, or metadata on its own.
 type PreparedModelCall<TContext = unknown> = AgentArtifacts<TContext> & {
   model: Model;
   explictlyModelSet: boolean;
@@ -1782,6 +1712,178 @@ function agentInputSerializationReplacer(
   return value;
 }
 
+// Tracks which items have already been sent to or received from the Responses API when the caller
+// supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
+class ServerConversationTracker {
+  // Conversation ID:
+  // - https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#using-the-conversations-api
+  // - https://platform.openai.com/docs/api-reference/conversations/create
+  public conversationId?: string;
+
+  // Previous Response ID:
+  // https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#passing-context-from-the-previous-response
+  public previousResponseId?: string;
+
+  // Using this flag because WeakSet does not provide a way to check its size
+  private sentInitialInput = false;
+  // The items already sent to the model; using WeakSet for memory efficiency
+  private sentItems = new WeakSet<object>();
+  // The items received from the server; using WeakSet for memory efficiency
+  private serverItems = new WeakSet<object>();
+  // Track initial input items that have not yet been sent so they can be retried on later turns.
+  private remainingInitialInput: AgentInputItem[] | null = null;
+
+  constructor({
+    conversationId,
+    previousResponseId,
+  }: {
+    conversationId?: string;
+    previousResponseId?: string;
+  }) {
+    this.conversationId = conversationId ?? undefined;
+    this.previousResponseId = previousResponseId ?? undefined;
+  }
+
+  /**
+   * Pre-populates tracker caches from an existing RunState when resuming server-managed runs.
+   */
+  primeFromState({
+    originalInput,
+    generatedItems,
+    modelResponses,
+  }: {
+    originalInput: string | AgentInputItem[];
+    generatedItems: RunItem[];
+    modelResponses: ModelResponse[];
+  }) {
+    if (this.sentInitialInput) {
+      return;
+    }
+
+    for (const item of toAgentInputList(originalInput)) {
+      if (item && typeof item === 'object') {
+        this.sentItems.add(item);
+      }
+    }
+
+    this.sentInitialInput = true;
+    this.remainingInitialInput = null;
+
+    const latestResponse = modelResponses[modelResponses.length - 1];
+    for (const response of modelResponses) {
+      for (const item of response.output) {
+        if (item && typeof item === 'object') {
+          this.serverItems.add(item);
+        }
+      }
+    }
+
+    if (!this.conversationId && latestResponse?.responseId) {
+      this.previousResponseId = latestResponse.responseId;
+    }
+
+    for (const item of generatedItems) {
+      const rawItem = item.rawItem;
+      if (!rawItem || typeof rawItem !== 'object') {
+        continue;
+      }
+      if (this.serverItems.has(rawItem)) {
+        this.sentItems.add(rawItem);
+      }
+    }
+  }
+
+  trackServerItems(modelResponse: ModelResponse | undefined) {
+    if (!modelResponse) {
+      return;
+    }
+    for (const item of modelResponse.output) {
+      if (item && typeof item === 'object') {
+        this.serverItems.add(item);
+      }
+    }
+    if (
+      !this.conversationId &&
+      this.previousResponseId !== undefined &&
+      modelResponse.responseId
+    ) {
+      this.previousResponseId = modelResponse.responseId;
+    }
+  }
+
+  prepareInput(
+    originalInput: string | AgentInputItem[],
+    generatedItems: RunItem[],
+  ): AgentInputItem[] {
+    const inputItems: AgentInputItem[] = [];
+
+    if (!this.sentInitialInput) {
+      const initialItems = toAgentInputList(originalInput);
+      // Preserve the full initial payload so a filter can drop items without losing their originals.
+      inputItems.push(...initialItems);
+      this.remainingInitialInput = initialItems.filter(
+        (item): item is AgentInputItem =>
+          Boolean(item) && typeof item === 'object',
+      );
+      this.sentInitialInput = true;
+    } else if (
+      this.remainingInitialInput &&
+      this.remainingInitialInput.length > 0
+    ) {
+      // Re-queue prior initial items until the tracker confirms they were delivered to the API.
+      inputItems.push(...this.remainingInitialInput);
+    }
+
+    for (const item of generatedItems) {
+      if (item.type === 'tool_approval_item') {
+        continue;
+      }
+      const rawItem = item.rawItem;
+      if (!rawItem || typeof rawItem !== 'object') {
+        continue;
+      }
+      if (this.sentItems.has(rawItem) || this.serverItems.has(rawItem)) {
+        continue;
+      }
+      inputItems.push(rawItem as AgentInputItem);
+    }
+
+    return inputItems;
+  }
+
+  markInputAsSent(items: (AgentInputItem | undefined)[]) {
+    if (!items.length) {
+      return;
+    }
+
+    const delivered = new Set<AgentInputItem>();
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || delivered.has(item)) {
+        continue;
+      }
+      // Some inputs may be repeated in the filtered list; only mark unique originals once.
+      delivered.add(item);
+      this.sentItems.add(item);
+    }
+
+    if (
+      !this.remainingInitialInput ||
+      this.remainingInitialInput.length === 0
+    ) {
+      return;
+    }
+
+    this.remainingInitialInput = this.remainingInitialInput.filter(
+      (item) => !delivered.has(item),
+    );
+    if (this.remainingInitialInput.length === 0) {
+      this.remainingInitialInput = null;
+    }
+  }
+}
+
+// Normalizes user-provided input into the structure the model expects. Strings become user messages,
+// arrays are kept as-is so downstream loops can treat both scenarios uniformly.
 function toAgentInputList(
   originalInput: string | AgentInputItem[],
 ): AgentInputItem[] {
