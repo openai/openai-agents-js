@@ -810,6 +810,66 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
+  it('persists filtered streaming input instead of the raw turn payload', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamFiltered',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    const secretInput = 'super secret';
+    const redactedContent = '[filtered]';
+
+    const result = await runner.run(agent, secretInput, {
+      stream: true,
+      session,
+      callModelInputFilter: ({ modelData }) => {
+        const sanitizedInput = modelData.input.map((item) => {
+          if (
+            item.type === 'message' &&
+            'role' in item &&
+            item.role === 'user'
+          ) {
+            return {
+              ...item,
+              content: redactedContent,
+            };
+          }
+          return item;
+        });
+
+        return {
+          ...modelData,
+          input: sanitizedInput,
+        };
+      },
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    const [, persistedItems] = saveInputSpy.mock.calls[0];
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: redactedContent,
+    });
+    expect(JSON.stringify(persistedItems)).not.toContain(secretInput);
+  });
+
   it('skips streaming session persistence when the server manages the conversation', async () => {
     const saveInputSpy = vi
       .spyOn(runImplementation, 'saveStreamInputToSession')

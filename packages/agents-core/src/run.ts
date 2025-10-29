@@ -935,7 +935,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           if (result.state._currentTurn === 1) {
             await this.#runInputGuardrails(result.state);
-            await ensureStreamInputPersisted?.();
           }
 
           const turnInput = serverConversationTracker
