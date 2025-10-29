@@ -904,6 +904,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     result: StreamedRunResult<TContext, TAgent>,
     options: StreamRunOptions<TContext>,
     isResumedState: boolean,
+    ensureStreamInputPersisted?: () => Promise<void>,
   ): Promise<void> {
     const serverConversationTracker =
       options.conversationId || options.previousResponseId
@@ -1018,6 +1019,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           if (result.state._currentTurn === 1) {
             await this.#runInputGuardrails(result.state);
+            await ensureStreamInputPersisted?.();
           }
 
           let modelSettings = {
@@ -1168,6 +1170,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
             result.state._currentStep.output,
           );
+          await ensureStreamInputPersisted?.();
           // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
           await saveStreamResultToSession(options.session, result);
           this.emit(
@@ -1186,6 +1189,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._currentStep.type === 'next_step_interruption'
         ) {
           // we are done for now. Don't run any output guardrails
+          await ensureStreamInputPersisted?.();
           await saveStreamResultToSession(options.session, result);
           return;
         } else if (result.state._currentStep.type === 'next_step_handoff') {
@@ -1237,6 +1241,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options?: StreamRunOptions<TContext>,
+    ensureStreamInputPersisted?: () => Promise<void>,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1267,6 +1272,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         result,
         options,
         isResumedState,
+        ensureStreamInputPersisted,
       ).then(
         () => {
           result._done();
@@ -1357,15 +1363,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       );
     }
 
+    let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
+    if (session && typeof sessionOriginalInput !== 'undefined') {
+      let persisted = false;
+      ensureStreamInputPersisted = async () => {
+        if (persisted) {
+          return;
+        }
+        persisted = true;
+        await saveStreamInputToSession(session, sessionOriginalInput);
+      };
+    }
+
     const executeRun = async () => {
       if (effectiveOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
           effectiveOptions,
+          ensureStreamInputPersisted,
         );
-        // for streaming runs, the outputs will be save later on
-        await saveStreamInputToSession(session, sessionOriginalInput);
         return streamResult;
       }
       const runResult = await this.#runIndividualNonStream(

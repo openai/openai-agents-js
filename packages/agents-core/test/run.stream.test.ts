@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -19,9 +19,12 @@ import {
   StreamEvent,
   FunctionCallItem,
   tool,
+  Session,
+  InputGuardrailTripwireTriggered,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
+import * as runImplementation from '../src/runImplementation';
 
 // Test for unhandled rejection when stream loop throws
 
@@ -29,6 +32,10 @@ describe('Runner.run (streaming)', () => {
   beforeAll(() => {
     setTracingDisabled(true);
     setDefaultModelProvider(new FakeModelProvider());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('does not emit unhandled rejection when stream loop fails', async () => {
@@ -681,4 +688,109 @@ describe('Runner.run (streaming)', () => {
       });
     });
   });
+
+  it('persists streaming input only after the run completes successfully', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamSuccess',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'hello world', {
+      stream: true,
+      session,
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveInputSpy).toHaveBeenCalledWith(session, 'hello world');
+  });
+
+  it('skips persisting streaming input when an input guardrail triggers', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const guardrail = {
+      name: 'block',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'blocked' },
+      }),
+    };
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamGuardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should not run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'blocked input', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+  });
 });
+
+class ImmediateStreamingModel implements Model {
+  constructor(private readonly response: ModelResponse) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    return this.response;
+  }
+
+  async *getStreamedResponse(
+    _request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    const usage = this.response.usage;
+    const output = this.response.output.map((item) =>
+      protocol.OutputModelItem.parse(item),
+    );
+    yield {
+      type: 'response_done',
+      response: {
+        id: 'r',
+        usage: {
+          requests: usage.requests,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+        },
+        output,
+      },
+    } satisfies StreamEvent;
+  }
+}
+
+function createSessionMock(): Session {
+  return {
+    getSessionId: vi.fn().mockResolvedValue('session-id'),
+    getItems: vi.fn().mockResolvedValue([]),
+    addItems: vi.fn().mockResolvedValue(undefined),
+    popItem: vi.fn().mockResolvedValue(undefined),
+    clearSession: vi.fn().mockResolvedValue(undefined),
+  };
+}
