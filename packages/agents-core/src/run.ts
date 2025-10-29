@@ -73,44 +73,9 @@ import {
   isSerializedBufferSnapshot,
 } from './utils/smartString';
 
-const DEFAULT_MAX_TURNS = 10;
-
-/**
- * Mutable view of the instructions + input items that the model will receive.
- * Filters always see a copy so they can edit without side effects.
- */
-export type ModelInputData = {
-  input: AgentInputItem[];
-  instructions?: string;
-};
-
-/**
- * Result of applying a `callModelInputFilter`.
- * - `modelInput` is the payload that goes to the model.
- * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
- *   This lets the conversation tracker know which originals reached the model.
- * - `persistedItems` are the filtered clones we should commit to session memory so the stored
- *   history reflects any redactions or truncation introduced by the filter.
- */
-type FilterApplicationResult = {
-  modelInput: ModelInputData;
-  sourceItems: (AgentInputItem | undefined)[];
-  persistedItems: AgentInputItem[];
-};
-
-/**
- * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
- * share the same implementation across languages.
- */
-export type CallModelInputFilterArgs<TContext = unknown> = {
-  modelData: ModelInputData;
-  agent: Agent<TContext, AgentOutputType>;
-  context: TContext | undefined;
-};
-
-export type CallModelInputFilter<TContext = unknown> = (
-  args: CallModelInputFilterArgs<TContext>,
-) => ModelInputData | Promise<ModelInputData>;
+// --------------------------------------------------------------
+//  Configuration
+// --------------------------------------------------------------
 
 /**
  * Configures settings for the entire agent run.
@@ -219,7 +184,7 @@ export type StreamRunOptions<TContext = undefined> =
 export type NonStreamRunOptions<TContext = undefined> =
   SharedRunOptions<TContext> & {
     /**
-     * Whether to stream the run. If true, the run will emit events as the model responds.
+     * Run to completion without streaming incremental events; leave undefined or set to `false`.
      */
     stream?: false;
   };
@@ -228,41 +193,9 @@ export type IndividualRunOptions<TContext = undefined> =
   | StreamRunOptions<TContext>
   | NonStreamRunOptions<TContext>;
 
-/**
- * @internal
- */
-export function getTracing(
-  tracingDisabled: boolean,
-  traceIncludeSensitiveData: boolean,
-): ModelTracing {
-  if (tracingDisabled) {
-    return false;
-  }
-
-  if (traceIncludeSensitiveData) {
-    return true;
-  }
-
-  return 'enabled_without_data';
-}
-
-/**
- * Internal module for tracking the items in turns and ensuring that we don't send duplicate items.
- * This logic is vital for properly handling the items to send during multiple turns
- * when you use either `conversationId` or `previousResponseId`.
- * Both scenarios expect an agent loop to send only new items for each Responses API call.
- *
- * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
- */
-export function getTurnInput(
-  originalInput: string | AgentInputItem[],
-  generatedItems: RunItem[],
-): AgentInputItem[] {
-  const rawItems = generatedItems
-    .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
-    .map((item) => item.rawItem);
-  return [...toAgentInputList(originalInput), ...rawItems];
-}
+// --------------------------------------------------------------
+//  Runner
+// --------------------------------------------------------------
 
 /**
  * A Runner is responsible for running an agent workflow.
@@ -499,7 +432,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       );
 
     serverConversationTracker?.markInputAsSent(sourceItems);
-    // Provide filtered clones only when they differ from the originals.
+    // Provide filtered clones whenever filters run so session history mirrors the model payload.
     sessionInputUpdate?.(
       sourceItems,
       persistedItems.length > 0 ? persistedItems : undefined,
@@ -1547,170 +1480,84 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   }
 }
 
+// --------------------------------------------------------------
+//  Internal helpers
+// --------------------------------------------------------------
+
+const DEFAULT_MAX_TURNS = 10;
+
 /**
- * When the default model is a GPT-5 variant, agents may carry GPT-5-specific providerData
- * (e.g., reasoning effort, text verbosity). If a run resolves to a non-GPT-5 model and the
- * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
- * are incompatible and should be stripped to avoid runtime errors.
+ * Mutable view of the instructions + input items that the model will receive.
+ * Filters always see a copy so they can edit without side effects.
  */
-function adjustModelSettingsForNonGPT5RunnerModel(
-  explictlyModelSet: boolean,
-  agentModelSettings: ModelSettings,
-  runnerModel: string | Model,
-  modelSettings: ModelSettings,
-): ModelSettings {
-  if (
-    // gpt-5 is enabled for the default model for agents
-    isGpt5Default() &&
-    // explicitly set model for the agent
-    explictlyModelSet &&
-    // this runner uses a non-gpt-5 model
-    (typeof runnerModel !== 'string' ||
-      !gpt5ReasoningSettingsRequired(runnerModel)) &&
-    (agentModelSettings.providerData?.reasoning ||
-      agentModelSettings.providerData?.text?.verbosity ||
-      (agentModelSettings.providerData as any)?.reasoning_effort)
-  ) {
-    const copiedModelSettings = { ...modelSettings };
-    // the incompatible parameters should be removed to avoid runtime errors
-    delete copiedModelSettings.providerData?.reasoning;
-    delete (copiedModelSettings.providerData as any)?.text?.verbosity;
-    delete (copiedModelSettings.providerData as any)?.reasoning_effort;
-    if (copiedModelSettings.reasoning) {
-      delete copiedModelSettings.reasoning.effort;
-      delete copiedModelSettings.reasoning.summary;
-    }
-    if (copiedModelSettings.text) {
-      delete copiedModelSettings.text.verbosity;
-    }
-    return copiedModelSettings;
-  }
-  return modelSettings;
-}
-
-// Package turn metadata so both run loops share identical serialization.
-// Each field mirrors the information we ship to the model for the current agent turn.
-type AgentArtifacts<TContext = unknown> = {
-  handoffs: Handoff<any, any>[];
-  tools: Tool<TContext>[];
-  serializedHandoffs: SerializedHandoff[];
-  serializedTools: SerializedTool[];
+export type ModelInputData = {
+  input: AgentInputItem[];
+  instructions?: string;
 };
 
-// Captures everything required to call the model once so we avoid recomputing precedence or filters.
-// The values here are the "final say" for a turn; every loop simply consumes the structure rather
-// than attempting to rebuild model settings, filters, or metadata on its own.
-type PreparedModelCall<TContext = unknown> = AgentArtifacts<TContext> & {
-  model: Model;
-  explictlyModelSet: boolean;
-  modelSettings: ModelSettings;
+/**
+ * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
+ * share the same implementation across languages.
+ */
+export type CallModelInputFilterArgs<TContext = unknown> = {
+  modelData: ModelInputData;
+  agent: Agent<TContext, AgentOutputType>;
+  context: TContext | undefined;
+};
+
+export type CallModelInputFilter<TContext = unknown> = (
+  args: CallModelInputFilterArgs<TContext>,
+) => ModelInputData | Promise<ModelInputData>;
+
+/**
+ * @internal
+ */
+export function getTracing(
+  tracingDisabled: boolean,
+  traceIncludeSensitiveData: boolean,
+): ModelTracing {
+  if (tracingDisabled) {
+    return false;
+  }
+
+  if (traceIncludeSensitiveData) {
+    return true;
+  }
+
+  return 'enabled_without_data';
+}
+
+/**
+ * Internal module for tracking the items in turns and ensuring that we don't send duplicate items.
+ * This logic is vital for properly handling the items to send during multiple turns
+ * when you use either `conversationId` or `previousResponseId`.
+ * Both scenarios expect an agent loop to send only new items for each Responses API call.
+ *
+ * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
+ */
+export function getTurnInput(
+  originalInput: string | AgentInputItem[],
+  generatedItems: RunItem[],
+): AgentInputItem[] {
+  const rawItems = generatedItems
+    .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
+    .map((item) => item.rawItem);
+  return [...toAgentInputList(originalInput), ...rawItems];
+}
+
+/**
+ * Result of applying a `callModelInputFilter`.
+ * - `modelInput` is the payload that goes to the model.
+ * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
+ *   This lets the conversation tracker know which originals reached the model.
+ * - `persistedItems` are the filtered clones we should commit to session memory so the stored
+ *   history reflects any redactions or truncation introduced by the filter.
+ */
+type FilterApplicationResult = {
   modelInput: ModelInputData;
-  prompt?: Prompt;
-  previousResponseId?: string;
-  conversationId?: string;
+  sourceItems: (AgentInputItem | undefined)[];
+  persistedItems: AgentInputItem[];
 };
-
-// Internal helpers ----------------------------------------------------------
-type AgentInputItemPool = Map<string, AgentInputItem[]>;
-
-function getAgentInputItemKey(item: AgentInputItem): string {
-  // Deep serialization keeps binary inputs comparable after filters clone them.
-  return JSON.stringify(item, agentInputSerializationReplacer);
-}
-
-function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
-  // Track every original object so filters can safely return cloned copies.
-  const pool: AgentInputItemPool = new Map();
-  for (const item of items) {
-    const key = getAgentInputItemKey(item);
-    const existing = pool.get(key);
-    if (existing) {
-      existing.push(item);
-    } else {
-      pool.set(key, [item]);
-    }
-  }
-  return pool;
-}
-
-function takeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  key: string,
-): AgentInputItem | undefined {
-  // Prefer reusing the earliest untouched original to keep ordering stable.
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return undefined;
-  }
-  const [first] = candidates;
-  candidates.shift();
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-  return first;
-}
-
-function removeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  item: AgentInputItem,
-) {
-  // Remove exactly the matched instance so duplicate payloads remain available.
-  const key = getAgentInputItemKey(item);
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return;
-  }
-  const index = candidates.findIndex((candidate) => candidate === item);
-  if (index === -1) {
-    return;
-  }
-  candidates.splice(index, 1);
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-}
-
-function agentInputSerializationReplacer(
-  _key: string,
-  value: unknown,
-): unknown {
-  // Mirror runImplementation serialization so buffer snapshots round-trip.
-  if (value instanceof ArrayBuffer) {
-    return {
-      __type: 'ArrayBuffer',
-      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
-    };
-  }
-
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __type: view.constructor.name,
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isSerializedBufferSnapshot(value)) {
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
-    };
-  }
-
-  return value;
-}
 
 // Tracks which items have already been sent to or received from the Responses API when the caller
 // supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
@@ -1880,6 +1727,170 @@ class ServerConversationTracker {
       this.remainingInitialInput = null;
     }
   }
+}
+
+/**
+ * When the default model is a GPT-5 variant, agents may carry GPT-5-specific providerData
+ * (e.g., reasoning effort, text verbosity). If a run resolves to a non-GPT-5 model and the
+ * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
+ * are incompatible and should be stripped to avoid runtime errors.
+ */
+function adjustModelSettingsForNonGPT5RunnerModel(
+  explictlyModelSet: boolean,
+  agentModelSettings: ModelSettings,
+  runnerModel: string | Model,
+  modelSettings: ModelSettings,
+): ModelSettings {
+  if (
+    // gpt-5 is enabled for the default model for agents
+    isGpt5Default() &&
+    // explicitly set model for the agent
+    explictlyModelSet &&
+    // this runner uses a non-gpt-5 model
+    (typeof runnerModel !== 'string' ||
+      !gpt5ReasoningSettingsRequired(runnerModel)) &&
+    (agentModelSettings.providerData?.reasoning ||
+      agentModelSettings.providerData?.text?.verbosity ||
+      (agentModelSettings.providerData as any)?.reasoning_effort)
+  ) {
+    const copiedModelSettings = { ...modelSettings };
+    // the incompatible parameters should be removed to avoid runtime errors
+    delete copiedModelSettings.providerData?.reasoning;
+    delete (copiedModelSettings.providerData as any)?.text?.verbosity;
+    delete (copiedModelSettings.providerData as any)?.reasoning_effort;
+    if (copiedModelSettings.reasoning) {
+      delete copiedModelSettings.reasoning.effort;
+      delete copiedModelSettings.reasoning.summary;
+    }
+    if (copiedModelSettings.text) {
+      delete copiedModelSettings.text.verbosity;
+    }
+    return copiedModelSettings;
+  }
+  return modelSettings;
+}
+
+// Package turn metadata so both run loops share identical serialization.
+// Each field mirrors the information we ship to the model for the current agent turn.
+type AgentArtifacts<TContext = unknown> = {
+  handoffs: Handoff<any, any>[];
+  tools: Tool<TContext>[];
+  serializedHandoffs: SerializedHandoff[];
+  serializedTools: SerializedTool[];
+};
+
+// Captures everything required to call the model once so we avoid recomputing precedence or filters.
+// The values here are the "final say" for a turn; every loop simply consumes the structure rather
+// than attempting to rebuild model settings, filters, or metadata on its own.
+type PreparedModelCall<TContext = unknown> = AgentArtifacts<TContext> & {
+  model: Model;
+  explictlyModelSet: boolean;
+  modelSettings: ModelSettings;
+  modelInput: ModelInputData;
+  prompt?: Prompt;
+  previousResponseId?: string;
+  conversationId?: string;
+};
+
+type AgentInputItemPool = Map<string, AgentInputItem[]>;
+
+function getAgentInputItemKey(item: AgentInputItem): string {
+  // Deep serialization keeps binary inputs comparable after filters clone them.
+  return JSON.stringify(item, agentInputSerializationReplacer);
+}
+
+function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
+  // Track every original object so filters can safely return cloned copies.
+  const pool: AgentInputItemPool = new Map();
+  for (const item of items) {
+    const key = getAgentInputItemKey(item);
+    const existing = pool.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      pool.set(key, [item]);
+    }
+  }
+  return pool;
+}
+
+function takeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  key: string,
+): AgentInputItem | undefined {
+  // Prefer reusing the earliest untouched original to keep ordering stable.
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return undefined;
+  }
+  const [first] = candidates;
+  candidates.shift();
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+  return first;
+}
+
+function removeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  item: AgentInputItem,
+) {
+  // Remove exactly the matched instance so duplicate payloads remain available.
+  const key = getAgentInputItemKey(item);
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return;
+  }
+  const index = candidates.findIndex((candidate) => candidate === item);
+  if (index === -1) {
+    return;
+  }
+  candidates.splice(index, 1);
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+}
+
+function agentInputSerializationReplacer(
+  _key: string,
+  value: unknown,
+): unknown {
+  // Mirror runImplementation serialization so buffer snapshots round-trip.
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: 'ArrayBuffer',
+      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
+    };
+  }
+
+  if (isArrayBufferView(value)) {
+    const view = value as ArrayBufferView;
+    return {
+      __type: view.constructor.name,
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isNodeBuffer(value)) {
+    const view = value as Uint8Array;
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isSerializedBufferSnapshot(value)) {
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
+    };
+  }
+
+  return value;
 }
 
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,

@@ -277,7 +277,7 @@ export type NextStep = z.infer<typeof nextStepSchema>;
 class SingleStepResult {
   constructor(
     /**
-     * The input items i.e. the items before run() was called. May be muted by handoff input filters
+     * The input items (i.e., the items before run() was called). May be mutated by handoff input filters.
      */
     public originalInput: string | AgentInputItem[],
     /**
@@ -1161,7 +1161,7 @@ export async function executeComputerActions(
       });
     }
 
-    // Always return a screenshot as a base64 data URL
+    // Return the screenshot as a data URL when available; fall back to an empty string on failures.
     const imageUrl = output ? `data:image/png;base64,${output}` : '';
     const rawItem: protocol.ComputerCallResultItem = {
       type: 'computer_call_result',
