@@ -100,7 +100,7 @@ export class OpenAIConversationsSession implements Session {
       return convertToOutputItem([item as OpenAI.Responses.ResponseOutputItem]);
     };
 
-    if (!limit) {
+    if (limit === undefined) {
       const items: AgentInputItem[] = [];
       const iterator = this.#client.conversations.items.list(conversationId, {
         order: 'asc' as const,
@@ -109,6 +109,10 @@ export class OpenAIConversationsSession implements Session {
         items.push(...toAgentItems(item));
       }
       return items;
+    }
+
+    if (limit <= 0) {
+      return [];
     }
 
     const groups: AgentInputItem[][] = [];
