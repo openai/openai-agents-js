@@ -16,6 +16,9 @@ import {
   ModelResponse,
   ModelSettings,
   ModelTracing,
+  Prompt,
+  SerializedHandoff,
+  SerializedTool,
 } from './model';
 import { getDefaultModelProvider } from './providers';
 import { RunContext } from './runContext';
@@ -46,6 +49,7 @@ import {
   prepareInputItemsWithSession,
 } from './runImplementation';
 import { RunItem } from './items';
+import { Tool } from './tool';
 import {
   getOrCreateTrace,
   addErrorToCurrentSpan,
@@ -84,107 +88,6 @@ type FilterApplicationResult = {
   modelInput: ModelInputData;
   sourceItems: (AgentInputItem | undefined)[];
 };
-
-type AgentInputItemPool = Map<string, AgentInputItem[]>;
-
-function getAgentInputItemKey(item: AgentInputItem): string {
-  // Serialize deeply so binary payloads are comparable across clones.
-  return JSON.stringify(item, agentInputSerializationReplacer);
-}
-
-function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
-  // Track every original object that the filter is allowed to reference by value instead of identity.
-  const pool: AgentInputItemPool = new Map();
-  for (const item of items) {
-    const key = getAgentInputItemKey(item);
-    const existing = pool.get(key);
-    if (existing) {
-      existing.push(item);
-    } else {
-      pool.set(key, [item]);
-    }
-  }
-  return pool;
-}
-
-function takeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  key: string,
-): AgentInputItem | undefined {
-  // Provide a deterministic original when the filter returns a brand new clone.
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return undefined;
-  }
-  const [first] = candidates;
-  candidates.shift();
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-  return first;
-}
-
-function removeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  item: AgentInputItem,
-) {
-  // Remove the specific reference so duplicates remain available for later matches.
-  const key = getAgentInputItemKey(item);
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return;
-  }
-  const index = candidates.findIndex((candidate) => candidate === item);
-  if (index === -1) {
-    return;
-  }
-  candidates.splice(index, 1);
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-}
-
-function agentInputSerializationReplacer(
-  _key: string,
-  value: unknown,
-): unknown {
-  // Reproduce runImplementation's serialization so filters that clone buffers still map back correctly.
-  if (value instanceof ArrayBuffer) {
-    return {
-      __type: 'ArrayBuffer',
-      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
-    };
-  }
-
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __type: view.constructor.name,
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isSerializedBufferSnapshot(value)) {
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
-    };
-  }
-
-  return value;
-}
 
 /**
  * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
@@ -332,16 +235,6 @@ export function getTracing(
   }
 
   return 'enabled_without_data';
-}
-
-function toAgentInputList(
-  originalInput: string | AgentInputItem[],
-): AgentInputItem[] {
-  if (typeof originalInput === 'string') {
-    return [{ type: 'message', role: 'user', content: originalInput }];
-  }
-
-  return [...originalInput];
 }
 
 /**
@@ -654,6 +547,130 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
   /**
    * @internal
+   * Resolves the effective model once so both run loops obey the same precedence rules.
+   */
+  async #resolveModelForAgent<TContext>(
+    agent: Agent<TContext, AgentOutputType>,
+  ): Promise<{ model: Model; explictlyModelSet: boolean }> {
+    const explictlyModelSet =
+      (agent.model !== undefined && agent.model !== '') ||
+      (this.config.model !== undefined && this.config.model !== '');
+    let resolvedModel = selectModel(agent.model, this.config.model);
+    if (typeof resolvedModel === 'string') {
+      resolvedModel = await this.config.modelProvider.getModel(resolvedModel);
+    }
+    return { model: resolvedModel, explictlyModelSet };
+  }
+
+  /**
+   * @internal
+   * Collects tools/handoffs early so we can annotate spans before model execution begins.
+   */
+  async #prepareAgentArtifacts<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
+    const handoffs = await state._currentAgent.getEnabledHandoffs(
+      state._context,
+    );
+    const tools = await state._currentAgent.getAllTools(state._context);
+
+    if (!state._currentAgentSpan) {
+      const handoffNames = handoffs.map((h) => h.agentName);
+      state._currentAgentSpan = createAgentSpan({
+        data: {
+          name: state._currentAgent.name,
+          handoffs: handoffNames,
+          tools: tools.map((t) => t.name),
+          output_type: state._currentAgent.outputSchemaName,
+        },
+      });
+      state._currentAgentSpan.start();
+      setCurrentSpan(state._currentAgentSpan);
+    } else {
+      state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
+    }
+
+    return {
+      handoffs,
+      tools,
+      serializedHandoffs: handoffs.map((handoff) => serializeHandoff(handoff)),
+      serializedTools: tools.map((tool) => serializeTool(tool)),
+    };
+  }
+
+  /**
+   * @internal
+   * Applies call-level filters and merges session updates so the model request mirrors exactly
+   * what we persisted for history.
+   */
+  async #prepareModelCall<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(
+    state: RunState<TContext, TAgent>,
+    options: SharedRunOptions<TContext>,
+    artifacts: AgentArtifacts<TContext>,
+    turnInput: AgentInputItem[],
+    serverConversationTracker?: ServerConversationTracker,
+    sessionInputUpdate?: (items: (AgentInputItem | undefined)[]) => void,
+  ): Promise<PreparedModelCall<TContext>> {
+    const { model, explictlyModelSet } = await this.#resolveModelForAgent(
+      state._currentAgent,
+    );
+
+    let modelSettings = {
+      ...this.config.modelSettings,
+      ...state._currentAgent.modelSettings,
+    };
+    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+      explictlyModelSet,
+      state._currentAgent.modelSettings,
+      model,
+      modelSettings,
+    );
+    modelSettings = maybeResetToolChoice(
+      state._currentAgent,
+      state._toolUseTracker,
+      modelSettings,
+    );
+
+    const systemInstructions = await state._currentAgent.getSystemPrompt(
+      state._context,
+    );
+    const prompt = await state._currentAgent.getPrompt(state._context);
+
+    const { modelInput, sourceItems } = await this.#applyCallModelInputFilter(
+      state._currentAgent,
+      options.callModelInputFilter,
+      state._context,
+      turnInput,
+      systemInstructions,
+    );
+
+    serverConversationTracker?.markInputAsSent(sourceItems);
+    sessionInputUpdate?.(sourceItems);
+
+    const previousResponseId =
+      serverConversationTracker?.previousResponseId ??
+      options.previousResponseId;
+    const conversationId =
+      serverConversationTracker?.conversationId ?? options.conversationId;
+
+    return {
+      ...artifacts,
+      model,
+      explictlyModelSet,
+      modelSettings,
+      modelInput,
+      prompt,
+      previousResponseId,
+      conversationId,
+    };
+  }
+
+  /**
+   * @internal
    */
   async #runIndividualNonStream<
     TContext,
@@ -699,16 +716,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
-          const explictlyModelSet =
-            (state._currentAgent.model !== undefined &&
-              state._currentAgent.model !== '') ||
-            (this.config.model !== undefined && this.config.model !== '');
-          let model = selectModel(state._currentAgent.model, this.config.model);
-
-          if (typeof model === 'string') {
-            model = await this.config.modelProvider.getModel(model);
-          }
-
           // if we don't have a current step, we treat this as a new run
           state._currentStep = state._currentStep ?? {
             type: 'next_step_run_again',
@@ -752,29 +759,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const handoffs = await state._currentAgent.getEnabledHandoffs(
-              state._context,
-            );
-
-            if (!state._currentAgentSpan) {
-              const handoffNames = handoffs.map((h) => h.agentName);
-              state._currentAgentSpan = createAgentSpan({
-                data: {
-                  name: state._currentAgent.name,
-                  handoffs: handoffNames,
-                  output_type: state._currentAgent.outputSchemaName,
-                },
-              });
-              state._currentAgentSpan.start();
-              setCurrentSpan(state._currentAgentSpan);
-            }
-
-            const tools = await state._currentAgent.getAllTools(state._context);
-            const serializedTools = tools.map((t) => serializeTool(t));
-            const serializedHandoffs = handoffs.map((h) => serializeHandoff(h));
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
-            }
+            const artifacts = await this.#prepareAgentArtifacts(state);
 
             state._currentTurn++;
 
@@ -814,62 +799,31 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this.emit('agent_start', state._context, state._currentAgent);
             }
 
-            const systemInstructions =
-              await state._currentAgent.getSystemPrompt(state._context);
-            const prompt = await state._currentAgent.getPrompt(state._context);
-
-            // Allow callers to rewrite instructions or trim input immediately before the model call.
-            const {
-              modelInput: filteredModelInput,
-              sourceItems: filteredSourceItems,
-            } = await this.#applyCallModelInputFilter(
-              state._currentAgent,
-              options.callModelInputFilter,
-              state._context,
+            const preparedCall = await this.#prepareModelCall(
+              state,
+              options,
+              artifacts,
               turnInput,
-              systemInstructions,
+              serverConversationTracker,
+              sessionInputUpdate,
             );
 
-            serverConversationTracker?.markInputAsSent(filteredSourceItems);
-            sessionInputUpdate?.(filteredSourceItems);
-
-            let modelSettings = {
-              ...this.config.modelSettings,
-              ...state._currentAgent.modelSettings,
-            };
-            const agentModelSettings = state._currentAgent.modelSettings;
-            modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-              explictlyModelSet,
-              agentModelSettings,
-              model,
-              modelSettings,
-            );
-            modelSettings = maybeResetToolChoice(
-              state._currentAgent,
-              state._toolUseTracker,
-              modelSettings,
-            );
-            const previousResponseId =
-              serverConversationTracker?.previousResponseId ??
-              options.previousResponseId;
-            const conversationId =
-              serverConversationTracker?.conversationId ??
-              options.conversationId;
-
-            state._lastTurnResponse = await model.getResponse({
-              systemInstructions: filteredModelInput.instructions,
-              prompt,
+            state._lastTurnResponse = await preparedCall.model.getResponse({
+              systemInstructions: preparedCall.modelInput.instructions,
+              prompt: preparedCall.prompt,
               // Explicit agent/run config models should take precedence over prompt defaults.
-              ...(explictlyModelSet ? { overridePromptModel: true } : {}),
-              input: filteredModelInput.input,
-              previousResponseId,
-              conversationId,
-              modelSettings,
-              tools: serializedTools,
+              ...(preparedCall.explictlyModelSet
+                ? { overridePromptModel: true }
+                : {}),
+              input: preparedCall.modelInput.input,
+              previousResponseId: preparedCall.previousResponseId,
+              conversationId: preparedCall.conversationId,
+              modelSettings: preparedCall.modelSettings,
+              tools: preparedCall.serializedTools,
               outputType: convertAgentOutputTypeToSerializable(
                 state._currentAgent.outputType,
               ),
-              handoffs: serializedHandoffs,
+              handoffs: preparedCall.serializedHandoffs,
               tracing: getTracing(
                 this.config.tracingDisabled,
                 this.config.traceIncludeSensitiveData,
@@ -887,8 +841,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const processedResponse = processModelResponse(
               state._lastTurnResponse,
               state._currentAgent,
-              tools,
-              handoffs,
+              preparedCall.tools,
+              preparedCall.handoffs,
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1120,12 +1074,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     try {
       while (true) {
         const currentAgent = result.state._currentAgent;
-        const handoffs = await currentAgent.getEnabledHandoffs(
-          result.state._context,
-        );
-        const tools = await currentAgent.getAllTools(result.state._context);
-        const serializedTools = tools.map((t) => serializeTool(t));
-        const serializedHandoffs = handoffs.map((h) => serializeHandoff(h));
 
         result.state._currentStep = result.state._currentStep ?? {
           type: 'next_step_run_again',
@@ -1172,19 +1120,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          if (!result.state._currentAgentSpan) {
-            const handoffNames = handoffs.map((h) => h.agentName);
-            result.state._currentAgentSpan = createAgentSpan({
-              data: {
-                name: currentAgent.name,
-                handoffs: handoffNames,
-                tools: tools.map((t) => t.name),
-                output_type: currentAgent.outputSchemaName,
-              },
-            });
-            result.state._currentAgentSpan.start();
-            setCurrentSpan(result.state._currentAgentSpan);
-          }
+          const artifacts = await this.#prepareAgentArtifacts(result.state);
 
           result.state._currentTurn++;
 
@@ -1203,36 +1139,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
-          const explictlyModelSet =
-            (currentAgent.model !== undefined && currentAgent.model !== '') ||
-            (this.config.model !== undefined && this.config.model !== '');
-          let model = selectModel(currentAgent.model, this.config.model);
-
-          if (typeof model === 'string') {
-            model = await this.config.modelProvider.getModel(model);
-          }
-
           if (result.state._currentTurn === 1) {
             await this.#runInputGuardrails(result.state);
             await ensureStreamInputPersisted?.();
           }
-
-          let modelSettings = {
-            ...this.config.modelSettings,
-            ...currentAgent.modelSettings,
-          };
-          const agentModelSettings = currentAgent.modelSettings;
-          modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-            explictlyModelSet,
-            agentModelSettings,
-            model,
-            modelSettings,
-          );
-          modelSettings = maybeResetToolChoice(
-            currentAgent,
-            result.state._toolUseTracker,
-            modelSettings,
-          );
 
           const turnInput = serverConversationTracker
             ? serverConversationTracker.prepareInput(
@@ -1252,43 +1162,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           let finalResponse: ModelResponse | undefined = undefined;
 
-          const previousResponseId =
-            serverConversationTracker?.previousResponseId ??
-            options.previousResponseId;
-          const conversationId =
-            serverConversationTracker?.conversationId ?? options.conversationId;
-
-          const systemInstructions = await currentAgent.getSystemPrompt(
-            result.state._context,
-          );
-          const prompt = await currentAgent.getPrompt(result.state._context);
-
-          const {
-            modelInput: filteredModelInput,
-            sourceItems: filteredSourceItems,
-          } = await this.#applyCallModelInputFilter(
-            currentAgent,
-            options.callModelInputFilter,
-            result.state._context,
+          const preparedCall = await this.#prepareModelCall(
+            result.state,
+            options,
+            artifacts,
             turnInput,
-            systemInstructions,
+            serverConversationTracker,
+            sessionInputUpdate,
           );
 
-          serverConversationTracker?.markInputAsSent(filteredSourceItems);
-          sessionInputUpdate?.(filteredSourceItems);
           await ensureStreamInputPersisted?.();
 
-          for await (const event of model.getStreamedResponse({
-            systemInstructions: filteredModelInput.instructions,
-            prompt,
+          for await (const event of preparedCall.model.getStreamedResponse({
+            systemInstructions: preparedCall.modelInput.instructions,
+            prompt: preparedCall.prompt,
             // Streaming requests should also honor explicitly chosen models.
-            ...(explictlyModelSet ? { overridePromptModel: true } : {}),
-            input: filteredModelInput.input,
-            previousResponseId,
-            conversationId,
-            modelSettings,
-            tools: serializedTools,
-            handoffs: serializedHandoffs,
+            ...(preparedCall.explictlyModelSet
+              ? { overridePromptModel: true }
+              : {}),
+            input: preparedCall.modelInput.input,
+            previousResponseId: preparedCall.previousResponseId,
+            conversationId: preparedCall.conversationId,
+            modelSettings: preparedCall.modelSettings,
+            tools: preparedCall.serializedTools,
+            handoffs: preparedCall.serializedHandoffs,
             outputType: convertAgentOutputTypeToSerializable(
               currentAgent.outputType,
             ),
@@ -1330,8 +1227,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const processedResponse = processModelResponse(
             result.state._lastTurnResponse,
             currentAgent,
-            tools,
-            handoffs,
+            preparedCall.tools,
+            preparedCall.handoffs,
           );
 
           result.state._lastProcessedResponse = processedResponse;
@@ -1762,4 +1659,136 @@ function adjustModelSettingsForNonGPT5RunnerModel(
     return copiedModelSettings;
   }
   return modelSettings;
+}
+
+// Package turn metadata so both run loops share identical serialization.
+type AgentArtifacts<TContext = unknown> = {
+  handoffs: Handoff<any, any>[];
+  tools: Tool<TContext>[];
+  serializedHandoffs: SerializedHandoff[];
+  serializedTools: SerializedTool[];
+};
+
+// Captures everything required to call the model once so we avoid recomputing precedence or filters.
+type PreparedModelCall<TContext = unknown> = AgentArtifacts<TContext> & {
+  model: Model;
+  explictlyModelSet: boolean;
+  modelSettings: ModelSettings;
+  modelInput: ModelInputData;
+  prompt?: Prompt;
+  previousResponseId?: string;
+  conversationId?: string;
+};
+
+// Internal helpers ----------------------------------------------------------
+type AgentInputItemPool = Map<string, AgentInputItem[]>;
+
+function getAgentInputItemKey(item: AgentInputItem): string {
+  // Deep serialization keeps binary inputs comparable after filters clone them.
+  return JSON.stringify(item, agentInputSerializationReplacer);
+}
+
+function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
+  // Track every original object so filters can safely return cloned copies.
+  const pool: AgentInputItemPool = new Map();
+  for (const item of items) {
+    const key = getAgentInputItemKey(item);
+    const existing = pool.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      pool.set(key, [item]);
+    }
+  }
+  return pool;
+}
+
+function takeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  key: string,
+): AgentInputItem | undefined {
+  // Prefer reusing the earliest untouched original to keep ordering stable.
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return undefined;
+  }
+  const [first] = candidates;
+  candidates.shift();
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+  return first;
+}
+
+function removeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  item: AgentInputItem,
+) {
+  // Remove exactly the matched instance so duplicate payloads remain available.
+  const key = getAgentInputItemKey(item);
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return;
+  }
+  const index = candidates.findIndex((candidate) => candidate === item);
+  if (index === -1) {
+    return;
+  }
+  candidates.splice(index, 1);
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+}
+
+function agentInputSerializationReplacer(
+  _key: string,
+  value: unknown,
+): unknown {
+  // Mirror runImplementation serialization so buffer snapshots round-trip.
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: 'ArrayBuffer',
+      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
+    };
+  }
+
+  if (isArrayBufferView(value)) {
+    const view = value as ArrayBufferView;
+    return {
+      __type: view.constructor.name,
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isNodeBuffer(value)) {
+    const view = value as Uint8Array;
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isSerializedBufferSnapshot(value)) {
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
+    };
+  }
+
+  return value;
+}
+
+function toAgentInputList(
+  originalInput: string | AgentInputItem[],
+): AgentInputItem[] {
+  // Allow callers to pass plain strings while preserving original item order.
+  if (typeof originalInput === 'string') {
+    return [{ type: 'message', role: 'user', content: originalInput }];
+  }
+
+  return [...originalInput];
 }

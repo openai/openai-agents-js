@@ -687,6 +687,8 @@ export async function executeToolsAndSideEffects<TContext>(
 
 /**
  * @internal
+ * Normalizes tool outputs once so downstream code works with fully structured protocol items.
+ * Doing this here keeps API surface stable even when providers add new shapes.
  */
 export function getToolCallOutputItem(
   toolCall: protocol.FunctionCallItem,
@@ -719,263 +721,6 @@ export function getToolCallOutputItem(
     },
   };
 }
-
-type StructuredToolOutput =
-  | ToolOutputText
-  | ToolOutputImage
-  | ToolOutputFileContent;
-
-/**
- * Accepts whatever the tool returned and attempts to coerce it into the structured protocol
- * shapes we expose to downstream model adapters (input_text/input_image/input_file). Tools are
- * allowed to return either a single structured object or an array of them; anything else falls
- * back to the legacy string pipeline.
- */
-function normalizeStructuredToolOutputs(
-  output: unknown,
-): StructuredToolOutput[] | null {
-  if (Array.isArray(output)) {
-    const structured: StructuredToolOutput[] = [];
-    for (const item of output) {
-      const normalized = normalizeStructuredToolOutput(item);
-      if (!normalized) {
-        return null;
-      }
-      structured.push(normalized);
-    }
-    return structured;
-  }
-  const normalized = normalizeStructuredToolOutput(output);
-  return normalized ? [normalized] : null;
-}
-
-/**
- * Best-effort normalization of a single tool output item. If the object already matches the
- * protocol shape we simply cast it; otherwise we copy the recognised fields into the canonical
- * structure. Returning null lets the caller know we should revert to plain-string handling.
- */
-function normalizeStructuredToolOutput(
-  value: unknown,
-): StructuredToolOutput | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const type = value.type;
-  if (type === 'text' && typeof value.text === 'string') {
-    const output: ToolOutputText = { type: 'text', text: value.text };
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
-  }
-
-  if (type === 'image') {
-    const output: ToolOutputImage = { type: 'image' };
-
-    let imageString: string | undefined;
-    let imageFileId: string | undefined;
-    const fallbackImageMediaType = isNonEmptyString((value as any).mediaType)
-      ? (value as any).mediaType
-      : undefined;
-
-    const imageField = value.image;
-    if (typeof imageField === 'string' && imageField.length > 0) {
-      imageString = imageField;
-    } else if (isRecord(imageField)) {
-      const imageObj = imageField as Record<string, any>;
-      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
-        ? imageObj.mediaType
-        : fallbackImageMediaType;
-      if (isNonEmptyString(imageObj.url)) {
-        imageString = imageObj.url;
-      } else if (isNonEmptyString(imageObj.data)) {
-        imageString = toInlineImageString(imageObj.data, inlineMediaType);
-      } else if (
-        imageObj.data instanceof Uint8Array &&
-        imageObj.data.length > 0
-      ) {
-        imageString = toInlineImageString(imageObj.data, inlineMediaType);
-      }
-
-      if (!imageString) {
-        const candidateId =
-          (isNonEmptyString(imageObj.fileId) && imageObj.fileId) ||
-          (isNonEmptyString(imageObj.id) && imageObj.id) ||
-          undefined;
-        if (candidateId) {
-          imageFileId = candidateId;
-        }
-      }
-    }
-
-    if (
-      !imageString &&
-      typeof value.imageUrl === 'string' &&
-      value.imageUrl.length > 0
-    ) {
-      imageString = value.imageUrl;
-    }
-    if (
-      !imageFileId &&
-      typeof value.fileId === 'string' &&
-      value.fileId.length > 0
-    ) {
-      imageFileId = value.fileId;
-    }
-
-    if (
-      !imageString &&
-      typeof value.data === 'string' &&
-      value.data.length > 0
-    ) {
-      imageString = fallbackImageMediaType
-        ? toInlineImageString(value.data, fallbackImageMediaType)
-        : value.data;
-    } else if (
-      !imageString &&
-      value.data instanceof Uint8Array &&
-      value.data.length > 0
-    ) {
-      imageString = toInlineImageString(value.data, fallbackImageMediaType);
-    }
-    if (typeof value.detail === 'string' && value.detail.length > 0) {
-      output.detail = value.detail;
-    }
-
-    if (imageString) {
-      output.image = imageString;
-    } else if (imageFileId) {
-      output.image = { fileId: imageFileId };
-    } else {
-      return null;
-    }
-
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
-  }
-
-  if (type === 'file') {
-    const fileValue = normalizeFileValue(value);
-    if (!fileValue) {
-      return null;
-    }
-
-    const output: ToolOutputFileContent = { type: 'file', file: fileValue };
-
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
-  }
-
-  return null;
-}
-
-/**
- * Translates the normalized tool output into the protocol `input_*` items. This is the last hop
- * before we hand the data to model-specific adapters, so we generate the exact schema expected by
- * the protocol definitions.
- */
-function convertStructuredToolOutputToInputItem(
-  output: StructuredToolOutput,
-): ToolCallStructuredOutput {
-  if (output.type === 'text') {
-    const result: protocol.InputText = {
-      type: 'input_text',
-      text: output.text,
-    };
-    if (output.providerData) {
-      result.providerData = output.providerData;
-    }
-    return result;
-  }
-  if (output.type === 'image') {
-    const result: protocol.InputImage = { type: 'input_image' };
-    if (typeof output.detail === 'string' && output.detail.length > 0) {
-      result.detail = output.detail;
-    }
-    if (typeof output.image === 'string' && output.image.length > 0) {
-      result.image = output.image;
-    } else if (isRecord(output.image)) {
-      const imageObj = output.image as Record<string, any>;
-      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
-        ? imageObj.mediaType
-        : undefined;
-      if (isNonEmptyString(imageObj.url)) {
-        result.image = imageObj.url;
-      } else if (isNonEmptyString(imageObj.data)) {
-        result.image =
-          inlineMediaType && !imageObj.data.startsWith('data:')
-            ? asDataUrl(imageObj.data, inlineMediaType)
-            : imageObj.data;
-      } else if (
-        imageObj.data instanceof Uint8Array &&
-        imageObj.data.length > 0
-      ) {
-        const base64 = encodeUint8ArrayToBase64(imageObj.data);
-        result.image = asDataUrl(base64, inlineMediaType);
-      } else {
-        const referencedId =
-          (isNonEmptyString(imageObj.fileId) && imageObj.fileId) ||
-          (isNonEmptyString(imageObj.id) && imageObj.id) ||
-          undefined;
-        if (referencedId) {
-          result.image = { id: referencedId };
-        }
-      }
-    }
-    if (output.providerData) {
-      result.providerData = output.providerData;
-    }
-    return result;
-  }
-
-  if (output.type === 'file') {
-    const result: protocol.InputFile = { type: 'input_file' };
-    const fileValue = output.file;
-    if (typeof fileValue === 'string') {
-      result.file = fileValue;
-    } else if (fileValue && typeof fileValue === 'object') {
-      const record = fileValue as Record<string, any>;
-      if ('data' in record && record.data) {
-        const mediaType = record.mediaType ?? 'text/plain';
-        if (typeof record.data === 'string') {
-          result.file = asDataUrl(record.data, mediaType);
-        } else {
-          const base64 = encodeUint8ArrayToBase64(record.data);
-          result.file = asDataUrl(base64, mediaType);
-        }
-      } else if (typeof record.url === 'string' && record.url.length > 0) {
-        result.file = { url: record.url };
-      } else {
-        const referencedId =
-          (typeof record.id === 'string' &&
-            record.id.length > 0 &&
-            record.id) ||
-          (typeof record.fileId === 'string' && record.fileId.length > 0
-            ? record.fileId
-            : undefined);
-        if (referencedId) {
-          result.file = { id: referencedId };
-        }
-      }
-
-      if (typeof record.filename === 'string' && record.filename.length > 0) {
-        result.filename = record.filename;
-      }
-    }
-    if (output.providerData) {
-      result.providerData = output.providerData;
-    }
-    return result;
-  }
-  const exhaustiveCheck: never = output;
-  return exhaustiveCheck;
-}
-
-type FileReferenceValue = ToolOutputFileContent['file'];
 
 function normalizeFileValue(
   value: Record<string, any>,
@@ -1903,6 +1648,264 @@ export async function prepareInputItemsWithSession(
     sessionItems: appended.length > 0 ? appended : [],
   };
 }
+
+// Internal helpers kept near the end so the main execution path reads top-to-bottom.
+type StructuredToolOutput =
+  | ToolOutputText
+  | ToolOutputImage
+  | ToolOutputFileContent;
+
+/**
+ * Accepts whatever the tool returned and attempts to coerce it into the structured protocol
+ * shapes we expose to downstream model adapters (input_text/input_image/input_file). Tools are
+ * allowed to return either a single structured object or an array of them; anything else falls
+ * back to the legacy string pipeline.
+ */
+function normalizeStructuredToolOutputs(
+  output: unknown,
+): StructuredToolOutput[] | null {
+  if (Array.isArray(output)) {
+    const structured: StructuredToolOutput[] = [];
+    for (const item of output) {
+      const normalized = normalizeStructuredToolOutput(item);
+      if (!normalized) {
+        return null;
+      }
+      structured.push(normalized);
+    }
+    return structured;
+  }
+  const normalized = normalizeStructuredToolOutput(output);
+  return normalized ? [normalized] : null;
+}
+
+/**
+ * Best-effort normalization of a single tool output item. If the object already matches the
+ * protocol shape we simply cast it; otherwise we copy the recognised fields into the canonical
+ * structure. Returning null lets the caller know we should revert to plain-string handling.
+ */
+function normalizeStructuredToolOutput(
+  value: unknown,
+): StructuredToolOutput | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const type = value.type;
+  if (type === 'text' && typeof value.text === 'string') {
+    const output: ToolOutputText = { type: 'text', text: value.text };
+    if (isRecord(value.providerData)) {
+      output.providerData = value.providerData;
+    }
+    return output;
+  }
+
+  if (type === 'image') {
+    const output: ToolOutputImage = { type: 'image' };
+
+    let imageString: string | undefined;
+    let imageFileId: string | undefined;
+    const fallbackImageMediaType = isNonEmptyString((value as any).mediaType)
+      ? (value as any).mediaType
+      : undefined;
+
+    const imageField = value.image;
+    if (typeof imageField === 'string' && imageField.length > 0) {
+      imageString = imageField;
+    } else if (isRecord(imageField)) {
+      const imageObj = imageField as Record<string, any>;
+      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
+        ? imageObj.mediaType
+        : fallbackImageMediaType;
+      if (isNonEmptyString(imageObj.url)) {
+        imageString = imageObj.url;
+      } else if (isNonEmptyString(imageObj.data)) {
+        imageString = toInlineImageString(imageObj.data, inlineMediaType);
+      } else if (
+        imageObj.data instanceof Uint8Array &&
+        imageObj.data.length > 0
+      ) {
+        imageString = toInlineImageString(imageObj.data, inlineMediaType);
+      }
+
+      if (!imageString) {
+        const candidateId =
+          (isNonEmptyString(imageObj.fileId) && imageObj.fileId) ||
+          (isNonEmptyString(imageObj.id) && imageObj.id) ||
+          undefined;
+        if (candidateId) {
+          imageFileId = candidateId;
+        }
+      }
+    }
+
+    if (
+      !imageString &&
+      typeof value.imageUrl === 'string' &&
+      value.imageUrl.length > 0
+    ) {
+      imageString = value.imageUrl;
+    }
+    if (
+      !imageFileId &&
+      typeof value.fileId === 'string' &&
+      value.fileId.length > 0
+    ) {
+      imageFileId = value.fileId;
+    }
+
+    if (
+      !imageString &&
+      typeof value.data === 'string' &&
+      value.data.length > 0
+    ) {
+      imageString = fallbackImageMediaType
+        ? toInlineImageString(value.data, fallbackImageMediaType)
+        : value.data;
+    } else if (
+      !imageString &&
+      value.data instanceof Uint8Array &&
+      value.data.length > 0
+    ) {
+      imageString = toInlineImageString(value.data, fallbackImageMediaType);
+    }
+    if (typeof value.detail === 'string' && value.detail.length > 0) {
+      output.detail = value.detail;
+    }
+
+    if (imageString) {
+      output.image = imageString;
+    } else if (imageFileId) {
+      output.image = { fileId: imageFileId };
+    } else {
+      return null;
+    }
+
+    if (isRecord(value.providerData)) {
+      output.providerData = value.providerData;
+    }
+    return output;
+  }
+
+  if (type === 'file') {
+    const fileValue = normalizeFileValue(value);
+    if (!fileValue) {
+      return null;
+    }
+
+    const output: ToolOutputFileContent = { type: 'file', file: fileValue };
+
+    if (isRecord(value.providerData)) {
+      output.providerData = value.providerData;
+    }
+    return output;
+  }
+
+  return null;
+}
+
+/**
+ * Translates the normalized tool output into the protocol `input_*` items. This is the last hop
+ * before we hand the data to model-specific adapters, so we generate the exact schema expected by
+ * the protocol definitions.
+ */
+function convertStructuredToolOutputToInputItem(
+  output: StructuredToolOutput,
+): ToolCallStructuredOutput {
+  if (output.type === 'text') {
+    const result: protocol.InputText = {
+      type: 'input_text',
+      text: output.text,
+    };
+    if (output.providerData) {
+      result.providerData = output.providerData;
+    }
+    return result;
+  }
+  if (output.type === 'image') {
+    const result: protocol.InputImage = { type: 'input_image' };
+    if (typeof output.detail === 'string' && output.detail.length > 0) {
+      result.detail = output.detail;
+    }
+    if (typeof output.image === 'string' && output.image.length > 0) {
+      result.image = output.image;
+    } else if (isRecord(output.image)) {
+      const imageObj = output.image as Record<string, any>;
+      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
+        ? imageObj.mediaType
+        : undefined;
+      if (isNonEmptyString(imageObj.url)) {
+        result.image = imageObj.url;
+      } else if (isNonEmptyString(imageObj.data)) {
+        result.image =
+          inlineMediaType && !imageObj.data.startsWith('data:')
+            ? asDataUrl(imageObj.data, inlineMediaType)
+            : imageObj.data;
+      } else if (
+        imageObj.data instanceof Uint8Array &&
+        imageObj.data.length > 0
+      ) {
+        const base64 = encodeUint8ArrayToBase64(imageObj.data);
+        result.image = asDataUrl(base64, inlineMediaType);
+      } else {
+        const referencedId =
+          (isNonEmptyString(imageObj.fileId) && imageObj.fileId) ||
+          (isNonEmptyString(imageObj.id) && imageObj.id) ||
+          undefined;
+        if (referencedId) {
+          result.image = { id: referencedId };
+        }
+      }
+    }
+    if (output.providerData) {
+      result.providerData = output.providerData;
+    }
+    return result;
+  }
+
+  if (output.type === 'file') {
+    const result: protocol.InputFile = { type: 'input_file' };
+    const fileValue = output.file;
+    if (typeof fileValue === 'string') {
+      result.file = fileValue;
+    } else if (fileValue && typeof fileValue === 'object') {
+      const record = fileValue as Record<string, any>;
+      if ('data' in record && record.data) {
+        const mediaType = record.mediaType ?? 'text/plain';
+        if (typeof record.data === 'string') {
+          result.file = asDataUrl(record.data, mediaType);
+        } else {
+          const base64 = encodeUint8ArrayToBase64(record.data);
+          result.file = asDataUrl(base64, mediaType);
+        }
+      } else if (typeof record.url === 'string' && record.url.length > 0) {
+        result.file = { url: record.url };
+      } else {
+        const referencedId =
+          (typeof record.id === 'string' &&
+            record.id.length > 0 &&
+            record.id) ||
+          (typeof record.fileId === 'string' && record.fileId.length > 0
+            ? record.fileId
+            : undefined);
+        if (referencedId) {
+          result.file = { id: referencedId };
+        }
+      }
+
+      if (typeof record.filename === 'string' && record.filename.length > 0) {
+        result.filename = record.filename;
+      }
+    }
+    if (output.providerData) {
+      result.providerData = output.providerData;
+    }
+    return result;
+  }
+  const exhaustiveCheck: never = output;
+  return exhaustiveCheck;
+}
+
+type FileReferenceValue = ToolOutputFileContent['file'];
 
 function buildItemFrequencyMap(items: AgentInputItem[]): Map<string, number> {
   const counts = new Map<string, number>();
