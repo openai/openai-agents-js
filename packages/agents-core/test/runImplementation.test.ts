@@ -346,6 +346,25 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems).toEqual([newItem]);
     expect(sessionItems[0]).toBe(newItem);
   });
+
+  it('omits session history from prepared input when includeHistoryInPreparedInput is false', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'past',
+      id: 'history-1',
+    };
+    const session = new StubSession([historyItem]);
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      undefined,
+      { includeHistoryInPreparedInput: false },
+    );
+
+    expect(result.preparedInput).toEqual(toInputItemList('fresh input'));
+    expect(result.sessionItems).toEqual(toInputItemList('fresh input'));
+  });
 });
 
 describe('getToolCallOutputItem', () => {

@@ -333,6 +333,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback,
       callModelInputFilter,
     };
+    const serverManagesConversation =
+      Boolean(effectiveOptions.conversationId) ||
+      Boolean(effectiveOptions.previousResponseId);
     const session = effectiveOptions.session;
     const resumingFromState = input instanceof RunState;
     let sessionInputItemsToPersist: AgentInputItem[] | undefined =
@@ -452,8 +455,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         preparedInput,
         session,
         sessionInputCallback,
+        {
+          // When the server tracks conversation state we only send the new turn inputs;
+          // previous messages are recovered via conversationId/previousResponseId.
+          includeHistoryInPreparedInput: !serverManagesConversation,
+        },
       );
-      preparedInput = prepared.preparedInput;
+      if (serverManagesConversation && session) {
+        preparedInput = prepared.sessionItems ?? [];
+      } else {
+        preparedInput = prepared.preparedInput;
+      }
       if (session) {
         const items = prepared.sessionItems ?? [];
         // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
@@ -1363,27 +1375,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   }
 }
 
-/**
- * Resolves the effective model for the next turn by giving precedence to the agent-specific
- * configuration when present, otherwise falling back to the runner-level default.
- */
-export function selectModel(
-  agentModel: string | Model,
-  runConfigModel: string | Model | undefined,
-): string | Model {
-  // When initializing an agent without model name, the model property is set to an empty string. So,
-  // * agentModel === '' & runConfigModel exists, runConfigModel will be used
-  // * agentModel is set, the agentModel will be used over runConfigModel
-  if (
-    (typeof agentModel === 'string' &&
-      agentModel !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
-    agentModel // any truthy value
-  ) {
-    return agentModel;
-  }
-  return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
-}
-
 // --------------------------------------------------------------
 //  Other types and functions
 // --------------------------------------------------------------
@@ -1417,26 +1408,6 @@ export type CallModelInputFilter<TContext = unknown> = (
 ) => ModelInputData | Promise<ModelInputData>;
 
 /**
- * Normalizes tracing configuration into the format expected by model providers.
- * Returns `false` to disable tracing, `true` to include full payload data, or
- * `'enabled_without_data'` to omit sensitive content while still emitting spans.
- */
-export function getTracing(
-  tracingDisabled: boolean,
-  traceIncludeSensitiveData: boolean,
-): ModelTracing {
-  if (tracingDisabled) {
-    return false;
-  }
-
-  if (traceIncludeSensitiveData) {
-    return true;
-  }
-
-  return 'enabled_without_data';
-}
-
-/**
  * Constructs the model input array for the current turn by combining the original turn input with
  * any new run items (excluding tool approval placeholders). This helps ensure that repeated calls
  * to the Responses API only send newly generated content.
@@ -1467,6 +1438,47 @@ function getDefaultRunner() {
   }
   _defaultRunner = new Runner();
   return _defaultRunner;
+}
+
+/**
+ * Resolves the effective model for the next turn by giving precedence to the agent-specific
+ * configuration when present, otherwise falling back to the runner-level default.
+ */
+export function selectModel(
+  agentModel: string | Model,
+  runConfigModel: string | Model | undefined,
+): string | Model {
+  // When initializing an agent without model name, the model property is set to an empty string. So,
+  // * agentModel === '' & runConfigModel exists, runConfigModel will be used
+  // * agentModel is set, the agentModel will be used over runConfigModel
+  if (
+    (typeof agentModel === 'string' &&
+      agentModel !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
+    agentModel // any truthy value
+  ) {
+    return agentModel;
+  }
+  return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
+}
+
+/**
+ * Normalizes tracing configuration into the format expected by model providers.
+ * Returns `false` to disable tracing, `true` to include full payload data, or
+ * `'enabled_without_data'` to omit sensitive content while still emitting spans.
+ */
+export function getTracing(
+  tracingDisabled: boolean,
+  traceIncludeSensitiveData: boolean,
+): ModelTracing {
+  if (tracingDisabled) {
+    return false;
+  }
+
+  if (traceIncludeSensitiveData) {
+    return true;
+  }
+
+  return 'enabled_without_data';
 }
 
 /**

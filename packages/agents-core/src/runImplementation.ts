@@ -1609,6 +1609,14 @@ export async function prepareInputItemsWithSession(
   input: string | AgentInputItem[],
   session?: Session,
   sessionInputCallback?: SessionInputCallback,
+  options?: {
+    /**
+     * When true (default), the returned `preparedInput` includes both the persisted session history
+     * and the new turn items. Set to false when upstream code already provides history to the model
+     * (e.g. server-managed conversations) to avoid sending duplicated messages each turn.
+     */
+    includeHistoryInPreparedInput?: boolean;
+  },
 ): Promise<PreparedInputWithSessionResult> {
   if (!session) {
     return {
@@ -1616,6 +1624,9 @@ export async function prepareInputItemsWithSession(
       sessionItems: undefined,
     };
   }
+
+  const includeHistoryInPreparedInput =
+    options?.includeHistoryInPreparedInput ?? true;
 
   const history = await session.getItems();
   const newInputItems = Array.isArray(input)
@@ -1626,7 +1637,11 @@ export async function prepareInputItemsWithSession(
   // previously persisted history without risking duplicate tool outputs or approvals. Align with
   // the Python SDK by requiring an explicit callback in that scenario so the merge strategy stays
   // intentional and predictable.
-  if (Array.isArray(input) && !sessionInputCallback) {
+  if (
+    Array.isArray(input) &&
+    !sessionInputCallback &&
+    includeHistoryInPreparedInput
+  ) {
     throw new UserError(
       'When using session memory, list inputs require a RunConfig.sessionInputCallback to define how history and new items are merged. Provide a string input instead or disable session memory to manage items manually.',
     );
@@ -1634,7 +1649,9 @@ export async function prepareInputItemsWithSession(
 
   if (!sessionInputCallback) {
     return {
-      preparedInput: [...history, ...newInputItems],
+      preparedInput: includeHistoryInPreparedInput
+        ? [...history, ...newInputItems]
+        : newInputItems,
       sessionItems: newInputItems,
     };
   }
@@ -1686,7 +1703,11 @@ export async function prepareInputItemsWithSession(
   }
 
   return {
-    preparedInput: combined,
+    preparedInput: includeHistoryInPreparedInput
+      ? combined
+      : appended.length > 0
+        ? appended
+        : newInputItems,
     sessionItems: appended.length > 0 ? appended : [],
   };
 }
