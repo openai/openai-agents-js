@@ -2023,3 +2023,82 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.newStepItems).not.toContain(approvalItem);
   });
 });
+
+describe('resolveInterruptedTurn', () => {
+  it('dispatches approved computer actions when resuming an interruption', async () => {
+    const fakeComputer: Computer = {
+      environment: 'mac',
+      dimensions: [1, 1],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(async (_x: number, _y: number, _button: any) => {}),
+      doubleClick: vi.fn(async (_x: number, _y: number) => {}),
+      drag: vi.fn(async (_path: [number, number][]) => {}),
+      keypress: vi.fn(async (_keys: string[]) => {}),
+      move: vi.fn(async (_x: number, _y: number) => {}),
+      scroll: vi.fn(
+        async (_x: number, _y: number, _sx: number, _sy: number) => {},
+      ),
+      type: vi.fn(async (_text: string) => {}),
+      wait: vi.fn(async () => {}),
+    };
+    const computer = computerTool({ computer: fakeComputer });
+    const agent = new Agent({ name: 'ComputerAgent', tools: [computer] });
+    const computerCall: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      id: 'comp1',
+      callId: 'comp1',
+      status: 'in_progress',
+      action: { type: 'screenshot' } as any,
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new ToolCallItem(computerCall, agent)],
+      handoffs: [],
+      functions: [],
+      computerActions: [{ toolCall: computerCall, computer }],
+      mcpApprovalRequests: [],
+      toolsUsed: ['computer_use'],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+    const approvalSpy = vi
+      .spyOn(state._context, 'isToolApproved')
+      .mockImplementation(({ toolName, callId }) => {
+        if (toolName === computer.name && callId === computerCall.callId) {
+          return true as any;
+        }
+        return undefined as any;
+      });
+
+    const originalItems = [new ToolCallItem(computerCall, agent)];
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      originalItems,
+      resumedResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    approvalSpy.mockRestore();
+
+    const toolOutputs = result.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+
+    expect(toolOutputs).toHaveLength(1);
+    expect(
+      (toolOutputs[0].rawItem as protocol.ComputerCallResultItem).callId,
+    ).toBe(computerCall.callId);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+  });
+});

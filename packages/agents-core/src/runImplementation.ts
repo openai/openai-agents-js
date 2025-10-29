@@ -373,6 +373,26 @@ export async function resolveInterruptedTurn<TContext>(
     state,
   );
 
+  const approvedComputerActions = processedResponse.computerActions.filter(
+    (action) => {
+      const approval = state._context.isToolApproved({
+        toolName: action.computer.name,
+        callId: action.toolCall.callId,
+      });
+      return approval === true;
+    },
+  );
+
+  const computerResults =
+    approvedComputerActions.length > 0
+      ? await executeComputerActions(
+          agent,
+          approvedComputerActions,
+          runner,
+          state._context,
+        )
+      : [];
+
   // When resuming we receive the original RunItem references; suppress duplicates so history and streaming do not double-emit the same items.
   const originalPreStepItemSet = new Set(originalPreStepItems);
   const newItems: RunItem[] = [];
@@ -387,6 +407,10 @@ export async function resolveInterruptedTurn<TContext>(
 
   for (const result of functionResults) {
     appendIfNew(result.runItem);
+  }
+
+  for (const result of computerResults) {
+    appendIfNew(result);
   }
 
   // Run MCP tools that require approval after they get their approval results
