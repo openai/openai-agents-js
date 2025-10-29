@@ -714,7 +714,16 @@ describe('Runner.run (streaming)', () => {
     await result.completed;
 
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
-    expect(saveInputSpy).toHaveBeenCalledWith(session, 'hello world');
+    const [sessionArg, persistedItems] = saveInputSpy.mock.calls[0];
+    expect(sessionArg).toBe(session);
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: 'hello world',
+    });
   });
 
   it('skips persisting streaming input when an input guardrail triggers', async () => {

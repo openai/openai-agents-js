@@ -1737,13 +1737,13 @@ export function extractOutputItemsFromRunItems(
  */
 export async function saveToSession(
   session: Session | undefined,
-  originalInput: string | AgentInputItem[] | undefined,
+  sessionInputItems: AgentInputItem[] | undefined,
   result: RunResult<any, any>,
 ): Promise<void> {
   if (!session) {
     return;
   }
-  const inputItems = originalInput ? toInputItemList(originalInput) : [];
+  const inputItems = sessionInputItems ?? [];
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   // Persist only the portion of _generatedItems that has not yet been stored for this turn.
@@ -1771,19 +1771,15 @@ export async function saveToSession(
  */
 export async function saveStreamInputToSession(
   session: Session | undefined,
-  originalInput: string | AgentInputItem[] | undefined,
+  sessionInputItems: AgentInputItem[] | undefined,
 ): Promise<void> {
   if (!session) {
     return;
   }
-  if (!originalInput) {
+  if (!sessionInputItems || sessionInputItems.length === 0) {
     return;
   }
-  const itemsToSave = toInputItemList(originalInput);
-  if (itemsToSave.length === 0) {
-    return;
-  }
-  await session.addItems(itemsToSave);
+  await session.addItems(sessionInputItems);
 }
 
 /**
@@ -1814,13 +1810,21 @@ export async function saveStreamResultToSession(
  * @internal
  * If a session is provided, expands the input with session history; otherwise returns the input.
  */
+export type PreparedInputWithSessionResult = {
+  preparedInput: string | AgentInputItem[];
+  sessionItems?: AgentInputItem[];
+};
+
 export async function prepareInputItemsWithSession(
   input: string | AgentInputItem[],
   session?: Session,
   sessionInputCallback?: SessionInputCallback,
-): Promise<string | AgentInputItem[]> {
+): Promise<PreparedInputWithSessionResult> {
   if (!session) {
-    return input;
+    return {
+      preparedInput: input,
+      sessionItems: undefined,
+    };
   }
 
   const history = await session.getItems();
@@ -1839,7 +1843,10 @@ export async function prepareInputItemsWithSession(
   }
 
   if (!sessionInputCallback) {
-    return [...history, ...newInputItems];
+    return {
+      preparedInput: [...history, ...newInputItems],
+      sessionItems: newInputItems,
+    };
   }
 
   // Delegate history reconciliation to the user-supplied callback. It must return a concrete list
@@ -1851,5 +1858,26 @@ export async function prepareInputItemsWithSession(
     );
   }
 
-  return combined;
+  const historySet = new Set(history);
+  const newInputSet = new Set(newInputItems);
+  const appended: AgentInputItem[] = [];
+  for (const item of combined) {
+    if (historySet.has(item) || !newInputSet.has(item)) {
+      if (!historySet.has(item) && !newInputSet.has(item)) {
+        appended.push(item);
+      }
+      continue;
+    }
+    appended.push(item);
+  }
+
+  if (appended.length === 0 && combined.length > history.length) {
+    // When callbacks replace every new item with fresh objects, fall back to the tail slice.
+    appended.push(...combined.slice(history.length));
+  }
+
+  return {
+    preparedInput: combined,
+    sessionItems: appended.length > 0 ? appended : [],
+  };
 }

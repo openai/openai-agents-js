@@ -775,6 +775,44 @@ describe('Runner.run', () => {
         expect(getFirstTextContent(recordedInput[1])).toBe('Fresh input');
       });
 
+      it('persists transformed session input from callback', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('session response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'SessionTransform', model });
+        const session = new MemorySession();
+        const runner = new Runner();
+        const original = 'Sensitive payload';
+        const redacted = '[redacted]';
+
+        await runner.run(agent, original, {
+          session,
+          sessionInputCallback: (history, newItems) => {
+            expect(history).toHaveLength(0);
+            if (newItems[0] && typeof newItems[0] === 'object') {
+              (newItems[0] as protocol.UserMessageItem).content = redacted;
+            }
+            return history.concat(newItems);
+          },
+        });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(recordedInput[recordedInput.length - 1]).toMatchObject({
+          role: 'user',
+          content: redacted,
+        });
+
+        expect(session.added).toHaveLength(1);
+        const persistedTurn = session.added[0];
+        expect(persistedTurn[0]).toMatchObject({
+          role: 'user',
+          content: redacted,
+        });
+      });
+
       it('throws when session input callback returns invalid data', async () => {
         const model = new RecordingModel([
           {

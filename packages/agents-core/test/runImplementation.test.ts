@@ -32,6 +32,7 @@ import {
   streamStepItemsToRunResult,
   saveToSession,
   executeInterruptedToolsAndSideEffects,
+  toInputItemList,
 } from '../src/runImplementation';
 import {
   FunctionTool,
@@ -195,7 +196,11 @@ describe('saveToSession', () => {
     state._generatedItems = [new ToolApprovalItem(functionCall, textAgent)];
 
     const preApprovalResult = new RunResult(state);
-    await saveToSession(session, state._originalInput, preApprovalResult);
+    await saveToSession(
+      session,
+      toInputItemList(state._originalInput),
+      preApprovalResult,
+    );
 
     expect(session.items).toEqual([
       {

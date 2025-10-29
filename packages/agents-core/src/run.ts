@@ -1348,33 +1348,37 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     };
     const session = effectiveOptions.session;
     const resumingFromState = input instanceof RunState;
-    let sessionOriginalInput: string | AgentInputItem[] | undefined;
-    if (resumingFromState) {
-      if (session) {
-        sessionOriginalInput = [] as AgentInputItem[];
-      }
-    } else {
-      sessionOriginalInput = input as string | AgentInputItem[];
-    }
+    let sessionInputItemsToPersist: AgentInputItem[] | undefined =
+      session && resumingFromState ? [] : undefined;
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
-      preparedInput = await prepareInputItemsWithSession(
+      const prepared = await prepareInputItemsWithSession(
         preparedInput,
         session,
         sessionInputCallback,
       );
+      preparedInput = prepared.preparedInput;
+      if (session) {
+        const items = prepared.sessionItems ?? [];
+        // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
+        sessionInputItemsToPersist = items.map((item) => structuredClone(item));
+      }
     }
 
     let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
-    if (session && typeof sessionOriginalInput !== 'undefined') {
+    if (
+      session &&
+      sessionInputItemsToPersist &&
+      sessionInputItemsToPersist.length > 0
+    ) {
       let persisted = false;
       ensureStreamInputPersisted = async () => {
         if (persisted) {
           return;
         }
         persisted = true;
-        await saveStreamInputToSession(session, sessionOriginalInput);
+        await saveStreamInputToSession(session, sessionInputItemsToPersist);
       };
     }
 
@@ -1393,7 +1397,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         preparedInput,
         effectiveOptions,
       );
-      await saveToSession(session, sessionOriginalInput, runResult);
+      await saveToSession(session, sessionInputItemsToPersist, runResult);
       return runResult;
     };
 
