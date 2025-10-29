@@ -810,6 +810,40 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
+  it('persists streaming input when the model stream rejects before completion', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+    const streamError = new Error('model stream failed');
+
+    const agent = new Agent({
+      name: 'StreamFailurePersistsInput',
+      model: new RejectingStreamingModel(streamError),
+    });
+
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'save me please', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toThrow('model stream failed');
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    const [, persistedItems] = saveInputSpy.mock.calls[0];
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: 'save me please',
+    });
+  });
+
   it('persists filtered streaming input instead of the raw turn payload', async () => {
     const saveInputSpy = vi
       .spyOn(runImplementation, 'saveStreamInputToSession')
@@ -968,6 +1002,27 @@ class ImmediateStreamingModel implements Model {
         output,
       },
     } satisfies StreamEvent;
+  }
+}
+
+class RejectingStreamingModel implements Model {
+  constructor(private readonly error: Error) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    throw this.error;
+  }
+
+  getStreamedResponse(_request: ModelRequest): AsyncIterable<StreamEvent> {
+    const error = this.error;
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            throw error;
+          },
+        } satisfies AsyncIterator<StreamEvent>;
+      },
+    } satisfies AsyncIterable<StreamEvent>;
   }
 }
 

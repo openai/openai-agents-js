@@ -877,6 +877,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         })
       : undefined;
 
+    let handedInputToModel = false;
+    let streamInputPersisted = false;
+    const persistStreamInputIfNeeded = async () => {
+      if (streamInputPersisted || !ensureStreamInputPersisted) {
+        return;
+      }
+      await ensureStreamInputPersisted();
+      streamInputPersisted = true;
+    };
+
     if (serverConversationTracker && isResumedState) {
       serverConversationTracker.primeFromState({
         originalInput: result.state._originalInput,
@@ -983,7 +993,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionInputUpdate,
           );
 
-          await ensureStreamInputPersisted?.();
+          handedInputToModel = true;
+          await persistStreamInputIfNeeded();
 
           for await (const event of preparedCall.model.getStreamedResponse({
             systemInstructions: preparedCall.modelInput.instructions,
@@ -1081,7 +1092,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
             result.state._currentStep.output,
           );
-          await ensureStreamInputPersisted?.();
+          await persistStreamInputIfNeeded();
           // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
           if (!serverManagesConversation) {
             await saveStreamResultToSession(options.session, result);
@@ -1102,7 +1113,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._currentStep.type === 'next_step_interruption'
         ) {
           // we are done for now. Don't run any output guardrails
-          await ensureStreamInputPersisted?.();
+          await persistStreamInputIfNeeded();
           if (!serverManagesConversation) {
             await saveStreamResultToSession(options.session, result);
           }
@@ -1129,6 +1140,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       }
     } catch (error) {
+      if (handedInputToModel && !streamInputPersisted) {
+        await persistStreamInputIfNeeded();
+      }
       if (result.state._currentAgentSpan) {
         result.state._currentAgentSpan.setError({
           message: 'Error in agent run',
