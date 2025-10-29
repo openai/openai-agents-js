@@ -1865,13 +1865,15 @@ export async function prepareInputItemsWithSession(
 
   const historyCounts = buildItemFrequencyMap(history);
   const newInputCounts = buildItemFrequencyMap(newInputItems);
+  const historyRefs = buildItemReferenceMap(history);
+  const newInputRefs = buildItemReferenceMap(newInputItems);
 
   const appended: AgentInputItem[] = [];
   for (const item of combined) {
     const key = sessionItemKey(item);
-    const historyRemaining = historyCounts.get(key) ?? 0;
-    if (historyRemaining > 0) {
-      historyCounts.set(key, historyRemaining - 1);
+    if (consumeReference(newInputRefs, key, item)) {
+      decrementCount(newInputCounts, key);
+      appended.push(item);
       continue;
     }
 
@@ -1879,6 +1881,17 @@ export async function prepareInputItemsWithSession(
     if (newRemaining > 0) {
       newInputCounts.set(key, newRemaining - 1);
       appended.push(item);
+      continue;
+    }
+
+    if (consumeReference(historyRefs, key, item)) {
+      decrementCount(historyCounts, key);
+      continue;
+    }
+
+    const historyRemaining = historyCounts.get(key) ?? 0;
+    if (historyRemaining > 0) {
+      historyCounts.set(key, historyRemaining - 1);
       continue;
     }
 
@@ -1898,6 +1911,51 @@ function buildItemFrequencyMap(items: AgentInputItem[]): Map<string, number> {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
+}
+
+function buildItemReferenceMap(
+  items: AgentInputItem[],
+): Map<string, AgentInputItem[]> {
+  const refs = new Map<string, AgentInputItem[]>();
+  for (const item of items) {
+    const key = sessionItemKey(item);
+    const list = refs.get(key);
+    if (list) {
+      list.push(item);
+    } else {
+      refs.set(key, [item]);
+    }
+  }
+  return refs;
+}
+
+function consumeReference(
+  refs: Map<string, AgentInputItem[]>,
+  key: string,
+  target: AgentInputItem,
+): boolean {
+  const candidates = refs.get(key);
+  if (!candidates || candidates.length === 0) {
+    return false;
+  }
+  const index = candidates.findIndex((candidate) => candidate === target);
+  if (index === -1) {
+    return false;
+  }
+  candidates.splice(index, 1);
+  if (candidates.length === 0) {
+    refs.delete(key);
+  }
+  return true;
+}
+
+function decrementCount(map: Map<string, number>, key: string) {
+  const remaining = (map.get(key) ?? 0) - 1;
+  if (remaining <= 0) {
+    map.delete(key);
+  } else {
+    map.set(key, remaining);
+  }
 }
 
 function sessionItemKey(item: AgentInputItem): string {

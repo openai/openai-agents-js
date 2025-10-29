@@ -848,6 +848,35 @@ describe('Runner.run', () => {
         expect(getFirstTextContent(persistedUsers[0])).toBe('Fresh input');
       });
 
+      it('persists reordered new items ahead of matching history', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('reordered response')],
+          },
+        ]);
+        const historyMessage = user('Repeatable message');
+        const newMessage = user('Repeatable message');
+        const session = new MemorySession([historyMessage]);
+        const agent = new Agent({ name: 'ReorderedSession', model });
+        const runner = new Runner({
+          sessionInputCallback: (history, newItems) => newItems.concat(history),
+        });
+
+        await runner.run(agent, [newMessage], { session });
+
+        expect(session.added).toHaveLength(1);
+        const [persisted] = session.added;
+        const persistedUsers = persisted.filter(
+          (item): item is protocol.UserMessageItem =>
+            item.type === 'message' && 'role' in item && item.role === 'user',
+        );
+        expect(persistedUsers).toHaveLength(1);
+        expect(getFirstTextContent(persistedUsers[0])).toBe(
+          'Repeatable message',
+        );
+      });
+
       it('persists binary payloads that share prefixes with history', async () => {
         const model = new RecordingModel([
           {
