@@ -11,11 +11,11 @@ import {
 import { z } from 'zod';
 import {
   Agent,
-  AgentInputItem,
   MaxTurnsExceededError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
   Session,
+  ModelInputData,
   type AgentInputItem,
   run,
   Runner,
@@ -23,6 +23,8 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   BatchTraceProcessor,
+  user,
+  assistant,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { handoff } from '../src/handoff';
@@ -51,6 +53,20 @@ import {
   ModelRequest,
   ModelSettings,
 } from '../src/model';
+
+function getFirstTextContent(item: AgentInputItem): string | undefined {
+  if (item.type !== 'message') {
+    return undefined;
+  }
+  if (typeof item.content === 'string') {
+    return item.content;
+  }
+  if (Array.isArray(item.content)) {
+    const first = item.content[0] as { text?: string };
+    return first?.text;
+  }
+  return undefined;
+}
 
 describe('Runner.run', () => {
   beforeAll(() => {
@@ -671,23 +687,302 @@ describe('Runner.run', () => {
         const session = new MemorySession();
 
         await expect(
-          runner.run(
-            agent,
-            [
-              {
-                type: 'message',
-                role: 'user',
-                content: 'Hello',
-              } as AgentInputItem,
-            ],
-            {
-              session,
-            },
-          ),
+          runner.run(agent, [user('Hello')], {
+            session,
+          }),
+        ).rejects.toThrow('RunConfig.sessionInputCallback');
+      });
+
+      it('allows list inputs when session input callback is provided', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'SessionCallbackAgent', model });
+        const sessionHistory: AgentInputItem[] = [
+          user('Keep this history item'),
+          assistant('Drop this assistant reply'),
+        ];
+        const session = new MemorySession([...sessionHistory]);
+        const runner = new Runner({
+          sessionInputCallback: (history, newItems) => {
+            return history
+              .filter(
+                (item) =>
+                  item.type === 'message' &&
+                  'role' in item &&
+                  item.role === 'user',
+              )
+              .concat(newItems);
+          },
+        });
+
+        await runner.run(agent, [user('New message')], { session });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(Array.isArray(recordedInput)).toBe(true);
+        expect(recordedInput).toHaveLength(2);
+        expect(
+          recordedInput[0].type === 'message' &&
+            'role' in recordedInput[0] &&
+            recordedInput[0].role,
+        ).toBe('user');
+        expect(getFirstTextContent(recordedInput[0])).toBe(
+          'Keep this history item',
+        );
+        expect(
+          recordedInput[1].type === 'message' &&
+            'role' in recordedInput[1] &&
+            recordedInput[1].role,
+        ).toBe('user');
+        expect(getFirstTextContent(recordedInput[1])).toBe('New message');
+      });
+
+      it('supports async session input callback', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'AsyncSessionCallback', model });
+        const session = new MemorySession([
+          user('Older message'),
+          user('Newest history'),
+        ]);
+        const runner = new Runner();
+
+        await runner.run(agent, [user('Fresh input')], {
+          session,
+          sessionInputCallback: async (history, newItems) => {
+            await Promise.resolve();
+            return history.slice(-1).concat(newItems);
+          },
+        });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(Array.isArray(recordedInput)).toBe(true);
+        expect(recordedInput).toHaveLength(2);
+        expect(getFirstTextContent(recordedInput[0])).toBe('Newest history');
+        expect(getFirstTextContent(recordedInput[1])).toBe('Fresh input');
+      });
+
+      it('throws when session input callback returns invalid data', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'InvalidCallback', model });
+        const session = new MemorySession([user('history')]);
+        const runner = new Runner();
+
+        await expect(
+          runner.run(agent, 'Hello', {
+            session,
+            sessionInputCallback: () =>
+              'not-an-array' as unknown as AgentInputItem[],
+          }),
         ).rejects.toThrow(
-          'Cannot provide both a session and a list of input items.',
+          'Session input callback must return an array of AgentInputItem objects.',
         );
       });
+    });
+  });
+
+  describe('callModelInputFilter', () => {
+    class FilterTrackingModel extends FakeModel {
+      lastRequest?: ModelRequest;
+
+      override async getResponse(
+        request: ModelRequest,
+      ): Promise<ModelResponse> {
+        this.lastRequest = request;
+        return await super.getResponse(request);
+      }
+    }
+
+    class FilterStreamingModel implements Model {
+      lastRequest?: ModelRequest;
+
+      constructor(private readonly response: ModelResponse) {}
+
+      async getResponse(request: ModelRequest): Promise<ModelResponse> {
+        this.lastRequest = request;
+        return this.response;
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<protocol.StreamEvent> {
+        this.lastRequest = request;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'stream-filter',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: this.response.output,
+          },
+        } as protocol.StreamEvent;
+      }
+    }
+
+    it('modifies model input for non-streaming runs', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('filtered result')],
+        },
+      ]);
+      const agent = new Agent({
+        name: 'FilterAgent',
+        instructions: 'Base instructions',
+        model,
+      });
+
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          return {
+            instructions: `${modelData.instructions ?? ''} ::filtered`,
+            input: modelData.input.slice(-1),
+          };
+        },
+      });
+
+      await runner.run(agent, [user('First input'), user('Second input')]);
+
+      expect(model.lastRequest?.systemInstructions).toBe(
+        'Base instructions ::filtered',
+      );
+      const sentInput = model.lastRequest?.input as AgentInputItem[];
+      expect(Array.isArray(sentInput)).toBe(true);
+      expect(sentInput).toHaveLength(1);
+      expect(
+        sentInput[0].type === 'message' &&
+          'role' in sentInput[0] &&
+          sentInput[0].role,
+      ).toBe('user');
+      expect(getFirstTextContent(sentInput[0])).toBe('Second input');
+    });
+
+    it('supports async filters for streaming runs', async () => {
+      const streamingModel = new FilterStreamingModel({
+        output: [fakeModelMessage('stream response')],
+        usage: new Usage(),
+      });
+      const agent = new Agent({
+        name: 'StreamFilterAgent',
+        instructions: 'Stream instructions',
+        model: streamingModel,
+      });
+
+      const runner = new Runner({
+        callModelInputFilter: async ({ modelData }) => {
+          await Promise.resolve();
+          return {
+            instructions: `${modelData.instructions ?? ''} ::stream`,
+            input: modelData.input.slice(0, 1),
+          };
+        },
+      });
+
+      const result = await runner.run(agent, [user('Alpha'), user('Beta')], {
+        stream: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const e of result.toStream()) {
+        events.push(e);
+      }
+      await result.completed;
+
+      expect(streamingModel.lastRequest?.systemInstructions).toBe(
+        'Stream instructions ::stream',
+      );
+      const streamInput = streamingModel.lastRequest?.input as AgentInputItem[];
+      expect(Array.isArray(streamInput)).toBe(true);
+      expect(streamInput).toHaveLength(1);
+      expect(
+        streamInput[0].type === 'message' &&
+          'role' in streamInput[0] &&
+          streamInput[0].role,
+      ).toBe('user');
+      expect(getFirstTextContent(streamInput[0])).toBe('Alpha');
+    });
+
+    it('throws when filter returns invalid data', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'InvalidFilterAgent',
+        model,
+      });
+      const runner = new Runner({
+        callModelInputFilter: () =>
+          ({
+            instructions: 'invalid',
+          }) as unknown as ModelInputData,
+      });
+
+      await expect(runner.run(agent, 'Hello')).rejects.toThrow(
+        'ModelInputData',
+      );
+    });
+
+    it('prefers per-run callModelInputFilter over runner config', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'OverrideFilterAgent',
+        model,
+      });
+
+      const defaultFilter = vi.fn(({ modelData }) => ({
+        instructions: `${modelData.instructions ?? ''} default`,
+        input: modelData.input,
+      }));
+      const overrideFilter = vi.fn((payload) => ({
+        instructions: 'override instructions',
+        input: payload.modelData.input,
+      }));
+
+      const runner = new Runner({
+        callModelInputFilter: defaultFilter,
+      });
+
+      const context = { tenant: 'acme' };
+
+      await runner.run(agent, 'Hello override', {
+        callModelInputFilter: overrideFilter,
+        context,
+      });
+
+      expect(defaultFilter).not.toHaveBeenCalled();
+      expect(overrideFilter).toHaveBeenCalledTimes(1);
+      const args = overrideFilter.mock.calls[0][0];
+      expect(args.context).toEqual(context);
+
+      expect(model.lastRequest?.systemInstructions).toBe(
+        'override instructions',
+      );
+      const sentInput = model.lastRequest?.input as AgentInputItem[];
+      expect(Array.isArray(sentInput)).toBe(true);
+      expect(sentInput).toHaveLength(1);
+      expect(getFirstTextContent(sentInput[0])).toBe('Hello override');
     });
   });
 

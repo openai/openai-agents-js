@@ -50,7 +50,7 @@ import { Computer } from './computer';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
 import * as ProviderData from './types/providerData';
-import type { Session } from './memory/session';
+import type { Session, SessionInputCallback } from './memory/session';
 
 type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -1789,17 +1789,39 @@ export async function saveStreamResultToSession(
 export async function prepareInputItemsWithSession(
   input: string | AgentInputItem[],
   session?: Session,
+  sessionInputCallback?: SessionInputCallback,
 ): Promise<string | AgentInputItem[]> {
   if (!session) {
     return input;
   }
 
-  if (Array.isArray(input)) {
+  const history = await session.getItems();
+  const newInputItems = Array.isArray(input)
+    ? [...input]
+    : toInputItemList(input);
+
+  // When callers hand us pre-expanded AgentInputItems we cannot guess how to merge them with
+  // previously persisted history without risking duplicate tool outputs or approvals. Align with
+  // the Python SDK by requiring an explicit callback in that scenario so the merge strategy stays
+  // intentional and predictable.
+  if (Array.isArray(input) && !sessionInputCallback) {
     throw new UserError(
-      'Cannot provide both a session and a list of input items. When using session memory, pass a single string input.',
+      'When using session memory, list inputs require a RunConfig.sessionInputCallback to define how history and new items are merged. Provide a string input instead or disable session memory to manage items manually.',
     );
   }
 
-  const history = await session.getItems();
-  return [...history, ...toInputItemList(input)];
+  if (!sessionInputCallback) {
+    return [...history, ...newInputItems];
+  }
+
+  // Delegate history reconciliation to the user-supplied callback. It must return a concrete list
+  // to keep downstream model requests well-typed.
+  const combined = await sessionInputCallback(history, newInputItems);
+  if (!Array.isArray(combined)) {
+    throw new UserError(
+      'Session input callback must return an array of AgentInputItem objects.',
+    );
+  }
+
+  return combined;
 }

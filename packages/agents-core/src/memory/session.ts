@@ -1,6 +1,14 @@
 import type { AgentInputItem } from '../types';
 
 /**
+ * A function that combines session history with new input items before the model call.
+ */
+export type SessionInputCallback = (
+  historyItems: AgentInputItem[],
+  newItems: AgentInputItem[],
+) => AgentInputItem[] | Promise<AgentInputItem[]>;
+
+/**
  * Interface representing a persistent session store for conversation history.
  */
 export interface Session {

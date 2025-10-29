@@ -48,6 +48,7 @@ import {
 import { RunItem } from './items';
 import {
   getOrCreateTrace,
+  addErrorToCurrentSpan,
   resetCurrentSpan,
   setCurrentSpan,
   withNewSpanContext,
@@ -60,9 +61,32 @@ import { RunState } from './runState';
 import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from './defaultModel';
-import type { Session } from './memory/session';
+import type { Session, SessionInputCallback } from './memory/session';
 
 const DEFAULT_MAX_TURNS = 10;
+
+/**
+ * Mutable view of the instructions + input items that the model will receive.
+ * Filters always see a copy so they can edit without side effects.
+ */
+export type ModelInputData = {
+  input: AgentInputItem[];
+  instructions?: string;
+};
+
+/**
+ * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
+ * share the same implementation across languages.
+ */
+export type CallModelInputFilterArgs<TContext = unknown> = {
+  modelData: ModelInputData;
+  agent: Agent<TContext, AgentOutputType>;
+  context: TContext | undefined;
+};
+
+export type CallModelInputFilter<TContext = unknown> = (
+  args: CallModelInputFilterArgs<TContext>,
+) => ModelInputData | Promise<ModelInputData>;
 
 /**
  * Configures settings for the entire agent run.
@@ -135,6 +159,18 @@ export type RunConfig = {
    * An optional dictionary of additional metadata to include with the trace.
    */
   traceMetadata?: Record<string, string>;
+
+  /**
+   * Customizes how session history is combined with the current turn's input.
+   * When omitted, history items are appended before the new input.
+   */
+  sessionInputCallback?: SessionInputCallback;
+
+  /**
+   * Invoked immediately before calling the model, allowing callers to edit the
+   * system instructions or input items that will be sent to the model.
+   */
+  callModelInputFilter?: CallModelInputFilter;
 };
 
 type SharedRunOptions<TContext = undefined> = {
@@ -144,6 +180,8 @@ type SharedRunOptions<TContext = undefined> = {
   previousResponseId?: string;
   conversationId?: string;
   session?: Session;
+  sessionInputCallback?: SessionInputCallback;
+  callModelInputFilter?: CallModelInputFilter;
 };
 
 export type StreamRunOptions<TContext = undefined> =
@@ -368,6 +406,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       traceId: config.traceId,
       groupId: config.groupId,
       traceMetadata: config.traceMetadata,
+      sessionInputCallback: config.sessionInputCallback,
+      callModelInputFilter: config.callModelInputFilter,
     };
     this.inputGuardrailDefs = (config.inputGuardrails ?? []).map(
       defineInputGuardrail,
@@ -375,6 +415,56 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     this.outputGuardrailDefs = (config.outputGuardrails ?? []).map(
       defineOutputGuardrail,
     );
+  }
+
+  /**
+   * @internal
+   */
+  async #applyCallModelInputFilter<TContext>(
+    agent: Agent<TContext, AgentOutputType>,
+    callModelInputFilter: CallModelInputFilter<any> | undefined,
+    context: RunContext<TContext>,
+    inputItems: AgentInputItem[],
+    systemInstructions: string | undefined,
+  ): Promise<ModelInputData> {
+    // Always create a shallow copy so downstream mutations inside filters cannot affect
+    // the cached turn state.
+    const base: ModelInputData = {
+      input: [...inputItems],
+      instructions: systemInstructions,
+    };
+
+    if (!callModelInputFilter) {
+      return base;
+    }
+
+    try {
+      const result = await callModelInputFilter({
+        modelData: base,
+        agent,
+        context: context.context,
+      } as CallModelInputFilterArgs<any>);
+
+      if (!result || !Array.isArray(result.input)) {
+        throw new UserError(
+          'callModelInputFilter must return a ModelInputData object with an input array.',
+        );
+      }
+
+      return {
+        input: [...result.input],
+        instructions:
+          typeof result.instructions === 'undefined'
+            ? systemInstructions
+            : result.instructions,
+      };
+    } catch (error) {
+      addErrorToCurrentSpan({
+        message: 'Error in callModelInputFilter',
+        data: { error: String(error) },
+      });
+      throw error;
+    }
   }
 
   /**
@@ -536,6 +626,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this.emit('agent_start', state._context, state._currentAgent);
             }
 
+            const systemInstructions =
+              await state._currentAgent.getSystemPrompt(state._context);
+            const prompt = await state._currentAgent.getPrompt(state._context);
+
+            // Allow callers to rewrite instructions or trim input immediately before the model call.
+            const filteredModelInput = await this.#applyCallModelInputFilter(
+              state._currentAgent,
+              options.callModelInputFilter,
+              state._context,
+              turnInput,
+              systemInstructions,
+            );
+
             let modelSettings = {
               ...this.config.modelSettings,
               ...state._currentAgent.modelSettings,
@@ -560,13 +663,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.conversationId;
 
             state._lastTurnResponse = await model.getResponse({
-              systemInstructions: await state._currentAgent.getSystemPrompt(
-                state._context,
-              ),
-              prompt: await state._currentAgent.getPrompt(state._context),
+              systemInstructions: filteredModelInput.instructions,
+              prompt,
               // Explicit agent/run config models should take precedence over prompt defaults.
               ...(explictlyModelSet ? { overridePromptModel: true } : {}),
-              input: turnInput,
+              input: filteredModelInput.input,
               previousResponseId,
               conversationId,
               modelSettings,
@@ -960,14 +1061,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const conversationId =
             serverConversationTracker?.conversationId ?? options.conversationId;
 
+          const systemInstructions = await currentAgent.getSystemPrompt(
+            result.state._context,
+          );
+          const prompt = await currentAgent.getPrompt(result.state._context);
+
+          const filteredModelInput = await this.#applyCallModelInputFilter(
+            currentAgent,
+            options.callModelInputFilter,
+            result.state._context,
+            turnInput,
+            systemInstructions,
+          );
+
           for await (const event of model.getStreamedResponse({
-            systemInstructions: await currentAgent.getSystemPrompt(
-              result.state._context,
-            ),
-            prompt: await currentAgent.getPrompt(result.state._context),
+            systemInstructions: filteredModelInput.instructions,
+            prompt,
             // Streaming requests should also honor explicitly chosen models.
             ...(explictlyModelSet ? { overridePromptModel: true } : {}),
-            input: turnInput,
+            input: filteredModelInput.input,
             previousResponseId,
             conversationId,
             modelSettings,
@@ -1213,7 +1325,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
     const resolvedOptions = options ?? { stream: false, context: undefined };
-    const session = resolvedOptions.session;
+    // Per-run options take precedence over runner defaults for session memory behavior.
+    const sessionInputCallback =
+      resolvedOptions.sessionInputCallback ?? this.config.sessionInputCallback;
+    // Likewise allow callers to override callModelInputFilter on individual runs.
+    const callModelInputFilter =
+      resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
+    const effectiveOptions = {
+      ...resolvedOptions,
+      sessionInputCallback,
+      callModelInputFilter,
+    };
+    const session = effectiveOptions.session;
     const sessionOriginalInput =
       input instanceof RunState
         ? undefined
@@ -1224,6 +1347,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput = await prepareInputItemsWithSession(
         preparedInput,
         session,
+        sessionInputCallback,
       );
     } else if (session) {
       throw new UserError(
@@ -1232,11 +1356,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     }
 
     const executeRun = async () => {
-      if (resolvedOptions.stream) {
+      if (effectiveOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
-          resolvedOptions,
+          effectiveOptions,
         );
         // for streaming runs, the outputs will be save later on
         await saveStreamInputToSession(session, sessionOriginalInput);
@@ -1245,7 +1369,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const runResult = await this.#runIndividualNonStream(
         agent,
         preparedInput,
-        resolvedOptions,
+        effectiveOptions,
       );
       await saveToSession(session, sessionOriginalInput, runResult);
       return runResult;
