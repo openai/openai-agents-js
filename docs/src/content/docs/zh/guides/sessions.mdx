@@ -1,0 +1,111 @@
+---
+title: 会话
+description: Persist multi-turn conversation history so agents can resume context across runs.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import sessionsQuickstart from '../../../../../../examples/docs/sessions/basicSession.ts?raw';
+import manageHistory from '../../../../../../examples/docs/sessions/manageHistory.ts?raw';
+import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
+import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
+
+会话为 Agents SDK 提供了一个**持久化内存层**。你只需要一个实现了 `Session` 接口的对象——将其传给 `Runner.run`，其余由 SDK 处理。当会话存在时，运行器会自动：
+
+1. 获取之前存储的对话条目，并将其置于下一轮对话之前。
+2. 在每次运行完成后，持久化新的用户输入和助手输出。
+3. 保持会话可用于后续回合，无论你是用新的用户文本调用运行器，还是从中断的 `RunState` 恢复。
+
+这消除了在回合之间手动调用 toInputList() 或拼接历史的需求。TypeScript SDK 目前内置了一个可直接使用的 `OpenAIConversationsSession`，并且相同的 `Session` 接口也允许你使用自定义存储。除了 OpenAI Conversations API，你还可以在 `examples/memory/` 下浏览示例会话后端（Prisma、文件存储等）以获取灵感。
+
+> 提示：要运行本页中的 `OpenAIConversationsSession` 示例，请设置
+> `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 能调用 Conversations API。
+
+---
+
+## 快速开始
+
+使用 `OpenAIConversationsSession`（或任何其他 `Session` 实现）与
+[Conversations API](https://platform.openai.com/docs/api-reference/conversations)
+同步内存。
+
+<Code
+  lang="typescript"
+  code={sessionsQuickstart}
+  title="Use the Conversations API as session memory"
+/>
+
+当你复用同一个会话实例时，智能体会在每一轮之前收到完整的对话历史，并自动写回新条目。
+
+将 `OpenAIConversationsSession` 替换为任意其他 `Session` 实现——无需修改其他代码。
+
+---
+
+## 运行器如何使用会话
+
+- **每次运行之前**，运行器会检索会话历史，与新一轮输入合并，并将合并后的列表传给你的智能体。
+- **在非流式运行之后**，一次性调用 `session.addItems()` 会持久化最新一轮中的原始用户输入和模型输出。
+- **对于流式运行**，运行器会先写入用户输入，并在该轮完成后追加流式输出。
+- **当从 `RunResult.state` 恢复**（用于审批流程或其他中断）时，继续传入相同的 `session`。恢复的这一轮会被添加到内存中，而无需重新准备输入。
+
+---
+
+## 历史的查看与编辑
+
+会话提供了简单的 CRUD 助手，便于你构建“撤销”“清空聊天”或审计功能。
+
+<Code
+  lang="typescript"
+  code={manageHistory}
+  title="Read and edit stored items"
+/>
+
+`session.getItems()` 返回存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一条——在你重新运行智能体前，适用于用户纠错。
+
+---
+
+## 自带存储
+
+实现 `Session` 接口，以使用 Redis、DynamoDB、SQLite 或其他数据存储来支持内存。只需实现五个异步方法。
+
+<Code
+  lang="typescript"
+  code={customSession}
+  title="Custom in-memory session implementation"
+/>
+
+自定义会话允许你执行保留策略、添加加密，或在持久化前为每轮对话附加元数据。
+
+---
+
+## 控制历史与新条目的合并方式
+
+当你将 `AgentInputItem` 数组作为运行输入传入时，提供一个 `sessionInputCallback`，以可预测地与已存历史合并。运行器会加载现有历史，在**模型调用之前**调用你的回调，并将返回的数组作为该轮的完整输入传给模型。此钩子非常适合裁剪旧条目、去重工具结果，或仅突出你希望模型看到的上下文。
+
+<Code
+  lang="typescript"
+  code={sessionInputCallback}
+  title="Truncate history with sessionInputCallback"
+/>
+
+对于字符串输入，运行器可以自动合并历史，因此可以省略回调。
+
+---
+
+## 审批与可恢复运行的处理
+
+人工干预流程往往会暂停一次运行以等待审批：
+
+```typescript
+const result = await runner.run(agent, 'Search the itinerary', {
+  session,
+  stream: true,
+});
+
+if (result.requiresApproval) {
+  // ... collect user feedback, then resume the agent in a later turn
+  const continuation = await runner.run(agent, result.state, { session });
+  console.log(continuation.finalOutput);
+}
+```
+
+由于会话在从先前的 `RunState` 恢复时同样有效，继续的这一轮会被追加到同一条内存记录中，从而为对话维持一份连贯的历史。这确保了人工干预（HITL）流程的完全兼容——你的审批检查点继续通过 `RunState` 往返，同时会话保持完整的对话记录。
