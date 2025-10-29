@@ -1,7 +1,14 @@
+// Prisma-backed Session implementation example. To try it out:
+//   pnpm add @prisma/client prisma
+//   npx prisma migrate dev --name init --schema ./examples/memory/prisma/schema.prisma
+//   npx prisma generate --schema ./examples/memory/prisma/schema.prisma
+//   pnpm start:prisma
+
 import type { AgentInputItem, Session } from '@openai/agents';
 import { Agent, protocol, run } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import * as process from 'node:process';
 
 /**
@@ -82,11 +89,7 @@ export class PrismaSession implements Session {
         orderBy: { position: 'desc' },
       });
       let position = last?.position ?? 0;
-      const payload: Array<{
-        sessionId: string;
-        position: number;
-        item: string;
-      }> = [];
+      const payload: Prisma.SessionItemCreateManyInput[] = [];
       for (const raw of items) {
         const item = coerceAgentItem(raw);
         if (!item) continue;
@@ -110,7 +113,7 @@ export class PrismaSession implements Session {
         select: { id: true, item: true },
         orderBy: { position: 'desc' },
       });
-      if (!latest) return undefined;
+      if (!latest?.id) return undefined;
       await client.sessionItem.delete({ where: { id: latest.id } });
       const raw =
         typeof latest.item === 'string' ? JSON.parse(latest.item) : latest.item;
@@ -128,12 +131,14 @@ export class PrismaSession implements Session {
     this.#sessionId = undefined;
   }
 
-  async #withClient<T>(fn: (client: PrismaClient) => Promise<T>): Promise<T> {
+  async #withClient<T>(
+    fn: (client: PrismaClient | Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
     if (
       this.#useTransactions &&
       typeof this.#client.$transaction === 'function'
     ) {
-      return this.#client.$transaction((tx: unknown) => fn(tx as PrismaClient));
+      return this.#client.$transaction((tx) => fn(tx));
     }
     return fn(this.#client);
   }
@@ -242,7 +247,9 @@ async function promptAndRun() {
   }
 }
 
-promptAndRun().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  promptAndRun().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
