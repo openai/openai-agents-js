@@ -1772,7 +1772,7 @@ export async function prepareInputItemsWithSession(
       : appended.length > 0
         ? appended
         : newInputSnapshot,
-    sessionItems: appended.length > 0 ? appended : [],
+    sessionItems: appended.length > 0 ? appended : newInputSnapshot,
   };
 }
 
