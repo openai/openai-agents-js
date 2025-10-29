@@ -194,7 +194,14 @@ describe('saveToSession', () => {
       providerData: {},
     };
 
-    state._generatedItems = [new ToolApprovalItem(functionCall, textAgent)];
+    const approvalItem = new ToolApprovalItem(functionCall, textAgent);
+    state._generatedItems = [approvalItem];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [approvalItem],
+      },
+    };
 
     const preApprovalResult = new RunResult(state);
     await saveToSession(
@@ -2025,6 +2032,76 @@ describe('resolveTurnAfterModelResponse', () => {
 });
 
 describe('resolveInterruptedTurn', () => {
+  it('rewinds persisted count only for pending approval placeholders', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'SequentialApprovalsAgent',
+      outputType: 'text',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const firstCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-first',
+      callId: 'call-first',
+    };
+    const secondCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-second',
+      callId: 'call-second',
+    };
+
+    const firstApproval = new ToolApprovalItem(firstCall, agent);
+    const firstOutputRaw = getToolCallOutputItem(firstCall, 'done');
+    const firstOutput = new ToolCallOutputItem(firstOutputRaw, agent, 'done');
+    const secondApproval = new ToolApprovalItem(secondCall, agent);
+
+    const generatedItems = [firstApproval, firstOutput, secondApproval];
+    const state = new RunState(new RunContext(), 'hello', agent, 5);
+    state._generatedItems = generatedItems;
+    state._currentTurnPersistedItemCount = generatedItems.length;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [secondApproval],
+      },
+    };
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      generatedItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(state._currentTurnPersistedItemCount).toBe(
+      generatedItems.length - 1,
+    );
+    expect(result.preStepItems).toEqual([firstOutput]);
+  });
+
   it('dispatches approved computer actions when resuming an interruption', async () => {
     const fakeComputer: Computer = {
       environment: 'mac',

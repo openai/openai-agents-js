@@ -93,6 +93,68 @@ export type ProcessedResponse<TContext = UnknownContext> = {
   hasToolsOrApprovalsToRun(): boolean;
 };
 
+type ApprovalItemLike =
+  | RunToolApprovalItem
+  | {
+      rawItem?: protocol.FunctionCallItem | protocol.HostedToolCallItem;
+      agent?: Agent<any, any>;
+    };
+
+function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  if (!('rawItem' in value)) {
+    return false;
+  }
+
+  const rawItem = (value as { rawItem?: unknown }).rawItem;
+  if (!rawItem || typeof rawItem !== 'object') {
+    return false;
+  }
+
+  const itemType = (rawItem as { type?: unknown }).type;
+  return itemType === 'function_call' || itemType === 'hosted_tool_call';
+}
+
+function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
+  const rawItem = approval.rawItem;
+  if (!rawItem) {
+    return undefined;
+  }
+
+  if (rawItem.type === 'function_call' && rawItem.callId) {
+    return `function_call:${rawItem.callId}`;
+  }
+
+  if ('callId' in rawItem && rawItem.callId) {
+    return `${rawItem.type}:${rawItem.callId}`;
+  }
+
+  const id = 'id' in rawItem ? rawItem.id : undefined;
+  if (id) {
+    return `${rawItem.type}:${id}`;
+  }
+
+  const providerData =
+    typeof rawItem.providerData === 'object' && rawItem.providerData
+      ? (rawItem.providerData as { id?: string })
+      : undefined;
+  if (providerData?.id) {
+    return `${rawItem.type}:provider:${providerData.id}`;
+  }
+
+  const agentName =
+    'agent' in approval && approval.agent ? approval.agent.name : '';
+
+  try {
+    return `${agentName}:${rawItem.type}:${JSON.stringify(rawItem)}`;
+  } catch {
+    return `${agentName}:${rawItem.type}`;
+  }
+}
+
 /**
  * @internal
  * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
@@ -350,16 +412,49 @@ export async function resolveInterruptedTurn<TContext>(
   // We already persisted the turn once when the approval interrupt was raised, so the
   // counter reflects the approval items as "flushed". When we resume the same turn we need
   // to rewind it so the eventual tool output for this call is still written to the session.
-  const approvalItemCount = originalPreStepItems.filter(
-    (item) => item instanceof RunToolApprovalItem,
-  ).length;
-  // Persisting the approval request already advanced the counter once, so undo the increment
-  // to make sure we write the final tool output back to the session when the turn resumes.
-  if (approvalItemCount > 0) {
-    state._currentTurnPersistedItemCount = Math.max(
-      0,
-      state._currentTurnPersistedItemCount - approvalItemCount,
-    );
+  const pendingApprovalItems = state
+    .getInterruptions()
+    .filter(isApprovalItemLike);
+
+  if (pendingApprovalItems.length > 0) {
+    const pendingApprovalIdentities = new Set<string>();
+    for (const approval of pendingApprovalItems) {
+      const identity = getApprovalIdentity(approval);
+      if (identity) {
+        pendingApprovalIdentities.add(identity);
+      }
+    }
+
+    if (pendingApprovalIdentities.size > 0) {
+      let rewindCount = 0;
+      for (let index = originalPreStepItems.length - 1; index >= 0; index--) {
+        const item = originalPreStepItems[index];
+        if (!(item instanceof RunToolApprovalItem)) {
+          break;
+        }
+
+        const identity = getApprovalIdentity(item);
+        if (!identity || !pendingApprovalIdentities.has(identity)) {
+          break;
+        }
+
+        rewindCount++;
+        pendingApprovalIdentities.delete(identity);
+
+        if (pendingApprovalIdentities.size === 0) {
+          break;
+        }
+      }
+
+      // Persisting the approval request already advanced the counter once, so undo the increment
+      // to make sure we write the final tool output back to the session when the turn resumes.
+      if (rewindCount > 0) {
+        state._currentTurnPersistedItemCount = Math.max(
+          0,
+          state._currentTurnPersistedItemCount - rewindCount,
+        );
+      }
+    }
   }
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
