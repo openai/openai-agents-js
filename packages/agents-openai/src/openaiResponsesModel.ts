@@ -51,16 +51,16 @@ type ResponseFunctionCallOutputListItem =
     }
   | {
       type: 'input_image';
-      image_url?: string;
-      file_id?: string;
-      detail?: 'low' | 'high' | 'auto';
+      image_url?: string | null;
+      file_id?: string | null;
+      detail?: 'low' | 'high' | 'auto' | null;
     }
   | {
       type: 'input_file';
-      file_data?: string;
-      file_url?: string;
-      file_id?: string;
-      filename?: string;
+      file_data?: string | null;
+      file_url?: string | null;
+      file_id?: string | null;
+      filename?: string | null;
     };
 
 type ExtendedFunctionCallOutput = Omit<
@@ -69,6 +69,13 @@ type ExtendedFunctionCallOutput = Omit<
 > & {
   output: string | ResponseFunctionCallOutputListItem[];
 };
+
+type ResponseOutputItemWithFunctionResult =
+  | OpenAI.Responses.ResponseOutputItem
+  | (OpenAI.Responses.ResponseFunctionToolCallOutputItem & {
+      name?: string;
+      function_name?: string;
+    });
 
 const HostedToolChoice = z.enum([
   'file_search',
@@ -392,6 +399,73 @@ function convertStructuredOutputToRequestItem(
   throw new UserError(
     `Unsupported structured tool output: ${JSON.stringify(item)}`,
   );
+}
+
+function convertResponseFunctionCallOutputItemToStructured(
+  item: ResponseFunctionCallOutputListItem,
+): protocol.ToolCallStructuredOutput {
+  if (item.type === 'input_text') {
+    return {
+      type: 'input_text',
+      text: item.text,
+    };
+  }
+
+  if (item.type === 'input_image') {
+    const structured: protocol.InputImage = { type: 'input_image' };
+
+    if (typeof item.image_url === 'string' && item.image_url.length > 0) {
+      structured.image = item.image_url;
+    } else if (typeof item.file_id === 'string' && item.file_id.length > 0) {
+      structured.image = { id: item.file_id };
+    }
+
+    if (item.detail) {
+      structured.detail = item.detail;
+    }
+
+    return structured;
+  }
+
+  if (item.type === 'input_file') {
+    const structured: protocol.InputFile = { type: 'input_file' };
+
+    if (typeof item.file_id === 'string' && item.file_id.length > 0) {
+      structured.file = { id: item.file_id };
+    } else if (typeof item.file_url === 'string' && item.file_url.length > 0) {
+      structured.file = { url: item.file_url };
+    } else if (
+      typeof item.file_data === 'string' &&
+      item.file_data.length > 0
+    ) {
+      structured.file = item.file_data;
+    }
+
+    if (item.filename) {
+      structured.filename = item.filename;
+    }
+
+    return structured;
+  }
+
+  const exhaustive: never = item;
+  throw new UserError(
+    `Unsupported structured tool output: ${JSON.stringify(exhaustive)}`,
+  );
+}
+
+function convertFunctionCallOutputToProtocol(
+  output: OpenAI.Responses.ResponseFunctionToolCallOutputItem['output'],
+): protocol.FunctionCallResultItem['output'] {
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  if (Array.isArray(output)) {
+    return output.map(convertResponseFunctionCallOutputItemToStructured);
+  }
+
+  return '';
 }
 
 function normalizeLegacyFileFromOutput(value: Record<string, any>): {
@@ -1090,7 +1164,7 @@ function convertToMessageContentItem(
 }
 
 function convertToOutputItem(
-  items: OpenAI.Responses.ResponseOutputItem[],
+  items: ResponseOutputItemWithFunctionResult[],
 ): protocol.OutputModelItem[] {
   return items.map((item) => {
     if (item.type === 'message') {
@@ -1134,6 +1208,28 @@ function convertToOutputItem(
         name,
         status,
         arguments: args,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'function_call_output') {
+      const {
+        call_id,
+        status,
+        output: rawOutput,
+        name: toolName,
+        function_name: functionName,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseFunctionToolCallOutputItem & {
+        name?: string;
+        function_name?: string;
+      };
+      const output: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        id: item.id,
+        callId: call_id,
+        name: toolName ?? functionName ?? call_id,
+        status: status ?? 'completed',
+        output: convertFunctionCallOutputToProtocol(rawOutput),
         providerData,
       };
       return output;
@@ -1204,6 +1300,7 @@ function convertToOutputItem(
 
     return {
       type: 'unknown',
+      id: item.id,
       providerData: item,
     };
   });
