@@ -111,6 +111,7 @@ export function processModelResponse<TContext>(
   const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
   const toolsUsed: string[] = [];
   const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
+  // Resolve tools upfront so we can look up the concrete handler in O(1) while iterating outputs.
   const functionMap = new Map(
     tools.filter((t) => t.type === 'function').map((t) => [t.name, t]),
   );
@@ -352,6 +353,8 @@ export async function resolveInterruptedTurn<TContext>(
   const approvalItemCount = originalPreStepItems.filter(
     (item) => item instanceof RunToolApprovalItem,
   ).length;
+  // Persisting the approval request already advanced the counter once, so undo the increment
+  // to make sure we write the final tool output back to the session when the turn resumes.
   if (approvalItemCount > 0) {
     state._currentTurnPersistedItemCount = Math.max(
       0,
@@ -399,6 +402,7 @@ export async function resolveInterruptedTurn<TContext>(
   // Hosted MCP approvals may still be waiting on a human decision when the turn resumes.
   const pendingHostedMCPApprovals = new Set<RunToolApprovalItem>();
   const pendingHostedMCPApprovalIds = new Set<string>();
+  // Keep track of approvals we still need to surface next turn so HITL flows can resume cleanly.
   for (const run of mcpApprovalRuns) {
     // the approval_request_id "mcpr_123..."
     const approvalRequestId = run.requestItem.rawItem.id!;
@@ -437,6 +441,8 @@ export async function resolveInterruptedTurn<TContext>(
 
   // Server-managed conversations rely on preStepItems to re-surface pending approvals.
   // Keep unresolved hosted MCP approvals in place so HITL flows still have something to approve next turn.
+  // Drop resolved approval placeholders so they are not replayed on the next turn, but keep
+  // pending approvals in place to signal the outstanding work to the UI and session store.
   const preStepItems = originalPreStepItems.filter((item) => {
     if (!(item instanceof RunToolApprovalItem)) {
       return true;
@@ -498,6 +504,8 @@ export async function resolveTurnAfterModelResponse<TContext>(
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
 ): Promise<SingleStepResult> {
+  // Reuse the same array reference so we can compare object identity when deciding whether to
+  // append new items, ensuring we never double-stream existing RunItems.
   const preStepItems = originalPreStepItems;
   const seenItems = new Set<RunItem>(originalPreStepItems);
   const newItems: RunItem[] = [];
@@ -513,6 +521,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
     appendIfNew(item);
   }
 
+  // Run function tools and computer actions in parallel; neither depends on the other's side effects.
   const [functionResults, computerResults] = await Promise.all([
     executeFunctionToolCalls(
       agent,
@@ -657,6 +666,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
     );
   }
 
+  // Keep looping if any tool output placeholders still require an approval follow-up.
   const hasPendingToolsOrApprovals = functionResults.some(
     (result) => result.runItem instanceof RunToolApprovalItem,
   );
@@ -722,6 +732,8 @@ type TurnFinalizationParams<TContext> = {
   newItems: RunItem[];
 };
 
+// Consolidates the logic that determines whether tool results yielded a final answer,
+// triggered an interruption, or require the agent loop to continue running.
 async function maybeCompleteTurnFromToolResults<TContext>({
   agent,
   runner,
@@ -974,6 +986,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         parsedArgs = JSON.parse(parsedArgs);
       }
     }
+    // Some tools require a human or policy check before execution; defer until approval is recorded.
     const needsApproval = await toolRun.tool.needsApproval(
       state._context,
       parsedArgs,

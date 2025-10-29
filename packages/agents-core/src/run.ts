@@ -336,30 +336,36 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const serverManagesConversation =
       Boolean(effectiveOptions.conversationId) ||
       Boolean(effectiveOptions.previousResponseId);
+    // When the server tracks conversation history we defer to it for previous turns so local session
+    // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
     const resumingFromState = input instanceof RunState;
-    let sessionInputItemsToPersist: AgentInputItem[] | undefined =
+    let sessionInputOriginalSnapshot: AgentInputItem[] | undefined =
       session && resumingFromState ? [] : undefined;
-    let sessionInputItemsFiltered: AgentInputItem[] | undefined = undefined;
-    let sessionNewInputCounts: Map<string, number> | undefined =
+    let sessionInputFilteredSnapshot: AgentInputItem[] | undefined = undefined;
+    // Tracks remaining persistence slots per AgentInputItem key so resumed sessions only write each original occurrence once.
+    let sessionInputPendingWriteCounts: Map<string, number> | undefined =
       session && resumingFromState ? new Map() : undefined;
     // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
     // the original objects (so we can respect resume counts) while `filteredItems`, when present,
     // contains the filtered/redacted clones that must be persisted for history.
-    const updateSessionInputItems = (
+    // The helper takes the filtered clones produced by callModelInputFilter and reconciles them
+    // with the original objects so resume-from-state bookkeeping stays consistent.
+    const recordSessionItemsForPersistence = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
-      const counts = sessionNewInputCounts;
+      const counts = sessionInputPendingWriteCounts;
       if (filteredItems !== undefined) {
         if (!counts) {
-          sessionInputItemsFiltered = filteredItems.map((item) =>
+          sessionInputFilteredSnapshot = filteredItems.map((item) =>
             structuredClone(item),
           );
           return;
         }
         const collected: AgentInputItem[] = [];
         const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
+        // Track how many times each original object appears so duplicate references only consume one persistence slot.
         for (const source of sourceItems) {
           if (!source || typeof source !== 'object') {
             continue;
@@ -367,6 +373,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
           sourceOccurrenceCounts.set(source, nextCount);
         }
+        // Let filtered items without a one-to-one source match claim any remaining persistence count.
         const allocateFallback = () => {
           for (const [key, remaining] of counts) {
             if (remaining > 0) {
@@ -414,13 +421,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (
             !allocated &&
             !source &&
-            sessionInputItemsFiltered === undefined
+            sessionInputFilteredSnapshot === undefined
           ) {
             collected.push(structuredClone(filteredItem));
           }
         }
-        if (collected.length > 0 || sessionInputItemsFiltered === undefined) {
-          sessionInputItemsFiltered = collected;
+        if (
+          collected.length > 0 ||
+          sessionInputFilteredSnapshot === undefined
+        ) {
+          sessionInputFilteredSnapshot = collected;
         }
         return;
       }
@@ -447,20 +457,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       }
       if (filtered.length > 0) {
-        sessionInputItemsFiltered = filtered;
-      } else if (sessionInputItemsFiltered === undefined) {
-        sessionInputItemsFiltered = [];
+        sessionInputFilteredSnapshot = filtered;
+      } else if (sessionInputFilteredSnapshot === undefined) {
+        sessionInputFilteredSnapshot = [];
       }
     };
 
+    // Determine which items should be committed to session memory for this turn.
+    // Filters take precedence because they reflect the exact payload delivered to the model.
     const resolveSessionItemsForPersistence = () => {
-      if (sessionInputItemsFiltered !== undefined) {
-        return sessionInputItemsFiltered;
+      if (sessionInputFilteredSnapshot !== undefined) {
+        return sessionInputFilteredSnapshot;
       }
       if (hasCallModelInputFilter) {
         return undefined;
       }
-      return sessionInputItemsToPersist;
+      return sessionInputOriginalSnapshot;
     };
 
     let preparedInput: typeof input = input;
@@ -476,6 +488,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         },
       );
       if (serverManagesConversation && session) {
+        // When the server manages memory we only persist the new turn inputs locally so the
+        // conversation service stays the single source of truth for prior exchanges.
         const sessionItems = prepared.sessionItems;
         if (sessionItems && sessionItems.length > 0) {
           preparedInput = sessionItems;
@@ -488,18 +502,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (session) {
         const items = prepared.sessionItems ?? [];
         // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
-        sessionInputItemsToPersist = items.map((item) => structuredClone(item));
-        sessionNewInputCounts = new Map();
+        sessionInputOriginalSnapshot = items.map((item) =>
+          structuredClone(item),
+        );
+        // Reset pending counts so each prepared item reserves exactly one write slot until filters resolve matches.
+        sessionInputPendingWriteCounts = new Map();
         for (const item of items) {
           const key = getAgentInputItemKey(item);
-          sessionNewInputCounts.set(
+          sessionInputPendingWriteCounts.set(
             key,
-            (sessionNewInputCounts.get(key) ?? 0) + 1,
+            (sessionInputPendingWriteCounts.get(key) ?? 0) + 1,
           );
         }
       }
     }
 
+    // Streaming runs persist the input asynchronously, so track a one-shot helper
+    // that can be awaited from multiple branches without double-writing.
     let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
     // Sessions remain usable alongside server-managed conversations (e.g., OpenAIConversationsSession)
     // so callers can reuse callbacks, resume-from-state logic, and other helpers without duplicating
@@ -526,7 +545,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preparedInput,
           effectiveOptions,
           ensureStreamInputPersisted,
-          updateSessionInputItems,
+          recordSessionItemsForPersistence,
         );
         return streamResult;
       }
@@ -534,7 +553,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
-        updateSessionInputItems,
+        recordSessionItemsForPersistence,
       );
       // See note above: allow sessions to run for callbacks/state but skip writes when the server
       // is the source of truth for transcript history.
@@ -759,6 +778,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             state._context.usage.add(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
 
+            // After each turn record the items echoed by the server so future requests only
+            // include the incremental inputs that have not yet been acknowledged.
             serverConversationTracker?.trackServerItems(
               state._lastTurnResponse,
             );
@@ -883,6 +904,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (streamInputPersisted || !ensureStreamInputPersisted) {
         return;
       }
+      // Both success and error paths call this helper, so guard against multiple writes.
       await ensureStreamInputPersisted();
       streamInputPersisted = true;
     };
@@ -1044,6 +1066,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           result.state._lastTurnResponse = finalResponse;
+          // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
@@ -1391,6 +1414,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         systemInstructions,
       );
 
+    // Inform the tracker which exact original objects made it to the provider so future turns
+    // only send the delta that has not yet been acknowledged by the server.
     serverConversationTracker?.markInputAsSent(sourceItems);
     // Provide filtered clones whenever filters run so session history mirrors the model payload.
     // Returning an empty array is intentional: it tells the session layer to persist "nothing"
@@ -1622,6 +1647,8 @@ async function applyCallModelInputFilter<TContext>(
       );
     }
 
+    // Preserve a pointer to the original object backing each filtered clone so downstream
+    // trackers can keep their bookkeeping consistent even after redaction.
     const sourceItems = result.input.map((item) => {
       if (!item || typeof item !== 'object') {
         return undefined;
@@ -1748,6 +1775,10 @@ class ServerConversationTracker {
     }
   }
 
+  /**
+   * Records the raw items returned by the server so future delta calculations skip them.
+   * Also captures the latest response identifier to chain follow-up calls when possible.
+   */
   trackServerItems(modelResponse: ModelResponse | undefined) {
     if (!modelResponse) {
       return;
@@ -1766,6 +1797,11 @@ class ServerConversationTracker {
     }
   }
 
+  /**
+   * Returns the minimum set of items that still need to be delivered to the server for the
+   * current turn. This includes the original turn inputs (until acknowledged) plus any
+   * newly generated items that have not yet been echoed back by the API.
+   */
   prepareInput(
     originalInput: string | AgentInputItem[],
     generatedItems: RunItem[],
@@ -1806,6 +1842,10 @@ class ServerConversationTracker {
     return inputItems;
   }
 
+  /**
+   * Marks the provided originals as delivered so future turns do not resend them and any
+   * pending initial inputs can be dropped once the server acknowledges receipt.
+   */
   markInputAsSent(items: (AgentInputItem | undefined)[]) {
     if (!items.length) {
       return;
