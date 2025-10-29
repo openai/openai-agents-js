@@ -83,10 +83,34 @@ export class OpenAIConversationsSession implements Session {
                     return { type: 'input_image', image: { id: c.file_id } };
                   }
                 } else if (c.type === 'input_file') {
+                  if (c.file_data) {
+                    const fileItem: protocol.InputFile = {
+                      type: 'input_file',
+                      file: c.file_data,
+                    };
+                    if (c.filename) {
+                      fileItem.filename = c.filename;
+                    }
+                    return fileItem;
+                  }
                   if (c.file_url) {
-                    return { type: 'input_file', file: c.file_url };
+                    const fileItem: protocol.InputFile = {
+                      type: 'input_file',
+                      file: c.file_url,
+                    };
+                    if (c.filename) {
+                      fileItem.filename = c.filename;
+                    }
+                    return fileItem;
                   } else if (c.file_id) {
-                    return { type: 'input_file', file: { id: c.file_id } };
+                    const fileItem: protocol.InputFile = {
+                      type: 'input_file',
+                      file: { id: c.file_id },
+                    };
+                    if (c.filename) {
+                      fileItem.filename = c.filename;
+                    }
+                    return fileItem;
                   }
                 }
                 // Add more content types here when they're added

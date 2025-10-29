@@ -214,4 +214,61 @@ describe('OpenAIConversationsSession', () => {
     });
     expect(popped?.id).toBe('resp-1-msg-3');
   });
+
+  it('preserves inline file data for user inputs', async () => {
+    const items = [
+      {
+        type: 'message',
+        role: 'user',
+        id: 'user-1',
+        content: [
+          {
+            type: 'input_file',
+            file_data: 'data:application/pdf;base64,SGVsbG8=',
+            filename: 'inline.pdf',
+          },
+        ],
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(result).toEqual([
+      {
+        id: 'user-1',
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,SGVsbG8=',
+            filename: 'inline.pdf',
+          },
+        ],
+      },
+    ]);
+  });
 });
