@@ -31,6 +31,7 @@ import { handoff } from '../src/handoff';
 import {
   RunMessageOutputItem as MessageOutputItem,
   RunToolApprovalItem as ToolApprovalItem,
+  RunToolCallOutputItem as ToolCallOutputItem,
 } from '../src/items';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
@@ -2389,14 +2390,23 @@ describe('Runner.run', () => {
         conversationId: 'conv-mixed',
       });
 
-      expect(model.requests).toHaveLength(2);
-      const secondItems = model.requests[1].input as AgentInputItem[];
-      expect(secondItems).toHaveLength(1);
-      expect(secondItems[0]).toMatchObject({
-        type: 'function_call_result',
-        callId: 'call-mixed',
+      expect(model.requests).toHaveLength(1);
+
+      const toolOutputs = secondResult.newItems.filter(
+        (item) =>
+          item instanceof ToolCallOutputItem &&
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-mixed',
+      );
+      expect(toolOutputs).toHaveLength(1);
+
+      expect(secondResult.interruptions).toHaveLength(1);
+      expect(secondResult.interruptions[0].rawItem).toMatchObject({
+        providerData: { id: 'approval-id', type: 'mcp_approval_request' },
       });
-      expect(secondResult.finalOutput).toBe('still waiting');
+      expect(secondResult.state._currentStep?.type).toBe(
+        'next_step_interruption',
+      );
     });
 
     it('sends full history when no server-managed state is provided', async () => {

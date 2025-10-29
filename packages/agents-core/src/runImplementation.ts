@@ -370,8 +370,21 @@ export async function resolveInterruptedTurn<TContext>(
     state,
   );
 
-  // Create the initial set of the output items
-  const newItems: RunItem[] = functionResults.map((r) => r.runItem);
+  // When resuming we receive the original RunItem references; suppress duplicates so history and streaming do not double-emit the same items.
+  const originalPreStepItemSet = new Set(originalPreStepItems);
+  const newItems: RunItem[] = [];
+  const newItemsSet = new Set<RunItem>();
+  const appendIfNew = (item: RunItem) => {
+    if (originalPreStepItemSet.has(item) || newItemsSet.has(item)) {
+      return;
+    }
+    newItems.push(item);
+    newItemsSet.add(item);
+  };
+
+  for (const result of functionResults) {
+    appendIfNew(result.runItem);
+  }
 
   // Run MCP tools that require approval after they get their approval results
   const mcpApprovalRuns = processedResponse.mcpApprovalRequests.filter(
@@ -383,6 +396,9 @@ export async function resolveInterruptedTurn<TContext>(
       );
     },
   );
+  // Hosted MCP approvals may still be waiting on a human decision when the turn resumes.
+  const pendingHostedMCPApprovals = new Set<RunToolApprovalItem>();
+  const pendingHostedMCPApprovalIds = new Set<string>();
   for (const run of mcpApprovalRuns) {
     // the approval_request_id "mcpr_123..."
     const approvalRequestId = run.requestItem.rawItem.id!;
@@ -398,23 +414,49 @@ export async function resolveInterruptedTurn<TContext>(
         reason: undefined,
       };
       // Tell Responses API server the approval result in the next turn
-      newItems.push(
-        new RunToolCallItem(
-          {
-            type: 'hosted_tool_call',
-            name: 'mcp_approval_response',
-            providerData,
-          },
-          agent as Agent<unknown, 'text'>,
-        ),
+      const responseItem = new RunToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          providerData,
+        },
+        agent as Agent<unknown, 'text'>,
       );
+      appendIfNew(responseItem);
+    } else {
+      pendingHostedMCPApprovals.add(run.requestItem);
+      pendingHostedMCPApprovalIds.add(approvalRequestId);
+      functionResults.push({
+        type: 'hosted_mcp_tool_approval',
+        tool: run.mcpTool,
+        runItem: run.requestItem,
+      });
+      appendIfNew(run.requestItem);
     }
   }
 
-  // Exclude the tool approval items, which should not be sent to Responses API,
-  // from the SingleStepResult's preStepItems
+  // Server-managed conversations rely on preStepItems to re-surface pending approvals.
+  // Keep unresolved hosted MCP approvals in place so HITL flows still have something to approve next turn.
   const preStepItems = originalPreStepItems.filter((item) => {
-    return !(item instanceof RunToolApprovalItem);
+    if (!(item instanceof RunToolApprovalItem)) {
+      return true;
+    }
+
+    if (
+      item.rawItem.type === 'hosted_tool_call' &&
+      item.rawItem.providerData?.type === 'mcp_approval_request'
+    ) {
+      if (pendingHostedMCPApprovals.has(item)) {
+        return true;
+      }
+      const approvalRequestId = item.rawItem.id;
+      if (approvalRequestId) {
+        return pendingHostedMCPApprovalIds.has(approvalRequestId);
+      }
+      return false;
+    }
+
+    return false;
   });
 
   const completedStep = await maybeCompleteTurnFromToolResults({

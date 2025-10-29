@@ -1915,4 +1915,80 @@ describe('resolveTurnAfterModelResponse', () => {
       });
     }
   });
+
+  it('preserves pending hosted MCP approvals when resuming an interrupted turn', async () => {
+    const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'demo_server',
+      serverUrl: 'https://example.com',
+      requireApproval: {
+        always: { toolNames: ['demo_tool'] },
+      },
+    });
+
+    const approvalRequest: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval1',
+      name: 'demo_tool',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'demo_server',
+        name: 'demo_tool',
+        id: 'approval1',
+        arguments: '{}',
+      },
+    } as protocol.HostedToolCallItem;
+
+    const approvalItem = new ToolApprovalItem(approvalRequest, approvalAgent);
+    const originalPreStepItems = [approvalItem];
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      mcpApprovalRequests: [
+        {
+          requestItem: approvalItem,
+          mcpTool,
+        },
+      ],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const resumedState = new RunState(
+      new RunContext(),
+      'test input',
+      approvalAgent,
+      1,
+    );
+
+    const runner = new Runner();
+
+    const result = await resolveInterruptedTurn(
+      approvalAgent,
+      'test input',
+      originalPreStepItems,
+      resumedResponse,
+      processedResponse,
+      runner,
+      resumedState,
+    );
+
+    expect(result.nextStep.type).toBe('next_step_interruption');
+    if (result.nextStep.type === 'next_step_interruption') {
+      expect(result.nextStep.data.interruptions).toContain(approvalItem);
+    }
+    expect(result.preStepItems).toContain(approvalItem);
+    expect(result.newStepItems).not.toContain(approvalItem);
+  });
 });
