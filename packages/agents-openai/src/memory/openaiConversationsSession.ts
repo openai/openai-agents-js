@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import type { AgentInputItem, Session } from '@openai/agents-core';
-import { getDefaultOpenAIClient, getDefaultOpenAIKey } from './defaults';
-import { convertToOutputItem, getInputItems } from './openaiResponsesModel';
+import { getDefaultOpenAIClient, getDefaultOpenAIKey } from '../defaults';
+import { convertToOutputItem, getInputItems } from '../openaiResponsesModel';
 import { protocol } from '@openai/agents-core';
 
 export type OpenAIConversationsSessionOptions = {

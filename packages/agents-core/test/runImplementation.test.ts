@@ -17,6 +17,7 @@ import { ModelResponse } from '../src/model';
 import { RunResult, StreamedRunResult } from '../src/result';
 import { getTracing } from '../src/run';
 import { RunState } from '../src/runState';
+import type { ProcessedResponse } from '../src/runImplementation';
 import {
   addStepToRunResult,
   AgentToolUseTracker,
@@ -29,6 +30,8 @@ import {
   executeHandoffCalls,
   executeToolsAndSideEffects,
   streamStepItemsToRunResult,
+  saveToSession,
+  executeInterruptedToolsAndSideEffects,
 } from '../src/runImplementation';
 import {
   FunctionTool,
@@ -57,6 +60,9 @@ import { Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
 import { Logger } from '../src/logger';
+import type { UnknownContext } from '../src/types';
+import type { Session } from '../src/memory/session';
+import type { AgentInputItem } from '../src/types';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -131,6 +137,150 @@ describe('maybeResetToolChoice', () => {
 
     const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
     expect(result.toolChoice).toBeUndefined();
+  });
+});
+
+describe('saveToSession', () => {
+  class MemorySession implements Session {
+    items: AgentInputItem[] = [];
+
+    async getSessionId(): Promise<string> {
+      return 'session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.items];
+    }
+
+    async addItems(items: AgentInputItem[]): Promise<void> {
+      this.items.push(...items);
+    }
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return this.items.pop();
+    }
+
+    async clearSession(): Promise<void> {
+      this.items = [];
+    }
+  }
+
+  it('persists tool outputs when resuming a turn after approvals', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Hitl Agent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new MemorySession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '1' }),
+      providerData: {},
+    };
+
+    state._generatedItems = [new ToolApprovalItem(functionCall, textAgent)];
+
+    const preApprovalResult = new RunResult(state);
+    await saveToSession(session, state._originalInput, preApprovalResult);
+
+    expect(session.items).toEqual([
+      {
+        role: 'user',
+        content: 'hello',
+      } as AgentInputItem,
+    ]);
+    expect(state._currentTurnPersistedItemCount).toBe(1);
+
+    const toolDefinition = tool({
+      name: 'lookup_customer_profile',
+      description: 'mock lookup',
+      parameters: z.object({ id: z.string() }),
+      async execute({ id }) {
+        return `No customer found for id ${id}.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const assistantMessage: protocol.AssistantMessageItem = {
+      type: 'message',
+      id: 'msg_1',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: 'Ready to help.',
+        },
+      ],
+      providerData: {},
+    };
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new MessageOutputItem(assistantMessage, textAgent)],
+      handoffs: [],
+      functions: [
+        {
+          toolCall: functionCall,
+          tool: toolDefinition,
+        },
+      ],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    } as ProcessedResponse<UnknownContext>;
+
+    const runner = new Runner();
+    const resumedResponse: ModelResponse = {
+      usage: new Usage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      }),
+      output: [],
+    };
+
+    const turnResult = await withTrace('hitl-test-trace', async () => {
+      return executeInterruptedToolsAndSideEffects(
+        textAgent,
+        state._originalInput,
+        state._generatedItems,
+        resumedResponse,
+        processedResponse,
+        runner,
+        state,
+      );
+    });
+
+    state._originalInput = turnResult.originalInput;
+    state._generatedItems = turnResult.generatedItems;
+    state._currentStep = turnResult.nextStep;
+
+    const resumedResult = new RunResult(state);
+    await saveToSession(session, [], resumedResult);
+
+    expect(session.items).toHaveLength(2);
+    const last = session.items[
+      session.items.length - 1
+    ] as protocol.FunctionCallResultItem;
+    expect(last.type).toBe('function_call_result');
+    expect(last.callId).toBe(functionCall.callId);
   });
 });
 

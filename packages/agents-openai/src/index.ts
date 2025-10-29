@@ -21,4 +21,4 @@ export {
 export {
   OpenAIConversationsSession,
   startOpenAIConversationsSession,
-} from './openaiConversationsSession';
+} from './memory/openaiConversationsSession';

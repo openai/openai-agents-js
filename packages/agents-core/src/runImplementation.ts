@@ -324,6 +324,19 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
         item.rawItem.type === 'function_call',
     )
     .map((item) => (item.rawItem as protocol.FunctionCallItem).callId);
+
+  // We already persisted the turn once when the approval interrupt was raised, so the
+  // counter reflects the approval items as "flushed". When we resume the same turn we need
+  // to rewind it so the eventual tool output for this call is still written to the session.
+  const approvalItemCount = originalPreStepItems.filter(
+    (item) => item instanceof RunToolApprovalItem,
+  ).length;
+  if (approvalItemCount > 0) {
+    state._currentTurnPersistedItemCount = Math.max(
+      0,
+      state._currentTurnPersistedItemCount - approvalItemCount,
+    );
+  }
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
     return functionCallIds.includes(run.toolCall.callId);
@@ -1730,17 +1743,26 @@ export async function saveToSession(
   if (!session) {
     return;
   }
-  if (!originalInput) {
-    return;
+  const inputItems = originalInput ? toInputItemList(originalInput) : [];
+  const state = result.state;
+  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
+  // Persist only the portion of _generatedItems that has not yet been stored for this turn.
+  const newRunItems = result.newItems.slice(alreadyPersisted);
+  if (process.env.OPENAI_AGENTS__DEBUG_SAVE_SESSION) {
+    console.debug(
+      'saveToSession:newRunItems',
+      newRunItems.map((item) => item.type),
+    );
   }
-  const itemsToSave = [
-    ...toInputItemList(originalInput),
-    ...extractOutputItemsFromRunItems(result.newItems),
-  ];
+  const outputItems = extractOutputItemsFromRunItems(newRunItems);
+  const itemsToSave = [...inputItems, ...outputItems];
   if (itemsToSave.length === 0) {
+    state._currentTurnPersistedItemCount =
+      alreadyPersisted + newRunItems.length;
     return;
   }
   await session.addItems(itemsToSave);
+  state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 
 /**
@@ -1775,11 +1797,17 @@ export async function saveStreamResultToSession(
   if (!session) {
     return;
   }
-  const itemsToSave = extractOutputItemsFromRunItems(result.newItems);
+  const state = result.state;
+  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
+  const newRunItems = result.newItems.slice(alreadyPersisted);
+  const itemsToSave = extractOutputItemsFromRunItems(newRunItems);
   if (itemsToSave.length === 0) {
+    state._currentTurnPersistedItemCount =
+      alreadyPersisted + newRunItems.length;
     return;
   }
   await session.addItems(itemsToSave);
+  state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 
 /**

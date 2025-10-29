@@ -1,9 +1,30 @@
-import { Agent, OpenAIConversationsSession, run } from '@openai/agents';
+import { Agent, OpenAIConversationsSession, run, tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookupCustomerProfile = tool({
+  name: 'lookup_customer_profile',
+  description:
+    'Look up stored profile details for a customer by their internal id.',
+  parameters: z.object({
+    id: z
+      .string()
+      .describe('The internal identifier for the customer to retrieve.'),
+  }),
+  async execute({ id }) {
+    const directory: Record<string, string> = {
+      '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
+      '2': 'Customer 2 (tier standard). Notes: Interested in tutorials.',
+    };
+    return directory[id] ?? `No customer found for id ${id}.`;
+  },
+});
 
 async function main() {
   const agent = new Agent({
     name: 'Assistant',
-    instructions: 'You are a helpful assistant. be VERY concise.',
+    instructions: 'You are a helpful assistant.',
+    modelSettings: { toolChoice: 'required' },
+    tools: [lookupCustomerProfile],
   });
 
   const session = new OpenAIConversationsSession();
@@ -23,7 +44,9 @@ async function main() {
 async function mainStream() {
   const agent = new Agent({
     name: 'Assistant',
-    instructions: 'You are a helpful assistant. be VERY concise.',
+    instructions: 'You are a helpful assistant.',
+    modelSettings: { toolChoice: 'required' },
+    tools: [lookupCustomerProfile],
   });
 
   const session = new OpenAIConversationsSession();

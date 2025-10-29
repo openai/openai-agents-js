@@ -1342,7 +1342,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     if (resumingFromState) {
       if (session) {
         sessionOriginalInput = [] as AgentInputItem[];
-        // Persist new outputs without duplicating the original turn when resuming with memory.
       }
     } else {
       sessionOriginalInput = input as string | AgentInputItem[];
