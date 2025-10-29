@@ -1042,6 +1042,47 @@ describe('Runner.run', () => {
       expect(getFirstTextContent(streamInput[0])).toBe('Alpha');
     });
 
+    it('does not mutate run history when filter mutates input items', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'HistoryFilterAgent',
+        model,
+      });
+
+      const originalText = 'Top secret message';
+      const redactedText = '[redacted]';
+
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          const first = modelData.input[0];
+          if (
+            first?.type === 'message' &&
+            Array.isArray(first.content) &&
+            first.content.length > 0
+          ) {
+            const firstChunk = first.content[0] as { text?: string };
+            if (firstChunk) {
+              firstChunk.text = redactedText;
+            }
+          }
+          return modelData;
+        },
+      });
+
+      const result = await runner.run(agent, [user(originalText)]);
+
+      const sentInput = model.lastRequest?.input as AgentInputItem[];
+      expect(Array.isArray(sentInput)).toBe(true);
+      expect(getFirstTextContent(sentInput[0])).toBe(redactedText);
+
+      const history = result.history;
+      expect(getFirstTextContent(history[0])).toBe(originalText);
+    });
+
     it('throws when filter returns invalid data', async () => {
       const model = new FilterTrackingModel([
         {

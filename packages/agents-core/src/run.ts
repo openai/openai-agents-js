@@ -427,10 +427,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     inputItems: AgentInputItem[],
     systemInstructions: string | undefined,
   ): Promise<ModelInputData> {
-    // Always create a shallow copy so downstream mutations inside filters cannot affect
+    const cloneInputItems = (items: AgentInputItem[]) =>
+      items.map((item) => structuredClone(item));
+
+    // Always create a deep copy so downstream mutations inside filters cannot affect
     // the cached turn state.
     const base: ModelInputData = {
-      input: [...inputItems],
+      input: cloneInputItems(inputItems),
       instructions: systemInstructions,
     };
 
@@ -452,7 +455,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
 
       return {
-        input: [...result.input],
+        input: cloneInputItems(result.input),
         instructions:
           typeof result.instructions === 'undefined'
             ? systemInstructions
