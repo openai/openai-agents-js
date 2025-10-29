@@ -2,11 +2,16 @@
   "private": true,
   "name": "memory",
   "dependencies": {
-    "@openai/agents": "workspace:*"
+    "@openai/agents": "workspace:*",
+    "@prisma/client": "^6.18.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
     "start:oai": "tsx oai.ts",
-    "start:file": "tsx file.ts"
+    "start:file": "tsx file.ts",
+    "start:prisma": "pnpm prisma db push --schema ./prisma/schema.prisma && pnpm prisma generate --schema ./prisma/schema.prisma && tsx prisma.ts"
+  },
+  "devDependencies": {
+    "prisma": "^6.18.0"
   }
 }

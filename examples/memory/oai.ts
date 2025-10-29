@@ -73,6 +73,7 @@ async function promptAndRun() {
   }
 }
 
-if (require.main === module) {
-  promptAndRun().catch(console.error);
-}
+promptAndRun().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

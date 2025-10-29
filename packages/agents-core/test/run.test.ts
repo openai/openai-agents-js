@@ -679,6 +679,12 @@ describe('Runner.run', () => {
           content: 'How are you?',
         });
         expect(session.added[0][1]).toMatchObject({ role: 'assistant' });
+        const savedAssistant = session
+          .added[0][1] as protocol.AssistantMessageItem;
+        const firstPart = Array.isArray(savedAssistant.content)
+          ? (savedAssistant.content[0] as { providerData?: unknown })
+          : undefined;
+        expect(firstPart?.providerData).toEqual({ annotations: [] });
       });
 
       it('rejects list inputs when using session history', async () => {
@@ -789,6 +795,124 @@ describe('Runner.run', () => {
         ).rejects.toThrow(
           'Session input callback must return an array of AgentInputItem objects.',
         );
+      });
+
+      it('stores function tool call and structured output in session', async () => {
+        const functionCall: protocol.FunctionCallItem = {
+          type: 'function_call',
+          callId: 'call-weather',
+          name: 'weather_lookup',
+          status: 'completed',
+          arguments: JSON.stringify({ city: 'San Francisco' }),
+          providerData: { source: 'openai' },
+        } as protocol.FunctionCallItem;
+
+        const model = new FakeModel([
+          {
+            output: [functionCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('Weather retrieved.')],
+            usage: new Usage(),
+          },
+        ]);
+
+        const weatherTool = tool({
+          name: 'weather_lookup',
+          description: 'Looks up weather information',
+          parameters: z.object({ city: z.string() }),
+          execute: async ({ city }) => [
+            {
+              type: 'text',
+              text: `Weather for ${city}`,
+            },
+          ],
+        });
+
+        const agent = new Agent({
+          name: 'FunctionToolAgent',
+          model,
+          tools: [weatherTool],
+        });
+
+        const session = new MemorySession();
+        const runner = new Runner();
+
+        await runner.run(agent, 'What is the weather in San Francisco?', {
+          session,
+        });
+
+        expect(session.added).toHaveLength(1);
+        const savedItems = session.added[0];
+        expect(savedItems).toHaveLength(4);
+        const savedFunctionCall = savedItems[1] as protocol.FunctionCallItem;
+        expect(savedFunctionCall.providerData).toEqual({ source: 'openai' });
+        expect(savedFunctionCall.arguments).toBe(
+          JSON.stringify({ city: 'San Francisco' }),
+        );
+        const savedResult = savedItems[2] as protocol.FunctionCallResultItem & {
+          output: protocol.ToolCallStructuredOutput[];
+        };
+        expect(Array.isArray(savedResult.output)).toBe(true);
+        expect(savedResult.output[0]).toMatchObject({
+          type: 'input_text',
+          text: 'Weather for San Francisco',
+        });
+      });
+
+      it('stores hosted tool call metadata when approval is required', async () => {
+        const hostedCall: protocol.HostedToolCallItem = {
+          type: 'hosted_tool_call',
+          id: 'approval-1',
+          name: 'mcp_approval_request',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_approval_request',
+            server_label: 'demo_server',
+            name: 'file_search',
+            id: 'approval-1',
+            arguments: '{"query":"invoices"}',
+          },
+        } as protocol.HostedToolCallItem;
+
+        const model = new FakeModel([
+          {
+            output: [hostedCall],
+            usage: new Usage(),
+          },
+        ]);
+
+        const hostedTool = hostedMcpTool({
+          serverLabel: 'demo_server',
+          serverUrl: 'https://example.com',
+          requireApproval: {
+            always: { toolNames: ['file_search'] },
+          },
+        });
+
+        const agent = new Agent({
+          name: 'HostedToolAgent',
+          model,
+          tools: [hostedTool],
+        });
+
+        const session = new MemorySession();
+        const runner = new Runner();
+
+        const result = await runner.run(agent, 'Find latest invoices', {
+          session,
+        });
+
+        expect(result.interruptions).toHaveLength(1);
+        expect(session.added).toHaveLength(1);
+        const savedItems = session.added[0];
+        expect(savedItems).toHaveLength(2);
+        const savedHostedCall = savedItems[1] as protocol.HostedToolCallItem & {
+          providerData: Record<string, unknown>;
+        };
+        expect(savedHostedCall.providerData).toEqual(hostedCall.providerData);
+        expect(savedHostedCall.id).toBe('approval-1');
       });
     });
   });
@@ -983,6 +1107,97 @@ describe('Runner.run', () => {
       expect(Array.isArray(sentInput)).toBe(true);
       expect(sentInput).toHaveLength(1);
       expect(getFirstTextContent(sentInput[0])).toBe('Hello override');
+    });
+
+    it('preserves providerData when saving streaming session items', async () => {
+      class MetadataStreamingModel implements Model {
+        constructor(private readonly response: ModelResponse) {}
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          return this.response;
+        }
+
+        async *getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'meta-stream',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: this.response.output,
+            },
+          } as protocol.StreamEvent;
+        }
+      }
+
+      const assistantMessage: protocol.AssistantMessageItem = {
+        ...fakeModelMessage('assistant with metadata'),
+        providerData: { annotations: ['keep-me'] },
+      };
+      const model = new MetadataStreamingModel({
+        output: [assistantMessage],
+        usage: new Usage(),
+      });
+
+      const agent = new Agent({
+        name: 'StreamSessionMetadata',
+        model,
+      });
+
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+        sessionId = 'stream-session';
+
+        async getSessionId(): Promise<string> {
+          return this.sessionId;
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const session = new RecordingSession();
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'Hi stream', {
+        stream: true,
+        session,
+      });
+
+      for await (const _event of result.toStream()) {
+        // exhaust stream so the run finishes
+      }
+      await result.completed;
+
+      expect(session.added).toHaveLength(2);
+      const streamedItems = session.added[1];
+      expect(streamedItems).toHaveLength(1);
+      const savedAssistant = streamedItems[0] as protocol.AssistantMessageItem;
+      expect(savedAssistant.providerData).toEqual({ annotations: ['keep-me'] });
+      expect(getFirstTextContent(savedAssistant)).toBe(
+        'assistant with metadata',
+      );
     });
   });
 
