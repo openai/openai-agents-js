@@ -37,8 +37,8 @@ import {
 } from './errors';
 import {
   addStepToRunResult,
-  executeInterruptedToolsAndSideEffects,
-  executeToolsAndSideEffects,
+  resolveInterruptedTurn,
+  resolveTurnAfterModelResponse,
   maybeResetToolChoice,
   ProcessedResponse,
   processModelResponse,
@@ -539,133 +539,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
   /**
    * @internal
-   */
-  async #applyCallModelInputFilter<TContext>(
-    agent: Agent<TContext, AgentOutputType>,
-    callModelInputFilter: CallModelInputFilter<any> | undefined,
-    context: RunContext<TContext>,
-    inputItems: AgentInputItem[],
-    systemInstructions: string | undefined,
-  ): Promise<FilterApplicationResult> {
-    const cloneInputItems = (
-      items: AgentInputItem[],
-      map?: WeakMap<object, AgentInputItem>,
-    ) =>
-      items.map((item) => {
-        const cloned = structuredClone(item) as AgentInputItem;
-        if (map && cloned && typeof cloned === 'object') {
-          map.set(cloned as object, item);
-        }
-        return cloned;
-      });
-
-    // Record the relationship between the cloned array passed to filters and the original inputs.
-    const cloneMap = new WeakMap<object, AgentInputItem>();
-    const originalPool = buildAgentInputPool(inputItems);
-    const fallbackOriginals: AgentInputItem[] = [];
-    // Track any original object inputs so filtered replacements can still mark them as delivered.
-    for (const item of inputItems) {
-      if (item && typeof item === 'object') {
-        fallbackOriginals.push(item);
-      }
-    }
-    const removeFromFallback = (candidate: AgentInputItem | undefined) => {
-      if (!candidate || typeof candidate !== 'object') {
-        return;
-      }
-      const index = fallbackOriginals.findIndex(
-        (original) => original === candidate,
-      );
-      if (index !== -1) {
-        fallbackOriginals.splice(index, 1);
-      }
-    };
-    const takeFallbackOriginal = (): AgentInputItem | undefined => {
-      const next = fallbackOriginals.shift();
-      if (next) {
-        removeAgentInputFromPool(originalPool, next);
-      }
-      return next;
-    };
-
-    // Always create a deep copy so downstream mutations inside filters cannot affect
-    // the cached turn state.
-    const clonedBaseInput = cloneInputItems(inputItems, cloneMap);
-    const base: ModelInputData = {
-      input: clonedBaseInput,
-      instructions: systemInstructions,
-    };
-    if (!callModelInputFilter) {
-      return {
-        modelInput: base,
-        sourceItems: [...inputItems],
-        persistedItems: [],
-        filterApplied: false,
-      };
-    }
-
-    try {
-      const result = await callModelInputFilter({
-        modelData: base,
-        agent,
-        context: context.context,
-      } as CallModelInputFilterArgs<any>);
-
-      if (!result || !Array.isArray(result.input)) {
-        throw new UserError(
-          'callModelInputFilter must return a ModelInputData object with an input array.',
-        );
-      }
-
-      const sourceItems = result.input.map((item) => {
-        if (!item || typeof item !== 'object') {
-          return undefined;
-        }
-        const original = cloneMap.get(item as object);
-        if (original) {
-          removeFromFallback(original);
-          removeAgentInputFromPool(originalPool, original);
-          return original;
-        }
-        const key = getAgentInputItemKey(item as AgentInputItem);
-        const matchedByContent = takeAgentInputFromPool(originalPool, key);
-        if (matchedByContent) {
-          removeFromFallback(matchedByContent);
-          return matchedByContent;
-        }
-        const fallback = takeFallbackOriginal();
-        if (fallback) {
-          return fallback;
-        }
-        return undefined;
-      });
-
-      const clonedFilteredInput = cloneInputItems(result.input);
-      return {
-        modelInput: {
-          input: clonedFilteredInput,
-          instructions:
-            typeof result.instructions === 'undefined'
-              ? systemInstructions
-              : result.instructions,
-        },
-        sourceItems,
-        persistedItems: clonedFilteredInput.map((item) =>
-          structuredClone(item),
-        ),
-        filterApplied: true,
-      };
-    } catch (error) {
-      addErrorToCurrentSpan({
-        message: 'Error in callModelInputFilter',
-        data: { error: String(error) },
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * @internal
    * Resolves the effective model once so both run loops obey the same precedence rules.
    */
   async #resolveModelForAgent<TContext>(
@@ -679,123 +552,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       resolvedModel = await this.config.modelProvider.getModel(resolvedModel);
     }
     return { model: resolvedModel, explictlyModelSet };
-  }
-
-  /**
-   * @internal
-   * Collects tools/handoffs early so we can annotate spans before model execution begins.
-   */
-  async #prepareAgentArtifacts<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
-    const handoffs = await state._currentAgent.getEnabledHandoffs(
-      state._context,
-    );
-    const tools = await state._currentAgent.getAllTools(state._context);
-
-    if (!state._currentAgentSpan) {
-      const handoffNames = handoffs.map((h) => h.agentName);
-      state._currentAgentSpan = createAgentSpan({
-        data: {
-          name: state._currentAgent.name,
-          handoffs: handoffNames,
-          tools: tools.map((t) => t.name),
-          output_type: state._currentAgent.outputSchemaName,
-        },
-      });
-      state._currentAgentSpan.start();
-      setCurrentSpan(state._currentAgentSpan);
-    } else {
-      state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
-    }
-
-    return {
-      handoffs,
-      tools,
-      serializedHandoffs: handoffs.map((handoff) => serializeHandoff(handoff)),
-      serializedTools: tools.map((tool) => serializeTool(tool)),
-    };
-  }
-
-  /**
-   * @internal
-   * Applies call-level filters and merges session updates so the model request mirrors exactly
-   * what we persisted for history.
-   */
-  async #prepareModelCall<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(
-    state: RunState<TContext, TAgent>,
-    options: SharedRunOptions<TContext>,
-    artifacts: AgentArtifacts<TContext>,
-    turnInput: AgentInputItem[],
-    serverConversationTracker?: ServerConversationTracker,
-    sessionInputUpdate?: (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => void,
-  ): Promise<PreparedModelCall<TContext>> {
-    const { model, explictlyModelSet } = await this.#resolveModelForAgent(
-      state._currentAgent,
-    );
-
-    let modelSettings = {
-      ...this.config.modelSettings,
-      ...state._currentAgent.modelSettings,
-    };
-    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-      explictlyModelSet,
-      state._currentAgent.modelSettings,
-      model,
-      modelSettings,
-    );
-    modelSettings = maybeResetToolChoice(
-      state._currentAgent,
-      state._toolUseTracker,
-      modelSettings,
-    );
-
-    const systemInstructions = await state._currentAgent.getSystemPrompt(
-      state._context,
-    );
-    const prompt = await state._currentAgent.getPrompt(state._context);
-
-    const { modelInput, sourceItems, persistedItems, filterApplied } =
-      await this.#applyCallModelInputFilter(
-        state._currentAgent,
-        options.callModelInputFilter,
-        state._context,
-        turnInput,
-        systemInstructions,
-      );
-
-    serverConversationTracker?.markInputAsSent(sourceItems);
-    // Provide filtered clones whenever filters run so session history mirrors the model payload.
-    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
-    // instead of falling back to the unfiltered originals when the filter redacts everything.
-    sessionInputUpdate?.(
-      sourceItems,
-      filterApplied ? persistedItems : undefined,
-    );
-
-    const previousResponseId =
-      serverConversationTracker?.previousResponseId ??
-      options.previousResponseId;
-    const conversationId =
-      serverConversationTracker?.conversationId ?? options.conversationId;
-
-    return {
-      ...artifacts,
-      model,
-      explictlyModelSet,
-      modelSettings,
-      modelInput,
-      prompt,
-      previousResponseId,
-      conversationId,
-    };
   }
 
   /**
@@ -862,16 +618,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const turnResult =
-              await executeInterruptedToolsAndSideEffects<TContext>(
-                state._currentAgent,
-                state._originalInput,
-                state._generatedItems,
-                state._lastTurnResponse,
-                state._lastProcessedResponse as ProcessedResponse<unknown>,
-                this,
-                state,
-              );
+            const turnResult = await resolveInterruptedTurn<TContext>(
+              state._currentAgent,
+              state._originalInput,
+              state._generatedItems,
+              state._lastTurnResponse,
+              state._lastProcessedResponse as ProcessedResponse<unknown>,
+              this,
+              state,
+            );
 
             state._toolUseTracker.addToolUse(
               state._currentAgent,
@@ -891,7 +646,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const artifacts = await this.#prepareAgentArtifacts(state);
+            const artifacts = await prepareAgentArtifacts(state);
 
             state._currentTurn++;
 
@@ -978,7 +733,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
 
             state._lastProcessedResponse = processedResponse;
-            const turnResult = await executeToolsAndSideEffects<TContext>(
+            const turnResult = await resolveTurnAfterModelResponse<TContext>(
               state._currentAgent,
               state._originalInput,
               state._generatedItems,
@@ -1059,121 +814,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     });
   }
 
-  async #runInputGuardrails<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(state: RunState<TContext, TAgent>) {
-    const guardrails = this.inputGuardrailDefs.concat(
-      state._currentAgent.inputGuardrails.map(defineInputGuardrail),
-    );
-    if (guardrails.length > 0) {
-      const guardrailArgs = {
-        agent: state._currentAgent,
-        input: state._originalInput,
-        context: state._context,
-      };
-      try {
-        const results = await Promise.all(
-          guardrails.map(async (guardrail) => {
-            return withGuardrailSpan(
-              async (span) => {
-                const result = await guardrail.run(guardrailArgs);
-                span.spanData.triggered = result.output.tripwireTriggered;
-                return result;
-              },
-              { data: { name: guardrail.name } },
-              state._currentAgentSpan,
-            );
-          }),
-        );
-        for (const result of results) {
-          if (result.output.tripwireTriggered) {
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.setError({
-                message: 'Guardrail tripwire triggered',
-                data: { guardrail: result.guardrail.name },
-              });
-            }
-            throw new InputGuardrailTripwireTriggered(
-              `Input guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-              result,
-              state,
-            );
-          }
-        }
-      } catch (e) {
-        if (e instanceof InputGuardrailTripwireTriggered) {
-          throw e;
-        }
-        // roll back the current turn to enable reruns
-        state._currentTurn--;
-        throw new GuardrailExecutionError(
-          `Input guardrail failed to complete: ${e}`,
-          e as Error,
-          state,
-        );
-      }
-    }
-  }
-
-  async #runOutputGuardrails<
-    TContext,
-    TOutput extends AgentOutputType,
-    TAgent extends Agent<TContext, TOutput>,
-  >(state: RunState<TContext, TAgent>, output: string) {
-    const guardrails = this.outputGuardrailDefs.concat(
-      state._currentAgent.outputGuardrails.map(defineOutputGuardrail),
-    );
-    if (guardrails.length > 0) {
-      const agentOutput = state._currentAgent.processFinalOutput(output);
-      const guardrailArgs: OutputGuardrailFunctionArgs<unknown, TOutput> = {
-        agent: state._currentAgent,
-        agentOutput,
-        context: state._context,
-        details: { modelResponse: state._lastTurnResponse },
-      };
-      try {
-        const results = await Promise.all(
-          guardrails.map(async (guardrail) => {
-            return withGuardrailSpan(
-              async (span) => {
-                const result = await guardrail.run(guardrailArgs);
-                span.spanData.triggered = result.output.tripwireTriggered;
-                return result;
-              },
-              { data: { name: guardrail.name } },
-              state._currentAgentSpan,
-            );
-          }),
-        );
-        for (const result of results) {
-          if (result.output.tripwireTriggered) {
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.setError({
-                message: 'Guardrail tripwire triggered',
-                data: { guardrail: result.guardrail.name },
-              });
-            }
-            throw new OutputGuardrailTripwireTriggered(
-              `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-              result,
-              state,
-            );
-          }
-        }
-      } catch (e) {
-        if (e instanceof OutputGuardrailTripwireTriggered) {
-          throw e;
-        }
-        throw new GuardrailExecutionError(
-          `Output guardrail failed to complete: ${e}`,
-          e as Error,
-          state,
-        );
-      }
-    }
-  }
-
   /**
    * @internal
    */
@@ -1226,16 +866,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
 
-          const turnResult =
-            await executeInterruptedToolsAndSideEffects<TContext>(
-              result.state._currentAgent,
-              result.state._originalInput,
-              result.state._generatedItems,
-              result.state._lastTurnResponse,
-              result.state._lastProcessedResponse as ProcessedResponse<unknown>,
-              this,
-              result.state,
-            );
+          const turnResult = await resolveInterruptedTurn<TContext>(
+            result.state._currentAgent,
+            result.state._originalInput,
+            result.state._generatedItems,
+            result.state._lastTurnResponse,
+            result.state._lastProcessedResponse as ProcessedResponse<unknown>,
+            this,
+            result.state,
+          );
 
           addStepToRunResult(result, turnResult);
 
@@ -1255,7 +894,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          const artifacts = await this.#prepareAgentArtifacts(result.state);
+          const artifacts = await prepareAgentArtifacts(result.state);
 
           result.state._currentTurn++;
 
@@ -1375,7 +1014,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             streamStepItemsToRunResult(result, processedResponse.newItems);
           }
 
-          const turnResult = await executeToolsAndSideEffects<TContext>(
+          const turnResult = await resolveTurnAfterModelResponse<TContext>(
             currentAgent,
             result.state._originalInput,
             result.state._generatedItems,
@@ -1527,6 +1166,201 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       return result;
     });
   }
+
+  async #runInputGuardrails<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(state: RunState<TContext, TAgent>) {
+    const guardrails = this.inputGuardrailDefs.concat(
+      state._currentAgent.inputGuardrails.map(defineInputGuardrail),
+    );
+    if (guardrails.length > 0) {
+      const guardrailArgs = {
+        agent: state._currentAgent,
+        input: state._originalInput,
+        context: state._context,
+      };
+      try {
+        const results = await Promise.all(
+          guardrails.map(async (guardrail) => {
+            return withGuardrailSpan(
+              async (span) => {
+                const result = await guardrail.run(guardrailArgs);
+                span.spanData.triggered = result.output.tripwireTriggered;
+                return result;
+              },
+              { data: { name: guardrail.name } },
+              state._currentAgentSpan,
+            );
+          }),
+        );
+        for (const result of results) {
+          if (result.output.tripwireTriggered) {
+            if (state._currentAgentSpan) {
+              state._currentAgentSpan.setError({
+                message: 'Guardrail tripwire triggered',
+                data: { guardrail: result.guardrail.name },
+              });
+            }
+            throw new InputGuardrailTripwireTriggered(
+              `Input guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
+              result,
+              state,
+            );
+          }
+        }
+      } catch (e) {
+        if (e instanceof InputGuardrailTripwireTriggered) {
+          throw e;
+        }
+        // roll back the current turn to enable reruns
+        state._currentTurn--;
+        throw new GuardrailExecutionError(
+          `Input guardrail failed to complete: ${e}`,
+          e as Error,
+          state,
+        );
+      }
+    }
+  }
+
+  async #runOutputGuardrails<
+    TContext,
+    TOutput extends AgentOutputType,
+    TAgent extends Agent<TContext, TOutput>,
+  >(state: RunState<TContext, TAgent>, output: string) {
+    const guardrails = this.outputGuardrailDefs.concat(
+      state._currentAgent.outputGuardrails.map(defineOutputGuardrail),
+    );
+    if (guardrails.length > 0) {
+      const agentOutput = state._currentAgent.processFinalOutput(output);
+      const guardrailArgs: OutputGuardrailFunctionArgs<unknown, TOutput> = {
+        agent: state._currentAgent,
+        agentOutput,
+        context: state._context,
+        details: { modelResponse: state._lastTurnResponse },
+      };
+      try {
+        const results = await Promise.all(
+          guardrails.map(async (guardrail) => {
+            return withGuardrailSpan(
+              async (span) => {
+                const result = await guardrail.run(guardrailArgs);
+                span.spanData.triggered = result.output.tripwireTriggered;
+                return result;
+              },
+              { data: { name: guardrail.name } },
+              state._currentAgentSpan,
+            );
+          }),
+        );
+        for (const result of results) {
+          if (result.output.tripwireTriggered) {
+            if (state._currentAgentSpan) {
+              state._currentAgentSpan.setError({
+                message: 'Guardrail tripwire triggered',
+                data: { guardrail: result.guardrail.name },
+              });
+            }
+            throw new OutputGuardrailTripwireTriggered(
+              `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
+              result,
+              state,
+            );
+          }
+        }
+      } catch (e) {
+        if (e instanceof OutputGuardrailTripwireTriggered) {
+          throw e;
+        }
+        throw new GuardrailExecutionError(
+          `Output guardrail failed to complete: ${e}`,
+          e as Error,
+          state,
+        );
+      }
+    }
+  }
+
+  /**
+   * @internal
+   * Applies call-level filters and merges session updates so the model request mirrors exactly
+   * what we persisted for history.
+   */
+  async #prepareModelCall<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(
+    state: RunState<TContext, TAgent>,
+    options: SharedRunOptions<TContext>,
+    artifacts: AgentArtifacts<TContext>,
+    turnInput: AgentInputItem[],
+    serverConversationTracker?: ServerConversationTracker,
+    sessionInputUpdate?: (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => void,
+  ): Promise<PreparedModelCall<TContext>> {
+    const { model, explictlyModelSet } = await this.#resolveModelForAgent(
+      state._currentAgent,
+    );
+
+    let modelSettings = {
+      ...this.config.modelSettings,
+      ...state._currentAgent.modelSettings,
+    };
+    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+      explictlyModelSet,
+      state._currentAgent.modelSettings,
+      model,
+      modelSettings,
+    );
+    modelSettings = maybeResetToolChoice(
+      state._currentAgent,
+      state._toolUseTracker,
+      modelSettings,
+    );
+
+    const systemInstructions = await state._currentAgent.getSystemPrompt(
+      state._context,
+    );
+    const prompt = await state._currentAgent.getPrompt(state._context);
+
+    const { modelInput, sourceItems, persistedItems, filterApplied } =
+      await applyCallModelInputFilter(
+        state._currentAgent,
+        options.callModelInputFilter,
+        state._context,
+        turnInput,
+        systemInstructions,
+      );
+
+    serverConversationTracker?.markInputAsSent(sourceItems);
+    // Provide filtered clones whenever filters run so session history mirrors the model payload.
+    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
+    // instead of falling back to the unfiltered originals when the filter redacts everything.
+    sessionInputUpdate?.(
+      sourceItems,
+      filterApplied ? persistedItems : undefined,
+    );
+
+    const previousResponseId =
+      serverConversationTracker?.previousResponseId ??
+      options.previousResponseId;
+    const conversationId =
+      serverConversationTracker?.conversationId ?? options.conversationId;
+
+    return {
+      ...artifacts,
+      model,
+      explictlyModelSet,
+      modelSettings,
+      modelInput,
+      prompt,
+      previousResponseId,
+      conversationId,
+    };
+  }
 }
 
 /**
@@ -1651,6 +1485,131 @@ type FilterApplicationResult = {
   persistedItems: AgentInputItem[];
   filterApplied: boolean;
 };
+
+/**
+ * @internal
+ */
+async function applyCallModelInputFilter<TContext>(
+  agent: Agent<TContext, AgentOutputType>,
+  callModelInputFilter: CallModelInputFilter<any> | undefined,
+  context: RunContext<TContext>,
+  inputItems: AgentInputItem[],
+  systemInstructions: string | undefined,
+): Promise<FilterApplicationResult> {
+  const cloneInputItems = (
+    items: AgentInputItem[],
+    map?: WeakMap<object, AgentInputItem>,
+  ) =>
+    items.map((item) => {
+      const cloned = structuredClone(item) as AgentInputItem;
+      if (map && cloned && typeof cloned === 'object') {
+        map.set(cloned as object, item);
+      }
+      return cloned;
+    });
+
+  // Record the relationship between the cloned array passed to filters and the original inputs.
+  const cloneMap = new WeakMap<object, AgentInputItem>();
+  const originalPool = buildAgentInputPool(inputItems);
+  const fallbackOriginals: AgentInputItem[] = [];
+  // Track any original object inputs so filtered replacements can still mark them as delivered.
+  for (const item of inputItems) {
+    if (item && typeof item === 'object') {
+      fallbackOriginals.push(item);
+    }
+  }
+  const removeFromFallback = (candidate: AgentInputItem | undefined) => {
+    if (!candidate || typeof candidate !== 'object') {
+      return;
+    }
+    const index = fallbackOriginals.findIndex(
+      (original) => original === candidate,
+    );
+    if (index !== -1) {
+      fallbackOriginals.splice(index, 1);
+    }
+  };
+  const takeFallbackOriginal = (): AgentInputItem | undefined => {
+    const next = fallbackOriginals.shift();
+    if (next) {
+      removeAgentInputFromPool(originalPool, next);
+    }
+    return next;
+  };
+
+  // Always create a deep copy so downstream mutations inside filters cannot affect
+  // the cached turn state.
+  const clonedBaseInput = cloneInputItems(inputItems, cloneMap);
+  const base: ModelInputData = {
+    input: clonedBaseInput,
+    instructions: systemInstructions,
+  };
+  if (!callModelInputFilter) {
+    return {
+      modelInput: base,
+      sourceItems: [...inputItems],
+      persistedItems: [],
+      filterApplied: false,
+    };
+  }
+
+  try {
+    const result = await callModelInputFilter({
+      modelData: base,
+      agent,
+      context: context.context,
+    } as CallModelInputFilterArgs<any>);
+
+    if (!result || !Array.isArray(result.input)) {
+      throw new UserError(
+        'callModelInputFilter must return a ModelInputData object with an input array.',
+      );
+    }
+
+    const sourceItems = result.input.map((item) => {
+      if (!item || typeof item !== 'object') {
+        return undefined;
+      }
+      const original = cloneMap.get(item as object);
+      if (original) {
+        removeFromFallback(original);
+        removeAgentInputFromPool(originalPool, original);
+        return original;
+      }
+      const key = getAgentInputItemKey(item as AgentInputItem);
+      const matchedByContent = takeAgentInputFromPool(originalPool, key);
+      if (matchedByContent) {
+        removeFromFallback(matchedByContent);
+        return matchedByContent;
+      }
+      const fallback = takeFallbackOriginal();
+      if (fallback) {
+        return fallback;
+      }
+      return undefined;
+    });
+
+    const clonedFilteredInput = cloneInputItems(result.input);
+    return {
+      modelInput: {
+        input: clonedFilteredInput,
+        instructions:
+          typeof result.instructions === 'undefined'
+            ? systemInstructions
+            : result.instructions,
+      },
+      sourceItems,
+      persistedItems: clonedFilteredInput.map((item) => structuredClone(item)),
+      filterApplied: true,
+    };
+  } catch (error) {
+    addErrorToCurrentSpan({
+      message: 'Error in callModelInputFilter',
+      data: { error: String(error) },
+    });
+    throw error;
+  }
+}
 
 // Tracks which items have already been sent to or received from the Responses API when the caller
 // supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
@@ -1871,6 +1830,41 @@ type AgentArtifacts<TContext = unknown> = {
   serializedHandoffs: SerializedHandoff[];
   serializedTools: SerializedTool[];
 };
+
+/**
+ * @internal
+ * Collects tools/handoffs early so we can annotate spans before model execution begins.
+ */
+async function prepareAgentArtifacts<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
+  const handoffs = await state._currentAgent.getEnabledHandoffs(state._context);
+  const tools = await state._currentAgent.getAllTools(state._context);
+
+  if (!state._currentAgentSpan) {
+    const handoffNames = handoffs.map((h) => h.agentName);
+    state._currentAgentSpan = createAgentSpan({
+      data: {
+        name: state._currentAgent.name,
+        handoffs: handoffNames,
+        tools: tools.map((t) => t.name),
+        output_type: state._currentAgent.outputSchemaName,
+      },
+    });
+    state._currentAgentSpan.start();
+    setCurrentSpan(state._currentAgentSpan);
+  } else {
+    state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
+  }
+
+  return {
+    handoffs,
+    tools,
+    serializedHandoffs: handoffs.map((handoff) => serializeHandoff(handoff)),
+    serializedTools: tools.map((tool) => serializeTool(tool)),
+  };
+}
 
 // Captures everything required to call the model once so we avoid recomputing precedence or filters.
 // The values here are the "final say" for a turn; every loop simply consumes the structure rather

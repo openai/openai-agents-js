@@ -29,10 +29,10 @@ import {
   executeFunctionToolCalls,
   executeComputerActions,
   executeHandoffCalls,
-  executeToolsAndSideEffects,
+  resolveTurnAfterModelResponse,
   streamStepItemsToRunResult,
   saveToSession,
-  executeInterruptedToolsAndSideEffects,
+  resolveInterruptedTurn,
   toInputItemList,
 } from '../src/runImplementation';
 import {
@@ -263,7 +263,7 @@ describe('saveToSession', () => {
     };
 
     const turnResult = await withTrace('hitl-test-trace', async () => {
-      return executeInterruptedToolsAndSideEffects(
+      return resolveInterruptedTurn(
         textAgent,
         state._originalInput,
         state._generatedItems,
@@ -1468,7 +1468,7 @@ describe('hasToolsOrApprovalsToRun method', () => {
   });
 });
 
-describe('executeToolsAndSideEffects', () => {
+describe('resolveTurnAfterModelResponse', () => {
   let runner: Runner;
   let state: RunState<any, any>;
 
@@ -1489,7 +1489,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1536,7 +1536,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         structuredAgent,
         'test input',
         [],
@@ -1561,7 +1561,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1604,7 +1604,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1670,7 +1670,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         computerAgent,
         'test input',
         [],
@@ -1729,7 +1729,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         approvalAgent,
         'test input',
         [],
@@ -1787,7 +1787,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         approvalAgent,
         'test input',
         [],

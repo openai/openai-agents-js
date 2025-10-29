@@ -327,7 +327,7 @@ export function maybeResetToolChoice(
  * Continues a turn that was previously interrupted waiting for tool approval. Executes the now
  * approved tools and returns the resulting step transition.
  */
-export async function executeInterruptedToolsAndSideEffects<TContext>(
+export async function resolveInterruptedTurn<TContext>(
   agent: Agent<TContext, any>,
   originalInput: string | AgentInputItem[],
   originalPreStepItems: RunItem[],
@@ -411,50 +411,25 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
     }
   }
 
-  const checkToolOutput = await checkForFinalOutputFromTools(
-    agent,
-    functionResults,
-    state,
-  );
-
   // Exclude the tool approval items, which should not be sent to Responses API,
   // from the SingleStepResult's preStepItems
   const preStepItems = originalPreStepItems.filter((item) => {
     return !(item instanceof RunToolApprovalItem);
   });
 
-  if (checkToolOutput.isFinalOutput) {
-    runner.emit(
-      'agent_end',
-      state._context,
-      agent,
-      checkToolOutput.finalOutput,
-    );
-    agent.emit('agent_end', state._context, checkToolOutput.finalOutput);
+  const completedStep = await maybeCompleteTurnFromToolResults({
+    agent,
+    runner,
+    state,
+    functionResults,
+    originalInput,
+    newResponse,
+    preStepItems,
+    newItems,
+  });
 
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      {
-        type: 'next_step_final_output',
-        output: checkToolOutput.finalOutput,
-      },
-    );
-  } else if (checkToolOutput.isInterrupted) {
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      {
-        type: 'next_step_interruption',
-        data: {
-          interruptions: checkToolOutput.interruptions,
-        },
-      },
-    );
+  if (completedStep) {
+    return completedStep;
   }
 
   // we only ran new tools and side effects. We need to run the rest of the agent
@@ -472,7 +447,7 @@ export async function executeInterruptedToolsAndSideEffects<TContext>(
  * Executes every follow-up action the model requested (function tools, computer actions, MCP flows),
  * appends their outputs to the run history, and determines the next step for the agent loop.
  */
-export async function executeToolsAndSideEffects<TContext>(
+export async function resolveTurnAfterModelResponse<TContext>(
   agent: Agent<TContext, any>,
   originalInput: string | AgentInputItem[],
   originalPreStepItems: RunItem[],
@@ -568,44 +543,19 @@ export async function executeToolsAndSideEffects<TContext>(
     );
   }
 
-  const checkToolOutput = await checkForFinalOutputFromTools(
+  const completedStep = await maybeCompleteTurnFromToolResults({
     agent,
-    functionResults,
+    runner,
     state,
-  );
+    functionResults,
+    originalInput,
+    newResponse,
+    preStepItems,
+    newItems,
+  });
 
-  if (checkToolOutput.isFinalOutput) {
-    runner.emit(
-      'agent_end',
-      state._context,
-      agent,
-      checkToolOutput.finalOutput,
-    );
-    agent.emit('agent_end', state._context, checkToolOutput.finalOutput);
-
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      {
-        type: 'next_step_final_output',
-        output: checkToolOutput.finalOutput,
-      },
-    );
-  } else if (checkToolOutput.isInterrupted) {
-    return new SingleStepResult(
-      originalInput,
-      newResponse,
-      preStepItems,
-      newItems,
-      {
-        type: 'next_step_interruption',
-        data: {
-          interruptions: checkToolOutput.interruptions,
-        },
-      },
-    );
+  if (completedStep) {
+    return completedStep;
   }
 
   // If the model issued any tool calls or handoffs in this turn,
@@ -701,6 +651,67 @@ export async function executeToolsAndSideEffects<TContext>(
     newItems,
     { type: 'next_step_run_again' },
   );
+}
+
+type TurnFinalizationParams<TContext> = {
+  agent: Agent<TContext, any>;
+  runner: Runner;
+  state: RunState<TContext, Agent<TContext, any>>;
+  functionResults: FunctionToolResult[];
+  originalInput: string | AgentInputItem[];
+  newResponse: ModelResponse;
+  preStepItems: RunItem[];
+  newItems: RunItem[];
+};
+
+async function maybeCompleteTurnFromToolResults<TContext>({
+  agent,
+  runner,
+  state,
+  functionResults,
+  originalInput,
+  newResponse,
+  preStepItems,
+  newItems,
+}: TurnFinalizationParams<TContext>): Promise<SingleStepResult | null> {
+  const toolOutcome = await checkForFinalOutputFromTools(
+    agent,
+    functionResults,
+    state,
+  );
+
+  if (toolOutcome.isFinalOutput) {
+    runner.emit('agent_end', state._context, agent, toolOutcome.finalOutput);
+    agent.emit('agent_end', state._context, toolOutcome.finalOutput);
+
+    return new SingleStepResult(
+      originalInput,
+      newResponse,
+      preStepItems,
+      newItems,
+      {
+        type: 'next_step_final_output',
+        output: toolOutcome.finalOutput,
+      },
+    );
+  }
+
+  if (toolOutcome.isInterrupted) {
+    return new SingleStepResult(
+      originalInput,
+      newResponse,
+      preStepItems,
+      newItems,
+      {
+        type: 'next_step_interruption',
+        data: {
+          interruptions: toolOutcome.interruptions,
+        },
+      },
+    );
+  }
+
+  return null;
 }
 
 /**
