@@ -198,15 +198,41 @@ export type IndividualRunOptions<TContext = undefined> =
 // --------------------------------------------------------------
 
 /**
+ * Run an agent workflow starting at the given agent using the default runner.
+ * The default runner is a singleton instance of the Runner class.
+ * @param agent - The agent to run.
+ * @param input - The input to the agent. You can pass a string or an array of `AgentInputItem`.
+ * @param options - Options for the run, including streaming behavior, execution context, and the maximum number of turns.
+ * @returns The result of the run.
+ */
+export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
+  agent: TAgent,
+  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+  options?: NonStreamRunOptions<TContext>,
+): Promise<RunResult<TContext, TAgent>>;
+export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
+  agent: TAgent,
+  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+  options?: StreamRunOptions<TContext>,
+): Promise<StreamedRunResult<TContext, TAgent>>;
+export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
+  agent: TAgent,
+  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+  options?: StreamRunOptions<TContext> | NonStreamRunOptions<TContext>,
+): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
+  const runner = getDefaultRunner();
+  if (options?.stream) {
+    return await runner.run(agent, input, options);
+  } else {
+    return await runner.run(agent, input, options);
+  }
+}
+
+/**
  * A Runner is responsible for running an agent workflow.
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   public readonly config: RunConfig;
-  private readonly inputGuardrailDefs: InputGuardrailDefinition[];
-  private readonly outputGuardrailDefs: OutputGuardrailDefinition<
-    OutputGuardrailMetadata,
-    AgentOutputType<unknown>
-  >[];
 
   constructor(config: Partial<RunConfig> = {}) {
     super();
@@ -233,6 +259,265 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       defineOutputGuardrail,
     );
   }
+
+  /**
+   * Run a workflow starting at the given agent. The agent will run in a loop until a final
+   * output is generated. The loop runs like so:
+   * 1. The agent is invoked with the given input.
+   * 2. If there is a final output (i.e. the agent produces something of type
+   *    `agent.outputType`, the loop terminates.
+   * 3. If there's a handoff, we run the loop again, with the new agent.
+   * 4. Else, we run tool calls (if any), and re-run the loop.
+   *
+   * In two cases, the agent may raise an exception:
+   * 1. If the maxTurns is exceeded, a MaxTurnsExceeded exception is raised.
+   * 2. If a guardrail tripwire is triggered, a GuardrailTripwireTriggered exception is raised.
+   *
+   * Note that only the first agent's input guardrails are run.
+   *
+   * @param agent - The starting agent to run.
+   * @param input - The initial input to the agent. You can pass a string or an array of
+   * `AgentInputItem`.
+   * @param options - Options for the run, including streaming behavior, execution context, and the
+   * maximum number of turns.
+   * @returns The result of the run.
+   */
+  run<TAgent extends Agent<any, any>, TContext = undefined>(
+    agent: TAgent,
+    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+    options?: NonStreamRunOptions<TContext>,
+  ): Promise<RunResult<TContext, TAgent>>;
+  run<TAgent extends Agent<any, any>, TContext = undefined>(
+    agent: TAgent,
+    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+    options?: StreamRunOptions<TContext>,
+  ): Promise<StreamedRunResult<TContext, TAgent>>;
+  async run<TAgent extends Agent<any, any>, TContext = undefined>(
+    agent: TAgent,
+    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+    options: IndividualRunOptions<TContext> = {
+      stream: false,
+      context: undefined,
+    } as IndividualRunOptions<TContext>,
+  ): Promise<
+    RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
+  > {
+    const resolvedOptions = options ?? { stream: false, context: undefined };
+    // Per-run options take precedence over runner defaults for session memory behavior.
+    const sessionInputCallback =
+      resolvedOptions.sessionInputCallback ?? this.config.sessionInputCallback;
+    // Likewise allow callers to override callModelInputFilter on individual runs.
+    const callModelInputFilter =
+      resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
+    const hasCallModelInputFilter = Boolean(callModelInputFilter);
+    const effectiveOptions = {
+      ...resolvedOptions,
+      sessionInputCallback,
+      callModelInputFilter,
+    };
+    const session = effectiveOptions.session;
+    const resumingFromState = input instanceof RunState;
+    let sessionInputItemsToPersist: AgentInputItem[] | undefined =
+      session && resumingFromState ? [] : undefined;
+    let sessionInputItemsFiltered: AgentInputItem[] | undefined = undefined;
+    let sessionNewInputCounts: Map<string, number> | undefined =
+      session && resumingFromState ? new Map() : undefined;
+    // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
+    // the original objects (so we can respect resume counts) while `filteredItems`, when present,
+    // contains the filtered/redacted clones that must be persisted for history.
+    const updateSessionInputItems = (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => {
+      const counts = sessionNewInputCounts;
+      if (filteredItems !== undefined) {
+        if (!counts) {
+          sessionInputItemsFiltered = filteredItems.map((item) =>
+            structuredClone(item),
+          );
+          return;
+        }
+        const collected: AgentInputItem[] = [];
+        const allocateFallback = () => {
+          for (const [key, remaining] of counts) {
+            if (remaining > 0) {
+              counts.set(key, remaining - 1);
+              return true;
+            }
+          }
+          return false;
+        };
+        for (let i = 0; i < filteredItems.length; i++) {
+          const filteredItem = filteredItems[i];
+          if (!filteredItem) {
+            continue;
+          }
+          let allocated = false;
+          const source = sourceItems[i];
+          if (source) {
+            const sourceKey = getAgentInputItemKey(source);
+            const remaining = counts.get(sourceKey) ?? 0;
+            if (remaining > 0) {
+              counts.set(sourceKey, remaining - 1);
+              collected.push(structuredClone(filteredItem));
+              allocated = true;
+              continue;
+            }
+          }
+          const filteredKey = getAgentInputItemKey(filteredItem);
+          const filteredRemaining = counts.get(filteredKey) ?? 0;
+          if (filteredRemaining > 0) {
+            counts.set(filteredKey, filteredRemaining - 1);
+            collected.push(structuredClone(filteredItem));
+            allocated = true;
+            continue;
+          }
+          if (!source && allocateFallback()) {
+            collected.push(structuredClone(filteredItem));
+            allocated = true;
+          }
+          if (
+            !allocated &&
+            !source &&
+            sessionInputItemsFiltered === undefined
+          ) {
+            collected.push(structuredClone(filteredItem));
+          }
+        }
+        if (collected.length > 0 || sessionInputItemsFiltered === undefined) {
+          sessionInputItemsFiltered = collected;
+        }
+        return;
+      }
+      const filtered: AgentInputItem[] = [];
+      if (!counts) {
+        for (const item of sourceItems) {
+          if (!item) {
+            continue;
+          }
+          filtered.push(structuredClone(item));
+        }
+      } else {
+        for (const item of sourceItems) {
+          if (!item) {
+            continue;
+          }
+          const key = getAgentInputItemKey(item);
+          const remaining = counts.get(key) ?? 0;
+          if (remaining <= 0) {
+            continue;
+          }
+          counts.set(key, remaining - 1);
+          filtered.push(structuredClone(item));
+        }
+      }
+      if (filtered.length > 0) {
+        sessionInputItemsFiltered = filtered;
+      } else if (sessionInputItemsFiltered === undefined) {
+        sessionInputItemsFiltered = [];
+      }
+    };
+
+    const resolveSessionItemsForPersistence = () => {
+      if (sessionInputItemsFiltered !== undefined) {
+        return sessionInputItemsFiltered;
+      }
+      if (hasCallModelInputFilter) {
+        return undefined;
+      }
+      return sessionInputItemsToPersist;
+    };
+
+    let preparedInput: typeof input = input;
+    if (!(preparedInput instanceof RunState)) {
+      const prepared = await prepareInputItemsWithSession(
+        preparedInput,
+        session,
+        sessionInputCallback,
+      );
+      preparedInput = prepared.preparedInput;
+      if (session) {
+        const items = prepared.sessionItems ?? [];
+        // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
+        sessionInputItemsToPersist = items.map((item) => structuredClone(item));
+        sessionNewInputCounts = new Map();
+        for (const item of items) {
+          const key = getAgentInputItemKey(item);
+          sessionNewInputCounts.set(
+            key,
+            (sessionNewInputCounts.get(key) ?? 0) + 1,
+          );
+        }
+      }
+    }
+
+    let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
+    if (session) {
+      let persisted = false;
+      ensureStreamInputPersisted = async () => {
+        if (persisted) {
+          return;
+        }
+        const itemsToPersist = resolveSessionItemsForPersistence();
+        if (!itemsToPersist || itemsToPersist.length === 0) {
+          return;
+        }
+        persisted = true;
+        await saveStreamInputToSession(session, itemsToPersist);
+      };
+    }
+
+    const executeRun = async () => {
+      if (effectiveOptions.stream) {
+        const streamResult = await this.#runIndividualStream(
+          agent,
+          preparedInput,
+          effectiveOptions,
+          ensureStreamInputPersisted,
+          updateSessionInputItems,
+        );
+        return streamResult;
+      }
+      const runResult = await this.#runIndividualNonStream(
+        agent,
+        preparedInput,
+        effectiveOptions,
+        updateSessionInputItems,
+      );
+      await saveToSession(
+        session,
+        resolveSessionItemsForPersistence(),
+        runResult,
+      );
+      return runResult;
+    };
+
+    if (preparedInput instanceof RunState && preparedInput._trace) {
+      return withTrace(preparedInput._trace, async () => {
+        if (preparedInput._currentAgentSpan) {
+          setCurrentSpan(preparedInput._currentAgentSpan);
+        }
+        return executeRun();
+      });
+    }
+    return getOrCreateTrace(async () => executeRun(), {
+      traceId: this.config.traceId,
+      name: this.config.workflowName,
+      groupId: this.config.groupId,
+      metadata: this.config.traceMetadata,
+    });
+  }
+
+  // --------------------------------------------------------------
+  //  Internals
+  // --------------------------------------------------------------
+
+  private readonly inputGuardrailDefs: InputGuardrailDefinition[];
+
+  private readonly outputGuardrailDefs: OutputGuardrailDefinition<
+    OutputGuardrailMetadata,
+    AgentOutputType<unknown>
+  >[];
 
   /**
    * @internal
@@ -1185,257 +1470,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       return result;
     });
   }
-
-  /**
-   * Run a workflow starting at the given agent. The agent will run in a loop until a final
-   * output is generated. The loop runs like so:
-   * 1. The agent is invoked with the given input.
-   * 2. If there is a final output (i.e. the agent produces something of type
-   *    `agent.outputType`, the loop terminates.
-   * 3. If there's a handoff, we run the loop again, with the new agent.
-   * 4. Else, we run tool calls (if any), and re-run the loop.
-   *
-   * In two cases, the agent may raise an exception:
-   * 1. If the maxTurns is exceeded, a MaxTurnsExceeded exception is raised.
-   * 2. If a guardrail tripwire is triggered, a GuardrailTripwireTriggered exception is raised.
-   *
-   * Note that only the first agent's input guardrails are run.
-   *
-   * @param agent - The starting agent to run.
-   * @param input - The initial input to the agent. You can pass a string or an array of
-   * `AgentInputItem`.
-   * @param options - Options for the run, including streaming behavior, execution context, and the
-   * maximum number of turns.
-   * @returns The result of the run.
-   */
-  run<TAgent extends Agent<any, any>, TContext = undefined>(
-    agent: TAgent,
-    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options?: NonStreamRunOptions<TContext>,
-  ): Promise<RunResult<TContext, TAgent>>;
-  run<TAgent extends Agent<any, any>, TContext = undefined>(
-    agent: TAgent,
-    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options?: StreamRunOptions<TContext>,
-  ): Promise<StreamedRunResult<TContext, TAgent>>;
-  async run<TAgent extends Agent<any, any>, TContext = undefined>(
-    agent: TAgent,
-    input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options: IndividualRunOptions<TContext> = {
-      stream: false,
-      context: undefined,
-    } as IndividualRunOptions<TContext>,
-  ): Promise<
-    RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
-  > {
-    const resolvedOptions = options ?? { stream: false, context: undefined };
-    // Per-run options take precedence over runner defaults for session memory behavior.
-    const sessionInputCallback =
-      resolvedOptions.sessionInputCallback ?? this.config.sessionInputCallback;
-    // Likewise allow callers to override callModelInputFilter on individual runs.
-    const callModelInputFilter =
-      resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
-    const hasCallModelInputFilter = Boolean(callModelInputFilter);
-    const effectiveOptions = {
-      ...resolvedOptions,
-      sessionInputCallback,
-      callModelInputFilter,
-    };
-    const session = effectiveOptions.session;
-    const resumingFromState = input instanceof RunState;
-    let sessionInputItemsToPersist: AgentInputItem[] | undefined =
-      session && resumingFromState ? [] : undefined;
-    let sessionInputItemsFiltered: AgentInputItem[] | undefined = undefined;
-    let sessionNewInputCounts: Map<string, number> | undefined =
-      session && resumingFromState ? new Map() : undefined;
-    // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
-    // the original objects (so we can respect resume counts) while `filteredItems`, when present,
-    // contains the filtered/redacted clones that must be persisted for history.
-    const updateSessionInputItems = (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => {
-      const counts = sessionNewInputCounts;
-      if (filteredItems !== undefined) {
-        if (!counts) {
-          sessionInputItemsFiltered = filteredItems.map((item) =>
-            structuredClone(item),
-          );
-          return;
-        }
-        const collected: AgentInputItem[] = [];
-        const allocateFallback = () => {
-          for (const [key, remaining] of counts) {
-            if (remaining > 0) {
-              counts.set(key, remaining - 1);
-              return true;
-            }
-          }
-          return false;
-        };
-        for (let i = 0; i < filteredItems.length; i++) {
-          const filteredItem = filteredItems[i];
-          if (!filteredItem) {
-            continue;
-          }
-          let allocated = false;
-          const source = sourceItems[i];
-          if (source) {
-            const sourceKey = getAgentInputItemKey(source);
-            const remaining = counts.get(sourceKey) ?? 0;
-            if (remaining > 0) {
-              counts.set(sourceKey, remaining - 1);
-              collected.push(structuredClone(filteredItem));
-              allocated = true;
-              continue;
-            }
-          }
-          const filteredKey = getAgentInputItemKey(filteredItem);
-          const filteredRemaining = counts.get(filteredKey) ?? 0;
-          if (filteredRemaining > 0) {
-            counts.set(filteredKey, filteredRemaining - 1);
-            collected.push(structuredClone(filteredItem));
-            allocated = true;
-            continue;
-          }
-          if (!source && allocateFallback()) {
-            collected.push(structuredClone(filteredItem));
-            allocated = true;
-          }
-          if (
-            !allocated &&
-            !source &&
-            sessionInputItemsFiltered === undefined
-          ) {
-            collected.push(structuredClone(filteredItem));
-          }
-        }
-        if (collected.length > 0 || sessionInputItemsFiltered === undefined) {
-          sessionInputItemsFiltered = collected;
-        }
-        return;
-      }
-      const filtered: AgentInputItem[] = [];
-      if (!counts) {
-        for (const item of sourceItems) {
-          if (!item) {
-            continue;
-          }
-          filtered.push(structuredClone(item));
-        }
-      } else {
-        for (const item of sourceItems) {
-          if (!item) {
-            continue;
-          }
-          const key = getAgentInputItemKey(item);
-          const remaining = counts.get(key) ?? 0;
-          if (remaining <= 0) {
-            continue;
-          }
-          counts.set(key, remaining - 1);
-          filtered.push(structuredClone(item));
-        }
-      }
-      if (filtered.length > 0) {
-        sessionInputItemsFiltered = filtered;
-      } else if (sessionInputItemsFiltered === undefined) {
-        sessionInputItemsFiltered = [];
-      }
-    };
-
-    const resolveSessionItemsForPersistence = () => {
-      if (sessionInputItemsFiltered !== undefined) {
-        return sessionInputItemsFiltered;
-      }
-      if (hasCallModelInputFilter) {
-        return undefined;
-      }
-      return sessionInputItemsToPersist;
-    };
-
-    let preparedInput: typeof input = input;
-    if (!(preparedInput instanceof RunState)) {
-      const prepared = await prepareInputItemsWithSession(
-        preparedInput,
-        session,
-        sessionInputCallback,
-      );
-      preparedInput = prepared.preparedInput;
-      if (session) {
-        const items = prepared.sessionItems ?? [];
-        // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
-        sessionInputItemsToPersist = items.map((item) => structuredClone(item));
-        sessionNewInputCounts = new Map();
-        for (const item of items) {
-          const key = getAgentInputItemKey(item);
-          sessionNewInputCounts.set(
-            key,
-            (sessionNewInputCounts.get(key) ?? 0) + 1,
-          );
-        }
-      }
-    }
-
-    let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
-    if (session) {
-      let persisted = false;
-      ensureStreamInputPersisted = async () => {
-        if (persisted) {
-          return;
-        }
-        const itemsToPersist = resolveSessionItemsForPersistence();
-        if (!itemsToPersist || itemsToPersist.length === 0) {
-          return;
-        }
-        persisted = true;
-        await saveStreamInputToSession(session, itemsToPersist);
-      };
-    }
-
-    const executeRun = async () => {
-      if (effectiveOptions.stream) {
-        const streamResult = await this.#runIndividualStream(
-          agent,
-          preparedInput,
-          effectiveOptions,
-          ensureStreamInputPersisted,
-          updateSessionInputItems,
-        );
-        return streamResult;
-      }
-      const runResult = await this.#runIndividualNonStream(
-        agent,
-        preparedInput,
-        effectiveOptions,
-        updateSessionInputItems,
-      );
-      await saveToSession(
-        session,
-        resolveSessionItemsForPersistence(),
-        runResult,
-      );
-      return runResult;
-    };
-
-    if (preparedInput instanceof RunState && preparedInput._trace) {
-      return withTrace(preparedInput._trace, async () => {
-        if (preparedInput._currentAgentSpan) {
-          setCurrentSpan(preparedInput._currentAgentSpan);
-        }
-        return executeRun();
-      });
-    }
-    return getOrCreateTrace(async () => executeRun(), {
-      traceId: this.config.traceId,
-      name: this.config.workflowName,
-      groupId: this.config.groupId,
-      metadata: this.config.traceMetadata,
-    });
-  }
 }
 
+// --------------------------------------------------------------
+//  Internal helpers
+// --------------------------------------------------------------
+
+const DEFAULT_MAX_TURNS = 10;
+
 let _defaultRunner: Runner | undefined = undefined;
+
 function getDefaultRunner() {
   if (_defaultRunner) {
     return _defaultRunner;
@@ -1460,35 +1504,6 @@ export function selectModel(
   }
   return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
 }
-
-export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
-  agent: TAgent,
-  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: NonStreamRunOptions<TContext>,
-): Promise<RunResult<TContext, TAgent>>;
-export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
-  agent: TAgent,
-  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: StreamRunOptions<TContext>,
-): Promise<StreamedRunResult<TContext, TAgent>>;
-export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
-  agent: TAgent,
-  input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: StreamRunOptions<TContext> | NonStreamRunOptions<TContext>,
-): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
-  const runner = getDefaultRunner();
-  if (options?.stream) {
-    return await runner.run(agent, input, options);
-  } else {
-    return await runner.run(agent, input, options);
-  }
-}
-
-// --------------------------------------------------------------
-//  Internal helpers
-// --------------------------------------------------------------
-
-const DEFAULT_MAX_TURNS = 10;
 
 /**
  * Mutable view of the instructions + input items that the model will receive.
