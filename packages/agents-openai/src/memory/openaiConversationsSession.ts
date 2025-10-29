@@ -107,6 +107,10 @@ export class OpenAIConversationsSession implements Session {
     }
     if (limit) {
       items.reverse();
+      if (items.length > limit) {
+        items.splice(0, items.length - limit);
+      }
+      return items;
     }
     return items;
   }
