@@ -25,6 +25,7 @@ import {
   getToolCallOutputItem,
   maybeResetToolChoice,
   processModelResponse,
+  prepareInputItemsWithSession,
   executeFunctionToolCalls,
   executeComputerActions,
   executeHandoffCalls,
@@ -286,6 +287,64 @@ describe('saveToSession', () => {
     ] as protocol.FunctionCallResultItem;
     expect(last.type).toBe('function_call_result');
     expect(last.callId).toBe(functionCall.callId);
+  });
+});
+
+describe('prepareInputItemsWithSession', () => {
+  class StubSession implements Session {
+    constructor(private history: AgentInputItem[]) {}
+
+    async getSessionId(): Promise<string> {
+      return 'session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.history];
+    }
+
+    async addItems(_items: AgentInputItem[]): Promise<void> {}
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return undefined;
+    }
+
+    async clearSession(): Promise<void> {}
+  }
+
+  it('only persists new inputs when callbacks prepend history duplicates', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'ok',
+      id: 'history-1',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'ok',
+      id: 'new-1',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        expect(history).toHaveLength(1);
+        expect(history[0]).toBe(historyItem);
+        expect(newItems).toHaveLength(1);
+        expect(newItems[0]).toBe(newItem);
+        return [...history.slice(-1), ...newItems];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, newItem]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual([newItem]);
+    expect(sessionItems[0]).toBe(newItem);
   });
 });
 

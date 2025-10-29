@@ -1651,13 +1651,8 @@ export async function prepareInputItemsWithSession(
       continue;
     }
 
-    const newRemaining = newInputCounts.get(key) ?? 0;
-    if (newRemaining > 0) {
-      newInputCounts.set(key, newRemaining - 1);
-      appended.push(item);
-      continue;
-    }
-
+    // Prioritize exact history matches before payload-based counts so callbacks that surface
+    // history ahead of identical new inputs keep previously persisted items out of the new queue.
     if (consumeReference(historyRefs, key, item)) {
       decrementCount(historyCounts, key);
       continue;
@@ -1666,6 +1661,13 @@ export async function prepareInputItemsWithSession(
     const historyRemaining = historyCounts.get(key) ?? 0;
     if (historyRemaining > 0) {
       historyCounts.set(key, historyRemaining - 1);
+      continue;
+    }
+
+    const newRemaining = newInputCounts.get(key) ?? 0;
+    if (newRemaining > 0) {
+      newInputCounts.set(key, newRemaining - 1);
+      appended.push(item);
       continue;
     }
 
