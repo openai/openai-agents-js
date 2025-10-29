@@ -88,7 +88,72 @@ describe('OpenAIConversationsSession', () => {
     expect(result).toHaveLength(2);
     expect(result.map((item: any) => item.id)).toEqual([
       'resp-1-msg-2',
-      'resp-1-msg-1',
+      'resp-1-msg-3',
     ]);
+  });
+
+  it('popItem deletes the newest converted item', async () => {
+    convertToOutputItemMock.mockReturnValue([
+      {
+        id: 'resp-1-msg-1',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+      {
+        id: 'resp-1-msg-2',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+      {
+        id: 'resp-1-msg-3',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ] as any);
+
+    const items = [
+      {
+        type: 'message',
+        role: 'assistant',
+        id: 'resp-1',
+        content: [],
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const deleteMock = vi.fn();
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: deleteMock,
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const popped = await session.popItem();
+
+    expect(list).toHaveBeenCalledWith('conv-123', { limit: 1, order: 'desc' });
+    expect(deleteMock).toHaveBeenCalledWith('resp-1-msg-3', {
+      conversation_id: 'conv-123',
+    });
+    expect(popped?.id).toBe('resp-1-msg-3');
   });
 });

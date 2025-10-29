@@ -3,6 +3,8 @@ import type { AgentInputItem, Session } from '@openai/agents-core';
 import { getDefaultOpenAIClient, getDefaultOpenAIKey } from '../defaults';
 import { convertToOutputItem, getInputItems } from '../openaiResponsesModel';
 import { protocol } from '@openai/agents-core';
+import type { ConversationItem as APIConversationItem } from 'openai/resources/conversations/items';
+import type { Message as APIConversationMessage } from 'openai/resources/conversations/conversations';
 
 export type OpenAIConversationsSessionOptions = {
   conversationId?: string;
@@ -62,57 +64,84 @@ export class OpenAIConversationsSession implements Session {
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
     const conversationId = await this.getSessionId();
-    const items: AgentInputItem[] = [];
-
-    const iterator = this.#client.conversations.items.list(
-      conversationId,
-      limit ? { limit, order: 'desc' as const } : { order: 'asc' as const },
-    );
-    for await (const item of iterator) {
+    const toAgentItems = (item: APIConversationItem): AgentInputItem[] => {
       if (item.type === 'message' && item.role === 'user') {
-        items.push({
-          id: item.id,
-          type: 'message',
-          role: 'user',
-          content: item.content
-            .map((c) => {
-              if (c.type === 'input_text') {
-                return { type: 'input_text', text: c.text };
-              } else if (c.type === 'input_image') {
-                if (c.image_url) {
-                  return { type: 'input_image', image: c.image_url };
-                } else if (c.file_id) {
-                  return { type: 'input_image', image: { id: c.file_id } };
+        const message = item as APIConversationMessage;
+        return [
+          {
+            id: item.id,
+            type: 'message',
+            role: 'user',
+            content: (message.content ?? [])
+              .map((c) => {
+                if (c.type === 'input_text') {
+                  return { type: 'input_text', text: c.text };
+                } else if (c.type === 'input_image') {
+                  if (c.image_url) {
+                    return { type: 'input_image', image: c.image_url };
+                  } else if (c.file_id) {
+                    return { type: 'input_image', image: { id: c.file_id } };
+                  }
+                } else if (c.type === 'input_file') {
+                  if (c.file_url) {
+                    return { type: 'input_file', file: c.file_url };
+                  } else if (c.file_id) {
+                    return { type: 'input_file', file: { id: c.file_id } };
+                  }
                 }
-              } else if (c.type === 'input_file') {
-                if (c.file_url) {
-                  return { type: 'input_file', file: c.file_url };
-                } else if (c.file_id) {
-                  return { type: 'input_file', file: { id: c.file_id } };
-                }
-              }
-              // Add more content types here when they're added
-              return null;
-            })
-            .filter((c) => c !== null) as protocol.UserContent[],
-        });
-      } else {
-        items.push(
-          ...convertToOutputItem([item as OpenAI.Responses.ResponseOutputItem]),
-        );
+                // Add more content types here when they're added
+                return null;
+              })
+              .filter((c) => c !== null) as protocol.UserContent[],
+          },
+        ];
       }
-      if (limit && items.length >= limit) {
-        break;
-      }
-    }
-    if (limit) {
-      items.reverse();
-      if (items.length > limit) {
-        items.splice(0, items.length - limit);
+
+      return convertToOutputItem([item as OpenAI.Responses.ResponseOutputItem]);
+    };
+
+    if (!limit) {
+      const items: AgentInputItem[] = [];
+      const iterator = this.#client.conversations.items.list(conversationId, {
+        order: 'asc' as const,
+      });
+      for await (const item of iterator) {
+        items.push(...toAgentItems(item));
       }
       return items;
     }
-    return items;
+
+    const groups: AgentInputItem[][] = [];
+    let total = 0;
+    const iterator = this.#client.conversations.items.list(conversationId, {
+      limit,
+      order: 'desc' as const,
+    });
+
+    for await (const item of iterator) {
+      const group = toAgentItems(item);
+      if (!group.length) {
+        continue;
+      }
+
+      groups.push(group);
+      total += group.length;
+
+      if (total >= limit) {
+        break;
+      }
+    }
+
+    const flattened: AgentInputItem[] = [];
+    for (let index = groups.length - 1; index >= 0; index -= 1) {
+      flattened.push(...groups[index]);
+    }
+
+    if (flattened.length > limit) {
+      flattened.splice(0, flattened.length - limit);
+    }
+
+    return flattened;
   }
 
   async addItems(items: AgentInputItem[]): Promise<void> {
