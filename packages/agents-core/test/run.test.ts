@@ -1372,7 +1372,9 @@ describe('Runner.run', () => {
           if (filterCalls === 1) {
             return {
               instructions: modelData.instructions,
-              input: modelData.input.slice(1),
+              input: modelData.input
+                .slice(1)
+                .map((item) => structuredClone(item)),
             };
           }
           return modelData;

@@ -62,6 +62,12 @@ import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from './defaultModel';
 import type { Session, SessionInputCallback } from './memory/session';
+import { encodeUint8ArrayToBase64 } from './utils/base64';
+import {
+  isArrayBufferView,
+  isNodeBuffer,
+  isSerializedBufferSnapshot,
+} from './utils/smartString';
 
 const DEFAULT_MAX_TURNS = 10;
 
@@ -78,6 +84,107 @@ type FilterApplicationResult = {
   modelInput: ModelInputData;
   sourceItems: (AgentInputItem | undefined)[];
 };
+
+type AgentInputItemPool = Map<string, AgentInputItem[]>;
+
+function getAgentInputItemKey(item: AgentInputItem): string {
+  // Serialize deeply so binary payloads are comparable across clones.
+  return JSON.stringify(item, agentInputSerializationReplacer);
+}
+
+function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
+  // Track every original object that the filter is allowed to reference by value instead of identity.
+  const pool: AgentInputItemPool = new Map();
+  for (const item of items) {
+    const key = getAgentInputItemKey(item);
+    const existing = pool.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      pool.set(key, [item]);
+    }
+  }
+  return pool;
+}
+
+function takeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  key: string,
+): AgentInputItem | undefined {
+  // Provide a deterministic original when the filter returns a brand new clone.
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return undefined;
+  }
+  const [first] = candidates;
+  candidates.shift();
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+  return first;
+}
+
+function removeAgentInputFromPool(
+  pool: AgentInputItemPool,
+  item: AgentInputItem,
+) {
+  // Remove the specific reference so duplicates remain available for later matches.
+  const key = getAgentInputItemKey(item);
+  const candidates = pool.get(key);
+  if (!candidates || candidates.length === 0) {
+    return;
+  }
+  const index = candidates.findIndex((candidate) => candidate === item);
+  if (index === -1) {
+    return;
+  }
+  candidates.splice(index, 1);
+  if (candidates.length === 0) {
+    pool.delete(key);
+  }
+}
+
+function agentInputSerializationReplacer(
+  _key: string,
+  value: unknown,
+): unknown {
+  // Reproduce runImplementation's serialization so filters that clone buffers still map back correctly.
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: 'ArrayBuffer',
+      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
+    };
+  }
+
+  if (isArrayBufferView(value)) {
+    const view = value as ArrayBufferView;
+    return {
+      __type: view.constructor.name,
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isNodeBuffer(value)) {
+    const view = value as Uint8Array;
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+
+  if (isSerializedBufferSnapshot(value)) {
+    return {
+      __type: 'Buffer',
+      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
+    };
+  }
+
+  return value;
+}
 
 /**
  * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
@@ -484,6 +591,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     // Record the relationship between the cloned array passed to filters and the original inputs.
     const cloneMap = new WeakMap<object, AgentInputItem>();
+    const originalPool = buildAgentInputPool(inputItems);
 
     // Always create a deep copy so downstream mutations inside filters cannot affect
     // the cached turn state.
@@ -516,8 +624,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (!item || typeof item !== 'object') {
           return undefined;
         }
-        // Map the cloned item the filter returned back to the original object reference sent earlier.
-        return cloneMap.get(item as object);
+        const original = cloneMap.get(item as object);
+        if (original) {
+          removeAgentInputFromPool(originalPool, original);
+          return original;
+        }
+        const key = getAgentInputItemKey(item as AgentInputItem);
+        return takeAgentInputFromPool(originalPool, key);
       });
 
       return {
