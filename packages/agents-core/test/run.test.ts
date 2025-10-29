@@ -1278,6 +1278,116 @@ describe('Runner.run', () => {
       expect(getFirstTextContent(sentInput[0])).toBe('Hello override');
     });
 
+    it('keeps server conversation tracking aligned with filtered inputs', async () => {
+      class ConversationTrackingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        constructor(private readonly responses: ModelResponse[]) {}
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          const cloned: ModelRequest = {
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          };
+          this.requests.push(cloned);
+          const response = this.responses.shift();
+          if (!response) {
+            throw new Error('No response configured');
+          }
+          return response;
+        }
+
+        getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ConversationTrackingModel([
+        {
+          output: [
+            fakeModelMessage('call the tool'),
+            {
+              id: 'call-1',
+              type: 'function_call',
+              name: 'filterTool',
+              callId: 'call-1',
+              status: 'completed',
+              arguments: JSON.stringify({ test: 'value' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+          responseId: 'resp-1',
+        },
+        {
+          output: [fakeModelMessage('all done')],
+          usage: new Usage(),
+          responseId: 'resp-2',
+        },
+      ]);
+
+      const filterTool = tool({
+        name: 'filterTool',
+        description: 'test tool',
+        parameters: z.object({ test: z.string() }),
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls += 1;
+          if (filterCalls === 1) {
+            return {
+              instructions: modelData.instructions,
+              input: modelData.input.slice(1),
+            };
+          }
+          return modelData;
+        },
+      });
+
+      const agent = new Agent({
+        name: 'TrackerFilterAgent',
+        model,
+        tools: [filterTool],
+      });
+
+      const result = await runner.run(
+        agent,
+        [user('First input'), user('Second input')],
+        { conversationId: 'conv-filter-tracker' },
+      );
+
+      expect(result.finalOutput).toBe('all done');
+      expect(filterCalls).toBe(2);
+      expect(model.requests).toHaveLength(2);
+
+      const firstInput = model.requests[0].input as AgentInputItem[];
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput).toHaveLength(1);
+      expect(getFirstTextContent(firstInput[0])).toBe('Second input');
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondMessages = secondInput.filter(
+        (item) => item.type === 'message',
+      );
+      expect(secondMessages).toHaveLength(1);
+      expect(getFirstTextContent(secondMessages[0])).toBe('First input');
+
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'function_call_result' &&
+            (item as protocol.FunctionCallResultItem).callId === 'call-1',
+        ),
+      ).toBe(true);
+    });
+
     it('preserves providerData when saving streaming session items', async () => {
       class MetadataStreamingModel implements Model {
         constructor(private readonly response: ModelResponse) {}

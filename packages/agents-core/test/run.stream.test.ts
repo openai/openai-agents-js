@@ -19,12 +19,27 @@ import {
   StreamEvent,
   FunctionCallItem,
   tool,
+  user,
   Session,
   InputGuardrailTripwireTriggered,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
 import * as runImplementation from '../src/runImplementation';
+
+function getFirstTextContent(item: AgentInputItem): string | undefined {
+  if (item.type !== 'message') {
+    return undefined;
+  }
+  if (typeof item.content === 'string') {
+    return item.content;
+  }
+  if (Array.isArray(item.content)) {
+    const first = item.content[0] as { text?: string };
+    return first?.text;
+  }
+  return undefined;
+}
 
 // Test for unhandled rejection when stream loop throws
 
@@ -551,6 +566,73 @@ describe('Runner.run (streaming)', () => {
         type: 'function_call_result',
         callId: 'call-2',
       });
+    });
+
+    it('keeps server tracker aligned with filtered inputs when streaming', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [fakeModelMessage('call the tool'), buildToolCall('call-1', 'value')],
+          'resp-1',
+        ),
+        buildTurn([fakeModelMessage('all done')], 'resp-2'),
+      ]);
+
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls += 1;
+          if (filterCalls === 1) {
+            return {
+              instructions: modelData.instructions,
+              input: modelData.input.slice(1),
+            };
+          }
+          return modelData;
+        },
+      });
+
+      const agent = new Agent({
+        name: 'StreamTrackerFilter',
+        model,
+        tools: [serverTool],
+      });
+
+      const result = await runner.run(
+        agent,
+        [user('First input'), user('Second input')],
+        {
+          stream: true,
+          conversationId: 'conv-filter-stream',
+        },
+      );
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('all done');
+      expect(filterCalls).toBe(2);
+      expect(model.requests).toHaveLength(2);
+
+      const firstInput = model.requests[0].input as AgentInputItem[];
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput).toHaveLength(1);
+      expect(getFirstTextContent(firstInput[0])).toBe('Second input');
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'message' &&
+            getFirstTextContent(item) === 'First input',
+        ),
+      ).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'function_call_result' &&
+            (item as protocol.FunctionCallResultItem).callId === 'call-1',
+        ),
+      ).toBe(true);
     });
 
     it('only sends new items and updates previousResponseId across turns', async () => {

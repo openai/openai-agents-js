@@ -74,6 +74,11 @@ export type ModelInputData = {
   instructions?: string;
 };
 
+type FilterApplicationResult = {
+  modelInput: ModelInputData;
+  sourceItems: (AgentInputItem | undefined)[];
+};
+
 /**
  * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
  * share the same implementation across languages.
@@ -256,6 +261,8 @@ class ServerConversationTracker {
   private sentItems = new WeakSet<object>();
   // The items received from the server; using WeakSet for memory efficiency
   private serverItems = new WeakSet<object>();
+  // Track initial input items that have not yet been sent so they can be retried on later turns.
+  private remainingInitialInput: AgentInputItem[] | null = null;
 
   constructor({
     conversationId,
@@ -291,6 +298,7 @@ class ServerConversationTracker {
     }
 
     this.sentInitialInput = true;
+    this.remainingInitialInput = null;
 
     const latestResponse = modelResponses[modelResponses.length - 1];
     for (const response of modelResponses) {
@@ -342,13 +350,19 @@ class ServerConversationTracker {
 
     if (!this.sentInitialInput) {
       const initialItems = toAgentInputList(originalInput);
-      for (const item of initialItems) {
-        inputItems.push(item);
-        if (item && typeof item === 'object') {
-          this.sentItems.add(item);
-        }
-      }
+      // Preserve the full initial payload so a filter can drop items without losing their originals.
+      inputItems.push(...initialItems);
+      this.remainingInitialInput = initialItems.filter(
+        (item): item is AgentInputItem =>
+          Boolean(item) && typeof item === 'object',
+      );
       this.sentInitialInput = true;
+    } else if (
+      this.remainingInitialInput &&
+      this.remainingInitialInput.length > 0
+    ) {
+      // Re-queue prior initial items until the tracker confirms they were delivered to the API.
+      inputItems.push(...this.remainingInitialInput);
     }
 
     for (const item of generatedItems) {
@@ -363,10 +377,39 @@ class ServerConversationTracker {
         continue;
       }
       inputItems.push(rawItem as AgentInputItem);
-      this.sentItems.add(rawItem);
     }
 
     return inputItems;
+  }
+
+  markInputAsSent(items: (AgentInputItem | undefined)[]) {
+    if (!items.length) {
+      return;
+    }
+
+    const delivered = new Set<AgentInputItem>();
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || delivered.has(item)) {
+        continue;
+      }
+      // Some inputs may be repeated in the filtered list; only mark unique originals once.
+      delivered.add(item);
+      this.sentItems.add(item);
+    }
+
+    if (
+      !this.remainingInitialInput ||
+      this.remainingInitialInput.length === 0
+    ) {
+      return;
+    }
+
+    this.remainingInitialInput = this.remainingInitialInput.filter(
+      (item) => !delivered.has(item),
+    );
+    if (this.remainingInitialInput.length === 0) {
+      this.remainingInitialInput = null;
+    }
   }
 }
 
@@ -426,19 +469,34 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     context: RunContext<TContext>,
     inputItems: AgentInputItem[],
     systemInstructions: string | undefined,
-  ): Promise<ModelInputData> {
-    const cloneInputItems = (items: AgentInputItem[]) =>
-      items.map((item) => structuredClone(item));
+  ): Promise<FilterApplicationResult> {
+    const cloneInputItems = (
+      items: AgentInputItem[],
+      map?: WeakMap<object, AgentInputItem>,
+    ) =>
+      items.map((item) => {
+        const cloned = structuredClone(item) as AgentInputItem;
+        if (map && cloned && typeof cloned === 'object') {
+          map.set(cloned as object, item);
+        }
+        return cloned;
+      });
+
+    // Record the relationship between the cloned array passed to filters and the original inputs.
+    const cloneMap = new WeakMap<object, AgentInputItem>();
 
     // Always create a deep copy so downstream mutations inside filters cannot affect
     // the cached turn state.
     const base: ModelInputData = {
-      input: cloneInputItems(inputItems),
+      input: cloneInputItems(inputItems, cloneMap),
       instructions: systemInstructions,
     };
 
     if (!callModelInputFilter) {
-      return base;
+      return {
+        modelInput: base,
+        sourceItems: [...inputItems],
+      };
     }
 
     try {
@@ -454,12 +512,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
 
+      const sourceItems = result.input.map((item) => {
+        if (!item || typeof item !== 'object') {
+          return undefined;
+        }
+        // Map the cloned item the filter returned back to the original object reference sent earlier.
+        return cloneMap.get(item as object);
+      });
+
       return {
-        input: cloneInputItems(result.input),
-        instructions:
-          typeof result.instructions === 'undefined'
-            ? systemInstructions
-            : result.instructions,
+        modelInput: {
+          input: cloneInputItems(result.input),
+          instructions:
+            typeof result.instructions === 'undefined'
+              ? systemInstructions
+              : result.instructions,
+        },
+        sourceItems,
       };
     } catch (error) {
       addErrorToCurrentSpan({
@@ -634,13 +703,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const prompt = await state._currentAgent.getPrompt(state._context);
 
             // Allow callers to rewrite instructions or trim input immediately before the model call.
-            const filteredModelInput = await this.#applyCallModelInputFilter(
+            const {
+              modelInput: filteredModelInput,
+              sourceItems: filteredSourceItems,
+            } = await this.#applyCallModelInputFilter(
               state._currentAgent,
               options.callModelInputFilter,
               state._context,
               turnInput,
               systemInstructions,
             );
+
+            serverConversationTracker?.markInputAsSent(filteredSourceItems);
 
             let modelSettings = {
               ...this.config.modelSettings,
@@ -1071,13 +1145,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
           const prompt = await currentAgent.getPrompt(result.state._context);
 
-          const filteredModelInput = await this.#applyCallModelInputFilter(
+          const {
+            modelInput: filteredModelInput,
+            sourceItems: filteredSourceItems,
+          } = await this.#applyCallModelInputFilter(
             currentAgent,
             options.callModelInputFilter,
             result.state._context,
             turnInput,
             systemInstructions,
           );
+
+          serverConversationTracker?.markInputAsSent(filteredSourceItems);
 
           for await (const event of model.getStreamedResponse({
             systemInstructions: filteredModelInput.instructions,
