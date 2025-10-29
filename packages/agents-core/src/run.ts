@@ -162,6 +162,9 @@ export type RunConfig = {
   callModelInputFilter?: CallModelInputFilter;
 };
 
+/**
+ * Common run options shared between streaming and non-streaming execution pathways.
+ */
 type SharedRunOptions<TContext = undefined> = {
   context?: TContext | RunContext<TContext>;
   maxTurns?: number;
@@ -173,6 +176,9 @@ type SharedRunOptions<TContext = undefined> = {
   callModelInputFilter?: CallModelInputFilter;
 };
 
+/**
+ * Options for runs that stream incremental events as the model responds.
+ */
 export type StreamRunOptions<TContext = undefined> =
   SharedRunOptions<TContext> & {
     /**
@@ -181,6 +187,9 @@ export type StreamRunOptions<TContext = undefined> =
     stream: true;
   };
 
+/**
+ * Options for runs that collect the full model response before returning.
+ */
 export type NonStreamRunOptions<TContext = undefined> =
   SharedRunOptions<TContext> & {
     /**
@@ -189,6 +198,9 @@ export type NonStreamRunOptions<TContext = undefined> =
     stream?: false;
   };
 
+/**
+ * Options polymorphic over streaming or non-streaming execution modes.
+ */
 export type IndividualRunOptions<TContext = undefined> =
   | StreamRunOptions<TContext>
   | NonStreamRunOptions<TContext>;
@@ -198,12 +210,12 @@ export type IndividualRunOptions<TContext = undefined> =
 // --------------------------------------------------------------
 
 /**
- * Run an agent workflow starting at the given agent using the default runner.
- * The default runner is a singleton instance of the Runner class.
- * @param agent - The agent to run.
- * @param input - The input to the agent. You can pass a string or an array of `AgentInputItem`.
- * @param options - Options for the run, including streaming behavior, execution context, and the maximum number of turns.
- * @returns The result of the run.
+ * Executes an agent workflow with the shared default `Runner` instance.
+ *
+ * @param agent - The entry agent to invoke.
+ * @param input - A string utterance, structured input items, or a resumed `RunState`.
+ * @param options - Controls streaming mode, context, session handling, and turn limits.
+ * @returns A `RunResult` when `stream` is false, otherwise a `StreamedRunResult`.
  */
 export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
@@ -229,11 +241,17 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
 }
 
 /**
- * A Runner is responsible for running an agent workflow.
+ * Orchestrates agent execution, including guardrails, tool calls, session persistence, and
+ * tracing. Reuse a `Runner` instance when you want consistent configuration across multiple runs.
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   public readonly config: RunConfig;
 
+  /**
+   * Creates a runner with optional defaults that apply to every subsequent run invocation.
+   *
+   * @param config - Overrides for models, guardrails, tracing, or session behavior.
+   */
   constructor(config: Partial<RunConfig> = {}) {
     super();
     this.config = {
@@ -1476,22 +1494,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   }
 }
 
-// --------------------------------------------------------------
-//  Internal helpers
-// --------------------------------------------------------------
-
-const DEFAULT_MAX_TURNS = 10;
-
-let _defaultRunner: Runner | undefined = undefined;
-
-function getDefaultRunner() {
-  if (_defaultRunner) {
-    return _defaultRunner;
-  }
-  _defaultRunner = new Runner();
-  return _defaultRunner;
-}
-
+/**
+ * Resolves the effective model for the next turn by giving precedence to the agent-specific
+ * configuration when present, otherwise falling back to the runner-level default.
+ */
 export function selectModel(
   agentModel: string | Model,
   runConfigModel: string | Model | undefined,
@@ -1508,6 +1514,10 @@ export function selectModel(
   }
   return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
 }
+
+// --------------------------------------------------------------
+//  Other types and functions
+// --------------------------------------------------------------
 
 /**
  * Mutable view of the instructions + input items that the model will receive.
@@ -1528,12 +1538,19 @@ export type CallModelInputFilterArgs<TContext = unknown> = {
   context: TContext | undefined;
 };
 
+/**
+ * Hook invoked immediately before a model call is issued, allowing callers to adjust the
+ * instructions or input array. Returning a new array enables redaction, truncation, or
+ * augmentation of the payload that will be sent to the provider.
+ */
 export type CallModelInputFilter<TContext = unknown> = (
   args: CallModelInputFilterArgs<TContext>,
 ) => ModelInputData | Promise<ModelInputData>;
 
 /**
- * @internal
+ * Normalizes tracing configuration into the format expected by model providers.
+ * Returns `false` to disable tracing, `true` to include full payload data, or
+ * `'enabled_without_data'` to omit sensitive content while still emitting spans.
  */
 export function getTracing(
   tracingDisabled: boolean,
@@ -1551,12 +1568,11 @@ export function getTracing(
 }
 
 /**
- * Internal module for tracking the items in turns and ensuring that we don't send duplicate items.
- * This logic is vital for properly handling the items to send during multiple turns
- * when you use either `conversationId` or `previousResponseId`.
- * Both scenarios expect an agent loop to send only new items for each Responses API call.
+ * Constructs the model input array for the current turn by combining the original turn input with
+ * any new run items (excluding tool approval placeholders). This helps ensure that repeated calls
+ * to the Responses API only send newly generated content.
  *
- * see also: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses
+ * See: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses.
  */
 export function getTurnInput(
   originalInput: string | AgentInputItem[],
@@ -1566,6 +1582,22 @@ export function getTurnInput(
     .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
     .map((item) => item.rawItem);
   return [...toAgentInputList(originalInput), ...rawItems];
+}
+
+// --------------------------------------------------------------
+//  Internal helpers
+// --------------------------------------------------------------
+
+const DEFAULT_MAX_TURNS = 10;
+
+let _defaultRunner: Runner | undefined = undefined;
+
+function getDefaultRunner() {
+  if (_defaultRunner) {
+    return _defaultRunner;
+  }
+  _defaultRunner = new Runner();
+  return _defaultRunner;
 }
 
 /**
