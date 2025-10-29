@@ -1298,11 +1298,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             allocated = true;
             continue;
           }
-          if (allocateFallback()) {
+          if (!source && allocateFallback()) {
             collected.push(structuredClone(filteredItem));
             allocated = true;
           }
-          if (!allocated && sessionInputItemsFiltered === undefined) {
+          if (
+            !allocated &&
+            !source &&
+            sessionInputItemsFiltered === undefined
+          ) {
             collected.push(structuredClone(filteredItem));
           }
         }

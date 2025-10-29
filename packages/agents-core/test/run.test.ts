@@ -1240,6 +1240,81 @@ describe('Runner.run', () => {
       expect(getFirstTextContent(history[0])).toBe(originalText);
     });
 
+    it('does not duplicate existing session history when filters run', async () => {
+      class TrackingSession implements Session {
+        #history: AgentInputItem[];
+        added: AgentInputItem[][] = [];
+        sessionId?: string;
+
+        constructor(history: AgentInputItem[]) {
+          this.#history = [...history];
+          this.sessionId = 'filter-session';
+        }
+
+        async getSessionId(): Promise<string> {
+          if (!this.sessionId) {
+            this.sessionId = 'filter-session';
+          }
+          return this.sessionId;
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+          this.sessionId = undefined;
+        }
+      }
+
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'FilterSessionAgent',
+        model,
+      });
+      const historyMessage = user('Persisted history');
+      const session = new TrackingSession([historyMessage]);
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => ({
+          instructions: modelData.instructions,
+          input: modelData.input,
+        }),
+      });
+
+      await runner.run(agent, 'Fresh input', { session });
+
+      expect(session.added).toHaveLength(1);
+      const [persisted] = session.added;
+      const persistedUsers = persisted.filter(
+        (item) => 'role' in item && item.role === 'user',
+      );
+      expect(persistedUsers).toHaveLength(1);
+      const persistedTexts = persistedUsers
+        .map((item) => {
+          if ('content' in item && typeof item.content === 'string') {
+            return item.content;
+          }
+          return getFirstTextContent(item);
+        })
+        .filter((text): text is string => typeof text === 'string');
+      expect(persistedTexts).toContain('Fresh input');
+      expect(persistedTexts).not.toContain('Persisted history');
+    });
+
     it('throws when filter returns invalid data', async () => {
       const model = new FilterTrackingModel([
         {
