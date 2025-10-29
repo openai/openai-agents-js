@@ -1498,9 +1498,10 @@ export function toInputItemList(
   if (typeof input === 'string') {
     return [
       {
+        type: 'message',
         role: 'user',
         content: input,
-      } as AgentInputItem,
+      },
     ];
   }
   return [...input];

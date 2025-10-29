@@ -205,9 +205,10 @@ describe('saveToSession', () => {
 
     expect(session.items).toEqual([
       {
+        type: 'message',
         role: 'user',
         content: 'hello',
-      } as AgentInputItem,
+      },
     ]);
     expect(state._currentTurnPersistedItemCount).toBe(1);
 
