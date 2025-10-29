@@ -97,6 +97,16 @@ export class OpenAIConversationsSession implements Session {
         ];
       }
 
+      const outputItems = (
+        item as APIConversationItem & {
+          output?: OpenAI.Responses.ResponseOutputItem[];
+        }
+      ).output;
+
+      if (outputItems) {
+        return convertToOutputItem(outputItems);
+      }
+
       return convertToOutputItem([item as OpenAI.Responses.ResponseOutputItem]);
     };
 

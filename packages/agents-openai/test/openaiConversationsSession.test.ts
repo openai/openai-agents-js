@@ -18,6 +18,64 @@ describe('OpenAIConversationsSession', () => {
     getInputItemsMock.mockReset();
   });
 
+  it('converts response items using their output payload', async () => {
+    const responseOutput = [
+      {
+        id: 'resp-1-msg-1',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ];
+    const convertedItems = [
+      {
+        id: 'converted-1',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ];
+
+    convertToOutputItemMock.mockReturnValue(convertedItems as any);
+
+    const items = [
+      {
+        type: 'response',
+        id: 'resp-1',
+        output: responseOutput,
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(list).toHaveBeenCalledWith('conv-123', { order: 'asc' });
+    expect(convertToOutputItemMock).toHaveBeenCalledWith(responseOutput);
+    expect(result).toEqual(convertedItems);
+  });
+
   it('enforces the item limit after converting response items', async () => {
     convertToOutputItemMock.mockImplementation((raw) => {
       const id = raw[0]?.id ?? 'response';
