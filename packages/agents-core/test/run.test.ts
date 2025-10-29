@@ -813,6 +813,41 @@ describe('Runner.run', () => {
         });
       });
 
+      it('does not duplicate history when callback clones entries', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('clone response')],
+          },
+        ]);
+        const history = [user('Existing history item')];
+        const session = new MemorySession(history);
+        const agent = new Agent({ name: 'CloneSession', model });
+        const runner = new Runner();
+
+        await runner.run(agent, [user('Fresh input')], {
+          session,
+          sessionInputCallback: (incomingHistory, newItems) => {
+            const clonedHistory = incomingHistory.map((item) =>
+              structuredClone(item),
+            );
+            const clonedNewItems = newItems.map((item) =>
+              structuredClone(item),
+            );
+            return clonedHistory.concat(clonedNewItems);
+          },
+        });
+
+        expect(session.added).toHaveLength(1);
+        const [persistedItems] = session.added;
+        const persistedUsers = persistedItems.filter(
+          (item): item is protocol.UserMessageItem =>
+            item.type === 'message' && 'role' in item && item.role === 'user',
+        );
+        expect(persistedUsers).toHaveLength(1);
+        expect(getFirstTextContent(persistedUsers[0])).toBe('Fresh input');
+      });
+
       it('throws when session input callback returns invalid data', async () => {
         const model = new RecordingModel([
           {

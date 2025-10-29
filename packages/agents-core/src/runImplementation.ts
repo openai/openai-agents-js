@@ -1858,22 +1858,35 @@ export async function prepareInputItemsWithSession(
     );
   }
 
-  const historySet = new Set(history);
-  const newInputSet = new Set(newInputItems);
-  const appended: AgentInputItem[] = [];
-  for (const item of combined) {
-    if (historySet.has(item) || !newInputSet.has(item)) {
-      if (!historySet.has(item) && !newInputSet.has(item)) {
-        appended.push(item);
-      }
-      continue;
-    }
-    appended.push(item);
+  const historyCounts = new Map<string, number>();
+  for (const item of history) {
+    const key = toSmartString(item);
+    historyCounts.set(key, (historyCounts.get(key) ?? 0) + 1);
   }
 
-  if (appended.length === 0 && combined.length > history.length) {
-    // When callbacks replace every new item with fresh objects, fall back to the tail slice.
-    appended.push(...combined.slice(history.length));
+  const newInputCounts = new Map<string, number>();
+  for (const item of newInputItems) {
+    const key = toSmartString(item);
+    newInputCounts.set(key, (newInputCounts.get(key) ?? 0) + 1);
+  }
+
+  const appended: AgentInputItem[] = [];
+  for (const item of combined) {
+    const key = toSmartString(item);
+    const historyRemaining = historyCounts.get(key) ?? 0;
+    if (historyRemaining > 0) {
+      historyCounts.set(key, historyRemaining - 1);
+      continue;
+    }
+
+    const newRemaining = newInputCounts.get(key) ?? 0;
+    if (newRemaining > 0) {
+      newInputCounts.set(key, newRemaining - 1);
+      appended.push(item);
+      continue;
+    }
+
+    appended.push(item);
   }
 
   return {
