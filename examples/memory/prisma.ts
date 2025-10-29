@@ -2,7 +2,6 @@ import type { AgentInputItem, Session } from '@openai/agents';
 import { Agent, protocol, run } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
-import type { Prisma } from '@prisma/client';
 import * as process from 'node:process';
 
 /**
@@ -83,7 +82,11 @@ export class PrismaSession implements Session {
         orderBy: { position: 'desc' },
       });
       let position = last?.position ?? 0;
-      const payload: Prisma.SessionItemCreateManyInput[] = [];
+      const payload: Array<{
+        sessionId: string;
+        position: number;
+        item: string;
+      }> = [];
       for (const raw of items) {
         const item = coerceAgentItem(raw);
         if (!item) continue;
@@ -125,14 +128,12 @@ export class PrismaSession implements Session {
     this.#sessionId = undefined;
   }
 
-  async #withClient<T>(
-    fn: (client: PrismaClient | Prisma.TransactionClient) => Promise<T>,
-  ): Promise<T> {
+  async #withClient<T>(fn: (client: PrismaClient) => Promise<T>): Promise<T> {
     if (
       this.#useTransactions &&
       typeof this.#client.$transaction === 'function'
     ) {
-      return this.#client.$transaction((tx) => fn(tx));
+      return this.#client.$transaction((tx: unknown) => fn(tx as PrismaClient));
     }
     return fn(this.#client);
   }
