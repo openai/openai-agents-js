@@ -359,6 +359,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           return;
         }
         const collected: AgentInputItem[] = [];
+        const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
+        for (const source of sourceItems) {
+          if (!source || typeof source !== 'object') {
+            continue;
+          }
+          const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
+          sourceOccurrenceCounts.set(source, nextCount);
+        }
         const allocateFallback = () => {
           for (const [key, remaining] of counts) {
             if (remaining > 0) {
@@ -375,7 +383,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
           let allocated = false;
           const source = sourceItems[i];
-          if (source) {
+          if (source && typeof source === 'object') {
+            const pendingOccurrences =
+              (sourceOccurrenceCounts.get(source) ?? 0) - 1;
+            sourceOccurrenceCounts.set(source, pendingOccurrences);
+            if (pendingOccurrences > 0) {
+              continue;
+            }
             const sourceKey = getAgentInputItemKey(source);
             const remaining = counts.get(sourceKey) ?? 0;
             if (remaining > 0) {

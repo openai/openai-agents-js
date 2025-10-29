@@ -1384,6 +1384,66 @@ describe('Runner.run', () => {
       expect(userItems).toHaveLength(0);
     });
 
+    it('keeps original inputs when filters prepend new items', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+        #sessionId: string | undefined = 'prepended-filter-session';
+
+        async getSessionId(): Promise<string> {
+          if (!this.#sessionId) {
+            this.#sessionId = 'prepended-filter-session';
+          }
+          return this.#sessionId;
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+          this.#sessionId = undefined;
+        }
+      }
+
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+        },
+      ]);
+      const agent = new Agent({
+        name: 'PrependedFilterAgent',
+        model,
+      });
+      const session = new RecordingSession();
+
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => ({
+          instructions: modelData.instructions,
+          input: [assistant('primer'), ...modelData.input],
+        }),
+      });
+
+      await runner.run(agent, 'Persist me', { session });
+
+      expect(session.added).toHaveLength(1);
+      const [persisted] = session.added;
+      const persistedTexts = persisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(persistedTexts).toContain('Persist me');
+    });
+
     it('throws when filter returns invalid data', async () => {
       const model = new FilterTrackingModel([
         {
