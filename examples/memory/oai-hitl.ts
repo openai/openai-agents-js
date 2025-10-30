@@ -12,30 +12,51 @@ import {
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 
+const instructions =
+  'You assist support agents. Always consult the lookup_customer_profile tool before answering customer questions so your replies include stored notes. If the tool reports a transient failure, request approval and retry the same call once before responding. Keep responses under three sentences.';
+
 const customerDirectory: Record<
   string,
   { name: string; phone: string; tier: string; notes: string }
 > = {
   '101': {
-    name: 'Amina K.',
-    phone: '+1-415-555-1010',
+    name: 'Kaz S.',
+    phone: '+1-415-555-AAAA',
     tier: 'gold',
     notes: 'Prefers SMS follow ups and values concise summaries.',
   },
   '104': {
-    name: 'Diego L.',
-    phone: '+1-415-555-2040',
+    name: 'Yu S.',
+    phone: '+1-415-555-BBBB',
     tier: 'platinum',
     notes:
       'Recently reported sync issues. Flagged for a proactive onboarding call.',
   },
   '205': {
-    name: 'Morgan S.',
-    phone: '+1-415-555-3205',
+    name: 'Ken S.',
+    phone: '+1-415-555-CCCC',
     tier: 'standard',
     notes: 'Interested in automation tutorials sent last week.',
   },
 };
+
+let hasSimulatedLookupFailure = false;
+
+async function fetchCustomerProfile(id: string): Promise<string> {
+  if (!hasSimulatedLookupFailure) {
+    hasSimulatedLookupFailure = true;
+    throw new Error(
+      'Simulated CRM outage for the first lookup. Please retry the tool call.',
+    );
+  }
+
+  const record = customerDirectory[id];
+  if (!record) {
+    return `No customer found for id ${id}.`;
+  }
+
+  return `Customer ${record.name} (tier ${record.tier}) can be reached at ${record.phone}. Notes: ${record.notes}`;
+}
 
 const lookupCustomerProfile = tool({
   name: 'lookup_customer_profile',
@@ -50,11 +71,7 @@ const lookupCustomerProfile = tool({
     return true;
   },
   async execute({ id }) {
-    const record = customerDirectory[id];
-    if (!record) {
-      return `No customer found for id ${id}.`;
-    }
-    return `Customer ${record.name} (tier ${record.tier}) can be reached at ${record.phone}. Notes: ${record.notes}`;
+    return await fetchCustomerProfile(id);
   },
 });
 
@@ -114,8 +131,7 @@ async function resolveInterruptions<TContext, TAgent extends Agent<any, any>>(
 async function main() {
   const agent = new Agent({
     name: 'Memory HITL assistant',
-    instructions:
-      'You assist support agents. Always consult the lookup_customer_profile tool before answering customer questions so your replies include stored notes. Keep responses under three sentences.',
+    instructions,
     modelSettings: { toolChoice: 'required' },
     tools: [lookupCustomerProfile],
   });

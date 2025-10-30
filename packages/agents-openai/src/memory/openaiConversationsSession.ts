@@ -15,22 +15,6 @@ export type OpenAIConversationsSessionOptions = {
   project?: string;
 };
 
-function resolveClient(options: OpenAIConversationsSessionOptions): OpenAI {
-  if (options.client) {
-    return options.client;
-  }
-
-  return (
-    getDefaultOpenAIClient() ??
-    new OpenAI({
-      apiKey: options.apiKey ?? getDefaultOpenAIKey(),
-      baseURL: options.baseURL,
-      organization: options.organization,
-      project: options.project,
-    })
-  );
-}
-
 export async function startOpenAIConversationsSession(
   client?: OpenAI,
 ): Promise<string> {
@@ -121,13 +105,10 @@ export class OpenAIConversationsSession implements Session {
         ];
       }
 
-      const outputItems = (
-        item as APIConversationItem & {
-          output?: OpenAI.Responses.ResponseOutputItem[];
-        }
-      ).output;
+      const outputItems = (item as APIConversationItem & { output?: unknown })
+        .output;
 
-      if (outputItems) {
+      if (isResponseOutputItemArray(outputItems)) {
         return convertToOutputItem(outputItems);
       }
 
@@ -218,4 +199,61 @@ export class OpenAIConversationsSession implements Session {
     await this.#client.conversations.delete(this.#conversationId);
     this.#conversationId = undefined;
   }
+}
+
+// --------------------------------------------------------------
+//  Internals
+// --------------------------------------------------------------
+
+const INPUT_CONTENT_TYPES = new Set([
+  'input_text',
+  'input_image',
+  'input_file',
+  'input_audio',
+]);
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+// Treats a value as ResponseOutputItem[] only when each entry resembles an output item rather than raw input content.
+function isResponseOutputItemArray(
+  value: unknown,
+): value is OpenAI.Responses.ResponseOutputItem[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+
+  return value.every((entry) => {
+    if (!isObject(entry)) {
+      return false;
+    }
+    const type = (entry as { type?: unknown }).type;
+    if (typeof type !== 'string') {
+      return false;
+    }
+
+    if (INPUT_CONTENT_TYPES.has(type)) {
+      return false;
+    }
+
+    // Fallback: pre-emptively exclude future input_* variants so they never masquerade as response outputs.
+    return !type.startsWith('input_');
+  });
+}
+
+function resolveClient(options: OpenAIConversationsSessionOptions): OpenAI {
+  if (options.client) {
+    return options.client;
+  }
+
+  return (
+    getDefaultOpenAIClient() ??
+    new OpenAI({
+      apiKey: options.apiKey ?? getDefaultOpenAIKey(),
+      baseURL: options.baseURL,
+      organization: options.organization,
+      project: options.project,
+    })
+  );
 }

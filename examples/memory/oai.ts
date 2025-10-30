@@ -1,6 +1,27 @@
 import { Agent, OpenAIConversationsSession, run, tool } from '@openai/agents';
 import { z } from 'zod';
 
+const directory: Record<string, string> = {
+  '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
+  '2': 'Customer 2 (tier standard). Notes: Interested in tutorials.',
+};
+
+const instructions =
+  'You are a helpful assistant. If a tool reports a transient failure, retry the same tool call once before responding.';
+
+let hasSimulatedLookupFailure = false;
+
+async function fetchProfileFromDirectory(id: string): Promise<string> {
+  if (!hasSimulatedLookupFailure) {
+    hasSimulatedLookupFailure = true;
+    throw new Error(
+      'Simulated transient CRM outage. Please retry the tool call.',
+    );
+  }
+
+  return directory[id] ?? `No customer found for id ${id}.`;
+}
+
 const lookupCustomerProfile = tool({
   name: 'lookup_customer_profile',
   description:
@@ -11,18 +32,14 @@ const lookupCustomerProfile = tool({
       .describe('The internal identifier for the customer to retrieve.'),
   }),
   async execute({ id }) {
-    const directory: Record<string, string> = {
-      '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
-      '2': 'Customer 2 (tier standard). Notes: Interested in tutorials.',
-    };
-    return directory[id] ?? `No customer found for id ${id}.`;
+    return await fetchProfileFromDirectory(id);
   },
 });
 
 async function main() {
   const agent = new Agent({
     name: 'Assistant',
-    instructions: 'You are a helpful assistant.',
+    instructions,
     modelSettings: { toolChoice: 'required' },
     tools: [lookupCustomerProfile],
   });
@@ -44,7 +61,7 @@ async function main() {
 async function mainStream() {
   const agent = new Agent({
     name: 'Assistant',
-    instructions: 'You are a helpful assistant.',
+    instructions,
     modelSettings: { toolChoice: 'required' },
     tools: [lookupCustomerProfile],
   });

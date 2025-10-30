@@ -76,6 +76,126 @@ describe('OpenAIConversationsSession', () => {
     expect(result).toEqual(convertedItems);
   });
 
+  it('wraps string function_call_output payloads before converting', async () => {
+    const convertedItems = [
+      {
+        id: 'converted-output',
+        type: 'function_call_result',
+      },
+    ];
+
+    convertToOutputItemMock.mockReturnValue(convertedItems as any);
+
+    const items = [
+      {
+        type: 'function_call_output',
+        id: 'resp-fn-output',
+        call_id: 'call-1',
+        output: 'Tool error message',
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(convertToOutputItemMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'resp-fn-output',
+        type: 'function_call_output',
+        call_id: 'call-1',
+        output: 'Tool error message',
+      }),
+    ]);
+    expect(result).toEqual(convertedItems);
+  });
+
+  it('wraps function_call_output structured content arrays before converting', async () => {
+    const convertedItems = [
+      {
+        id: 'converted-output-array',
+        type: 'function_call_result',
+      },
+    ];
+
+    convertToOutputItemMock.mockReturnValue(convertedItems as any);
+
+    const items = [
+      {
+        type: 'function_call_output',
+        id: 'resp-fn-output-array',
+        call_id: 'call-2',
+        output: [
+          {
+            type: 'input_text',
+            text: 'No customer found',
+          },
+        ],
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(convertToOutputItemMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'resp-fn-output-array',
+        type: 'function_call_output',
+        call_id: 'call-2',
+        output: [
+          {
+            type: 'input_text',
+            text: 'No customer found',
+          },
+        ],
+      }),
+    ]);
+    expect(result).toEqual(convertedItems);
+  });
+
   it('enforces the item limit after converting response items', async () => {
     convertToOutputItemMock.mockImplementation((raw) => {
       const id = raw[0]?.id ?? 'response';
