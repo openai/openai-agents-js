@@ -1799,11 +1799,7 @@ class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    if (
-      !this.conversationId &&
-      this.previousResponseId !== undefined &&
-      modelResponse.responseId
-    ) {
+    if (!this.conversationId && modelResponse.responseId) {
       this.previousResponseId = modelResponse.responseId;
     }
   }
