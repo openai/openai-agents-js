@@ -48,6 +48,7 @@ export class OpenAIConversationsSession implements Session {
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
     const conversationId = await this.getSessionId();
+    // Convert each API item into the Agent SDK's input shape. Some API payloads expand into multiple items.
     const toAgentItems = (item: APIConversationItem): AgentInputItem[] => {
       if (item.type === 'message' && item.role === 'user') {
         const message = item as APIConversationMessage;
@@ -130,7 +131,7 @@ export class OpenAIConversationsSession implements Session {
       return [];
     }
 
-    const groups: AgentInputItem[][] = [];
+    const itemGroups: AgentInputItem[][] = [];
     let total = 0;
     const iterator = this.#client.conversations.items.list(conversationId, {
       limit,
@@ -143,7 +144,7 @@ export class OpenAIConversationsSession implements Session {
         continue;
       }
 
-      groups.push(group);
+      itemGroups.push(group);
       total += group.length;
 
       if (total >= limit) {
@@ -151,16 +152,17 @@ export class OpenAIConversationsSession implements Session {
       }
     }
 
-    const flattened: AgentInputItem[] = [];
-    for (let index = groups.length - 1; index >= 0; index -= 1) {
-      flattened.push(...groups[index]);
+    // Iterate in reverse because the API returned items in descending order.
+    const orderedItems: AgentInputItem[] = [];
+    for (let index = itemGroups.length - 1; index >= 0; index -= 1) {
+      orderedItems.push(...itemGroups[index]);
     }
 
-    if (flattened.length > limit) {
-      flattened.splice(0, flattened.length - limit);
+    if (orderedItems.length > limit) {
+      orderedItems.splice(0, orderedItems.length - limit);
     }
 
-    return flattened;
+    return orderedItems;
   }
 
   async addItems(items: AgentInputItem[]): Promise<void> {

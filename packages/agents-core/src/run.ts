@@ -349,21 +349,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
     // the original objects (so we can respect resume counts) while `filteredItems`, when present,
     // contains the filtered/redacted clones that must be persisted for history.
-    // The helper takes the filtered clones produced by callModelInputFilter and reconciles them
-    // with the original objects so resume-from-state bookkeeping stays consistent.
+    // The helper reconciles the filtered copies produced by callModelInputFilter with their original
+    // counterparts so resume-from-state bookkeeping stays consistent and duplicate references only
+    // consume a single persistence slot.
     const recordSessionItemsForPersistence = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
-      const counts = sessionInputPendingWriteCounts;
+      const pendingWriteCounts = sessionInputPendingWriteCounts;
       if (filteredItems !== undefined) {
-        if (!counts) {
+        if (!pendingWriteCounts) {
           sessionInputFilteredSnapshot = filteredItems.map((item) =>
             structuredClone(item),
           );
           return;
         }
-        const collected: AgentInputItem[] = [];
+        const persistableItems: AgentInputItem[] = [];
         const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
         // Track how many times each original object appears so duplicate references only consume one persistence slot.
         for (const source of sourceItems) {
@@ -374,10 +375,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           sourceOccurrenceCounts.set(source, nextCount);
         }
         // Let filtered items without a one-to-one source match claim any remaining persistence count.
-        const allocateFallback = () => {
-          for (const [key, remaining] of counts) {
+        const consumeAnyPendingWriteSlot = () => {
+          for (const [key, remaining] of pendingWriteCounts) {
             if (remaining > 0) {
-              counts.set(key, remaining - 1);
+              pendingWriteCounts.set(key, remaining - 1);
               return true;
             }
           }
@@ -398,24 +399,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continue;
             }
             const sourceKey = getAgentInputItemKey(source);
-            const remaining = counts.get(sourceKey) ?? 0;
+            const remaining = pendingWriteCounts.get(sourceKey) ?? 0;
             if (remaining > 0) {
-              counts.set(sourceKey, remaining - 1);
-              collected.push(structuredClone(filteredItem));
+              pendingWriteCounts.set(sourceKey, remaining - 1);
+              persistableItems.push(structuredClone(filteredItem));
               allocated = true;
               continue;
             }
           }
           const filteredKey = getAgentInputItemKey(filteredItem);
-          const filteredRemaining = counts.get(filteredKey) ?? 0;
+          const filteredRemaining = pendingWriteCounts.get(filteredKey) ?? 0;
           if (filteredRemaining > 0) {
-            counts.set(filteredKey, filteredRemaining - 1);
-            collected.push(structuredClone(filteredItem));
+            pendingWriteCounts.set(filteredKey, filteredRemaining - 1);
+            persistableItems.push(structuredClone(filteredItem));
             allocated = true;
             continue;
           }
-          if (!source && allocateFallback()) {
-            collected.push(structuredClone(filteredItem));
+          if (!source && consumeAnyPendingWriteSlot()) {
+            persistableItems.push(structuredClone(filteredItem));
             allocated = true;
           }
           if (
@@ -423,19 +424,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             !source &&
             sessionInputFilteredSnapshot === undefined
           ) {
-            collected.push(structuredClone(filteredItem));
+            // Preserve at least one copy so later persistence resolves even when no counters remain.
+            persistableItems.push(structuredClone(filteredItem));
           }
         }
         if (
-          collected.length > 0 ||
+          persistableItems.length > 0 ||
           sessionInputFilteredSnapshot === undefined
         ) {
-          sessionInputFilteredSnapshot = collected;
+          sessionInputFilteredSnapshot = persistableItems;
         }
         return;
       }
       const filtered: AgentInputItem[] = [];
-      if (!counts) {
+      if (!pendingWriteCounts) {
         for (const item of sourceItems) {
           if (!item) {
             continue;
@@ -448,11 +450,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             continue;
           }
           const key = getAgentInputItemKey(item);
-          const remaining = counts.get(key) ?? 0;
+          const remaining = pendingWriteCounts.get(key) ?? 0;
           if (remaining <= 0) {
             continue;
           }
-          counts.set(key, remaining - 1);
+          pendingWriteCounts.set(key, remaining - 1);
           filtered.push(structuredClone(item));
         }
       }
@@ -477,6 +479,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
+      if (session && Array.isArray(preparedInput) && !sessionInputCallback) {
+        throw new UserError(
+          'RunConfig.sessionInputCallback must be provided when using session history with list inputs.',
+        );
+      }
+
       const prepared = await prepareInputItemsWithSession(
         preparedInput,
         session,
@@ -602,8 +610,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     agent: Agent<TContext, AgentOutputType>,
   ): Promise<{ model: Model; explictlyModelSet: boolean }> {
     const explictlyModelSet =
-      (agent.model !== undefined && agent.model !== '') ||
-      (this.config.model !== undefined && this.config.model !== '');
+      (agent.model !== undefined &&
+        agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
+      (this.config.model !== undefined &&
+        this.config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER);
     let resolvedModel = selectModel(agent.model, this.config.model);
     if (typeof resolvedModel === 'string') {
       resolvedModel = await this.config.modelProvider.getModel(resolvedModel);
@@ -1518,7 +1528,7 @@ export function selectModel(
   runConfigModel: string | Model | undefined,
 ): string | Model {
   // When initializing an agent without model name, the model property is set to an empty string. So,
-  // * agentModel === '' & runConfigModel exists, runConfigModel will be used
+  // * agentModel === Agent.DEFAULT_MODEL_PLACEHOLDER & runConfigModel exists, runConfigModel will be used
   // * agentModel is set, the agentModel will be used over runConfigModel
   if (
     (typeof agentModel === 'string' &&

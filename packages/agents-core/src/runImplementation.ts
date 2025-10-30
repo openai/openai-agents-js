@@ -1705,6 +1705,8 @@ export function extractOutputItemsFromRunItems(
     .map((item) => item.rawItem as AgentInputItem);
 }
 
+// Carries metadata while recursively sanitizing nested payloads so binary blobs can share the
+// appropriate media type when converted into durable data URLs.
 type SessionBinaryContext = {
   mediaType?: string;
 };
@@ -1922,20 +1924,6 @@ export async function prepareInputItemsWithSession(
   const newInputItems = Array.isArray(input)
     ? [...input]
     : toInputItemList(input);
-
-  // When callers hand us pre-expanded AgentInputItems we cannot guess how to merge them with
-  // previously persisted history without risking duplicate tool outputs or approvals. Align with
-  // the Python SDK by requiring an explicit callback in that scenario so the merge strategy stays
-  // intentional and predictable.
-  if (
-    Array.isArray(input) &&
-    !sessionInputCallback &&
-    includeHistoryInPreparedInput
-  ) {
-    throw new UserError(
-      'When using session memory, list inputs require a RunConfig.sessionInputCallback to define how history and new items are merged. Provide a string input instead or disable session memory to manage items manually.',
-    );
-  }
 
   if (!sessionInputCallback) {
     return {

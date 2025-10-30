@@ -475,6 +475,47 @@ describe('prepareInputItemsWithSession', () => {
     async clearSession(): Promise<void> {}
   }
 
+  it('concatenates session history with array inputs when no callback is provided', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+      id: 'history-1',
+    };
+    const newItems: AgentInputItem[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'fresh text',
+        id: 'new-1',
+      },
+      {
+        type: 'function_call_result',
+        name: 'foo-func',
+        callId: 'new-2',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+        status: 'completed',
+      },
+    ];
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(newItems, session);
+
+    expect(result.preparedInput).toEqual([historyItem, ...newItems]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual(newItems);
+    expect(sessionItems[0]).toBe(newItems[0]);
+    expect(sessionItems[1]).toBe(newItems[1]);
+  });
+
   it('only persists new inputs when callbacks prepend history duplicates', async () => {
     const historyItem: AgentInputItem = {
       type: 'message',
