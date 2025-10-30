@@ -703,6 +703,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
+            if (turnResult.nextStep.type === 'next_step_run_again') {
+              state._currentTurnPersistedItemCount = 0;
+            }
             state._currentStep = turnResult.nextStep;
 
             if (turnResult.nextStep.type === 'next_step_interruption') {
@@ -717,6 +720,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const artifacts = await prepareAgentArtifacts(state);
 
             state._currentTurn++;
+            state._currentTurnPersistedItemCount = 0;
 
             if (state._currentTurn > state._maxTurns) {
               state._currentAgentSpan?.setError({
@@ -820,6 +824,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
+            if (turnResult.nextStep.type === 'next_step_run_again') {
+              state._currentTurnPersistedItemCount = 0;
+            }
             state._currentStep = turnResult.nextStep;
           }
 
@@ -967,6 +974,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
+          if (turnResult.nextStep.type === 'next_step_run_again') {
+            result.state._currentTurnPersistedItemCount = 0;
+          }
           result.state._currentStep = turnResult.nextStep;
           if (turnResult.nextStep.type === 'next_step_interruption') {
             // we are still in an interruption, so we need to avoid an infinite loop
@@ -979,6 +989,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const artifacts = await prepareAgentArtifacts(result.state);
 
           result.state._currentTurn++;
+          result.state._currentTurnPersistedItemCount = 0;
 
           if (result.state._currentTurn > result.state._maxTurns) {
             result.state._currentAgentSpan?.setError({
@@ -1118,6 +1129,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
+          if (turnResult.nextStep.type === 'next_step_run_again') {
+            result.state._currentTurnPersistedItemCount = 0;
+          }
           result.state._currentStep = turnResult.nextStep;
         }
 
