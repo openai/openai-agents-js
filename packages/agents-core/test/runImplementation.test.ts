@@ -552,7 +552,7 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems[0]).toBe(newItem);
   });
 
-  it('preserves the latest input when callbacks omit new items entirely', async () => {
+  it('respects callbacks that intentionally drop new inputs', async () => {
     const historyItem: AgentInputItem = {
       type: 'message',
       role: 'user',
@@ -574,13 +574,12 @@ describe('prepareInputItemsWithSession', () => {
       { includeHistoryInPreparedInput: false },
     );
 
-    expect(result.preparedInput).toEqual([newItem]);
+    expect(result.preparedInput).toEqual([]);
     const sessionItems = result.sessionItems;
     if (!sessionItems) {
       throw new Error('Expected sessionItems to be defined.');
     }
-    expect(sessionItems).toEqual([newItem]);
-    expect(sessionItems[0]).toBe(newItem);
+    expect(sessionItems).toEqual([]);
   });
 
   it('persists appended copies when callbacks mutate history in place', async () => {

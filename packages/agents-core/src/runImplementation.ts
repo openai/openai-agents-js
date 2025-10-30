@@ -1908,6 +1908,12 @@ export async function prepareInputItemsWithSession(
      * (e.g. server-managed conversations) to avoid sending duplicated messages each turn.
      */
     includeHistoryInPreparedInput?: boolean;
+    /**
+     * When true, ensures new turn inputs are still provided to the model even if the session input
+     * callback drops them from persistence (used for server-managed conversations that redact
+     * writes).
+     */
+    preserveDroppedNewItems?: boolean;
   },
 ): Promise<PreparedInputWithSessionResult> {
   if (!session) {
@@ -1919,6 +1925,7 @@ export async function prepareInputItemsWithSession(
 
   const includeHistoryInPreparedInput =
     options?.includeHistoryInPreparedInput ?? true;
+  const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
 
   const history = await session.getItems();
   const newInputItems = Array.isArray(input)
@@ -1985,13 +1992,20 @@ export async function prepareInputItemsWithSession(
     appended.push(item);
   }
 
+  // Preserve redacted inputs for model delivery when requested (e.g. server-managed histories).
+  const preparedItems = includeHistoryInPreparedInput
+    ? combined
+    : appended.length > 0
+      ? appended
+      : preserveDroppedNewItems
+        ? newInputSnapshot
+        : [];
+
   return {
-    preparedInput: includeHistoryInPreparedInput
-      ? combined
-      : appended.length > 0
-        ? appended
-        : newInputSnapshot,
-    sessionItems: appended.length > 0 ? appended : newInputSnapshot,
+    preparedInput: preparedItems,
+    // Respect callbacks that intentionally drop the latest inputs (e.g. to redact sensitive
+    // values) by persisting only the items they kept in the combined array.
+    sessionItems: appended,
   };
 }
 

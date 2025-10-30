@@ -493,6 +493,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // When the server tracks conversation state we only send the new turn inputs;
           // previous messages are recovered via conversationId/previousResponseId.
           includeHistoryInPreparedInput: !serverManagesConversation,
+          preserveDroppedNewItems: serverManagesConversation,
         },
       );
       if (serverManagesConversation && session) {
