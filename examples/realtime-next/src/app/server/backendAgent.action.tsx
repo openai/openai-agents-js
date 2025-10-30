@@ -8,7 +8,7 @@ const backendAgent = new Agent({
   name: 'Refund Agent',
   instructions:
     'You are a specialist on handling refund requests and detect fraud. You are given a request and you need to determine if the request is valid and if it is, you need to handle it.',
-  model: 'o4-mini',
+  model: 'gpt-5-mini',
   outputType: z.object({
     refundApproved: z.boolean(),
     refundReason: z.string(),

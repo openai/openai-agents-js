@@ -16,8 +16,10 @@ async function confirm(item: RunToolApprovalItem): Promise<boolean> {
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 'always' | 'never' | { never, always }
   const requireApproval = {
-    never: { toolNames: ['search_codex_code', 'fetch_codex_documentation'] },
-    always: { toolNames: ['fetch_generic_url_content'] },
+    never: { toolNames: ['search_codex_code'] },
+    always: {
+      toolNames: ['fetch_generic_url_content', 'fetch_codex_documentation'],
+    },
   };
   const agent = new Agent({
     name: 'MCP Assistant',
