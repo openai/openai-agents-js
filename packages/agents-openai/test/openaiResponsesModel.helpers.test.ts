@@ -512,4 +512,70 @@ describe('convertToOutputItem', () => {
       ] as any),
     ).toThrow();
   });
+
+  it('converts function_call_output items into function_call_result entries', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-1',
+        call_id: 'call-1',
+        name: 'lookup',
+        output: 'done',
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      id: 'out-1',
+      callId: 'call-1',
+      name: 'lookup',
+      output: 'done',
+      status: 'completed',
+    });
+  });
+
+  it('converts structured function_call_output payloads into structured outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'function_call_output',
+        id: 'out-2',
+        call_id: 'call-2',
+        function_name: 'search',
+        status: 'in_progress',
+        output: [
+          { type: 'input_text', text: 'hello' },
+          {
+            type: 'input_image',
+            image_url: 'https://example.com/img.png',
+            detail: 'high',
+          },
+          {
+            type: 'input_file',
+            file_url: 'https://example.com/file.txt',
+            filename: 'file.txt',
+          },
+        ],
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call-2',
+      name: 'search',
+      status: 'in_progress',
+      output: [
+        { type: 'input_text', text: 'hello' },
+        {
+          type: 'input_image',
+          image: 'https://example.com/img.png',
+          detail: 'high',
+        },
+        {
+          type: 'input_file',
+          file: { url: 'https://example.com/file.txt' },
+          filename: 'file.txt',
+        },
+      ],
+    });
+  });
 });

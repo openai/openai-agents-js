@@ -17,6 +17,7 @@ import { ModelResponse } from '../src/model';
 import { RunResult, StreamedRunResult } from '../src/result';
 import { getTracing } from '../src/run';
 import { RunState } from '../src/runState';
+import type { ProcessedResponse } from '../src/runImplementation';
 import {
   addStepToRunResult,
   AgentToolUseTracker,
@@ -24,11 +25,15 @@ import {
   getToolCallOutputItem,
   maybeResetToolChoice,
   processModelResponse,
+  prepareInputItemsWithSession,
   executeFunctionToolCalls,
   executeComputerActions,
   executeHandoffCalls,
-  executeToolsAndSideEffects,
+  resolveTurnAfterModelResponse,
   streamStepItemsToRunResult,
+  saveToSession,
+  resolveInterruptedTurn,
+  toInputItemList,
 } from '../src/runImplementation';
 import {
   FunctionTool,
@@ -57,6 +62,9 @@ import { Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
 import { Logger } from '../src/logger';
+import type { UnknownContext } from '../src/types';
+import type { Session } from '../src/memory/session';
+import type { AgentInputItem } from '../src/types';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -131,6 +139,506 @@ describe('maybeResetToolChoice', () => {
 
     const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
     expect(result.toolChoice).toBeUndefined();
+  });
+});
+
+describe('saveToSession', () => {
+  class MemorySession implements Session {
+    items: AgentInputItem[] = [];
+
+    async getSessionId(): Promise<string> {
+      return 'session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.items];
+    }
+
+    async addItems(items: AgentInputItem[]): Promise<void> {
+      this.items.push(...items);
+    }
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return this.items.pop();
+    }
+
+    async clearSession(): Promise<void> {
+      this.items = [];
+    }
+  }
+
+  it('persists tool outputs when resuming a turn after approvals', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Hitl Agent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new MemorySession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '1' }),
+      providerData: {},
+    };
+
+    const approvalItem = new ToolApprovalItem(functionCall, textAgent);
+    state._generatedItems = [approvalItem];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [approvalItem],
+      },
+    };
+
+    const preApprovalResult = new RunResult(state);
+    await saveToSession(
+      session,
+      toInputItemList(state._originalInput),
+      preApprovalResult,
+    );
+
+    expect(session.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+    ]);
+    expect(state._currentTurnPersistedItemCount).toBe(1);
+
+    const toolDefinition = tool({
+      name: 'lookup_customer_profile',
+      description: 'mock lookup',
+      parameters: z.object({ id: z.string() }),
+      async execute({ id }) {
+        return `No customer found for id ${id}.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const assistantMessage: protocol.AssistantMessageItem = {
+      type: 'message',
+      id: 'msg_1',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: 'Ready to help.',
+        },
+      ],
+      providerData: {},
+    };
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new MessageOutputItem(assistantMessage, textAgent)],
+      handoffs: [],
+      functions: [
+        {
+          toolCall: functionCall,
+          tool: toolDefinition,
+        },
+      ],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    } as ProcessedResponse<UnknownContext>;
+
+    const runner = new Runner();
+    const resumedResponse: ModelResponse = {
+      usage: new Usage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      }),
+      output: [],
+    };
+
+    const turnResult = await withTrace('hitl-test-trace', async () => {
+      return resolveInterruptedTurn(
+        textAgent,
+        state._originalInput,
+        state._generatedItems,
+        resumedResponse,
+        processedResponse,
+        runner,
+        state,
+      );
+    });
+
+    state._originalInput = turnResult.originalInput;
+    state._generatedItems = turnResult.generatedItems;
+    state._currentStep = turnResult.nextStep;
+
+    const resumedResult = new RunResult(state);
+    await saveToSession(session, [], resumedResult);
+
+    expect(session.items).toHaveLength(2);
+    const last = session.items[
+      session.items.length - 1
+    ] as protocol.FunctionCallResultItem;
+    expect(last.type).toBe('function_call_result');
+    expect(last.callId).toBe(functionCall.callId);
+  });
+
+  it('persists HITL tool outputs when approval items are not the last generated entries', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Interleaved HITL Agent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new MemorySession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const approvalCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_hitl',
+      callId: 'call_hitl',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '101' }),
+      providerData: {},
+    };
+
+    const autoCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_auto',
+      callId: 'call_auto',
+      name: 'fetch_image_data',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '101' }),
+      providerData: {},
+    };
+
+    const approvalToolCallItem = new ToolCallItem(approvalCall, textAgent);
+    const autoToolCallItem = new ToolCallItem(autoCall, textAgent);
+    const approvalItem = new ToolApprovalItem(approvalCall, textAgent);
+    const autoOutputRaw = getToolCallOutputItem(autoCall, 'Fetched image.');
+    const autoOutputItem = new ToolCallOutputItem(
+      autoOutputRaw,
+      textAgent,
+      'Fetched image.',
+    );
+
+    state._generatedItems = [
+      approvalToolCallItem,
+      autoToolCallItem,
+      approvalItem,
+      autoOutputItem,
+    ];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [approvalItem],
+      },
+    };
+
+    const preApprovalResult = new RunResult(state);
+    await saveToSession(
+      session,
+      toInputItemList(state._originalInput),
+      preApprovalResult,
+    );
+
+    expect(state._currentTurnPersistedItemCount).toBe(4);
+    expect(session.items).toHaveLength(4);
+    const preResumeResult = session.items[3] as protocol.FunctionCallResultItem;
+    expect(preResumeResult.type).toBe('function_call_result');
+    expect(preResumeResult.callId).toBe(autoCall.callId);
+
+    state.approve(approvalItem);
+
+    const approvalTool = tool({
+      name: approvalCall.name,
+      description: 'Approval tool',
+      parameters: z.object({ id: z.string() }),
+      needsApproval: async () => true,
+      async execute({ id }) {
+        return `Customer ${id} details.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const autoTool = tool({
+      name: autoCall.name,
+      description: 'Auto tool',
+      parameters: z.object({ id: z.string() }),
+      async execute({ id }) {
+        return `Image for ${id}.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        approvalToolCallItem,
+        autoToolCallItem,
+        approvalItem,
+        autoOutputItem,
+      ],
+      handoffs: [],
+      functions: [
+        {
+          toolCall: approvalCall,
+          tool: approvalTool,
+        },
+        {
+          toolCall: autoCall,
+          tool: autoTool,
+        },
+      ],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [approvalCall.name, autoCall.name],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    } as ProcessedResponse<UnknownContext>;
+
+    const runner = new Runner();
+    const resumedResponse: ModelResponse = {
+      usage: new Usage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      }),
+      output: [],
+    };
+
+    const turnResult = await withTrace('interleaved-hitl', async () => {
+      return resolveInterruptedTurn(
+        textAgent,
+        state._originalInput,
+        state._generatedItems,
+        resumedResponse,
+        processedResponse,
+        runner,
+        state,
+      );
+    });
+
+    state._originalInput = turnResult.originalInput;
+    state._generatedItems = turnResult.generatedItems;
+    state._currentStep = turnResult.nextStep;
+
+    const resumedResult = new RunResult(state);
+    await saveToSession(session, [], resumedResult);
+
+    expect(session.items).toHaveLength(5);
+    const latest = session.items[4] as protocol.FunctionCallResultItem;
+    expect(latest.type).toBe('function_call_result');
+    expect(latest.callId).toBe(approvalCall.callId);
+  });
+});
+
+describe('prepareInputItemsWithSession', () => {
+  class StubSession implements Session {
+    constructor(private history: AgentInputItem[]) {}
+
+    async getSessionId(): Promise<string> {
+      return 'session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.history];
+    }
+
+    async addItems(_items: AgentInputItem[]): Promise<void> {}
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return undefined;
+    }
+
+    async clearSession(): Promise<void> {}
+  }
+
+  it('concatenates session history with array inputs when no callback is provided', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+      id: 'history-1',
+    };
+    const newItems: AgentInputItem[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'fresh text',
+        id: 'new-1',
+      },
+      {
+        type: 'function_call_result',
+        name: 'foo-func',
+        callId: 'new-2',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+        status: 'completed',
+      },
+    ];
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(newItems, session);
+
+    expect(result.preparedInput).toEqual([historyItem, ...newItems]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual(newItems);
+    expect(sessionItems[0]).toBe(newItems[0]);
+    expect(sessionItems[1]).toBe(newItems[1]);
+  });
+
+  it('only persists new inputs when callbacks prepend history duplicates', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'ok',
+      id: 'history-1',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'ok',
+      id: 'new-1',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        expect(history).toHaveLength(1);
+        expect(history[0]).toBe(historyItem);
+        expect(newItems).toHaveLength(1);
+        expect(newItems[0]).toBe(newItem);
+        return [...history.slice(-1), ...newItems];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, newItem]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual([newItem]);
+    expect(sessionItems[0]).toBe(newItem);
+  });
+
+  it('respects callbacks that intentionally drop new inputs', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'previous',
+      id: 'history-1',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'fresh',
+      id: 'new-1',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history) => history.slice(),
+      { includeHistoryInPreparedInput: false },
+    );
+
+    expect(result.preparedInput).toEqual([]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual([]);
+  });
+
+  it('persists appended copies when callbacks mutate history in place', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'past',
+      id: 'history-1',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'fresh',
+      id: 'new-1',
+    };
+    const session = new StubSession([historyItem]);
+
+    let appendedItems: AgentInputItem[] = [];
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        appendedItems = newItems.map((item) => ({
+          ...item,
+          providerData: { annotated: true },
+        }));
+        history.push(...appendedItems);
+        return history;
+      },
+    );
+
+    expect(appendedItems).toHaveLength(1);
+    expect(result.preparedInput).toEqual([historyItem, ...appendedItems]);
+    const sessionItems = result.sessionItems;
+    if (!sessionItems) {
+      throw new Error('Expected sessionItems to be defined.');
+    }
+    expect(sessionItems).toEqual(appendedItems);
+    expect(sessionItems[0]).toBe(appendedItems[0]);
+    expect(sessionItems[0]).not.toBe(newItem);
+  });
+
+  it('omits session history from prepared input when includeHistoryInPreparedInput is false', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'past',
+      id: 'history-1',
+    };
+    const session = new StubSession([historyItem]);
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      undefined,
+      { includeHistoryInPreparedInput: false },
+    );
+
+    expect(result.preparedInput).toEqual(toInputItemList('fresh input'));
+    expect(result.sessionItems).toEqual(toInputItemList('fresh input'));
   });
 });
 
@@ -1254,7 +1762,7 @@ describe('hasToolsOrApprovalsToRun method', () => {
   });
 });
 
-describe('executeToolsAndSideEffects', () => {
+describe('resolveTurnAfterModelResponse', () => {
   let runner: Runner;
   let state: RunState<any, any>;
 
@@ -1275,7 +1783,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1322,7 +1830,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         structuredAgent,
         'test input',
         [],
@@ -1347,7 +1855,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1390,7 +1898,7 @@ describe('executeToolsAndSideEffects', () => {
     expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         textAgent,
         'test input',
         [],
@@ -1456,7 +1964,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         computerAgent,
         'test input',
         [],
@@ -1468,6 +1976,55 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('does not duplicate previously persisted model items when resuming after approvals', async () => {
+    const toolCall = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-resume',
+      callId: 'call-resume',
+    };
+    const message = fakeModelMessage('Tool approval pending');
+    message.id = 'message-resume';
+    const response: ModelResponse = {
+      output: [toolCall, message],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+    );
+
+    const priorItems = [...processedResponse.newItems];
+    state._generatedItems = priorItems;
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        TEST_AGENT,
+        'test input',
+        priorItems,
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    const persistedToolCalls = result.generatedItems.filter((item) => {
+      return item instanceof ToolCallItem && item.rawItem.id === 'call-resume';
+    });
+    expect(persistedToolCalls).toHaveLength(1);
+
+    const persistedMessages = result.generatedItems.filter((item) => {
+      return (
+        item instanceof MessageOutputItem &&
+        item.rawItem.id === 'message-resume'
+      );
+    });
+    expect(persistedMessages).toHaveLength(1);
   });
 
   it('does not finalize when hosted MCP approval happens in the same turn; runs again', async () => {
@@ -1515,7 +2072,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         approvalAgent,
         'test input',
         [],
@@ -1573,7 +2130,7 @@ describe('executeToolsAndSideEffects', () => {
     );
 
     const result = await withTrace('test', () =>
-      executeToolsAndSideEffects(
+      resolveTurnAfterModelResponse(
         approvalAgent,
         'test input',
         [],
@@ -1591,5 +2148,230 @@ describe('executeToolsAndSideEffects', () => {
         providerData: { id: 'approval1', type: 'mcp_approval_request' },
       });
     }
+  });
+
+  it('preserves pending hosted MCP approvals when resuming an interrupted turn', async () => {
+    const approvalAgent = new Agent({ name: 'MCPAgent', outputType: 'text' });
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'demo_server',
+      serverUrl: 'https://example.com',
+      requireApproval: {
+        always: { toolNames: ['demo_tool'] },
+      },
+    });
+
+    const approvalRequest: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval1',
+      name: 'demo_tool',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'demo_server',
+        name: 'demo_tool',
+        id: 'approval1',
+        arguments: '{}',
+      },
+    } as protocol.HostedToolCallItem;
+
+    const approvalItem = new ToolApprovalItem(approvalRequest, approvalAgent);
+    const originalPreStepItems = [approvalItem];
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      mcpApprovalRequests: [
+        {
+          requestItem: approvalItem,
+          mcpTool,
+        },
+      ],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const resumedState = new RunState(
+      new RunContext(),
+      'test input',
+      approvalAgent,
+      1,
+    );
+
+    const runner = new Runner();
+
+    const result = await resolveInterruptedTurn(
+      approvalAgent,
+      'test input',
+      originalPreStepItems,
+      resumedResponse,
+      processedResponse,
+      runner,
+      resumedState,
+    );
+
+    expect(result.nextStep.type).toBe('next_step_interruption');
+    if (result.nextStep.type === 'next_step_interruption') {
+      expect(result.nextStep.data.interruptions).toContain(approvalItem);
+    }
+    expect(result.preStepItems).toContain(approvalItem);
+    expect(result.newStepItems).not.toContain(approvalItem);
+  });
+});
+
+describe('resolveInterruptedTurn', () => {
+  it('rewinds persisted count only for pending approval placeholders', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'SequentialApprovalsAgent',
+      outputType: 'text',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const firstCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-first',
+      callId: 'call-first',
+    };
+    const secondCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-second',
+      callId: 'call-second',
+    };
+
+    const firstApproval = new ToolApprovalItem(firstCall, agent);
+    const firstOutputRaw = getToolCallOutputItem(firstCall, 'done');
+    const firstOutput = new ToolCallOutputItem(firstOutputRaw, agent, 'done');
+    const secondApproval = new ToolApprovalItem(secondCall, agent);
+
+    const generatedItems = [firstApproval, firstOutput, secondApproval];
+    const state = new RunState(new RunContext(), 'hello', agent, 5);
+    state._generatedItems = generatedItems;
+    state._currentTurnPersistedItemCount = generatedItems.length;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [secondApproval],
+      },
+    };
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      generatedItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(state._currentTurnPersistedItemCount).toBe(
+      generatedItems.length - 1,
+    );
+    expect(result.preStepItems).toEqual([firstOutput]);
+  });
+
+  it('dispatches approved computer actions when resuming an interruption', async () => {
+    const fakeComputer: Computer = {
+      environment: 'mac',
+      dimensions: [1, 1],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(async (_x: number, _y: number, _button: any) => {}),
+      doubleClick: vi.fn(async (_x: number, _y: number) => {}),
+      drag: vi.fn(async (_path: [number, number][]) => {}),
+      keypress: vi.fn(async (_keys: string[]) => {}),
+      move: vi.fn(async (_x: number, _y: number) => {}),
+      scroll: vi.fn(
+        async (_x: number, _y: number, _sx: number, _sy: number) => {},
+      ),
+      type: vi.fn(async (_text: string) => {}),
+      wait: vi.fn(async () => {}),
+    };
+    const computer = computerTool({ computer: fakeComputer });
+    const agent = new Agent({ name: 'ComputerAgent', tools: [computer] });
+    const computerCall: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      id: 'comp1',
+      callId: 'comp1',
+      status: 'in_progress',
+      action: { type: 'screenshot' } as any,
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new ToolCallItem(computerCall, agent)],
+      handoffs: [],
+      functions: [],
+      computerActions: [{ toolCall: computerCall, computer }],
+      mcpApprovalRequests: [],
+      toolsUsed: ['computer_use'],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+    const approvalSpy = vi
+      .spyOn(state._context, 'isToolApproved')
+      .mockImplementation(({ toolName, callId }) => {
+        if (toolName === computer.name && callId === computerCall.callId) {
+          return true as any;
+        }
+        return undefined as any;
+      });
+
+    const originalItems = [new ToolCallItem(computerCall, agent)];
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      originalItems,
+      resumedResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    approvalSpy.mockRestore();
+
+    const toolOutputs = result.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+
+    expect(toolOutputs).toHaveLength(1);
+    expect(
+      (toolOutputs[0].rawItem as protocol.ComputerCallResultItem).callId,
+    ).toBe(computerCall.callId);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 });

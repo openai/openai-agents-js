@@ -1,0 +1,35 @@
+// Example schema for the Prisma-backed session store.
+// Run the following to get started:
+//   pnpm add -D prisma
+//   pnpm add @prisma/client
+//   npx prisma migrate dev --name init --schema ./examples/memory/prisma/schema.prisma
+//   npx prisma generate --schema ./examples/memory/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String        @id
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  items     SessionItem[]
+}
+
+model SessionItem {
+  id        Int      @id @default(autoincrement())
+  sessionId String
+  position  Int
+  item      Json
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, position])
+  @@unique([sessionId, position])
+}

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -19,9 +19,27 @@ import {
   StreamEvent,
   FunctionCallItem,
   tool,
+  user,
+  Session,
+  InputGuardrailTripwireTriggered,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
+import * as runImplementation from '../src/runImplementation';
+
+function getFirstTextContent(item: AgentInputItem): string | undefined {
+  if (item.type !== 'message') {
+    return undefined;
+  }
+  if (typeof item.content === 'string') {
+    return item.content;
+  }
+  if (Array.isArray(item.content)) {
+    const first = item.content[0] as { text?: string };
+    return first?.text;
+  }
+  return undefined;
+}
 
 // Test for unhandled rejection when stream loop throws
 
@@ -29,6 +47,10 @@ describe('Runner.run (streaming)', () => {
   beforeAll(() => {
     setTracingDisabled(true);
     setDefaultModelProvider(new FakeModelProvider());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('does not emit unhandled rejection when stream loop fails', async () => {
@@ -546,6 +568,75 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('keeps server tracker aligned with filtered inputs when streaming', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [fakeModelMessage('call the tool'), buildToolCall('call-1', 'value')],
+          'resp-1',
+        ),
+        buildTurn([fakeModelMessage('all done')], 'resp-2'),
+      ]);
+
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls += 1;
+          if (filterCalls === 1) {
+            return {
+              instructions: modelData.instructions,
+              input: modelData.input
+                .slice(1)
+                .map((item) => structuredClone(item)),
+            };
+          }
+          return modelData;
+        },
+      });
+
+      const agent = new Agent({
+        name: 'StreamTrackerFilter',
+        model,
+        tools: [serverTool],
+      });
+
+      const result = await runner.run(
+        agent,
+        [user('First input'), user('Second input')],
+        {
+          stream: true,
+          conversationId: 'conv-filter-stream',
+        },
+      );
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('all done');
+      expect(filterCalls).toBe(2);
+      expect(model.requests).toHaveLength(2);
+
+      const firstInput = model.requests[0].input as AgentInputItem[];
+      expect(Array.isArray(firstInput)).toBe(true);
+      expect(firstInput).toHaveLength(1);
+      expect(getFirstTextContent(firstInput[0])).toBe('Second input');
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'message' &&
+            getFirstTextContent(item) === 'First input',
+        ),
+      ).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'function_call_result' &&
+            (item as protocol.FunctionCallResultItem).callId === 'call-1',
+        ),
+      ).toBe(true);
+    });
+
     it('only sends new items and updates previousResponseId across turns', async () => {
       const model = new TrackingStreamingModel([
         buildTurn(
@@ -681,4 +772,266 @@ describe('Runner.run (streaming)', () => {
       });
     });
   });
+
+  it('persists streaming input only after the run completes successfully', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamSuccess',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'hello world', {
+      stream: true,
+      session,
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    const [sessionArg, persistedItems] = saveInputSpy.mock.calls[0];
+    expect(sessionArg).toBe(session);
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: 'hello world',
+    });
+  });
+
+  it('persists streaming input when the model stream rejects before completion', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+    const streamError = new Error('model stream failed');
+
+    const agent = new Agent({
+      name: 'StreamFailurePersistsInput',
+      model: new RejectingStreamingModel(streamError),
+    });
+
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'save me please', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toThrow('model stream failed');
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    const [, persistedItems] = saveInputSpy.mock.calls[0];
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: 'save me please',
+    });
+  });
+
+  it('persists filtered streaming input instead of the raw turn payload', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamFiltered',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    const secretInput = 'super secret';
+    const redactedContent = '[filtered]';
+
+    const result = await runner.run(agent, secretInput, {
+      stream: true,
+      session,
+      callModelInputFilter: ({ modelData }) => {
+        const sanitizedInput = modelData.input.map((item) => {
+          if (
+            item.type === 'message' &&
+            'role' in item &&
+            item.role === 'user'
+          ) {
+            return {
+              ...item,
+              content: redactedContent,
+            };
+          }
+          return item;
+        });
+
+        return {
+          ...modelData,
+          input: sanitizedInput,
+        };
+      },
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    const [, persistedItems] = saveInputSpy.mock.calls[0];
+    if (!Array.isArray(persistedItems)) {
+      throw new Error('Expected persisted session items to be an array.');
+    }
+    expect(persistedItems).toHaveLength(1);
+    expect(persistedItems[0]).toMatchObject({
+      role: 'user',
+      content: redactedContent,
+    });
+    expect(JSON.stringify(persistedItems)).not.toContain(secretInput);
+  });
+
+  it('skips streaming session persistence when the server manages the conversation', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamServerManaged',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner();
+
+    // Session is still supplied alongside conversationId to confirm we suppress duplicate persistence while preserving session-based hooks.
+    const result = await runner.run(agent, 'hello world', {
+      stream: true,
+      session,
+      conversationId: 'conv-server-managed',
+    });
+
+    await result.completed;
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips persisting streaming input when an input guardrail triggers', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+
+    const guardrail = {
+      name: 'block',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'blocked' },
+      }),
+    };
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamGuardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should not run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'blocked input', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+  });
 });
+
+class ImmediateStreamingModel implements Model {
+  constructor(private readonly response: ModelResponse) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    return this.response;
+  }
+
+  async *getStreamedResponse(
+    _request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    const usage = this.response.usage;
+    const output = this.response.output.map((item) =>
+      protocol.OutputModelItem.parse(item),
+    );
+    yield {
+      type: 'response_done',
+      response: {
+        id: 'r',
+        usage: {
+          requests: usage.requests,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+        },
+        output,
+      },
+    } satisfies StreamEvent;
+  }
+}
+
+class RejectingStreamingModel implements Model {
+  constructor(private readonly error: Error) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    throw this.error;
+  }
+
+  getStreamedResponse(_request: ModelRequest): AsyncIterable<StreamEvent> {
+    const error = this.error;
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            throw error;
+          },
+        } satisfies AsyncIterator<StreamEvent>;
+      },
+    } satisfies AsyncIterable<StreamEvent>;
+  }
+}
+
+function createSessionMock(): Session {
+  return {
+    getSessionId: vi.fn().mockResolvedValue('session-id'),
+    getItems: vi.fn().mockResolvedValue([]),
+    addItems: vi.fn().mockResolvedValue(undefined),
+    popItem: vi.fn().mockResolvedValue(undefined),
+    clearSession: vi.fn().mockResolvedValue(undefined),
+  };
+}

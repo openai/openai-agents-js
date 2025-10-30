@@ -606,6 +606,7 @@ export const OutputModelItem = z.discriminatedUnion('type', [
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
+  FunctionCallResultItem,
   ReasoningItem,
   UnknownItem,
 ]);

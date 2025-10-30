@@ -18,3 +18,7 @@ export {
   codeInterpreterTool,
   imageGenerationTool,
 } from './tools';
+export {
+  OpenAIConversationsSession,
+  startOpenAIConversationsSession,
+} from './memory/openaiConversationsSession';

@@ -112,6 +112,11 @@ export {
   Runner,
   StreamRunOptions,
 } from './run';
+export type {
+  ModelInputData,
+  CallModelInputFilter,
+  CallModelInputFilterArgs,
+} from './run';
 export { RunContext } from './runContext';
 export { RunState } from './runState';
 export {
@@ -161,6 +166,8 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { Usage } from './usage';
+export type { Session, SessionInputCallback } from './memory/session';
+export { MemorySession } from './memory/memorySession';
 
 /**
  * Exporting the whole protocol as an object here. This contains both the types
