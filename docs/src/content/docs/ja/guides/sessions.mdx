@@ -9,90 +9,86 @@ import manageHistory from '../../../../../../examples/docs/sessions/manageHistor
 import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
 import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 
-セッションは Agents SDK に**永続的なメモリ層**を与えます。`Session` インターフェースを実装した任意のオブジェクトを用意し、それを `Runner.run` に渡すだけで、あとは SDK が処理します。セッションがある場合、ランナーは自動的に次を行います。
+セッションは Agents SDK による **永続的なメモリレイヤー** を提供します。`Session` インターフェースを実装する任意のオブジェクトを `Runner.run` に渡すだけで、残りは SDK が処理します。セッションがある場合、ランナーは自動的に次を行います:
 
-1. 以前に保存された会話アイテムを取得し、次のターンの先頭に追加する
-2. 各実行完了後に新しいユーザー入力とアシスタント出力を永続化する
-3. 新しいユーザーのテキストでランナーを呼び出す場合でも、中断した `RunState` から再開する場合でも、将来のターンのためにセッションを利用可能な状態に保つ
+1. 以前に保存された会話アイテムを取得し、次のターンの先頭に付加します
+2. 各実行完了後に、新しいユーザー入力とアシスタント出力を永続化します
+3. 新しいユーザーのテキストでランナーを呼び出す場合でも、中断された `RunState` から再開する場合でも、将来のターンにセッションを利用可能に保ちます
 
-これにより、ターン間で手動で `toInputList()` を呼び出したり、履歴をつなぎ合わせたりする必要がなくなります。TypeScript SDK には、すぐに使える `OpenAIConversationsSession` が同梱されています。同じ `Session` インターフェースを使えば、独自のストレージを持ち込むこともできます。OpenAI Conversations API 以外の発想については、`examples/memory/` 配下のサンプルセッションバックエンド（Prisma、ファイルバックエンドなど）を参照してください。
+これにより、手動で `toInputList()` を呼び出したり、ターン間で履歴をつなぎ合わせたりする必要がなくなります。TypeScript SDK には 2 つの実装が同梱されています: Conversations API 用の `OpenAIConversationsSession` と、ローカル開発向けの `MemorySession` です。両者は `Session` インターフェースを共有するため、独自のストレージバックエンドを差し替えできます。Conversations API 以外のアイデアについては、`examples/memory/` 配下のサンプルセッションバックエンド（Prisma、ファイル永続など）を参照してください。
 
-> Tip: このページの `OpenAIConversationsSession` の例を実行するには、`OPENAI_API_KEY` 環境変数を設定する（またはセッション構築時に `apiKey` を指定する）ことで、SDK が Conversations API を呼び出せるようにしてください。
+> ヒント: このページの `OpenAIConversationsSession` の例を実行するには、`OPENAI_API_KEY` 環境変数を設定する（またはセッション構築時に `apiKey` を指定する）ことで、SDK が Conversations API を呼び出せるようにしてください。
 
 ---
 
 ## クイックスタート
 
-`OpenAIConversationsSession`（または他の任意の `Session` 実装）を使用してメモリを
-[Conversations API](https://platform.openai.com/docs/api-reference/conversations)
-と同期します。
+`OpenAIConversationsSession` を使用して [Conversations API](https://platform.openai.com/docs/api-reference/conversations) とメモリを同期するか、他の任意の `Session` 実装に差し替えます。
 
 <Code
   lang="typescript"
   code={sessionsQuickstart}
-  title="Use the Conversations API as session memory"
+  title="Conversations API をセッションメモリとして使用"
 />
 
-同じセッションインスタンスを再利用すると、エージェントは毎ターンの前に会話履歴全体を受け取り、新しいアイテムを書き戻します。
-
-`OpenAIConversationsSession` を他の任意の `Session` 実装に差し替えても、他のコード変更は不要です。
+同じセッションインスタンスを再利用すると、各ターンの前にエージェントが完全な会話履歴を受け取り、新しいアイテムが自動的に永続化されます。別の `Session` 実装への切り替えでも、他のコード変更は不要です。
 
 ---
 
-## ランナーによるセッションの利用方法
+## ランナーによるセッションの使用方法
 
-- **各実行の前に** ランナーはセッション履歴を取得し、新しいターンの入力とマージして、その結合リストをエージェントに渡します
-- **非ストリーミング実行の後に** `session.addItems()` を 1 回呼び出して、元のユーザー入力と直近ターンのモデル出力の両方を永続化します
-- **ストリーミング実行では** ユーザー入力を先に書き込み、ターンが完了したらストリーミング出力を追記します
-- **`RunResult.state` から再開する場合**（承認フローやその他の中断）同じ `session` を渡し続けます。再開したターンは入力の再準備なしにメモリへ追加されます
+- **各実行前に** セッション履歴を取得し、新しいターンの入力とマージして、結合リストをエージェントに渡します
+- **非ストリーミング実行後に** 1 回の `session.addItems()` 呼び出しで、直近ターンの元のユーザー入力とモデル出力の両方を永続化します
+- **ストリーミング実行では** まずユーザー入力を書き込み、ターン完了時にストリーム出力を追記します
+- **`RunResult.state` から再開する場合**（承認やその他の中断）も同じ `session` を渡し続けます。再開したターンは、入力を再準備せずにメモリへ追加されます
 
 ---
 
 ## 履歴の確認と編集
 
-セッションはシンプルな CRUD ヘルパーを公開しているため、「元に戻す」「チャットをクリア」「監査」といった機能を構築できます。
+セッションはシンプルな CRUD ヘルパーを公開しているため、「取り消し」「チャットのクリア」や監査機能を構築できます。
 
 <Code
   lang="typescript"
   code={manageHistory}
-  title="Read and edit stored items"
+  title="保存済みアイテムの読み取りと編集"
 />
 
-`session.getItems()` は保存済みの `AgentInputItem[]` を返します。`popItem()` を呼び出して最後のエントリを削除できます。これは、エージェントを再実行する前のユーザー修正に便利です。
+`session.getItems()` は保存された `AgentInputItem[]` を返します。`popItem()` を呼び出して最後のエントリを削除できます。エージェントを再実行する前のユーザー修正に便利です。
 
 ---
 
 ## 独自ストレージの持ち込み
 
-`Session` インターフェースを実装して、Redis、DynamoDB、SQLite などのデータストアでメモリを裏付けできます。必要なのは 5 つの非同期メソッドだけです。
+`Session` インターフェースを実装して、Redis、DynamoDB、SQLite などのデータストアでメモリを支えることができます。必要なのは 5 つの非同期メソッドだけです。
 
 <Code
   lang="typescript"
   code={customSession}
-  title="Custom in-memory session implementation"
+  title="カスタムのインメモリセッション実装"
 />
 
-カスタムセッションを使うことで、保持ポリシーの適用、暗号化の追加、または永続化前に各会話ターンへメタデータを付与できます。
+カスタムセッションにより、保持ポリシーの適用、暗号化の追加、各会話ターンにメタデータを付与してから永続化することが可能になります。
 
 ---
 
 ## 履歴と新規アイテムのマージ方法の制御
 
-実行入力として `AgentInputItem` の配列を渡すときは、保存済み履歴と決定論的にマージするために `sessionInputCallback` を指定します。ランナーは既存の履歴を読み込み、**モデル呼び出しの前に** コールバックを呼び出し、返された配列をそのターンの完全な入力としてモデルに渡します。このフックは、古いアイテムの切り詰め、ツール結果の重複排除、またはモデルに見せたいコンテキストだけを強調表示するのに最適です。
+実行入力として `AgentInputItem` の配列を渡す場合、`sessionInputCallback` を指定して、保存済み履歴とのマージを決定的に行えます。ランナーは既存履歴を読み込み、**モデル呼び出し前に** コールバックを呼び出し、返された配列を当該ターンの完全な入力としてモデルに渡します。このフックは、古いアイテムのトリミング、ツール結果の重複排除、モデルに見せたいコンテキストのみを強調する用途に最適です。
 
 <Code
   lang="typescript"
   code={sessionInputCallback}
-  title="Truncate history with sessionInputCallback"
+  title="sessionInputCallback で履歴を切り詰め"
 />
 
-文字列入力の場合、ランナーは履歴を自動的にマージできるため、コールバックを省略できます。
+文字列入力ではランナーが自動で履歴をマージするため、コールバックは任意です。
 
 ---
 
 ## 承認と再開可能な実行の取り扱い
 
-Human in the loop (人間の介入) フローでは、承認待ちのために実行を一時停止することがよくあります。
+Human-in-the-loop フローでは、承認待ちのために実行を一時停止することがあります:
 
 ```typescript
 const result = await runner.run(agent, 'Search the itinerary', {
@@ -107,4 +103,4 @@ if (result.requiresApproval) {
 }
 ```
 
-セッションは以前の `RunState` からの再開時にも機能するため、継続したターンは同じメモリレコードに追加され、会話の一貫した単一の履歴が維持されます。これにより Human in the loop (人間の介入) (HITL) フローとの完全な互換性が保たれます。承認チェックポイントは引き続き `RunState` を往復しつつ、セッションが全文書を完全に保ちます。
+以前の `RunState` から再開する場合、新しいターンは同じメモリレコードに追記され、単一の会話履歴が維持されます。Human in the loop (人間の介入)（HITL）フローとの互換性は完全に保たれ、承認チェックポイントは引き続き `RunState` を経由して往復しつつ、セッションが完全なトランスクリプトを保持します。
