@@ -1715,7 +1715,9 @@ function normalizeItemsForSessionPersistence(
   items: AgentInputItem[],
 ): AgentInputItem[] {
   // Persisted sessions must avoid raw binary so we convert every item into a JSON-safe shape before writing to storage.
-  return items.map((item) => sanitizeValueForSession(item));
+  return items.map((item) =>
+    sanitizeValueForSession(stripTransientCallIds(item)),
+  );
 }
 
 function sanitizeValueForSession(
@@ -1790,12 +1792,10 @@ function toUint8ArrayIfBinary(value: unknown): Uint8Array | undefined {
 function toDataUrlFromBytes(bytes: Uint8Array, mediaType?: string): string {
   // Convert binary payloads into a durable data URL so session files remain self-contained.
   const base64 = encodeUint8ArrayToBase64(bytes);
+  // Note that OpenAI Responses API never accepts application/octet-stream as a media type,
+  // so we fall back to text/plain; that said, tools are supposed to return a valid media type when this utility is used.
   const type =
-    mediaType && !mediaType.startsWith('data:')
-      ? mediaType
-      : // Note that OpenAI Responses API never accepts application/octet-stream as a media type,
-        // so we fall back to text/plain; that said, tools are supposed to return a valid media type when this utility is used.
-        'text/plain';
+    mediaType && !mediaType.startsWith('data:') ? mediaType : 'text/plain';
   return `data:${type};base64,${base64}`;
 }
 
@@ -1805,6 +1805,44 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   }
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+// Drop IDs from transient function call items (fc_***) so replayed histories do not reuse generated IDs.
+function stripTransientCallIds(value: AgentInputItem): AgentInputItem;
+function stripTransientCallIds(value: unknown): unknown;
+function stripTransientCallIds(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripTransientCallIds(entry));
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  const isProtocolItem =
+    typeof record.type === 'string' && record.type.length > 0;
+  const shouldStripId =
+    isProtocolItem && shouldStripIdForType(record.type as string);
+  for (const [key, entry] of Object.entries(record)) {
+    if (shouldStripId && key === 'id') {
+      continue;
+    }
+    result[key] = stripTransientCallIds(entry);
+  }
+  return result;
+}
+
+function shouldStripIdForType(type: string): boolean {
+  switch (type) {
+    case 'function_call':
+    case 'function_call_result':
+      return true;
+    default:
+      return false;
+  }
 }
 
 /**

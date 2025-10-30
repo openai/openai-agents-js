@@ -1,5 +1,10 @@
-import { Agent, run, withTrace } from '@openai/agents';
-import { FileSession } from './sessions';
+import {
+  Agent,
+  getLogger,
+  MemorySession,
+  run,
+  withTrace,
+} from '@openai/agents';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools';
 
 const directory: Record<string, string> = {
@@ -17,7 +22,7 @@ const lookupCustomerProfile = createLookupCustomerProfileTool({
 });
 
 async function main() {
-  await withTrace('memory:file:main', async () => {
+  await withTrace('memory:memorySession:main', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions,
@@ -25,23 +30,25 @@ async function main() {
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
-    const session = new FileSession({ dir: './tmp/' });
+    const session = new MemorySession({
+      logger: getLogger('memory:memory'),
+    });
     let result = await run(
       agent,
       'What is the largest country in South America?',
       { session },
     );
-    console.log(result.finalOutput); // e.g., Brazil
+    console.log(result.finalOutput); // e.g., Brazil.
 
     result = await run(agent, 'What is the capital of that country?', {
       session,
     });
-    console.log(result.finalOutput); // e.g., Brasilia
+    console.log(result.finalOutput); // e.g., Brasilia.
   });
 }
 
 async function mainStream() {
-  await withTrace('memory:file:mainStream', async () => {
+  await withTrace('memory:memorySession:mainStream', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions,
@@ -49,7 +56,7 @@ async function mainStream() {
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
-    const session = new FileSession({ dir: './tmp/' });
+    const session = new MemorySession();
     let result = await run(
       agent,
       'What is the largest country in South America?',
@@ -63,8 +70,9 @@ async function mainStream() {
       if (
         event.type === 'raw_model_stream_event' &&
         event.data.type === 'output_text_delta'
-      )
+      ) {
         process.stdout.write(event.data.delta);
+      }
     }
     console.log();
 
@@ -73,14 +81,10 @@ async function mainStream() {
       session,
     });
 
-    // toTextStream() automatically returns a readable stream of strings intended to be displayed
-    // to the user
     for await (const event of result.toTextStream()) {
       process.stdout.write(event);
     }
     console.log();
-
-    // Additional tool invocations happen earlier in the turn.
   });
 }
 

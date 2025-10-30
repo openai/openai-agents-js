@@ -38,4 +38,32 @@ describe('MemorySession', () => {
     expect(await session.getItems(3)).toEqual([]);
     expect(await session.popItem()).toBeUndefined();
   });
+
+  test('returns clones so external mutations do not persist', async () => {
+    const initial = createUserMessage('start');
+    const session = new MemorySession({
+      sessionId: 'session-2',
+      initialItems: [initial],
+    });
+
+    const items = await session.getItems();
+    expect(items[0]).not.toBe(initial);
+    (items[0] as any).content = 'mutated';
+    expect(await session.getItems()).toEqual([createUserMessage('start')]);
+
+    const next = createUserMessage('next');
+    await session.addItems([next]);
+    (next as any).content = 'mutated';
+    expect(await session.getItems()).toEqual([
+      createUserMessage('start'),
+      createUserMessage('next'),
+    ]);
+
+    const popped = await session.popItem();
+    expect(popped).toEqual(createUserMessage('next'));
+    if (popped) {
+      (popped as any).content = 'mutated';
+    }
+    expect(await session.getItems()).toEqual([createUserMessage('start')]);
+  });
 });
