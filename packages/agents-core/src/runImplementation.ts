@@ -468,21 +468,13 @@ export async function resolveInterruptedTurn<TContext>(
     state,
   );
 
-  const approvedComputerActions = processedResponse.computerActions.filter(
-    (action) => {
-      const approval = state._context.isToolApproved({
-        toolName: action.computer.name,
-        callId: action.toolCall.callId,
-      });
-      return approval === true;
-    },
-  );
-
+  // There is no built-in HITL approval surface for computer tools today, so every pending action
+  // is executed immediately when the turn resumes.
   const computerResults =
-    approvedComputerActions.length > 0
+    processedResponse.computerActions.length > 0
       ? await executeComputerActions(
           agent,
-          approvedComputerActions,
+          processedResponse.computerActions,
           runner,
           state._context,
         )
