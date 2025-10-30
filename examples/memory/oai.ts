@@ -1,5 +1,10 @@
-import { Agent, OpenAIConversationsSession, run, tool } from '@openai/agents';
-import { z } from 'zod';
+import {
+  Agent,
+  OpenAIConversationsSession,
+  run,
+  withTrace,
+} from '@openai/agents';
+import { createLookupCustomerProfileTool, fetchImageData } from './tools';
 
 const directory: Record<string, string> = {
   '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
@@ -7,95 +12,80 @@ const directory: Record<string, string> = {
 };
 
 const instructions =
-  'You are a helpful assistant. If a tool reports a transient failure, retry the same tool call once before responding.';
+  'You are a helpful assistant. For every user turn you must call lookup_customer_profile and fetch_image_data before responding.';
 
-let hasSimulatedLookupFailure = false;
-
-async function fetchProfileFromDirectory(id: string): Promise<string> {
-  if (!hasSimulatedLookupFailure) {
-    hasSimulatedLookupFailure = true;
-    throw new Error(
-      'Simulated transient CRM outage. Please retry the tool call.',
-    );
-  }
-
-  return directory[id] ?? `No customer found for id ${id}.`;
-}
-
-const lookupCustomerProfile = tool({
-  name: 'lookup_customer_profile',
-  description:
-    'Look up stored profile details for a customer by their internal id.',
-  parameters: z.object({
-    id: z
-      .string()
-      .describe('The internal identifier for the customer to retrieve.'),
-  }),
-  async execute({ id }) {
-    return await fetchProfileFromDirectory(id);
-  },
+const lookupCustomerProfile = createLookupCustomerProfileTool({
+  directory,
+  transientErrorMessage:
+    'Simulated transient CRM outage. Please retry the tool call.',
 });
 
 async function main() {
-  const agent = new Agent({
-    name: 'Assistant',
-    instructions,
-    modelSettings: { toolChoice: 'required' },
-    tools: [lookupCustomerProfile],
-  });
+  await withTrace('memory:oai:main', async () => {
+    const agent = new Agent({
+      name: 'Assistant',
+      instructions,
+      modelSettings: { toolChoice: 'required' },
+      tools: [lookupCustomerProfile, fetchImageData],
+    });
 
-  const session = new OpenAIConversationsSession();
-  let result = await run(
-    agent,
-    'What is the largest country in South America?',
-    { session },
-  );
-  console.log(result.finalOutput); // e.g., Brazil
+    const session = new OpenAIConversationsSession();
+    let result = await run(
+      agent,
+      'What is the largest country in South America?',
+      { session },
+    );
+    console.log(result.finalOutput); // e.g., Brazil
 
-  result = await run(agent, 'What is the capital of that country?', {
-    session,
+    result = await run(agent, 'What is the capital of that country?', {
+      session,
+    });
+    console.log(result.finalOutput); // e.g., Brasilia
   });
-  console.log(result.finalOutput); // e.g., Brasilia
 }
 
 async function mainStream() {
-  const agent = new Agent({
-    name: 'Assistant',
-    instructions,
-    modelSettings: { toolChoice: 'required' },
-    tools: [lookupCustomerProfile],
-  });
+  await withTrace('memory:oai:mainStream', async () => {
+    const agent = new Agent({
+      name: 'Assistant',
+      instructions,
+      modelSettings: { toolChoice: 'required' },
+      tools: [lookupCustomerProfile, fetchImageData],
+    });
 
-  const session = new OpenAIConversationsSession();
-  let result = await run(
-    agent,
-    'What is the largest country in South America?',
-    {
+    const session = new OpenAIConversationsSession();
+    let result = await run(
+      agent,
+      'What is the largest country in South America?',
+      {
+        stream: true,
+        session,
+      },
+    );
+
+    for await (const event of result) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      )
+        process.stdout.write(event.data.delta);
+    }
+    console.log();
+
+    result = await run(agent, 'What is the capital of that country?', {
       stream: true,
       session,
-    },
-  );
+    });
 
-  for await (const event of result) {
-    if (
-      event.type === 'raw_model_stream_event' &&
-      event.data.type === 'output_text_delta'
-    )
-      process.stdout.write(event.data.delta);
-  }
-  console.log();
+    // toTextStream() automatically returns a readable stream of strings intended to be displayed
+    // to the user
+    for await (const event of result.toTextStream()) {
+      process.stdout.write(event);
+    }
+    console.log();
 
-  result = await run(agent, 'What is the capital of that country?', {
-    stream: true,
-    session,
+    // Additional tool invocations happen earlier in the turn.
   });
-
-  // toTextStream() automatically returns a readable stream of strings intended to be displayed
-  // to the user
-  for await (const event of result.toTextStream()) {
-    process.stdout.write(event);
-  }
-  console.log();
 }
 
 async function promptAndRun() {

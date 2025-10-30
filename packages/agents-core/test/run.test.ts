@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import {
   beforeAll,
   beforeEach,
@@ -924,13 +925,11 @@ describe('Runner.run', () => {
               item.role === 'user' &&
               item.providerData?.payload,
           )
-          .map((item) =>
-            Array.from(item.providerData?.payload as Uint8Array | number[]),
-          );
-        expect(persistedPayloads).toContainEqual(Array.from(newPayload));
-        expect(persistedPayloads).not.toContainEqual(
-          Array.from(historyPayload),
-        );
+          .map((item) => item.providerData?.payload);
+        const expectedNewPayload = `data:text/plain;base64,${Buffer.from(newPayload).toString('base64')}`;
+        const expectedHistoryPayload = `data:text/plain;base64,${Buffer.from(historyPayload).toString('base64')}`;
+        expect(persistedPayloads).toContain(expectedNewPayload);
+        expect(persistedPayloads).not.toContain(expectedHistoryPayload);
       });
 
       it('throws when session input callback returns invalid data', async () => {

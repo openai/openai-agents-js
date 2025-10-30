@@ -430,12 +430,16 @@ export async function resolveInterruptedTurn<TContext>(
       for (let index = originalPreStepItems.length - 1; index >= 0; index--) {
         const item = originalPreStepItems[index];
         if (!(item instanceof RunToolApprovalItem)) {
-          break;
+          continue;
         }
 
         const identity = getApprovalIdentity(item);
-        if (!identity || !pendingApprovalIdentities.has(identity)) {
-          break;
+        if (!identity) {
+          continue;
+        }
+
+        if (!pendingApprovalIdentities.has(identity)) {
+          continue;
         }
 
         rewindCount++;
@@ -1701,6 +1705,106 @@ export function extractOutputItemsFromRunItems(
     .map((item) => item.rawItem as AgentInputItem);
 }
 
+type SessionBinaryContext = {
+  mediaType?: string;
+};
+
+function normalizeItemsForSessionPersistence(
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  // Persisted sessions must avoid raw binary so we convert every item into a JSON-safe shape before writing to storage.
+  return items.map((item) => sanitizeValueForSession(item));
+}
+
+function sanitizeValueForSession(
+  value: AgentInputItem,
+  context?: SessionBinaryContext,
+): AgentInputItem;
+// Nested fields such as providerData may hold arbitrary shapes, so we keep an unknown-based overload for recursive traversal.
+function sanitizeValueForSession(
+  value: unknown,
+  context?: SessionBinaryContext,
+): unknown;
+function sanitizeValueForSession(
+  value: unknown,
+  context: SessionBinaryContext = {},
+): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  // Convert supported binary payloads into ArrayBuffer views before serialization.
+  const binary = toUint8ArrayIfBinary(value);
+  if (binary) {
+    return toDataUrlFromBytes(binary, context.mediaType);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeValueForSession(entry, context));
+  }
+
+  if (!isPlainObject(value)) {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  const mediaType =
+    typeof record.mediaType === 'string' && record.mediaType.length > 0
+      ? (record.mediaType as string)
+      : context.mediaType;
+
+  for (const [key, entry] of Object.entries(record)) {
+    // Propagate explicit media type only when walking into binary payload containers.
+    const nextContext =
+      key === 'data' || key === 'fileData' ? { mediaType } : context;
+    result[key] = sanitizeValueForSession(entry, nextContext);
+  }
+
+  return result;
+}
+
+function toUint8ArrayIfBinary(value: unknown): Uint8Array | undefined {
+  // Normalize the diverse binary containers we may receive into a shared Uint8Array view.
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (isArrayBufferView(value)) {
+    const view = value as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (isNodeBuffer(value)) {
+    const view = value as Uint8Array;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (isSerializedBufferSnapshot(value)) {
+    const snapshot = value as { data: number[] };
+    return Uint8Array.from(snapshot.data);
+  }
+  return undefined;
+}
+
+function toDataUrlFromBytes(bytes: Uint8Array, mediaType?: string): string {
+  // Convert binary payloads into a durable data URL so session files remain self-contained.
+  const base64 = encodeUint8ArrayToBase64(bytes);
+  const type =
+    mediaType && !mediaType.startsWith('data:')
+      ? mediaType
+      : // Note that OpenAI Responses API never accepts application/octet-stream as a media type,
+        // so we fall back to text/plain; that said, tools are supposed to return a valid media type when this utility is used.
+        'text/plain';
+  return `data:${type};base64,${base64}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 /**
  * @internal
  * Persist full turn (input + outputs) for non-streaming runs.
@@ -1732,7 +1836,8 @@ export async function saveToSession(
       alreadyPersisted + newRunItems.length;
     return;
   }
-  await session.addItems(itemsToSave);
+  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  await session.addItems(sanitizedItems);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 
@@ -1751,7 +1856,8 @@ export async function saveStreamInputToSession(
   if (!sessionInputItems || sessionInputItems.length === 0) {
     return;
   }
-  await session.addItems(sessionInputItems);
+  const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
+  await session.addItems(sanitizedInput);
 }
 
 /**
@@ -1775,7 +1881,8 @@ export async function saveStreamResultToSession(
       alreadyPersisted + newRunItems.length;
     return;
   }
-  await session.addItems(itemsToSave);
+  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  await session.addItems(sanitizedItems);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 

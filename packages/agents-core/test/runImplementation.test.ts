@@ -296,6 +296,162 @@ describe('saveToSession', () => {
     expect(last.type).toBe('function_call_result');
     expect(last.callId).toBe(functionCall.callId);
   });
+
+  it('persists HITL tool outputs when approval items are not the last generated entries', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Interleaved HITL Agent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new MemorySession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const approvalCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_hitl',
+      callId: 'call_hitl',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '101' }),
+      providerData: {},
+    };
+
+    const autoCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_auto',
+      callId: 'call_auto',
+      name: 'fetch_image_data',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '101' }),
+      providerData: {},
+    };
+
+    const approvalToolCallItem = new ToolCallItem(approvalCall, textAgent);
+    const autoToolCallItem = new ToolCallItem(autoCall, textAgent);
+    const approvalItem = new ToolApprovalItem(approvalCall, textAgent);
+    const autoOutputRaw = getToolCallOutputItem(autoCall, 'Fetched image.');
+    const autoOutputItem = new ToolCallOutputItem(
+      autoOutputRaw,
+      textAgent,
+      'Fetched image.',
+    );
+
+    state._generatedItems = [
+      approvalToolCallItem,
+      autoToolCallItem,
+      approvalItem,
+      autoOutputItem,
+    ];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [approvalItem],
+      },
+    };
+
+    const preApprovalResult = new RunResult(state);
+    await saveToSession(
+      session,
+      toInputItemList(state._originalInput),
+      preApprovalResult,
+    );
+
+    expect(state._currentTurnPersistedItemCount).toBe(4);
+    expect(session.items).toHaveLength(4);
+    const preResumeResult = session.items[3] as protocol.FunctionCallResultItem;
+    expect(preResumeResult.type).toBe('function_call_result');
+    expect(preResumeResult.callId).toBe(autoCall.callId);
+
+    state.approve(approvalItem);
+
+    const approvalTool = tool({
+      name: approvalCall.name,
+      description: 'Approval tool',
+      parameters: z.object({ id: z.string() }),
+      needsApproval: async () => true,
+      async execute({ id }) {
+        return `Customer ${id} details.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const autoTool = tool({
+      name: autoCall.name,
+      description: 'Auto tool',
+      parameters: z.object({ id: z.string() }),
+      async execute({ id }) {
+        return `Image for ${id}.`;
+      },
+    }) as unknown as FunctionTool<UnknownContext>;
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        approvalToolCallItem,
+        autoToolCallItem,
+        approvalItem,
+        autoOutputItem,
+      ],
+      handoffs: [],
+      functions: [
+        {
+          toolCall: approvalCall,
+          tool: approvalTool,
+        },
+        {
+          toolCall: autoCall,
+          tool: autoTool,
+        },
+      ],
+      computerActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [approvalCall.name, autoCall.name],
+      hasToolsOrApprovalsToRun() {
+        return false;
+      },
+    } as ProcessedResponse<UnknownContext>;
+
+    const runner = new Runner();
+    const resumedResponse: ModelResponse = {
+      usage: new Usage({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      }),
+      output: [],
+    };
+
+    const turnResult = await withTrace('interleaved-hitl', async () => {
+      return resolveInterruptedTurn(
+        textAgent,
+        state._originalInput,
+        state._generatedItems,
+        resumedResponse,
+        processedResponse,
+        runner,
+        state,
+      );
+    });
+
+    state._originalInput = turnResult.originalInput;
+    state._generatedItems = turnResult.generatedItems;
+    state._currentStep = turnResult.nextStep;
+
+    const resumedResult = new RunResult(state);
+    await saveToSession(session, [], resumedResult);
+
+    expect(session.items).toHaveLength(5);
+    const latest = session.items[4] as protocol.FunctionCallResultItem;
+    expect(latest.type).toBe('function_call_result');
+    expect(latest.callId).toBe(approvalCall.callId);
+  });
 });
 
 describe('prepareInputItemsWithSession', () => {

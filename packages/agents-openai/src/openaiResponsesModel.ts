@@ -403,7 +403,7 @@ function convertStructuredOutputToRequestItem(
 
 function convertResponseFunctionCallOutputItemToStructured(
   item: ResponseFunctionCallOutputListItem,
-): protocol.ToolCallStructuredOutput {
+): protocol.ToolCallStructuredOutput | null {
   if (item.type === 'input_text') {
     return {
       type: 'input_text',
@@ -418,6 +418,13 @@ function convertResponseFunctionCallOutputItemToStructured(
       structured.image = item.image_url;
     } else if (typeof item.file_id === 'string' && item.file_id.length > 0) {
       structured.image = { id: item.file_id };
+    } else {
+      // As of 2025-10-30, conversations retrieval API may not include
+      // data url in image_url property; so skipping this pattern
+      logger.debug(
+        `Skipped the "input_image" output item from a tool call result because the OpenAI Conversations API response didn't include the required property (image_url or file_id).`,
+      );
+      return null;
     }
 
     if (item.detail) {
@@ -462,7 +469,9 @@ function convertFunctionCallOutputToProtocol(
   }
 
   if (Array.isArray(output)) {
-    return output.map(convertResponseFunctionCallOutputItemToStructured);
+    return output
+      .map(convertResponseFunctionCallOutputItemToStructured)
+      .filter((s) => s !== null);
   }
 
   return '';
@@ -936,7 +945,6 @@ function getInputItems(
         status: item.status,
         ...camelOrSnakeToSnakeCase(item.providerData),
       };
-
       return entry as unknown as OpenAI.Responses.ResponseInputItem.FunctionCallOutput;
     }
 

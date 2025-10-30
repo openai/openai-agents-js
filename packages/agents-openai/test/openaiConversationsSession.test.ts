@@ -391,4 +391,48 @@ describe('OpenAIConversationsSession', () => {
       },
     ]);
   });
+
+  it('adds items without requesting additional response includes', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      {
+        id: 'user-1',
+        type: 'message',
+        role: 'user',
+        content: [],
+      },
+    ];
+    const converted = [
+      {
+        id: 'payload-user-1',
+        type: 'message',
+        role: 'user',
+        content: [],
+      },
+    ];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = new OpenAIConversationsSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(getInputItemsMock).toHaveBeenCalledWith(inputItems);
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: converted,
+    });
+  });
 });
