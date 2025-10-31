@@ -49,6 +49,7 @@ export {
   OpenAIRealtimeEventTypes,
   DEFAULT_OPENAI_REALTIME_MODEL,
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
+  RealtimeSessionPayload,
 } from './openaiRealtimeBase';
 
 export { RealtimeOutputGuardrail } from './guardrail';

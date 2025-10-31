@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
 import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
+import { RealtimeAgent } from '../src/realtimeAgent';
 
 let lastFakeSocket: any;
 vi.mock('ws', () => {
@@ -405,5 +406,32 @@ describe('OpenAIRealtimeWebSocket', () => {
       'wss://api.openai.com/v1/realtime?call_id=call_xyz',
     );
     sip.close();
+  });
+
+  it('OpenAIRealtimeSIP buildInitialConfig returns realtime payload seeded from agent', async () => {
+    const agent = new RealtimeAgent({
+      name: 'sip-agent',
+      handoffs: [],
+      instructions: 'Respond politely.',
+    });
+    const payload = await OpenAIRealtimeSIP.buildInitialConfig(
+      agent,
+      {
+        model: 'gpt-realtime',
+        config: { audio: { output: { speed: 1.5 } } },
+      },
+      { audio: { output: { speed: 2 } } },
+    );
+    expect(payload.type).toBe('realtime');
+    expect(payload.model).toBe('gpt-realtime');
+    expect(payload.instructions).toBe('Respond politely.');
+    expect(payload.audio?.output?.speed).toBe(2);
+  });
+
+  it('OpenAIRealtimeSIP sendAudio throws', () => {
+    const sip = new OpenAIRealtimeSIP();
+    expect(() => sip.sendAudio(new ArrayBuffer(1))).toThrow(
+      'OpenAIRealtimeSIP does not support sending audio buffers',
+    );
   });
 });

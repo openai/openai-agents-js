@@ -7,6 +7,7 @@ import {
   OpenAIRealtimeSIP,
   RealtimeItem,
   RealtimeSession,
+  type RealtimeSessionOptions,
 } from '@openai/agents/realtime';
 import { getStartingAgent, WELCOME_MESSAGE } from './agents';
 
@@ -44,20 +45,27 @@ async function main() {
   const activeCallTasks = new Map<string, Promise<void>>();
   const startingAgent = getStartingAgent();
 
-  function getDefaultInstructions(): string {
-    if (typeof startingAgent.instructions === 'string') {
-      return startingAgent.instructions;
-    }
-    return 'You are a helpful triage agent for ABC customer service.';
-  }
+  // Reuse the same session options when accepting the call and when instantiating the session so
+  // the SIP payload remains in sync with the live websocket session.
+  const sessionOptions: Partial<RealtimeSessionOptions> = {
+    model: 'gpt-realtime',
+    config: {
+      audio: {
+        input: {
+          turnDetection: { type: 'semantic_vad', interruptResponse: true },
+        },
+      },
+    },
+  };
 
   async function acceptCall(callId: string): Promise<void> {
     try {
-      await openai.realtime.calls.accept(callId, {
-        type: 'realtime',
-        model: 'gpt-realtime',
-        instructions: getDefaultInstructions(),
-      });
+      // Build the initial session config using the agent data and session options
+      const initialConfig = await OpenAIRealtimeSIP.buildInitialConfig(
+        startingAgent,
+        sessionOptions,
+      );
+      await openai.realtime.calls.accept(callId, initialConfig);
       console.info(`Accepted call ${callId}`);
     } catch (error) {
       if (error instanceof APIError && error.status === 404) {
@@ -97,17 +105,7 @@ async function main() {
   async function observeCall(callId: string): Promise<void> {
     const session = new RealtimeSession(startingAgent, {
       transport: new OpenAIRealtimeSIP(),
-      model: 'gpt-realtime',
-      config: {
-        audio: {
-          input: {
-            turnDetection: {
-              type: 'semantic_vad',
-              interruptResponse: true,
-            },
-          },
-        },
-      },
+      ...sessionOptions,
     });
 
     session.on('history_added', (item: RealtimeItem) => logHistoryItem(item));

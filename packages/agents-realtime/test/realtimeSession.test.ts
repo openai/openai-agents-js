@@ -126,6 +126,14 @@ describe('RealtimeSession', () => {
     expect(t.connectCalls[0]?.url).toBe('ws://example');
   });
 
+  it('forwards callId in connect options to transport', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test', callId: 'call_123' });
+    expect(t.connectCalls[0]?.callId).toBe('call_123');
+  });
+
   it('includes default transcription config when connecting', async () => {
     const t = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
