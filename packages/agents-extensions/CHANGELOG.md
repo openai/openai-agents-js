@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.3.0
+
+### Patch Changes
+
+- b3148a2: Fix open ai compatible models misuse '' in tools arguments call when an empty object is the valid option
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+  - @openai/agents@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

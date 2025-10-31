@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.3.0
+
+### Minor Changes
+
+- 1a5326f: feat: fix #272 add memory feature
+
+### Patch Changes
+
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes
