@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.3.0
+
+### Minor Changes
+
+- 1a5326f: feat: fix #272 add memory feature
+
 ## 0.2.1
 
 ### Patch Changes

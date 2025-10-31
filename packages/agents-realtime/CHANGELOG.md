@@ -1,5 +1,14 @@
 # @openai/agents-realtime
 
+## 0.3.0
+
+### Patch Changes
+
+- 14016fd: feat: #439 add SIP support for realtime agent runner
+- 8c93873: fix: #613 Listen to peerConnection state in `OpenAIRealtimeWebRTC` to detect disconnects
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes
