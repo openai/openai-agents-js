@@ -6,7 +6,8 @@ export const METADATA = {
   "version": "0.2.1",
   "versions": {
     "@openai/agents-extensions": "0.2.1",
-    "@openai/agents-core": "workspace:*"
+    "@openai/agents-core": "workspace:*",
+    "@openai/codex-sdk": "^0.53.0"
   }
 };
 

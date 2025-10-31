@@ -434,6 +434,9 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@openai/agents-extensions':
+        specifier: workspace:*
+        version: link:../../packages/agents-extensions
       playwright:
         specifier: ^1.55.1
         version: 1.55.1
@@ -491,6 +494,9 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
+      '@openai/codex-sdk':
+        specifier: ^0.53.0
+        version: 0.53.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1255,6 +1261,10 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@openai/codex-sdk@0.53.0':
+    resolution: {integrity: sha512-DtJTku9u9VKTfHsR2OM/d+jW3V14Yc18YHNgo+iIDHpSViApMM/2+2p6Yeeri2m5VUOVvUQuqsQQzAwRH2MMBw==}
+    engines: {node: '>=18'}
 
   '@openrouter/ai-sdk-provider@1.2.0':
     resolution: {integrity: sha512-stuIwq7Yb7DNmk3GuCtz+oS3nZOY4TXEV3V5KsknDGQN7Fpu3KRMQVWRc1J073xKdf0FC9EHOctSyzsACmp5Ag==}
@@ -6679,6 +6689,8 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
+
+  '@openai/codex-sdk@0.53.0': {}
 
   '@openrouter/ai-sdk-provider@1.2.0(ai@5.0.23(zod@3.25.76))(zod@3.25.76)':
     dependencies:

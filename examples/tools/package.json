@@ -3,10 +3,12 @@
   "name": "tools",
   "dependencies": {
     "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
     "playwright": "^1.55.1"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
+    "start:codex-tool": "tsx codex-tool.ts",
     "start:computer-use": "tsx computer-use.ts",
     "start:file-search": "tsx file-search.ts",
     "start:web-search": "tsx web-search.ts",
