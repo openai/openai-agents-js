@@ -148,6 +148,11 @@ export type RealtimeSessionConnectOptions = {
    * The URL to use for the connection.
    */
   url?: string;
+
+  /**
+   * The call ID to attach to when connecting to a SIP-initiated session.
+   */
+  callId?: string;
 };
 
 function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
@@ -399,6 +404,53 @@ export class RealtimeSession<
     this.#lastSessionConfig = fullConfig;
 
     return fullConfig;
+  }
+
+  /**
+   * Compute the initial session config that the current session will use when connecting.
+   *
+   * This mirrors the configuration payload we send during `connect`, including dynamic values
+   * such as the upstream agent instructions, tool definitions, and prompt content generated at
+   * runtime. Keeping this helper exposed allows transports or orchestration layers to precompute
+   * a CallAccept-compatible payload without opening a socket.
+   *
+   * @param overrides - Additional config overrides applied on top of the session options.
+   */
+  async getInitialSessionConfig(
+    overrides: Partial<RealtimeSessionConfig> = {},
+  ): Promise<Partial<RealtimeSessionConfig>> {
+    await this.#setCurrentAgent(this.initialAgent);
+    return this.#getSessionConfig({
+      ...(this.options.config ?? {}),
+      ...(overrides ?? {}),
+    });
+  }
+
+  /**
+   * Convenience helper to compute the initial session config without manually instantiating and connecting a session.
+   *
+   * This is primarily useful for integrations that must provide the session configuration to a
+   * third party (for example the SIP `calls.accept` endpoint) before the actual realtime session
+   * is attached. The helper instantiates a throwaway session so all agent-driven dynamic fields
+   * resolve in exactly the same way as the live session path.
+   *
+   * @param agent - The starting agent for the session.
+   * @param options - Session options used to seed the config calculation.
+   * @param overrides - Additional config overrides applied on top of the provided options.
+   */
+  static async computeInitialSessionConfig<TBaseContext = unknown>(
+    agent:
+      | RealtimeAgent<TBaseContext>
+      | RealtimeAgent<RealtimeContextData<TBaseContext>>,
+    options: Partial<RealtimeSessionOptions<TBaseContext>> = {},
+    overrides: Partial<RealtimeSessionConfig> = {},
+  ): Promise<Partial<RealtimeSessionConfig>> {
+    const session = new RealtimeSession(agent, options);
+    try {
+      return await session.getInitialSessionConfig(overrides);
+    } finally {
+      session.close();
+    }
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
@@ -852,6 +904,7 @@ export class RealtimeSession<
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
       url: options.url,
+      callId: options.callId,
       initialSessionConfig: await this.#getSessionConfig(this.options.config),
     });
     // Ensure the cached lastSessionConfig includes everything passed as the initial session config

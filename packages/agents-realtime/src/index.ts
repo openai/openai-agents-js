@@ -40,6 +40,8 @@ export {
   WebSocketState,
 } from './openaiRealtimeWebsocket';
 
+export { OpenAIRealtimeSIP } from './openaiRealtimeSip';
+
 export {
   OpenAIRealtimeModels,
   OpenAIRealtimeBase,
@@ -47,6 +49,7 @@ export {
   OpenAIRealtimeEventTypes,
   DEFAULT_OPENAI_REALTIME_MODEL,
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
+  RealtimeSessionPayload,
 } from './openaiRealtimeBase';
 
 export { RealtimeOutputGuardrail } from './guardrail';

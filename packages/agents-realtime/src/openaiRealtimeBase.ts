@@ -48,6 +48,8 @@ export type OpenAIRealtimeModels =
   | 'gpt-4o-mini-realtime-preview-2024-12-17'
   | 'gpt-realtime'
   | 'gpt-realtime-2025-08-28'
+  | 'gpt-realtime-mini'
+  | 'gpt-realtime-mini-2025-10-06'
   | (string & {}); // ensures autocomplete works
 
 /**
@@ -104,6 +106,13 @@ export type OpenAIRealtimeEventTypes = {
    */
   disconnected: [];
 } & RealtimeTransportEventTypes;
+
+/**
+ * Shape of the payload that the Realtime API expects for session.create/update operations.
+ * This closely mirrors the REST `CallAcceptParams` type so that callers can feed the payload
+ * directly into the `openai.realtime.calls.accept` helper without casts.
+ */
+export type RealtimeSessionPayload = { type: 'realtime' } & Record<string, any>;
 
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
@@ -523,10 +532,12 @@ export abstract class OpenAIRealtimeBase
     );
   }
 
-  protected _getMergedSessionConfig(config: Partial<RealtimeSessionConfig>) {
+  protected _getMergedSessionConfig(
+    config: Partial<RealtimeSessionConfig>,
+  ): RealtimeSessionPayload {
     const newConfig = toNewSessionConfig(config);
 
-    const sessionData: Record<string, any> = {
+    const sessionData: RealtimeSessionPayload = {
       type: 'realtime',
       instructions: newConfig.instructions,
       model: newConfig.model ?? this.#model,
@@ -586,6 +597,21 @@ export abstract class OpenAIRealtimeBase
     }
 
     return sessionData;
+  }
+
+  /**
+   * Build the payload object expected by the Realtime API when creating or updating a session.
+   *
+   * The helper centralises the conversion from camelCase runtime config to the snake_case payload
+   * required by the Realtime API so transports that need a one-off payload (for example SIP call
+   * acceptance) can reuse the same logic without duplicating private state.
+   *
+   * @param config - The session config to merge with defaults.
+   */
+  buildSessionPayload(
+    config: Partial<RealtimeSessionConfig>,
+  ): RealtimeSessionPayload {
+    return this._getMergedSessionConfig(config);
   }
 
   private static buildTurnDetectionConfig(
@@ -735,7 +761,7 @@ export abstract class OpenAIRealtimeBase
    * @param config - The session config to update.
    */
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
-    const sessionData = this._getMergedSessionConfig(config);
+    const sessionData = this.buildSessionPayload(config);
 
     this.sendEvent({
       type: 'session.update',

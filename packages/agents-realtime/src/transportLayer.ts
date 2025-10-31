@@ -36,6 +36,11 @@ export type RealtimeTransportLayerConnectOptions = {
   url?: string;
 
   /**
+   * The call ID to attach to instead of starting a new session.
+   */
+  callId?: string;
+
+  /**
    * The initial session config to use for the session.
    */
   initialSessionConfig?: Partial<RealtimeSessionConfig>;

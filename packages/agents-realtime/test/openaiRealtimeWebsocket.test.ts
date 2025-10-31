@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
+import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
+import { RealtimeAgent } from '../src/realtimeAgent';
 
 let lastFakeSocket: any;
 vi.mock('ws', () => {
@@ -359,5 +361,77 @@ describe('OpenAIRealtimeWebSocket', () => {
     sendSpy.mockClear();
     ws.interrupt();
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('connects using callId when provided', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek_test', callId: 'call_abc' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_abc',
+    );
+    ws.close();
+  });
+
+  it('updates cached URL when callId changes', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const first = ws.connect({ apiKey: 'ek_test', callId: 'call_one' });
+    await vi.runAllTimersAsync();
+    await first;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_one',
+    );
+    ws.close();
+
+    const second = ws.connect({ apiKey: 'ek_test', callId: 'call_two' });
+    await vi.runAllTimersAsync();
+    await second;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_two',
+    );
+    ws.close();
+  });
+
+  it('OpenAIRealtimeSIP requires callId', async () => {
+    const sip = new OpenAIRealtimeSIP();
+    await expect(sip.connect({ apiKey: 'ek_test' } as any)).rejects.toThrow(
+      'callId',
+    );
+
+    const p = sip.connect({ apiKey: 'ek_test', callId: 'call_xyz' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_xyz',
+    );
+    sip.close();
+  });
+
+  it('OpenAIRealtimeSIP buildInitialConfig returns realtime payload seeded from agent', async () => {
+    const agent = new RealtimeAgent({
+      name: 'sip-agent',
+      handoffs: [],
+      instructions: 'Respond politely.',
+    });
+    const payload = await OpenAIRealtimeSIP.buildInitialConfig(
+      agent,
+      {
+        model: 'gpt-realtime',
+        config: { audio: { output: { speed: 1.5 } } },
+      },
+      { audio: { output: { speed: 2 } } },
+    );
+    expect(payload.type).toBe('realtime');
+    expect(payload.model).toBe('gpt-realtime');
+    expect(payload.instructions).toBe('Respond politely.');
+    expect(payload.audio?.output?.speed).toBe(2);
+  });
+
+  it('OpenAIRealtimeSIP sendAudio throws', () => {
+    const sip = new OpenAIRealtimeSIP();
+    expect(() => sip.sendAudio(new ArrayBuffer(1))).toThrow(
+      'OpenAIRealtimeSIP does not support sending audio buffers',
+    );
   });
 });

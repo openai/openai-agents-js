@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "name": "realtime-twilio-sip",
+  "dependencies": {
+    "@openai/agents-core": "workspace:*",
+    "@openai/agents-realtime": "workspace:*",
+    "@openai/agents": "workspace:*",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.3.3",
+    "fastify-raw-body": "^5.0.0",
+    "openai": "^6.7.0"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start": "tsx server.ts"
+  }
+}
