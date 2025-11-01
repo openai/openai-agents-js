@@ -1,0 +1,106 @@
+---
+title: Sessions
+description: Persist multi-turn conversation history so agents can resume context across runs.
+---
+
+import { Code } from '@astrojs/starlight/components';
+import sessionsQuickstart from '../../../../../examples/docs/sessions/basicSession.ts?raw';
+import manageHistory from '../../../../../examples/docs/sessions/manageHistory.ts?raw';
+import customSession from '../../../../../examples/docs/sessions/customSession.ts?raw';
+import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
+
+Sessions give the Agents SDK a **persistent memory layer**. Provide any object that implements the `Session` interface to `Runner.run`, and the SDK handles the rest. When a session is present, the runner automatically:
+
+1. Fetches previously stored conversation items and prepends them to the next turn.
+2. Persists new user input and assistant output after each run completes.
+3. Keeps the session available for future turns, whether you call the runner with new user text or resume from an interrupted `RunState`.
+
+This removes the need to manually call `toInputList()` or stitch history between turns. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. Because they share the `Session` interface, you can plug in your own storage backend. For inspiration beyond the Conversations API, explore the sample session backends under `examples/memory/` (Prisma, file-backed, and more).
+
+> Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
+
+---
+
+## Quick start
+
+Use `OpenAIConversationsSession` to sync memory with the [Conversations API](https://platform.openai.com/docs/api-reference/conversations), or swap in any other `Session` implementation.
+
+<Code
+  lang="typescript"
+  code={sessionsQuickstart}
+  title="Use the Conversations API as session memory"
+/>
+
+Reusing the same session instance ensures the agent receives the full conversation history before every turn and automatically persists new items. Switching to a different `Session` implementation requires no other code changes.
+
+---
+
+## How the runner uses sessions
+
+- **Before each run** it retrieves the session history, merges it with the new turn's input, and passes the combined list to your agent.
+- **After a non-streaming run** one call to `session.addItems()` persists both the original user input and the model outputs from the latest turn.
+- **For streaming runs** it writes the user input first and appends streamed outputs once the turn completes.
+- **When resuming from `RunResult.state`** (for approvals or other interruptions) keep passing the same `session`. The resumed turn is added to memory without re-preparing the input.
+
+---
+
+## Inspecting and editing history
+
+Sessions expose simple CRUD helpers so you can build "undo", "clear chat", or audit features.
+
+<Code
+  lang="typescript"
+  code={manageHistory}
+  title="Read and edit stored items"
+/>
+
+`session.getItems()` returns the stored `AgentInputItem[]`. Call `popItem()` to remove the last entry—useful for user corrections before you rerun the agent.
+
+---
+
+## Bring your own storage
+
+Implement the `Session` interface to back memory with Redis, DynamoDB, SQLite, or another datastore. Only five asynchronous methods are required.
+
+<Code
+  lang="typescript"
+  code={customSession}
+  title="Custom in-memory session implementation"
+/>
+
+Custom sessions let you enforce retention policies, add encryption, or attach metadata to each conversation turn before persisting it.
+
+---
+
+## Control how history and new items merge
+
+When you pass an array of `AgentInputItem`s as the run input, provide a `sessionInputCallback` to merge them with stored history deterministically. The runner loads the existing history, calls your callback **before the model invocation**, and hands the returned array to the model as the turn’s complete input. This hook is ideal for trimming old items, deduplicating tool results, or highlighting only the context you want the model to see.
+
+<Code
+  lang="typescript"
+  code={sessionInputCallback}
+  title="Truncate history with sessionInputCallback"
+/>
+
+For string inputs the runner merges history automatically, so the callback is optional.
+
+---
+
+## Handling approvals and resumable runs
+
+Human-in-the-loop flows often pause a run to wait for approval:
+
+```typescript
+const result = await runner.run(agent, 'Search the itinerary', {
+  session,
+  stream: true,
+});
+
+if (result.requiresApproval) {
+  // ... collect user feedback, then resume the agent in a later turn
+  const continuation = await runner.run(agent, result.state, { session });
+  console.log(continuation.finalOutput);
+}
+```
+
+When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Human-in-the-loop (HITL) flows stay fully compatible—approval checkpoints still round-trip through `RunState` while the session keeps the transcript complete.
