@@ -187,6 +187,10 @@ describe('codexTool', () => {
       ),
     );
 
+    if (typeof result === 'string') {
+      throw new Error('Codex tool unexpectedly returned a string result.');
+    }
+
     expect(result.threadId).toBe('thread-1');
     expect(result.response).toBe('Codex finished.');
     expect(result.usage).toEqual({

@@ -17,6 +17,7 @@ export {
   ConsoleSpanExporter,
 } from './processor';
 export { NoopSpan, Span } from './spans';
+<<<<<<< HEAD
 export type {
   SpanData,
   AgentSpanData,
