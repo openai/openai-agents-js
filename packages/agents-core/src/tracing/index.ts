@@ -17,6 +17,7 @@ export {
   ConsoleSpanExporter,
 } from './processor';
 export { NoopSpan, Span } from './spans';
+export type { CustomSpanData } from './spans';
 export { NoopTrace, Trace } from './traces';
 export { generateGroupId, generateSpanId, generateTraceId } from './utils';
 

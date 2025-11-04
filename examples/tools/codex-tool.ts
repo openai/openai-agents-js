@@ -5,7 +5,10 @@ import {
   type RunItem,
   type RunToolCallOutputItem,
 } from '@openai/agents';
-import { codexTool } from '@openai/agents-extensions';
+import {
+  codexTool,
+  type CodexOutputSchemaDescriptor,
+} from '@openai/agents-extensions';
 
 type CodexToolOutput = {
   threadId: string | null;
@@ -43,6 +46,31 @@ function isCodexToolOutputItem(
   );
 }
 
+const codexStructuredOutput: CodexOutputSchemaDescriptor = {
+  title: 'CodexToolResult',
+  properties: [
+    {
+      name: 'summary',
+      description: 'High-level summary of Codex actions and findings.',
+      schema: {
+        type: 'string',
+      },
+    },
+    {
+      name: 'commands',
+      description:
+        'Commands executed by Codex, in the order they were invoked.',
+      schema: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+    },
+  ],
+  required: ['summary'],
+};
+
 async function main(): Promise<void> {
   ensureEnvironmentVariables();
 
@@ -50,7 +78,7 @@ async function main(): Promise<void> {
     name: 'Codex tool orchestrator',
     instructions:
       'You route workspace automation tasks through the codex tool. Always call the codex tool at least once before responding, and use it to run commands or inspect files before summarizing the results.',
-    tools: [codexTool()],
+    tools: [codexTool({ outputSchema: codexStructuredOutput })],
   });
 
   const task =

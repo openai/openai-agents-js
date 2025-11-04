@@ -152,6 +152,7 @@ export type {
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,
+  JsonObjectSchemaStrict,
   ReasoningItem,
   ResponseStreamEvent,
   SystemMessageItem,
