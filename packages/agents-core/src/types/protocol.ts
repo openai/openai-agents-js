@@ -694,6 +694,11 @@ export const StreamEventResponseCompleted = SharedBase.extend({
      * The output from the model.
      */
     output: z.array(OutputModelItem),
+
+    /**
+     * The reasoning/thinking text from the model.
+     */
+    reasoning: z.string().optional(),
   }),
 });
 

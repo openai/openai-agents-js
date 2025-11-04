@@ -71,5 +71,9 @@
     "verdaccio": "^6.2.1",
     "vitest": "^3.2.4"
   },
-  "packageManager": "pnpm@10.20.0"
+  "packageManager": "pnpm@10.20.0",
+  "dependencies": {
+    "@ai-sdk/openai": "^2.0.62",
+    "@openai/agents-extensions": "^0.2.1"
+  }
 }

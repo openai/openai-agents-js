@@ -820,6 +820,115 @@ describe('AiSdkModel.getResponse', () => {
       outputTokensDetails: [],
     });
   });
+
+  test('should store reasoning in response for non-streaming text output', async () => {
+    const mockProviderResult = {
+      content: [{ type: 'text', text: 'This is the final answer.' }],
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      providerMetadata: { p: 1 },
+      response: { id: 'fake-id-123' },
+      finishReason: 'stop',
+      warnings: [],
+      reasoning: '<thinking>I am thinking about the answer.</thinking>',
+    };
+
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return mockProviderResult as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.reasoning).toBeDefined();
+    expect(res.reasoning).toBe(
+      '<thinking>I am thinking about the answer.</thinking>',
+    );
+    expect(res.responseId).toBe('fake-id-123');
+  });
+
+  test('should store reasoning in final response_done event for streaming', async () => {
+    async function* mockProviderStream() {
+      yield {
+        type: 'response-metadata',
+        id: 'fake-stream-id-456',
+      };
+
+      yield {
+        type: 'reasoning-delta',
+        reasoningDelta: '<thinking>Step 1: I am thinking.',
+      };
+
+      yield {
+        type: 'text-delta',
+        delta: 'Here is the answer.',
+      };
+
+      yield {
+        type: 'reasoning-delta',
+        reasoningDelta: ' Step 2: More thinking.</thinking>',
+      };
+
+      yield {
+        type: 'finish',
+        usage: { inputTokens: 5, outputTokens: 10, totalTokens: 15 },
+      };
+    }
+
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: mockProviderStream(),
+          } as any;
+        },
+      }),
+    );
+
+    const stream = model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any);
+
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    const finalEvent = events.find((e) => e.type === 'response_done') as
+      | protocol.StreamEventResponseCompleted
+      | undefined;
+
+    expect(finalEvent).toBeDefined();
+
+    expect(finalEvent!.response.reasoning).toBeDefined();
+    expect(finalEvent!.response.reasoning).toBe(
+      '<thinking>Step 1: I am thinking. Step 2: More thinking.</thinking>',
+    );
+
+    expect(finalEvent!.response.id).toBe('fake-stream-id-456');
+    expect(finalEvent!.response.usage.totalTokens).toBe(15);
+
+    const textOutput = finalEvent!.response.output.find(
+      (o) => o.type === 'message' && o.content[0].type === 'output_text',
+    ) as any;
+    expect(textOutput.content[0].text).toBe('Here is the answer.');
+  });
 });
 
 describe('AiSdkModel.getStreamedResponse', () => {
