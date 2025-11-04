@@ -194,6 +194,37 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(() => ws.mute(true)).toThrow('Mute is not supported');
   });
 
+  it('disables tracing when initial config sets tracing to null', async () => {
+    const updateSpy = vi.spyOn(
+      OpenAIRealtimeBase.prototype as any,
+      '_updateTracingConfig',
+    );
+    const ws = new OpenAIRealtimeWebSocket();
+    const connectPromise = ws.connect({
+      apiKey: 'ek',
+      model: 'm',
+      initialSessionConfig: {
+        tracing: null,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await connectPromise;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'session.created',
+        event_id: 'evt_1',
+        session: {
+          tracing: 'auto',
+        },
+      }),
+    });
+
+    expect(updateSpy).toHaveBeenCalled();
+    const lastCall = updateSpy.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBeNull();
+  });
+
   it('sendAudio only sends when connected', async () => {
     const baseSpy = vi.spyOn(OpenAIRealtimeBase.prototype, 'sendAudio');
     const ws = new OpenAIRealtimeWebSocket();

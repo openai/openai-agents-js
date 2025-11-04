@@ -672,7 +672,7 @@ export abstract class OpenAIRealtimeBase
    *
    * @param tracingConfig - The tracing config to set. We don't support 'auto' here as the SDK will always configure a Workflow Name unless it exists
    */
-  protected _updateTracingConfig(tracingConfig: RealtimeTracingConfig) {
+  protected _updateTracingConfig(tracingConfig: RealtimeTracingConfig | null) {
     if (typeof this.#tracingConfig === 'undefined') {
       // treating it as default value
       this.#tracingConfig = null;
