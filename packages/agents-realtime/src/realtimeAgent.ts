@@ -9,7 +9,7 @@ import { RealtimeContextData } from './realtimeSession';
 
 export type RealtimeAgentConfiguration<TContext = UnknownContext> = Partial<
   Omit<
-    AgentConfiguration<TContext, TextOutput>,
+    AgentConfiguration<RealtimeContextData<TContext>, TextOutput>,
     | 'model'
     | 'handoffs'
     | 'modelSettings'
@@ -29,7 +29,10 @@ export type RealtimeAgentConfiguration<TContext = UnknownContext> = Partial<
   /**
    * Any other `RealtimeAgent` instances the agent is able to hand off to.
    */
-  handoffs?: (RealtimeAgent | Handoff)[];
+  handoffs?: (
+    | RealtimeAgent<TContext>
+    | Handoff<RealtimeContextData<TContext>, TextOutput>
+  )[];
   /**
    * The voice intended to be used by the agent. If another agent already spoke during the
    * RealtimeSession, changing the voice during a handoff will fail.
