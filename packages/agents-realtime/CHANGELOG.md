@@ -1,5 +1,16 @@
 # @openai/agents-realtime
 
+## 0.3.0
+
+### Patch Changes
+
+- 642a79b: fix: #639 Type issue with realtime agent handoffs
+- 4c1192d: fix: #633 fix a bug where tracingDisabled in realtime config does not work
+- 14016fd: feat: #439 add SIP support for realtime agent runner
+- 8c93873: fix: #613 Listen to peerConnection state in `OpenAIRealtimeWebRTC` to detect disconnects
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes
