@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-デフォルトでは SDK は初回のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。環境変数を設定できない場合は `setDefaultOpenAIKey()` を手動で呼び出せます。
+既定では、SDK は最初にインポートされたときに環境変数 `OPENAI_API_KEY` を読み取ります。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアント インスタンスを渡すこともできます。指定しない場合、SDK は既定のキーを使って自動的に作成します。
+独自の `OpenAI` クライアント インスタンスを渡すこともできます。渡さない場合、SDK は既定のキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
@@ -29,7 +29,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI クライアントを設定"
 />
 
-最後に、Responses API と Chat Completions API を切り替えることができます。
+最後に、Responses API と Chat Completions API を切り替えられます。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API を設定" />
 
@@ -37,7 +37,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 トレーシングは既定で有効で、上記の OpenAI キーを使用します。
 
-別のキーは `setTracingExportApiKey()` で設定できます。
+別のキーは `setTracingExportApiKey()` で設定できます:
 
 <Code
   lang="typescript"
@@ -45,7 +45,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングのエクスポート用 API キーを設定"
 />
 
-トレーシングは完全に無効化することもできます。
+トレーシングは完全に無効化することもできます:
 
 <Code
   lang="typescript"
@@ -53,11 +53,11 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="トレーシングを無効化"
 />
 
-トレーシング機能の詳細は [トレーシング](/openai-agents-js/ja/guides/tracing) をご覧ください。
+トレーシング機能の詳細は、[トレーシング](/openai-agents-js/ja/guides/tracing) を参照してください。
 
-## デバッグログ
+## デバッグロギング
 
-SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを見るには、環境変数 `DEBUG` を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
@@ -69,15 +69,15 @@ export DEBUG=openai-agents*
 
 ### ログ内の機微データ
 
-一部のログには user データが含まれる場合があります。以下の環境変数を設定して無効化できます。
+特定のログにはユーザー データが含まれる場合があります。次の環境変数を設定して無効化できます。
 
-LLM の入力と出力のログを無効にするには:
+LLM の入力と出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力と出力のログを無効にするには:
+ツールの入力と出力のロギングを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
