@@ -22,52 +22,63 @@ import historyUpdatedExample from '../../../../../../../examples/docs/voice-agen
 import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
 import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
 import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
+import sipTransportExample from '../../../../../../../examples/docs/voice-agents/sipTransport.ts?raw';
 import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-## デフォルトのトランスポート層
+## 既定のトランスポート層
 
-### WebRTC 接続
+### WebRTC 経由での接続
 
-既定のトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動的に再生されます。
+既定のトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動で再生されます。
 
-独自のメディアストリームや audio 要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
+独自のメディアストリームや音声要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### WebSocket 接続
+### WebSocket 経由での接続
 
-WebRTC の代わりに WebSocket 接続を使用するには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これはサーバーサイドのユースケース、たとえば Twilio で電話エージェントを構築する場合に有効です。
+WebRTC の代わりに WebSocket 接続を使用するには、セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これはサーバーサイドのユースケース、たとえば Twilio で電話エージェントを構築する場合に適しています。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-任意の録音/再生ライブラリを使用して、元 PCM16 音声バイトを処理します。
+任意の録音/再生ライブラリを使用して、元の PCM16 オーディオバイトを扱ってください。
+
+### SIP 経由での接続
+
+`OpenAIRealtimeSIP` トランスポートを使用して、Twilio などのプロバイダーからの SIP 通話をブリッジします。このトランスポートは、あなたのテレフォニー・プロバイダーが発行する SIP イベントと Realtime セッションの同期を維持します。
+
+1. `OpenAIRealtimeSIP.buildInitialConfig()` で初期セッション設定を生成して着信通話を受け入れます。これにより、SIP 招待と Realtime セッションが同一のデフォルトを共有します。
+2. `OpenAIRealtimeSIP` トランスポートを使用する `RealtimeSession` をアタッチし、プロバイダーの Webhook が発行した `callId` で接続します。
+3. セッションイベントをリッスンして、通話分析、文字起こし、エスカレーションロジックを駆動します。
+
+<Code lang="typescript" code={sipTransportExample} />
 
 #### Cloudflare Workers（workerd）に関する注意
 
-Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使って外向きの WebSocket を開くことはできません。extensions パッケージの Cloudflare トランスポートを使用してください。これは内部で `fetch()` ベースのアップグレードを実行します。
+Cloudflare Workers および他の workerd ランタイムは、グローバルの `WebSocket` コンストラクターを使用してアウトバウンド WebSocket を開くことができません。拡張機能パッケージにある Cloudflare 用トランスポートを使用してください。これは内部で `fetch()` ベースのアップグレードを実行します。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### 独自トランスポート機構の構築
+### 独自のトランスポート機構の構築
 
-別の音声対音声 API を使いたい場合や、独自のカスタムトランスポート機構を持っている場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発火することで独自に作成できます。
+別の音声対音声 API を使用したい場合や独自のトランスポート機構がある場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` のイベントを発行することで独自実装を作成できます。
 
-## Realtime API とのより直接的なやり取り
+## Realtime API をより直接的に操作する
 
-OpenAI Realtime API を使用しつつ、Realtime API へより直接的にアクセスしたい場合は、次の 2 つの選択肢があります。
+OpenAI の Realtime API を使用しつつ、より直接的にアクセスしたい場合は、次の 2 つの方法があります。
 
 ### オプション 1 - トランスポート層へのアクセス
 
-`RealtimeSession` のあらゆる機能を活用したい場合は、`session.transport` からトランスポート層にアクセスできます。
+`RealtimeSession` のすべての機能を活用したい場合は、`session.transport` を介してトランスポート層にアクセスできます。
 
-トランスポート層は受信したすべてのイベントを `*` イベントで発火し、`sendEvent()` メソッドを使って元のイベントを送信できます。
+トランスポート層は、受信したすべてのイベントを `*` イベントとして発行し、`sendEvent()` メソッドを使用して元のイベントを送信できます。
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### オプション 2 — トランスポート層のみの利用
+### オプション 2 — トランスポート層のみを使用
 
-自動ツール実行やガードレールなどが不要な場合は、接続と割り込みのみを管理する「薄い」クライアントとしてトランスポート層だけを使用できます。
+自動ツール実行やガードレールなどが不要な場合、接続と割り込みだけを管理する「薄い」クライアントとしてトランスポート層のみを使用できます。
 
 <Code lang="typescript" code={thinClientExample} />
