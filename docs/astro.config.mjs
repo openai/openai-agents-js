@@ -182,6 +182,15 @@ const sidebar = [
         },
       },
       {
+        label: 'Sessions',
+        link: '/guides/sessions',
+        translations: {
+          ja: 'セッション',
+          zh: '会话',
+          ko: '세션',
+        },
+      },
+      {
         label: 'Models',
         link: '/guides/models',
         translations: {
