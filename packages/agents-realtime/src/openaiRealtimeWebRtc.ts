@@ -245,7 +245,11 @@ export class OpenAIRealtimeWebRTC
           if (parsed.type === 'session.created') {
             this._tracingConfig = parsed.session.tracing;
             // Trying to turn on tracing after the session is created
-            this._updateTracingConfig(userSessionConfig.tracing ?? 'auto');
+            const tracingConfig =
+              typeof userSessionConfig.tracing === 'undefined'
+                ? 'auto'
+                : userSessionConfig.tracing;
+            this._updateTracingConfig(tracingConfig);
           }
         });
 

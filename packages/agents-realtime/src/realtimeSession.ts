@@ -350,6 +350,8 @@ export class RealtimeSession<
       this.#context,
     );
 
+    // Realtime expects tracing to be explicitly null to disable it; leaving the previous config
+    // in place would otherwise continue emitting spans.
     const tracingConfig: RealtimeTracingConfig | null = this.options
       .tracingDisabled
       ? null
