@@ -9,78 +9,86 @@ import manageHistory from '../../../../../../examples/docs/sessions/manageHistor
 import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
 import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 
-会话为 Agents SDK 提供了一个**持久内存层**。向 `Runner.run` 提供任何实现了 `Session` 接口的对象，其余由 SDK 处理。当会话存在时，运行器会自动：
+会话为 Agents SDK 提供了一个**持久化内存层**。将任何实现了 `Session` 接口的对象传给 `Runner.run`，其余由 SDK 处理。有会话时，runner 会自动：
 
-1. 获取先前存储的对话项，并将其预置到下一轮对话前。
+1. 获取先前存储的会话项，并将其预置到下一轮对话前。
 2. 在每次运行完成后持久化新的用户输入和助手输出。
-3. 保持会话可用于未来回合，无论您是用新的用户文本调用运行器，还是从中断的 `RunState` 恢复。
+3. 保持会话可用于后续轮次，无论是用新的用户文本调用 runner，还是从中断的 `RunState` 恢复。
 
-这消除了手动调用 `toInputList()` 或在回合之间拼接历史的需要。TypeScript SDK 内置两个实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及用于本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以插入自己的存储后端。若需要超出 Conversations API 的灵感，可探索 `examples/memory/` 下的示例会话后端（Prisma、文件存储等）。
+这消除了手动调用 `toInputList()` 或在轮次之间拼接历史的需要。TypeScript SDK 自带两个实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及面向本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以插入自定义的存储后端。若想获得 Conversations API 以外的灵感，可查看 `examples/memory/` 下的示例会话后端（Prisma、文件存储等）。
 
-> 提示：要运行本页中的 `OpenAIConversationsSession` 示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 可以调用 Conversations API。
+> 提示：要在本页运行 `OpenAIConversationsSession` 示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造 session 时提供 `apiKey`），以便 SDK 能调用 Conversations API。
 
 ---
 
-## 快速开始
+## 快速上手
 
-使用 `OpenAIConversationsSession` 将内存与 [Conversations API](https://platform.openai.com/docs/api-reference/conversations) 同步，或替换为任何其他 `Session` 实现。
+使用 `OpenAIConversationsSession` 将内存与 [Conversations API](https://platform.openai.com/docs/api-reference/conversations) 同步，或替换为任意其他 `Session` 实现。
 
 <Code
   lang="typescript"
   code={sessionsQuickstart}
-  title="使用 Conversations API 作为会话内存"
+  title="Use the Conversations API as session memory"
 />
 
-复用同一个会话实例可确保智能体在每一轮前都接收完整对话历史，并自动持久化新条目。切换到不同的 `Session` 实现无需其他代码更改。
+重复使用同一会话实例可确保智能体在每一轮之前接收完整的会话历史，并自动持久化新条目。切换到不同的 `Session` 实现无需其他代码修改。
 
 ---
 
-## 运行器如何使用会话
+## Runner 使用会话方式
 
-- 在每次运行之前，它会检索会话历史，与新一轮的输入合并，并将组合后的列表传递给您的智能体。
-- 在非流式运行之后，通过一次 `session.addItems()` 调用持久化原始用户输入和本轮模型输出。
-- 对于流式传输运行，它会先写入用户输入，并在本轮完成后追加流式输出。
-- 当从 `RunResult.state` 恢复时（用于审批或其他中断），继续传递相同的 `session`。恢复的回合会被添加到内存中，而无需重新准备输入。
+- **每次运行前**，它会检索会话历史，与新一轮的输入合并，并将合并后的列表传递给您的智能体。
+- **在非流式运行后**，一次 `session.addItems()` 调用即可持久化本轮的原始用户输入和模型输出。
+- **对于流式运行**，它会先写入用户输入，并在本轮完成后追加流式输出。
+- **从 `RunResult.state` 恢复时**（用于审批或其他中断），请持续传递同一个 `session`。恢复的轮次会加入内存，而无需重新准备输入。
 
 ---
 
-## 检查和编辑历史
+## 历史检查与编辑
 
-会话提供简单的 CRUD 辅助方法，便于构建“撤销”“清除对话”或审计功能。
+会话提供简单的 CRUD 助手，便于构建“撤销”“清空聊天”或审计功能。
 
-<Code lang="typescript" code={manageHistory} title="读取和编辑已存储条目" />
+<Code
+  lang="typescript"
+  code={manageHistory}
+  title="Read and edit stored items"
+/>
 
-`session.getItems()` 返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一项——在您重新运行智能体前用于用户更正非常有用。
+`session.getItems()` 返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一条记录——在重新运行智能体前用于用户更正很有用。
 
 ---
 
 ## 自定义存储
 
-实现 `Session` 接口，以 Redis、DynamoDB、SQLite 或其他数据存储为内存提供后端。只需实现五个异步方法。
+实现 `Session` 接口，以使用 Redis、DynamoDB、SQLite 或其他数据存储来支撑内存。只需实现五个异步方法。
 
-<Code lang="typescript" code={customSession} title="自定义内存会话实现" />
+<Code
+  lang="typescript"
+  code={customSession}
+  title="Custom in-memory session implementation"
+/>
 
-自定义会话可用于实施保留策略、添加加密，或在持久化前为每个对话回合附加元数据。
+自定义会话可用于实施保留策略、添加加密，或在持久化前为每轮会话附加元数据。
 
 ---
 
-## 控制历史与新项目的合并
+## 控制历史与新条目的合并方式
 
-当您将 `AgentInputItem` 数组作为运行输入传入时，提供 `sessionInputCallback` 以确定性地将其与已存历史合并。运行器会加载现有历史，在模型调用之前调用您的回调，并将返回的数组作为该回合的完整输入交给模型。此钩子非常适合裁剪旧条目、去重工具结果，或仅突出您希望模型看到的上下文。
+当您将 `AgentInputItem` 数组作为运行输入传入时，可提供 `sessionInputCallback` 来与存储的历史进行确定性合并。runner 会加载现有历史，**在模型调用之前**调用您的回调，并将返回的数组作为本轮的完整输入交给模型。此钩子适合裁剪旧条目、去重工具结果，或仅突出您希望模型看到的上下文。
 
 <Code
   lang="typescript"
   code={sessionInputCallback}
-  title="使用 sessionInputCallback 截断历史"
+  title="Truncate history with sessionInputCallback"
 />
 
-对于字符串输入，运行器会自动合并历史，因此该回调是可选的。
+对于字符串输入，runner 会自动合并历史，因此该回调是可选的。
 
 ---
 
-## 处理审批与可恢复运行
+## 审批与可恢复运行的处理
 
-人工干预流程通常会暂停一次运行以等待审批：
+Human-in-the-loop 流程常会在等待审批时暂停运行：
 
 ```typescript
 const result = await runner.run(agent, 'Search the itinerary', {
@@ -95,4 +103,4 @@ if (result.requiresApproval) {
 }
 ```
 
-当您从先前的 `RunState` 恢复时，新回合会追加到同一内存记录中，以保留单一的对话历史。Human-in-the-loop（HITL）流程仍完全兼容——审批检查点仍通过 `RunState` 往返，而会话则保持完整的对话记录。
+当您从先前的 `RunState` 恢复时，新的一轮会追加到同一条内存记录中，以保留单一的会话历史。Human-in-the-loop（HITL）流程依然完全兼容——审批检查点仍通过 `RunState` 往返，而会话会保持完整的对话记录。

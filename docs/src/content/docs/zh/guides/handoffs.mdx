@@ -10,9 +10,9 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-交接使一个智能体可以将对话的一部分委托给另一个智能体。当不同智能体在特定领域各有所长时，这非常有用。例如在客服应用中，您可能有负责预订、退款或常见问题的智能体。
+交接让一个智能体将对话的一部分委托给另一个智能体。当不同智能体专注于特定领域时，这很有用。例如在客服应用中，你可能有负责预订、退款或常见问题的智能体。
 
-交接在 LLM 中以工具的形式呈现。如果你将会话交接给名为 `Refund Agent` 的智能体，工具名将是 `transfer_to_refund_agent`。
+交接会作为工具呈现给 LLM。如果你将会话交接给名为 `Refund Agent` 的智能体，则工具名为 `transfer_to_refund_agent`。
 
 ## 创建交接
 
@@ -24,32 +24,32 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ### 通过 `handoff()` 自定义交接
 
-`handoff()` 函数允许你调整生成的工具。
+`handoff()` 函数允许你微调生成的工具。
 
 - `agent` – 要交接到的智能体。
 - `toolNameOverride` – 覆盖默认的 `transfer_to_<agent_name>` 工具名。
-- `toolDescriptionOverride` – 覆盖默认的工具描述。
-- `onHandoff` – 交接发生时的回调。接收一个 `RunContext`，以及可选的已解析输入。
-- `inputType` – 交接所需的输入模式。
-- `inputFilter` – 过滤传递给下一个智能体的历史记录。
+- `toolDescriptionOverride` – 覆盖默认工具描述。
+- `onHandoff` – 发生交接时的回调。接收 `RunContext` 以及可选的解析后输入。
+- `inputType` – 交接所期望的输入模式。
+- `inputFilter` – 筛选传递给下一个智能体的历史。
 
 <Code lang="typescript" code={customizeHandoffExample} title="自定义交接" />
 
 ## 交接输入
 
-有时你希望 LLM 在调用交接时提供数据。定义一个输入模式，并在 `handoff()` 中使用它。
+有时你希望 LLM 在调用交接时提供数据。定义一个输入模式并在 `handoff()` 中使用它。
 
 <Code lang="typescript" code={handoffInputExample} title="交接输入" />
 
-## 输入过滤器
+## 输入筛选器
 
-默认情况下，交接会接收整个对话历史。若需修改传递给下一个智能体的内容，请提供一个 `inputFilter`。
-常用辅助函数位于 `@openai/agents-core/extensions`。
+默认情况下，交接会接收整个对话历史。要修改传递给下一个智能体的内容，请提供 `inputFilter`。
+常用辅助函数位于 `@openai/agents-core/extensions` 中。
 
-<Code lang="typescript" code={inputFilterExample} title="输入过滤器" />
+<Code lang="typescript" code={inputFilterExample} title="输入筛选器" />
 
 ## 推荐提示
 
-当你的提示中提到交接时，LLM 的响应会更稳定。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了一个推荐前缀。
+当提示中提到交接时，LLM 的响应更可靠。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了推荐前缀。
 
 <Code lang="typescript" code={recommendedPromptExample} title="推荐提示" />
