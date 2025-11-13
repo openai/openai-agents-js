@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+- Updated dependencies [2b57c4e]
+  - @openai/agents-core@0.3.1
+  - @openai/agents@0.3.1
+
 ## 0.3.0
 
 ### Patch Changes
