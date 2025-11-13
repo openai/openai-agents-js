@@ -9,13 +9,13 @@ import manageHistory from '../../../../../../examples/docs/sessions/manageHistor
 import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
 import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 
-会话为 Agents SDK 提供了一个**持久化内存层**。向 `Runner.run` 提供任意实现了 `Session` 接口的对象，其余由 SDK 处理。当存在会话时，运行器将自动：
+会话为 Agents SDK 提供了一个**持久化内存层**。将任何实现了 `Session` 接口的对象传给 `Runner.run`，其余工作由 SDK 处理。当会话存在时，runner 会自动：
 
-1. 获取先前存储的对话项，并将其添加到下一轮对话的前面。
-2. 在每次运行完成后，持久化新的用户输入和助手输出。
-3. 保持该会话可用于未来的轮次，无论是用新的用户文本调用运行器，还是从中断的 `RunState` 恢复。
+1. 获取先前存储的对话项并在下一轮对话前置。
+2. 在每次运行完成后持久化新的用户输入和助手输出。
+3. 保持会话可用于后续轮次，无论是用新的用户文本调用 runner，还是从中断的 `RunState` 恢复。
 
-这无需再手动调用 `toInputList()` 或在轮次之间拼接历史。TypeScript SDK 自带两种实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及用于本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以插入自定义的存储后端。除 Conversations API 外的灵感可参考 `examples/memory/` 下的示例会话后端（Prisma、文件存储等）。
+这免去了手动调用 `toInputList()` 或在轮次间拼接历史的需要。TypeScript SDK 自带两个实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及面向本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以插入自定义存储后端。除了 Conversations API 之外的灵感，可参阅 `examples/memory/` 下的示例会话后端（Prisma、文件存储等）。
 
 > 提示：要运行本页中的 `OpenAIConversationsSession` 示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 能调用 Conversations API。
 
@@ -28,45 +28,45 @@ import sessionInputCallback from '../../../../../../examples/docs/sessions/sessi
 <Code
   lang="typescript"
   code={sessionsQuickstart}
-  title="使用 Conversations API 作为会话内存"
+  title="将 Conversations API 用作会话内存"
 />
 
-复用同一个会话实例可确保智能体在每一轮前都收到完整对话历史，并自动持久化新项目。切换到不同的 `Session` 实现无需更改其他代码。
+复用同一个会话实例可确保智能体在每一轮前都能获得完整的对话历史，并自动持久化新条目。切换到不同的 `Session` 实现无需更改其他代码。
 
 ---
 
-## 运行器对会话的使用
+## runner 如何使用会话
 
-- **每次运行之前**，它会检索会话历史，与新一轮输入合并，并将合并后的列表传递给您的智能体。
-- **对于非流式运行**，通过一次 `session.addItems()` 调用即可同时持久化原始用户输入和最新一轮的模型输出。
-- **对于流式传输运行**，它会先写入用户输入，并在该轮完成后追加流式输出。
-- **从 `RunResult.state` 恢复时**（如审批或其他中断），请继续传入同一个 `session`。恢复的这一轮将被加入内存，而无需重新准备输入。
-
----
-
-## 历史记录的查看与编辑
-
-会话提供简单的 CRUD 辅助方法，便于构建“撤销”“清空聊天”或审计等功能。
-
-<Code lang="typescript" code={manageHistory} title="读取与编辑已存储的条目" />
-
-`session.getItems()` 返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一项——在您重新运行智能体前，这对用户更正很有用。
+- 在每次运行之前，它会检索会话历史，将其与新一轮的输入合并，并将合并后的列表传给您的智能体。
+- 对于非流式运行，一次 `session.addItems()` 调用即可持久化最新一轮中的原始用户输入和模型输出。
+- 对于流式运行，它会先写入用户输入，并在该轮完成后追加流式输出。
+- 当从 `RunResult.state` 恢复（用于审批或其他中断）时，请继续传入相同的 `session`。恢复的该轮会被添加到内存中，而无需重新准备输入。
 
 ---
 
-## 自定义存储
+## 历史的查看与编辑
 
-实现 `Session` 接口，以使用 Redis、DynamoDB、SQLite 或其他数据存储为内存提供支持。只需实现五个异步方法。
+会话提供简洁的 CRUD 助手，便于构建“撤销”“清空对话”或审计等功能。
 
-<Code lang="typescript" code={customSession} title="自定义内存会话的实现" />
+<Code lang="typescript" code={manageHistory} title="读取与编辑已存储条目" />
 
-自定义会话可让您实施保留策略、添加加密，或在持久化前为每轮对话附加元数据。
+`session.getItems()` 会返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一条记录——在您重新运行智能体前用于用户更正非常有用。
+
+---
+
+## 自带存储
+
+实现 `Session` 接口即可使用 Redis、DynamoDB、SQLite 或其他数据存储来支撑内存。只需实现五个异步方法。
+
+<Code lang="typescript" code={customSession} title="自定义内存会话实现" />
+
+自定义会话可用于实施保留策略、添加加密，或在持久化前为每次对话轮次附加元数据。
 
 ---
 
 ## 控制历史与新条目的合并方式
 
-当您以 `AgentInputItem` 数组作为运行输入时，可提供 `sessionInputCallback`，以确定性地将它们与存储的历史合并。运行器会加载现有历史，在**模型调用之前**调用您的回调，并将回调返回的数组作为该轮的完整输入交给模型。此钩子非常适合裁剪旧项目、去重工具结果，或仅突出您希望模型看到的上下文。
+当您将 `AgentInputItem` 数组作为运行输入时，可提供 `sessionInputCallback` 来以确定性方式与存储的历史合并。runner 会加载现有历史，在模型调用之前调用该回调，并将返回的数组作为该轮的完整输入交给模型。此钩子非常适合裁剪旧条目、去重工具结果，或仅突出您希望模型看到的上下文。
 
 <Code
   lang="typescript"
@@ -74,13 +74,13 @@ import sessionInputCallback from '../../../../../../examples/docs/sessions/sessi
   title="使用 sessionInputCallback 截断历史"
 />
 
-对于字符串输入，运行器会自动合并历史，因此该回调为可选。
+对于字符串输入，runner 会自动合并历史，因此该回调是可选的。
 
 ---
 
-## 审批与可恢复运行
+## 审批与可恢复运行的处理
 
-人工干预（Human in the loop）流程常会暂停一次运行以等待审批：
+人工干预流程常会暂停一次运行以等待审批：
 
 ```typescript
 const result = await runner.run(agent, 'Search the itinerary', {
@@ -95,4 +95,4 @@ if (result.requiresApproval) {
 }
 ```
 
-当您从先前的 `RunState` 恢复时，新一轮会被追加到相同的内存记录中，以保留单一的对话历史。人工干预（HITL）流程保持完全兼容——审批检查点仍通过 `RunState` 往返，而会话则保持完整的对话记录。
+当您从之前的 `RunState` 恢复时，新的一轮会被追加到相同的内存记录中，以保留单一的对话历史。人工干预（HITL）流程仍完全兼容——审批检查点会继续通过 `RunState` 往返，而会话则保持完整的对话记录。

@@ -25,27 +25,27 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 ![实时智能体](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-语音智能体使用 OpenAI 语音到语音模型提供实时语音聊天。这些模型支持流式音频、文本和工具调用，适用于语音/电话客服、移动应用体验以及语音聊天等场景。
+语音智能体使用 OpenAI 语音到语音模型提供实时语音聊天。这些模型支持音频、文本与工具调用的流式传输，适用于语音/电话客服、移动应用体验和语音聊天等场景。
 
 Voice Agents SDK 为 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 提供 TypeScript 客户端。
 
 <LinkCard
   title="快速开始"
   href="/openai-agents-js/zh/guides/voice-agents/quickstart"
-  description="使用 OpenAI Agents SDK 在几分钟内构建您的第一个实时语音助手。"
+  description="使用 OpenAI Agents SDK，在几分钟内构建您的第一个实时语音助手。"
 />
 
-### 关键特性
+### 关键功能
 
 - 通过 WebSocket 或 WebRTC 连接
-- 可用于浏览器和后端连接
+- 既可在浏览器中使用，也可用于后端连接
 - 音频与打断处理
-- 通过交接进行多智能体编排
+- 通过交接实现多智能体编排
 - 工具定义与调用
-- 自定义护栏以监控模型输出
+- 自定义护栏监控模型输出
 - 流式事件回调
-- 在文本与语音智能体间复用相同组件
+- 在文本与语音智能体间复用同一组件
 
-借助语音到语音模型，我们可以利用模型实时处理音频的能力，无需在模型动作后先转写再将文本转换回音频。
+通过使用语音到语音模型，我们可以利用模型在实时处理音频的能力，而无需在模型执行后将音频转写为文本再转换回音频。
 
 ![语音到语音模型](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

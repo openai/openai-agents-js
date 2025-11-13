@@ -7,13 +7,13 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-このガイドでは、SDK に組み込まれた Human in the loop (人間の介入) サポートを使って、人の介入に基づきエージェントの実行を一時停止・再開する方法を説明します。
+このガイドでは、SDK に組み込まれた Human in the loop（人間の介入）サポートを使って、人的介入に基づきエージェントの実行を一時停止・再開する方法を説明します。
 
-現在の主なユースケースは、機微なツール実行の承認を求めることです。
+現時点での主なユースケースは、機微なツール実行に対する承認の取得です。
 
 ## 承認リクエスト
 
-`needsApproval` オプションを `true`、または真偽値を返す非同期関数に設定すると、承認が必要なツールを定義できます。
+`needsApproval` オプションを `true`、または boolean を返す非同期関数に設定することで、承認が必要なツールを定義できます。
 
 <Code
   lang="typescript"
@@ -24,19 +24,19 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 
 ### フロー
 
-1. エージェントがツール（複数可）を呼び出すと判断した場合、`needsApproval` を評価してそのツールに承認が必要か確認します。
-2. 承認が必要な場合、エージェントは承認がすでに許可または却下されているかを確認します。
-   - 許可または却下がまだ行われていない場合、ツール呼び出しを実行できない旨の静的メッセージがエージェントへ返されます。
-   - 許可 / 却下が未設定の場合、ツール承認リクエストがトリガーされます。
-3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します。
-4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/results) に、保留中のステップを示す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは、`type: "tool_approval_item"` の `ToolApprovalItem` が現れます。
-5. ツール呼び出しを許可または却下するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出します。
-6. すべての中断を処理したら、`agent` が全体の実行を開始した元のエージェントであることに注意しつつ、`runner.run(agent, state)` に `result.state` を渡して実行を再開できます。
-7. フローは手順 1 から再開されます。
+1. エージェントがツール（複数でも可）を呼び出すと判断した場合、`needsApproval` を評価してそのツールに承認が必要か確認します
+2. 承認が必要な場合、承認がすでに許可または拒否されているかを確認します
+   - 承認がまだ許可も拒否もされていない場合、ツール呼び出しを実行できない旨の静的メッセージをエージェントに返します
+   - 承認 / 拒否が未設定であれば、ツール承認リクエストをトリガーします
+3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します
+4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/results) に未処理のステップを表す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは、`type: "tool_approval_item"` の `ToolApprovalItem` が現れます
+5. ツール呼び出しを承認または拒否するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出します
+6. すべての中断を処理したら、`result.state` を `runner.run(agent, state)` に渡して実行を再開できます。ここで `agent` は全体の実行をトリガーした元のエージェントです
+7. フローは手順 1 から再開します
 
 ## 例
 
-以下は、ターミナルで承認を促し、状態を一時的にファイルへ保存する Human in the loop (人間の介入) フローのより完全な例です。
+以下は、ターミナルで承認を促し、状態を一時的にファイルへ保存する Human in the loop のより完全な例です。
 
 <Code
   lang="typescript"
@@ -44,23 +44,22 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
   title="Human in the loop"
 />
 
-動作するエンドツーエンド版は、[完全なサンプルスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) を参照してください。
+エンドツーエンドで動作する版は、[完全なサンプルスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)をご覧ください。
 
-## 承認に時間がかかる場合の対処
+## 長時間の承認への対処
 
-Human in the loop (人間の介入) フローは、サーバーを動かし続けることなく長時間中断できるよう設計されています。いったんリクエストを終了し、後で続ける必要がある場合は、状態をシリアライズして後から再開できます。
+Human in the loop のフローは、サーバーを稼働し続けなくても長時間の中断に対応できるよう設計されています。リクエストをいったん停止して後で続行したい場合は、状態をシリアライズして後から再開できます。
 
-`JSON.stringify(result.state)` で状態をシリアライズし、後で `RunState.fromString(agent, serializedState)` にシリアライズ済み状態を渡して再開できます。ここで `agent` は全体の実行を開始したエージェントのインスタンスです。
+状態は `JSON.stringify(result.state)` を使ってシリアライズでき、後から `RunState.fromString(agent, serializedState)` にシリアライズ済み状態を渡すことで再開できます。ここで `agent` は全体の実行をトリガーしたエージェントのインスタンスです。
 
-この方法なら、シリアライズした状態をデータベースやリクエストと一緒に保存できます。
+この方法により、シリアライズした状態をデータベースやリクエストと一緒に保存できます。
 
 ### 保留タスクのバージョニング
 
 <Aside>
-  これは主に、エージェントに変更を加えつつ、シリアライズした状態を
-  長期間保存しようとする場合に該当します。
+  これは主に、エージェントに変更を加えつつ、シリアライズした状態を長期間保存しようとする場合に該当します。
 </Aside>
 
-承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい、または Agents SDK のバージョンを上げたい場合は、パッケージエイリアスを使って 2 つの Agents SDK を並行インストールし、独自の分岐ロジックを実装することを現在は推奨します。
+承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい、または Agents SDK のバージョンを更新したい場合は、パッケージエイリアスを用いて 2 つの Agents SDK バージョンを並行インストールし、独自の分岐ロジックを実装することを現時点では推奨します。
 
-実務上は、自分のコードにバージョン番号を付与してシリアライズした状態と一緒に保存し、デシリアライズ時に正しいコードのバージョンへ誘導することを意味します。
+実務上は、自分のコードにバージョン番号を付与し、それをシリアライズした状態とともに保存し、デシリアライズを自分のコードの正しいバージョンへ誘導することを意味します。
