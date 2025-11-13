@@ -12,9 +12,14 @@ import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
 } from '../src/items';
-import { computerTool } from '../src/tool';
+import { applyPatchTool, computerTool, shellTool } from '../src/tool';
 import * as protocol from '../src/types/protocol';
-import { TEST_MODEL_MESSAGE, FakeComputer } from './stubs';
+import {
+  TEST_MODEL_MESSAGE,
+  FakeComputer,
+  FakeShell,
+  FakeEditor,
+} from './stubs';
 
 describe('RunState', () => {
   it('initializes with default values', () => {
@@ -281,6 +286,8 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [],
       toolsUsed: [],
       hasToolsOrApprovalsToRun: () => true,
@@ -290,6 +297,60 @@ describe('deserialize helpers', () => {
     expect(restored._lastProcessedResponse?.computerActions[0]?.computer).toBe(
       tool,
     );
+  });
+
+  it('deserializeProcessedResponse restores shell actions', async () => {
+    const shell = shellTool({ shell: new FakeShell() });
+    const agent = new Agent({ name: 'Shell', tools: [shell] });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 's1',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [{ toolCall: call, shell }],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._lastProcessedResponse?.shellActions[0]?.shell).toBe(shell);
+  });
+
+  it('deserializeProcessedResponse restores apply_patch actions', async () => {
+    const editorTool = applyPatchTool({ editor: new FakeEditor() });
+    const agent = new Agent({ name: 'Editor', tools: [editorTool] });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'ap1',
+      status: 'completed',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [{ toolCall: call, applyPatch: editorTool }],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      restored._lastProcessedResponse?.applyPatchActions[0]?.applyPatch,
+    ).toBe(editorTool);
   });
 
   it('deserializeProcessedResponse restores currentStep', async () => {
@@ -307,6 +368,8 @@ describe('deserialize helpers', () => {
       functions: [],
       handoffs: [],
       computerActions: [{ toolCall: call, computer: tool }],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [
         {
           requestItem: {
@@ -325,6 +388,9 @@ describe('deserialize helpers', () => {
             },
             type: 'tool_approval_item',
             agent: new Agent({ name: 'foo ' }),
+            name: 'fetch_generic_url_content',
+            arguments:
+              '{"url":"https://raw.githubusercontent.com/openai/codex/main/README.md"}',
             toJSON: function (): any {
               throw new Error('Function not implemented.');
             },

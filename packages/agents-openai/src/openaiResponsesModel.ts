@@ -77,14 +77,24 @@ type ResponseOutputItemWithFunctionResult =
       function_name?: string;
     });
 
+type ResponseShellCallOutput =
+  OpenAI.Responses.ResponseInputItem.ShellCallOutput;
+type ResponseShellCallOutputContent =
+  OpenAI.Responses.ResponseFunctionShellCallOutputContent;
+type ResponseApplyPatchCallOutput =
+  OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput;
+
 const HostedToolChoice = z.enum([
   'file_search',
   'web_search',
   'web_search_preview',
-  'computer_use_preview',
   'code_interpreter',
   'image_generation',
   'mcp',
+  // Specialized local tools
+  'computer_use_preview',
+  'shell',
+  'apply_patch',
 ]);
 
 const DefaultToolChoice = z.enum(['auto', 'required', 'none']);
@@ -103,7 +113,7 @@ function getToolChoice(
 
   const result = HostedToolChoice.safeParse(toolChoice);
   if (result.success) {
-    return { type: result.data };
+    return { type: result.data as any };
   }
 
   return { type: 'function', name: toolChoice };
@@ -590,6 +600,20 @@ function converTool<_TContext = unknown>(
       },
       include: undefined,
     };
+  } else if (tool.type === 'shell') {
+    return {
+      tool: {
+        type: 'shell',
+      } as OpenAI.Responses.FunctionShellTool,
+      include: undefined,
+    };
+  } else if (tool.type === 'apply_patch') {
+    return {
+      tool: {
+        type: 'apply_patch',
+      } as OpenAI.Responses.ApplyPatchTool,
+      include: undefined,
+    };
   } else if (tool.type === 'hosted_tool') {
     if (tool.providerData?.type === 'web_search') {
       return {
@@ -913,7 +937,7 @@ function getInputItems(
     ];
   }
 
-  return input.map((item) => {
+  return input.map((item): OpenAI.Responses.ResponseInputItem => {
     if (isMessageItem(item)) {
       return getMessageItem(item);
     }
@@ -987,6 +1011,88 @@ function getInputItems(
         acknowledged_safety_checks: item.providerData?.acknowledgedSafetyChecks,
         ...camelOrSnakeToSnakeCase(item.providerData),
       };
+      return entry;
+    }
+
+    if (item.type === 'shell_call') {
+      const action: OpenAI.Responses.ResponseInputItem.ShellCall['action'] = {
+        commands: item.action.commands,
+        timeout_ms:
+          typeof item.action.timeoutMs === 'number'
+            ? item.action.timeoutMs
+            : null,
+        max_output_length:
+          typeof item.action.maxOutputLength === 'number'
+            ? item.action.maxOutputLength
+            : null,
+      };
+
+      const entry: OpenAI.Responses.ResponseInputItem.ShellCall = {
+        type: 'shell_call',
+        id: item.id,
+        call_id: item.callId,
+        status: item.status ?? 'in_progress',
+        action,
+      };
+
+      return entry;
+    }
+
+    if (item.type === 'shell_call_output') {
+      const shellOutputs: protocol.ShellCallOutputContent[] = item.output;
+      const sanitizedOutputs: ResponseShellCallOutputContent[] =
+        shellOutputs.map((entry) => {
+          const outcome = entry?.outcome;
+          const exitCode = outcome?.type === 'exit' ? outcome.exitCode : null;
+          return {
+            stdout: typeof entry?.stdout === 'string' ? entry.stdout : '',
+            stderr: typeof entry?.stderr === 'string' ? entry.stderr : '',
+            outcome:
+              outcome?.type === 'timeout'
+                ? { type: 'timeout' }
+                : { type: 'exit', exit_code: exitCode ?? 0 },
+          } as ResponseShellCallOutputContent;
+        });
+
+      const entry: OpenAI.Responses.ResponseInputItem.ShellCallOutput & {
+        max_output_length?: number;
+      } = {
+        type: 'shell_call_output',
+        call_id: item.callId,
+        output: sanitizedOutputs,
+        id: item.id ?? undefined,
+      };
+      if (typeof item.maxOutputLength === 'number') {
+        entry.max_output_length = item.maxOutputLength;
+      }
+
+      return entry;
+    }
+
+    if (item.type === 'apply_patch_call') {
+      if (!item.operation) {
+        throw new UserError('apply_patch_call missing operation');
+      }
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall = {
+        type: 'apply_patch_call',
+        id: item.id ?? undefined,
+        call_id: item.callId,
+        status: item.status ?? 'in_progress',
+        operation: item.operation,
+      };
+
+      return entry;
+    }
+
+    if (item.type === 'apply_patch_call_output') {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput = {
+        type: 'apply_patch_call_output',
+        id: item.id ?? undefined,
+        call_id: item.callId,
+        status: item.status ?? 'completed',
+        output: item.output ?? undefined,
+      };
+
       return entry;
     }
 
@@ -1129,7 +1235,7 @@ function getInputItems(
       return {
         ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
         id: item.id,
-      } as OpenAI.Responses.ResponseItem;
+      } as OpenAI.Responses.ResponseInputItem;
     }
 
     const exhaustive = item satisfies never;
@@ -1249,6 +1355,120 @@ function convertToOutputItem(
         callId: call_id,
         status,
         action,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'shell_call') {
+      const { call_id, status, action, ...providerData } = item;
+      const shellAction: protocol.ShellAction = {
+        commands: Array.isArray(action?.commands) ? action.commands : [],
+      };
+      const timeout = action?.timeout_ms;
+      if (typeof timeout === 'number') {
+        shellAction.timeoutMs = timeout;
+      }
+      const maxOutputLength = action?.max_output_length;
+      if (typeof maxOutputLength === 'number') {
+        shellAction.maxOutputLength = maxOutputLength;
+      }
+      const output: protocol.ShellCallItem = {
+        type: 'shell_call',
+        id: item.id ?? undefined,
+        callId: call_id,
+        status: status ?? 'in_progress',
+        action: shellAction,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'shell_call_output') {
+      const {
+        call_id,
+        output: responseOutput,
+        max_output_length,
+        ...providerData
+      } = item as ResponseShellCallOutput;
+      let normalizedOutput: protocol.ShellCallOutputContent[] = [];
+      if (Array.isArray(responseOutput)) {
+        normalizedOutput = responseOutput.map((entry) => ({
+          stdout: typeof entry?.stdout === 'string' ? entry.stdout : '',
+          stderr: typeof entry?.stderr === 'string' ? entry.stderr : '',
+          outcome:
+            entry?.outcome?.type === 'timeout'
+              ? { type: 'timeout' as const }
+              : {
+                  type: 'exit' as const,
+                  exitCode:
+                    typeof entry?.outcome?.exit_code === 'number'
+                      ? entry.outcome.exit_code
+                      : null,
+                },
+        }));
+      }
+      const output: protocol.ShellCallResultItem = {
+        type: 'shell_call_output',
+        id: item.id ?? undefined,
+        callId: call_id,
+        output: normalizedOutput,
+        providerData,
+      };
+      if (typeof max_output_length === 'number') {
+        output.maxOutputLength = max_output_length;
+      }
+      return output;
+    } else if (item.type === 'apply_patch_call') {
+      const { call_id, status, operation, ...providerData } = item;
+      if (!operation) {
+        throw new UserError('apply_patch_call missing operation');
+      }
+
+      let normalizedOperation: protocol.ApplyPatchOperation;
+      switch (operation.type) {
+        case 'create_file':
+          normalizedOperation = {
+            type: 'create_file',
+            path: operation.path,
+            diff: operation.diff,
+          };
+          break;
+        case 'delete_file':
+          normalizedOperation = {
+            type: 'delete_file',
+            path: operation.path,
+          };
+          break;
+        case 'update_file':
+          normalizedOperation = {
+            type: 'update_file',
+            path: operation.path,
+            diff: operation.diff,
+          };
+          break;
+        default:
+          throw new UserError('Unknown apply_patch operation type');
+      }
+
+      const output: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        id: item.id ?? undefined,
+        callId: call_id,
+        status: status ?? 'in_progress',
+        operation: normalizedOperation,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'apply_patch_call_output') {
+      const {
+        call_id,
+        status,
+        output: responseOutput,
+        ...providerData
+      } = item as unknown as ResponseApplyPatchCallOutput;
+      const output: protocol.ApplyPatchCallResultItem = {
+        type: 'apply_patch_call_output',
+        id: item.id ?? undefined,
+        callId: call_id,
+        status,
+        output: typeof responseOutput === 'string' ? responseOutput : undefined,
         providerData,
       };
       return output;

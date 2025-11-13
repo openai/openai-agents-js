@@ -6,7 +6,7 @@ const packageJson = JSON.parse(
   readFileSync(resolve(cwd(), 'package.json'), 'utf-8'),
 );
 
-const dependencies = Object.entries(packageJson.dependencies);
+const dependencies = Object.entries(packageJson.dependencies ?? {});
 const openaiDependencies = dependencies.filter(
   ([name]) => name.startsWith('@openai/') || name === 'openai',
 );
@@ -21,7 +21,7 @@ const versions = {
 const METADATA = {
   name: packageJson.name,
   version: packageJson.version,
-  versions: versions,
+  versions,
 };
 
 const output = `

@@ -66,7 +66,9 @@ export class RunToolCallOutputItem extends RunItemBase {
   constructor(
     public rawItem:
       | protocol.FunctionCallResultItem
-      | protocol.ComputerCallResultItem,
+      | protocol.ComputerCallResultItem
+      | protocol.ShellCallResultItem
+      | protocol.ApplyPatchCallResultItem,
     public agent: Agent<any, any>,
     public output: string | unknown,
   ) {
@@ -142,16 +144,41 @@ export class RunToolApprovalItem extends RunItemBase {
   public readonly type = 'tool_approval_item' as const;
 
   constructor(
-    public rawItem: protocol.FunctionCallItem | protocol.HostedToolCallItem,
+    public rawItem:
+      | protocol.FunctionCallItem
+      | protocol.HostedToolCallItem
+      | protocol.ShellCallItem
+      | protocol.ApplyPatchCallItem,
     public agent: Agent<any, any>,
+    /**
+     * Explicit tool name to use for approval tracking when not present on the raw item.
+     */
+    public toolName?: string,
   ) {
     super();
+    this.toolName = toolName ?? (rawItem as any).name;
+  }
+
+  /**
+   * Returns the tool name if available on the raw item or provided explicitly.
+   * Kept for backwards compatibility with code that previously relied on `rawItem.name`.
+   */
+  get name(): string | undefined {
+    return this.toolName ?? (this.rawItem as any).name;
+  }
+
+  /**
+   * Returns the arguments if the raw item has an arguments property otherwise this will be undefined.
+   */
+  get arguments(): string | undefined {
+    return 'arguments' in this.rawItem ? this.rawItem.arguments : undefined;
   }
 
   toJSON() {
     return {
       ...super.toJSON(),
       agent: this.agent.toJSON(),
+      toolName: this.toolName,
     };
   }
 }

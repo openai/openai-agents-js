@@ -22,6 +22,18 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
       dimensions: tool.computer.dimensions,
     };
   }
+  if (tool.type === 'shell') {
+    return {
+      type: 'shell',
+      name: tool.name,
+    };
+  }
+  if (tool.type === 'apply_patch') {
+    return {
+      type: 'apply_patch',
+      name: tool.name,
+    };
+  }
   return {
     type: 'hosted_tool',
     name: tool.name,

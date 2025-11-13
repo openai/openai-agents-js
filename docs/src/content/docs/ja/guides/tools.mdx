@@ -23,13 +23,15 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 `OpenAIResponsesModel` を使う場合、以下の組み込みツールを追加できます:
 
-| ツール           | Type string          | 目的                                              |
-| ---------------- | -------------------- | ------------------------------------------------- |
-| Web 検索         | `'web_search'`       | インターネット検索                                |
-| ファイル / 検索  | `'file_search'`      | OpenAI 上でホストされる ベクトルストア へのクエリ |
-| コンピュータ操作 | `'computer'`         | GUI の操作を自動化                                |
-| Code Interpreter | `'code_interpreter'` | サンドボックス環境でコードを実行                  |
-| 画像生成         | `'image_generation'` | テキストに基づいて画像を生成                      |
+| ツール                  | 型文字列             | 目的                                            |
+| ----------------------- | -------------------- | ----------------------------------------------- |
+| Web search              | `'web_search'`       | インターネット検索                              |
+| File / retrieval search | `'file_search'`      | OpenAI 上でホストされる ベクトルストア のクエリ |
+| Computer use            | `'computer'`         | GUI 操作を自動化                                |
+| Shell                   | `'shell'`            | ホスト上でシェルコマンドを実行                  |
+| Apply patch             | `'apply_patch'`      | ホスト上のファイルに V4A 差分を適用             |
+| Code Interpreter        | `'code_interpreter'` | サンドボックス環境でコードを実行                |
+| Image generation        | `'image_generation'` | テキストに基づいて画像を生成                    |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 

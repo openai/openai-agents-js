@@ -21,7 +21,7 @@ while (stream.interruptions?.length) {
   const state = stream.state;
   for (const interruption of stream.interruptions) {
     const approved = confirm(
-      `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
+      `Agent ${interruption.agent.name} would like to use the tool ${interruption.name} with "${interruption.arguments}". Do you approve?`,
     );
     if (approved) {
       state.approve(interruption);

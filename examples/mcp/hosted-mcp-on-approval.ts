@@ -4,8 +4,8 @@ import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
 
 async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
   const rl = readline.createInterface({ input: stdin, output: stdout });
-  const name = item.rawItem.name;
-  const params = JSON.parse(item.rawItem.providerData?.arguments || '{}');
+  const name = item.name;
+  const params = JSON.parse(item.arguments ?? '{}');
   const answer = await rl.question(
     `Approve running tool (mcp: ${name}, params: ${JSON.stringify(params)})? (y/n) `,
   );

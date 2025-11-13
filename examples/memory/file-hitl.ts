@@ -32,7 +32,7 @@ const instructions =
   'You assist support agents. For every user turn you must call lookup_customer_profile and fetch_image_data before responding so replies include stored notes and the sample image. If a tool reports a transient failure, request approval and retry the same call once before responding. Keep responses under three sentences.';
 
 function formatToolArguments(interruption: RunToolApprovalItem): string {
-  const args = interruption.rawItem.arguments;
+  const args = interruption.arguments;
   if (!args) {
     return '';
   }
@@ -67,7 +67,7 @@ async function resolveInterruptions<TContext, TAgent extends Agent<any, any>>(
       const args = formatToolArguments(interruption);
       const approved = await promptYesNo(
         rl,
-        `Agent ${interruption.agent.name} wants to call ${interruption.rawItem.name} with ${args || 'no arguments'}`,
+        `Agent ${interruption.agent.name} wants to call ${interruption.name} with ${args || 'no arguments'}`,
       );
       if (approved) {
         result.state.approve(interruption);

@@ -1,9 +1,16 @@
-import { describe, it, expect } from 'vitest';
-import { computerTool, hostedMcpTool, tool } from '../src/tool';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  applyPatchTool,
+  computerTool,
+  hostedMcpTool,
+  shellTool,
+  tool,
+} from '../src/tool';
 import { z } from 'zod';
 import { Computer } from '../src';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
+import { FakeEditor, FakeShell } from './stubs';
 
 interface Bar {
   bar: string;
@@ -33,6 +40,58 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('computer');
     expect(t.name).toBe('computer_use_preview');
+  });
+
+  it('shellTool assigns default name', () => {
+    const shell = new FakeShell();
+    const t = shellTool({ shell });
+    expect(t.type).toBe('shell');
+    expect(t.name).toBe('shell');
+    expect(t.shell).toBe(shell);
+  });
+
+  it('shellTool needsApproval boolean becomes function', async () => {
+    const shell = new FakeShell();
+    const t = shellTool({ shell, needsApproval: true });
+    const approved = await t.needsApproval(
+      new RunContext(),
+      { commands: [] },
+      'id',
+    );
+    expect(approved).toBe(true);
+  });
+
+  it('shellTool onApproval is passed through', async () => {
+    const shell = new FakeShell();
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const t = shellTool({ shell, onApproval });
+    expect(t.onApproval).toBe(onApproval);
+  });
+
+  it('applyPatchTool assigns default name', () => {
+    const editor = new FakeEditor();
+    const t = applyPatchTool({ editor });
+    expect(t.type).toBe('apply_patch');
+    expect(t.name).toBe('apply_patch');
+    expect(t.editor).toBe(editor);
+  });
+
+  it('applyPatchTool needsApproval boolean becomes function', async () => {
+    const editor = new FakeEditor();
+    const t = applyPatchTool({ editor, needsApproval: true });
+    const approved = await t.needsApproval(
+      new RunContext(),
+      { type: 'delete_file', path: 'tmp' },
+      'id',
+    );
+    expect(approved).toBe(true);
+  });
+
+  it('applyPatchTool onApproval is passed through', async () => {
+    const editor = new FakeEditor();
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const t = applyPatchTool({ editor, onApproval });
+    expect(t.onApproval).toBe(onApproval);
   });
 });
 

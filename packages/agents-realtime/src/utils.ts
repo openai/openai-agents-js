@@ -294,6 +294,15 @@ export function realtimeApprovalItemToApprovalItem(
 export function approvalItemToRealtimeApprovalItem(
   item: RunToolApprovalItem,
 ): RealtimeMcpCallApprovalRequestItem {
+  if (
+    item.rawItem.type !== 'function_call' &&
+    item.rawItem.type !== 'hosted_tool_call'
+  ) {
+    throw new Error(
+      'Invalid approval item type for Realtime MCP approval request',
+    );
+  }
+
   const { name, arguments: args, providerData } = item.rawItem;
   const { itemId, serverLabel, ...rest } = providerData ?? {};
   if (!itemId || !serverLabel) {

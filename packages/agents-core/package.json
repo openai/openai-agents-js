@@ -70,8 +70,8 @@
     "@modelcontextprotocol/sdk": "^1.17.2"
   },
   "dependencies": {
-    "openai": "^6",
-    "debug": "^4.4.0"
+    "debug": "^4.4.0",
+    "openai": "^6"
   },
   "peerDependencies": {
     "zod": "^3.25.40 || ^4.0"

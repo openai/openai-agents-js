@@ -23,13 +23,15 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 当你使用 `OpenAIResponsesModel` 时，可以添加以下内置工具：
 
-| Tool                    | Type string          | Purpose                               |
-| ----------------------- | -------------------- | ------------------------------------- |
-| Web search              | `'web_search'`       | Internet search.                      |
-| File / retrieval search | `'file_search'`      | Query vector stores hosted on OpenAI. |
-| Computer use            | `'computer'`         | Automate GUI interactions.            |
-| Code Interpreter        | `'code_interpreter'` | Run code in a sandboxed environment.  |
-| Image generation        | `'image_generation'` | Generate images based on text.        |
+| 工具             | 类型字符串           | 目的                         |
+| ---------------- | -------------------- | ---------------------------- |
+| Web 搜索         | `'web_search'`       | 互联网搜索。                 |
+| 文件/检索搜索    | `'file_search'`      | 查询 OpenAI 托管的向量存储。 |
+| 计算机操作       | `'computer'`         | 自动化 GUI 交互。            |
+| Shell            | `'shell'`            | 在主机上运行 Shell 命令。    |
+| Apply patch      | `'apply_patch'`      | 对本地文件应用 V4A 补丁。    |
+| Code Interpreter | `'code_interpreter'` | 在沙盒环境中运行代码。       |
+| 图像生成         | `'image_generation'` | 基于文本生成图像。           |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 

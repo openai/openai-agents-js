@@ -553,8 +553,111 @@ export const ComputerCallResultItem = ItemBase.extend({
 
 export type ComputerCallResultItem = z.infer<typeof ComputerCallResultItem>;
 
+export const ShellAction = z.object({
+  commands: z.array(z.string()),
+  timeoutMs: z.number().int().min(0).optional(),
+  maxOutputLength: z.number().int().min(0).optional(),
+});
+
+export type ShellAction = z.infer<typeof ShellAction>;
+
+export const ShellCallItem = ItemBase.extend({
+  type: z.literal('shell_call'),
+  callId: z.string(),
+  status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
+  action: ShellAction,
+});
+
+export type ShellCallItem = z.infer<typeof ShellCallItem>;
+
+export const ShellCallOutcome = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('timeout') }),
+  z.object({
+    type: z.literal('exit'),
+    exitCode: z.number().int().nullable(),
+  }),
+]);
+
+export type ShellCallOutcome = z.infer<typeof ShellCallOutcome>;
+
+export const ShellCallOutputContent = z
+  .object({
+    stdout: z.string(),
+    stderr: z.string(),
+    outcome: ShellCallOutcome,
+  })
+  .passthrough();
+
+export type ShellCallOutputContent = z.infer<typeof ShellCallOutputContent>;
+
+export const ShellCallResultItem = ItemBase.extend({
+  type: z.literal('shell_call_output'),
+  callId: z.string(),
+  maxOutputLength: z.number().optional(),
+  output: z.array(ShellCallOutputContent),
+});
+
+export type ShellCallResultItem = z.infer<typeof ShellCallResultItem>;
+
+export const ApplyPatchOperationCreateFile = z.object({
+  type: z.literal('create_file'),
+  path: z.string(),
+  diff: z.string(),
+});
+
+export type ApplyPatchOperationCreateFile = z.infer<
+  typeof ApplyPatchOperationCreateFile
+>;
+
+export const ApplyPatchOperationUpdateFile = z.object({
+  type: z.literal('update_file'),
+  path: z.string(),
+  diff: z.string(),
+});
+
+export type ApplyPatchOperationUpdateFile = z.infer<
+  typeof ApplyPatchOperationUpdateFile
+>;
+
+export const ApplyPatchOperationDeleteFile = z.object({
+  type: z.literal('delete_file'),
+  path: z.string(),
+});
+
+export type ApplyPatchOperationDeleteFile = z.infer<
+  typeof ApplyPatchOperationDeleteFile
+>;
+
+export const ApplyPatchOperation = z.discriminatedUnion('type', [
+  ApplyPatchOperationCreateFile,
+  ApplyPatchOperationUpdateFile,
+  ApplyPatchOperationDeleteFile,
+]);
+
+export type ApplyPatchOperation = z.infer<typeof ApplyPatchOperation>;
+
+export const ApplyPatchCallItem = ItemBase.extend({
+  type: z.literal('apply_patch_call'),
+  callId: z.string(),
+  status: z.enum(['in_progress', 'completed']),
+  operation: ApplyPatchOperation,
+});
+
+export type ApplyPatchCallItem = z.infer<typeof ApplyPatchCallItem>;
+
+export const ApplyPatchCallResultItem = ItemBase.extend({
+  type: z.literal('apply_patch_call_output'),
+  callId: z.string(),
+  status: z.enum(['completed', 'failed']),
+  output: z.string().optional(),
+});
+
+export type ApplyPatchCallResultItem = z.infer<typeof ApplyPatchCallResultItem>;
+
 export const ToolCallItem = z.discriminatedUnion('type', [
   ComputerUseCallItem,
+  ShellCallItem,
+  ApplyPatchCallItem,
   FunctionCallItem,
   HostedToolCallItem,
 ]);
@@ -606,7 +709,11 @@ export const OutputModelItem = z.discriminatedUnion('type', [
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
+  ShellCallItem,
+  ApplyPatchCallItem,
   FunctionCallResultItem,
+  ShellCallResultItem,
+  ApplyPatchCallResultItem,
   ReasoningItem,
   UnknownItem,
 ]);
@@ -620,8 +727,12 @@ export const ModelItem = z.union([
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
+  ShellCallItem,
+  ApplyPatchCallItem,
   FunctionCallResultItem,
   ComputerCallResultItem,
+  ShellCallResultItem,
+  ApplyPatchCallResultItem,
   ReasoningItem,
   UnknownItem,
 ]);

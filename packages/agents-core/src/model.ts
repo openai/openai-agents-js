@@ -1,6 +1,12 @@
 import { Usage } from './usage';
 import { StreamEvent } from './types/protocol';
-import { HostedTool, ComputerTool, FunctionTool } from './tool';
+import {
+  HostedTool,
+  ComputerTool,
+  FunctionTool,
+  ShellTool,
+  ApplyPatchTool,
+} from './tool';
 import { Handoff } from './handoff';
 import {
   AgentInputItem,
@@ -169,6 +175,16 @@ export type SerializedComputerTool = {
   dimensions: ComputerTool['computer']['dimensions'];
 };
 
+export type SerializedShellTool = {
+  type: ShellTool['type'];
+  name: ShellTool['name'];
+};
+
+export type SerializedApplyPatchTool = {
+  type: ApplyPatchTool['type'];
+  name: ApplyPatchTool['name'];
+};
+
 export type SerializedHostedTool = {
   type: HostedTool['type'];
   name: HostedTool['name'];
@@ -178,6 +194,8 @@ export type SerializedHostedTool = {
 export type SerializedTool =
   | SerializedFunctionTool
   | SerializedComputerTool
+  | SerializedShellTool
+  | SerializedApplyPatchTool
   | SerializedHostedTool;
 
 export type SerializedHandoff = {

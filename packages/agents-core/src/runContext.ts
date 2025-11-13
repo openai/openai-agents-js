@@ -103,7 +103,8 @@ export class RunContext<TContext = UnknownContext> {
     approvalItem: RunToolApprovalItem,
     { alwaysApprove = false }: { alwaysApprove?: boolean } = {},
   ) {
-    const toolName = approvalItem.rawItem.name;
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     if (alwaysApprove) {
       this.#approvals.set(toolName, {
         approved: true,
@@ -136,7 +137,8 @@ export class RunContext<TContext = UnknownContext> {
     approvalItem: RunToolApprovalItem,
     { alwaysReject = false }: { alwaysReject?: boolean } = {},
   ) {
-    const toolName = approvalItem.rawItem.name;
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     if (alwaysReject) {
       this.#approvals.set(toolName, {
         approved: false,

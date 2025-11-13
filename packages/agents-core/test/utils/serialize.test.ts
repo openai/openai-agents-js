@@ -38,6 +38,28 @@ describe('serialize utilities', () => {
     });
   });
 
+  it('serializes shell tools', () => {
+    const t: any = {
+      type: 'shell',
+      name: 'custom-shell',
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'shell',
+      name: 'custom-shell',
+    });
+  });
+
+  it('serializes apply_patch tools', () => {
+    const t: any = {
+      type: 'apply_patch',
+      name: 'custom-editor',
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'apply_patch',
+      name: 'custom-editor',
+    });
+  });
+
   it('serializes hosted tools', () => {
     const t: any = { type: 'hosted_tool', name: 'bt', providerData: { a: 1 } };
     expect(serializeTool(t)).toEqual({

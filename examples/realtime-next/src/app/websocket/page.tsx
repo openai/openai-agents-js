@@ -164,7 +164,7 @@ export default function Home() {
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
         const approved = confirm(
-          `Approve tool call to ${approvalRequest.approvalItem.rawItem.name} with parameters:\n ${JSON.stringify(approvalRequest.approvalItem.rawItem.arguments, null, 2)}?`,
+          `Approve tool call to ${approvalRequest.approvalItem.name} with parameters:\n ${approvalRequest.approvalItem.arguments ?? '{}'}?`,
         );
         if (approved) {
           session.current?.approve(approvalRequest.approvalItem);
