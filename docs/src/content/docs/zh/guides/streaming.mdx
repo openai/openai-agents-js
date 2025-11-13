@@ -9,36 +9,36 @@ import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nod
 import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 
-Agents SDK 可以逐步输出来自模型和其他执行步骤的结果。流式传输可保持 UI 响应，避免在更新用户前等待整个最终结果。
+Agents SDK 可以增量地传递来自模型和其他执行步骤的输出。流式传输让你的 UI 保持响应，无需等待整个最终结果即可向用户更新。
 
 ## 启用流式传输
 
-向 `Runner.run()` 传入 `{ stream: true }` 选项以获取一个流式对象，而不是完整结果：
+向 `Runner.run()` 传入 `{ stream: true }` 选项以获取一个流式对象，而不是完整的运行结果：
 
 <Code lang="typescript" code={basicStreamingExample} title="启用流式传输" />
 
-启用流式传输时，返回的 `stream` 实现了 `AsyncIterable` 接口。每个产出的事件都是一个对象，用于描述运行期间发生的情况。该流会产出三种事件类型之一，分别描述智能体执行的不同部分。大多数应用只需要模型的文本，因此流提供了辅助方法。
+当启用流式传输时，返回的 `stream` 实现了 `AsyncIterable` 接口。每个产出的事件都是一个对象，用于描述运行过程中发生的事情。该流会产出三种事件类型之一，分别描述智能体执行的不同部分。大多数应用只需要模型的文本，因此流提供了辅助方法。
 
 ### 获取文本输出
 
-调用 `stream.toTextStream()` 以获取已发出的文本流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是常规的 Node.js `Readable`。我们可以直接将其管道到 `process.stdout` 或其他目标。
+调用 `stream.toTextStream()` 获取已发出的文本流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是一个常规的 Node.js `Readable`。我们可以将其直接管道到 `process.stdout` 或其他目标。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="随着到达实时输出日志"
+  title="文本一到达就进行日志输出"
   meta={`{13-17}`}
 />
 
-当运行及所有挂起的回调完成后，`stream.completed` 这个 promise 会被 resolve。如果你想确保没有更多输出，请务必等待它。
+在运行和所有待处理回调完成后，`stream.completed` 这个 promise 会被 resolve。若你想确保没有更多输出，请始终等待它。
 
 ### 监听所有事件
 
-你可以使用 `for await` 循环在事件到达时逐个检查。实用信息包括底层模型事件、任何智能体切换以及 SDK 特定的运行信息：
+你可以使用 `for await` 循环在每个事件到达时进行检查。可用信息包括底层模型事件、任何智能体切换以及 SDK 特定的运行信息：
 
 <Code lang="typescript" code={handleAllEventsExample} title="监听所有事件" />
 
-参见[流式示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)，其中提供了完整脚本，同时打印纯文本流和原始事件流。
+参见[流式传输示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)，其中包含一个完整脚本，同时打印纯文本流和原始事件流。
 
 ## 事件类型
 
@@ -75,7 +75,7 @@ type RunItemStreamEvent = {
 };
 ```
 
-交接负载示例：
+示例交接负载：
 
 ```json
 {
@@ -112,12 +112,12 @@ type RunAgentUpdatedStreamEvent = {
 
 ## 流式传输中的人工干预
 
-流式传输兼容会暂停执行的交接（例如工具需要审批时）。流对象上的 `interruption` 字段会暴露中断，你可以通过对每个中断调用 `state.approve()` 或 `state.reject()` 来继续执行。再次以 `{ stream: true }` 执行即可恢复流式输出。
+流式传输与会暂停执行的交接兼容（例如当某个工具需要审批）。流对象上的 `interruption` 字段会暴露中断，你可以对每个中断调用 `state.approve()` 或 `state.reject()` 以继续执行。再次以 `{ stream: true }` 执行将恢复流式输出。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="在流式传输中处理人工审批"
+  title="在流式传输时处理人工审批"
 />
 
 一个与用户交互的更完整示例见
@@ -125,8 +125,8 @@ type RunAgentUpdatedStreamEvent = {
 
 ## 提示
 
-- 退出前记得等待 `stream.completed`，以确保所有输出已刷新。
-- 初始的 `{ stream: true }` 选项只对提供它的那次调用生效。如果你用 `RunState` 重新执行，必须再次指定该选项。
-- 如果你的应用只关心文本结果，优先使用 `toTextStream()`，以避免处理单独的事件对象。
+- 退出前请记得等待 `stream.completed`，以确保所有输出都已刷新。
+- 初始的 `{ stream: true }` 选项只适用于提供它的那次调用。若你使用 `RunState` 重新运行，必须再次指定该选项。
+- 若你的应用只关心文本结果，优先使用 `toTextStream()`，以免处理单个事件对象。
 
-借助流式传输和事件系统，你可以将智能体集成到聊天界面、终端应用，或任何用户能从增量更新中受益的场景。
+通过流式传输和事件系统，你可以将智能体集成到聊天界面、终端应用，或任何用户受益于增量更新的场景中。

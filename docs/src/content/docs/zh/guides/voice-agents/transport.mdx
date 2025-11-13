@@ -29,29 +29,29 @@ import cloudflareTransportExample from '../../../../../../../examples/docs/exten
 
 ## 默认传输层
 
-### 通过 WebRTC 连接
+### WebRTC 连接
 
-默认传输层使用 WebRTC。音频会从麦克风录制并自动回放。
+默认传输层使用 WebRTC。音频将从麦克风录制并自动播放。
 
-若要使用您自己的媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
+如需使用您自己的媒体流或音频元素，在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-### 通过 WebSocket 连接
+### WebSocket 连接
 
-在创建会话时传入 `transport: 'websocket'` 或一个 `OpenAIRealtimeWebSocket` 实例，以使用 WebSocket 连接替代 WebRTC。此方式非常适合服务器端用例，例如使用 Twilio 构建电话智能体。
+在创建会话时传入 `transport: 'websocket'` 或 `OpenAIRealtimeWebSocket` 的实例，以使用 WebSocket 连接替代 WebRTC。这非常适合服务器端用例，例如构建使用 Twilio 的电话智能体。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-使用任意录制/回放库来处理原始 PCM16 音频字节。
+使用任意录制/播放库来处理原始 PCM16 音频字节。
 
-### 通过 SIP 连接
+### SIP 连接
 
-使用 `OpenAIRealtimeSIP` 传输来桥接来自 Twilio 等提供商的 SIP 呼叫。该传输会让 Realtime 会话与您的通信服务提供商发出的 SIP 事件保持同步。
+通过使用 `OpenAIRealtimeSIP` 传输，将来自 Twilio 等提供商的 SIP 呼叫进行桥接。该传输会让 Realtime 会话与您的电话服务提供商发出的 SIP 事件保持同步。
 
-1. 通过 `OpenAIRealtimeSIP.buildInitialConfig()` 生成初始会话配置以接受来电。这可确保 SIP 邀请与 Realtime 会话共享相同的默认值。
+1. 通过 `OpenAIRealtimeSIP.buildInitialConfig()` 生成初始会话配置以接受来电。这可确保 SIP 邀请与 Realtime 会话共享一致的默认值。
 2. 附加一个使用 `OpenAIRealtimeSIP` 传输的 `RealtimeSession`，并使用提供商 webhook 发放的 `callId` 进行连接。
-3. 监听会话事件，以驱动通话分析、转录或升级逻辑。
+3. 监听会话事件，用于驱动通话分析、转录或升级逻辑。
 
 <Code lang="typescript" code={sipTransportExample} />
 
@@ -61,24 +61,24 @@ Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### 构建自定义传输机制
+### 自定义传输机制
 
-如果您想使用不同的语音到语音 API，或拥有自定义传输机制，可以通过实现 `RealtimeTransportLayer` 接口并发出 `RealtimeTransportEventTypes` 事件来创建自己的传输。
+如果您想使用不同的语音到语音 API，或拥有自己的自定义传输机制，可以通过实现 `RealtimeTransportLayer` 接口并发出 `RealtimeTransportEventTypes` 事件来创建自己的传输层。
 
-## 更直接地与 Realtime API 交互
+## 与 Realtime API 的更直接交互
 
-如果您想使用 OpenAI Realtime API，同时需要更直接地访问 Realtime API，有两种选择：
+如果您想使用 OpenAI Realtime API，同时对 Realtime API 拥有更直接的访问方式，有两种选项：
 
 ### 选项 1 - 访问传输层
 
 如果您仍希望受益于 `RealtimeSession` 的全部能力，可以通过 `session.transport` 访问您的传输层。
 
-传输层会在 `*` 事件下发出它接收到的每个事件，您也可以使用 `sendEvent()` 方法发送原始事件。
+传输层会在 `*` 事件下发出其接收到的每一个事件，您也可以使用 `sendEvent()` 方法发送原始事件。
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 选项 2 — 仅使用传输层
 
-如果您不需要自动工具执行、护栏等功能，也可以仅使用传输层，作为一个仅管理连接与中断的“轻量”客户端。
+如果您不需要自动工具执行、护栏等功能，也可以将传输层用作仅管理连接和中断的“瘦”客户端。
 
 <Code lang="typescript" code={thinClientExample} />
