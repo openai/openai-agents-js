@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+
 ## 0.3.0
 
 ### Minor Changes
