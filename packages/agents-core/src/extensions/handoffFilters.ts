@@ -13,6 +13,10 @@ const TOOL_TYPES = new Set([
   'function_call_result',
   'computer_call',
   'computer_call_result',
+  'shell_call',
+  'shell_call_output',
+  'apply_patch_call',
+  'apply_patch_call_output',
   'hosted_tool_call',
 ]);
 

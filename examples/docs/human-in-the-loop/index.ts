@@ -65,7 +65,7 @@ async function main() {
 
     for (const interruption of result.interruptions) {
       const confirmed = await confirm(
-        `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
+        `Agent ${interruption.agent.name} would like to use the tool ${interruption.name} with "${interruption.arguments}". Do you approve?`,
       );
 
       if (confirmed) {

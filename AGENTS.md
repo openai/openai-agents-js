@@ -4,6 +4,10 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 
 **Location:** `AGENTS.md` at the repository root.
 
+## ExecPlans
+
+When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
+
 ## Table of Contents
 
 1.  [Overview](#overview)
@@ -123,6 +127,8 @@ See [this README](integration-tests/README.md) for details.
   pnpm examples:basic
   pnpm examples:agents-as-tools
   pnpm examples:deterministic
+  pnpm examples:tools-shell
+  pnpm examples:tools-apply-patch
   # See root package.json "examples:*" scripts for full list
   ```
 - Metadata embedding (prebuild):

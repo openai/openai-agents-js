@@ -1,5 +1,7 @@
 import type { Agent } from './agent';
 import type { Computer } from './computer';
+import type { Shell, ShellAction } from './shell';
+import type { Editor, ApplyPatchOperation } from './editor';
 import {
   JsonObjectSchema,
   JsonObjectSchemaNonStrict,
@@ -42,6 +44,28 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
   input: ToolExecuteArgument<TParameters>,
   callId?: string,
 ) => Promise<boolean>;
+
+export type ShellApprovalFunction = (
+  runContext: RunContext,
+  action: ShellAction,
+  callId?: string,
+) => Promise<boolean>;
+
+export type ShellOnApprovalFunction = (
+  runContext: RunContext,
+  approvalItem: RunToolApprovalItem,
+) => Promise<{ approve: boolean; reason?: string }>;
+
+export type ApplyPatchApprovalFunction = (
+  runContext: RunContext,
+  operation: ApplyPatchOperation,
+  callId?: string,
+) => Promise<boolean>;
+
+export type ApplyPatchOnApprovalFunction = (
+  runContext: RunContext,
+  approvalItem: RunToolApprovalItem,
+) => Promise<{ approve: boolean; reason?: string }>;
 
 export type ToolEnabledFunction<Context = UnknownContext> = (
   runContext: RunContext<Context>,
@@ -139,6 +163,97 @@ export function computerTool(
     type: 'computer',
     name: options.name ?? 'computer_use_preview',
     computer: options.computer,
+  };
+}
+
+export type ShellTool = {
+  type: 'shell';
+  /**
+   * Public name exposed to the model. Defaults to `shell`.
+   */
+  name: string;
+  /**
+   * The shell implementation to execute commands.
+   */
+  shell: Shell;
+  /**
+   * Predicate determining whether this shell action requires approval.
+   */
+  needsApproval: ShellApprovalFunction;
+  /**
+   * Optional handler to auto-approve or reject when approval is required.
+   * If provided, it will be invoked immediately when an approval is needed.
+   */
+  onApproval?: ShellOnApprovalFunction;
+};
+
+export function shellTool(
+  options: Partial<Omit<ShellTool, 'type' | 'shell' | 'needsApproval'>> & {
+    shell: Shell;
+    needsApproval?: boolean | ShellApprovalFunction;
+    onApproval?: ShellOnApprovalFunction;
+  },
+): ShellTool {
+  const needsApproval: ShellApprovalFunction =
+    typeof options.needsApproval === 'function'
+      ? options.needsApproval
+      : async () =>
+          typeof options.needsApproval === 'boolean'
+            ? options.needsApproval
+            : false;
+
+  return {
+    type: 'shell',
+    name: options.name ?? 'shell',
+    shell: options.shell,
+    needsApproval,
+    onApproval: options.onApproval,
+  };
+}
+
+export type ApplyPatchTool = {
+  type: 'apply_patch';
+  /**
+   * Public name exposed to the model. Defaults to `apply_patch`.
+   */
+  name: string;
+  /**
+   * Diff applier invoked when the tool is called.
+   */
+  editor: Editor;
+  /**
+   * Predicate determining whether this apply_patch operation requires approval.
+   */
+  needsApproval: ApplyPatchApprovalFunction;
+  /**
+   * Optional handler to auto-approve or reject when approval is required.
+   */
+  onApproval?: ApplyPatchOnApprovalFunction;
+};
+
+export function applyPatchTool(
+  options: Partial<
+    Omit<ApplyPatchTool, 'type' | 'editor' | 'needsApproval'>
+  > & {
+    editor: Editor;
+    needsApproval?: boolean | ApplyPatchApprovalFunction;
+    onApproval?: ApplyPatchOnApprovalFunction;
+  },
+): ApplyPatchTool {
+  const needsApproval: ApplyPatchApprovalFunction =
+    typeof options.needsApproval === 'function'
+      ? options.needsApproval
+      : async () =>
+          typeof options.needsApproval === 'boolean'
+            ? options.needsApproval
+            : false;
+
+  return {
+    type: 'apply_patch',
+    name: options.name ?? 'apply_patch',
+    editor: options.editor,
+    needsApproval,
+    onApproval: options.onApproval,
   };
 }
 
@@ -314,6 +429,8 @@ export type HostedTool = {
 export type Tool<Context = unknown> =
   | FunctionTool<Context, any, any>
   | ComputerTool
+  | ShellTool
+  | ApplyPatchTool
   | HostedTool;
 
 /**

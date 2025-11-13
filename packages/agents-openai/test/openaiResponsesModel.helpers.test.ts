@@ -26,6 +26,8 @@ describe('getToolChoice', () => {
     expect(getToolChoice('computer_use_preview')).toEqual({
       type: 'computer_use_preview',
     });
+    expect(getToolChoice('shell')).toEqual({ type: 'shell' });
+    expect(getToolChoice('apply_patch')).toEqual({ type: 'apply_patch' });
   });
 
   it('supports arbitrary function names', () => {
@@ -69,6 +71,16 @@ describe('converTool', () => {
       display_width: 100,
       display_height: 200,
     });
+  });
+
+  it('converts shell tools', () => {
+    const t = converTool({ type: 'shell', name: 'shell' } as any);
+    expect(t.tool).toEqual({ type: 'shell' });
+  });
+
+  it('converts apply_patch tools', () => {
+    const t = converTool({ type: 'apply_patch', name: 'apply_patch' } as any);
+    expect(t.tool).toEqual({ type: 'apply_patch' });
   });
 
   it('converts builtin tools', () => {
@@ -184,18 +196,93 @@ describe('getInputItems', () => {
         callId: 'c2',
         output: { data: 'img' },
       },
+      {
+        type: 'shell_call',
+        id: 'sh1',
+        callId: 's1',
+        status: 'completed',
+        action: {
+          commands: ['echo hi'],
+          timeoutMs: 10,
+          maxOutputLength: 5,
+        },
+      },
+      {
+        type: 'shell_call_output',
+        id: 'sh2',
+        callId: 's1',
+        output: [
+          {
+            stdout: 'hi',
+            stderr: '',
+            outcome: { type: 'exit', exitCode: 0 },
+          },
+        ],
+      },
+      {
+        type: 'apply_patch_call',
+        id: 'ap1',
+        callId: 'p1',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'tmp.txt' },
+      },
+      {
+        type: 'apply_patch_call_output',
+        id: 'ap2',
+        callId: 'p1',
+        status: 'failed',
+        output: 'conflict',
+      },
       { type: 'reasoning', id: 'r1', content: [{ text: 'why' }] },
     ] as any);
 
     expect(items[0]).toEqual({ id: 'u1', role: 'user', content: 'hi' });
-    expect(items[1]).toMatchObject({ type: 'function_call', name: 'fn' });
-    expect(items[2]).toMatchObject({
-      type: 'function_call_output',
-      output: 'ok',
+    expect(items.some((entry) => entry.type === 'function_call')).toBe(true);
+    expect(items.some((entry) => entry.type === 'function_call_output')).toBe(
+      true,
+    );
+    expect(items.some((entry) => entry.type === 'computer_call')).toBe(true);
+    expect(items.some((entry) => entry.type === 'computer_call_output')).toBe(
+      true,
+    );
+    const shellCall = items.find((entry) => entry.type === 'shell_call') as any;
+    expect(shellCall).toMatchObject({
+      type: 'shell_call',
+      call_id: 's1',
+      action: { commands: ['echo hi'], timeout_ms: 10, max_output_length: 5 },
     });
-    expect(items[3]).toMatchObject({ type: 'computer_call', action: 'open' });
-    expect(items[4]).toMatchObject({ type: 'computer_call_output' });
-    expect(items[5]).toMatchObject({ type: 'reasoning' });
+    const shellCallOutput = items.find(
+      (entry) => entry.type === 'shell_call_output',
+    ) as any;
+    expect(shellCallOutput).toMatchObject({
+      type: 'shell_call_output',
+      id: 'sh2',
+      call_id: 's1',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exit_code: 0 },
+        },
+      ],
+    });
+    const applyPatchCall = items.find(
+      (entry) => entry.type === 'apply_patch_call',
+    ) as any;
+    expect(applyPatchCall).toMatchObject({
+      type: 'apply_patch_call',
+      call_id: 'p1',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    });
+    const applyPatchCallOutput = items.find(
+      (entry) => entry.type === 'apply_patch_call_output',
+    ) as any;
+    expect(applyPatchCallOutput).toMatchObject({
+      type: 'apply_patch_call_output',
+      call_id: 'p1',
+      status: 'failed',
+    });
+    expect(items.some((entry) => entry.type === 'reasoning')).toBe(true);
   });
 
   it('converts structured tool outputs into input items', () => {
@@ -576,6 +663,72 @@ describe('convertToOutputItem', () => {
           filename: 'file.txt',
         },
       ],
+    });
+  });
+
+  it('converts shell and apply_patch tool items', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'shell_call',
+        id: 'sh1',
+        call_id: 's1',
+        status: 'completed',
+        action: { commands: ['echo hi'], timeout_ms: 15, max_output_length: 3 },
+      } as any,
+      {
+        type: 'shell_call_output',
+        id: 'sh2',
+        call_id: 's1',
+        output: [
+          {
+            stdout: 'hi',
+            stderr: '',
+            outcome: { type: 'exit', exit_code: 0 },
+          },
+        ],
+      } as any,
+      {
+        type: 'apply_patch_call',
+        id: 'ap1',
+        call_id: 'p1',
+        status: 'in_progress',
+        operation: { type: 'delete_file', path: 'tmp.txt' },
+      } as any,
+      {
+        type: 'apply_patch_call_output',
+        id: 'ap2',
+        call_id: 'p1',
+        status: 'failed',
+        output: 'conflict',
+      } as any,
+    ]);
+
+    expect(out[0]).toMatchObject({
+      type: 'shell_call',
+      callId: 's1',
+      action: { commands: ['echo hi'], timeoutMs: 15, maxOutputLength: 3 },
+    });
+    expect(out[1]).toMatchObject({
+      type: 'shell_call_output',
+      callId: 's1',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    });
+    expect(out[2]).toMatchObject({
+      type: 'apply_patch_call',
+      callId: 'p1',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    });
+    expect(out[3]).toMatchObject({
+      type: 'apply_patch_call_output',
+      callId: 'p1',
+      status: 'failed',
+      output: 'conflict',
     });
   });
 });

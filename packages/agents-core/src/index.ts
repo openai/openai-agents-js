@@ -14,6 +14,8 @@ export {
   ToolUseBehaviorFlags,
 } from './agent';
 export { Computer } from './computer';
+export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
+export { ApplyPatchOperation, ApplyPatchResult, Editor } from './editor';
 export {
   AgentsError,
   GuardrailExecutionError,
@@ -68,6 +70,7 @@ export {
 } from './items';
 export { AgentHooks } from './lifecycle';
 export { getLogger } from './logger';
+export { applyDiff } from './utils/applyDiff';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
@@ -123,6 +126,10 @@ export {
   HostedTool,
   ComputerTool,
   computerTool,
+  ShellTool,
+  shellTool,
+  ApplyPatchTool,
+  applyPatchTool,
   HostedMCPTool,
   hostedMcpTool,
   FunctionTool,
@@ -149,6 +156,10 @@ export type {
   HostedToolCallItem,
   ComputerCallResultItem,
   ComputerUseCallItem,
+  ShellCallItem,
+  ShellCallResultItem,
+  ApplyPatchCallItem,
+  ApplyPatchCallResultItem,
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,

@@ -74,6 +74,11 @@ async function main() {
     );
     const state = stream.state;
     for (const interruption of stream.interruptions) {
+      if (interruption.rawItem.type !== 'function_call') {
+        throw new Error(
+          'Invalid interruption type: ' + interruption.rawItem.type,
+        );
+      }
       const ok = await confirm(
         `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
       );

@@ -44,6 +44,35 @@ const hostedToolCall: protocol.HostedToolCallItem = {
   output: 'results',
 };
 
+const shellCall: protocol.ShellCallItem = {
+  type: 'shell_call',
+  callId: 'shell-call',
+  status: 'completed',
+  action: { commands: ['echo hi'] },
+};
+
+const shellCallResult: protocol.ShellCallResultItem = {
+  type: 'shell_call_output',
+  callId: 'shell-call',
+  output: [
+    { stdout: 'hi', stderr: '', outcome: { type: 'exit', exitCode: 0 } },
+  ],
+};
+
+const applyPatchCall: protocol.ApplyPatchCallItem = {
+  type: 'apply_patch_call',
+  callId: 'patch-call',
+  status: 'completed',
+  operation: { type: 'delete_file', path: 'tmp.txt' },
+};
+
+const applyPatchCallResult: protocol.ApplyPatchCallResultItem = {
+  type: 'apply_patch_call_output',
+  callId: 'patch-call',
+  status: 'completed',
+  output: 'done',
+};
+
 describe('removeAllTools', () => {
   test('should be available', () => {
     const result = removeAllTools({
@@ -100,6 +129,10 @@ describe('removeAllTools', () => {
       computerCall,
       computerCallResult,
       hostedToolCall,
+      shellCall,
+      shellCallResult,
+      applyPatchCall,
+      applyPatchCallResult,
     ];
 
     const result = removeAllTools({
@@ -109,7 +142,7 @@ describe('removeAllTools', () => {
     });
 
     expect(result.inputHistory).toStrictEqual([userMessage]);
-    expect(history).toHaveLength(6);
+    expect(history).toHaveLength(10);
     expect((result.inputHistory as AgentInputItem[])[0]).toBe(userMessage);
   });
 });

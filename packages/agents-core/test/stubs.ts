@@ -9,6 +9,12 @@ import {
 import { tool } from '../src/tool';
 import type { Computer } from '../src/computer';
 import type { Environment } from '../src/computer';
+import type { Shell, ShellAction, ShellResult } from '../src/shell';
+import type {
+  Editor,
+  ApplyPatchOperation,
+  ApplyPatchResult,
+} from '../src/editor';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { Span, Trace, TracingExporter } from '../src';
@@ -139,5 +145,62 @@ export class FakeModelProvider implements ModelProvider {
 export class FakeTracingExporter implements TracingExporter {
   export(_items: (Trace | Span<any>)[], _signal?: AbortSignal): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+export class FakeShell implements Shell {
+  public readonly calls: ShellAction[] = [];
+  public result: ShellResult = {
+    output: [
+      {
+        stdout: 'shell result',
+        stderr: '',
+        outcome: { type: 'exit', exitCode: 0 },
+      },
+    ],
+  };
+  public error: Error | null = null;
+
+  async run(action: ShellAction): Promise<ShellResult> {
+    this.calls.push(action);
+    if (this.error) {
+      throw this.error;
+    }
+    return this.result;
+  }
+}
+
+export class FakeEditor implements Editor {
+  public readonly operations: ApplyPatchOperation[] = [];
+  public result: ApplyPatchResult | void = { status: 'completed' };
+  public errors: Partial<Record<ApplyPatchOperation['type'], Error>> = {};
+
+  async createFile(
+    operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+  ): Promise<ApplyPatchResult | void> {
+    return this.handle(operation);
+  }
+
+  async updateFile(
+    operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+  ): Promise<ApplyPatchResult | void> {
+    return this.handle(operation);
+  }
+
+  async deleteFile(
+    operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+  ): Promise<ApplyPatchResult | void> {
+    return this.handle(operation);
+  }
+
+  private async handle(
+    operation: ApplyPatchOperation,
+  ): Promise<ApplyPatchResult | void> {
+    this.operations.push(operation);
+    const error = this.errors[operation.type];
+    if (error) {
+      throw error;
+    }
+    return this.result;
   }
 }

@@ -232,7 +232,11 @@ export function itemsToMessages(
       }
     } else if (
       item.type === 'computer_call' ||
-      item.type === 'computer_call_result'
+      item.type === 'computer_call_result' ||
+      item.type === 'shell_call' ||
+      item.type === 'shell_call_output' ||
+      item.type === 'apply_patch_call' ||
+      item.type === 'apply_patch_call_output'
     ) {
       throw new UserError(
         'Computer use calls are not supported for chat completions. Got item: ' +

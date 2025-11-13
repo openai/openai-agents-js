@@ -1001,8 +1001,10 @@ export class RealtimeSession<
     options: { alwaysApprove?: boolean } = { alwaysApprove: false },
   ) {
     this.#context.approveTool(approvalItem, options);
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === approvalItem.rawItem.name,
+      (tool) => tool.name === toolName,
     );
     if (
       tool &&
@@ -1020,9 +1022,7 @@ export class RealtimeSession<
         approvalItemToRealtimeApprovalItem(approvalItem);
       this.#transport.sendMcpResponse(mcpApprovalRequest, true);
     } else {
-      throw new ModelBehaviorError(
-        `Tool ${approvalItem.rawItem.name} not found`,
-      );
+      throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }
   }
 
@@ -1039,8 +1039,10 @@ export class RealtimeSession<
     this.#context.rejectTool(approvalItem, options);
 
     // we still need to simulate a tool call to the agent to let the agent know
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === approvalItem.rawItem.name,
+      (tool) => tool.name === toolName,
     );
     if (
       tool &&
@@ -1058,9 +1060,7 @@ export class RealtimeSession<
         approvalItemToRealtimeApprovalItem(approvalItem);
       this.#transport.sendMcpResponse(mcpApprovalRequest, false);
     } else {
-      throw new ModelBehaviorError(
-        `Tool ${approvalItem.rawItem.name} not found`,
-      );
+      throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }
   }
 }

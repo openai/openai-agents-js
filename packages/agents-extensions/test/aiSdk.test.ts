@@ -175,6 +175,30 @@ describe('itemsToLanguageV2Messages', () => {
     ).toThrow(UserError);
   });
 
+  test('throws on shell tool calls and results', () => {
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [{ type: 'shell_call' } as any]),
+    ).toThrow(UserError);
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        { type: 'shell_call_output' } as any,
+      ]),
+    ).toThrow(UserError);
+  });
+
+  test('throws on apply_patch tool calls and results', () => {
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        { type: 'apply_patch_call' } as any,
+      ]),
+    ).toThrow(UserError);
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        { type: 'apply_patch_call_output' } as any,
+      ]),
+    ).toThrow(UserError);
+  });
+
   test('converts user images, function results and reasoning items', () => {
     const items: protocol.ModelItem[] = [
       {

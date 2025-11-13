@@ -31,7 +31,10 @@ import {
   Tool,
   FunctionToolResult,
   HostedMCPTool,
+  ShellTool,
+  ApplyPatchTool,
 } from './tool';
+import type { ShellResult } from './shell';
 import { AgentInputItem, UnknownContext } from './types';
 import { Runner } from './run';
 import { RunContext } from './runContext';
@@ -52,6 +55,7 @@ import { RunResult, StreamedRunResult } from './result';
 import { z } from 'zod';
 import * as protocol from './types/protocol';
 import { Computer } from './computer';
+import type { ApplyPatchResult } from './editor';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
 import * as ProviderData from './types/providerData';
@@ -75,6 +79,18 @@ type ToolRunComputer = {
   computer: ComputerTool;
 };
 
+// Captures a shell invocation emitted by the model.
+type ToolRunShell = {
+  toolCall: protocol.ShellCallItem;
+  shell: ShellTool;
+};
+
+// Captures an apply_patch operation emitted by the model.
+type ToolRunApplyPatch = {
+  toolCall: protocol.ApplyPatchCallItem;
+  applyPatch: ApplyPatchTool;
+};
+
 // Tracks hosted MCP approval requests awaiting either automatic or user-driven authorization.
 type ToolRunMCPApprovalRequest = {
   requestItem: RunToolApprovalItem;
@@ -88,6 +104,8 @@ export type ProcessedResponse<TContext = UnknownContext> = {
   handoffs: ToolRunHandoff[];
   functions: ToolRunFunction<TContext>[];
   computerActions: ToolRunComputer[];
+  shellActions: ToolRunShell[];
+  applyPatchActions: ToolRunApplyPatch[];
   mcpApprovalRequests: ToolRunMCPApprovalRequest[];
   toolsUsed: string[];
   hasToolsOrApprovalsToRun(): boolean;
@@ -170,6 +188,8 @@ export function processModelResponse<TContext>(
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
   const runComputerActions: ToolRunComputer[] = [];
+  const runShellActions: ToolRunShell[] = [];
+  const runApplyPatchActions: ToolRunApplyPatch[] = [];
   const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
   const toolsUsed: string[] = [];
   const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
@@ -178,6 +198,10 @@ export function processModelResponse<TContext>(
     tools.filter((t) => t.type === 'function').map((t) => [t.name, t]),
   );
   const computerTool = tools.find((t) => t.type === 'computer');
+  const shellTool = tools.find((t): t is ShellTool => t.type === 'shell');
+  const applyPatchTool = tools.find(
+    (t): t is ApplyPatchTool => t.type === 'apply_patch',
+  );
   const mcpToolMap = new Map(
     tools
       .filter((t) => t.type === 'hosted_tool' && t.providerData?.type === 'mcp')
@@ -257,6 +281,43 @@ export function processModelResponse<TContext>(
         toolCall: output,
         computer: computerTool,
       });
+    } else if (output.type === 'shell_call') {
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('shell');
+      if (!shellTool) {
+        addErrorToCurrentSpan({
+          message: 'Model produced shell action without a shell tool.',
+          data: {
+            agent_name: agent.name,
+          },
+        });
+        throw new ModelBehaviorError(
+          'Model produced shell action without a shell tool.',
+        );
+      }
+      runShellActions.push({
+        toolCall: output,
+        shell: shellTool,
+      });
+    } else if (output.type === 'apply_patch_call') {
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('apply_patch');
+      if (!applyPatchTool) {
+        addErrorToCurrentSpan({
+          message:
+            'Model produced apply_patch action without an apply_patch tool.',
+          data: {
+            agent_name: agent.name,
+          },
+        });
+        throw new ModelBehaviorError(
+          'Model produced apply_patch action without an apply_patch tool.',
+        );
+      }
+      runApplyPatchActions.push({
+        toolCall: output,
+        applyPatch: applyPatchTool,
+      });
     }
 
     if (output.type !== 'function_call') {
@@ -300,6 +361,8 @@ export function processModelResponse<TContext>(
     handoffs: runHandoffs,
     functions: runFunctions,
     computerActions: runComputerActions,
+    shellActions: runShellActions,
+    applyPatchActions: runApplyPatchActions,
     mcpApprovalRequests: runMCPApprovalRequests,
     toolsUsed: toolsUsed,
     hasToolsOrApprovalsToRun(): boolean {
@@ -307,7 +370,9 @@ export function processModelResponse<TContext>(
         runHandoffs.length > 0 ||
         runFunctions.length > 0 ||
         runMCPApprovalRequests.length > 0 ||
-        runComputerActions.length > 0
+        runComputerActions.length > 0 ||
+        runShellActions.length > 0 ||
+        runApplyPatchActions.length > 0
       );
     },
   };
@@ -520,10 +585,14 @@ export async function resolveInterruptedTurn<TContext>(
   // Keep track of approvals we still need to surface next turn so HITL flows can resume cleanly.
   for (const run of mcpApprovalRuns) {
     // the approval_request_id "mcpr_123..."
-    const approvalRequestId = run.requestItem.rawItem.id!;
+    const rawItem = run.requestItem.rawItem;
+    if (rawItem.type !== 'hosted_tool_call') {
+      continue;
+    }
+    const approvalRequestId = rawItem.id!;
     const approved = state._context.isToolApproved({
       // Since this item name must be the same with the one sent from Responses API server
-      toolName: run.requestItem.rawItem.name,
+      toolName: rawItem.name,
       callId: approvalRequestId,
     });
     if (typeof approved !== 'undefined') {
@@ -637,25 +706,44 @@ export async function resolveTurnAfterModelResponse<TContext>(
   }
 
   // Run function tools and computer actions in parallel; neither depends on the other's side effects.
-  const [functionResults, computerResults] = await Promise.all([
-    executeFunctionToolCalls(
-      agent,
-      processedResponse.functions as ToolRunFunction<unknown>[],
-      runner,
-      state,
-    ),
-    executeComputerActions(
-      agent,
-      processedResponse.computerActions,
-      runner,
-      state._context,
-    ),
-  ]);
+  const [functionResults, computerResults, shellResults, applyPatchResults] =
+    await Promise.all([
+      executeFunctionToolCalls(
+        agent,
+        processedResponse.functions as ToolRunFunction<unknown>[],
+        runner,
+        state,
+      ),
+      executeComputerActions(
+        agent,
+        processedResponse.computerActions,
+        runner,
+        state._context,
+      ),
+      executeShellActions(
+        agent,
+        processedResponse.shellActions,
+        runner,
+        state._context,
+      ),
+      executeApplyPatchOperations(
+        agent,
+        processedResponse.applyPatchActions,
+        runner,
+        state._context,
+      ),
+    ]);
 
   for (const result of functionResults) {
     appendIfNew(result.runItem);
   }
   for (const item of computerResults) {
+    appendIfNew(item);
+  }
+  for (const item of shellResults) {
+    appendIfNew(item);
+  }
+  for (const item of applyPatchResults) {
     appendIfNew(item);
   }
 
@@ -746,6 +834,8 @@ export async function resolveTurnAfterModelResponse<TContext>(
   const hadToolCallsOrActions =
     (processedResponse.functions?.length ?? 0) > 0 ||
     (processedResponse.computerActions?.length ?? 0) > 0 ||
+    (processedResponse.shellActions?.length ?? 0) > 0 ||
+    (processedResponse.applyPatchActions?.length ?? 0) > 0 ||
     (processedResponse.mcpApprovalRequests?.length ?? 0) > 0 ||
     (processedResponse.handoffs?.length ?? 0) > 0;
   if (hadToolCallsOrActions) {
@@ -1311,6 +1401,292 @@ async function _runComputerActionAndScreenshot(
     }
   }
   throw new Error('Computer does not implement screenshot()');
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.toString();
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+export async function executeShellActions(
+  agent: Agent<any, any>,
+  actions: ToolRunShell[],
+  runner: Runner,
+  runContext: RunContext,
+  customLogger: Logger | undefined = undefined,
+): Promise<RunItem[]> {
+  const _logger = customLogger ?? logger;
+  const results: RunItem[] = [];
+
+  for (const action of actions) {
+    const shellTool = action.shell;
+    const toolCall = action.toolCall;
+    const approvalItem = new RunToolApprovalItem(
+      toolCall,
+      agent,
+      shellTool.name,
+    );
+    const requiresApproval = await shellTool.needsApproval(
+      runContext,
+      toolCall.action,
+      toolCall.callId,
+    );
+
+    if (requiresApproval) {
+      if (shellTool.onApproval) {
+        const decision = await shellTool.onApproval(runContext, approvalItem);
+        if (decision.approve === true) {
+          runContext.approveTool(approvalItem);
+        } else if (decision.approve === false) {
+          runContext.rejectTool(approvalItem);
+        }
+      }
+
+      const approval = runContext.isToolApproved({
+        toolName: shellTool.name,
+        callId: toolCall.callId,
+      });
+
+      if (approval === false) {
+        const response = 'Tool execution was not approved.';
+        const rejectionOutput: protocol.ShellCallOutputContent = {
+          stdout: '',
+          stderr: response,
+          outcome: { type: 'exit', exitCode: null },
+        };
+        results.push(
+          new RunToolCallOutputItem(
+            {
+              type: 'shell_call_output',
+              callId: toolCall.callId,
+              output: [rejectionOutput],
+            },
+            agent,
+            response,
+          ),
+        );
+        continue;
+      }
+
+      if (approval !== true) {
+        results.push(approvalItem);
+        continue;
+      }
+    }
+
+    runner.emit('agent_tool_start', runContext, agent, shellTool, {
+      toolCall,
+    });
+    if (typeof agent.emit === 'function') {
+      agent.emit('agent_tool_start', runContext, shellTool, { toolCall });
+    }
+
+    let shellOutputs: ShellResult['output'] | undefined;
+    const providerMeta: Record<string, unknown> = {};
+    let maxOutputLength: number | undefined;
+
+    try {
+      const shellResult = await shellTool.shell.run(toolCall.action);
+      shellOutputs = shellResult.output ?? [];
+
+      if (shellResult.providerData) {
+        Object.assign(providerMeta, shellResult.providerData);
+      }
+
+      if (typeof shellResult.maxOutputLength === 'number') {
+        maxOutputLength = shellResult.maxOutputLength;
+      }
+    } catch (err) {
+      const errorText = toErrorMessage(err);
+      shellOutputs = [
+        {
+          stdout: '',
+          stderr: errorText,
+          outcome: { type: 'exit', exitCode: null },
+        },
+      ];
+      _logger.error('Failed to execute shell action:', err);
+    }
+
+    shellOutputs = shellOutputs ?? [];
+
+    runner.emit(
+      'agent_tool_end',
+      runContext,
+      agent,
+      shellTool,
+      JSON.stringify(shellOutputs),
+      {
+        toolCall,
+      },
+    );
+    if (typeof agent.emit === 'function') {
+      agent.emit(
+        'agent_tool_end',
+        runContext,
+        shellTool,
+        JSON.stringify(shellOutputs),
+        {
+          toolCall,
+        },
+      );
+    }
+
+    const rawItem: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: toolCall.callId,
+      output: shellOutputs ?? [],
+    };
+
+    if (typeof maxOutputLength === 'number') {
+      rawItem.maxOutputLength = maxOutputLength;
+    }
+
+    if (Object.keys(providerMeta).length > 0) {
+      rawItem.providerData = providerMeta;
+    }
+
+    results.push(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
+  }
+
+  return results;
+}
+
+export async function executeApplyPatchOperations(
+  agent: Agent<any, any>,
+  actions: ToolRunApplyPatch[],
+  runner: Runner,
+  runContext: RunContext,
+  customLogger: Logger | undefined = undefined,
+): Promise<RunItem[]> {
+  const _logger = customLogger ?? logger;
+  const results: RunItem[] = [];
+
+  for (const action of actions) {
+    const applyPatchTool = action.applyPatch;
+    const toolCall = action.toolCall;
+    const approvalItem = new RunToolApprovalItem(
+      toolCall,
+      agent,
+      applyPatchTool.name,
+    );
+    const requiresApproval = await applyPatchTool.needsApproval(
+      runContext,
+      toolCall.operation,
+      toolCall.callId,
+    );
+
+    if (requiresApproval) {
+      if (applyPatchTool.onApproval) {
+        const decision = await applyPatchTool.onApproval(
+          runContext,
+          approvalItem,
+        );
+        if (decision.approve === true) {
+          runContext.approveTool(approvalItem);
+        } else if (decision.approve === false) {
+          runContext.rejectTool(approvalItem);
+        }
+      }
+
+      const approval = runContext.isToolApproved({
+        toolName: applyPatchTool.name,
+        callId: toolCall.callId,
+      });
+
+      if (approval === false) {
+        const response = 'Tool execution was not approved.';
+        results.push(
+          new RunToolCallOutputItem(
+            {
+              type: 'apply_patch_call_output',
+              callId: toolCall.callId,
+              status: 'failed',
+              output: response,
+            },
+            agent,
+            response,
+          ),
+        );
+        continue;
+      }
+
+      if (approval !== true) {
+        results.push(approvalItem);
+        continue;
+      }
+    }
+
+    runner.emit('agent_tool_start', runContext, agent, applyPatchTool, {
+      toolCall,
+    });
+    if (typeof agent.emit === 'function') {
+      agent.emit('agent_tool_start', runContext, applyPatchTool, {
+        toolCall,
+      });
+    }
+
+    let status: 'completed' | 'failed' = 'completed';
+    let output = '';
+
+    try {
+      let result: ApplyPatchResult | void;
+      switch (toolCall.operation.type) {
+        case 'create_file':
+          result = await applyPatchTool.editor.createFile(toolCall.operation);
+          break;
+        case 'update_file':
+          result = await applyPatchTool.editor.updateFile(toolCall.operation);
+          break;
+        case 'delete_file':
+          result = await applyPatchTool.editor.deleteFile(toolCall.operation);
+          break;
+        default:
+          throw new Error('Unsupported apply_patch operation');
+      }
+
+      if (result && typeof result.status === 'string') {
+        status = result.status;
+      }
+
+      if (result && typeof result.output === 'string') {
+        output = result.output;
+      }
+    } catch (err) {
+      status = 'failed';
+      output = toErrorMessage(err);
+      _logger.error('Failed to execute apply_patch operation:', err);
+    }
+
+    runner.emit('agent_tool_end', runContext, agent, applyPatchTool, output, {
+      toolCall,
+    });
+    if (typeof agent.emit === 'function') {
+      agent.emit('agent_tool_end', runContext, applyPatchTool, output, {
+        toolCall,
+      });
+    }
+
+    const rawItem: protocol.ApplyPatchCallResultItem = {
+      type: 'apply_patch_call_output',
+      callId: toolCall.callId,
+      status,
+    };
+
+    if (output) {
+      rawItem.output = output;
+    }
+
+    results.push(new RunToolCallOutputItem(rawItem, agent, output));
+  }
+
+  return results;
 }
 
 /**

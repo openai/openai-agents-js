@@ -42,8 +42,8 @@ import * as readline from 'node:readline/promises';
 
 async function confirm(item: RunToolApprovalItem): Promise<boolean> {
   const rl = readline.createInterface({ input: stdin, output: stdout });
-  const name = item.rawItem.name;
-  const params = item.rawItem.providerData?.arguments;
+  const name = item.name;
+  const params = item.arguments;
   const answer = await rl.question(
     `Approve running tool (mcp: ${name}, params: ${params})? (y/n) `,
   );

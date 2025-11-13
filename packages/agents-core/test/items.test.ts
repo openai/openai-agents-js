@@ -183,6 +183,7 @@ describe('items toJSON()', () => {
         type: 'tool_approval_item',
         rawItem: item.rawItem,
         agent: item.agent.toJSON(),
+        toolName: 'test',
       });
     });
   });

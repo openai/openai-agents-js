@@ -32,7 +32,7 @@ import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import { safeExecute } from './utils/safeExecute';
-import { HostedMCPTool } from './tool';
+import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -121,8 +121,11 @@ const itemSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('tool_approval_item'),
-    rawItem: protocol.FunctionCallItem.or(protocol.HostedToolCallItem),
+    rawItem: protocol.FunctionCallItem.or(protocol.HostedToolCallItem)
+      .or(protocol.ShellCallItem)
+      .or(protocol.ApplyPatchCallItem),
     agent: serializedAgentSchema,
+    toolName: z.string().optional(),
   }),
 ]);
 
@@ -155,6 +158,22 @@ const serializedProcessedResponseSchema = z.object({
       computer: z.any(),
     }),
   ),
+  shellActions: z
+    .array(
+      z.object({
+        toolCall: z.any(),
+        shell: z.any(),
+      }),
+    )
+    .optional(),
+  applyPatchActions: z
+    .array(
+      z.object({
+        toolCall: z.any(),
+        applyPatch: z.any(),
+      }),
+    )
+    .optional(),
   mcpApprovalRequests: z
     .array(
       z.object({
@@ -724,6 +743,7 @@ export function deserializeItem(
       return new RunToolApprovalItem(
         serializedItem.rawItem,
         agentMap.get(serializedItem.agent.name) as Agent<any, any>,
+        serializedItem.toolName,
       );
   }
 }
@@ -748,6 +768,16 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   const computerTools = new Map(
     allTools
       .filter((tool) => tool.type === 'computer')
+      .map((tool) => [tool.name, tool]),
+  );
+  const shellTools = new Map(
+    allTools
+      .filter((tool): tool is ShellTool => tool.type === 'shell')
+      .map((tool) => [tool.name, tool]),
+  );
+  const applyPatchTools = new Map(
+    allTools
+      .filter((tool): tool is ApplyPatchTool => tool.type === 'apply_patch')
       .map((tool) => [tool.name, tool]),
   );
   const handoffs = new Map(
@@ -800,6 +830,32 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         };
       },
     ),
+    shellActions: (serializedProcessedResponse.shellActions ?? []).map(
+      (shellAction) => {
+        const toolName = shellAction.shell.name;
+        if (!shellTools.has(toolName)) {
+          throw new UserError(`Shell tool ${toolName} not found`);
+        }
+
+        return {
+          toolCall: shellAction.toolCall,
+          shell: shellTools.get(toolName)!,
+        };
+      },
+    ),
+    applyPatchActions: (
+      serializedProcessedResponse.applyPatchActions ?? []
+    ).map((applyPatchAction) => {
+      const toolName = applyPatchAction.applyPatch.name;
+      if (!applyPatchTools.has(toolName)) {
+        throw new UserError(`Apply patch tool ${toolName} not found`);
+      }
+
+      return {
+        toolCall: applyPatchAction.toolCall,
+        applyPatch: applyPatchTools.get(toolName)!,
+      };
+    }),
     mcpApprovalRequests: (
       serializedProcessedResponse.mcpApprovalRequests ?? []
     ).map((approvalRequest) => ({
@@ -819,7 +875,9 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         result.handoffs.length > 0 ||
         result.functions.length > 0 ||
         result.mcpApprovalRequests.length > 0 ||
-        result.computerActions.length > 0
+        result.computerActions.length > 0 ||
+        result.shellActions.length > 0 ||
+        result.applyPatchActions.length > 0
       );
     },
   };

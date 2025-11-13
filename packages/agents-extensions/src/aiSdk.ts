@@ -205,6 +205,22 @@ export function itemsToLanguageV2Messages(
       throw new UserError('Computer call results are not supported');
     }
 
+    if (item.type === 'shell_call') {
+      throw new UserError('Shell calls are not supported');
+    }
+
+    if (item.type === 'shell_call_output') {
+      throw new UserError('Shell call results are not supported');
+    }
+
+    if (item.type === 'apply_patch_call') {
+      throw new UserError('Apply patch calls are not supported');
+    }
+
+    if (item.type === 'apply_patch_call_output') {
+      throw new UserError('Apply patch call results are not supported');
+    }
+
     if (
       item.type === 'reasoning' &&
       item.content.length > 0 &&
@@ -522,8 +538,7 @@ export function toolToLanguageV2Tool(
     };
   }
 
-  const exhaustiveCheck: never = tool;
-  throw new Error(`Unsupported tool type: ${exhaustiveCheck}`);
+  throw new Error(`Unsupported tool type: ${JSON.stringify(tool)}`);
 }
 
 /**

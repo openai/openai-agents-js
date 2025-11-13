@@ -28,6 +28,8 @@ import {
   prepareInputItemsWithSession,
   executeFunctionToolCalls,
   executeComputerActions,
+  executeShellActions,
+  executeApplyPatchOperations,
   executeHandoffCalls,
   resolveTurnAfterModelResponse,
   streamStepItemsToRunResult,
@@ -40,6 +42,8 @@ import {
   FunctionToolResult,
   tool,
   computerTool,
+  applyPatchTool,
+  shellTool,
   hostedMcpTool,
 } from '../src/tool';
 import { handoff } from '../src/handoff';
@@ -55,6 +59,8 @@ import {
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
   TEST_TOOL,
   FakeModelProvider,
+  FakeShell,
+  FakeEditor,
   fakeModelMessage,
 } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -97,6 +103,94 @@ describe('processModelResponse', () => {
       TEST_MODEL_RESPONSE_WITH_FUNCTION.output[1],
     );
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('queues shell actions when shell tool registered', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({ shell: new FakeShell() });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.shellActions[0]?.toolCall).toEqual(shellCall);
+    expect(result.shellActions[0]?.shell).toBe(shell);
+    expect(result.toolsUsed).toEqual(['shell']);
+  });
+
+  it('throws when shell action emitted without shell tool', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('queues apply_patch actions when editor tool registered', () => {
+    const applyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [applyPatchCall],
+      usage: new Usage(),
+    };
+
+    const editor = applyPatchTool({ editor: new FakeEditor() });
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [editor],
+      [],
+    );
+
+    expect(result.applyPatchActions).toHaveLength(1);
+    expect(result.applyPatchActions[0]?.toolCall).toEqual(applyPatchCall);
+    expect(result.applyPatchActions[0]?.applyPatch).toBe(editor);
+    expect(result.toolsUsed).toEqual(['apply_patch']);
+  });
+
+  it('throws when apply_patch action emitted without editor tool', () => {
+    const applyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: {
+        type: 'delete_file',
+        path: 'temp.txt',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [applyPatchCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
   });
 });
 
@@ -252,6 +346,8 @@ describe('saveToSession', () => {
         },
       ],
       computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [],
       toolsUsed: [],
       hasToolsOrApprovalsToRun() {
@@ -410,6 +506,8 @@ describe('saveToSession', () => {
         },
       ],
       computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [],
       toolsUsed: [approvalCall.name, autoCall.name],
       hasToolsOrApprovalsToRun() {
@@ -1169,6 +1267,310 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+  });
+});
+
+describe('executeShellActions', () => {
+  it('runs shell commands and truncates output when maxOutputLength provided', async () => {
+    const shell = new FakeShell();
+    shell.result = {
+      output: [
+        {
+          stdout: '0123456789',
+          stderr: 'stderr-info',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const shellToolDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'], maxOutputLength: 5 },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    expect(results).toHaveLength(1);
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(rawItem.output).toEqual(shell.result.output);
+    expect(rawItem.providerData).toBeUndefined();
+    expect(rawItem.maxOutputLength).toBeUndefined();
+    expect(shell.calls).toHaveLength(1);
+  });
+
+  it('returns failed status when shell throws', async () => {
+    const shell = new FakeShell();
+    shell.error = new Error('boom');
+    const shellToolDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(Array.isArray(rawItem.output)).toBe(true);
+    expect(rawItem.output[0]).toMatchObject({
+      stdout: '',
+      stderr: 'boom',
+      outcome: { type: 'exit', exitCode: null },
+    });
+  });
+
+  it('returns approval item when needsApproval is true and not yet approved', async () => {
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({ shell, needsApproval: async () => true });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].type).toBe('tool_approval_item');
+    expect(shell.calls).toHaveLength(0);
+  });
+
+  it('honors onApproval for shell tools', async () => {
+    const shell = new FakeShell();
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+      onApproval,
+    });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    expect(onApproval).toHaveBeenCalled();
+    // Should proceed to execution
+    expect(shell.calls).toHaveLength(1);
+    expect(results[0].rawItem.type).toBe('shell_call_output');
+  });
+
+  it('returns failed output when approval explicitly rejected', async () => {
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({ shell, needsApproval: async () => true });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    runContext._rebuildApprovals({
+      shell: { approved: [], rejected: ['call_shell'] },
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(Array.isArray(rawItem.output)).toBe(true);
+    expect(rawItem.output[0]).toMatchObject({
+      stdout: '',
+      stderr: 'Tool execution was not approved.',
+      outcome: { type: 'exit', exitCode: null },
+    });
+    expect(shell.calls).toHaveLength(0);
+  });
+});
+
+describe('executeApplyPatchOperations', () => {
+  it('returns completed status when editor succeeds', async () => {
+    const editor = new FakeEditor();
+    editor.result = { status: 'completed', output: 'done' };
+    const applyPatch = applyPatchTool({ editor });
+    const agent = new Agent({ name: 'EditorAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'in_progress',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+
+    const results = await executeApplyPatchOperations(
+      agent,
+      [{ toolCall, applyPatch } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
+    expect(rawItem.status).toBe('completed');
+    expect(rawItem.output).toBe('done');
+    expect(editor.operations).toHaveLength(1);
+    expect(editor.operations[0]).toEqual(toolCall.operation);
+  });
+
+  it('returns failed status when editor throws', async () => {
+    const editor = new FakeEditor();
+    editor.errors.delete_file = new Error('cannot delete');
+    const applyPatch = applyPatchTool({ editor });
+    const agent = new Agent({ name: 'EditorAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'in_progress',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+
+    const results = await executeApplyPatchOperations(
+      agent,
+      [{ toolCall, applyPatch } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
+    expect(rawItem.status).toBe('failed');
+    expect(typeof rawItem.output).toBe('string');
+  });
+
+  it('returns approval item when needsApproval is true and not yet approved', async () => {
+    const editor = new FakeEditor();
+    const applyPatch = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({ name: 'EditorAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'in_progress',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+
+    const results = await executeApplyPatchOperations(
+      agent,
+      [{ toolCall, applyPatch } as any],
+      runner,
+      runContext,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].type).toBe('tool_approval_item');
+    expect(editor.operations).toHaveLength(0);
+  });
+
+  it('honors onApproval for apply_patch tools', async () => {
+    const editor = new FakeEditor();
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const applyPatch = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+      onApproval,
+    });
+    const agent = new Agent({ name: 'EditorAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'in_progress',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+
+    const results = await executeApplyPatchOperations(
+      agent,
+      [{ toolCall, applyPatch } as any],
+      runner,
+      runContext,
+    );
+
+    expect(onApproval).toHaveBeenCalled();
+    expect(editor.operations).toHaveLength(1);
+    expect(results[0].rawItem.type).toBe('apply_patch_call_output');
+  });
+
+  it('returns failed output when approval explicitly rejected', async () => {
+    const editor = new FakeEditor();
+    const applyPatch = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({ name: 'EditorAgent' });
+    const runContext = new RunContext();
+    runContext._rebuildApprovals({
+      apply_patch: { approved: [], rejected: ['call_patch'] },
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'in_progress',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+
+    const results = await executeApplyPatchOperations(
+      agent,
+      [{ toolCall, applyPatch } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
+    expect(rawItem.status).toBe('failed');
+    expect(rawItem.output).toBe('Tool execution was not approved.');
+    expect(editor.operations).toHaveLength(0);
   });
 });
 
@@ -2182,6 +2584,8 @@ describe('resolveTurnAfterModelResponse', () => {
       handoffs: [],
       functions: [],
       computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [
         {
           requestItem: approvalItem,
@@ -2269,6 +2673,8 @@ describe('resolveInterruptedTurn', () => {
       handoffs: [],
       functions: [],
       computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [],
       toolsUsed: [],
       hasToolsOrApprovalsToRun() {
@@ -2328,6 +2734,8 @@ describe('resolveInterruptedTurn', () => {
       handoffs: [],
       functions: [],
       computerActions: [{ toolCall: computerCall, computer }],
+      shellActions: [],
+      applyPatchActions: [],
       mcpApprovalRequests: [],
       toolsUsed: ['computer_use'],
       hasToolsOrApprovalsToRun() {

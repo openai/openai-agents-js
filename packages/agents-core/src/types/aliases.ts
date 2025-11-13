@@ -5,8 +5,12 @@ import {
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
+  ShellCallItem,
   FunctionCallResultItem,
   ComputerCallResultItem,
+  ShellCallResultItem,
+  ApplyPatchCallItem,
+  ApplyPatchCallResultItem,
   ReasoningItem,
   UnknownItem,
 } from './protocol';
@@ -31,8 +35,12 @@ export type AgentOutputItem =
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem
+  | ShellCallItem
+  | ApplyPatchCallItem
   | FunctionCallResultItem
   | ComputerCallResultItem
+  | ShellCallResultItem
+  | ApplyPatchCallResultItem
   | ReasoningItem
   | UnknownItem;
 
@@ -46,7 +54,11 @@ export type AgentInputItem =
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem
+  | ShellCallItem
+  | ApplyPatchCallItem
   | FunctionCallResultItem
   | ComputerCallResultItem
+  | ShellCallResultItem
+  | ApplyPatchCallResultItem
   | ReasoningItem
   | UnknownItem;

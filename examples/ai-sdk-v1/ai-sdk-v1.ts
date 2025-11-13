@@ -309,6 +309,10 @@ export function toolToLanguageV1Tool(
     };
   }
 
+  if (tool.type === 'shell' || tool.type === 'apply_patch') {
+    throw new UserError(`Unsupported tool type: ${tool.type}`);
+  }
+
   const exhaustiveCheck: never = tool;
   throw new Error(`Unsupported tool type: ${exhaustiveCheck}`);
 }

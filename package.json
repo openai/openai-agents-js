@@ -39,6 +39,8 @@
     "examples:tools-computer-use": "pnpm -F tools start:computer-use",
     "examples:tools-file-search": "pnpm -F tools start:file-search",
     "examples:tools-web-search": "pnpm -F tools start:web-search",
+    "examples:tools-shell": "pnpm -F tools start:shell",
+    "examples:tools-apply-patch": "pnpm -F tools start:apply-patch",
     "examples:tool-filter": "tsx examples/mcp/tool-filter-example.ts",
     "ci:publish": "pnpm publish -r --no-git-checks",
     "bump-version": "changeset version && pnpm -F @openai/* prebuild",
