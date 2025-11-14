@@ -30,10 +30,15 @@ jobs:
       - name: Setup node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: '24.x'
           cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org'
           always-auth: true  # Optional but avoids intermittent ENEEDAUTH issues in pnpm monorepos
+
+      - name: Show Node & npm versions
+        run: |
+          node -v
+          npm -v
 
       - name: Install dependencies
         run: pnpm install
