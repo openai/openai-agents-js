@@ -214,6 +214,18 @@ export class OpenAIChatCompletionsModel implements Model {
         response,
         stream,
       )) {
+        if (
+          event.type === 'response_done' &&
+          response.usage?.total_tokens === 0
+        ) {
+          response.usage = {
+            prompt_tokens: event.response.usage.inputTokens,
+            completion_tokens: event.response.usage.outputTokens,
+            total_tokens: event.response.usage.totalTokens,
+            prompt_tokens_details: event.response.usage.inputTokensDetails,
+            completion_tokens_details: event.response.usage.outputTokensDetails,
+          };
+        }
         yield event;
       }
 

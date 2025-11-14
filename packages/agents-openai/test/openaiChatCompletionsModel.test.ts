@@ -511,4 +511,57 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
   });
+
+  it('populates usage from response_done event when initial usage is zero', async () => {
+    // override the original implementation to add the response_done event.
+    vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
+      async function* () {
+        yield { type: 'first' } as any;
+        yield { type: 'second' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            usage: {
+              inputTokens: 10,
+              outputTokens: 5,
+              totalTokens: 15,
+              inputTokensDetails: { cached_tokens: 2 },
+              outputTokensDetails: { reasoning_tokens: 3 },
+            },
+          },
+        } as any;
+      },
+    );
+
+    const client = new FakeClient();
+    async function* fakeStream() {
+      yield { id: 'c' } as any;
+    }
+    client.chat.completions.create.mockResolvedValue(fakeStream());
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+    const events: any[] = [];
+    await withTrace('t', async () => {
+      for await (const e of model.getStreamedResponse(req)) {
+        events.push(e);
+      }
+    });
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ stream: true }),
+      { headers: HEADERS, signal: undefined },
+    );
+    expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
+    const responseDone = events.find((e) => e.type === 'response_done');
+    expect(responseDone).toBeDefined();
+    expect(responseDone.response.usage.totalTokens).toBe(15);
+  });
 });
