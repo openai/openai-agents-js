@@ -283,6 +283,35 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(options).toEqual({ headers: HEADERS, signal: undefined });
   });
 
+  it('passes none reasoning effort through to chat completions payloads', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.1-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.1');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'none' },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.1 none', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    const [args, options] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('none');
+    expect(options).toEqual({ headers: HEADERS, signal: undefined });
+  });
+
   it('handles function tool calls', async () => {
     const client = new FakeClient();
     const response = {
