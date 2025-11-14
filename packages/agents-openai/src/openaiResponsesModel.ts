@@ -1599,12 +1599,17 @@ export class OpenAIResponsesModel implements Model {
     const shouldSendModel =
       !request.prompt || request.overridePromptModel === true;
 
+    const shouldSendTools =
+      tools.length > 0 ||
+      request.toolsExplicitlyProvided === true ||
+      !request.prompt;
+
     const requestData = {
       ...(shouldSendModel ? { model: this.#model } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,
-      tools,
+      ...(shouldSendTools ? { tools } : {}),
       previous_response_id: request.previousResponseId,
       conversation: request.conversationId,
       prompt,

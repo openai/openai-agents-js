@@ -74,6 +74,36 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('still sends an empty tools array when no prompt is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-no-prompt', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([]);
+      expect(args.prompt).toBeUndefined();
+    });
+  });
+
   it('omits model when a prompt is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
@@ -132,6 +162,68 @@ describe('OpenAIResponsesModel', () => {
       const [args] = createMock.mock.calls[0];
       expect(args.model).toBe('gpt-override');
       expect(args.prompt).toMatchObject({ id: 'pmpt_456' });
+    });
+  });
+
+  it('omits tools when agent did not configure any and prompt should supply them', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-no-tools', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_789' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_789' });
+    });
+  });
+
+  it('sends an explicit empty tools array when the agent intentionally disabled tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-empty-tools', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_999' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([]);
+      expect(args.prompt).toMatchObject({ id: 'pmpt_999' });
     });
   });
 

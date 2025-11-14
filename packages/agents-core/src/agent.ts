@@ -382,6 +382,7 @@ export class Agent<
   outputType: TOutput = 'text' as TOutput;
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
+  private readonly _toolsExplicitlyConfigured: boolean;
 
   constructor(config: AgentOptions<TContext, TOutput>) {
     super();
@@ -396,6 +397,7 @@ export class Agent<
     this.model = config.model ?? '';
     this.modelSettings = config.modelSettings ?? getDefaultModelSettings();
     this.tools = config.tools ?? [];
+    this._toolsExplicitlyConfigured = config.tools !== undefined;
     this.mcpServers = config.mcpServers ?? [];
     this.inputGuardrails = config.inputGuardrails ?? [];
     this.outputGuardrails = config.outputGuardrails ?? [];
@@ -677,6 +679,10 @@ export class Agent<
     }
 
     return [...mcpTools, ...enabledTools];
+  }
+
+  hasExplicitToolConfig(): boolean {
+    return this._toolsExplicitlyConfigured;
   }
 
   /**

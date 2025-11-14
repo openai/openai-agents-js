@@ -779,6 +779,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               conversationId: preparedCall.conversationId,
               modelSettings: preparedCall.modelSettings,
               tools: preparedCall.serializedTools,
+              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
               outputType: convertAgentOutputTypeToSerializable(
                 state._currentAgent.outputType,
               ),
@@ -1052,6 +1053,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             conversationId: preparedCall.conversationId,
             modelSettings: preparedCall.modelSettings,
             tools: preparedCall.serializedTools,
+            toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
             handoffs: preparedCall.serializedHandoffs,
             outputType: convertAgentOutputTypeToSerializable(
               currentAgent.outputType,
@@ -1946,6 +1948,7 @@ type AgentArtifacts<TContext = unknown> = {
   tools: Tool<TContext>[];
   serializedHandoffs: SerializedHandoff[];
   serializedTools: SerializedTool[];
+  toolsExplicitlyProvided: boolean;
 };
 
 /**
@@ -1980,6 +1983,7 @@ async function prepareAgentArtifacts<
     tools,
     serializedHandoffs: handoffs.map((handoff) => serializeHandoff(handoff)),
     serializedTools: tools.map((tool) => serializeTool(tool)),
+    toolsExplicitlyProvided: state._currentAgent.hasExplicitToolConfig(),
   };
 }
 
