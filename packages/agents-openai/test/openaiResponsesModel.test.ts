@@ -253,6 +253,43 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('passes none reasoning effort to the Responses API payload', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-none',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          total_tokens: 2,
+        },
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.1');
+      const request = {
+        systemInstructions: undefined,
+        input: 'hi',
+        modelSettings: {
+          reasoning: { effort: 'none' },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.reasoning).toEqual({ effort: 'none' });
+    });
+  });
+
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };
