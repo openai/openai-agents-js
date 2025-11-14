@@ -42,7 +42,7 @@
     "examples:tools-shell": "pnpm -F tools start:shell",
     "examples:tools-apply-patch": "pnpm -F tools start:apply-patch",
     "examples:tool-filter": "tsx examples/mcp/tool-filter-example.ts",
-    "ci:publish": "pnpm publish -r --no-git-checks",
+    "ci:publish": "pnpm publish -r --no-git-checks --access public",
     "bump-version": "changeset version && pnpm -F @openai/* prebuild",
     "prepare": "husky",
     "clear:deps": "rm -rf node_modules && pnpm -r exec rm -rf node_modules",

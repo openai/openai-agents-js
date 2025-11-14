@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      id-token: write
+      id-token: write  # required for trusted publishing
     steps:
       - name: Checkout code repository
         uses: actions/checkout@v4
@@ -32,6 +32,8 @@ jobs:
         with:
           node-version: 20
           cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true  # Optional but avoids intermittent ENEEDAUTH issues in pnpm monorepos
 
       - name: Install dependencies
         run: pnpm install
