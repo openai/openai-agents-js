@@ -264,6 +264,13 @@ export type ModelRequest = {
   tools: SerializedTool[];
 
   /**
+   * When true, the caller explicitly configured the tools list (even if empty).
+   * Providers can use this to avoid overwriting prompt-defined tools when an agent
+   * does not specify its own tools.
+   */
+  toolsExplicitlyProvided?: boolean;
+
+  /**
    * The type of the output to use for the model.
    */
   outputType: SerializedOutputType;
