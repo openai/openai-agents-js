@@ -756,6 +756,7 @@ export class AiSdkModel implements Model {
                   : ((result as any).usage?.outputTokens ?? 0)) || 0,
           }),
           output,
+          reasoning: (result as any).reasoning ?? undefined,
           providerData: result,
         } as const;
 
@@ -889,6 +890,7 @@ export class AiSdkModel implements Model {
       let usageCompletionTokens = 0;
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
+      let reasoningText: string | undefined;
 
       for await (const part of stream) {
         if (!started) {
@@ -937,6 +939,16 @@ export class AiSdkModel implements Model {
               : ((part as any).usage?.outputTokens ?? 0);
             break;
           }
+          case 'reasoning-delta': {
+            const reasoningDelta = (part as any).reasoningDelta;
+            if (reasoningDelta) {
+              if (!reasoningText) {
+                reasoningText = '';
+              }
+              reasoningText += reasoningDelta;
+            }
+            break;
+          }
           case 'error': {
             throw part.error;
           }
@@ -968,6 +980,7 @@ export class AiSdkModel implements Model {
             totalTokens: usagePromptTokens + usageCompletionTokens,
           },
           output: outputs,
+          reasoning: reasoningText,
         },
       };
 
