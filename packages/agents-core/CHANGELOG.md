@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.3.2
+
+### Patch Changes
+
+- 184e5d0: feat: Add reasoning.effort: none parameter for gpt-5.1
+- 0a808d2: fix: Omit tools parameter when prompt ID is set but tools in the agent is absent
+
 ## 0.3.1
 
 ### Patch Changes
