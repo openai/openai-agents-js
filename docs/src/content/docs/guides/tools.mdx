@@ -39,6 +39,143 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 The exact parameter sets match the OpenAI Responses API – refer to the official documentation
 for advanced options like `rankingOptions` or semantic filters.
 
+### Shell tool
+
+The `shell` tool exposes a command runner in your environment so the model can request `shell_call`
+actions. Each call includes a [`ShellAction`](../../openai/agents/interfaces/ShellAction) with:
+
+- `commands` – ordered strings that you should execute sequentially (one tool call can include a batch).
+- `timeoutMs` – optional per-command timeout hint from the model.
+- `maxOutputLength` – hint for how many characters of `stdout`/`stderr` to capture before truncating.
+
+Return a [`ShellResult`](../../openai/agents/interfaces/ShellResult) containing:
+
+- `output`: one entry per executed command with `{ stdout, stderr, outcome }`.
+- `maxOutputLength`: the limit you actually enforced (helps clients know when output was clipped).
+- `providerData`: optional structured metadata that is persisted with the tool call history.
+
+`shellTool()` wires the host implementation plus an optional approval policy. If `needsApproval`
+returns `true`, the run pauses with a `RunToolApprovalItem` until you approve or reject it
+(identical to the computer-use approval flow). `onApproval` lets you auto-approve/deny inside
+your application UI before surfacing the interruption.
+
+```ts
+import { shellTool } from '@openai/agents';
+import { promisify } from 'node:util';
+import { exec } from 'node:child_process';
+
+const execAsync = promisify(exec);
+const truncate = (text: string, limit = 4096) =>
+  text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+
+export const shell = shellTool({
+  name: 'local_shell',
+  shell: {
+    async run(action) {
+      const output = [];
+
+      for (const command of action.commands) {
+        try {
+          const result = await execAsync(command, {
+            cwd: process.cwd(),
+            timeout: action.timeoutMs ?? 30_000,
+            maxBuffer: action.maxOutputLength ?? 512 * 1024,
+          });
+
+          output.push({
+            stdout: truncate(result.stdout, action.maxOutputLength),
+            stderr: truncate(result.stderr, action.maxOutputLength),
+            outcome: { type: 'exit', exitCode: 0 },
+          });
+        } catch (error) {
+          output.push({
+            stdout: '',
+            stderr: error instanceof Error ? error.message : String(error),
+            outcome: { type: 'exit', exitCode: null },
+          });
+        }
+      }
+
+      return { output };
+    },
+  },
+  needsApproval: async (_ctx, action) =>
+    action.commands.some((command) => command.includes('rm ')),
+});
+```
+
+Best practices:
+
+- Run commands inside a sandboxed working directory and scrub environment variables.
+- Enforce your own allow/deny lists regardless of what the model asks for.
+- Set `result.maxOutputLength` whenever you truncate so downstream UIs can indicate clipped logs.
+
+### Apply patch tool
+
+The `apply_patch` tool lets the model edit files through V4A diffs, the same format used by
+ChatGPT’s “apply patch” actions. Each `apply_patch_call` contains an
+[`ApplyPatchOperation`](../../openai/agents/types/ApplyPatchOperation) which is one of:
+
+- `create_file` – path plus `diff` with the file contents.
+- `update_file` – path plus `diff` (usually a unified diff with context).
+- `delete_file` – path only.
+
+Provide an `Editor` implementation to [`applyPatchTool()`](../../openai/agents/functions/applyPatchTool):
+
+- `createFile`, `updateFile`, and `deleteFile` should perform the operation and optionally return
+  an [`ApplyPatchResult`](../../openai/agents/interfaces/ApplyPatchResult) with `status` (`completed`
+  or `failed`) and a short textual `output` for the model.
+- Use `needsApproval` / `onApproval` the same way as the shell tool when edits should be gated.
+
+```ts
+import { applyPatchTool } from '@openai/agents';
+import { spawn } from 'node:child_process';
+import { rm } from 'node:fs/promises';
+import path from 'node:path';
+
+const repoRoot = process.cwd();
+
+const gitApply = (diff: string) =>
+  new Promise<void>((resolve, reject) => {
+    const child = spawn('git', ['apply', '--allow-empty', '-'], {
+      cwd: repoRoot,
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    child.stdin.end(diff);
+    child.once('error', reject);
+    child.once('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`git apply exited ${code}`)),
+    );
+  });
+
+export const workspaceEditor = applyPatchTool({
+  name: 'workspace_editor',
+  editor: {
+    async createFile(operation) {
+      await gitApply(operation.diff);
+      return { output: `Created ${operation.path}` };
+    },
+    async updateFile(operation) {
+      await gitApply(operation.diff);
+      return { output: `Updated ${operation.path}` };
+    },
+    async deleteFile(operation) {
+      await rm(path.join(repoRoot, operation.path));
+      return { output: `Deleted ${operation.path}` };
+    },
+  },
+  needsApproval: async (_ctx, operation) =>
+    operation.path.startsWith('src/prod/'),
+});
+```
+
+Tips for `apply_patch`:
+
+- Validate every requested path (`path.resolve`) so edits stay inside your workspace.
+- Use `git apply`, `patch`, or another diff-aware tool; V4A diffs include metadata like file modes.
+- When an operation fails, throw or return `{ status: 'failed', output: 'explanation' }` so the
+  model can self-correct in the next turn.
+
 ---
 
 ## 2. Function tools
