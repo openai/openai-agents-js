@@ -74,6 +74,33 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('sends prompt cache retention setting to the Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-cache', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-cache');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: { promptCacheRetention: 'in-memory' },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt_cache_retention).toBe('in-memory');
+    });
+  });
+
   it('still sends an empty tools array when no prompt is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-no-prompt', usage: {}, output: [] };

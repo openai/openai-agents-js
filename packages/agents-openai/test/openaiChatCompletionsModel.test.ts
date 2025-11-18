@@ -137,6 +137,37 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('sends prompt cache retention when provided', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'cached' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        promptCacheRetention: '24h',
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt_cache_retention: '24h',
+      }),
+      { headers: HEADERS, signal: undefined },
+    );
+  });
+
   it('handles refusal message', async () => {
     const client = new FakeClient();
     const response = {

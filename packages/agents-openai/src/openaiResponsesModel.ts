@@ -1622,6 +1622,7 @@ export class OpenAIResponsesModel implements Model {
       stream,
       text: responseFormat,
       store: request.modelSettings.store,
+      prompt_cache_retention: request.modelSettings.promptCacheRetention,
       ...restOfProviderData,
     };
 

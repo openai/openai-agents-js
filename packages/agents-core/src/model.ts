@@ -123,6 +123,12 @@ export type ModelSettings = {
   store?: boolean;
 
   /**
+   * Enables prompt caching and controls how long cached content should be retained by the model provider.
+   * See https://platform.openai.com/docs/guides/prompt-caching#prompt-cache-retention for the available options.
+   */
+  promptCacheRetention?: 'in-memory' | '24h' | null;
+
+  /**
    * The reasoning settings to use when calling the model.
    */
   reasoning?: ModelSettingsReasoning;
