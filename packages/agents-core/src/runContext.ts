@@ -1,7 +1,12 @@
+import { RunStreamEvent } from './events';
 import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import { UnknownContext } from './types';
 import { Usage } from './usage';
+import {
+  ReadableStreamController,
+  ReadableStream as _ReadableStream,
+} from '@openai/agents-core/_shims';
 
 type ApprovalRecord = {
   approved: boolean | string[];
@@ -27,6 +32,10 @@ export class RunContext<TContext = UnknownContext> {
    * A map of tool names to whether they have been approved.
    */
   #approvals: Map<string, ApprovalRecord>;
+
+  _copyToContextScopeStream?: boolean;
+  _contextScopeStream?: _ReadableStream<RunStreamEvent>;
+  _contextScopeStreamController?: ReadableStreamController<RunStreamEvent>;
 
   constructor(context: TContext = {} as TContext) {
     this.context = context;

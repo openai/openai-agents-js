@@ -560,11 +560,25 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
-        const result = await runner.run(this, data.input, {
-          context,
-          ...(runOptions ?? {}),
-        });
-        const completedResult = result as CompletedRunResult<TContext, TAgent>;
+
+        let completedResult: CompletedRunResult<TContext, TAgent>;
+        if (context?._copyToContextScopeStream) {
+          logger.debug('copy to aggregated stream');
+          const result = await runner.run(this, data.input, {
+            context,
+            ...(runOptions ?? {}),
+            stream: true,
+            streamAgentTools: false, // already set in top level runner; no need to set it here again
+          });
+          await result.completed;
+          completedResult = result as CompletedRunResult<TContext, TAgent>;
+        } else {
+          const result = await runner.run(this, data.input, {
+            context,
+            ...(runOptions ?? {}),
+          });
+          completedResult = result as CompletedRunResult<TContext, TAgent>;
+        }
 
         const usesStopAtToolNames =
           typeof this.toolUseBehavior === 'object' &&

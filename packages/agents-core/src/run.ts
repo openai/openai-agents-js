@@ -186,6 +186,10 @@ export type StreamRunOptions<TContext = undefined> =
      * Whether to stream the run. If true, the run will emit events as the model responds.
      */
     stream: true;
+    /**
+     * Whether to enable recursive streaming for agent as tool calls. If true, all events from agents invoked as tools will appear in the top-level stream result.
+     */
+    streamAgentTools?: boolean;
   };
 
 /**
@@ -1319,9 +1323,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
       // Initialize the streamed result with existing state
+      logger.debug('streamAgentTools', options.streamAgentTools);
       const result = new StreamedRunResult<TContext, TAgent>({
-        signal: options.signal,
         state,
+        signal: options.signal,
+        streamAgentTools: options.streamAgentTools,
       });
 
       // Setup defaults
