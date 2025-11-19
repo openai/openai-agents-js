@@ -7,6 +7,7 @@ import {
   withTrace,
   type ResponseStreamEvent,
 } from '@openai/agents-core';
+import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
@@ -412,11 +413,20 @@ describe('OpenAIResponsesModel', () => {
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };
-      const events: ResponseStreamEvent[] = [
-        { type: 'response.created', response: fakeResponse as any },
+      const events: OpenAIResponseStreamEvent[] = [
+        {
+          type: 'response.created',
+          response: fakeResponse as any,
+          sequence_number: 0,
+        },
         {
           type: 'response.output_text.delta',
+          content_index: 0,
           delta: 'delta',
+          item_id: 'item-1',
+          logprobs: [],
+          output_index: 0,
+          sequence_number: 1,
         } as any,
       ];
       async function* fakeStream() {
@@ -462,6 +472,11 @@ describe('OpenAIResponsesModel', () => {
           type: 'output_text_delta',
           delta: 'delta',
           providerData: {
+            content_index: 0,
+            item_id: 'item-1',
+            logprobs: [],
+            output_index: 0,
+            sequence_number: 1,
             type: 'response.output_text.delta',
           },
         },
@@ -475,11 +490,12 @@ describe('OpenAIResponsesModel', () => {
 
   it('getStreamedResponse maps streamed usage data onto response_done events', async () => {
     await withTrace('test', async () => {
-      const createdEvent: ResponseStreamEvent = {
+      const createdEvent: OpenAIResponseStreamEvent = {
         type: 'response.created',
         response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
       };
-      const completedEvent: ResponseStreamEvent = {
+      const completedEvent: OpenAIResponseStreamEvent = {
         type: 'response.completed',
         response: {
           id: 'res-stream',
@@ -492,6 +508,7 @@ describe('OpenAIResponsesModel', () => {
             output_tokens_details: { reasoning_tokens: 3 },
           },
         },
+        sequence_number: 1,
       } as any;
       async function* fakeStream() {
         yield createdEvent;
