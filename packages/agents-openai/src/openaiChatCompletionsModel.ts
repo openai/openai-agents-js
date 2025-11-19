@@ -337,6 +337,7 @@ export class OpenAIChatCompletionsModel implements Model {
       parallel_tool_calls: parallelToolCalls,
       stream,
       store: request.modelSettings.store,
+      prompt_cache_retention: request.modelSettings.promptCacheRetention,
       ...providerData,
     };
 
