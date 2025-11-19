@@ -348,6 +348,10 @@ export class OpenAIRealtimeWebRTC
     }
   }
 
+  protected override _afterAudioDoneEvent() {
+    this.#ongoingResponse = false;
+  }
+
   /**
    * Close the connection to the Realtime API and disconnects the underlying WebRTC connection.
    */

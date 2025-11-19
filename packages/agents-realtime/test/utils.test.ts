@@ -163,6 +163,62 @@ describe('realtime utils', () => {
     expect((result[1] as any).content[0].audio).toBeNull();
   });
 
+  it('preserves assistant output_audio transcript when new item lacks it', () => {
+    const transcript = 'previous text';
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: '2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_audio', transcript }],
+      },
+    ];
+
+    const incoming: RealtimeMessageItem = {
+      itemId: '2',
+      type: 'message',
+      role: 'assistant',
+      status: 'incomplete',
+      content: [{ type: 'output_audio' } as any],
+    } as RealtimeMessageItem;
+
+    const updated = updateRealtimeHistory(history, incoming, false);
+    expect(updated).toHaveLength(1);
+    const updatedMessage = updated[0] as RealtimeMessageItem;
+    const content = (updatedMessage as RealtimeMessageItem).content[0] as any;
+    expect(content.transcript).toBe(transcript);
+    if (updatedMessage.role === 'assistant' || updatedMessage.role === 'user') {
+      expect(updatedMessage.status).toBe('incomplete');
+    } else {
+      throw new Error('Expected assistant message to retain transcript');
+    }
+  });
+
+  it('prefers new transcript value when provided', () => {
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: '3',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_audio', transcript: 'old' }],
+      },
+    ];
+
+    const incoming: RealtimeMessageItem = {
+      itemId: '3',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_audio', transcript: 'new' }],
+    } as RealtimeMessageItem;
+
+    const updated = updateRealtimeHistory(history, incoming, false);
+    const content = (updated[0] as RealtimeMessageItem).content[0] as any;
+    expect(content.transcript).toBe('new');
+  });
+
   it('removeAudioFromContent strips input and output audio', () => {
     const userItem: RealtimeMessageItem = {
       itemId: 'u1',
