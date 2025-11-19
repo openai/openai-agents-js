@@ -173,6 +173,44 @@ function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
   }
 }
 
+function formatFinalOutputTypeError(error: unknown): string {
+  // Surface structured output validation hints without echoing potentially large or sensitive payloads.
+  try {
+    if (error instanceof z.ZodError) {
+      const issue = error.issues[0];
+      if (issue) {
+        const issuePathParts = Array.isArray(issue.path) ? issue.path : [];
+        const issuePath =
+          issuePathParts.length > 0
+            ? issuePathParts.map((part) => String(part)).join('.')
+            : '(root)';
+        const message = truncateForDeveloper(issue.message ?? '');
+        return `Invalid output type: final assistant output failed schema validation at "${issuePath}" (${message}).`;
+      }
+      return 'Invalid output type: final assistant output failed schema validation.';
+    }
+
+    if (error instanceof Error && error.message) {
+      return `Invalid output type: ${truncateForDeveloper(error.message)}`;
+    }
+  } catch {
+    // Swallow formatting errors so we can return a generic message below.
+  }
+
+  return 'Invalid output type: final assistant output did not match the expected schema.';
+}
+
+function truncateForDeveloper(message: string, maxLength = 160): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return 'Schema validation failed.';
+  }
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
 /**
  * @internal
  * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
@@ -898,13 +936,14 @@ export async function resolveTurnAfterModelResponse<TContext>(
       );
       const [error] = await safeExecute(() => parser(potentialFinalOutput));
       if (error) {
+        const outputErrorMessage = formatFinalOutputTypeError(error);
         addErrorToCurrentSpan({
-          message: 'Invalid output type',
+          message: outputErrorMessage,
           data: {
             error: String(error),
           },
         });
-        throw new ModelBehaviorError('Invalid output type');
+        throw new ModelBehaviorError(outputErrorMessage);
       }
 
       return new SingleStepResult(
