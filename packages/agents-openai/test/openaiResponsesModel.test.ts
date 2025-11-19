@@ -7,6 +7,7 @@ import {
   withTrace,
   type ResponseStreamEvent,
 } from '@openai/agents-core';
+import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
@@ -412,11 +413,20 @@ describe('OpenAIResponsesModel', () => {
   it('getStreamedResponse yields events and calls client with stream flag', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res2', usage: {}, output: [] };
-      const events: ResponseStreamEvent[] = [
-        { type: 'response.created', response: fakeResponse as any },
+      const events: OpenAIResponseStreamEvent[] = [
+        {
+          type: 'response.created',
+          response: fakeResponse as any,
+          sequence_number: 0,
+        },
         {
           type: 'response.output_text.delta',
+          content_index: 0,
           delta: 'delta',
+          item_id: 'item-1',
+          logprobs: [],
+          output_index: 0,
+          sequence_number: 1,
         } as any,
       ];
       async function* fakeStream() {
@@ -462,6 +472,11 @@ describe('OpenAIResponsesModel', () => {
           type: 'output_text_delta',
           delta: 'delta',
           providerData: {
+            content_index: 0,
+            item_id: 'item-1',
+            logprobs: [],
+            output_index: 0,
+            sequence_number: 1,
             type: 'response.output_text.delta',
           },
         },
@@ -470,6 +485,67 @@ describe('OpenAIResponsesModel', () => {
           event: events[1],
         },
       ]);
+    });
+  });
+
+  it('getStreamedResponse maps streamed usage data onto response_done events', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream',
+          output: [],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 5,
+            total_tokens: 16,
+            input_tokens_details: { cached_tokens: 2 },
+            output_tokens_details: { reasoning_tokens: 3 },
+          },
+        },
+        sequence_number: 1,
+      } as any;
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model-usage');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'payload',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      const responseDone = received.find((ev) => ev.type === 'response_done');
+      expect(responseDone).toBeDefined();
+      expect((responseDone as any).response.id).toBe('res-stream');
+      expect((responseDone as any).response.usage).toEqual({
+        inputTokens: 11,
+        outputTokens: 5,
+        totalTokens: 16,
+        inputTokensDetails: { cached_tokens: 2 },
+        outputTokensDetails: { reasoning_tokens: 3 },
+      });
     });
   });
 });
