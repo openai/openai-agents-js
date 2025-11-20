@@ -2317,6 +2317,73 @@ describe('resolveTurnAfterModelResponse', () => {
     }
   });
 
+  it('throws descriptive error when structured output validation fails', async () => {
+    const structuredAgent = new Agent({
+      name: 'StructuredAgent',
+      outputType: z.object({
+        summary: z.string(),
+        sections: z.array(
+          z.object({
+            title: z.string(),
+            points: z.array(
+              z.object({
+                label: z.string(),
+                score: z.number().min(0).max(1),
+              }),
+            ),
+          }),
+        ),
+      }),
+    });
+
+    const response: ModelResponse = {
+      output: [
+        fakeModelMessage(
+          JSON.stringify({
+            summary: 'Example',
+            sections: [
+              {
+                title: 'One',
+                points: [{ label: 42, score: 0.5 }],
+              },
+            ],
+          }),
+        ),
+      ],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      structuredAgent,
+      [],
+      [],
+    );
+
+    const structuredState = new RunState(
+      new RunContext(),
+      'test input',
+      structuredAgent,
+      1,
+    );
+
+    await expect(
+      withTrace('test', () =>
+        resolveTurnAfterModelResponse(
+          structuredAgent,
+          'test input',
+          [],
+          response,
+          processedResponse,
+          runner,
+          structuredState,
+        ),
+      ),
+    ).rejects.toThrowError(
+      /Invalid output type: final assistant output failed schema validation at "sections\.0\.points\.0\.label" \(Expected string, received number\)./,
+    );
+  });
+
   it('does not finalize after computer actions in the same turn; runs again', async () => {
     const computerAgent = new Agent({
       name: 'ComputerAgent',
