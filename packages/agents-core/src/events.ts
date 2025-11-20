@@ -15,7 +15,10 @@ export class RunRawModelStreamEvent {
   /**
    * @param data The raw responses stream events from the LLM.
    */
-  constructor(public data: ResponseStreamEvent) {}
+  constructor(
+    public data: ResponseStreamEvent,
+    public agentName: string,
+  ) {}
 }
 
 /**

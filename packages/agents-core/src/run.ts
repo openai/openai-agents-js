@@ -1151,7 +1151,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               // this loop to prevent internal false errors and unnecessary processing
               return;
             }
-            result._addItem(new RunRawModelStreamEvent(event));
+            result._addItem(
+              new RunRawModelStreamEvent(event, currentAgent.name),
+            );
           }
 
           if (parallelGuardrailPromise) {

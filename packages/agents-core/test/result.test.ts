@@ -34,11 +34,18 @@ describe('StreamedRunResult', () => {
   it('collects streamed text', async () => {
     const state = createState();
     const sr = new StreamedRunResult({ state });
+    const agentName = 'test';
     sr._addItem(
-      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'he' }),
+      new RunRawModelStreamEvent(
+        { type: 'output_text_delta', delta: 'he' },
+        agentName,
+      ),
     );
     sr._addItem(
-      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'llo' }),
+      new RunRawModelStreamEvent(
+        { type: 'output_text_delta', delta: 'llo' },
+        agentName,
+      ),
     );
     sr._done();
 
