@@ -321,7 +321,7 @@ export type AgentConfigWithHandoffs<
 >;
 
 // The parameter type fo needApproval function for the tool created by Agent.asTool() method
-const AgentAsToolNeedApprovalSchame = z.object({ input: z.string() });
+const AgentAsToolNeedApprovalSchema = z.object({ input: z.string() });
 
 /**
  * The class representing an AI agent configured with instructions, tools, guardrails, handoffs and more.
@@ -519,7 +519,7 @@ export class Agent<
        */
       needsApproval?:
         | boolean
-        | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
+        | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchema>;
       /**
        * Run configuration for initializing the internal agent runner.
        */
@@ -538,7 +538,7 @@ export class Agent<
             agent: Agent<TContext, TOutput>;
           }) => boolean | Promise<boolean>);
     },
-  ): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
+  ): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchema> {
     const {
       toolName,
       toolDescription,
@@ -551,7 +551,7 @@ export class Agent<
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
       description: toolDescription ?? '',
-      parameters: AgentAsToolNeedApprovalSchame,
+      parameters: AgentAsToolNeedApprovalSchema,
       strict: true,
       needsApproval,
       isEnabled,
