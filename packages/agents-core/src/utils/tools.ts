@@ -63,15 +63,11 @@ function buildJsonSchemaFromZod(
 }
 
 /**
- * Convert a string to a function tool name by replacing spaces with underscores and
- * non-alphanumeric characters with underscores.
+ * Convert a string to a function tool name by replacing non-alphanumeric characters with underscores.
  * @param name - The name of the tool.
  * @returns The function tool name.
  */
 export function toFunctionToolName(name: string): FunctionToolName {
-  // Replace spaces with underscores
-  name = name.replace(/\s/g, '_');
-
   // Replace non-alphanumeric characters with underscores
   name = name.replace(/[^a-zA-Z0-9]/g, '_');
 
