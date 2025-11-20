@@ -14,6 +14,7 @@ import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import type {
   RealtimeSessionConfig,
+  RealtimeSessionConfigDefinition,
   RealtimeToolDefinition,
   RealtimeTracingConfig,
   RealtimeUserInput,
@@ -346,9 +347,20 @@ export class RealtimeSession<
   async #getSessionConfig(
     additionalConfig: Partial<RealtimeSessionConfig> = {},
   ): Promise<Partial<RealtimeSessionConfig>> {
+    const overridesConfig: Partial<RealtimeSessionConfig> =
+      additionalConfig ?? {};
+    const optionsConfig: Partial<RealtimeSessionConfig> =
+      this.options.config ?? {};
     const instructions = await this.#currentAgent.getSystemPrompt(
       this.#context,
     );
+    const getAudioOutputVoiceOverride = (
+      config: Partial<RealtimeSessionConfig>,
+    ): string | undefined => {
+      const audioConfig = (config as Partial<RealtimeSessionConfigDefinition>)
+        .audio;
+      return audioConfig?.output?.voice;
+    };
 
     // Realtime expects tracing to be explicitly null to disable it; leaving the previous config
     // in place would otherwise continue emitting spans.
@@ -374,6 +386,17 @@ export class RealtimeSession<
       );
     }
 
+    const audioOutputVoiceOverride =
+      getAudioOutputVoiceOverride(overridesConfig) ??
+      getAudioOutputVoiceOverride(optionsConfig);
+    const topLevelVoiceOverride = overridesConfig.voice ?? optionsConfig.voice;
+    const resolvedVoice =
+      typeof audioOutputVoiceOverride !== 'undefined'
+        ? audioOutputVoiceOverride
+        : typeof topLevelVoiceOverride !== 'undefined'
+          ? topLevelVoiceOverride
+          : this.#currentAgent.voice;
+
     // Start from any previously-sent config (so we preserve values like audio formats)
     // and the original options.config provided by the user. Preference order:
     // 1. Last session config we sent (#lastSessionConfig)
@@ -383,15 +406,15 @@ export class RealtimeSession<
     // to ensure they always reflect the current agent & runtime state.
     const base: Partial<RealtimeSessionConfig> = {
       ...(this.#lastSessionConfig ?? {}),
-      ...(this.options.config ?? {}),
-      ...(additionalConfig ?? {}),
+      ...optionsConfig,
+      ...overridesConfig,
     };
 
     // Note: Certain fields cannot be updated after the session begins, such as voice and model
     const fullConfig: Partial<RealtimeSessionConfig> = {
       ...base,
       instructions,
-      voice: this.#currentAgent.voice,
+      voice: resolvedVoice,
       model: this.options.model,
       tools: this.#currentTools,
       tracing: tracingConfig,

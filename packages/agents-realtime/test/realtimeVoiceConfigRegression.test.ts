@@ -79,4 +79,43 @@ describe('Realtime session voice config regression', () => {
     );
     expect(transport.mergedConfig?.audio?.output?.voice).toBe('marin');
   });
+
+  it('prefers config.voice over the agent voice when no audio output override exists', async () => {
+    const transport = new CapturingTransport();
+    const agent = new RealtimeAgent({
+      name: 'voice-agent',
+      instructions: 'Respond cheerfully.',
+      voice: 'alloy',
+    });
+
+    const session = new RealtimeSession(agent, {
+      transport,
+      model: 'gpt-realtime',
+      config: {
+        voice: 'verse',
+      },
+    });
+
+    await session.connect({ apiKey: 'dummy-key' });
+
+    expect(transport.mergedConfig?.audio?.output?.voice).toBe('verse');
+  });
+
+  it('falls back to the agent voice when no config overrides are provided', async () => {
+    const transport = new CapturingTransport();
+    const agent = new RealtimeAgent({
+      name: 'voice-agent',
+      instructions: 'Respond cheerfully.',
+      voice: 'alloy',
+    });
+
+    const session = new RealtimeSession(agent, {
+      transport,
+      model: 'gpt-realtime',
+    });
+
+    await session.connect({ apiKey: 'dummy-key' });
+
+    expect(transport.mergedConfig?.audio?.output?.voice).toBe('alloy');
+  });
 });
