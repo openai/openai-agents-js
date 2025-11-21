@@ -1,5 +1,18 @@
 # @openai/agents-realtime
 
+## 0.3.3
+
+### Patch Changes
+
+- 46df17d: fix: #523 transcript removal issue when being interrupted
+- d84976a: fix: #675 top-level voice param in realtime session confid does not work
+- Updated dependencies [18fec56]
+- Updated dependencies [b94432b]
+- Updated dependencies [0404173]
+- Updated dependencies [ef0a6d8]
+- Updated dependencies [22865ae]
+  - @openai/agents-core@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes
