@@ -159,6 +159,52 @@ describe('OpenAIRealtimeWebSocket', () => {
     ).toBe(true);
   });
 
+  it('does not send truncate events once audio playback completed', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const sendSpy = vi
+      .spyOn(ws as any, 'sendEvent')
+      .mockImplementation(() => {});
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.output_audio.delta',
+        event_id: 'delta-1',
+        item_id: 'item-a',
+        content_index: 0,
+        delta: 'AA==',
+        output_index: 0,
+        response_id: 'resp-a',
+      }),
+    });
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.output_audio.done',
+        event_id: 'done-1',
+        item_id: 'item-a',
+        content_index: 0,
+        output_index: 0,
+        response_id: 'resp-a',
+      }),
+    });
+
+    sendSpy.mockClear();
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'input_audio_buffer.speech_started',
+        event_id: 'speech-1',
+        item_id: 'unused',
+        audio_start_ms: 0,
+      }),
+    });
+
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
   it('sendEvent throws when not connected', () => {
     const ws = new OpenAIRealtimeWebSocket();
     expect(() => ws.sendEvent({ type: 'noop' } as any)).toThrow();

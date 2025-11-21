@@ -8,7 +8,6 @@ import {
   RealtimeItem,
   OutputGuardrailTripwireTriggered,
   RealtimeOutputGuardrail,
-  backgroundResult,
 } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
@@ -52,7 +51,7 @@ const weatherTool = tool({
     location: z.string(),
   }),
   execute: async ({ location }) => {
-    return backgroundResult(`The weather in ${location} is sunny.`);
+    return `The weather in ${location} is sunny.`;
   },
 });
 

@@ -88,6 +88,40 @@ describe('Runner.run', () => {
       expectTypeOf(result.finalOutput).toEqualTypeOf<string | undefined>();
     });
 
+    it('exposes aggregated usage on run results', async () => {
+      const model = new FakeModel([
+        {
+          output: [fakeModelMessage('hi there')],
+          usage: new Usage({
+            requests: 1,
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+          }),
+          responseId: 'usage-res',
+        },
+      ]);
+      const agent = new Agent({
+        name: 'UsageAgent',
+        model,
+      });
+
+      const result = await run(agent, 'ping');
+
+      expect(result.state.usage.inputTokens).toBe(2);
+      expect(result.state.usage.outputTokens).toBe(3);
+      expect(result.state.usage.totalTokens).toBe(5);
+      expect(result.state.usage.requestUsageEntries).toEqual([
+        {
+          inputTokens: 2,
+          outputTokens: 3,
+          totalTokens: 5,
+          inputTokensDetails: {},
+          outputTokensDetails: {},
+        },
+      ]);
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {
@@ -319,6 +353,49 @@ describe('Runner.run', () => {
       const result = await runner.run(agent, 'start');
       expect(result.finalOutput).toBe('done');
       expect(guardrailFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for blocking input guardrails before calling the model', async () => {
+      let guardrailCompleted = false;
+      const blockingGuardrail = {
+        name: 'blocking-ig',
+        runInParallel: false,
+        execute: vi.fn(async () => {
+          await Promise.resolve();
+          guardrailCompleted = true;
+          return { tripwireTriggered: false, outputInfo: {} };
+        }),
+      };
+
+      class ExpectGuardrailFirstModel implements Model {
+        calls = 0;
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          this.calls++;
+          expect(guardrailCompleted).toBe(true);
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        /* eslint-disable require-yield */
+        async *getStreamedResponse(_request: ModelRequest) {
+          throw new Error('not implemented');
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const agent = new Agent({
+        name: 'BlockingGuard',
+        model: new ExpectGuardrailFirstModel(),
+        inputGuardrails: [blockingGuardrail],
+      });
+
+      const result = await run(agent, 'hello');
+      expect(result.finalOutput).toBe('done');
+      expect(result.inputGuardrailResults).toHaveLength(1);
+      expect(blockingGuardrail.execute).toHaveBeenCalledTimes(1);
     });
 
     it('output guardrail success', async () => {

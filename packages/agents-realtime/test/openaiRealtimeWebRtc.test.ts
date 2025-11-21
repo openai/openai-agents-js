@@ -149,6 +149,43 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     });
   });
 
+  it('stops sending response.cancel once audio playback is done', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    const channel = lastChannel as FakeRTCDataChannel;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: 'rc-1',
+          response: {},
+        }),
+      }),
+    );
+
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.output_audio.done',
+          event_id: 'rc-done-1',
+          item_id: 'item-1',
+          content_index: 0,
+          output_index: 0,
+          response_id: 'resp-1',
+        }),
+      }),
+    );
+
+    channel.sent.length = 0;
+    rtc.interrupt();
+
+    expect(channel.sent).toHaveLength(1);
+    expect(JSON.parse(channel.sent[0])).toEqual({
+      type: 'output_audio_buffer.clear',
+    });
+  });
+
   it('updates currentModel on connect', async () => {
     const rtc = new OpenAIRealtimeWebRTC();
     await rtc.connect({ apiKey: 'ek_test', model: 'rtc-model' });
