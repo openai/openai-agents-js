@@ -6,14 +6,13 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers とその他の workerd ランタイムでは、グローバル `WebSocket` コンストラクタを使った外向き WebSocket 接続を開けません。これらの環境から Realtime Agents への接続を簡単にするため、extensions パッケージは `fetch()` ベースのアップグレードを内部で行う専用のトランスポートを提供します。
+Cloudflare Workers とその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクタを使ってアウトバウンド WebSockets を開くことはできません。これらの環境から Realtime Agents に接続しやすくするために、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用の transport を提供します。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。まれなケースで問題やバグに遭遇する可能性があります。
-  問題があれば [GitHub
-  issues](https://github.com/openai/openai-agents-js/issues)
-  からご報告ください。迅速に修正します。Workers で Node.js 風 API が必要な場合は
-  `nodejs_compat` の有効化を検討してください。
+  このアダプターはまだベータ版です。エッジケースの問題やバグが発生する可能性があります。
+  問題は [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  から報告してください。迅速に対応します。Workers で Node.js 風の API
+  を使いたい場合は、`nodejs_compat` の有効化を検討してください。
 </Aside>
 
 ## セットアップ
@@ -26,7 +25,7 @@ Cloudflare Workers とその他の workerd ランタイムでは、グローバ�
    npm install @openai/agents-extensions
    ```
 
-2. **トランスポートを作成し、セッションにアタッチします。**
+2. **transport を作成し、セッションにアタッチします。**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
@@ -40,6 +39,6 @@ Cloudflare Workers とその他の workerd ランタイムでは、グローバ�
 
 ## 注意事項
 
-- Cloudflare トランスポートは内部で `Upgrade: websocket` 付きの `fetch()` を使用し、ソケットの `open` イベントを待たずに進むため、workerd の API に合わせています
-- このトランスポートを使用しても、すべての `RealtimeSession` 機能（tools、ガードレール など）は通常どおり動作します
-- 開発中の詳細ログの確認には `DEBUG=openai-agents*` を使用します
+- Cloudflare の transport は内部で `Upgrade: websocket` 付きの `fetch()` を使用し、ソケットの `open` イベントを待たずに進行します。workerd の API に合わせた動作です
+- この transport 使用時も、すべての `RealtimeSession` 機能（ツール、ガードレールなど）は通常どおり動作します
+- 開発中の詳細ログ確認には `DEBUG=openai-agents*` を使用してください
