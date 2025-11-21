@@ -44,6 +44,31 @@ describe('guardrail helpers', () => {
     expect(agent.outputGuardrails[0].name).toEqual('og');
   });
 
+  it('defaults input guardrails to run in parallel', () => {
+    const guardrail = defineInputGuardrail({
+      name: 'ig',
+      execute: async (_args) => ({
+        outputInfo: { ok: true },
+        tripwireTriggered: false,
+      }),
+    });
+
+    expect(guardrail.runInParallel).toBe(true);
+  });
+
+  it('uses configured runInParallel value for input guardrails', () => {
+    const guardrail = defineInputGuardrail({
+      name: 'blocking',
+      execute: async (_args) => ({
+        outputInfo: { ok: true },
+        tripwireTriggered: false,
+      }),
+      runInParallel: false,
+    });
+
+    expect(guardrail.runInParallel).toBe(false);
+  });
+
   it('executes input guardrail and returns expected result', async () => {
     const guardrailFn = vi.fn(async (_args: InputGuardrailFunctionArgs) => ({
       outputInfo: { ok: true },

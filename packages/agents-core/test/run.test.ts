@@ -355,6 +355,49 @@ describe('Runner.run', () => {
       expect(guardrailFn).toHaveBeenCalledTimes(1);
     });
 
+    it('waits for blocking input guardrails before calling the model', async () => {
+      let guardrailCompleted = false;
+      const blockingGuardrail = {
+        name: 'blocking-ig',
+        runInParallel: false,
+        execute: vi.fn(async () => {
+          await Promise.resolve();
+          guardrailCompleted = true;
+          return { tripwireTriggered: false, outputInfo: {} };
+        }),
+      };
+
+      class ExpectGuardrailFirstModel implements Model {
+        calls = 0;
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          this.calls++;
+          expect(guardrailCompleted).toBe(true);
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        /* eslint-disable require-yield */
+        async *getStreamedResponse(_request: ModelRequest) {
+          throw new Error('not implemented');
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const agent = new Agent({
+        name: 'BlockingGuard',
+        model: new ExpectGuardrailFirstModel(),
+        inputGuardrails: [blockingGuardrail],
+      });
+
+      const result = await run(agent, 'hello');
+      expect(result.finalOutput).toBe('done');
+      expect(result.inputGuardrailResults).toHaveLength(1);
+      expect(blockingGuardrail.execute).toHaveBeenCalledTimes(1);
+    });
+
     it('output guardrail success', async () => {
       const guardrailFn = vi.fn(async () => ({
         tripwireTriggered: false,

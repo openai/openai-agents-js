@@ -944,6 +944,7 @@ describe('Runner.run (streaming)', () => {
 
     const guardrail = {
       name: 'block',
+      runInParallel: false,
       execute: vi.fn().mockResolvedValue({
         tripwireTriggered: true,
         outputInfo: { reason: 'blocked' },
@@ -972,6 +973,66 @@ describe('Runner.run (streaming)', () => {
     );
 
     expect(saveInputSpy).not.toHaveBeenCalled();
+  });
+
+  it('runs blocking input guardrails before streaming starts', async () => {
+    let guardrailFinished = false;
+
+    const guardrail = {
+      name: 'blocking',
+      runInParallel: false,
+      execute: vi.fn(async () => {
+        await Promise.resolve();
+        guardrailFinished = true;
+        return {
+          tripwireTriggered: false,
+          outputInfo: { ok: true },
+        };
+      }),
+    };
+
+    class ExpectGuardrailBeforeStreamModel implements Model {
+      getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected call to getResponse');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        expect(guardrailFinished).toBe(true);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'stream1',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('ok')],
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'BlockingStreamAgent',
+      model: new ExpectGuardrailBeforeStreamModel(),
+      inputGuardrails: [guardrail],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'hi', { stream: true });
+
+    for await (const _ of result.toStream()) {
+      // consume
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('ok');
+    expect(result.inputGuardrailResults).toHaveLength(1);
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
   });
 });
 
