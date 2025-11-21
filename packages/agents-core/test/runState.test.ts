@@ -20,6 +20,9 @@ import {
   FakeShell,
   FakeEditor,
 } from './stubs';
+import { createAgentSpan } from '../src/tracing';
+import { getGlobalTraceProvider } from '../src/tracing/provider';
+import type { MCPServer, MCPTool } from '../src/mcp';
 
 describe('RunState', () => {
   it('initializes with default values', () => {
@@ -351,6 +354,111 @@ describe('deserialize helpers', () => {
     expect(
       restored._lastProcessedResponse?.applyPatchActions[0]?.applyPatch,
     ).toBe(editorTool);
+  });
+
+  it('fromString tolerates agents gaining MCP servers after serialization', async () => {
+    const agentWithoutMcp = new Agent({ name: 'McpLite' });
+    const state = new RunState(new RunContext(), 'input', agentWithoutMcp, 1);
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => false,
+    };
+
+    const serialized = state.toString();
+
+    const stubMcpServer: MCPServer = {
+      name: 'stub-server',
+      cacheToolsList: false,
+      toolFilter: undefined,
+      async connect() {},
+      async close() {},
+      async listTools() {
+        return [];
+      },
+      async callTool() {
+        return [];
+      },
+      async invalidateToolsCache() {},
+    };
+
+    const agentWithMcp = new Agent({
+      name: 'McpLite',
+      mcpServers: [stubMcpServer],
+    });
+
+    const restored = await RunState.fromString(agentWithMcp, serialized);
+    expect(restored._currentAgent.mcpServers).toHaveLength(1);
+    expect(restored._lastProcessedResponse?.hasToolsOrApprovalsToRun()).toBe(
+      false,
+    );
+  });
+
+  it('fromString tolerates serialized traces with new MCP servers', async () => {
+    const traceProvider = getGlobalTraceProvider();
+    const trace = traceProvider.createTrace({ name: 'restore-with-trace' });
+    const agentWithoutMcp = new Agent({ name: 'McpTracey' });
+    const state = new RunState(new RunContext(), 'input', agentWithoutMcp, 1);
+    state._trace = trace;
+    state._currentAgentSpan = createAgentSpan(
+      { data: { name: agentWithoutMcp.name } },
+      trace,
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => false,
+    };
+
+    const serialized = state.toString();
+
+    let listCalled = false;
+    const stubMcpTool: MCPTool = {
+      name: 'sample_tool',
+      description: '',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    };
+    const stubMcpServer: MCPServer = {
+      name: 'stub-traced-server',
+      cacheToolsList: false,
+      toolFilter: undefined,
+      async connect() {},
+      async close() {},
+      async listTools() {
+        listCalled = true;
+        return [stubMcpTool];
+      },
+      async callTool() {
+        return [];
+      },
+      async invalidateToolsCache() {},
+    };
+
+    const agentWithMcp = new Agent({
+      name: 'McpTracey',
+      mcpServers: [stubMcpServer],
+    });
+
+    const restored = await RunState.fromString(agentWithMcp, serialized);
+    expect(restored._currentAgent.mcpServers).toHaveLength(1);
+    expect(listCalled).toBe(true);
   });
 
   it('deserializeProcessedResponse restores currentStep', async () => {

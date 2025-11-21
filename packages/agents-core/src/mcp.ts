@@ -5,7 +5,13 @@ import {
   MCPServerStreamableHttp as UnderlyingMCPServerStreamableHttp,
   MCPServerSSE as UnderlyingMCPServerSSE,
 } from '@openai/agents-core/_shims';
-import { getCurrentSpan, withMCPListToolsSpan } from './tracing';
+import {
+  getCurrentSpan,
+  getCurrentTrace,
+  withMCPListToolsSpan,
+  type MCPListToolsSpanData,
+  type Span,
+} from './tracing';
 import { logger as globalLogger, getLogger, Logger } from './logger';
 import debug from 'debug';
 import { z } from 'zod';
@@ -314,68 +320,78 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
       mcpToFunctionTool(t, server, convertSchemasToStrict),
     );
   }
-  return withMCPListToolsSpan(
-    async (span) => {
-      const fetchedMcpTools = await server.listTools();
-      let mcpTools: MCPTool[] = fetchedMcpTools;
 
-      if (runContext && agent) {
-        const context = { runContext, agent, serverName: server.name };
-        const filteredTools: MCPTool[] = [];
-        for (const tool of fetchedMcpTools) {
-          const filter = server.toolFilter;
-          if (filter) {
-            if (typeof filter === 'function') {
-              const filtered = await filter(context, tool);
-              if (!filtered) {
-                globalLogger.debug(
-                  `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the callable filter.`,
-                );
-                continue;
-              }
-            } else {
-              const allowedToolNames = filter.allowedToolNames ?? [];
-              const blockedToolNames = filter.blockedToolNames ?? [];
-              if (allowedToolNames.length > 0 || blockedToolNames.length > 0) {
-                const allowed =
-                  allowedToolNames.length > 0
-                    ? allowedToolNames.includes(tool.name)
-                    : true;
-                const blocked =
-                  blockedToolNames.length > 0
-                    ? blockedToolNames.includes(tool.name)
-                    : false;
-                if (!allowed || blocked) {
-                  if (blocked) {
-                    globalLogger.debug(
-                      `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the static filter.`,
-                    );
-                  } else if (!allowed) {
-                    globalLogger.debug(
-                      `MCP Tool (server: ${server.name}, tool: ${tool.name}) is not allowed by the static filter.`,
-                    );
-                  }
-                  continue;
+  const listToolsForServer = async (
+    span?: Span<MCPListToolsSpanData>,
+  ): Promise<FunctionTool<TContext, any, unknown>[]> => {
+    const fetchedMcpTools = await server.listTools();
+    let mcpTools: MCPTool[] = fetchedMcpTools;
+
+    if (runContext && agent) {
+      const context = { runContext, agent, serverName: server.name };
+      const filteredTools: MCPTool[] = [];
+      for (const tool of fetchedMcpTools) {
+        const filter = server.toolFilter;
+        if (filter) {
+          if (typeof filter === 'function') {
+            const filtered = await filter(context, tool);
+            if (!filtered) {
+              globalLogger.debug(
+                `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the callable filter.`,
+              );
+              continue;
+            }
+          } else {
+            const allowedToolNames = filter.allowedToolNames ?? [];
+            const blockedToolNames = filter.blockedToolNames ?? [];
+            if (allowedToolNames.length > 0 || blockedToolNames.length > 0) {
+              const allowed =
+                allowedToolNames.length > 0
+                  ? allowedToolNames.includes(tool.name)
+                  : true;
+              const blocked =
+                blockedToolNames.length > 0
+                  ? blockedToolNames.includes(tool.name)
+                  : false;
+              if (!allowed || blocked) {
+                if (blocked) {
+                  globalLogger.debug(
+                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the static filter.`,
+                  );
+                } else if (!allowed) {
+                  globalLogger.debug(
+                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is not allowed by the static filter.`,
+                  );
                 }
+                continue;
               }
             }
           }
-          filteredTools.push(tool);
         }
-        mcpTools = filteredTools;
+        filteredTools.push(tool);
       }
+      mcpTools = filteredTools;
+    }
 
+    if (span) {
       span.spanData.result = mcpTools.map((t) => t.name);
-      const tools: FunctionTool<TContext, any, string>[] = mcpTools.map((t) =>
-        mcpToFunctionTool(t, server, convertSchemasToStrict),
-      );
-      if (server.cacheToolsList) {
-        _cachedTools[server.name] = mcpTools;
-      }
-      return tools;
-    },
-    { data: { server: server.name } },
-  );
+    }
+    const tools: FunctionTool<TContext, any, string>[] = mcpTools.map((t) =>
+      mcpToFunctionTool(t, server, convertSchemasToStrict),
+    );
+    if (server.cacheToolsList) {
+      _cachedTools[server.name] = mcpTools;
+    }
+    return tools;
+  };
+
+  if (!getCurrentTrace()) {
+    return listToolsForServer();
+  }
+
+  return withMCPListToolsSpan(listToolsForServer, {
+    data: { server: server.name },
+  });
 }
 
 /**
