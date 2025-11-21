@@ -72,11 +72,22 @@ const SerializedSpan: z.ZodType<SerializedSpanType> = serializedSpanBase.extend(
   },
 );
 
+const requestUsageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  totalTokens: z.number(),
+  inputTokensDetails: z.record(z.string(), z.number()).optional(),
+  outputTokensDetails: z.record(z.string(), z.number()).optional(),
+});
+
 const usageSchema = z.object({
   requests: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
+  inputTokensDetails: z.array(z.record(z.string(), z.number())).optional(),
+  outputTokensDetails: z.array(z.record(z.string(), z.number())).optional(),
+  requestUsageEntries: z.array(requestUsageSchema).optional(),
 });
 
 const modelResponseSchema = z.object({
@@ -287,6 +298,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Run context tracking approvals, usage, and other metadata.
    */
   public _context: RunContext<TContext>;
+
+  /**
+   * The usage aggregated for this run. This includes per-request breakdowns when available.
+   */
+  get usage(): Usage {
+    return this._context.usage;
+  }
   /**
    * Tracks what tools each agent has used.
    */
@@ -440,6 +458,22 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
             inputTokens: response.usage.inputTokens,
             outputTokens: response.usage.outputTokens,
             totalTokens: response.usage.totalTokens,
+            inputTokensDetails: response.usage.inputTokensDetails,
+            outputTokensDetails: response.usage.outputTokensDetails,
+            ...(response.usage.requestUsageEntries &&
+            response.usage.requestUsageEntries.length > 0
+              ? {
+                  requestUsageEntries: response.usage.requestUsageEntries.map(
+                    (entry) => ({
+                      inputTokens: entry.inputTokens,
+                      outputTokens: entry.outputTokens,
+                      totalTokens: entry.totalTokens,
+                      inputTokensDetails: entry.inputTokensDetails,
+                      outputTokensDetails: entry.outputTokensDetails,
+                    }),
+                  ),
+                }
+              : {}),
           },
           output: response.output as any,
           responseId: response.responseId,
@@ -683,11 +717,7 @@ export function deserializeSpan(
 export function deserializeModelResponse(
   serializedModelResponse: z.infer<typeof modelResponseSchema>,
 ): ModelResponse {
-  const usage = new Usage();
-  usage.requests = serializedModelResponse.usage.requests;
-  usage.inputTokens = serializedModelResponse.usage.inputTokens;
-  usage.outputTokens = serializedModelResponse.usage.outputTokens;
-  usage.totalTokens = serializedModelResponse.usage.totalTokens;
+  const usage = new Usage(serializedModelResponse.usage);
 
   return {
     usage,

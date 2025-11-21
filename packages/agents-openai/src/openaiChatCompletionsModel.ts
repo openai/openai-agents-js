@@ -222,8 +222,16 @@ export class OpenAIChatCompletionsModel implements Model {
             prompt_tokens: event.response.usage.inputTokens,
             completion_tokens: event.response.usage.outputTokens,
             total_tokens: event.response.usage.totalTokens,
-            prompt_tokens_details: event.response.usage.inputTokensDetails,
-            completion_tokens_details: event.response.usage.outputTokensDetails,
+            prompt_tokens_details: Array.isArray(
+              event.response.usage.inputTokensDetails,
+            )
+              ? event.response.usage.inputTokensDetails[0]
+              : event.response.usage.inputTokensDetails,
+            completion_tokens_details: Array.isArray(
+              event.response.usage.outputTokensDetails,
+            )
+              ? event.response.usage.outputTokensDetails[0]
+              : event.response.usage.outputTokensDetails,
           };
         }
         yield event;

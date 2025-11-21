@@ -842,6 +842,7 @@ describe('AiSdkModel.getResponse', () => {
       totalTokens: 0,
       inputTokensDetails: [],
       outputTokensDetails: [],
+      requestUsageEntries: undefined,
     });
   });
 });
