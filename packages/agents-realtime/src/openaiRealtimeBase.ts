@@ -167,6 +167,14 @@ export abstract class OpenAIRealtimeBase
 
   abstract readonly muted: boolean | null;
 
+  /**
+   * Hook for subclasses to clean up transport-specific state when audio
+   * playback finishes. Defaults to a no-op.
+   */
+  protected _afterAudioDoneEvent(): void {
+    // Intentionally empty.
+  }
+
   protected get _rawSessionConfig(): Record<string, any> | null {
     return this.#rawSessionConfig ?? null;
   }
@@ -252,6 +260,7 @@ export abstract class OpenAIRealtimeBase
 
     if (parsed.type === 'response.output_audio.done') {
       this.emit('audio_done');
+      this._afterAudioDoneEvent();
       return;
     }
 

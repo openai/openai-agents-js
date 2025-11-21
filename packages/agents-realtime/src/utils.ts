@@ -180,6 +180,51 @@ export function removeAudioFromContent(
   return item;
 }
 
+// Realtime can resend truncated assistant items without transcripts after an
+// interrupt/retrieve cycle. This helper merges those updates with the latest
+// known transcript so UIs retain the portion of the message the user already
+// heard.
+function preserveAssistantAudioTranscripts(
+  existing: RealtimeMessageItem,
+  incoming: RealtimeMessageItem,
+): RealtimeMessageItem {
+  if (existing.role !== 'assistant' || incoming.role !== 'assistant') {
+    return incoming;
+  }
+
+  const mergedContent = incoming.content.map((entry, index) => {
+    if (entry.type !== 'output_audio') {
+      return entry;
+    }
+
+    const transcriptMissing =
+      typeof entry.transcript !== 'string' || entry.transcript.length === 0;
+    if (!transcriptMissing) {
+      return entry;
+    }
+
+    const previousEntry = existing.content[index];
+    if (
+      previousEntry &&
+      previousEntry.type === 'output_audio' &&
+      typeof previousEntry.transcript === 'string' &&
+      previousEntry.transcript.length > 0
+    ) {
+      return {
+        ...entry,
+        transcript: previousEntry.transcript,
+      };
+    }
+
+    return entry;
+  });
+
+  return {
+    ...incoming,
+    content: mergedContent,
+  };
+}
+
 /**
  * Updates the realtime history array based on the incoming event and options.
  * @param history - The current history array.
@@ -230,10 +275,15 @@ export function updateRealtimeHistory(
   );
 
   if (existingIndex !== -1) {
+    const existingItem = history[existingIndex];
+    const mergedEvent =
+      newEvent.type === 'message' && existingItem.type === 'message'
+        ? preserveAssistantAudioTranscripts(existingItem, newEvent)
+        : newEvent;
     // Update existing item
     return history.map((item, idx) => {
       if (idx === existingIndex) {
-        return newEvent;
+        return mergedEvent;
       }
       if (!shouldIncludeAudioData && item.type === 'message') {
         return removeAudioFromContent(item as any);
