@@ -743,13 +743,34 @@ export type ModelItem = z.infer<typeof ModelItem>;
 // Meta data types
 // ----------------------------
 
-export const UsageData = z.object({
-  requests: z.number().optional(),
+export const RequestUsageData = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
   inputTokensDetails: z.record(z.string(), z.number()).optional(),
   outputTokensDetails: z.record(z.string(), z.number()).optional(),
+});
+
+export type RequestUsageData = z.infer<typeof RequestUsageData>;
+
+export const UsageData = z.object({
+  requests: z.number().optional(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  totalTokens: z.number(),
+  inputTokensDetails: z
+    .union([
+      z.record(z.string(), z.number()),
+      z.array(z.record(z.string(), z.number())),
+    ])
+    .optional(),
+  outputTokensDetails: z
+    .union([
+      z.record(z.string(), z.number()),
+      z.array(z.record(z.string(), z.number())),
+    ])
+    .optional(),
+  requestUsageEntries: z.array(RequestUsageData).optional(),
 });
 
 export type UsageData = z.infer<typeof UsageData>;

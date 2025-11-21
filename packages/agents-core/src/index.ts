@@ -176,7 +176,7 @@ export type {
   StreamEventResponseStarted,
   StreamEventGenericItem,
 } from './types';
-export { Usage } from './usage';
+export { RequestUsage, Usage } from './usage';
 export type { Session, SessionInputCallback } from './memory/session';
 export { MemorySession } from './memory/memorySession';
 

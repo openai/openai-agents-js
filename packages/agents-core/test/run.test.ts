@@ -88,6 +88,40 @@ describe('Runner.run', () => {
       expectTypeOf(result.finalOutput).toEqualTypeOf<string | undefined>();
     });
 
+    it('exposes aggregated usage on run results', async () => {
+      const model = new FakeModel([
+        {
+          output: [fakeModelMessage('hi there')],
+          usage: new Usage({
+            requests: 1,
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+          }),
+          responseId: 'usage-res',
+        },
+      ]);
+      const agent = new Agent({
+        name: 'UsageAgent',
+        model,
+      });
+
+      const result = await run(agent, 'ping');
+
+      expect(result.state.usage.inputTokens).toBe(2);
+      expect(result.state.usage.outputTokens).toBe(3);
+      expect(result.state.usage.totalTokens).toBe(5);
+      expect(result.state.usage.requestUsageEntries).toEqual([
+        {
+          inputTokens: 2,
+          outputTokens: 3,
+          totalTokens: 5,
+          inputTokensDetails: {},
+          outputTokensDetails: {},
+        },
+      ]);
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {
