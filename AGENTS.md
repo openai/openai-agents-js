@@ -53,7 +53,9 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 ## Testing & Automated Checks
 
-Before submitting changes, ensure all checks pass:
+Before submitting changes, ensure all checks pass and augment tests when you touch code:
+
+- Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
 
 ### Unit Tests and Type Checking
 
@@ -105,6 +107,14 @@ See [this README](integration-tests/README.md) for details.
   pnpm build
   ```
 - Build runs `tsx scripts/embedMeta.ts` (prebuild) and `tsc` for each package.
+
+### Mandatory Local Run Order
+
+For every code change, run the full validation sequence locally:
+
+```bash
+pnpm lint && pnpm build && pnpm -r build-check && pnpm test
+```
 
 ### Pre-commit Hooks
 
@@ -160,10 +170,10 @@ See [this README](integration-tests/README.md) for details.
     ```bash
     git checkout -b feat/<short-description>
     ```
-3.  Make changes, add/update tests in `packages/<pkg>/test`.
-4.  Run all checks:
+3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
+4.  Run all checks (in this order):
     ```bash
-    pnpm build && pnpm test && pnpm lint
+    pnpm lint && pnpm build && pnpm -r build-check && pnpm test
     ```
 5.  Commit using Conventional Commits.
 6.  Push and open a pull request.
