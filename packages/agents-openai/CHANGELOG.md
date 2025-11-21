@@ -1,5 +1,18 @@
 # @openai/agents-openai
 
+## 0.3.3
+
+### Patch Changes
+
+- ef0a6d8: feat: Add prompt_cache_retention option to ModelSettings
+- 22865ae: feat: #678 Add a list of per-request usage data to Usage
+- Updated dependencies [18fec56]
+- Updated dependencies [b94432b]
+- Updated dependencies [0404173]
+- Updated dependencies [ef0a6d8]
+- Updated dependencies [22865ae]
+  - @openai/agents-core@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes

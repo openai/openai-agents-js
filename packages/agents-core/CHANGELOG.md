@@ -1,5 +1,15 @@
 # @openai/agents-core
 
+## 0.3.3
+
+### Patch Changes
+
+- 18fec56: feat: #679 Add runInParallel option to input guardrail initialization
+- b94432b: fix: #683 Failing to run MCP servers when deserializing run state data
+- 0404173: fix: #316 developer-friendly message for output type errors
+- ef0a6d8: feat: Add prompt_cache_retention option to ModelSettings
+- 22865ae: feat: #678 Add a list of per-request usage data to Usage
+
 ## 0.3.2
 
 ### Patch Changes
