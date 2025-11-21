@@ -7,7 +7,7 @@ import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 
-Guardrails run _in parallel_ to your agents, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
+Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
 
 There are two kinds of guardrails:
 
@@ -24,6 +24,11 @@ Input guardrails run in three steps:
 
 > **Note**
 > Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
+
+### Execution modes
+
+- `runInParallel: true` (default) starts guardrails alongside the LLM/tool calls. This minimizes latency but the model may already have consumed tokens or run tools if the guardrail later triggers.
+- `runInParallel: false` runs the guardrail **before** calling the model, preventing token spend and tool execution when the guardrail blocks the request. Use this when you prefer safety and cost over latency.
 
 ## Output guardrails
 
