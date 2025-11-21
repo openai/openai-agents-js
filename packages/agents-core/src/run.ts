@@ -4,6 +4,7 @@ import {
   defineOutputGuardrail,
   InputGuardrail,
   InputGuardrailDefinition,
+  InputGuardrailResult,
   OutputGuardrail,
   OutputGuardrailDefinition,
   OutputGuardrailFunctionArgs,
@@ -603,6 +604,34 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     AgentOutputType<unknown>
   >[];
 
+  #getInputGuardrailDefinitions<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(state: RunState<TContext, TAgent>): InputGuardrailDefinition[] {
+    return this.inputGuardrailDefs.concat(
+      state._currentAgent.inputGuardrails.map(defineInputGuardrail),
+    );
+  }
+
+  #splitInputGuardrails<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(state: RunState<TContext, TAgent>) {
+    const guardrails = this.#getInputGuardrailDefinitions(state);
+    const blocking: InputGuardrailDefinition[] = [];
+    const parallel: InputGuardrailDefinition[] = [];
+
+    for (const guardrail of guardrails) {
+      if (guardrail.runInParallel === false) {
+        blocking.push(guardrail);
+      } else {
+        parallel.push(guardrail);
+      }
+    }
+
+    return { blocking, parallel };
+  }
+
   /**
    * @internal
    * Resolves the effective model once so both run loops obey the same precedence rules.
@@ -738,8 +767,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
             );
 
+            let parallelGuardrailPromise:
+              | Promise<InputGuardrailResult[]>
+              | undefined;
             if (state._currentTurn === 1) {
-              await this.#runInputGuardrails(state);
+              const guardrails = this.#splitInputGuardrails(state);
+              if (guardrails.blocking.length > 0) {
+                await this.#runInputGuardrails(state, guardrails.blocking);
+              }
+              if (guardrails.parallel.length > 0) {
+                parallelGuardrailPromise = this.#runInputGuardrails(
+                  state,
+                  guardrails.parallel,
+                );
+                parallelGuardrailPromise.catch(() => {});
+              }
             }
 
             const turnInput = serverConversationTracker
@@ -829,6 +871,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._currentTurnPersistedItemCount = 0;
             }
             state._currentStep = turnResult.nextStep;
+
+            if (parallelGuardrailPromise) {
+              await parallelGuardrailPromise;
+            }
           }
 
           if (
@@ -1007,8 +1053,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
+          let guardrailError: unknown;
+          let parallelGuardrailPromise:
+            | Promise<InputGuardrailResult[]>
+            | undefined;
           if (result.state._currentTurn === 1) {
-            await this.#runInputGuardrails(result.state);
+            const guardrails = this.#splitInputGuardrails(result.state);
+            if (guardrails.blocking.length > 0) {
+              await this.#runInputGuardrails(result.state, guardrails.blocking);
+            }
+            if (guardrails.parallel.length > 0) {
+              const promise = this.#runInputGuardrails(
+                result.state,
+                guardrails.parallel,
+              );
+              parallelGuardrailPromise = promise.catch((err) => {
+                guardrailError = err;
+                return [];
+              });
+            }
           }
 
           const turnInput = serverConversationTracker
@@ -1038,6 +1101,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionInputUpdate,
           );
 
+          if (guardrailError) {
+            throw guardrailError;
+          }
+
           handedInputToModel = true;
           await persistStreamInputIfNeeded();
 
@@ -1064,6 +1131,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             ),
             signal: options.signal,
           })) {
+            if (guardrailError) {
+              throw guardrailError;
+            }
             if (event.type === 'response_done') {
               const parsed = StreamEventResponseCompleted.parse(event);
               finalResponse = {
@@ -1078,6 +1148,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               return;
             }
             result._addItem(new RunRawModelStreamEvent(event));
+          }
+
+          if (parallelGuardrailPromise) {
+            await parallelGuardrailPromise;
+            if (guardrailError) {
+              throw guardrailError;
+            }
           }
 
           result.state._noActiveAgentRun = false;
@@ -1276,10 +1353,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   async #runInputGuardrails<
     TContext,
     TAgent extends Agent<TContext, AgentOutputType>,
-  >(state: RunState<TContext, TAgent>) {
-    const guardrails = this.inputGuardrailDefs.concat(
-      state._currentAgent.inputGuardrails.map(defineInputGuardrail),
-    );
+  >(
+    state: RunState<TContext, TAgent>,
+    guardrailsOverride?: InputGuardrailDefinition[],
+  ): Promise<InputGuardrailResult[]> {
+    const guardrails =
+      guardrailsOverride ?? this.#getInputGuardrailDefinitions(state);
     if (guardrails.length > 0) {
       const guardrailArgs = {
         agent: state._currentAgent,
@@ -1300,6 +1379,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }),
         );
+        state._inputGuardrailResults.push(...results);
         for (const result of results) {
           if (result.output.tripwireTriggered) {
             if (state._currentAgentSpan) {
@@ -1315,6 +1395,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
         }
+        return results;
       } catch (e) {
         if (e instanceof InputGuardrailTripwireTriggered) {
           throw e;
@@ -1328,6 +1409,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
     }
+    return [];
   }
 
   async #runOutputGuardrails<

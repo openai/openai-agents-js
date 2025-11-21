@@ -235,8 +235,9 @@ export interface AgentConfiguration<
   mcpServers: MCPServer[];
 
   /**
-   * A list of checks that run in parallel to the agent's execution, before generating a response.
-   * Runs only if the agent is the first agent in the chain.
+   * A list of checks that run in parallel to the agent by default; set `runInParallel` to false to
+   * block LLM/tool calls until the guardrail completes. Runs only if the agent is the first agent
+   * in the chain.
    */
   inputGuardrails: InputGuardrail[];
 

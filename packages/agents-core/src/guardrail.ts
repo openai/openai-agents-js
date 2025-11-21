@@ -65,6 +65,12 @@ export interface InputGuardrail {
    * The function that performs the guardrail check
    */
   execute: InputGuardrailFunction;
+
+  /**
+   * Whether the guardrail should execute alongside the agent (true, default) or block the
+   * agent until it completes (false).
+   */
+  runInParallel?: boolean;
 }
 
 /**
@@ -105,6 +111,7 @@ export interface InputGuardrailMetadata {
  */
 export interface InputGuardrailDefinition extends InputGuardrailMetadata {
   guardrailFunction: InputGuardrailFunction;
+  runInParallel: boolean;
   run(args: InputGuardrailFunctionArgs): Promise<InputGuardrailResult>;
 }
 
@@ -114,6 +121,7 @@ export interface InputGuardrailDefinition extends InputGuardrailMetadata {
 export interface DefineInputGuardrailArgs {
   name: string;
   execute: InputGuardrailFunction;
+  runInParallel?: boolean;
 }
 
 /**
@@ -122,10 +130,12 @@ export interface DefineInputGuardrailArgs {
 export function defineInputGuardrail({
   name,
   execute,
+  runInParallel = true,
 }: DefineInputGuardrailArgs): InputGuardrailDefinition {
   return {
     type: 'input',
     name,
+    runInParallel,
     guardrailFunction: execute,
     async run(args: InputGuardrailFunctionArgs): Promise<InputGuardrailResult> {
       return {
