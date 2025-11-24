@@ -274,10 +274,10 @@ export class StreamedRunResult<
     if (result.streamAgentTools) {
       if (this.state._context._copyToContextScopeStream) {
         logger.warn(
-          'An aggregated stream has already been created by another runner instance. Reusing it.',
+          'A context scope stream has already been created by another runner instance. Reusing it.',
         );
       } else {
-        logger.debug('Creating new aggregated stream');
+        logger.debug('Creating new context scope stream');
         this.state._context._contextScopeStream =
           new _ReadableStream<RunStreamEvent>({
             start: (controller) => {
@@ -337,11 +337,17 @@ export class StreamedRunResult<
                 .cancel(this.#signal?.reason)
                 .catch((err) => {
                   logger.debug(
-                    `Failed to cancel aggregated stream on abort: ${err}`,
+                    `Failed to cancel context scope stream on abort: ${err}`,
                   );
                 });
             }
           }
+          // Clean up context scope stream state on abort
+          // Clear the stream since it's been canceled and can't be read
+          this.state._context._contextScopeStream = undefined;
+          this.state._context._contextScopeStreamController = undefined;
+          this.state._context._copyToContextScopeStream = false;
+          this.#contextScopeStreamOwner = undefined;
         }
 
         this.#completedPromiseResolve?.();
@@ -363,7 +369,7 @@ export class StreamedRunResult<
     if (!this.cancelled) {
       this.#readableController?.enqueue(item);
       if (this.state._context._copyToContextScopeStream) {
-        logger.debug('Copying item to aggregated stream');
+        logger.debug('Copying item to context scope stream');
         this.state._context._contextScopeStreamController?.enqueue(item);
       }
     }
@@ -381,9 +387,13 @@ export class StreamedRunResult<
         this.state._context._contextScopeStreamController &&
         this.#contextScopeStreamOwner
       ) {
-        logger.debug('Closing aggregated stream');
+        logger.debug('Closing context scope stream');
         this.state._context._contextScopeStreamController.close();
         this.state._context._contextScopeStreamController = undefined;
+        // Clean up context scope stream state on completion
+        // Don't clear _contextScopeStream - it may still be consumed by toStream() or async iteration
+        // The stream will be garbage collected when no longer referenced
+        this.state._context._copyToContextScopeStream = false;
         this.#contextScopeStreamOwner = undefined;
       }
       this.#completedPromiseResolve?.();
@@ -406,6 +416,11 @@ export class StreamedRunResult<
     ) {
       this.state._context._contextScopeStreamController.error(err);
       this.state._context._contextScopeStreamController = undefined;
+      // Clean up context scope stream state on error
+      // Clear the stream since it's been errored and can't be read
+      this.state._context._contextScopeStream = undefined;
+      this.state._context._copyToContextScopeStream = false;
+      this.#contextScopeStreamOwner = undefined;
     }
     this.#error = err;
     this.#completedPromiseReject?.(err);
@@ -430,7 +445,7 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using aggregated stream as output');
+      logger.debug('Using context scope stream as output');
       return this.state._context
         ._contextScopeStream as ReadableStream<RunStreamEvent>;
     }
@@ -472,7 +487,7 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using aggregated stream as text stream');
+      logger.debug('Using context scope stream as text stream');
       stream = this.state._context._contextScopeStream;
     }
 
@@ -502,7 +517,7 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using aggregated stream as async iterator');
+      logger.debug('Using context scope stream as async iterator');
       return this.state._context._contextScopeStream[Symbol.asyncIterator]();
     }
     return this.#readableStream[Symbol.asyncIterator]();

@@ -1034,6 +1034,757 @@ describe('Runner.run (streaming)', () => {
     expect(result.inputGuardrailResults).toHaveLength(1);
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
   });
+
+  describe('streamAgentTools', () => {
+    class MultiTurnStreamingModel implements Model {
+      #callCount = 0;
+      constructor(private responses: ModelResponse[]) {}
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const response = this.responses[this.#callCount];
+        if (!response) {
+          throw new Error('No response configured');
+        }
+        return response;
+      }
+      async *getStreamedResponse(
+        _req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = this.responses[this.#callCount++];
+        if (!response) {
+          throw new Error('No response configured');
+        }
+        yield {
+          type: 'response_done',
+          response: {
+            id: `resp-${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    it('by default only streams main agent events', async () => {
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: false,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      // Should only see AgentA events, not AgentB events
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(false);
+    });
+
+    it('streams agent-as-tool events when streamAgentTools is enabled', async () => {
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      // Should see both AgentA and AgentB events
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(true);
+    });
+
+    it('streams handoff agent events when streamAgentTools is enabled', async () => {
+      const agentC = new Agent({
+        name: 'AgentC',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('C output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBHandoffCall: FunctionCallItem = {
+        id: 'handoff-1',
+        type: 'function_call',
+        name: handoff(agentC).toolName,
+        callId: 'h1',
+        status: 'completed',
+        arguments: '{}',
+      };
+
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [agentBHandoffCall],
+          usage: new Usage(),
+        }),
+        handoffs: [handoff(agentC)],
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      // Should see AgentA, AgentB, and AgentC events
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(true);
+      expect(agentNames.has('AgentC')).toBe(true);
+    });
+
+    it('works with nested agent-as-tool calls', async () => {
+      const agentC = new Agent({
+        name: 'AgentC',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('C output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentCAsTool = agentC.asTool({ toolDescription: 'Agent C tool' });
+      const agentBToolCall: FunctionCallItem = {
+        id: 'call-2',
+        type: 'function_call',
+        name: agentCAsTool.name,
+        callId: 'c2',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentBToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('B output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentCAsTool],
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(true);
+      expect(agentNames.has('AgentC')).toBe(true);
+    });
+
+    it('works with parallel agent-as-tool calls', async () => {
+      const agentB1 = new Agent({
+        name: 'AgentB1',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B1 output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentB2 = new Agent({
+        name: 'AgentB2',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B2 output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentB1AsTool = agentB1.asTool({
+        toolDescription: 'Agent B1 tool',
+      });
+      const agentB2AsTool = agentB2.asTool({
+        toolDescription: 'Agent B2 tool',
+      });
+      const agentAToolCall1: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentB1AsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test1' }),
+      };
+
+      const agentAToolCall2: FunctionCallItem = {
+        id: 'call-2',
+        type: 'function_call',
+        name: agentB2AsTool.name,
+        callId: 'c2',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test2' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall1, agentAToolCall2],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentB1AsTool, agentB2AsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB1')).toBe(true);
+      expect(agentNames.has('AgentB2')).toBe(true);
+    });
+
+    it('includes all event types (raw, agent_updated, run_item)', async () => {
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const eventTypes = new Set<string>();
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+        eventTypes.add(event.type);
+      }
+      await result.completed;
+
+      // Should include raw_model_stream_event, run_item_stream_event
+      // agent_updated_stream_event may or may not appear depending on handoffs
+      expect(eventTypes.has('raw_model_stream_event')).toBe(true);
+      expect(eventTypes.has('run_item_stream_event')).toBe(true);
+      expect(events.length).toBeGreaterThan(0);
+    });
+
+    it('works with toStream() method', async () => {
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result.toStream()) {
+        events.push(event);
+      }
+      await result.completed;
+
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          agentNames.add(event.agentName);
+        }
+      });
+
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(true);
+    });
+
+    it('works with toTextStream() method', async () => {
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('B output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      // Consume the text stream - it should complete without errors
+      // Note: toTextStream() only extracts text from output_text_delta events,
+      // so with our ImmediateStreamingModel that emits response_done events,
+      // the stream will be empty but should still complete successfully
+      const chunks: string[] = [];
+      for await (const chunk of result.toTextStream()) {
+        chunks.push(chunk);
+      }
+      await result.completed;
+
+      // Verify the stream completed and the result is valid
+      expect(result.finalOutput).toBeDefined();
+      expect(result.error).toBe(null);
+    });
+
+    it('handles complex scenario with handoff and nested agent-as-tool', async () => {
+      const agentD = new Agent({
+        name: 'AgentD',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('D output')],
+          usage: new Usage(),
+        }),
+      });
+
+      const agentDAsTool = agentD.asTool({ toolDescription: 'Agent D tool' });
+      const agentCToolCall: FunctionCallItem = {
+        id: 'call-3',
+        type: 'function_call',
+        name: agentDAsTool.name,
+        callId: 'c3',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentC = new Agent({
+        name: 'AgentC',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentCToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('C output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentDAsTool],
+      });
+
+      const agentBHandoffCall: FunctionCallItem = {
+        id: 'handoff-1',
+        type: 'function_call',
+        name: handoff(agentC).toolName,
+        callId: 'h1',
+        status: 'completed',
+        arguments: '{}',
+      };
+
+      const agentB = new Agent({
+        name: 'AgentB',
+        model: new ImmediateStreamingModel({
+          output: [agentBHandoffCall],
+          usage: new Usage(),
+        }),
+        handoffs: [handoff(agentC)],
+      });
+
+      const agentBAsTool = agentB.asTool({ toolDescription: 'Agent B tool' });
+      const agentAToolCall: FunctionCallItem = {
+        id: 'call-1',
+        type: 'function_call',
+        name: agentBAsTool.name,
+        callId: 'c1',
+        status: 'completed',
+        arguments: JSON.stringify({ input: 'test' }),
+      };
+
+      const agentA = new Agent({
+        name: 'AgentA',
+        model: new MultiTurnStreamingModel([
+          {
+            output: [agentAToolCall],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('A output')],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [agentBAsTool],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'test', {
+        stream: true,
+        streamAgentTools: true,
+      });
+
+      const events: RunStreamEvent[] = [];
+      for await (const event of result) {
+        events.push(event);
+      }
+      await result.completed;
+
+      const agentNames = new Set<string>();
+      events.forEach((event) => {
+        if (event.type === 'raw_model_stream_event') {
+          if (event.agentName) {
+            agentNames.add(event.agentName);
+          }
+        } else if (event.type === 'agent_updated_stream_event') {
+          if (event.agent?.name) {
+            agentNames.add(event.agent.name);
+          }
+        } else if (event.type === 'run_item_stream_event') {
+          const item = event.item;
+          if ('agent' in item && item.agent?.name) {
+            agentNames.add(item.agent.name);
+          } else if ('sourceAgent' in item && item.sourceAgent?.name) {
+            agentNames.add(item.sourceAgent.name);
+          } else if ('targetAgent' in item && item.targetAgent?.name) {
+            agentNames.add(item.targetAgent.name);
+          }
+        }
+      });
+
+      // Should see all agents: A -> B (handoff) -> C -> D (nested tool)
+      expect(agentNames.has('AgentA')).toBe(true);
+      expect(agentNames.has('AgentB')).toBe(true);
+      expect(agentNames.has('AgentC')).toBe(true);
+      expect(agentNames.has('AgentD')).toBe(true);
+    });
+  });
 });
 
 class ImmediateStreamingModel implements Model {

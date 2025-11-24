@@ -563,7 +563,7 @@ export class Agent<
 
         let completedResult: CompletedRunResult<TContext, TAgent>;
         if (context?._copyToContextScopeStream) {
-          logger.debug('copy to aggregated stream');
+          logger.debug('copy to context scope stream');
           const result = await runner.run(this, data.input, {
             context,
             ...(runOptions ?? {}),
