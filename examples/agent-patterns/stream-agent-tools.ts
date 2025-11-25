@@ -60,9 +60,8 @@ async function main() {
     personalAgent,
     "What's up in Beijing today?",
     {
-      // enable streaming
       stream: true,
-      // enable recursive streaming
+      // enable streaming of agent as tool events in the context scope stream
       streamAgentTools: true,
     },
   );

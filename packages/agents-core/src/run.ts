@@ -1325,7 +1325,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
       // Initialize the streamed result with existing state
-      logger.debug('streamAgentTools', options.streamAgentTools);
       const result = new StreamedRunResult<TContext, TAgent>({
         state,
         signal: options.signal,

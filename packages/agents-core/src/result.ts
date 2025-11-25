@@ -277,7 +277,9 @@ export class StreamedRunResult<
           'A context scope stream has already been created by another runner instance. Reusing it.',
         );
       } else {
-        logger.debug('Creating new context scope stream');
+        logger.debug(
+          'Creating new context scope stream; all subsequent events will be copied to it.',
+        );
         this.state._context._contextScopeStream =
           new _ReadableStream<RunStreamEvent>({
             start: (controller) => {
@@ -369,7 +371,6 @@ export class StreamedRunResult<
     if (!this.cancelled) {
       this.#readableController?.enqueue(item);
       if (this.state._context._copyToContextScopeStream) {
-        logger.debug('Copying item to context scope stream');
         this.state._context._contextScopeStreamController?.enqueue(item);
       }
     }
@@ -387,7 +388,6 @@ export class StreamedRunResult<
         this.state._context._contextScopeStreamController &&
         this.#contextScopeStreamOwner
       ) {
-        logger.debug('Closing context scope stream');
         this.state._context._contextScopeStreamController.close();
         this.state._context._contextScopeStreamController = undefined;
         // Clean up context scope stream state on completion
@@ -445,7 +445,6 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using context scope stream as output');
       return this.state._context
         ._contextScopeStream as ReadableStream<RunStreamEvent>;
     }
@@ -487,7 +486,6 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using context scope stream as text stream');
       stream = this.state._context._contextScopeStream;
     }
 
@@ -517,7 +515,6 @@ export class StreamedRunResult<
       this.state._context._contextScopeStream &&
       this.#contextScopeStreamOwner
     ) {
-      logger.debug('Using context scope stream as async iterator');
       return this.state._context._contextScopeStream[Symbol.asyncIterator]();
     }
     return this.#readableStream[Symbol.asyncIterator]();
