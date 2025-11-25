@@ -287,7 +287,9 @@ export class StreamedRunResult<
               this.#contextScopeStreamOwner = true;
               this.state._context._copyToContextScopeStream = true;
             },
-            cancel: () => {},
+            cancel: () => {
+              this.#cancelled = true;
+            },
           });
       }
     }
