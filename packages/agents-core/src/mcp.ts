@@ -603,6 +603,9 @@ export interface MCPServerSSEOptions {
   authProvider?: any;
   // RequestInit
   requestInit?: any;
+  // Custom fetch implementation used for all network requests.
+  // import { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
+  fetch?: any;
   // import { SSEReconnectionOptions } from '@modelcontextprotocol/sdk/client/sse.js';
   eventSourceInit?: any;
   // ----------------------------------------------------
