@@ -687,6 +687,37 @@ export async function resolveInterruptedTurn<TContext>(
     return false;
   });
 
+  // Filter out handoffs that were already executed before the interruption.
+  // Handoffs that were already executed will have their call items in originalPreStepItems.
+  // We check by callId to avoid re-executing the same handoff call.
+  const executedHandoffCallIds = new Set<string>();
+  for (const item of originalPreStepItems) {
+    if (item instanceof RunHandoffCallItem && item.rawItem.callId) {
+      executedHandoffCallIds.add(item.rawItem.callId);
+    }
+  }
+  const pendingHandoffs = processedResponse.handoffs.filter((handoff) => {
+    const callId = handoff.toolCall?.callId;
+    // Only filter by callId - if callId matches, this handoff was already executed
+    return !callId || !executedHandoffCallIds.has(callId);
+  });
+
+  // If there are pending handoffs that haven't been executed yet, execute them now.
+  // Otherwise, if there were handoffs that were already executed, we need to make sure
+  // they don't get re-executed when we continue.
+  if (pendingHandoffs.length > 0) {
+    return await executeHandoffCalls(
+      agent,
+      originalInput,
+      preStepItems,
+      newItems,
+      newResponse,
+      pendingHandoffs,
+      runner,
+      state._context,
+    );
+  }
+
   const completedStep = await maybeCompleteTurnFromToolResults({
     agent,
     runner,
@@ -1803,6 +1834,14 @@ export async function executeHandoffCalls<
   runner: Runner,
   runContext: RunContext<TContext>,
 ): Promise<SingleStepResult> {
+  logger.debug(
+    `[executeHandoffCalls] Executing ${runHandoffs.length} handoff(s):`,
+  );
+  for (const handoff of runHandoffs) {
+    logger.debug(
+      `  - ${handoff.toolCall.name} (callId: ${handoff.toolCall.callId})`,
+    );
+  }
   newStepItems = [...newStepItems];
 
   if (runHandoffs.length === 0) {
