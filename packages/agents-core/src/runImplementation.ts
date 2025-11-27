@@ -1834,14 +1834,6 @@ export async function executeHandoffCalls<
   runner: Runner,
   runContext: RunContext<TContext>,
 ): Promise<SingleStepResult> {
-  logger.debug(
-    `[executeHandoffCalls] Executing ${runHandoffs.length} handoff(s):`,
-  );
-  for (const handoff of runHandoffs) {
-    logger.debug(
-      `  - ${handoff.toolCall.name} (callId: ${handoff.toolCall.callId})`,
-    );
-  }
   newStepItems = [...newStepItems];
 
   if (runHandoffs.length === 0) {
