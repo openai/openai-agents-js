@@ -732,14 +732,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              state._currentTurnPersistedItemCount = 0;
-            }
+            // Don't reset counter here - it's already been adjusted by resolveInterruptedTurn's rewind logic
+            // Counter will be reset when _currentTurn is incremented (starting a new turn)
             state._currentStep = turnResult.nextStep;
 
             if (turnResult.nextStep.type === 'next_step_interruption') {
               // we are still in an interruption, so we need to avoid an infinite loop
               return new RunResult<TContext, TAgent>(state);
+            }
+
+            // If continuing from interruption with next_step_run_again, continue the loop
+            // but DON'T increment turn or reset counter - we're continuing the same turn
+            if (turnResult.nextStep.type === 'next_step_run_again') {
+              continue;
             }
 
             continue;
@@ -748,8 +753,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (state._currentStep.type === 'next_step_run_again') {
             const artifacts = await prepareAgentArtifacts(state);
 
+            // Only increment turn and reset counter when starting a NEW turn
+            // If counter is non-zero, it means we're continuing from an interruption (counter was rewound)
+            // In that case, don't reset the counter - it's already been adjusted by the rewind logic
             state._currentTurn++;
-            state._currentTurnPersistedItemCount = 0;
+            if (state._currentTurnPersistedItemCount === 0) {
+              // Only reset if counter is already 0 (starting a new turn)
+              // If counter is non-zero, we're continuing from interruption and it was already adjusted
+              state._currentTurnPersistedItemCount = 0;
+            }
 
             if (state._currentTurn > state._maxTurns) {
               state._currentAgentSpan?.setError({
@@ -867,9 +879,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              state._currentTurnPersistedItemCount = 0;
-            }
+            // Don't reset counter here - it's already been adjusted by resolveInterruptedTurn's rewind logic
+            // Counter will be reset when _currentTurn is incremented (starting a new turn)
             state._currentStep = turnResult.nextStep;
 
             if (parallelGuardrailPromise) {
@@ -1021,9 +1032,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            result.state._currentTurnPersistedItemCount = 0;
-          }
+          // Don't reset counter here - it's already been adjusted by resolveInterruptedTurn's rewind logic
+          // Counter will be reset when _currentTurn is incremented (starting a new turn)
           result.state._currentStep = turnResult.nextStep;
           if (turnResult.nextStep.type === 'next_step_interruption') {
             // we are still in an interruption, so we need to avoid an infinite loop
@@ -1035,8 +1045,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (result.state._currentStep.type === 'next_step_run_again') {
           const artifacts = await prepareAgentArtifacts(result.state);
 
+          // Only increment turn and reset counter when starting a NEW turn
+          // If counter is non-zero, it means we're continuing from an interruption (counter was rewound)
+          // In that case, don't reset the counter - it's already been adjusted by the rewind logic
           result.state._currentTurn++;
-          result.state._currentTurnPersistedItemCount = 0;
+          if (result.state._currentTurnPersistedItemCount === 0) {
+            // Only reset if counter is already 0 (starting a new turn)
+            // If counter is non-zero, we're continuing from interruption and it was already adjusted
+            result.state._currentTurnPersistedItemCount = 0;
+          }
 
           if (result.state._currentTurn > result.state._maxTurns) {
             result.state._currentAgentSpan?.setError({
@@ -1208,10 +1225,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            result.state._currentTurnPersistedItemCount = 0;
-          }
+          // Don't reset counter here - it's already been adjusted by resolveInterruptedTurn's rewind logic
+          // Counter will be reset when _currentTurn is incremented (starting a new turn)
           result.state._currentStep = turnResult.nextStep;
+
+          // If continuing from interruption with next_step_run_again, don't increment turn or reset counter
+          // We're continuing the same turn, not starting a new one
+          if (turnResult.nextStep.type === 'next_step_run_again') {
+            continue;
+          }
         }
 
         if (result.state._currentStep.type === 'next_step_final_output') {
