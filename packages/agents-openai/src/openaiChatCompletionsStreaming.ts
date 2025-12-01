@@ -138,6 +138,9 @@ export async function* convertChatCompletionsStreamToResponses(
   }
 
   for (const function_call of Object.values(state.function_calls)) {
+    if (function_call.arguments.startsWith('{}{')) {
+      function_call.arguments = function_call.arguments.slice(2);
+    }
     outputs.push(function_call);
   }
 

@@ -265,4 +265,59 @@ describe('convertChatCompletionsStreamToResponses', () => {
       rawContent: [{ type: 'reasoning_text', text: 'foobar' }],
     });
   });
+
+  it('strips leading {} from tool call arguments when followed by real args', async () => {
+    const resp = { id: 'r' } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, id: 'call1', function: { name: 'fn', arguments: '{}' } },
+        ],
+      });
+      yield makeChunk({
+        tool_calls: [{ index: 0, function: { arguments: '{"key":"value"}' } }],
+      });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    const functionCall = final.response.output.find(
+      (o: any) => o.type === 'function_call',
+    );
+    expect(functionCall.arguments).toBe('{"key":"value"}');
+  });
+
+  it('preserves {} for legitimate empty tool call arguments', async () => {
+    const resp = { id: 'r' } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, id: 'call1', function: { name: 'fn', arguments: '{}' } },
+        ],
+      });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    const functionCall = final.response.output.find(
+      (o: any) => o.type === 'function_call',
+    );
+    expect(functionCall.arguments).toBe('{}');
+  });
 });
