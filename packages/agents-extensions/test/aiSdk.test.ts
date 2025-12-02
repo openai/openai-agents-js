@@ -230,7 +230,7 @@ describe('itemsToLanguageV2Messages', () => {
           { type: 'text', text: 'hi', providerOptions: {} },
           {
             type: 'file',
-            data: 'http://x/img',
+            data: new URL('http://x/img'),
             mediaType: 'image/*',
             providerOptions: {},
           },

@@ -94,7 +94,7 @@ export function itemsToLanguageV2Messages(
                     const url = new URL(imageSource);
                     return {
                       type: 'file',
-                      data: url.toString(),
+                      data: url,
                       mediaType: 'image/*',
                       providerOptions: {
                         ...(contentProviderData ?? {}),
