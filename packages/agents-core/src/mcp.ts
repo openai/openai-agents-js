@@ -293,13 +293,28 @@ export class MCPServerSSE extends BaseMCPServerSSE {
  */
 
 const _cachedTools: Record<string, MCPTool[]> = {};
+const _cachedToolKeysByServer: Record<string, Set<string>> = {};
 /**
  * Remove cached tools for the given server so the next lookup fetches fresh data.
  *
  * @param serverName - Name of the MCP server whose cache should be cleared.
  */
 export async function invalidateServerToolsCache(serverName: string) {
+  const cachedKeys = _cachedToolKeysByServer[serverName];
+  if (cachedKeys) {
+    for (const cacheKey of cachedKeys) {
+      delete _cachedTools[cacheKey];
+    }
+    delete _cachedToolKeysByServer[serverName];
+    return;
+  }
+
   delete _cachedTools[serverName];
+  for (const cacheKey of Object.keys(_cachedTools)) {
+    if (cacheKey.startsWith(`${serverName}:`)) {
+      delete _cachedTools[cacheKey];
+    }
+  }
 }
 
 /**
@@ -415,6 +430,10 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
     // Cache store
     if (server.cacheToolsList) {
       _cachedTools[cacheKey] = mcpTools;
+      if (!_cachedToolKeysByServer[server.name]) {
+        _cachedToolKeysByServer[server.name] = new Set();
+      }
+      _cachedToolKeysByServer[server.name].add(cacheKey);
     }
     return tools;
   };

@@ -110,6 +110,87 @@ describe('MCP tools cache invalidation', () => {
       expect(called).toBe(true);
     });
   });
+
+  it('clears agent-specific cache entries when cache is invalidated', async () => {
+    await withTrace('test', async () => {
+      const toolsInitial = [
+        {
+          name: 'foo_initial',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar_initial',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      const toolsUpdated = [
+        {
+          name: 'foo_updated',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar_updated',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const server = new StubServer('server', toolsInitial);
+      server.toolFilter = async (ctx: any, tool: any) => {
+        if (ctx.agent.name === 'AgentOne') {
+          return tool.name.startsWith('foo');
+        }
+        return tool.name.startsWith('bar');
+      };
+
+      const agentOne = new Agent({ name: 'AgentOne' });
+      const agentTwo = new Agent({ name: 'AgentTwo' });
+      const ctxOne = new RunContext({});
+      const ctxTwo = new RunContext({});
+
+      const initialToolsAgentOne = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(initialToolsAgentOne.map((t: any) => t.name)).toEqual([
+        'foo_initial',
+      ]);
+
+      const initialToolsAgentTwo = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(initialToolsAgentTwo.map((t: any) => t.name)).toEqual([
+        'bar_initial',
+      ]);
+
+      server.toolList = toolsUpdated;
+      await server.invalidateToolsCache();
+
+      const updatedToolsAgentOne = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(updatedToolsAgentOne.map((t: any) => t.name)).toEqual([
+        'foo_updated',
+      ]);
+
+      const updatedToolsAgentTwo = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(updatedToolsAgentTwo.map((t: any) => t.name)).toEqual([
+        'bar_updated',
+      ]);
+    });
+  });
 });
 
 describe('MCP tools agent-dependent cache behavior', () => {
