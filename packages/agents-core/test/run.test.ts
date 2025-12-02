@@ -17,6 +17,7 @@ import {
   OutputGuardrailTripwireTriggered,
   Session,
   ModelInputData,
+  type OutputGuardrailFunctionArgs,
   type AgentInputItem,
   run,
   Runner,
@@ -434,6 +435,92 @@ describe('Runner.run', () => {
       await expect(runner.run(agent, 'input')).rejects.toBeInstanceOf(
         OutputGuardrailTripwireTriggered,
       );
+    });
+
+    it('passes run details to output guardrails', async () => {
+      let receivedArgs: OutputGuardrailFunctionArgs | undefined;
+      let guardrailValidatedTool = false;
+      const guardrailFn = vi.fn(async (args: OutputGuardrailFunctionArgs) => {
+        receivedArgs = args;
+        const toolCall = args.details?.output?.find(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' &&
+            (item as protocol.FunctionCallItem).name === 'queryPerson',
+        );
+        expect(toolCall?.arguments).toContain('person-1');
+        guardrailValidatedTool = true;
+        return { tripwireTriggered: false, outputInfo: {} };
+      });
+      const runner = new Runner({
+        outputGuardrails: [{ name: 'og', execute: guardrailFn }],
+      });
+      const queryPerson = tool({
+        name: 'queryPerson',
+        description: 'Look up a person by id',
+        parameters: z.object({ personId: z.string() }),
+        execute: async ({ personId }) => `${personId} result`,
+      });
+      const responses: ModelResponse[] = [
+        {
+          output: [
+            {
+              id: 'call-1',
+              type: 'function_call',
+              name: 'queryPerson',
+              callId: 'call-1',
+              status: 'completed',
+              arguments: '{"personId":"person-1"}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ];
+      const agent = new Agent({
+        name: 'Out',
+        model: new FakeModel(responses),
+        tools: [queryPerson],
+      });
+
+      await runner.run(agent, 'input');
+
+      expect(guardrailFn).toHaveBeenCalledTimes(1);
+
+      const outputItems = receivedArgs?.details?.output ?? [];
+      expect(outputItems.length).toBeGreaterThan(0);
+      const toolCall = outputItems.find(
+        (item): item is protocol.FunctionCallItem =>
+          item.type === 'function_call' && (item as any).name === 'queryPerson',
+      );
+      expect(toolCall?.arguments).toContain('person-1');
+
+      const toolResult = outputItems.find(
+        (item): item is protocol.FunctionCallResultItem =>
+          item.type === 'function_call_result' &&
+          (item as any).callId === 'call-1',
+      );
+      expect(toolResult).toBeDefined();
+      const toolOutput = toolResult?.output;
+      if (typeof toolOutput === 'string') {
+        expect(toolOutput).toBe('person-1 result');
+      } else if (Array.isArray(toolOutput)) {
+        expect(
+          toolOutput.some(
+            (item) =>
+              'text' in item &&
+              typeof (item as { text?: unknown }).text === 'string' &&
+              (item as { text: string }).text === 'person-1 result',
+          ),
+        ).toBe(true);
+      } else {
+        expect((toolOutput as { text?: string } | undefined)?.text).toBe(
+          'person-1 result',
+        );
+      }
+      expect(guardrailValidatedTool).toBe(true);
     });
 
     it('executes tool calls and records output', async () => {
