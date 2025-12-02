@@ -111,3 +111,126 @@ describe('MCP tools cache invalidation', () => {
     });
   });
 });
+
+describe('MCP tools agent-dependent cache behavior', () => {
+  it('handles agent-specific callable tool filters without cache leaking between agents', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'foo',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      // Callable filter chooses tool availability per agent name
+      const filter = async (ctx: any, tool: any) => {
+        if (ctx.agent.name === 'AgentOne') {
+          return tool.name === 'foo'; // AgentOne: only 'foo' allowed
+        } else {
+          return tool.name === 'bar'; // AgentTwo: only 'bar' allowed
+        }
+      };
+      const server = new StubServer('shared-server', tools);
+      server.toolFilter = filter;
+
+      const agentOne = new Agent({ name: 'AgentOne' });
+      const agentTwo = new Agent({ name: 'AgentTwo' });
+      const ctxOne = new RunContext({});
+      const ctxTwo = new RunContext({});
+
+      // First access by AgentOne (should get only 'foo')
+      const result1 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(result1.map((t: any) => t.name)).toEqual(['foo']);
+
+      // Second access by AgentTwo (should get only 'bar')
+      const result2 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxTwo,
+        agent: agentTwo,
+      });
+      expect(result2.map((t: any) => t.name)).toEqual(['bar']);
+
+      // Third access by AgentOne (should still get only 'foo', from cache key)
+      const result3 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: ctxOne,
+        agent: agentOne,
+      });
+      expect(result3.map((t: any) => t.name)).toEqual(['foo']);
+    });
+  });
+});
+
+describe('Custom generateMCPToolCacheKey can include runContext in key', () => {
+  it('supports fully custom cache key logic, including runContext properties', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'foo',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'bar',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+      // Filter that allows a tool based on runContext meta value
+      const filter = async (ctx: any, tool: any) => {
+        if (ctx.runContext.meta && ctx.runContext.meta.kind === 'fooUser') {
+          return tool.name === 'foo';
+        } else {
+          return tool.name === 'bar';
+        }
+      };
+      const server = new StubServer('custom-key-srv', tools);
+      server.toolFilter = filter;
+      const agent = new Agent({ name: 'A' });
+      // This cache key generator uses both agent name and runContext.meta.kind
+      const generateMCPToolCacheKey = ({ server, agent, runContext }: any) =>
+        `${server.name}:${agent ? agent.name : ''}:${runContext?.meta?.kind}`;
+
+      // Agent 'A', runContext kind 'fooUser' => should see only 'foo'
+      const context1 = new RunContext({});
+      (context1 as any).meta = { kind: 'fooUser' };
+      const res1 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context1,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res1.map((t: any) => t.name)).toEqual(['foo']);
+
+      // Agent 'A', runContext kind 'barUser' => should see only 'bar'
+      const context2 = new RunContext({});
+      (context2 as any).meta = { kind: 'barUser' };
+      const res2 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context2,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res2.map((t: any) => t.name)).toEqual(['bar']);
+
+      // Agent 'A'/'fooUser' again => should hit the correct cache entry, still see only 'foo'
+      const res3 = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: context1,
+        agent,
+        generateMCPToolCacheKey,
+      });
+      expect(res3.map((t: any) => t.name)).toEqual(['foo']);
+    });
+  });
+});
