@@ -138,6 +138,9 @@ export async function* convertChatCompletionsStreamToResponses(
   }
 
   for (const function_call of Object.values(state.function_calls)) {
+    // Some providers, such as Bedrock, may send two items:
+    // 1) an empty argument, and 2) the actual argument data.
+    // This is a workaround for that specific behavior.
     if (function_call.arguments.startsWith('{}{')) {
       function_call.arguments = function_call.arguments.slice(2);
     }
