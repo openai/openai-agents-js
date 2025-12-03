@@ -193,7 +193,14 @@ export class OpenAIChatCompletionsModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
-    const span = request.tracing ? createGenerationSpan() : undefined;
+    const span = request.tracing
+      ? createGenerationSpan({
+          data: {
+            model: this.#model,
+            model_config: request.modelSettings,
+          },
+        })
+      : undefined;
     try {
       if (span) {
         span.start();
@@ -221,6 +228,55 @@ export class OpenAIChatCompletionsModel implements Model {
           event.type === 'response_done' &&
           response.usage?.total_tokens === 0
         ) {
+          response.choices = event.response.output
+            .flatMap((o): OpenAI.Chat.Completions.ChatCompletion.Choice[] => {
+              if (o.type === 'function_call') {
+                return [
+                  {
+                    finish_reason: 'tool_calls',
+                    index: 0,
+                    logprobs: null,
+                    message: {
+                      content: null,
+                      refusal: null,
+                      role: 'assistant',
+                      tool_calls: [
+                        {
+                          type: 'function',
+                          function: {
+                            arguments: o.arguments,
+                            name: o.name,
+                          },
+                          id: o.callId,
+                        },
+                      ],
+                    },
+                  },
+                ];
+              } else if (o.type === 'message') {
+                return o.content
+                  .filter((c) => c.type === 'output_text')
+                  .map((c) => {
+                    return {
+                      finish_reason: 'stop',
+                      index: 0,
+                      logprobs: null,
+                      message: {
+                        content: c.text,
+                        refusal: null,
+                        role: 'assistant',
+                      },
+                    };
+                  });
+              } else {
+                return [];
+              }
+            })
+            .map((choice, index) => ({
+              ...choice,
+              index,
+            }));
+
           response.usage = {
             prompt_tokens: event.response.usage.inputTokens,
             completion_tokens: event.response.usage.outputTokens,
