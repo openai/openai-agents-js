@@ -1422,11 +1422,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     if (guardrails.length > 0) {
       const agentOutput = state._currentAgent.processFinalOutput(output);
+      const runOutput = getTurnInput([], state._generatedItems);
       const guardrailArgs: OutputGuardrailFunctionArgs<unknown, TOutput> = {
         agent: state._currentAgent,
         agentOutput,
         context: state._context,
-        details: { modelResponse: state._lastTurnResponse },
+        details: {
+          modelResponse: state._lastTurnResponse,
+          output: runOutput,
+        },
       };
       try {
         const results = await Promise.all(

@@ -1,7 +1,12 @@
 import type { ModelItem } from './types/protocol';
 import { Agent, AgentOutputType } from './agent';
 import { RunContext } from './runContext';
-import { ResolvedAgentOutput, TextOutput, UnknownContext } from './types';
+import {
+  AgentOutputItem,
+  ResolvedAgentOutput,
+  TextOutput,
+  UnknownContext,
+} from './types';
 import type { ModelResponse } from './model';
 
 /**
@@ -166,6 +171,8 @@ export interface OutputGuardrailFunctionArgs<
   details?: {
     /** Model response associated with the output if available. */
     modelResponse?: ModelResponse;
+    /** Model output items generated during the run (excluding approvals). */
+    output?: AgentOutputItem[];
   };
 }
 /**
