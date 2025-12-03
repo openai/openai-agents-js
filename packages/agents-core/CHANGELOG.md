@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.3.4
+
+### Patch Changes
+
+- 2e09baf: fix: #699 Forward fetch parameter to SSEClientTransport in MCPServerSSE
+- d1d7842: feat: Add ToolOptions to agents-core package export
+- c252cb5: feat: #713 Access tool call items in an output guardrail
+- 0345a4c: feat: #695 Customizable MCP list tool caching
+
 ## 0.3.3
 
 ### Patch Changes

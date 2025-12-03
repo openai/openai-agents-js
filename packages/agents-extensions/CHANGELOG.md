@@ -1,5 +1,18 @@
 # @openai/agents-extensions
 
+## 0.3.4
+
+### Patch Changes
+
+- 870cc20: fix: preserve Gemini thought_signature in multi-turn tool calls
+- 4ea9550: fix: #708 data: string in an input_image message item does not work with some providers
+- Updated dependencies [2e09baf]
+- Updated dependencies [d1d7842]
+- Updated dependencies [c252cb5]
+- Updated dependencies [0345a4c]
+  - @openai/agents-core@0.3.4
+  - @openai/agents@0.3.4
+
 ## 0.3.3
 
 ### Patch Changes
