@@ -732,24 +732,35 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              state._currentTurnPersistedItemCount = 0;
-            }
-            state._currentStep = turnResult.nextStep;
+            // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
+            // The counter will be reset when _currentTurn is incremented (starting a new turn)
 
             if (turnResult.nextStep.type === 'next_step_interruption') {
               // we are still in an interruption, so we need to avoid an infinite loop
+              state._currentStep = turnResult.nextStep;
               return new RunResult<TContext, TAgent>(state);
             }
 
-            continue;
+            // If continuing from interruption with next_step_run_again, set step to undefined
+            // so the loop treats it as a new step without incrementing the turn.
+            // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
+            if (turnResult.nextStep.type === 'next_step_run_again') {
+              state._currentStep = undefined;
+              continue;
+            }
+
+            state._currentStep = turnResult.nextStep;
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
             const artifacts = await prepareAgentArtifacts(state);
 
-            state._currentTurn++;
-            state._currentTurnPersistedItemCount = 0;
+            // Only increment turn and reset counter if we're starting a new turn,
+            // not if we're continuing from an interruption (which would have _lastTurnResponse set)
+            if (!state._lastTurnResponse) {
+              state._currentTurn++;
+              state._currentTurnPersistedItemCount = 0;
+            }
 
             if (state._currentTurn > state._maxTurns) {
               state._currentAgentSpan?.setError({
@@ -770,7 +781,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             let parallelGuardrailPromise:
               | Promise<InputGuardrailResult[]>
               | undefined;
-            if (state._currentTurn === 1) {
+            // Only run input guardrails on the first turn of a new run, not when continuing from an interruption
+            if (state._currentTurn === 1 && !state._lastTurnResponse) {
               const guardrails = this.#splitInputGuardrails(state);
               if (guardrails.blocking.length > 0) {
                 await this.#runInputGuardrails(state, guardrails.blocking);
@@ -1021,22 +1033,35 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            result.state._currentTurnPersistedItemCount = 0;
-          }
-          result.state._currentStep = turnResult.nextStep;
+          // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
+          // The counter will be reset when _currentTurn is incremented (starting a new turn)
+
           if (turnResult.nextStep.type === 'next_step_interruption') {
             // we are still in an interruption, so we need to avoid an infinite loop
+            result.state._currentStep = turnResult.nextStep;
             return;
           }
-          continue;
+
+          // If continuing from interruption with next_step_run_again, set step to undefined
+          // so the loop treats it as a new step without incrementing the turn.
+          // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
+          if (turnResult.nextStep.type === 'next_step_run_again') {
+            result.state._currentStep = undefined;
+            continue;
+          }
+
+          result.state._currentStep = turnResult.nextStep;
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
           const artifacts = await prepareAgentArtifacts(result.state);
 
-          result.state._currentTurn++;
-          result.state._currentTurnPersistedItemCount = 0;
+          // Only increment turn and reset counter if we're starting a new turn,
+          // not if we're continuing from an interruption (which would have _lastTurnResponse set)
+          if (!result.state._lastTurnResponse) {
+            result.state._currentTurn++;
+            result.state._currentTurnPersistedItemCount = 0;
+          }
 
           if (result.state._currentTurn > result.state._maxTurns) {
             result.state._currentAgentSpan?.setError({
@@ -1057,7 +1082,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           let parallelGuardrailPromise:
             | Promise<InputGuardrailResult[]>
             | undefined;
-          if (result.state._currentTurn === 1) {
+          // Only run input guardrails on the first turn of a new run, not when continuing from an interruption
+          if (
+            result.state._currentTurn === 1 &&
+            !result.state._lastTurnResponse
+          ) {
             const guardrails = this.#splitInputGuardrails(result.state);
             if (guardrails.blocking.length > 0) {
               await this.#runInputGuardrails(result.state, guardrails.blocking);
