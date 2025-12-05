@@ -1,5 +1,11 @@
 # @openai/agents-realtime
 
+## 0.3.5
+
+### Patch Changes
+
+- 1300121: feat(realtime): Add usage field to input audio transcription completed event
+
 ## 0.3.4
 
 ### Patch Changes

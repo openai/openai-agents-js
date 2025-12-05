@@ -1,5 +1,11 @@
 # @openai/agents-openai
 
+## 0.3.5
+
+### Patch Changes
+
+- 6aa0550: fix: support input_file for chat completions when possible
+
 ## 0.3.4
 
 ### Patch Changes
