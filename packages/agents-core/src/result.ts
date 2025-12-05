@@ -244,11 +244,13 @@ export class StreamedRunResult<
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
   #streamLoopPromise: Promise<void> | undefined;
+  #contextScopeStreamOwner: boolean | undefined;
 
   constructor(
     result: {
       state: RunState<TContext, TAgent>;
       signal?: AbortSignal;
+      streamAgentTools?: boolean;
     } = {} as any,
   ) {
     super(result.state);
@@ -268,6 +270,29 @@ export class StreamedRunResult<
       this.#completedPromiseResolve = resolve;
       this.#completedPromiseReject = reject;
     });
+
+    if (result.streamAgentTools) {
+      if (this.state._context._copyToContextScopeStream) {
+        logger.warn(
+          'A context scope stream has already been created by another runner instance. Reusing it.',
+        );
+      } else {
+        logger.debug(
+          'Creating new context scope stream; all subsequent events will be copied to it.',
+        );
+        this.state._context._contextScopeStream =
+          new _ReadableStream<RunStreamEvent>({
+            start: (controller) => {
+              this.state._context._contextScopeStreamController = controller;
+              this.#contextScopeStreamOwner = true;
+              this.state._context._copyToContextScopeStream = true;
+            },
+            cancel: () => {
+              this.#cancelled = true;
+            },
+          });
+      }
+    }
 
     if (this.#signal) {
       const handleAbort = () => {
@@ -296,6 +321,39 @@ export class StreamedRunResult<
             });
         }
 
+        if (this.#contextScopeStreamOwner) {
+          const controller = this.state._context._contextScopeStreamController;
+          this.state._context._contextScopeStreamController = undefined;
+
+          if (this.state._context._contextScopeStream?.locked) {
+            if (controller) {
+              try {
+                controller.close();
+              } catch (err) {
+                logger.debug(
+                  `Failed to close readable stream on abort: ${err}`,
+                );
+              }
+            }
+          } else {
+            if (this.state._context._contextScopeStream) {
+              void this.state._context._contextScopeStream
+                .cancel(this.#signal?.reason)
+                .catch((err) => {
+                  logger.debug(
+                    `Failed to cancel context scope stream on abort: ${err}`,
+                  );
+                });
+            }
+          }
+          // Clean up context scope stream state on abort
+          // Clear the stream since it's been canceled and can't be read
+          this.state._context._contextScopeStream = undefined;
+          this.state._context._contextScopeStreamController = undefined;
+          this.state._context._copyToContextScopeStream = false;
+          this.#contextScopeStreamOwner = undefined;
+        }
+
         this.#completedPromiseResolve?.();
       };
 
@@ -314,6 +372,9 @@ export class StreamedRunResult<
   _addItem(item: RunStreamEvent) {
     if (!this.cancelled) {
       this.#readableController?.enqueue(item);
+      if (this.state._context._copyToContextScopeStream) {
+        this.state._context._contextScopeStreamController?.enqueue(item);
+      }
     }
   }
 
@@ -325,6 +386,18 @@ export class StreamedRunResult<
     if (!this.cancelled && this.#readableController) {
       this.#readableController.close();
       this.#readableController = undefined;
+      if (
+        this.state._context._contextScopeStreamController &&
+        this.#contextScopeStreamOwner
+      ) {
+        this.state._context._contextScopeStreamController.close();
+        this.state._context._contextScopeStreamController = undefined;
+        // Clean up context scope stream state on completion
+        // Don't clear _contextScopeStream - it may still be consumed by toStream() or async iteration
+        // The stream will be garbage collected when no longer referenced
+        this.state._context._copyToContextScopeStream = false;
+        this.#contextScopeStreamOwner = undefined;
+      }
       this.#completedPromiseResolve?.();
     }
   }
@@ -337,6 +410,19 @@ export class StreamedRunResult<
     if (!this.cancelled && this.#readableController) {
       this.#readableController.error(err);
       this.#readableController = undefined;
+    }
+    if (
+      !this.cancelled &&
+      this.state._context._contextScopeStreamController &&
+      this.#contextScopeStreamOwner
+    ) {
+      this.state._context._contextScopeStreamController.error(err);
+      this.state._context._contextScopeStreamController = undefined;
+      // Clean up context scope stream state on error
+      // Clear the stream since it's been errored and can't be read
+      this.state._context._contextScopeStream = undefined;
+      this.state._context._copyToContextScopeStream = false;
+      this.#contextScopeStreamOwner = undefined;
     }
     this.#error = err;
     this.#completedPromiseReject?.(err);
@@ -357,6 +443,13 @@ export class StreamedRunResult<
    * @returns A readable stream of the agent run.
    */
   toStream(): ReadableStream<RunStreamEvent> {
+    if (
+      this.state._context._contextScopeStream &&
+      this.#contextScopeStreamOwner
+    ) {
+      return this.state._context
+        ._contextScopeStream as ReadableStream<RunStreamEvent>;
+    }
     return this.#readableStream as ReadableStream<RunStreamEvent>;
   }
 
@@ -390,7 +483,15 @@ export class StreamedRunResult<
   toTextStream(
     options: { compatibleWithNodeStreams?: boolean } = {},
   ): Readable | ReadableStream<string> {
-    const stream = this.#readableStream.pipeThrough(
+    let stream = this.#readableStream;
+    if (
+      this.state._context._contextScopeStream &&
+      this.#contextScopeStreamOwner
+    ) {
+      stream = this.state._context._contextScopeStream;
+    }
+
+    const textStream = stream.pipeThrough(
       new TransformStream<RunStreamEvent, string>({
         transform(event, controller) {
           if (
@@ -405,13 +506,19 @@ export class StreamedRunResult<
     );
 
     if (options.compatibleWithNodeStreams) {
-      return Readable.fromWeb(stream);
+      return Readable.fromWeb(textStream);
     }
 
-    return stream as ReadableStream<string>;
+    return textStream as ReadableStream<string>;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RunStreamEvent> {
+    if (
+      this.state._context._contextScopeStream &&
+      this.#contextScopeStreamOwner
+    ) {
+      return this.state._context._contextScopeStream[Symbol.asyncIterator]();
+    }
     return this.#readableStream[Symbol.asyncIterator]();
   }
 
