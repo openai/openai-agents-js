@@ -1235,6 +1235,101 @@ describe('Runner.run', () => {
         expect(savedHostedCall.providerData).toEqual(hostedCall.providerData);
         expect(savedHostedCall.id).toBe('approval-1');
       });
+
+      it('prevents duplicate function_call items when resuming from interruption after tool approval', async () => {
+        // Regression test for issue #701
+        //
+        // Bug: When resuming a turn after approving a tool call, duplicate function_call items
+        // were saved to the session. The bug occurred because _currentTurnPersistedItemCount
+        // was incorrectly reset to 0 after resolveInterruptedTurn returned next_step_run_again,
+        // causing saveToSession to save all items from the beginning of the turn, including
+        // the already-persisted function_call item.
+        //
+        // Expected behavior: Only 1 function_call item should be saved to the session.
+        // Buggy behavior: 2 function_call items (duplicate) were saved.
+        //
+        // Test scenario:
+        // 1. Initial run with tool requiring approval creates an interruption
+        // 2. Tool call is approved
+        // 3. Run is resumed with the approved state
+        // 4. Session should contain exactly 1 function_call item (not 2)
+
+        const getWeatherTool = tool({
+          name: 'get_weather',
+          description: 'Get weather for a city',
+          parameters: z.object({ city: z.string() }),
+          needsApproval: async () => true, // Require approval for all calls
+          execute: async ({ city }) => `Sunny, 72°F in ${city}`,
+        });
+
+        const model = new FakeModel([
+          // First response: tool call that requires approval
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_weather_1',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second response: after approval, final answer
+          {
+            output: [fakeModelMessage('The weather is sunny in Oakland.')],
+            usage: new Usage(),
+          },
+        ]);
+
+        const agent = new Agent({
+          name: 'Assistant',
+          instructions: 'Use get_weather tool to answer weather questions.',
+          model,
+          tools: [getWeatherTool],
+          toolUseBehavior: 'run_llm_again', // Must use 'run_llm_again' so resolveInterruptedTurn returns next_step_run_again
+        });
+
+        const session = new MemorySession();
+
+        // Use sessionInputCallback to match the scenario from issue #701
+        const sessionInputCallback = async (
+          historyItems: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => {
+          return [...historyItems, ...newItems];
+        };
+
+        // Step 1: Initial run creates an interruption for tool approval
+        let result = await run(
+          agent,
+          [{ role: 'user', content: "What's the weather in Oakland?" }],
+          { session, sessionInputCallback },
+        );
+
+        // Step 2: Approve the tool call
+        for (const interruption of result.interruptions || []) {
+          result.state.approve(interruption);
+        }
+
+        // Step 3: Resume the run with the approved state
+        // Note: No sessionInputCallback on resume - this is part of the bug scenario
+        result = await run(agent, result.state, { session });
+
+        // Step 4: Verify only one function_call item exists in the session
+        const allItems = await session.getItems();
+        const functionCalls = allItems.filter(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' && item.callId === 'call_weather_1',
+        );
+
+        // The bug would cause 2 function_call items to be saved (duplicate)
+        // The fix ensures only 1 function_call item is saved
+        expect(functionCalls).toHaveLength(1);
+      });
     });
   });
 
