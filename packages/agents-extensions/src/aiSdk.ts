@@ -784,22 +784,38 @@ export class AiSdkModel implements Model {
             data: {
               error:
                 request.tracing === true
-                  ? String(error)
-                  : error instanceof Error
-                    ? error.name
-                    : undefined,
+                  ? {
+                      name: error.name,
+                      message: error.message,
+                      // Include AI SDK specific error fields if they exist.
+                      ...(typeof error === 'object' && error !== null
+                        ? {
+                            ...('responseBody' in error
+                              ? { responseBody: (error as any).responseBody }
+                              : {}),
+                            ...('responseHeaders' in error
+                              ? {
+                                  responseHeaders: (error as any)
+                                    .responseHeaders,
+                                }
+                              : {}),
+                            ...('statusCode' in error
+                              ? { statusCode: (error as any).statusCode }
+                              : {}),
+                            ...('cause' in error
+                              ? { cause: (error as any).cause }
+                              : {}),
+                          }
+                        : {}),
+                    }
+                  : error.name,
             },
           });
         } else {
           span.setError({
             message: 'Unknown error',
             data: {
-              error:
-                request.tracing === true
-                  ? String(error)
-                  : error instanceof Error
-                    ? error.name
-                    : undefined,
+              error: request.tracing === true ? String(error) : undefined,
             },
           });
         }
@@ -999,11 +1015,37 @@ export class AiSdkModel implements Model {
     } catch (error) {
       if (span) {
         span.setError({
-          message: 'Error streaming response',
+          message:
+            error instanceof Error ? error.message : 'Error streaming response',
           data: {
             error:
               request.tracing === true
-                ? String(error)
+                ? error instanceof Error
+                  ? {
+                      name: error.name,
+                      message: error.message,
+                      // Include AI SDK specific error fields if they exist.
+                      ...(typeof error === 'object' && error !== null
+                        ? {
+                            ...('responseBody' in error
+                              ? { responseBody: (error as any).responseBody }
+                              : {}),
+                            ...('responseHeaders' in error
+                              ? {
+                                  responseHeaders: (error as any)
+                                    .responseHeaders,
+                                }
+                              : {}),
+                            ...('statusCode' in error
+                              ? { statusCode: (error as any).statusCode }
+                              : {}),
+                            ...('cause' in error
+                              ? { cause: (error as any).cause }
+                              : {}),
+                          }
+                        : {}),
+                    }
+                  : String(error)
                 : error instanceof Error
                   ? error.name
                   : undefined,
