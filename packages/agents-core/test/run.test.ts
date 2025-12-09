@@ -696,6 +696,159 @@ describe('Runner.run', () => {
       );
     });
 
+    it('enforces maxTurns across multiple model calls', async () => {
+      // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
+      // With maxTurns=1, we should only allow 1 model call, but currently allows 2.
+      const testTool = tool({
+        name: 'test_tool',
+        description: 'A test tool',
+        parameters: z.object({}),
+        execute: async () => 'result',
+      });
+
+      const agent = new Agent({
+        name: 'TurnCounter',
+        model: new FakeModel([
+          // First call: tool call
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'test_tool',
+                status: 'completed',
+                arguments: '{}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second call: should be blocked by maxTurns=1
+          { output: [fakeModelMessage('second')], usage: new Usage() },
+        ]),
+        tools: [testTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      // With maxTurns=1, this should throw MaxTurnsExceededError after the first model call
+      // Currently fails because turn counter doesn't advance after first call
+      await expect(run(agent, 'x', { maxTurns: 1 })).rejects.toBeInstanceOf(
+        MaxTurnsExceededError,
+      );
+    });
+
+    it('enforces maxTurns across resumed interruptions', async () => {
+      // Bug: After resuming from interruption, ALL subsequent calls are treated as same turn
+      // because _lastTurnResponse is still set. The first post-interruption call should NOT
+      // advance the turn, but the second call SHOULD advance the turn.
+      const testTool = tool({
+        name: 'test_tool',
+        description: 'A test tool',
+        parameters: z.object({}),
+        execute: async () => 'result',
+      });
+
+      const agent = new Agent({
+        name: 'ResumeTurnCounter',
+        model: new FakeModel([
+          // First post-interruption call: should NOT advance turn (still turn 1)
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'test_tool',
+                status: 'completed',
+                arguments: '{}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second call: SHOULD advance turn to 2, then maxTurns=1 should throw
+          { output: [fakeModelMessage('second')], usage: new Usage() },
+        ]),
+        tools: [testTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      // Simulate a resumed state after an interruption
+      const resumedState = new RunState(new RunContext(), 'x', agent, 1);
+      resumedState._currentTurn = 1;
+      resumedState._currentTurnPersistedItemCount = 0;
+      resumedState._currentStep = { type: 'next_step_run_again' };
+      // Set these to simulate a state that was resumed from interruption
+      resumedState._lastTurnResponse = {
+        output: [fakeModelMessage('previous')],
+        usage: new Usage(),
+      };
+      resumedState._lastProcessedResponse = {
+        newItems: [],
+        functions: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        handoffs: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+      } as any;
+
+      // With maxTurns=1, after the first post-interruption call completes and tries to make
+      // a second call, the turn should advance to 2 and then throw MaxTurnsExceededError.
+      // Currently fails because turn counter doesn't advance after first post-interruption call.
+      await expect(
+        run(agent, resumedState, { maxTurns: 1 }),
+      ).rejects.toBeInstanceOf(MaxTurnsExceededError);
+    });
+
+    it('does not advance the turn when resuming an interruption without persisted items', async () => {
+      const approvalTool = tool({
+        name: 'get_weather',
+        description: 'Gets weather for a city.',
+        parameters: z.object({ city: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ city }) => `Weather in ${city}`,
+      });
+
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_1',
+              callId: 'call_weather_1',
+              name: 'get_weather',
+              status: 'completed',
+              arguments: JSON.stringify({ city: 'Seattle' }),
+              providerData: {},
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('All set.')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalResume',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      let result = await run(agent, 'How is the weather?', { maxTurns: 1 });
+      expect(result.interruptions).toHaveLength(1);
+      expect(result.state._currentTurn).toBe(1);
+      expect(result.state._currentTurnPersistedItemCount).toBe(0);
+
+      result.state.approve(result.interruptions[0]);
+
+      result = await run(agent, result.state, { maxTurns: 1 });
+      expect(result.finalOutput).toBe('All set.');
+      expect(result.state._currentTurn).toBe(1);
+    });
+
     it('does nothing when no input guardrails are configured', async () => {
       setTracingDisabled(false);
       setTraceProcessors([new BatchTraceProcessor(new FakeTracingExporter())]);
