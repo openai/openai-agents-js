@@ -290,6 +290,68 @@ describe('Agent', () => {
     );
   });
 
+  it('agent as tool runs in streaming mode when context scope stream is active', async () => {
+    const agent = new Agent({
+      name: 'Streaming Agent',
+      instructions: 'You stream intermediate results.',
+    });
+    const mockResult = {} as any;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async () => mockResult);
+
+    const tool = agent.asTool({
+      toolDescription: 'streaming tool',
+    });
+
+    const context = new RunContext();
+    context._copyToContextScopeStream = true;
+
+    await tool.invoke(
+      context,
+      JSON.stringify({ input: 'run agent as tool stream mode' }),
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const [calledAgent, calledInput, calledOptions] = runSpy.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(calledInput).toBe('run agent as tool stream mode');
+    expect(calledOptions).toMatchObject({
+      context,
+      stream: true,
+      streamAgentTools: false,
+    });
+  });
+
+  it('agent as tool runs in non-streaming mode when context scope stream is not active', async () => {
+    const agent = new Agent({
+      name: 'NonStreaming Agent',
+      instructions: 'You return the final result.',
+    });
+    const mockResult = {} as any;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async () => mockResult);
+
+    const tool = agent.asTool({
+      toolDescription: 'standard tool',
+    });
+    const context = new RunContext();
+
+    await tool.invoke(
+      context,
+      JSON.stringify({ input: 'run agent as tool non-streaming mode' }),
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const [calledAgent, calledInput, calledOptions] = runSpy.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(calledInput).toBe('run agent as tool non-streaming mode');
+    expect(calledOptions).toMatchObject({
+      context,
+    });
+  });
+
   it('filters tools using isEnabled predicates', async () => {
     const conditionalTool = tool({
       name: 'conditional',
