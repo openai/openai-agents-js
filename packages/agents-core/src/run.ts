@@ -699,6 +699,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         });
       }
 
+      let continuingInterruptedTurn = false;
+
       try {
         while (true) {
           // if we don't have a current step, we treat this as a new run
@@ -745,19 +747,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // so the loop treats it as a new step without incrementing the turn.
             // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
             if (turnResult.nextStep.type === 'next_step_run_again') {
+              continuingInterruptedTurn = true;
               state._currentStep = undefined;
               continue;
             }
 
+            continuingInterruptedTurn = false;
             state._currentStep = turnResult.nextStep;
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
             const artifacts = await prepareAgentArtifacts(state);
 
-            // Only increment turn and reset counter if we're starting a new turn,
-            // not if we're continuing from an interruption (which would have _lastTurnResponse set)
-            if (!state._lastTurnResponse) {
+            const isResumingFromInterruption =
+              isResumedState && continuingInterruptedTurn;
+            continuingInterruptedTurn = false;
+
+            // Do not advance the turn when resuming from an interruption; the next model call is
+            // still part of the same logical turn.
+            if (!isResumingFromInterruption) {
               state._currentTurn++;
               state._currentTurnPersistedItemCount = 0;
             }
@@ -781,8 +789,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             let parallelGuardrailPromise:
               | Promise<InputGuardrailResult[]>
               | undefined;
-            // Only run input guardrails on the first turn of a new run, not when continuing from an interruption
-            if (state._currentTurn === 1 && !state._lastTurnResponse) {
+            // Only run input guardrails on the first turn of a new run.
+            if (state._currentTurn === 1 && !isResumingFromInterruption) {
               const guardrails = this.#splitInputGuardrails(state);
               if (guardrails.blocking.length > 0) {
                 await this.#runInputGuardrails(state, guardrails.blocking);
@@ -994,6 +1002,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       });
     }
 
+    let continuingInterruptedTurn = false;
+
     try {
       while (true) {
         const currentAgent = result.state._currentAgent;
@@ -1046,19 +1056,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // so the loop treats it as a new step without incrementing the turn.
           // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
           if (turnResult.nextStep.type === 'next_step_run_again') {
+            continuingInterruptedTurn = true;
             result.state._currentStep = undefined;
             continue;
           }
 
+          continuingInterruptedTurn = false;
           result.state._currentStep = turnResult.nextStep;
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
           const artifacts = await prepareAgentArtifacts(result.state);
 
-          // Only increment turn and reset counter if we're starting a new turn,
-          // not if we're continuing from an interruption (which would have _lastTurnResponse set)
-          if (!result.state._lastTurnResponse) {
+          const isResumingFromInterruption =
+            isResumedState && continuingInterruptedTurn;
+          continuingInterruptedTurn = false;
+
+          // Do not advance the turn when resuming from an interruption; the next model call is
+          // still part of the same logical turn.
+          if (!isResumingFromInterruption) {
             result.state._currentTurn++;
             result.state._currentTurnPersistedItemCount = 0;
           }
@@ -1082,11 +1098,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           let parallelGuardrailPromise:
             | Promise<InputGuardrailResult[]>
             | undefined;
-          // Only run input guardrails on the first turn of a new run, not when continuing from an interruption
-          if (
-            result.state._currentTurn === 1 &&
-            !result.state._lastTurnResponse
-          ) {
+          // Only run input guardrails on the first turn of a new run.
+          if (result.state._currentTurn === 1 && !isResumingFromInterruption) {
             const guardrails = this.#splitInputGuardrails(result.state);
             if (guardrails.blocking.length > 0) {
               await this.#runInputGuardrails(result.state, guardrails.blocking);
