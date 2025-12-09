@@ -1376,4 +1376,92 @@ describe('AiSdkModel', () => {
       expect(parseArguments('{"a":1,"b":"c"}')).toEqual({ a: 1, b: 'c' });
     });
   });
+
+  describe('Error handling with tracing', () => {
+    test('captures comprehensive AI SDK error details when tracing enabled', async () => {
+      // Simulate an AI SDK error with responseBody and other fields.
+      const aiSdkError = new Error('API call failed');
+      aiSdkError.name = 'AI_APICallError';
+      (aiSdkError as any).responseBody = {
+        error: {
+          message: 'Rate limit exceeded',
+          code: 'rate_limit_exceeded',
+          type: 'insufficient_quota',
+        },
+      };
+      (aiSdkError as any).responseHeaders = {
+        'x-request-id': 'req_abc123',
+        'retry-after': '60',
+      };
+      (aiSdkError as any).statusCode = 429;
+
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            throw aiSdkError;
+          },
+        }),
+      );
+
+      try {
+        await withTrace('test-trace', () =>
+          model.getResponse({
+            input: 'test input',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: true,
+          } as any),
+        );
+        expect.fail('Should have thrown error');
+      } catch (error: any) {
+        // Error should be re-thrown.
+        expect(error.message).toBe('API call failed');
+        // Verify error has the AI SDK fields.
+        expect((error as any).responseBody).toBeDefined();
+        expect((error as any).statusCode).toBe(429);
+      }
+    });
+
+    test('propagates error with AI SDK fields in streaming mode', async () => {
+      const aiSdkError = new Error('Stream failed');
+      aiSdkError.name = 'AI_StreamError';
+      (aiSdkError as any).responseBody = {
+        error: { message: 'Connection timeout', code: 'timeout' },
+      };
+      (aiSdkError as any).statusCode = 504;
+
+      const model = new AiSdkModel(
+        stubModel({
+          async doStream() {
+            throw aiSdkError;
+          },
+        }),
+      );
+
+      try {
+        await withTrace('test-stream', async () => {
+          const iter = model.getStreamedResponse({
+            input: 'test',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: true,
+          } as any);
+
+          for await (const _ of iter) {
+            // Should not get here.
+          }
+        });
+        expect.fail('Should have thrown error');
+      } catch (error: any) {
+        expect(error.message).toBe('Stream failed');
+        // Verify error has the AI SDK fields.
+        expect((error as any).responseBody).toBeDefined();
+        expect((error as any).statusCode).toBe(504);
+      }
+    });
+  });
 });
