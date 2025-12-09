@@ -1,5 +1,5 @@
 ---
-'@openai/agents-extensions': minor
+'@openai/agents-extensions': patch
 ---
 
 Add support for Anthropic extended thinking (reasoning) in the AI SDK adapter.
