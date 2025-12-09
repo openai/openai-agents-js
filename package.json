@@ -73,5 +73,5 @@
     "verdaccio": "^6.2.4",
     "vitest": "^3.2.4"
   },
-  "packageManager": "pnpm@10.24.0"
+  "packageManager": "pnpm@10.25.0"
 }
