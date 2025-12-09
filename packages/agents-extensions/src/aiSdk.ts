@@ -1029,10 +1029,11 @@ export class AiSdkModel implements Model {
       const outputs: protocol.OutputModelItem[] = [];
 
       // Add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
+      // Emit reasoning item even when text is empty to preserve signature in providerData for redacted thinking streams
       for (const [reasoningId, reasoningBlock] of Object.entries(
         reasoningBlocks,
       )) {
-        if (reasoningBlock.text) {
+        if (reasoningBlock.text || reasoningBlock.providerMetadata) {
           outputs.push({
             type: 'reasoning',
             id: reasoningId !== 'default' ? reasoningId : undefined,
