@@ -1294,6 +1294,336 @@ describe('toolChoiceToLanguageV2Format', () => {
   });
 });
 
+describe('Extended thinking / Reasoning support', () => {
+  describe('Non-streaming (getResponse)', () => {
+    test('captures reasoning parts and outputs them before tool calls', async () => {
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'reasoning',
+                  text: 'Let me think through this step by step...',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig_abc123' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call-1',
+                  toolName: 'get_weather',
+                  input: { location: 'Tokyo' },
+                },
+              ],
+              usage: { inputTokens: 50, outputTokens: 100, totalTokens: 150 },
+              providerMetadata: { anthropic: { thinkingTokens: 30 } },
+              response: { id: 'resp-1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        }),
+      );
+
+      const res = await withTrace('t', () =>
+        model.getResponse({
+          input: 'What is the weather in Tokyo?',
+          tools: [
+            {
+              type: 'function',
+              name: 'get_weather',
+              description: 'Get weather info',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      );
+
+      // Reasoning item should come FIRST, before tool calls
+      expect(res.output).toHaveLength(2);
+      expect(res.output[0]).toMatchObject({
+        type: 'reasoning',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Let me think through this step by step...',
+          },
+        ],
+        rawContent: [
+          {
+            type: 'reasoning_text',
+            text: 'Let me think through this step by step...',
+          },
+        ],
+        providerData: { anthropic: { signature: 'sig_abc123' } },
+      });
+      expect(res.output[1]).toMatchObject({
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'get_weather',
+      });
+    });
+
+    test('handles reasoning without signature (non-Anthropic providers)', async () => {
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'reasoning',
+                  text: 'Thinking about this problem...',
+                  // No providerMetadata / signature
+                },
+                { type: 'text', text: 'The answer is 42.' },
+              ],
+              usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+              providerMetadata: {},
+              response: { id: 'resp-2' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        }),
+      );
+
+      const res = await withTrace('t', () =>
+        model.getResponse({
+          input: 'What is the meaning of life?',
+          tools: [],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      );
+
+      expect(res.output).toHaveLength(2);
+      expect(res.output[0]).toMatchObject({
+        type: 'reasoning',
+        content: [
+          { type: 'input_text', text: 'Thinking about this problem...' },
+        ],
+        providerData: undefined,
+      });
+      expect(res.output[1]).toMatchObject({
+        type: 'message',
+        content: [{ type: 'output_text', text: 'The answer is 42.' }],
+      });
+    });
+  });
+
+  describe('Streaming (getStreamedResponse)', () => {
+    test('captures reasoning stream events and outputs them before tool calls', async () => {
+      const parts = [
+        {
+          type: 'reasoning-start',
+          id: 'reasoning-1',
+          providerMetadata: { anthropic: { thinking: 'enabled' } },
+        },
+        {
+          type: 'reasoning-delta',
+          id: 'reasoning-1',
+          delta: 'Let me think...',
+        },
+        { type: 'reasoning-delta', id: 'reasoning-1', delta: ' step by step.' },
+        {
+          type: 'reasoning-end',
+          id: 'reasoning-1',
+          providerMetadata: { anthropic: { signature: 'sig_stream_123' } },
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'c1',
+          toolName: 'search',
+          input: '{"query":"test"}',
+        },
+        { type: 'response-metadata', id: 'resp-stream-1' },
+        {
+          type: 'finish',
+          finishReason: 'tool-calls',
+          usage: { inputTokens: 20, outputTokens: 40 },
+        },
+      ];
+
+      const model = new AiSdkModel(
+        stubModel({
+          async doStream() {
+            return {
+              stream: partsStream(parts),
+            } as any;
+          },
+        }),
+      );
+
+      const events: any[] = [];
+      for await (const ev of model.getStreamedResponse({
+        input: 'Search for something',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        events.push(ev);
+      }
+
+      const final = events.at(-1);
+      expect(final.type).toBe('response_done');
+
+      // Reasoning should come FIRST in output
+      expect(final.response.output).toHaveLength(2);
+      expect(final.response.output[0]).toMatchObject({
+        type: 'reasoning',
+        id: 'reasoning-1',
+        content: [
+          { type: 'input_text', text: 'Let me think... step by step.' },
+        ],
+        rawContent: [
+          { type: 'reasoning_text', text: 'Let me think... step by step.' },
+        ],
+        providerData: { anthropic: { signature: 'sig_stream_123' } },
+      });
+      expect(final.response.output[1]).toMatchObject({
+        type: 'function_call',
+        callId: 'c1',
+        name: 'search',
+      });
+    });
+
+    test('handles multiple reasoning blocks in streaming', async () => {
+      const parts = [
+        { type: 'reasoning-start', id: 'r1' },
+        { type: 'reasoning-delta', id: 'r1', delta: 'First thought.' },
+        { type: 'reasoning-end', id: 'r1' },
+        { type: 'reasoning-start', id: 'r2' },
+        { type: 'reasoning-delta', id: 'r2', delta: 'Second thought.' },
+        { type: 'reasoning-end', id: 'r2' },
+        { type: 'text-delta', delta: 'Final answer.' },
+        {
+          type: 'finish',
+          finishReason: 'stop',
+          usage: { inputTokens: 10, outputTokens: 20 },
+        },
+      ];
+
+      const model = new AiSdkModel(
+        stubModel({
+          async doStream() {
+            return {
+              stream: partsStream(parts),
+            } as any;
+          },
+        }),
+      );
+
+      const events: any[] = [];
+      for await (const ev of model.getStreamedResponse({
+        input: 'Complex problem',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        events.push(ev);
+      }
+
+      const final = events.at(-1);
+      expect(final.type).toBe('response_done');
+      expect(final.response.output).toHaveLength(3);
+      expect(final.response.output[0]).toMatchObject({
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'First thought.' }],
+      });
+      expect(final.response.output[1]).toMatchObject({
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Second thought.' }],
+      });
+      expect(final.response.output[2]).toMatchObject({
+        type: 'message',
+        content: [{ type: 'output_text', text: 'Final answer.' }],
+      });
+    });
+
+    test('handles reasoning-delta without reasoning-start', async () => {
+      const parts = [
+        {
+          type: 'reasoning-delta',
+          id: 'orphan',
+          delta: 'Direct thinking content',
+        },
+        { type: 'reasoning-end', id: 'orphan' },
+        { type: 'text-delta', delta: 'Response.' },
+        {
+          type: 'finish',
+          finishReason: 'stop',
+          usage: { inputTokens: 5, outputTokens: 10 },
+        },
+      ];
+
+      const model = new AiSdkModel(
+        stubModel({
+          async doStream() {
+            return {
+              stream: partsStream(parts),
+            } as any;
+          },
+        }),
+      );
+
+      const events: any[] = [];
+      for await (const ev of model.getStreamedResponse({
+        input: 'test',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        events.push(ev);
+      }
+
+      const final = events.at(-1);
+      expect(final.response.output[0]).toMatchObject({
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Direct thinking content' }],
+      });
+    });
+  });
+
+  describe('Round-trip conversion (ReasoningItem to AI SDK and back)', () => {
+    test('preserves signature in providerData through itemsToLanguageV2Messages', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'My reasoning process...' }],
+          providerData: { anthropic: { signature: 'preserved_sig_456' } },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toEqual({
+        role: 'assistant',
+        content: [
+          {
+            type: 'reasoning',
+            text: 'My reasoning process...',
+            providerOptions: { anthropic: { signature: 'preserved_sig_456' } },
+          },
+        ],
+        providerOptions: { anthropic: { signature: 'preserved_sig_456' } },
+      });
+    });
+  });
+});
+
 describe('AiSdkModel', () => {
   test('should be available', () => {
     const model = new AiSdkModel({} as any);
