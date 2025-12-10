@@ -21,4 +21,5 @@ export {
 export {
   OpenAIConversationsSession,
   startOpenAIConversationsSession,
+  type OpenAIConversationsSessionOptions,
 } from './memory/openaiConversationsSession';
