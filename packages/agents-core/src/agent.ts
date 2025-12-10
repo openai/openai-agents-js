@@ -24,9 +24,9 @@ import type {
   HandoffsOutput,
   Expand,
 } from './types';
-import type { RunResult } from './result';
+import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
-import { NonStreamRunOptions, RunConfig, Runner } from './run';
+import { StreamRunOptions, RunConfig, Runner } from './run';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isAgentToolInput } from './utils/typeGuards';
@@ -37,13 +37,26 @@ import logger from './logger';
 import { UnknownContext, TextOutput } from './types';
 import type * as protocol from './types/protocol';
 import type { ZodObjectLike } from './utils/zodCompat';
+import type { RunStreamEvent } from './events';
 
-type AnyAgentRunResult = RunResult<any, Agent<any, any>>;
-type CompletedRunResult<
-  TContext,
-  TAgent extends Agent<TContext, any>,
-> = RunResult<TContext, TAgent> & {
+type AnyAgentRunResult =
+  | RunResult<any, Agent<any, any>>
+  | StreamedRunResult<any, Agent<any, any>>;
+type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
+  | RunResult<TContext, TAgent>
+  | StreamedRunResult<TContext, TAgent>
+) & {
   finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
+};
+
+type AgentToolRunOptions<TContext> = Omit<StreamRunOptions<TContext>, 'stream'>;
+
+type AgentToolStreamEvent = {
+  // Raw stream event emitted by the nested agent run.
+  event: RunStreamEvent;
+  // Convenience metadata so callers can correlate to the invoking tool call/agent.
+  agentName: string;
+  toolCallId?: string;
 };
 
 // Per-process, ephemeral map linking a function tool call to its nested
@@ -334,9 +347,9 @@ const AgentAsToolNeedApprovalSchame = z.object({ input: z.string() });
  * passed to tool functions, handoffs, guardrails, etc.
  */
 export class Agent<
-    TContext = UnknownContext,
-    TOutput extends AgentOutputType = TextOutput,
-  >
+  TContext = UnknownContext,
+  TOutput extends AgentOutputType = TextOutput,
+>
   extends AgentHooks<TContext, TOutput>
   implements AgentConfiguration<TContext, TOutput>
 {
@@ -527,7 +540,7 @@ export class Agent<
       /**
        * Additional run options for the agent (as tool) execution.
        */
-      runOptions?: NonStreamRunOptions<TContext>;
+      runOptions?: AgentToolRunOptions<TContext>;
       /**
        * Determines whether this tool should be exposed to the model for the current run.
        */
@@ -537,6 +550,10 @@ export class Agent<
             runContext: RunContext<TContext>;
             agent: Agent<TContext, TOutput>;
           }) => boolean | Promise<boolean>);
+      /**
+       * Optional hook to receive streamed events from the nested agent run.
+       */
+      onStream?: (event: AgentToolStreamEvent) => void | Promise<void>;
     },
   ): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
     const {
@@ -547,6 +564,7 @@ export class Agent<
       runConfig,
       runOptions,
       isEnabled,
+      onStream,
     } = options;
     return tool({
       name: toolName ?? toFunctionToolName(this.name),
@@ -560,10 +578,42 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
-        const result = await runner.run(this, data.input, {
-          context,
-          ...(runOptions ?? {}),
-        });
+        // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
+        const shouldStream = typeof onStream === 'function';
+        const result = shouldStream
+          ? await runner.run(this, data.input, {
+              context,
+              ...(runOptions ?? {}),
+              stream: true,
+            })
+          : await runner.run(this, data.input, {
+              context,
+              ...(runOptions ?? {}),
+            });
+        const streamPayload = {
+          agentName: this.name,
+          // Tool calls should carry IDs, but direct invocation or provider quirks can omit it, so keep this optional.
+          toolCallId: details?.toolCall?.callId,
+        };
+
+        if (shouldStream) {
+          // Cast through unknown: the async iterator shape matches and we want to drain the stream for side effects while keeping the public API stable.
+          const streamResult = result as unknown as StreamedRunResult<
+            TContext,
+            Agent<TContext, AgentOutputType>
+          >;
+          if (onStream) {
+            // Drain the stream to deliver every event to the handler; ensure completion awaited so the nested run finishes before returning.
+            for await (const event of streamResult) {
+              await onStream({
+                event,
+                ...streamPayload,
+              });
+            }
+            await streamResult.completed;
+          }
+        }
+
         const completedResult = result as CompletedRunResult<TContext, TAgent>;
 
         const usesStopAtToolNames =
@@ -591,7 +641,7 @@ export class Agent<
         if (details?.toolCall) {
           saveAgentToolRunResult(
             details.toolCall,
-            completedResult as RunResult<any, Agent<any, any>>,
+            completedResult as AnyAgentRunResult,
           );
         }
         return outputText;
