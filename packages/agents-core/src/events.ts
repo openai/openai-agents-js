@@ -1,6 +1,6 @@
 import { Agent } from './agent';
 import { RunItem } from './items';
-import { ResponseStreamEvent } from './types';
+import { ResponseStreamEvent, UsageData } from './types';
 
 /**
  * Streaming event from the LLM. These are `raw` events, i.e. they are directly passed through from
@@ -60,9 +60,26 @@ export class RunAgentUpdatedStreamEvent {
 }
 
 /**
+ * Event that notifies the current token usage while streaming.
+ */
+export class RunUsageUpdatedStreamEvent {
+  public readonly type = 'usage_updated_stream_event';
+
+  /**
+   * @param agent The new agent
+   * @param usage The usage data of the agent run up to this point
+   */
+  constructor(
+    public agent: Agent<any, any>,
+    public usage: UsageData,
+  ) {}
+}
+
+/**
  * A streaming event from an agent run.
  */
 export type RunStreamEvent =
   | RunRawModelStreamEvent
   | RunItemStreamEvent
-  | RunAgentUpdatedStreamEvent;
+  | RunAgentUpdatedStreamEvent
+  | RunUsageUpdatedStreamEvent;

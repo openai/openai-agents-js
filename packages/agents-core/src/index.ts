@@ -32,6 +32,7 @@ export {
   RunRawModelStreamEvent,
   RunItemStreamEvent,
   RunStreamEvent,
+  RunUsageUpdatedStreamEvent,
 } from './events';
 export {
   defineOutputGuardrail,
@@ -136,7 +137,6 @@ export {
   FunctionTool,
   FunctionToolResult,
   Tool,
-  ToolOptions,
   tool,
   ToolExecuteArgument,
   ToolEnabledFunction,
