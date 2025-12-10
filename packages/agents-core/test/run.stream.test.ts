@@ -23,6 +23,7 @@ import {
   user,
   Session,
   InputGuardrailTripwireTriggered,
+  RunUsageUpdatedStreamEvent,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -208,6 +209,296 @@ describe('Runner.run (streaming)', () => {
     expect(runnerEndEvents).toHaveLength(1);
     expect(runnerEndEvents[0].agent).toBe(agent);
     expect(runnerEndEvents[0].output).toBe('Final output');
+  });
+
+  it('emits usage_update_stream_event with cumulative usage after each turn', async () => {
+    const testTool = tool({
+      name: 'calculator',
+      description: 'Does math',
+      parameters: z.object({ value: z.number() }),
+      execute: async ({ value }) => `result: ${value * 2}`,
+    });
+
+    const firstResponse: ModelResponse = {
+      output: [
+        {
+          type: 'function_call',
+          id: 'fc_1',
+          callId: 'call_1',
+          name: 'calculator',
+          status: 'completed',
+          arguments: JSON.stringify({ value: 5 }),
+        } as protocol.FunctionCallItem,
+      ],
+      usage: new Usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }),
+    };
+
+    const secondResponse: ModelResponse = {
+      output: [fakeModelMessage('The answer is 10')],
+      usage: new Usage({ inputTokens: 20, outputTokens: 10, totalTokens: 30 }),
+    };
+
+    class MultiTurnStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const current = this.#callCount++;
+        return current === 0 ? firstResponse : secondResponse;
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'UsageTracker',
+      model: new MultiTurnStreamingModel(),
+      tools: [testTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'calculate', { stream: true });
+
+    const usageEvents: RunUsageUpdatedStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      if (event.type === 'usage_updated_stream_event') {
+        usageEvents.push(event);
+      }
+    }
+    await result.completed;
+
+    // Should have 2 usage events (one per turn)
+    expect(usageEvents).toHaveLength(2);
+
+    // First turn: 15 tokens
+    expect(usageEvents[0].usage.totalTokens).toBe(15);
+    expect(usageEvents[0].usage.inputTokens).toBe(10);
+    expect(usageEvents[0].usage.outputTokens).toBe(5);
+
+    // Second turn: 15 + 30 = 45 tokens (cumulative)
+    expect(usageEvents[1].usage.totalTokens).toBe(45);
+    expect(usageEvents[1].usage.inputTokens).toBe(30);
+    expect(usageEvents[1].usage.outputTokens).toBe(15);
+
+    expect(usageEvents[0].agent).toBe(agent);
+    expect(usageEvents[1].agent).toBe(agent);
+  });
+
+  it('emits usage_update_stream_event after response_done raw event', async () => {
+    class SimpleStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('done')],
+          usage: new Usage({
+            inputTokens: 10,
+            outputTokens: 5,
+            totalTokens: 15,
+          }),
+        };
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r1',
+            usage: {
+              requests: 1,
+              inputTokens: 10,
+              outputTokens: 5,
+              totalTokens: 15,
+            },
+            output: [fakeModelMessage('done')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'OrderTest',
+      model: new SimpleStreamingModel(),
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'test', { stream: true });
+
+    const events: RunStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      events.push(event);
+    }
+    await result.completed;
+
+    const responseDoneIndex = events.findIndex(
+      (e) =>
+        e.type === 'raw_model_stream_event' && e.data.type === 'response_done',
+    );
+    const usageUpdateIndex = events.findIndex(
+      (e) => e.type === 'usage_updated_stream_event',
+    );
+
+    expect(responseDoneIndex).toBeGreaterThan(-1);
+    expect(usageUpdateIndex).toBeGreaterThan(-1);
+    expect(usageUpdateIndex).toBeGreaterThan(responseDoneIndex);
+  });
+
+  it('allows aborting stream based on token limit', async () => {
+    const testTool = tool({
+      name: 'expensive',
+      description: 'Uses lots of tokens',
+      parameters: z.object({}),
+      execute: async () => 'expensive result',
+    });
+
+    const responses: ModelResponse[] = [
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            callId: 'call_1',
+            name: 'expensive',
+            status: 'completed',
+            arguments: '{}',
+          } as protocol.FunctionCallItem,
+        ],
+        usage: new Usage({
+          inputTokens: 5000,
+          outputTokens: 2000,
+          totalTokens: 7000,
+        }),
+      },
+      {
+        output: [fakeModelMessage('continuing...')],
+        usage: new Usage({
+          inputTokens: 6000,
+          outputTokens: 3000,
+          totalTokens: 9000,
+        }),
+      },
+    ];
+
+    class ExpensiveStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return responses[this.#callCount++] ?? responses[responses.length - 1];
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ExpensiveAgent',
+      model: new ExpensiveStreamingModel(),
+      tools: [testTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'do expensive work', {
+      stream: true,
+    });
+
+    const MAX_TOKENS = 10000;
+    let aborted = false;
+
+    for await (const event of result.toStream()) {
+      if (event.type === 'usage_updated_stream_event') {
+        if (event.usage.totalTokens > MAX_TOKENS) {
+          aborted = true;
+          break; // Abort the stream
+        }
+      }
+    }
+
+    expect(aborted).toBe(true);
+    expect(result.finalOutput).toBeUndefined();
+  });
+
+  it('emits usage_update_stream_event with agent changes on handoff', async () => {
+    const agentB = new Agent({
+      name: 'AgentB',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('B is done')],
+        usage: new Usage({
+          inputTokens: 20,
+          outputTokens: 10,
+          totalTokens: 30,
+        }),
+      }),
+    });
+
+    const callItem: FunctionCallItem = {
+      id: 'h1',
+      type: 'function_call',
+      name: handoff(agentB).toolName,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    const agentA = new Agent({
+      name: 'AgentA',
+      model: new ImmediateStreamingModel({
+        output: [callItem],
+        usage: new Usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }),
+      }),
+      handoffs: [handoff(agentB)],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agentA, 'start', { stream: true });
+
+    const usageEvents: RunUsageUpdatedStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      if (event.type === 'usage_updated_stream_event') {
+        usageEvents.push(event);
+      }
+    }
+    await result.completed;
+
+    // Should have 2 usage events (one per agent)
+    expect(usageEvents).toHaveLength(2);
+
+    // First event from Agent A
+    expect(usageEvents[0].agent.name).toBe('AgentA');
+    expect(usageEvents[0].usage.totalTokens).toBe(15);
+
+    // Second event from Agent B with cumulative usage
+    expect(usageEvents[1].agent.name).toBe('AgentB');
+    expect(usageEvents[1].usage.totalTokens).toBe(45); // 15 + 30
   });
 
   it('streams tool_called before the tool finishes executing', async () => {

@@ -18,8 +18,8 @@ export class RunContext<TContext = UnknownContext> {
   context: TContext;
 
   /**
-   * The usage of the agent run so far. For streamed responses, the usage will be stale until the
-   * last chunk of the stream is processed.
+   * The usage of the agent run so far. For streamed responses, the usage will be emitted after each response
+   * in the `usage_updated_stream_event`. Subscribe to this event to track token usage while streaming
    */
   usage: Usage;
 

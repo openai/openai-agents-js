@@ -1187,6 +1187,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 output: parsed.response.output,
                 responseId: parsed.response.id,
               };
+            }
+            if (result.cancelled) {
+              // When the user's code exits a loop to consume the stream, we need to break
+              // this loop to prevent internal false errors and unnecessary processing
+              return;
+            }
+            result._addItem(new RunRawModelStreamEvent(event));
+            if (event.type === 'response_done' && finalResponse) {
               result.state._context.usage.add(finalResponse.usage);
               result._addItem(
                 new RunUsageUpdatedStreamEvent(result.state._currentAgent, {
@@ -1203,12 +1211,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 }),
               );
             }
-            if (result.cancelled) {
-              // When the user's code exits a loop to consume the stream, we need to break
-              // this loop to prevent internal false errors and unnecessary processing
-              return;
-            }
-            result._addItem(new RunRawModelStreamEvent(event));
           }
 
           if (parallelGuardrailPromise) {
