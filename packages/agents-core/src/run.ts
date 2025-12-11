@@ -61,11 +61,7 @@ import {
 } from './tracing/context';
 import { createAgentSpan, withGuardrailSpan } from './tracing';
 import { Usage } from './usage';
-import {
-  RunAgentUpdatedStreamEvent,
-  RunRawModelStreamEvent,
-  RunUsageUpdatedStreamEvent,
-} from './events';
+import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import { RunState } from './runState';
 import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
@@ -1187,6 +1183,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 output: parsed.response.output,
                 responseId: parsed.response.id,
               };
+              result.state._context.usage.add(finalResponse.usage);
             }
             if (result.cancelled) {
               // When the user's code exits a loop to consume the stream, we need to break
@@ -1194,23 +1191,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               return;
             }
             result._addItem(new RunRawModelStreamEvent(event));
-            if (event.type === 'response_done' && finalResponse) {
-              result.state._context.usage.add(finalResponse.usage);
-              result._addItem(
-                new RunUsageUpdatedStreamEvent(result.state._currentAgent, {
-                  requests: result.state._context.usage.requests,
-                  inputTokens: result.state._context.usage.inputTokens,
-                  outputTokens: result.state._context.usage.outputTokens,
-                  totalTokens: result.state._context.usage.totalTokens,
-                  inputTokensDetails:
-                    result.state._context.usage.inputTokensDetails,
-                  outputTokensDetails:
-                    result.state._context.usage.outputTokensDetails,
-                  requestUsageEntries:
-                    result.state._context.usage.requestUsageEntries,
-                }),
-              );
-            }
           }
 
           if (parallelGuardrailPromise) {

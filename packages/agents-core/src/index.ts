@@ -32,7 +32,6 @@ export {
   RunRawModelStreamEvent,
   RunItemStreamEvent,
   RunStreamEvent,
-  RunUsageUpdatedStreamEvent,
 } from './events';
 export {
   defineOutputGuardrail,
