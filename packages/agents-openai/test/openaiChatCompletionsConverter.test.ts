@@ -385,6 +385,8 @@ describe('itemsToMessages', () => {
         type: 'function_call_result',
         id: '2',
         callId: 'call1',
+        name: 'f',
+        status: 'completed',
         output: 'result',
         providerData: { extra: 'data' },
       } as protocol.FunctionCallResultItem,
