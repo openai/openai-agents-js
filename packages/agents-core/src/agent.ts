@@ -58,6 +58,19 @@ type AgentToolStreamEvent = {
   agentName: string;
   toolCallId?: string;
 };
+type AgentToolEventName = AgentToolStreamEvent['event']['type'] | '*';
+type AgentToolEventHandler = (
+  event: AgentToolStreamEvent,
+) => void | Promise<void>;
+type AgentTool<TContext> = FunctionTool<
+  TContext,
+  typeof AgentAsToolNeedApprovalSchame
+> & {
+  on: (
+    name: AgentToolEventName,
+    handler: AgentToolEventHandler,
+  ) => AgentTool<TContext>;
+};
 
 // Per-process, ephemeral map linking a function tool call to its nested
 // Agent run result within the same run; entry is removed after consumption.
@@ -555,7 +568,7 @@ export class Agent<
        */
       onStream?: (event: AgentToolStreamEvent) => void | Promise<void>;
     },
-  ): FunctionTool<TContext, typeof AgentAsToolNeedApprovalSchame> {
+  ): AgentTool<TContext> {
     const {
       toolName,
       toolDescription,
@@ -566,7 +579,28 @@ export class Agent<
       isEnabled,
       onStream,
     } = options;
-    return tool({
+    // Event handlers are scoped to this agent tool instance and are not shared; we only support registration (no removal) to keep the API surface small.
+    const eventHandlers = new Map<
+      AgentToolEventName,
+      Set<AgentToolEventHandler>
+    >();
+    const emitEvent = async (event: AgentToolStreamEvent) => {
+      // We intentionally keep only add semantics (no off) to reduce surface area; handlers are scoped to this agent tool instance.
+      const specific = eventHandlers.get(event.event.type);
+      const wildcard = eventHandlers.get('*');
+      const candidates = [
+        ...(onStream ? [onStream] : []),
+        ...(specific ? Array.from(specific) : []),
+        ...(wildcard ? Array.from(wildcard) : []),
+      ];
+      // Run all handlers in parallel so a slow onStream callback does not block on(...) handlers (and vice versa).
+      await Promise.allSettled(
+        candidates.map((handler) =>
+          Promise.resolve().then(() => handler(event)),
+        ),
+      );
+    };
+    const baseTool = tool({
       name: toolName ?? toFunctionToolName(this.name),
       description: toolDescription ?? '',
       parameters: AgentAsToolNeedApprovalSchame,
@@ -579,7 +613,9 @@ export class Agent<
         }
         const runner = new Runner(runConfig ?? {});
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
-        const shouldStream = typeof onStream === 'function';
+        // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
+        const shouldStream =
+          typeof onStream === 'function' || eventHandlers.size > 0;
         const result = shouldStream
           ? await runner.run(this, data.input, {
               context,
@@ -602,16 +638,14 @@ export class Agent<
             TContext,
             Agent<TContext, AgentOutputType>
           >;
-          if (onStream) {
-            // Drain the stream to deliver every event to the handler; ensure completion awaited so the nested run finishes before returning.
-            for await (const event of streamResult) {
-              await onStream({
-                event,
-                ...streamPayload,
-              });
-            }
-            await streamResult.completed;
+          // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
+          for await (const event of streamResult) {
+            await emitEvent({
+              event,
+              ...streamPayload,
+            });
           }
+          await streamResult.completed;
         }
 
         const completedResult = result as CompletedRunResult<TContext, TAgent>;
@@ -647,6 +681,18 @@ export class Agent<
         return outputText;
       },
     });
+
+    const agentTool: AgentTool<TContext> = {
+      ...baseTool,
+      on: (name, handler) => {
+        const set = eventHandlers.get(name) ?? new Set<AgentToolEventHandler>();
+        set.add(handler);
+        eventHandlers.set(name, set);
+        return agentTool;
+      },
+    };
+
+    return agentTool;
   }
 
   /**
