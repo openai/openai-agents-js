@@ -351,6 +351,95 @@ describe('itemsToMessages', () => {
       },
     ]);
   });
+
+  test('propagates providerData from function_call to assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'myFunc',
+        arguments: '{"x":1}',
+        status: 'in_progress',
+        providerData: { custom_field: 'value', another: 123 },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).custom_field).toBe('value');
+    expect((msgs[0] as any).another).toBe(123);
+  });
+
+  test('propagates providerData from function_call_result to tool message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: 'result',
+        providerData: { extra: 'data' },
+      } as protocol.FunctionCallResultItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(2);
+    expect((msgs[1] as any).extra).toBe('data');
+  });
+
+  test('handles function_call without providerData gracefully', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).tool_calls).toHaveLength(1);
+  });
+
+  test('merges providerData from multiple function_calls into single assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f1',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_first: true },
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call',
+        id: '2',
+        callId: 'call2',
+        name: 'f2',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_second: true },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect((msgs[0] as any).tool_calls).toHaveLength(2);
+    expect((msgs[0] as any).from_first).toBe(true);
+    expect((msgs[0] as any).from_second).toBe(true);
+  });
 });
 
 describe('tool helpers', () => {
