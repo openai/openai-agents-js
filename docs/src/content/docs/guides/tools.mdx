@@ -8,6 +8,7 @@ import toolsFunctionExample from '../../../../../examples/docs/tools/functionToo
 import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
+import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
@@ -88,6 +89,23 @@ Under the hood the SDK:
 - Returns either the last message or the output extracted by `customOutputExtractor`.
 
 When you run an agent as a tool, Agents SDK creates a runner with the default settings and run the agent with it within the function execution. If you want to provide any properties of `runConfig` or `runOptions`, you can pass them to the `asTool()` method to customize the runner's behavior.
+
+### Streaming events from agent tools
+
+Agent tools can stream all nested run events back to your app. Choose the hook style that fits how you construct the tool:
+
+<Code
+  lang="typescript"
+  code={agentsAsToolsStreamingExample}
+  title="Streaming agent tools"
+/>
+
+- Event types match `RunStreamEvent['type']`: `raw_model_stream_event`, `run_item_stream_event`, `agent_updated_stream_event`.
+- `onStream` is the simplest “catch-all” and works well when you declare the tool inline (`tools: [agent.asTool({ onStream })]`). Use it if you do not need per-event routing.
+- `on(eventName, handler)` lets you subscribe selectively (or with `'*'`) and is best when you need finer-grained handling or want to attach listeners after creation.
+- If you provide either `onStream` or any `on(...)` handler, the agent-as-tool will run in streaming mode automatically; without them it stays on the non-streaming path.
+- Handlers are invoked in parallel so a slow `onStream` callback will not block `on(...)` handlers (and vice versa).
+- `toolCallId` is provided when the tool was invoked via a model tool call; direct `invoke()` calls or provider quirks may omit it.
 
 ---
 
