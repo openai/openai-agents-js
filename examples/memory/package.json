@@ -11,6 +11,7 @@
     "start:memory-hitl": "tsx memory-hitl.ts",
     "start:oai": "tsx oai.ts",
     "start:oai-hitl": "tsx oai-hitl.ts",
+    "start:oai-compact": "tsx oai-compact.ts",
     "start:file": "tsx file.ts",
     "start:file-hitl": "tsx file-hitl.ts",
     "start:prisma": "pnpm prisma db push --schema ./prisma/schema.prisma && pnpm prisma generate --schema ./prisma/schema.prisma && tsx prisma.ts"

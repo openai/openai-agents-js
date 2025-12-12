@@ -550,6 +550,90 @@ describe('saveToSession', () => {
     expect(latest.type).toBe('function_call_result');
     expect(latest.callId).toBe(approvalCall.callId);
   });
+
+  it('propagates lastResponseId to sessions after persisting items', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.items];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async runCompaction(args: {
+        responseId: string | undefined;
+      }): Promise<void> {
+        this.events.push(`runCompaction:${args.responseId}`);
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Recorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_123',
+    });
+    state._generatedItems = [
+      new MessageOutputItem(
+        {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg_123',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'here is the reply',
+            },
+          ],
+          providerData: {},
+        },
+        textAgent,
+      ),
+    ];
+    state._currentStep = {
+      type: 'next_step_final_output',
+      output: 'here is the reply',
+    };
+
+    const result = new RunResult(state);
+    await saveToSession(session, toInputItemList(state._originalInput), result);
+
+    expect(session.events).toEqual(['addItems:2', 'runCompaction:resp_123']);
+    expect(session.items).toHaveLength(2);
+  });
 });
 
 describe('prepareInputItemsWithSession', () => {

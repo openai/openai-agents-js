@@ -5,6 +5,10 @@ import { convertToOutputItem, getInputItems } from '../openaiResponsesModel';
 import { protocol } from '@openai/agents-core';
 import type { ConversationItem as APIConversationItem } from 'openai/resources/conversations/items';
 import type { Message as APIConversationMessage } from 'openai/resources/conversations/conversations';
+import {
+  OPENAI_SESSION_API,
+  type OpenAISessionApiTagged,
+} from './openaiSessionApi';
 
 export type OpenAIConversationsSessionOptions = {
   conversationId?: string;
@@ -23,7 +27,12 @@ export async function startOpenAIConversationsSession(
   return response.id;
 }
 
-export class OpenAIConversationsSession implements Session {
+export class OpenAIConversationsSession
+  implements Session, OpenAISessionApiTagged<'conversations'>
+{
+  // Marks this session as backed by the Conversations API so Responses-only integrations can reject it.
+  readonly [OPENAI_SESSION_API] = 'conversations' as const;
+
   #client: OpenAI;
   #conversationId?: string;
 
