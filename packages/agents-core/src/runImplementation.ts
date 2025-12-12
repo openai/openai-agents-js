@@ -54,7 +54,7 @@ import { RunItemStreamEvent, RunItemStreamEventName } from './events';
 import { RunResult, StreamedRunResult } from './result';
 import { z } from 'zod';
 import * as protocol from './types/protocol';
-import { Computer } from './computer';
+import { Computer, isInvokeComputer } from './computer';
 import type { ApplyPatchResult } from './editor';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
@@ -1767,7 +1767,11 @@ export async function executeComputerActions(
     // Run the action and get screenshot
     let output: string;
     try {
-      output = await _runComputerActionAndScreenshot(computer, toolCall);
+      if (isInvokeComputer(computer)) {
+        output = await computer.invoke(runContext, toolCall);
+      } else {
+        output = await _runComputerActionAndScreenshot(computer, toolCall);
+      }
     } catch (err) {
       _logger.error('Failed to execute computer action:', err);
       output = '';

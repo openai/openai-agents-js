@@ -13,7 +13,7 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
-export { Computer } from './computer';
+export { Computer, asInvokeComputer, isInvokeComputer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
 export { ApplyPatchOperation, ApplyPatchResult, Editor } from './editor';
 export {

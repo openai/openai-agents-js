@@ -48,7 +48,7 @@ import {
 } from '../src/tool';
 import { handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
-import { Computer } from '../src/computer';
+import { Computer, asInvokeComputer } from '../src/computer';
 import { Usage } from '../src/usage';
 import { setTracingDisabled, withTrace } from '../src';
 
@@ -1855,7 +1855,7 @@ describe('executeFunctionToolCalls', () => {
   });
 });
 
-describe('executeComputerActions', () => {
+describe('executeComputerActions - original', () => {
   function makeComputer(): Computer {
     return {
       environment: 'mac',
@@ -1924,6 +1924,88 @@ describe('executeComputerActions', () => {
       scroll: async () => {},
       type: async () => {},
       wait: async () => {},
+    };
+    const tool = computerTool({ computer: comp });
+    const call = {
+      toolCall: {
+        id: 'id',
+        type: 'computer_call',
+        callId: 'id',
+        status: 'completed',
+        action: { type: 'click', x: 1, y: 1, button: 'left' },
+      } as protocol.ComputerUseCallItem,
+      computer: tool,
+    };
+    const res = await withTrace('test', () =>
+      executeComputerActions(
+        new Agent({ name: 'C' }),
+        [call],
+        new Runner({ tracingDisabled: true }),
+        new RunContext(),
+        { error: (_: string) => {} } as unknown as Logger,
+      ),
+    );
+
+    expect(res[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(res[0].type).toBe('tool_call_output_item');
+    expect(res[0].rawItem.type).toBe('computer_call_result');
+    expect((res[0].rawItem as any).output.data).toBe('');
+  });
+});
+
+describe('executeComputerActions - invoke', () => {
+  function makeComputer(): Computer {
+    return asInvokeComputer({
+      environment: 'mac',
+      dimensions: [1, 1],
+      invoke: vi.fn(async () => 'img')
+    });
+  }
+
+  const actions: protocol.ComputerAction[] = [
+    { type: 'click', x: 1, y: 2, button: 'left' },
+    { type: 'double_click', x: 2, y: 2 },
+    { type: 'drag', path: [{ x: 1, y: 1 }] },
+    { type: 'keypress', keys: ['a'] },
+    { type: 'move', x: 3, y: 3 },
+    { type: 'screenshot' },
+    { type: 'scroll', x: 0, y: 0, scroll_x: 0, scroll_y: 1 },
+    { type: 'type', text: 'hi' },
+    { type: 'wait' },
+  ];
+
+  it('invokes computer methods and returns screenshots', async () => {
+    const comp = makeComputer();
+    const tool = computerTool({ computer: comp });
+    const calls = actions.map((a, i) => ({
+      toolCall: {
+        id: `id${i}`,
+        type: 'computer_call',
+        callId: `id${i}`,
+        status: 'completed',
+        action: a,
+      } as protocol.ComputerUseCallItem,
+      computer: tool,
+    }));
+
+    const result = await withTrace('test', () =>
+      executeComputerActions(
+        new Agent({ name: 'C' }),
+        calls,
+        new Runner({ tracingDisabled: true }),
+        new RunContext(),
+      ),
+    );
+
+    expect(result).toHaveLength(actions.length);
+    expect(result.every((r) => r instanceof ToolCallOutputItem)).toBe(true);
+  });
+
+  it('throws if computer lacks screenshot', async () => {
+    const comp: any = {
+      environment: 'mac',
+      dimensions: [1, 1],
+      invoke: vi.fn(async () => null)
     };
     const tool = computerTool({ computer: comp });
     const call = {
