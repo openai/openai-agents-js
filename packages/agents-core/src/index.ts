@@ -136,7 +136,6 @@ export {
   FunctionTool,
   FunctionToolResult,
   Tool,
-  ToolOptions,
   tool,
   ToolExecuteArgument,
   ToolEnabledFunction,
