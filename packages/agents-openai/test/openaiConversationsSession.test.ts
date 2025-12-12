@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import type { OpenAIConversationsSessionOptions } from '../src';
 
 const { convertToOutputItemMock, getInputItemsMock } = vi.hoisted(() => ({
   convertToOutputItemMock: vi.fn(),
@@ -10,7 +11,10 @@ vi.mock('../src/openaiResponsesModel', () => ({
   getInputItems: getInputItemsMock,
 }));
 
-import { OpenAIConversationsSession } from '../src/memory/openaiConversationsSession';
+import { OpenAIConversationsSession } from '../src';
+
+const createSession = (options: OpenAIConversationsSessionOptions) =>
+  new OpenAIConversationsSession(options);
 
 describe('OpenAIConversationsSession', () => {
   beforeEach(() => {
@@ -54,7 +58,7 @@ describe('OpenAIConversationsSession', () => {
       },
     }));
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -103,7 +107,7 @@ describe('OpenAIConversationsSession', () => {
       },
     }));
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -163,7 +167,7 @@ describe('OpenAIConversationsSession', () => {
       },
     }));
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -244,7 +248,7 @@ describe('OpenAIConversationsSession', () => {
       },
     }));
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -311,7 +315,7 @@ describe('OpenAIConversationsSession', () => {
 
     const deleteMock = vi.fn();
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -359,7 +363,7 @@ describe('OpenAIConversationsSession', () => {
       },
     }));
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {
@@ -413,7 +417,7 @@ describe('OpenAIConversationsSession', () => {
 
     getInputItemsMock.mockReturnValue(converted as any);
 
-    const session = new OpenAIConversationsSession({
+    const session = createSession({
       client: {
         conversations: {
           items: {

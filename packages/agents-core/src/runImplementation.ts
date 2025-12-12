@@ -1357,6 +1357,16 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
               error: String(error),
             },
           });
+
+          // Emit agent_tool_end even on error to maintain consistent event lifecycle
+          const errorResult = String(error);
+          runner.emit('agent_tool_end', state._context, agent, toolRun.tool, errorResult, {
+            toolCall: toolRun.toolCall,
+          });
+          agent.emit('agent_tool_end', state._context, toolRun.tool, errorResult, {
+            toolCall: toolRun.toolCall,
+          });
+
           throw error;
         }
       },

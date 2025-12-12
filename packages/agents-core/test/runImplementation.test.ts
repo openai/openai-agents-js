@@ -1771,6 +1771,50 @@ describe('executeFunctionToolCalls', () => {
     expect(invokeSpy).toHaveBeenCalled();
   });
 
+  it('emits agent_tool_end even when function tool throws error', async () => {
+    const errorMessage = 'Tool execution failed';
+    const t = tool({
+      name: 'failing_tool',
+      description: 'A tool that throws an error',
+      parameters: z.object({}),
+      // Disable default error handler to force raw error propagation
+      errorFunction: null,
+      execute: vi.fn(async () => {
+        throw new Error(errorMessage);
+      }),
+    }) as any;
+
+    const start = vi.fn();
+    const end = vi.fn();
+    runner.on('agent_tool_start', start);
+    runner.on('agent_tool_end', end);
+
+    // Tool should throw because we disabled the error handler
+    await expect(
+      withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      ),
+    ).rejects.toThrow();
+
+    // Both start and end should be emitted, even though tool threw
+    expect(start).toHaveBeenCalledWith(state._context, state._currentAgent, t, {
+      toolCall,
+    });
+    expect(end).toHaveBeenCalled();
+    expect(end).toHaveBeenCalledWith(
+      state._context,
+      state._currentAgent,
+      t,
+      expect.stringContaining(errorMessage),
+      { toolCall },
+    );
+  });
+
   it('propagates nested run result interruptions when provided by agent tools', async () => {
     const t = makeTool(false);
     const nestedAgent = new Agent({ name: 'Nested' }) as Agent<
