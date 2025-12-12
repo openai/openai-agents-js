@@ -344,6 +344,7 @@ export class OpenAIChatCompletionsModel implements Model {
       response_format: responseFormat,
       parallel_tool_calls: parallelToolCalls,
       stream,
+      stream_options: stream ? { include_usage: true } : undefined,
       store: request.modelSettings.store,
       prompt_cache_retention: request.modelSettings.promptCacheRetention,
       ...providerData,

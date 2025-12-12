@@ -290,6 +290,248 @@ describe('Agent', () => {
     );
   });
 
+  it('streams nested agent events when onStream is provided and still returns final text', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+      {
+        type: 'raw_model_stream_event',
+        data: { type: 'output_text_delta', delta: 'hi' },
+      },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'final text' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const onStream = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+      onStream,
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      '{"input":"run streaming"}',
+    );
+
+    expect(output).toBe('final text');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(onStream).toHaveBeenCalledTimes(streamEvents.length);
+    expect(onStream).toHaveBeenCalledWith({
+      event: streamEvents[0],
+      agentName: agent.name,
+      toolCallId: undefined,
+    });
+  });
+
+  it('includes toolCallId and agentName when streaming from nested agent tools', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const onStream = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+      onStream,
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      '{"input":"run streaming"}',
+      { toolCall: { callId: 'call-123' } as any },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(onStream).toHaveBeenCalledWith({
+      agentName: 'Streamer Agent',
+      event: streamEvents[0],
+      toolCallId: 'call-123',
+    });
+  });
+
+  it('supports event handlers registered via on (agent tool only) and wildcard handlers', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+      {
+        type: 'run_item_stream_event',
+        name: 'message_output_created',
+        item: { type: 'message_output_item' },
+      },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const rawHandler = vi.fn();
+    const wildcardHandler = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+    });
+
+    tool.on('raw_model_stream_event', rawHandler).on('*', wildcardHandler);
+
+    const output = await tool.invoke(
+      new RunContext(),
+      '{"input":"run streaming"}',
+      { toolCall: { callId: 'call-abc' } as any },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(rawHandler).toHaveBeenCalledTimes(1);
+    expect(rawHandler).toHaveBeenCalledWith({
+      agentName: 'Streamer Agent',
+      event: streamEvents[0],
+      toolCallId: 'call-abc',
+    });
+    expect(wildcardHandler).toHaveBeenCalledTimes(streamEvents.length);
+  });
+
+  it('enables streaming when handlers are registered even without onStream', async () => {
+    const agent = new Agent({
+      name: 'Handler Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const handler = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+    });
+
+    tool.on('raw_model_stream_event', handler);
+
+    const output = await tool.invoke(
+      new RunContext(),
+      '{"input":"run streaming"}',
+      { toolCall: { callId: 'call-xyz' } as any },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(handler).toHaveBeenCalledWith({
+      agentName: 'Handler Agent',
+      event: streamEvents[0],
+      toolCallId: 'call-xyz',
+    });
+  });
+
   it('filters tools using isEnabled predicates', async () => {
     const conditionalTool = tool({
       name: 'conditional',

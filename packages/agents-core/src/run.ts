@@ -1183,6 +1183,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 output: parsed.response.output,
                 responseId: parsed.response.id,
               };
+              result.state._context.usage.add(finalResponse.usage);
             }
             if (result.cancelled) {
               // When the user's code exits a loop to consume the stream, we need to break
