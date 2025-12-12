@@ -300,6 +300,10 @@ export function itemsToMessages(
       result.push({
         ...item.providerData,
       } as any);
+    } else if (item.type === 'compaction') {
+      throw new UserError(
+        'Compaction items are not supported for chat completions. Please use the Responses API when working with compaction.',
+      );
     } else {
       const exhaustive = item satisfies never; // ensures that the type is exhaustive
       throw new Error(`Unknown item type: ${JSON.stringify(exhaustive)}`);

@@ -23,3 +23,7 @@ export {
   startOpenAIConversationsSession,
   type OpenAIConversationsSessionOptions,
 } from './memory/openaiConversationsSession';
+export {
+  OpenAIResponsesCompactionSession,
+  type OpenAIResponsesCompactionSessionOptions,
+} from './memory/openaiResponsesCompactionSession';
