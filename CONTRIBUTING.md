@@ -104,9 +104,9 @@ When opening an issue, include:
 
 1. Fork the repository and create a branch with a descriptive name (e.g., `fix/missing-error`, `feat/new-tool`).
 2. Ensure your branch is up to date with `main`.
-3. Make your changes, add or update tests, and ensure that:
+3. Make your changes, add or update tests, and ensure that the following succeeds:
    ```bash
-   pnpm build && pnpm test && pnpm lint
+   pnpm build && pnpm -r build-check && pnpm test && pnpm lint
    ```
 4. If applicable, generate a changeset (`pnpm changeset`).
 5. Make sure you have [Trufflehog](https://github.com/trufflesecurity/trufflehog) installed to ensure no secrets are accidentally committed.

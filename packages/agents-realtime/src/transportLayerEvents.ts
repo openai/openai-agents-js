@@ -44,6 +44,16 @@ export type InputAudioTranscriptionCompletedEvent = {
   type: 'conversation.item.input_audio_transcription.completed';
   item_id: string;
   transcript: string;
+  usage?: {
+    type: 'tokens';
+    total_tokens: number;
+    input_tokens: number;
+    input_token_details: {
+      text_tokens: number;
+      audio_tokens: number;
+    };
+    output_tokens: number;
+  };
 };
 
 export type TransportLayerTranscriptDelta = {

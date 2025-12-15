@@ -87,6 +87,136 @@ describe('content extraction helpers', () => {
     expect(() => extractAllUserContent(bad)).toThrow();
   });
 
+  test('extractAllUserContent converts input_file with data URL', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        filename: 'document.pdf',
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'document.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on https URL (not supported in Chat Completions)', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'https://example.com/document.pdf',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /Chat Completions only supports data URLs/,
+    );
+  });
+
+  test('extractAllUserContent converts input_file with file ID object', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: { id: 'file-abc123' },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_id: 'file-abc123',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on file URL object (not supported in Chat Completions)', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: { url: 'https://example.com/document.pdf' },
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires a data URL or file ID/,
+    );
+  });
+
+  test('extractAllUserContent gets filename from providerData', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        providerData: {
+          filename: 'from-provider.pdf',
+        },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'from-provider.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent prefers content filename over providerData', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        filename: 'content-filename.pdf',
+        providerData: {
+          filename: 'from-provider.pdf',
+        },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'content-filename.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on unsupported file string format', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'not-a-valid-url-or-data',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /use an object with the id property/,
+    );
+  });
+
+  test('extractAllUserContent throws when file is missing', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires a data URL or file ID/,
+    );
+  });
+
   test('extractAllAssistantContent converts supported entries and ignores images/audio', () => {
     const assistantContent: protocol.AssistantMessageItem['content'] = [
       { type: 'output_text', text: 'hi', providerData: { b: 2 } },
@@ -220,6 +350,95 @@ describe('itemsToMessages', () => {
         reasoning: 'why',
       },
     ]);
+  });
+
+  test('propagates providerData from function_call to assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'myFunc',
+        arguments: '{"x":1}',
+        status: 'in_progress',
+        providerData: { custom_field: 'value', another: 123 },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).custom_field).toBe('value');
+    expect((msgs[0] as any).another).toBe(123);
+  });
+
+  test('propagates providerData from function_call_result to tool message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: 'result',
+        providerData: { extra: 'data' },
+      } as protocol.FunctionCallResultItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(2);
+    expect((msgs[1] as any).extra).toBe('data');
+  });
+
+  test('handles function_call without providerData gracefully', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).tool_calls).toHaveLength(1);
+  });
+
+  test('merges providerData from multiple function_calls into single assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f1',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_first: true },
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call',
+        id: '2',
+        callId: 'call2',
+        name: 'f2',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_second: true },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect((msgs[0] as any).tool_calls).toHaveLength(2);
+    expect((msgs[0] as any).from_first).toBe(true);
+    expect((msgs[0] as any).from_second).toBe(true);
   });
 });
 

@@ -671,6 +671,23 @@ export class AiSdkModel implements Model {
         const output: ModelResponse['output'] = [];
 
         const resultContent = (result as any).content ?? [];
+
+        // Extract and add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
+        const reasoningParts = resultContent.filter(
+          (c: any) => c && c.type === 'reasoning',
+        );
+        for (const reasoningPart of reasoningParts) {
+          const reasoningText =
+            typeof reasoningPart.text === 'string' ? reasoningPart.text : '';
+          output.push({
+            type: 'reasoning',
+            content: [{ type: 'input_text', text: reasoningText }],
+            rawContent: [{ type: 'reasoning_text', text: reasoningText }],
+            // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
+            providerData: reasoningPart.providerMetadata ?? undefined,
+          });
+        }
+
         const toolCalls = resultContent.filter(
           (c: any) => c && c.type === 'tool-call',
         );
@@ -784,22 +801,38 @@ export class AiSdkModel implements Model {
             data: {
               error:
                 request.tracing === true
-                  ? String(error)
-                  : error instanceof Error
-                    ? error.name
-                    : undefined,
+                  ? {
+                      name: error.name,
+                      message: error.message,
+                      // Include AI SDK specific error fields if they exist.
+                      ...(typeof error === 'object' && error !== null
+                        ? {
+                            ...('responseBody' in error
+                              ? { responseBody: (error as any).responseBody }
+                              : {}),
+                            ...('responseHeaders' in error
+                              ? {
+                                  responseHeaders: (error as any)
+                                    .responseHeaders,
+                                }
+                              : {}),
+                            ...('statusCode' in error
+                              ? { statusCode: (error as any).statusCode }
+                              : {}),
+                            ...('cause' in error
+                              ? { cause: (error as any).cause }
+                              : {}),
+                          }
+                        : {}),
+                    }
+                  : error.name,
             },
           });
         } else {
           span.setError({
             message: 'Unknown error',
             data: {
-              error:
-                request.tracing === true
-                  ? String(error)
-                  : error instanceof Error
-                    ? error.name
-                    : undefined,
+              error: request.tracing === true ? String(error) : undefined,
             },
           });
         }
@@ -892,6 +925,15 @@ export class AiSdkModel implements Model {
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
 
+      // State for tracking reasoning blocks (for Anthropic extended thinking)
+      const reasoningBlocks: Record<
+        string,
+        {
+          text: string;
+          providerMetadata?: Record<string, any>;
+        }
+      > = {};
+
       for await (const part of stream) {
         if (!started) {
           started = true;
@@ -907,6 +949,40 @@ export class AiSdkModel implements Model {
             }
             textOutput.text += (part as any).delta;
             yield { type: 'output_text_delta', delta: (part as any).delta };
+            break;
+          }
+          case 'reasoning-start': {
+            // Start tracking a new reasoning block
+            const reasoningId = (part as any).id ?? 'default';
+            reasoningBlocks[reasoningId] = {
+              text: '',
+              providerMetadata: (part as any).providerMetadata,
+            };
+            break;
+          }
+          case 'reasoning-delta': {
+            // Accumulate reasoning text
+            const reasoningId = (part as any).id ?? 'default';
+            if (!reasoningBlocks[reasoningId]) {
+              reasoningBlocks[reasoningId] = {
+                text: '',
+                providerMetadata: (part as any).providerMetadata,
+              };
+            }
+            reasoningBlocks[reasoningId].text += (part as any).delta ?? '';
+            break;
+          }
+          case 'reasoning-end': {
+            // Capture final provider metadata (may contain signature)
+            const reasoningId = (part as any).id ?? 'default';
+            if (
+              reasoningBlocks[reasoningId] &&
+              (part as any).providerMetadata
+            ) {
+              reasoningBlocks[reasoningId].providerMetadata = (
+                part as any
+              ).providerMetadata;
+            }
             break;
           }
           case 'tool-call': {
@@ -951,6 +1027,24 @@ export class AiSdkModel implements Model {
       }
 
       const outputs: protocol.OutputModelItem[] = [];
+
+      // Add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
+      // Emit reasoning item even when text is empty to preserve signature in providerData for redacted thinking streams
+      for (const [reasoningId, reasoningBlock] of Object.entries(
+        reasoningBlocks,
+      )) {
+        if (reasoningBlock.text || reasoningBlock.providerMetadata) {
+          outputs.push({
+            type: 'reasoning',
+            id: reasoningId !== 'default' ? reasoningId : undefined,
+            content: [{ type: 'input_text', text: reasoningBlock.text }],
+            rawContent: [{ type: 'reasoning_text', text: reasoningBlock.text }],
+            // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
+            providerData: reasoningBlock.providerMetadata ?? undefined,
+          });
+        }
+      }
+
       if (textOutput) {
         outputs.push({
           type: 'message',
@@ -999,11 +1093,37 @@ export class AiSdkModel implements Model {
     } catch (error) {
       if (span) {
         span.setError({
-          message: 'Error streaming response',
+          message:
+            error instanceof Error ? error.message : 'Error streaming response',
           data: {
             error:
               request.tracing === true
-                ? String(error)
+                ? error instanceof Error
+                  ? {
+                      name: error.name,
+                      message: error.message,
+                      // Include AI SDK specific error fields if they exist.
+                      ...(typeof error === 'object' && error !== null
+                        ? {
+                            ...('responseBody' in error
+                              ? { responseBody: (error as any).responseBody }
+                              : {}),
+                            ...('responseHeaders' in error
+                              ? {
+                                  responseHeaders: (error as any)
+                                    .responseHeaders,
+                                }
+                              : {}),
+                            ...('statusCode' in error
+                              ? { statusCode: (error as any).statusCode }
+                              : {}),
+                            ...('cause' in error
+                              ? { cause: (error as any).cause }
+                              : {}),
+                          }
+                        : {}),
+                    }
+                  : String(error)
                 : error instanceof Error
                   ? error.name
                   : undefined,

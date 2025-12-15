@@ -138,6 +138,18 @@ export const conversationItemInputAudioTranscriptionCompletedEventSchema =
     content_index: z.number(),
     transcript: z.string(),
     logprobs: z.array(z.any()).nullable().optional(),
+    usage: z
+      .object({
+        type: z.literal('tokens'),
+        total_tokens: z.number(),
+        input_tokens: z.number(),
+        input_token_details: z.object({
+          text_tokens: z.number(),
+          audio_tokens: z.number(),
+        }),
+        output_tokens: z.number(),
+      })
+      .optional(),
   });
 
 export const conversationItemInputAudioTranscriptionDeltaEventSchema = z.object(

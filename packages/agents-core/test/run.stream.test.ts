@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   Agent,
   AgentInputItem,
+  MaxTurnsExceededError,
   run,
   Runner,
   setDefaultModelProvider,
@@ -209,6 +210,243 @@ describe('Runner.run (streaming)', () => {
     expect(runnerEndEvents[0].output).toBe('Final output');
   });
 
+  it('emits turn input on agent_start during streaming runs', async () => {
+    class LifecycleStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('Final output')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r_lifecycle',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('Final output')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamLifecycleAgent',
+      model: new LifecycleStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const agentInputs: AgentInputItem[][] = [];
+    const runnerInputs: AgentInputItem[][] = [];
+
+    agent.on('agent_start', (_context, _agent, turnInput) => {
+      agentInputs.push(turnInput ?? []);
+    });
+    runner.on('agent_start', (_context, _agent, turnInput) => {
+      runnerInputs.push(turnInput ?? []);
+    });
+
+    const result = await runner.run(agent, 'stream this input', {
+      stream: true,
+    });
+
+    // Drain the stream to ensure the run completes.
+    for await (const _event of result.toStream()) {
+      // no-op
+    }
+    await result.completed;
+
+    expect(agentInputs).toHaveLength(1);
+    expect(runnerInputs).toHaveLength(1);
+    expect(agentInputs[0].map(getFirstTextContent)).toEqual([
+      'stream this input',
+    ]);
+    expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
+      'stream this input',
+    ]);
+  });
+
+  it('updates cumulative usage during streaming responses', async () => {
+    const testTool = tool({
+      name: 'calculator',
+      description: 'Does math',
+      parameters: z.object({ value: z.number() }),
+      execute: async ({ value }) => `result: ${value * 2}`,
+    });
+
+    const firstResponse: ModelResponse = {
+      output: [
+        {
+          type: 'function_call',
+          id: 'fc_1',
+          callId: 'call_1',
+          name: 'calculator',
+          status: 'completed',
+          arguments: JSON.stringify({ value: 5 }),
+        } as protocol.FunctionCallItem,
+      ],
+      usage: new Usage({ inputTokens: 10, outputTokens: 5, totalTokens: 15 }),
+    };
+
+    const secondResponse: ModelResponse = {
+      output: [fakeModelMessage('The answer is 10')],
+      usage: new Usage({ inputTokens: 20, outputTokens: 10, totalTokens: 30 }),
+    };
+
+    class MultiTurnStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const current = this.#callCount++;
+        return current === 0 ? firstResponse : secondResponse;
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'UsageTracker',
+      model: new MultiTurnStreamingModel(),
+      tools: [testTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'calculate', { stream: true });
+
+    const totals: number[] = [];
+    for await (const event of result.toStream()) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'response_done'
+      ) {
+        totals.push(result.state.usage.totalTokens);
+      }
+    }
+    await result.completed;
+
+    expect(totals).toEqual([15, 45]);
+    expect(result.state.usage.inputTokens).toBe(30);
+    expect(result.state.usage.outputTokens).toBe(15);
+    expect(result.state.usage.requestUsageEntries?.length).toBe(2);
+    expect(result.finalOutput).toBe('The answer is 10');
+  });
+
+  it('allows aborting a stream based on cumulative usage', async () => {
+    const testTool = tool({
+      name: 'expensive',
+      description: 'Uses lots of tokens',
+      parameters: z.object({}),
+      execute: async () => 'expensive result',
+    });
+
+    const responses: ModelResponse[] = [
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            callId: 'call_1',
+            name: 'expensive',
+            status: 'completed',
+            arguments: '{}',
+          } as protocol.FunctionCallItem,
+        ],
+        usage: new Usage({
+          inputTokens: 5000,
+          outputTokens: 2000,
+          totalTokens: 7000,
+        }),
+      },
+      {
+        output: [fakeModelMessage('continuing...')],
+        usage: new Usage({
+          inputTokens: 6000,
+          outputTokens: 3000,
+          totalTokens: 9000,
+        }),
+      },
+    ];
+
+    class ExpensiveStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return responses[this.#callCount++] ?? responses[responses.length - 1];
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ExpensiveAgent',
+      model: new ExpensiveStreamingModel(),
+      tools: [testTool],
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(agent, 'do expensive work', {
+      stream: true,
+    });
+
+    const MAX_TOKENS = 10_000;
+    let aborted = false;
+
+    for await (const event of result.toStream()) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'response_done' &&
+        result.state.usage.totalTokens > MAX_TOKENS
+      ) {
+        aborted = true;
+        break;
+      }
+    }
+
+    expect(aborted).toBe(true);
+    expect(result.state.usage.totalTokens).toBe(16_000);
+    expect(result.finalOutput).toBeUndefined();
+  });
+
   it('streams tool_called before the tool finishes executing', async () => {
     let releaseTool: (() => void) | undefined;
     const toolExecuted = vi.fn();
@@ -337,6 +575,170 @@ describe('Runner.run (streaming)', () => {
     expect(toolCalledIndex).toBeGreaterThan(-1);
     expect(toolOutputIndex).toBeGreaterThan(-1);
     expect(toolCalledIndex).toBeLessThan(toolOutputIndex);
+  });
+
+  it('enforces maxTurns across multiple streamed model calls', async () => {
+    // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
+    // With maxTurns=1, we should only allow 1 model call, but currently allows 2.
+    const testTool = tool({
+      name: 'test_tool',
+      description: 'A test tool',
+      parameters: z.object({}),
+      execute: async () => 'result',
+    });
+
+    const firstResponse: ModelResponse = {
+      output: [
+        {
+          type: 'function_call',
+          id: 'fc_1',
+          callId: 'call_1',
+          name: 'test_tool',
+          status: 'completed',
+          arguments: '{}',
+          providerData: {},
+        } as protocol.FunctionCallItem,
+      ],
+      usage: new Usage(),
+    };
+    const secondResponse: ModelResponse = {
+      output: [fakeModelMessage('second')],
+      usage: new Usage(),
+    };
+
+    class SimpleStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const current = this.#callCount++;
+        return current === 0 ? firstResponse : secondResponse;
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamTurnCounter',
+      model: new SimpleStreamingModel(),
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    // With maxTurns=1, this should throw MaxTurnsExceededError after the first model call
+    // Currently fails because turn counter doesn't advance after first call
+    const result = await run(agent, 'hi', { stream: true, maxTurns: 1 });
+    await expect(result.completed).rejects.toBeInstanceOf(
+      MaxTurnsExceededError,
+    );
+  });
+
+  it('does not advance the turn for streaming runs resuming an interruption without persisted items', async () => {
+    const approvalTool = tool({
+      name: 'get_weather',
+      description: 'Gets weather for a city.',
+      parameters: z.object({ city: z.string() }),
+      needsApproval: async () => true,
+      execute: async ({ city }) => `Weather in ${city}`,
+    });
+
+    class ApprovalStreamingModel implements Model {
+      constructor(private readonly responses: ModelResponse[]) {}
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        return response;
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<protocol.StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'approval-stream',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as protocol.StreamEvent;
+      }
+    }
+
+    const modelResponses: ModelResponse[] = [
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_stream',
+            callId: 'call_weather_stream',
+            name: 'get_weather',
+            status: 'completed',
+            arguments: JSON.stringify({ city: 'Seattle' }),
+            providerData: {},
+          } as protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      { output: [fakeModelMessage('Stream done.')], usage: new Usage() },
+    ];
+
+    const agent = new Agent({
+      name: 'ApprovalStreamResume',
+      model: new ApprovalStreamingModel(modelResponses),
+      tools: [approvalTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    let result = await run(agent, 'Stream weather?', {
+      maxTurns: 1,
+      stream: true,
+    });
+
+    for await (const _event of result.toStream()) {
+      // Consume stream.
+    }
+    await result.completed;
+
+    expect(result.interruptions).toHaveLength(1);
+    expect(result.state._currentTurn).toBe(1);
+    expect(result.state._currentTurnPersistedItemCount).toBe(0);
+
+    result.state.approve(result.interruptions[0]);
+
+    result = await run(agent, result.state, { maxTurns: 1, stream: true });
+
+    for await (const _event of result.toStream()) {
+      // Consume stream.
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('Stream done.');
+    expect(result.state._currentTurn).toBe(1);
   });
 
   it('emits run item events in the order items are generated', async () => {

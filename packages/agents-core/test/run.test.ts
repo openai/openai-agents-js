@@ -123,6 +123,41 @@ describe('Runner.run', () => {
       ]);
     });
 
+    it('emits turn input on agent_start lifecycle hooks', async () => {
+      const model = new FakeModel([
+        {
+          output: [fakeModelMessage('Acknowledged')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'LifecycleInputAgent',
+        model,
+      });
+      const runner = new Runner();
+
+      const agentInputs: AgentInputItem[][] = [];
+      const runnerInputs: AgentInputItem[][] = [];
+
+      agent.on('agent_start', (_context, _agent, turnInput) => {
+        agentInputs.push(turnInput ?? []);
+      });
+      runner.on('agent_start', (_context, _agent, turnInput) => {
+        runnerInputs.push(turnInput ?? []);
+      });
+
+      await runner.run(agent, 'capture this input for tracing');
+
+      expect(agentInputs).toHaveLength(1);
+      expect(runnerInputs).toHaveLength(1);
+      expect(agentInputs[0].map(getFirstTextContent)).toEqual([
+        'capture this input for tracing',
+      ]);
+      expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
+        'capture this input for tracing',
+      ]);
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {
@@ -696,6 +731,159 @@ describe('Runner.run', () => {
       );
     });
 
+    it('enforces maxTurns across multiple model calls', async () => {
+      // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
+      // With maxTurns=1, we should only allow 1 model call, but currently allows 2.
+      const testTool = tool({
+        name: 'test_tool',
+        description: 'A test tool',
+        parameters: z.object({}),
+        execute: async () => 'result',
+      });
+
+      const agent = new Agent({
+        name: 'TurnCounter',
+        model: new FakeModel([
+          // First call: tool call
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'test_tool',
+                status: 'completed',
+                arguments: '{}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second call: should be blocked by maxTurns=1
+          { output: [fakeModelMessage('second')], usage: new Usage() },
+        ]),
+        tools: [testTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      // With maxTurns=1, this should throw MaxTurnsExceededError after the first model call
+      // Currently fails because turn counter doesn't advance after first call
+      await expect(run(agent, 'x', { maxTurns: 1 })).rejects.toBeInstanceOf(
+        MaxTurnsExceededError,
+      );
+    });
+
+    it('enforces maxTurns across resumed interruptions', async () => {
+      // Bug: After resuming from interruption, ALL subsequent calls are treated as same turn
+      // because _lastTurnResponse is still set. The first post-interruption call should NOT
+      // advance the turn, but the second call SHOULD advance the turn.
+      const testTool = tool({
+        name: 'test_tool',
+        description: 'A test tool',
+        parameters: z.object({}),
+        execute: async () => 'result',
+      });
+
+      const agent = new Agent({
+        name: 'ResumeTurnCounter',
+        model: new FakeModel([
+          // First post-interruption call: should NOT advance turn (still turn 1)
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'test_tool',
+                status: 'completed',
+                arguments: '{}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second call: SHOULD advance turn to 2, then maxTurns=1 should throw
+          { output: [fakeModelMessage('second')], usage: new Usage() },
+        ]),
+        tools: [testTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      // Simulate a resumed state after an interruption
+      const resumedState = new RunState(new RunContext(), 'x', agent, 1);
+      resumedState._currentTurn = 1;
+      resumedState._currentTurnPersistedItemCount = 0;
+      resumedState._currentStep = { type: 'next_step_run_again' };
+      // Set these to simulate a state that was resumed from interruption
+      resumedState._lastTurnResponse = {
+        output: [fakeModelMessage('previous')],
+        usage: new Usage(),
+      };
+      resumedState._lastProcessedResponse = {
+        newItems: [],
+        functions: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        handoffs: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+      } as any;
+
+      // With maxTurns=1, after the first post-interruption call completes and tries to make
+      // a second call, the turn should advance to 2 and then throw MaxTurnsExceededError.
+      // Currently fails because turn counter doesn't advance after first post-interruption call.
+      await expect(
+        run(agent, resumedState, { maxTurns: 1 }),
+      ).rejects.toBeInstanceOf(MaxTurnsExceededError);
+    });
+
+    it('does not advance the turn when resuming an interruption without persisted items', async () => {
+      const approvalTool = tool({
+        name: 'get_weather',
+        description: 'Gets weather for a city.',
+        parameters: z.object({ city: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ city }) => `Weather in ${city}`,
+      });
+
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_1',
+              callId: 'call_weather_1',
+              name: 'get_weather',
+              status: 'completed',
+              arguments: JSON.stringify({ city: 'Seattle' }),
+              providerData: {},
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('All set.')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalResume',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      let result = await run(agent, 'How is the weather?', { maxTurns: 1 });
+      expect(result.interruptions).toHaveLength(1);
+      expect(result.state._currentTurn).toBe(1);
+      expect(result.state._currentTurnPersistedItemCount).toBe(0);
+
+      result.state.approve(result.interruptions[0]);
+
+      result = await run(agent, result.state, { maxTurns: 1 });
+      expect(result.finalOutput).toBe('All set.');
+      expect(result.state._currentTurn).toBe(1);
+    });
+
     it('does nothing when no input guardrails are configured', async () => {
       setTracingDisabled(false);
       setTraceProcessors([new BatchTraceProcessor(new FakeTracingExporter())]);
@@ -1234,6 +1422,101 @@ describe('Runner.run', () => {
         };
         expect(savedHostedCall.providerData).toEqual(hostedCall.providerData);
         expect(savedHostedCall.id).toBe('approval-1');
+      });
+
+      it('prevents duplicate function_call items when resuming from interruption after tool approval', async () => {
+        // Regression test for issue #701
+        //
+        // Bug: When resuming a turn after approving a tool call, duplicate function_call items
+        // were saved to the session. The bug occurred because _currentTurnPersistedItemCount
+        // was incorrectly reset to 0 after resolveInterruptedTurn returned next_step_run_again,
+        // causing saveToSession to save all items from the beginning of the turn, including
+        // the already-persisted function_call item.
+        //
+        // Expected behavior: Only 1 function_call item should be saved to the session.
+        // Buggy behavior: 2 function_call items (duplicate) were saved.
+        //
+        // Test scenario:
+        // 1. Initial run with tool requiring approval creates an interruption
+        // 2. Tool call is approved
+        // 3. Run is resumed with the approved state
+        // 4. Session should contain exactly 1 function_call item (not 2)
+
+        const getWeatherTool = tool({
+          name: 'get_weather',
+          description: 'Get weather for a city',
+          parameters: z.object({ city: z.string() }),
+          needsApproval: async () => true, // Require approval for all calls
+          execute: async ({ city }) => `Sunny, 72°F in ${city}`,
+        });
+
+        const model = new FakeModel([
+          // First response: tool call that requires approval
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_weather_1',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second response: after approval, final answer
+          {
+            output: [fakeModelMessage('The weather is sunny in Oakland.')],
+            usage: new Usage(),
+          },
+        ]);
+
+        const agent = new Agent({
+          name: 'Assistant',
+          instructions: 'Use get_weather tool to answer weather questions.',
+          model,
+          tools: [getWeatherTool],
+          toolUseBehavior: 'run_llm_again', // Must use 'run_llm_again' so resolveInterruptedTurn returns next_step_run_again
+        });
+
+        const session = new MemorySession();
+
+        // Use sessionInputCallback to match the scenario from issue #701
+        const sessionInputCallback = async (
+          historyItems: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => {
+          return [...historyItems, ...newItems];
+        };
+
+        // Step 1: Initial run creates an interruption for tool approval
+        let result = await run(
+          agent,
+          [{ role: 'user', content: "What's the weather in Oakland?" }],
+          { session, sessionInputCallback },
+        );
+
+        // Step 2: Approve the tool call
+        for (const interruption of result.interruptions || []) {
+          result.state.approve(interruption);
+        }
+
+        // Step 3: Resume the run with the approved state
+        // Note: No sessionInputCallback on resume - this is part of the bug scenario
+        result = await run(agent, result.state, { session });
+
+        // Step 4: Verify only one function_call item exists in the session
+        const allItems = await session.getItems();
+        const functionCalls = allItems.filter(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' && item.callId === 'call_weather_1',
+        );
+
+        // The bug would cause 2 function_call items to be saved (duplicate)
+        // The fix ensures only 1 function_call item is saved
+        expect(functionCalls).toHaveLength(1);
       });
     });
   });

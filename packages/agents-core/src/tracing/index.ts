@@ -17,9 +17,24 @@ export {
   ConsoleSpanExporter,
 } from './processor';
 export { NoopSpan, Span } from './spans';
+export type {
+  SpanData,
+  AgentSpanData,
+  FunctionSpanData,
+  GenerationSpanData,
+  ResponseSpanData,
+  HandoffSpanData,
+  CustomSpanData,
+  GuardrailSpanData,
+  TranscriptionSpanData,
+  SpeechSpanData,
+  SpeechGroupSpanData,
+  MCPListToolsSpanData,
+  SpanOptions,
+  SpanError,
+} from './spans';
 export { NoopTrace, Trace } from './traces';
 export { generateGroupId, generateSpanId, generateTraceId } from './utils';
-export type { MCPListToolsSpanData } from './spans';
 
 /**
  * Add a processor to the list of processors. Each processor will receive all traces/spans.

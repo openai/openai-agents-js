@@ -3,6 +3,7 @@ import {
   OutputGuardrailTripwireTriggered,
   RunContext,
   RunToolApprovalItem,
+  AgentInputItem,
 } from '@openai/agents-core';
 import { RealtimeGuardrailMetadata } from './guardrail';
 import { RealtimeItem, RealtimeMcpCallItem } from './items';
@@ -39,6 +40,7 @@ export type RealtimeSessionEventTypes<TContext = unknown> = {
   agent_start: [
     context: RunContext<RealtimeContextData<TContext>>,
     agent: AgentWithOrWithoutHistory<TContext>,
+    turnInput?: AgentInputItem[],
   ];
 
   /**

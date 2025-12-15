@@ -96,11 +96,40 @@ export function extractAllUserContent(
         ...rest,
       });
     } else if (c.type === 'input_file') {
-      throw new Error(
-        `File uploads are not supported for chat completions: ${JSON.stringify(
-          c,
-        )}`,
-      );
+      // Chat Completions API supports file inputs via the "file" content part type.
+      // See: https://platform.openai.com/docs/guides/pdf-files?api-mode=chat
+      const file: ChatCompletionContentPart.File['file'] = {};
+
+      if (typeof c.file === 'string') {
+        const value = c.file.trim();
+        if (value.startsWith('data:')) {
+          file.file_data = value;
+        } else {
+          throw new UserError(
+            `Chat Completions only supports data URLs for file input. If you're trying to pass an uploaded file's ID, use an object with the id property instead: ${JSON.stringify(c)}`,
+          );
+        }
+      } else if (c.file && typeof c.file === 'object' && 'id' in c.file) {
+        file.file_id = (c.file as { id: string }).id;
+      } else {
+        throw new UserError(
+          `File input requires a data URL or file ID: ${JSON.stringify(c)}`,
+        );
+      }
+
+      // Handle filename from the content item or providerData
+      if (c.filename) {
+        file.filename = c.filename;
+      } else if (c.providerData?.filename) {
+        file.filename = c.providerData.filename;
+      }
+
+      const { filename: _filename, ...rest } = c.providerData || {};
+      out.push({
+        type: 'file',
+        file,
+        ...rest,
+      });
     } else if (c.type === 'audio') {
       const { input_audio, ...rest } = c.providerData || {};
       out.push({
@@ -255,6 +284,7 @@ export function itemsToMessages(
         },
       });
       asst.tool_calls = toolCalls;
+      Object.assign(asst, funcCall.providerData);
     } else if (item.type === 'function_call_result') {
       flushAssistantMessage();
       const funcOutput = item;
