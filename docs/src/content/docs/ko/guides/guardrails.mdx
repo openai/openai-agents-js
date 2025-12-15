@@ -7,7 +7,7 @@ import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 
-가드레일은 에이전트와 함께 실행되거나 완료될 때까지 실행을 차단하여, 사용자 입력이나 에이전트 출력에 대한 검사와 검증을 수행할 수 있게 합니다. 예를 들어, 비용이 많이 드는 모델을 호출하기 전에 경량 모델을 가드레일로 실행할 수 있습니다. 가드레일이 악의적 사용을 감지하면 오류를 발생시켜 비용이 큰 모델의 실행을 중지할 수 있습니다.
+가드레일은 에이전트와 함께 실행되거나 완료될 때까지 실행을 차단하여, 사용자 입력 또는 에이전트 출력에 대한 점검과 유효성 검사를 수행할 수 있습니다. 예를 들어, 비용이 많이 드는 모델을 호출하기 전에 가벼운 모델을 가드레일로 실행할 수 있습니다. 가드레일이 악의적 사용을 감지하면 오류를 발생시켜 비용이 큰 모델의 실행을 중단할 수 있습니다.
 
 가드레일에는 두 가지 종류가 있습니다:
 
@@ -19,40 +19,40 @@ import outputGuardrailExample from '../../../../../../examples/docs/guardrails/g
 입력 가드레일은 세 단계로 실행됩니다:
 
 1. 가드레일은 에이전트에 전달된 것과 동일한 입력을 받습니다.
-2. 가드레일 함수가 실행되고 [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) 내부에 래핑된 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을 반환합니다.
+2. 가드레일 함수가 실행되고 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을 반환하며, 이는 [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult)로 래핑됩니다.
 3. `tripwireTriggered`가 `true`이면 [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) 오류가 발생합니다.
 
 > **Note**
-> 입력 가드레일은 사용자 입력을 위한 것이므로, 워크플로에서 해당 에이전트가 _첫 번째_ 에이전트일 때만 실행됩니다. 서로 다른 에이전트는 종종 다른 가드레일을 필요로 하므로 가드레일은 에이전트 자체에 구성됩니다.
+> 입력 가드레일은 사용자 입력을 위한 것으로, 에이전트가 워크플로에서 _첫 번째_ 에이전트인 경우에만 실행됩니다. 가드레일은 서로 다른 에이전트가 종종 다른 가드레일을 필요로 하므로 에이전트 자체에 구성합니다.
 
 ### 실행 모드
 
-- `runInParallel: true`(기본값)는 가드레일을 LLM/도구 호출과 함께 시작합니다. 이는 지연 시간을 최소화하지만, 가드레일이 나중에 트리거되면 모델이 이미 토큰을 소비했거나 도구를 실행했을 수 있습니다.
-- `runInParallel: false`는 모델을 호출하기 **전에** 가드레일을 실행하여, 가드레일이 요청을 차단할 때 토큰 사용과 도구 실행을 방지합니다. 지연 시간보다 안전성과 비용을 우선할 때 사용하세요.
+- `runInParallel: true`(기본값)는 가드레일을 LLM/도구 호출과 함께 시작합니다. 지연 시간을 최소화하지만, 이후 가드레일이 트리거되더라도 모델이 이미 토큰을 소모했거나 도구를 실행했을 수 있습니다
+- `runInParallel: false`는 가드레일을 모델 호출 **이전에** 실행하여, 가드레일이 요청을 차단할 때 토큰 사용과 도구 실행을 방지합니다. 지연 시간보다 안전성과 비용을 우선할 때 사용하세요
 
 ## 출력 가드레일
 
 출력 가드레일은 3단계로 실행됩니다:
 
 1. 가드레일은 에이전트가 생성한 출력을 받습니다.
-2. 가드레일 함수가 실행되고 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 내부에 래핑된 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을 반환합니다.
+2. 가드레일 함수가 실행되고 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을 반환하며, 이는 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult)로 래핑됩니다.
 3. `tripwireTriggered`가 `true`이면 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 오류가 발생합니다.
 
 > **Note**
-> 출력 가드레일은 워크플로에서 에이전트가 _마지막_ 에이전트일 때만 실행됩니다. 실시간 음성 상호작용은 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참조하세요.
+> 출력 가드레일은 에이전트가 워크플로에서 _마지막_ 에이전트인 경우에만 실행됩니다. 실시간 음성 상호작용은 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참고하세요.
 
 ## 트립와이어
 
-가드레일이 실패하면 트립와이어를 통해 이를 신호합니다. 트립와이어가 트리거되는 즉시 러너가 해당 오류를 발생시키고 실행을 중단합니다.
+가드레일이 실패하면 트립와이어를 통해 이를 신호합니다. 트립와이어가 트리거되는 즉시 러너는 해당 오류를 발생시키고 실행을 중단합니다.
 
 ## 가드레일 구현
 
-가드레일은 `GuardrailFunctionOutput`을 반환하는 간단한 함수입니다. 아래는 내부적으로 다른 에이전트를 실행하여 사용자가 수학 숙제 도움을 요청하는지 확인하는 최소 예제입니다.
+가드레일은 `GuardrailFunctionOutput`을 반환하는 간단한 함수입니다. 아래는 내부적으로 다른 에이전트를 실행하여 사용자가 수학 숙제 도움을 요청하는지 확인하는 최소 예시입니다.
 
 <Code
   lang="typescript"
   code={inputGuardrailExample}
-  title="입력 가드레일 예제"
+  title="Input guardrail example"
 />
 
 출력 가드레일도 동일한 방식으로 동작합니다.
@@ -60,7 +60,7 @@ import outputGuardrailExample from '../../../../../../examples/docs/guardrails/g
 <Code
   lang="typescript"
   code={outputGuardrailExample}
-  title="출력 가드레일 예제"
+  title="Output guardrail example"
 />
 
 1. `guardrailAgent`는 가드레일 함수 내부에서 사용됩니다.

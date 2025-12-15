@@ -9,7 +9,7 @@ import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nod
 import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 
-Agents SDK は、モデルやその他の実行ステップからの出力を段階的に配信できます。ストリーミングにより UI を応答性よく保ち、エージェントの最終的な実行結果全体を待たずに ユーザー を更新できます。
+Agents SDK は、モデルやその他の実行ステップからの出力を段階的に配信できます。ストリーミングにより UI を応答性よく保ち、エンドユーザーへの更新のために最終的な実行結果全体を待つ必要がなくなります。
 
 ## ストリーミングの有効化
 
@@ -18,39 +18,39 @@ Agents SDK は、モデルやその他の実行ステップからの出力を段
 <Code
   lang="typescript"
   code={basicStreamingExample}
-  title="ストリーミングを有効化"
+  title="ストリーミングの有効化"
 />
 
-ストリーミングが有効な場合、返される `stream` は `AsyncIterable` インターフェースを実装します。各イベントは、その実行内で何が起こったかを表すオブジェクトです。ストリームは 3 種類のイベントを出力し、それぞれがエージェントの実行の異なる部分を表します。多くのアプリケーションはモデルのテキストだけが必要なので、ストリームはそのためのヘルパーを提供します。
+ストリーミングを有効にすると、返される `stream` は `AsyncIterable` インターフェースを実装します。各イテレーションで、実行内で何が起きたかを記述するオブジェクトがイベントとして渡されます。ストリームは、エージェントの実行の異なる部分を表す 3 種類のイベントを返します。多くのアプリケーションはモデルのテキストのみが必要なため、ストリームにはヘルパーが用意されています。
 
 ### テキスト出力の取得
 
-`stream.toTextStream()` を呼び出すと、生成されたテキストのストリームを取得できます。`compatibleWithNodeStreams` が `true` の場合、戻り値は通常の Node.js の `Readable` です。`process.stdout` や別の出力先にそのままパイプできます。
+`stream.toTextStream()` を呼び出すと、生成されたテキストのストリームを取得できます。`compatibleWithNodeStreams` が `true` のとき、戻り値は通常の Node.js の `Readable` です。これを直接 `process.stdout` や他の出力先にパイプできます。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="到着したテキストを逐次ログ出力"
+  title="到着したテキストを逐次ログ出力する"
   meta={`{13-17}`}
 />
 
-`stream.completed` の Promise は、実行と保留中のすべてのコールバックが完了すると解決されます。出力がもうないことを確実にするには、必ず待機してください。
+`stream.completed` の Promise は、実行および保留中のコールバックがすべて完了すると解決されます。出力がもうないことを確実にするには、必ず待機してください。
 
-### すべてのイベントを監視
+### すべてのイベントの監視
 
-`for await` ループを使って、到着した各イベントを検査できます。有用な情報には、低レベルのモデルイベント、エージェントの切り替え、SDK 固有の実行情報などがあります:
+`for await` ループを使って、到着した各イベントを検査できます。有用な情報には、低レベルのモデルイベント、エージェントの切替、SDK 固有の実行情報などがあります:
 
 <Code
   lang="typescript"
   code={handleAllEventsExample}
-  title="すべてのイベントを監視"
+  title="すべてのイベントをリッスンする"
 />
 
-完全なプレーンテキストストリームと 元 のイベントストリームをどちらも出力するスクリプトは、[the streamed example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。
+[ストリーミングの例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) を参照してください。プレーンテキストのストリームと元のイベントストリームの両方を出力する、完全なスクリプトです。
 
 ## イベントタイプ
 
-ストリームは 3 種類のイベントを出力します:
+ストリームは 3 種類のイベントタイプを返します:
 
 ### raw_model_stream_event
 
@@ -118,23 +118,23 @@ type RunAgentUpdatedStreamEvent = {
 }
 ```
 
-## ストリーミング中の Human in the loop (人間の介入)
+## ストリーミング中の Human in the loop（人間の介入）
 
-ストリーミングは、実行を一時停止するハンドオフ（たとえばツールに承認が必要な場合）と両立します。ストリームオブジェクトの `interruption` フィールドで中断を取得でき、各中断に対して `state.approve()` または `state.reject()` を呼び出すことで実行を継続できます。`{ stream: true }` で再実行すると、ストリーミング出力が再開します。
+ストリーミングは、実行を一時停止するハンドオフ（たとえばツールに承認が必要な場合）と互換性があります。ストリームオブジェクトの `interruption` フィールドで割り込みにアクセスでき、各割り込みに対して `state.approve()` または `state.reject()` を呼び出すことで実行を継続できます。`{ stream: true }` で再実行するとストリーミング出力が再開されます。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="ストリーミング中の人間による承認を処理"
+  title="ストリーミング中の人間による承認の処理"
 />
 
-ユーザー と対話する、より完全なサンプルは
+ユーザーと対話する、より完全な例は
 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts) です。
 
 ## ヒント
 
-- すべての出力がフラッシュされることを保証するため、終了前に `stream.completed` を待つことを忘れないでください
-- 最初の `{ stream: true }` オプションは、指定したその呼び出しにのみ適用されます。`RunState` で再実行する場合は、再度オプションを指定する必要があります
-- アプリケーションがテキスト結果のみに関心がある場合は、個々のイベントオブジェクトを扱わなくて済むように `toTextStream()` を優先してください
+- すべての出力がフラッシュされることを確実にするため、終了前に `stream.completed` を待つことを忘れないでください
+- 最初の `{ stream: true }` オプションは、その呼び出しにのみ適用されます。`RunState` で再実行する場合は、再度オプションを指定する必要があります
+- アプリケーションがテキスト結果のみに関心がある場合は、個々のイベントオブジェクトを扱わずに済むよう `toTextStream()` を優先してください
 
-ストリーミングとイベントシステムを使うことで、エージェントをチャットインターフェース、ターミナルアプリケーション、または ユーザー が段階的な更新から恩恵を受けるあらゆる場所に統合できます。
+ストリーミングとイベントシステムにより、エージェントをチャットインターフェース、ターミナルアプリケーション、またはユーザーが段階的な更新の恩恵を受けるあらゆる場所に統合できます。
