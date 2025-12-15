@@ -1,5 +1,18 @@
 # @openai/agents-core
 
+## 0.3.5
+
+### Patch Changes
+
+- 2cb61b0: feat: Add onStream handler to agents as tools
+- 2a4a696: feat: #762 Add turnInput (optional) to agent_start event hooks
+- 820fbce: feat: track token usage while streaming responses for openai models
+- 970b086: chore(deps): bump @modelcontextprotocol/sdk from 1.12.1 to 1.24.0
+- dccc9b3: fix: #753 Emit agent_tool_end event when function tools throw errors
+- 378d421: fix: #701 prevent duplicate function_call items in session history after resuming from interruption
+- bdbc87d: fix: event data adjustment for #749
+- dd1a813: SpanData types are exported from distribution types for use when writing custom TracingExporters and Tracingprocessors
+
 ## 0.3.4
 
 ### Patch Changes

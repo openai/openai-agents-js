@@ -1,5 +1,25 @@
 # @openai/agents
 
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies [2cb61b0]
+- Updated dependencies [1300121]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [ef324c4]
+- Updated dependencies [970b086]
+- Updated dependencies [6aa0550]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [5750d8a]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+  - @openai/agents-realtime@0.3.5
+  - @openai/agents-openai@0.3.5
+
 ## 0.3.4
 
 ### Patch Changes
