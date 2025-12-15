@@ -210,6 +210,68 @@ describe('Runner.run (streaming)', () => {
     expect(runnerEndEvents[0].output).toBe('Final output');
   });
 
+  it('emits turn input on agent_start during streaming runs', async () => {
+    class LifecycleStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('Final output')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r_lifecycle',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('Final output')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamLifecycleAgent',
+      model: new LifecycleStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const agentInputs: AgentInputItem[][] = [];
+    const runnerInputs: AgentInputItem[][] = [];
+
+    agent.on('agent_start', (_context, _agent, turnInput) => {
+      agentInputs.push(turnInput ?? []);
+    });
+    runner.on('agent_start', (_context, _agent, turnInput) => {
+      runnerInputs.push(turnInput ?? []);
+    });
+
+    const result = await runner.run(agent, 'stream this input', {
+      stream: true,
+    });
+
+    // Drain the stream to ensure the run completes.
+    for await (const _event of result.toStream()) {
+      // no-op
+    }
+    await result.completed;
+
+    expect(agentInputs).toHaveLength(1);
+    expect(runnerInputs).toHaveLength(1);
+    expect(agentInputs[0].map(getFirstTextContent)).toEqual([
+      'stream this input',
+    ]);
+    expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
+      'stream this input',
+    ]);
+  });
+
   it('updates cumulative usage during streaming responses', async () => {
     const testTool = tool({
       name: 'calculator',
