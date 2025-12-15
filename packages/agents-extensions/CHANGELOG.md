@@ -1,5 +1,22 @@
 # @openai/agents-extensions
 
+## 0.3.5
+
+### Patch Changes
+
+- 9e1549a: feat(agents-extensions): #628 add Anthropic extended thinking support
+- 2a77585: Improve AI SDK error messages in tracing to include comprehensive error details like responseBody, statusCode, and responseHeaders when tracing is enabled.
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+  - @openai/agents@0.3.5
+
 ## 0.3.4
 
 ### Patch Changes
