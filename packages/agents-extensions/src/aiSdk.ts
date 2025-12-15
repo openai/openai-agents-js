@@ -42,13 +42,22 @@ import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 export function itemsToLanguageV2Messages(
   model: LanguageModelV2,
   items: protocol.ModelItem[],
+  modelSettingsProviderData?: Record<string, any>,
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
   let currentAssistantMessage: LanguageModelV2Message | undefined;
+  const isDeepSeekThinkingMode = isDeepSeekModel(
+    model,
+    modelSettingsProviderData,
+  );
 
   for (const item of items) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
       const { role, content, providerData } = item;
+      if (currentAssistantMessage && role !== 'assistant') {
+        messages.push(currentAssistantMessage);
+        currentAssistantMessage = undefined;
+      }
       if (role === 'system') {
         messages.push({
           role: 'system',
@@ -226,6 +235,29 @@ export function itemsToLanguageV2Messages(
       item.content.length > 0 &&
       typeof item.content[0].text === 'string'
     ) {
+      if (isDeepSeekThinkingMode) {
+        if (!currentAssistantMessage) {
+          currentAssistantMessage = {
+            role: 'assistant',
+            content: [],
+            providerOptions: {
+              ...(item.providerData ?? {}),
+            },
+          };
+        }
+        if (
+          Array.isArray(currentAssistantMessage.content) &&
+          currentAssistantMessage.role === 'assistant'
+        ) {
+          currentAssistantMessage.content.push({
+            type: 'reasoning',
+            text: item.content[0].text,
+            providerOptions: { ...(item.providerData ?? {}) },
+          } as any);
+        }
+        continue;
+      }
+
       messages.push({
         role: 'assistant',
         content: [
@@ -260,6 +292,26 @@ export function itemsToLanguageV2Messages(
   }
 
   return messages;
+}
+
+function isDeepSeekModel(
+  model: LanguageModelV2,
+  modelSettingsProviderData?: Record<string, any>,
+): boolean {
+  const provider = typeof model.provider === 'string' ? model.provider : '';
+  if (!provider.toLowerCase().startsWith('deepseek')) {
+    return false;
+  }
+
+  const modelId = typeof model.modelId === 'string' ? model.modelId : '';
+  if (modelId === 'deepseek-reasoner') {
+    return true;
+  }
+
+  return (
+    modelSettingsProviderData?.providerOptions?.deepseek?.thinking?.type ===
+    'enabled'
+  );
 }
 
 /**
@@ -612,7 +664,11 @@ export class AiSdkModel implements Model {
                   content: [{ type: 'text', text: request.input }],
                 },
               ]
-            : itemsToLanguageV2Messages(this.#model, request.input);
+            : itemsToLanguageV2Messages(
+                this.#model,
+                request.input,
+                request.modelSettings.providerData,
+              );
 
         if (request.systemInstructions) {
           input = [
@@ -867,7 +923,11 @@ export class AiSdkModel implements Model {
                 content: [{ type: 'text', text: request.input }],
               },
             ]
-          : itemsToLanguageV2Messages(this.#model, request.input);
+          : itemsToLanguageV2Messages(
+              this.#model,
+              request.input,
+              request.modelSettings.providerData,
+            );
 
       if (request.systemInstructions) {
         input = [
