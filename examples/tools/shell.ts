@@ -97,7 +97,7 @@ async function main() {
 
   const agent = new Agent({
     name: 'Shell Assistant',
-    model: 'gpt-5.1',
+    model: 'gpt-5.2',
     instructions:
       'You can execute shell commands to inspect the repository. Keep responses concise and include command output when helpful.',
     tools: [
