@@ -816,8 +816,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 'agent_start',
                 state._context,
                 state._currentAgent,
+                turnInput,
               );
-              this.emit('agent_start', state._context, state._currentAgent);
+              this.emit(
+                'agent_start',
+                state._context,
+                state._currentAgent,
+                turnInput,
+              );
             }
 
             const preparedCall = await this.#prepareModelCall(
@@ -1128,8 +1134,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               'agent_start',
               result.state._context,
               currentAgent,
+              turnInput,
             );
-            this.emit('agent_start', result.state._context, currentAgent);
+            this.emit(
+              'agent_start',
+              result.state._context,
+              currentAgent,
+              turnInput,
+            );
           }
 
           let finalResponse: ModelResponse | undefined = undefined;

@@ -51,25 +51,26 @@ type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
 
 type AgentToolRunOptions<TContext> = Omit<StreamRunOptions<TContext>, 'stream'>;
 
-type AgentToolStreamEvent = {
+type AgentToolStreamEvent<TAgent extends Agent<any, any>> = {
   // Raw stream event emitted by the nested agent run.
   event: RunStreamEvent;
-  // Convenience metadata so callers can correlate to the invoking tool call/agent.
-  agentName: string;
-  toolCallId?: string;
+  // The agent instance being executed as a tool.
+  agent: TAgent;
+  // The tool call item that triggered this nested run (when available).
+  toolCall?: protocol.FunctionCallItem;
 };
-type AgentToolEventName = AgentToolStreamEvent['event']['type'] | '*';
-type AgentToolEventHandler = (
-  event: AgentToolStreamEvent,
+type AgentToolEventName = RunStreamEvent['type'] | '*';
+type AgentToolEventHandler<TAgent extends Agent<any, any>> = (
+  event: AgentToolStreamEvent<TAgent>,
 ) => void | Promise<void>;
-type AgentTool<TContext> = FunctionTool<
+type AgentTool<TContext, TAgent extends Agent<TContext, any>> = FunctionTool<
   TContext,
   typeof AgentAsToolNeedApprovalSchame
 > & {
   on: (
     name: AgentToolEventName,
-    handler: AgentToolEventHandler,
-  ) => AgentTool<TContext>;
+    handler: AgentToolEventHandler<TAgent>,
+  ) => AgentTool<TContext, TAgent>;
 };
 
 // Per-process, ephemeral map linking a function tool call to its nested
@@ -566,9 +567,9 @@ export class Agent<
       /**
        * Optional hook to receive streamed events from the nested agent run.
        */
-      onStream?: (event: AgentToolStreamEvent) => void | Promise<void>;
+      onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
     },
-  ): AgentTool<TContext> {
+  ): AgentTool<TContext, TAgent> {
     const {
       toolName,
       toolDescription,
@@ -582,9 +583,9 @@ export class Agent<
     // Event handlers are scoped to this agent tool instance and are not shared; we only support registration (no removal) to keep the API surface small.
     const eventHandlers = new Map<
       AgentToolEventName,
-      Set<AgentToolEventHandler>
+      Set<AgentToolEventHandler<TAgent>>
     >();
-    const emitEvent = async (event: AgentToolStreamEvent) => {
+    const emitEvent = async (event: AgentToolStreamEvent<TAgent>) => {
       // We intentionally keep only add semantics (no off) to reduce surface area; handlers are scoped to this agent tool instance.
       const specific = eventHandlers.get(event.event.type);
       const wildcard = eventHandlers.get('*');
@@ -627,9 +628,8 @@ export class Agent<
               ...(runOptions ?? {}),
             });
         const streamPayload = {
-          agentName: this.name,
-          // Tool calls should carry IDs, but direct invocation or provider quirks can omit it, so keep this optional.
-          toolCallId: details?.toolCall?.callId,
+          agent: this,
+          toolCall: details?.toolCall,
         };
 
         if (shouldStream) {
@@ -682,10 +682,11 @@ export class Agent<
       },
     });
 
-    const agentTool: AgentTool<TContext> = {
+    const agentTool: AgentTool<TContext, TAgent> = {
       ...baseTool,
       on: (name, handler) => {
-        const set = eventHandlers.get(name) ?? new Set<AgentToolEventHandler>();
+        const set =
+          eventHandlers.get(name) ?? new Set<AgentToolEventHandler<TAgent>>();
         set.add(handler);
         eventHandlers.set(name, set);
         return agentTool;

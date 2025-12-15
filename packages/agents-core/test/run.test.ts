@@ -123,6 +123,41 @@ describe('Runner.run', () => {
       ]);
     });
 
+    it('emits turn input on agent_start lifecycle hooks', async () => {
+      const model = new FakeModel([
+        {
+          output: [fakeModelMessage('Acknowledged')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'LifecycleInputAgent',
+        model,
+      });
+      const runner = new Runner();
+
+      const agentInputs: AgentInputItem[][] = [];
+      const runnerInputs: AgentInputItem[][] = [];
+
+      agent.on('agent_start', (_context, _agent, turnInput) => {
+        agentInputs.push(turnInput ?? []);
+      });
+      runner.on('agent_start', (_context, _agent, turnInput) => {
+        runnerInputs.push(turnInput ?? []);
+      });
+
+      await runner.run(agent, 'capture this input for tracing');
+
+      expect(agentInputs).toHaveLength(1);
+      expect(runnerInputs).toHaveLength(1);
+      expect(agentInputs[0].map(getFirstTextContent)).toEqual([
+        'capture this input for tracing',
+      ]);
+      expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
+        'capture this input for tracing',
+      ]);
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {
