@@ -3,7 +3,7 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## 対応環境
+## サポートされている環境
 
 OpenAI Agents SDK は次のサーバー環境でサポートされています:
 
@@ -11,24 +11,24 @@ OpenAI Agents SDK は次のサーバー環境でサポートされています:
 - Deno 2.35+
 - Bun 1.2.5+
 
-### 制限付きサポート
+### 限定サポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現在いくつかの制限があります:
-  - 現在 SDK には `nodejs_compat` を有効化する必要があります
-  - リクエストの最後にトレースを手動でフラッシュする必要があります。詳細は[トレーシングガイド](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)を参照してください
-  - Cloudflare Workers における `AsyncLocalStorage` の限定的なサポートにより、一部のトレースが正確でない可能性があります
-  - 外向きの WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは不可）。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
-- **Browsers**:
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現時点ではいくつかの制限があります:
+  - 現在 SDK は `nodejs_compat` を有効化する必要があります
+  - リクエストの最後にトレースを手動でフラッシュする必要があります。[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください
+  - Cloudflare Workers における `AsyncLocalStorage` のサポート制限により、一部のトレースが正確でない可能性があります
+  - 外向きの WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは不可）。Realtime の場合は、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
+- **ブラウザ**:
   - ブラウザでは現在トレーシングはサポートされていません
-- **v8 isolates**:
-  - 適切なブラウザポリフィルを備えたバンドラを使用すれば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
-  - v8 isolates は十分なテストが行われていません
+- **v8 アイソレート**:
+  - 適切なブラウザポリフィルを備えたバンドラを使用すれば SDK を v8 アイソレート向けにバンドルできますが、トレーシングは機能しません
+  - v8 アイソレートでの動作は広範にはテストされていません
 
-## デバッグログ
+## デバッグロギング
 
-SDK で問題が発生している場合は、デバッグログを有効にして内部の状況を詳しく確認できます。
+SDK で問題が発生している場合、デバッグロギングを有効にすると詳細を確認できます。
 
-`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグログを有効化します。
+`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグロギングを有効にします。
 
 ```bash
 DEBUG=openai-agents:*
@@ -38,4 +38,4 @@ DEBUG=openai-agents:*
 
 - `openai-agents:core` — SDK の主要な実行ロジック
 - `openai-agents:openai` — OpenAI API 呼び出し
-- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント
+- `openai-agents:realtime` — Realtime Agents コンポーネント
