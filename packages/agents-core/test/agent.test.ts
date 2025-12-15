@@ -344,18 +344,21 @@ describe('Agent', () => {
       expect.objectContaining({ stream: true }),
     );
     expect(onStream).toHaveBeenCalledTimes(streamEvents.length);
-    expect(onStream).toHaveBeenCalledWith({
-      event: streamEvents[0],
-      agentName: agent.name,
-      toolCallId: undefined,
-    });
+    expect(onStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: streamEvents[0],
+        agent,
+        toolCall: undefined,
+      }),
+    );
   });
 
-  it('includes toolCallId and agentName when streaming from nested agent tools', async () => {
+  it('includes toolCall when streaming from nested agent tools', async () => {
     const agent = new Agent({
       name: 'Streamer Agent',
       instructions: 'Stream things.',
     });
+    const toolCall = { callId: 'call-123' } as any;
     const streamEvents = [
       { type: 'raw_model_stream_event', data: { type: 'response_started' } },
     ] as any[];
@@ -392,7 +395,7 @@ describe('Agent', () => {
     const output = await tool.invoke(
       new RunContext(),
       '{"input":"run streaming"}',
-      { toolCall: { callId: 'call-123' } as any },
+      { toolCall },
     );
 
     expect(output).toBe('tool output');
@@ -401,11 +404,13 @@ describe('Agent', () => {
       'run streaming',
       expect.objectContaining({ stream: true }),
     );
-    expect(onStream).toHaveBeenCalledWith({
-      agentName: 'Streamer Agent',
-      event: streamEvents[0],
-      toolCallId: 'call-123',
-    });
+    expect(onStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
+    );
   });
 
   it('supports event handlers registered via on (agent tool only) and wildcard handlers', async () => {
@@ -453,10 +458,11 @@ describe('Agent', () => {
 
     tool.on('raw_model_stream_event', rawHandler).on('*', wildcardHandler);
 
+    const toolCall = { callId: 'call-abc' } as any;
     const output = await tool.invoke(
       new RunContext(),
       '{"input":"run streaming"}',
-      { toolCall: { callId: 'call-abc' } as any },
+      { toolCall },
     );
 
     expect(output).toBe('tool output');
@@ -466,11 +472,13 @@ describe('Agent', () => {
       expect.objectContaining({ stream: true }),
     );
     expect(rawHandler).toHaveBeenCalledTimes(1);
-    expect(rawHandler).toHaveBeenCalledWith({
-      agentName: 'Streamer Agent',
-      event: streamEvents[0],
-      toolCallId: 'call-abc',
-    });
+    expect(rawHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
+    );
     expect(wildcardHandler).toHaveBeenCalledTimes(streamEvents.length);
   });
 
@@ -513,10 +521,11 @@ describe('Agent', () => {
 
     tool.on('raw_model_stream_event', handler);
 
+    const toolCall = { callId: 'call-xyz' } as any;
     const output = await tool.invoke(
       new RunContext(),
       '{"input":"run streaming"}',
-      { toolCall: { callId: 'call-xyz' } as any },
+      { toolCall },
     );
 
     expect(output).toBe('tool output');
@@ -525,11 +534,13 @@ describe('Agent', () => {
       'run streaming',
       expect.objectContaining({ stream: true }),
     );
-    expect(handler).toHaveBeenCalledWith({
-      agentName: 'Handler Agent',
-      event: streamEvents[0],
-      toolCallId: 'call-xyz',
-    });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
+    );
   });
 
   it('filters tools using isEnabled predicates', async () => {

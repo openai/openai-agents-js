@@ -36,7 +36,7 @@ async function main() {
       // When you pass onStream handler, the agent is executed in streaming mode.
       onStream: (event) => {
         console.log(
-          `### onStream method streaming event from ${event.agentName} in streaming mode:\n\n` +
+          `### onStream method streaming event from ${event.agent.name} in streaming mode:\n\n` +
             JSON.stringify(event) +
             '\n',
         );
@@ -47,7 +47,7 @@ async function main() {
     /*
     billingAgentTool.on('raw_model_stream_event', (event) => {
       console.log(
-        `### on method streaming event from ${event.agentName} in streaming mode:\n\n` +
+        `### on method streaming event from ${event.agent.name} in streaming mode:\n\n` +
         JSON.stringify(event) +
         '\n',
       );
