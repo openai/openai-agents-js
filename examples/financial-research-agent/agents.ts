@@ -71,8 +71,6 @@ export const searchAgent = new Agent({
   instructions: searchAgentPrompt,
   model: 'gpt-5.2',
   tools: [webSearchTool()],
-  // gpt-5.2 does not support tool_choice="required"; use "auto" to allow tool use.
-  modelSettings: { toolChoice: 'auto' },
 });
 
 // --- Verification Agent ---
