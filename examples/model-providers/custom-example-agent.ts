@@ -21,7 +21,7 @@ const getWeatherTool = tool({
 const client = new OpenAI();
 const agent = new Agent({
   name: 'Assistant',
-  model: new OpenAIChatCompletionsModel(client, 'gpt-4o'),
+  model: new OpenAIChatCompletionsModel(client, 'gpt-5.2'),
   instructions: 'You only respond in haikus.',
   tools: [getWeatherTool],
 });

@@ -28,9 +28,9 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 
 ## 既定のモデル
 
-`Agent` の初期化時にモデルを指定しない場合、既定のモデルが使用されます。現在の既定は [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) で、エージェントワークフローにおける予測可能性と低レイテンシの優れたバランスを提供します。
+`Agent` の初期化時にモデルを指定しない場合、既定のモデルが使用されます。現在の既定は互換性のため [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) です。利用可能であれば、より高品質のために [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) に設定することを推奨します。
 
-[`gpt-5`](https://platform.openai.com/docs/models/gpt-5) など他のモデルに切り替えたい場合、エージェントの設定方法は 2 つあります。
+[`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) など他のモデルに切り替えたい場合、エージェントの設定方法は 2 つあります。
 
 まず、カスタムモデルを設定していないすべてのエージェントで一貫して特定のモデルを使いたい場合は、エージェントを実行する前に環境変数 `OPENAI_DEFAULT_MODEL` を設定します。
 

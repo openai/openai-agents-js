@@ -112,7 +112,7 @@ async function main() {
 
   const agent = new Agent({
     name: 'Patch Assistant',
-    model: 'gpt-5.1',
+    model: 'gpt-5.2',
     instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool.`,
     tools: [
       applyPatchTool({

@@ -28,9 +28,9 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 
 ## 默认模型
 
-当你在初始化 `Agent` 时未指定模型，将使用默认模型。目前的默认模型是 [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1)，它在智能体工作流的可预测性与低延迟之间提供了良好平衡。
+当你在初始化 `Agent` 时未指定模型，将使用默认模型。目前的默认模型是 [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1)，它在智能体工作流的可预测性与低延迟之间提供了良好平衡。如果有权限，建议设置为更高质量的 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2)。
 
-如果你想切换到其他模型，如 [`gpt-5`](https://platform.openai.com/docs/models/gpt-5)，有两种方式可以为你的智能体进行配置。
+如果你想切换到其他模型，如 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2)，有两种方式可以为你的智能体进行配置。
 
 首先，如果你希望对所有未设置自定义模型的智能体始终使用某个特定模型，请在运行智能体前设置环境变量 `OPENAI_DEFAULT_MODEL`。
 
