@@ -145,6 +145,9 @@ type BivariantComputerCreate<
   Context = UnknownContext,
   TComputer extends Computer = Computer,
 > = {
+  // Use the conventional "bivarianceHack" pattern so user callbacks can accept
+  // narrower Computer types without contravariant parameter errors in TS.
+  // See: https://www.typescriptlang.org/docs/handbook/type-compatibility.html#function-parameter-bivariance
   bivarianceHack: (
     args: ComputerInitializerArgs<Context>,
   ) => TComputer | Promise<TComputer>;
@@ -164,6 +167,7 @@ type BivariantComputerDispose<
   Context = UnknownContext,
   TComputer extends Computer = Computer,
 > = {
+  // Apply the same bivariance pattern to cleanup callbacks for consistent ergonomics.
   bivarianceHack: (
     args: ComputerInitializerArgs<Context> & { computer: TComputer },
   ) => void | Promise<void>;
