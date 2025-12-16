@@ -8,14 +8,15 @@ import toolsFunctionExample from '../../../../../../examples/docs/tools/function
 import toolsHostedToolsExample from '../../../../../../examples/docs/tools/hostedTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../../examples/docs/tools/agentsAsTools.ts?raw';
+import agentsAsToolsStreamingExample from '../../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
-工具让智能体**执行操作**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持四种类别：
+工具让智能体**采取行动**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持四种类别：
 
-1. **托管工具**——与模型一同在 OpenAI 服务器上运行。（Web 搜索、文件搜索、计算机操作、Code Interpreter、图像生成）
-2. **函数工具**——使用 JSON 模式包装任意本地函数，使 LLM 可调用。
+1. **托管工具**——与模型一起在 OpenAI 服务器上运行。（Web 搜索、文件搜索、计算机操作、Code Interpreter、图像生成）
+2. **函数工具**——使用 JSON schema 封装任何本地函数，供 LLM 调用。
 3. **将智能体作为工具**——将整个智能体暴露为可调用的工具。
-4. **本地 MCP 服务器**——附加一个在你机器上运行的 Model Context Protocol 服务器。
+4. **本地 MCP 服务器**——挂载运行在你机器上的 Model Context Protocol 服务器。
 
 ---
 
@@ -23,68 +24,85 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 当你使用 `OpenAIResponsesModel` 时，可以添加以下内置工具：
 
-| 工具             | 类型字符串           | 目的                             |
-| ---------------- | -------------------- | -------------------------------- |
-| Web 搜索         | `'web_search'`       | 互联网搜索。                     |
-| 文件/检索搜索    | `'file_search'`      | 查询托管在 OpenAI 上的向量存储。 |
-| 计算机操作       | `'computer'`         | 自动化 GUI 交互。                |
-| Shell            | `'shell'`            | 在主机上运行 shell 命令。        |
-| 应用补丁         | `'apply_patch'`      | 将 V4A diff 应用于本地文件。     |
-| Code Interpreter | `'code_interpreter'` | 在沙箱环境中运行代码。           |
-| 图像生成         | `'image_generation'` | 基于文本生成图像。               |
+| 工具                    | 类型字符串           | 目的                             |
+| ----------------------- | -------------------- | -------------------------------- |
+| Web search              | `'web_search'`       | 互联网搜索。                     |
+| File / retrieval search | `'file_search'`      | 查询托管在 OpenAI 上的向量存储。 |
+| Computer use            | `'computer'`         | 自动化 GUI 交互。                |
+| Shell                   | `'shell'`            | 在主机上运行 shell 命令。        |
+| Apply patch             | `'apply_patch'`      | 将 V4A 差异应用到本地文件。      |
+| Code Interpreter        | `'code_interpreter'` | 在沙盒环境中运行代码。           |
+| Image generation        | `'image_generation'` | 基于文本生成图像。               |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="托管工具" />
 
-精确的参数集合与 OpenAI Responses API 保持一致——高级选项如 `rankingOptions` 或语义过滤请参阅官方文档。
+确切的参数集合与 OpenAI Responses API 对齐——有关 `rankingOptions` 或语义过滤等高级选项，请参阅官方文档。
 
 ---
 
 ## 2. 函数工具
 
-你可以使用 `tool()` 辅助函数将**任意**函数变成工具。
+你可以使用 `tool()` 辅助函数将**任何**函数变成工具。
 
 <Code
   lang="typescript"
   code={toolsFunctionExample}
-  title="带 Zod 参数的函数工具"
+  title="使用 Zod 参数的函数工具"
 />
 
 ### 选项参考
 
-| 字段            | 必填 | 描述                                                                                                                                                                                          |
+| 字段            | 必需 | 描述                                                                                                                                                                                          |
 | --------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`          | 否   | 默认为函数名（例如 `get_weather`）。                                                                                                                                                          |
-| `description`   | 是   | 向 LLM 展示的清晰、可读的人类描述。                                                                                                                                                           |
-| `parameters`    | 是   | 可以是 Zod 模式或原始 JSON 模式对象。使用 Zod 参数会自动启用 **strict** 模式。                                                                                                                |
-| `strict`        | 否   | 当为 `true`（默认）时，如果参数验证失败，SDK 会返回模型错误。将其设为 `false` 可进行模糊匹配。                                                                                                |
+| `name`          | 否   | 默认为函数名（例如，`get_weather`）。                                                                                                                                                         |
+| `description`   | 是   | 清晰、可读的人类描述，展示给 LLM。                                                                                                                                                            |
+| `parameters`    | 是   | 可以是 Zod schema 或原始 JSON schema 对象。使用 Zod 参数会自动启用 **strict** 模式。                                                                                                          |
+| `strict`        | 否   | 当为 `true`（默认）时，如果参数验证不通过，SDK 将返回模型错误。设置为 `false` 可进行模糊匹配。                                                                                                |
 | `execute`       | 是   | `(args, context) => string                                                                                               \| Promise<string>`——你的业务逻辑。可选的第二个参数是 `RunContext`。 |
 | `errorFunction` | 否   | 自定义处理器 `(context, error) => string`，用于将内部错误转换为用户可见的字符串。                                                                                                             |
 
-### 非严格 JSON 模式工具
+### 非严格 JSON‑schema 工具
 
-如果你需要模型在输入无效或不完整时进行“猜测”，可在使用原始 JSON 模式时禁用严格模式：
+如果你需要模型在输入无效或不完整时进行“猜测”，可在使用原始 JSON schema 时禁用严格模式：
 
 <Code
   lang="typescript"
   code={nonStrictSchemaTools}
-  title="非严格 JSON 模式工具"
+  title="非严格 JSON schema 工具"
 />
 
 ---
 
 ## 3. 将智能体作为工具
 
-有时你希望一个智能体在不完全交接会话的情况下“协助”另一个智能体。使用 `agent.asTool()`：
+有时你希望一个智能体在不完全交接对话的情况下“协助”另一个智能体。使用 `agent.asTool()`：
 
 <Code lang="typescript" code={agentsAsToolsExample} title="将智能体作为工具" />
 
 在底层，SDK 会：
 
-- 创建一个仅含 `input` 参数的函数工具。
-- 当工具被调用时，使用该输入运行子智能体。
+- 创建一个只有 `input` 参数的函数工具。
+- 当工具被调用时，用该输入运行子智能体。
 - 返回最后一条消息，或由 `customOutputExtractor` 提取的输出。
 
-当你将智能体作为工具运行时，Agents SDK 会创建一个带默认设置的 runner，并在函数执行中用它来运行该智能体。如果你想提供任何 `runConfig` 或 `runOptions` 的属性，可以将它们传给 `asTool()` 方法以自定义 runner 的行为。
+当你将智能体作为工具运行时，Agents SDK 会用默认设置创建一个 runner，并在函数执行中用它来运行该智能体。如果你想提供任何 `runConfig` 或 `runOptions` 的属性，可以将它们传递给 `asTool()` 方法以自定义 runner 的行为。
+
+### 来自智能体工具的流式事件
+
+智能体工具可以将所有嵌套运行事件流式传回你的应用。根据你构建工具的方式选择合适的钩子风格：
+
+<Code
+  lang="typescript"
+  code={agentsAsToolsStreamingExample}
+  title="流式传输智能体工具"
+/>
+
+- 事件类型与 `RunStreamEvent['type']` 匹配：`raw_model_stream_event`、`run_item_stream_event`、`agent_updated_stream_event`。
+- `onStream` 是最简单的“全捕获”方式，适合在内联声明工具时使用（`tools: [agent.asTool({ onStream })]`）。如果你不需要逐事件路由，请使用它。
+- `on(eventName, handler)` 允许你选择性订阅（或使用 `'*'`），当你需要更细粒度的处理或希望在创建后附加监听器时最合适。
+- 如果你提供了 `onStream` 或任意 `on(...)` 处理器，作为工具的智能体将自动以流式模式运行；否则保持非流式路径。
+- 处理器是并行调用的，因此缓慢的 `onStream` 回调不会阻塞 `on(...)` 处理器（反之亦然）。
+- 当工具通过模型的工具调用触发时会提供 `toolCallId`；直接 `invoke()` 调用或提供方差异可能会省略它。
 
 ---
 
@@ -95,27 +113,27 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 
 <Code lang="typescript" code={mcpLocalServer} title="本地 MCP 服务器" />
 
-完整示例参见 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果你在寻找有关 MCP 服务器工具集成的完整指南，请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp) 获取详细信息。
+完整示例参见 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果你在寻找关于 MCP 服务器工具集成的全面指南，请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp) 了解详情。
 
 ---
 
 ## 工具使用行为
 
-请参阅[智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use)，以控制模型何时以及如何必须使用工具（`tool_choice`、`toolUseBehavior` 等）。
+关于控制模型何时以及如何必须使用工具（`tool_choice`、`toolUseBehavior` 等），请参阅[智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
 
 ---
 
 ## 最佳实践
 
-- **简短且明确的描述**——说明工具做了什么，以及何时使用它。
-- **验证输入**——尽可能使用 Zod 模式进行严格的 JSON 校验。
-- **避免在错误处理器中产生副作用**——`errorFunction` 应返回有帮助的字符串，而不是抛出异常。
-- **单一职责**——小而可组合的工具有助于更好的模型推理。
+- **简短且明确的描述**——说明工具做什么以及何时使用它。
+- **验证输入**——尽可能使用 Zod schema 进行严格的 JSON 验证。
+- **避免在错误处理器中产生副作用**——`errorFunction` 应返回有用的字符串，而不是抛出异常。
+- **每个工具只承担一个职责**——小而可组合的工具有助于更好的模型推理。
 
 ---
 
-## 下一步
+## 后续步骤
 
 - 了解[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
-- 添加[护栏](/openai-agents-js/zh/guides/guardrails)来验证工具的输入或输出。
-- 查看 TypeDoc 中 [`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各类托管工具类型的参考。
+- 添加[护栏](/openai-agents-js/zh/guides/guardrails)以验证工具输入或输出。
+- 深入查看 TypeDoc 参考文档：[`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各类托管工具类型。

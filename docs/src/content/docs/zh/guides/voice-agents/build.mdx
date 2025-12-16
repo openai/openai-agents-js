@@ -30,134 +30,134 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 ## 音频处理
 
-某些传输层（如默认的 `OpenAIRealtimeWebRTC`）会自动为你处理音频输入和输出。对于 `OpenAIRealtimeWebSocket` 等其他传输机制，你需要自己处理会话音频：
+某些传输层（如默认的 `OpenAIRealtimeWebRTC`）会自动为你处理音频输入和输出。对于其他传输机制（如 `OpenAIRealtimeWebSocket`），你需要自行处理会话音频：
 
 <Code lang="typescript" code={handleAudioExample} />
 
 ## 会话配置
 
-你可以在构造时向[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)传入额外选项，或在调用`connect(...)`时进行配置。
+你可以在构造时向 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) 传入其他选项，或在调用 `connect(...)` 时配置会话。
 
 <Code lang="typescript" code={configureSessionExample} />
 
-这些传输层允许你传入与[session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update)匹配的任意参数。
+这些传输层允许你传入任何与 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) 匹配的参数。
 
-对于在[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)中暂无对应参数的新参数，你可以使用`providerData`。传入`providerData`中的任何内容都会直接作为`session`对象的一部分传递。
+对于新增且在 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) 中尚无对应参数的配置，你可以使用 `providerData`。传入 `providerData` 的任何内容都会作为 `session` 对象的一部分直接传递。
 
 ## 交接
 
-与常规智能体类似，你可以使用交接将你的智能体拆分为多个智能体，并在它们之间进行编排，从而提升智能体性能并更好地限定问题范围。
+与常规智能体类似，你可以使用交接将你的智能体拆分为多个智能体，并在它们之间进行编排，以提升性能并更好地限定问题范围。
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-与常规智能体不同，交接在实时智能体中的行为略有不同。执行交接时，正在进行的会话会使用新的智能体配置进行更新。因此，智能体会自动访问正在进行的对话历史，并且当前不会应用输入过滤器。
+与常规智能体不同，交接在实时智能体中的行为略有差异。执行交接时，正在进行的会话会更新为新的智能体配置。因此，智能体会自动访问当前的对话历史，并且当前不会应用输入过滤器。
 
-此外，这意味着在交接中不能更改`voice`或`model`。你也只能连接到其他实时智能体。如果你需要使用不同的模型，例如像`gpt-5-mini`这样的推理模型，你可以使用[通过工具进行委派](#delegation-through-tools)。
+此外，这意味着在交接中不能更改 `voice` 或 `model`。你也只能连接到其他实时智能体。如果你需要使用不同的模型，例如推理模型 `gpt-5-mini`，可以使用[通过工具进行委派](#delegation-through-tools)。
 
 ## 工具
 
-与常规智能体一样，实时智能体可以调用工具来执行操作。你可以使用与常规智能体相同的`tool()`函数来定义工具。
+与常规智能体一样，实时智能体可以调用工具以执行操作。你可以使用与常规智能体相同的 `tool()` 函数来定义工具。
 
 <Code lang="typescript" code={defineToolExample} />
 
-你只能在实时智能体中使用函数工具，并且这些工具会在与你的 Realtime Session 相同的位置执行。这意味着如果你在浏览器中运行 Realtime Session，你的工具也会在浏览器中执行。如果你需要执行更敏感的操作，可以在工具内向你的后端服务器发起 HTTP 请求。
+你只能在实时智能体中使用函数工具，这些工具会在与你的 Realtime 会话相同的位置执行。这意味着如果你的 Realtime 会话在浏览器中运行，你的工具也会在浏览器中执行。如果需要执行更敏感的操作，可以在工具内部向你的后端服务器发起 HTTP 请求。
 
-在工具执行期间，智能体将无法处理来自用户的新请求。改进体验的一种方式是让你的智能体在即将执行工具时进行提示，或说出特定短语以为执行工具争取时间。
+在工具执行期间，智能体将无法处理来自用户的新请求。提升体验的一种方式是让智能体在即将执行工具时进行提示，或说出特定短语，为执行工具争取时间。
 
 ### 访问对话历史
 
-除了智能体调用特定工具时传入的参数外，你还可以访问由 Realtime Session 跟踪的当前对话历史快照。如果你需要基于对话的当前状态执行更复杂的操作，或计划使用[用于委派的工具](#delegation-through-tools)，这会很有用。
+除了智能体调用特定工具时传入的参数外，你还可以访问 Realtime 会话跟踪的当前对话历史快照。如果你需要基于对话当前状态执行更复杂的操作，或计划使用[用于委派的工具](#delegation-through-tools)，这会很有用。
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
-  传入的历史记录是调用工具时刻的历史快照。用户最后说的话的转写可能尚不可用。
+  传入的历史是工具调用时刻的历史快照。用户最后说的话的转录可能尚不可用。
 </Aside>
 
 ### 工具执行前审批
 
-如果你在定义工具时设置了`needsApproval: true`，智能体会在执行工具之前发出`tool_approval_requested`事件。
+如果你在定义工具时设置了 `needsApproval: true`，智能体会在执行工具前触发 `tool_approval_requested` 事件。
 
-通过监听该事件，你可以向用户展示 UI 以批准或拒绝工具调用。
+通过监听该事件，你可以向用户展示 UI，以批准或拒绝该工具调用。
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  当语音智能体在等待对工具调用的批准时，智能体将无法处理来自用户的新请求。
+  当语音智能体等待工具调用的审批时，智能体将无法处理来自用户的新请求。
 </Aside>
 
 ## 护栏
 
-护栏提供了一种方式来监控智能体说的话是否违反了一组规则，并立即切断响应。这些护栏检查将基于智能体响应的转录进行，因此需要启用模型的文本输出（默认启用）。
+护栏提供了一种方式来监控智能体的输出是否违反了一组规则，并在需要时立即切断响应。这些护栏检查基于智能体响应的转录文本执行，因此需要启用模型的文本输出（默认已启用）。
 
-你提供的护栏会在模型响应返回时异步运行，允许你基于预定义的分类触发器（例如“提到某个特定的禁用词”）来切断响应。
+你提供的护栏会在模型返回响应时异步运行，允许你基于预定义的分类触发条件来切断响应，例如“提及特定禁用词”。
 
-当护栏被触发时，会话会发出`guardrail_tripped`事件。该事件还会提供一个包含触发护栏的`itemId`的`details`对象。
+当护栏被触发时，会话会发出 `guardrail_tripped` 事件。该事件还会提供一个包含触发该护栏的 `itemId` 的 `details` 对象。
 
 <Code lang="typescript" code={guardrailsExample} />
 
-默认情况下，护栏每生成 100 个字符或在响应文本结束时运行一次。由于朗读文本通常更耗时，这意味着在大多数情况下，护栏会在用户听到之前捕获违规内容。
+默认情况下，护栏每 100 个字符或在响应文本生成结束时运行。由于朗读文本通常更耗时，这意味着在大多数情况下，护栏应能在用户听到之前捕获到违规内容。
 
-如果你想修改此行为，可以向会话传入`outputGuardrailSettings`对象。
+如果你想修改此行为，可以向会话传入一个 `outputGuardrailSettings` 对象。
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
 ## 轮次检测/语音活动检测
 
-Realtime Session 将自动检测用户何时在说话，并使用 Realtime API 的内置[语音活动检测模式](https://platform.openai.com/docs/guides/realtime-vad)触发新的轮次。
+Realtime 会话会自动检测用户何时在说话，并使用 Realtime API 的内置[语音活动检测模式](https://platform.openai.com/docs/guides/realtime-vad)来触发新的轮次。
 
-你可以向会话传入`turnDetection`对象来更改语音活动检测模式。
+你可以通过向会话传入一个 `turnDetection` 对象来更改语音活动检测模式。
 
 <Code lang="typescript" code={turnDetectionExample} />
 
-修改轮次检测设置有助于校准不必要的打断和处理静音。查看[Realtime API 文档以了解不同设置的更多细节](https://platform.openai.com/docs/guides/realtime-vad)
+修改轮次检测设置有助于校准不期望的打断并处理静音情况。查看[Realtime API 文档以了解不同设置的更多细节](https://platform.openai.com/docs/guides/realtime-vad)
 
 ## 打断
 
-使用内置语音活动检测时，用户打断智能体说话会自动触发智能体根据所说内容检测并更新其上下文。它还会发出`audio_interrupted`事件。这可用于立即停止所有音频播放（仅适用于 WebSocket 连接）。
+使用内置语音活动检测时，与智能体“抢话”会自动触发智能体根据用户所说更新其上下文。它还会触发一个 `audio_interrupted` 事件。这可用于立即停止所有音频播放（仅适用于 WebSocket 连接）。
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-如果你想手动打断，例如在 UI 中提供“停止”按钮，你可以手动调用`interrupt()`：
+如果你想执行手动打断，例如在 UI 中提供“停止”按钮，可以手动调用 `interrupt()`：
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
-无论哪种方式，Realtime Session 都会处理对智能体生成的打断，截断其对已向用户说出内容的认知，并更新历史记录。
+无论哪种方式，Realtime 会话都会处理对智能体生成的打断、截断其对已向用户输出内容的认知，并更新历史。
 
-如果你使用 WebRTC 连接智能体，它还会清空音频输出。如果你使用 WebSocket，你需要自行处理，停止播放已排队的音频。
+如果你使用 WebRTC 连接到智能体，它还会清空音频输出。如果使用 WebSocket，你需要自行处理，停止播放已排队的音频。
 
 ## 文本输入
 
-如果你想向智能体发送文本输入，可以在`RealtimeSession`上使用`sendMessage`方法。
+如果你想向智能体发送文本输入，可以在 `RealtimeSession` 上使用 `sendMessage` 方法。
 
-这在你希望让用户同时以两种模态与智能体交互，或为对话提供额外上下文时很有用。
+如果你希望让用户以两种模态与智能体交互，或为对话提供额外上下文，这将很有用。
 
 <Code lang="typescript" code={sendMessageExample} />
 
 ## 对话历史管理
 
-`RealtimeSession`会在`history`属性中自动管理对话历史：
+`RealtimeSession` 会在 `history` 属性中自动管理对话历史：
 
-你可以用它向用户渲染历史，或在其上执行额外操作。由于在对话过程中历史会不断变化，你可以监听`history_updated`事件。
+你可以用它向客户渲染历史，或对其执行其他操作。由于在对话过程中历史会不断变化，你可以监听 `history_updated` 事件。
 
-如果你想修改历史，例如完全移除一条消息或更新其转写，可以使用`updateHistory`方法。
+如果你想修改历史，例如完全移除一条消息或更新其转录，可以使用 `updateHistory` 方法。
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 ### 限制
 
 1. 目前无法事后更新/更改函数工具调用
-2. 历史中的文本输出需要启用转写和文本模态
-3. 因打断而被截断的响应没有转写
+2. 历史中的文本输出需要启用转录和文本模态
+3. 因打断而被截断的响应没有转录
 
 ## 通过工具进行委派
 
 ![通过工具进行委派](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-通过将对话历史与工具调用结合，你可以将对话委派给另一个后端智能体来执行更复杂的操作，然后将其结果返回给用户。
+通过将对话历史与一次工具调用相结合，你可以将对话委派给另一个后端智能体来执行更复杂的操作，然后将结果返回给用户。
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-下面的代码将于服务器上执行。本示例通过 Next.js 的 Server Actions 实现。
+下面的代码将在服务器上执行。本示例通过 Next.js 的 server actions。
 
 <Code lang="typescript" code={serverAgentExample} />
