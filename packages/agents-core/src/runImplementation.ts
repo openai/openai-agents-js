@@ -2291,10 +2291,13 @@ async function runCompactionOnSession(
   session: Session | undefined,
   responseId: string | undefined,
 ): Promise<void> {
-  if (isOpenAIResponsesCompactionAwareSession(session)) {
-    // Called after a completed turn is persisted so compaction can consider the latest stored state.
-    await session.runCompaction({ responseId });
+  if (!isOpenAIResponsesCompactionAwareSession(session)) {
+    return;
   }
+  // Called after a completed turn is persisted so compaction can consider the latest stored state.
+  await session.runCompaction(
+    typeof responseId === 'undefined' ? undefined : { responseId },
+  );
 }
 
 /**

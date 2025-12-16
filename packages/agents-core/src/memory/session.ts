@@ -51,9 +51,13 @@ export type OpenAIResponsesCompactionArgs = {
   /**
    * The `response.id` from a completed OpenAI Responses API turn, if available.
    *
-   * When undefined, compaction should be skipped.
+   * When omitted, implementations may fall back to a cached value or throw.
    */
-  responseId: string | undefined;
+  responseId?: string | undefined;
+  /**
+   * When true, compaction should run regardless of any internal thresholds or hooks.
+   */
+  force?: boolean;
 };
 
 export interface OpenAIResponsesCompactionAwareSession extends Session {
@@ -66,7 +70,7 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
    * This hook is best-effort. Implementations should consider handling transient failures and
    * deciding whether to retry or skip compaction for the current turn.
    */
-  runCompaction(args: OpenAIResponsesCompactionArgs): Promise<void> | void;
+  runCompaction(args?: OpenAIResponsesCompactionArgs): Promise<void> | void;
 }
 
 export function isOpenAIResponsesCompactionAwareSession(

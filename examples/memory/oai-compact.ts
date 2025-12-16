@@ -9,17 +9,22 @@ import { FileSession } from './sessions';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({
+    model: 'gpt-5.2',
     // This compaction decorator handles only compaction logic.
     // The underlying session is responsible for storing the history.
     underlyingSession: new FileSession(),
-    // Set a low threshold to observe compaction in action.
-    compactionThreshold: 3,
-    model: 'gpt-4.1',
+    // (optional customization) This example demonstrates the simplest compaction logic,
+    // but you can also estimate the context window size using sessionItems (all items)
+    // and trigger compaction at the optimal time.
+    shouldTriggerCompaction: ({ compactionCandidateItems }) => {
+      // Set a low threshold to observe compaction in action.
+      return compactionCandidateItems.length >= 4;
+    },
   });
 
   const agent = new Agent({
     name: 'Assistant',
-    model: 'gpt-4.1',
+    model: 'gpt-5.2',
     instructions:
       'Keep answers short. This example demonstrates responses.compact with a custom session. For every user turn, call fetch_image_data with the provided label. Do not include raw image bytes or data URLs in your final answer.',
     modelSettings: { toolChoice: 'required' },
@@ -66,8 +71,17 @@ async function main() {
     }
 
     const compactedHistory = await session.getItems();
-    console.log('\nStored history after compaction:');
+    console.log('\nHitory including both compaction and newer items:');
     for (const item of compactedHistory) {
+      console.log(`- ${item.type}`);
+    }
+
+    // You can manually run compaction this way:
+    await session.runCompaction({ force: true });
+
+    const finalHistory = await session.getItems();
+    console.log('\nStored history after final compaction:');
+    for (const item of finalHistory) {
       console.log(`- ${item.type}`);
     }
   });

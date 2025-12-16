@@ -15,6 +15,23 @@ import {
 const DEFAULT_COMPACTION_THRESHOLD = 10;
 const logger = getLogger('openai-agents:openai:compaction');
 
+export type OpenAIResponsesCompactionDecisionContext = {
+  /**
+   * The `response.id` from a completed OpenAI Responses API turn, if available.
+   */
+  responseId: string | undefined;
+  /**
+   * Items considered compaction candidates (excludes user and compaction items).
+   * The array must not be mutated.
+   */
+  compactionCandidateItems: AgentInputItem[];
+  /**
+   * All stored items retrieved from the underlying session, if available.
+   * The array must not be mutated.
+   */
+  sessionItems: AgentInputItem[];
+};
+
 export type OpenAIResponsesCompactionSessionOptions = {
   /**
    * OpenAI client used to call `responses.compact`.
@@ -36,17 +53,6 @@ export type OpenAIResponsesCompactionSessionOptions = {
    */
   underlyingSession?: Session & { [OPENAI_SESSION_API]?: 'responses' };
   /**
-   * Compaction threshold based on the number of compaction items currently stored in the
-   * underlying session. Defaults to 10.
-   *
-   * This is a heuristic intended to avoid calling `responses.compact` too frequently in small demos.
-   * Tune this based on your latency/cost budget and how quickly your session grows.
-   *
-   * The default counter excludes user messages and `compaction` items, so tool calls, assistant
-   * messages, and other non-user items contribute to the threshold by default.
-   */
-  compactionThreshold?: number;
-  /**
    * The OpenAI model to use for `responses.compact`.
    *
    * Defaults to `DEFAULT_OPENAI_MODEL`. The value must resemble an OpenAI model name (for example
@@ -54,14 +60,17 @@ export type OpenAIResponsesCompactionSessionOptions = {
    */
   model?: OpenAI.ResponsesModel;
   /**
-   * Returns the number of items that should contribute to the compaction threshold.
+   * Custom decision hook that determines whether to call `responses.compact`.
    *
-   * This function is used to decide when to call `responses.compact`, and it is also used to keep
-   * an incremental count as new items are appended to the underlying session.
-   *
-   * Defaults to counting every stored item except `compaction` items and user messages.
+   * The default implementation compares the length of
+   * {@link OpenAIResponsesCompactionDecisionContext.compactionCandidateItems} to an internal threshold
+   * (10). Override this to support token-based triggers or other heuristics using
+   * {@link OpenAIResponsesCompactionDecisionContext.compactionCandidateItems} or
+   * {@link OpenAIResponsesCompactionDecisionContext.sessionItems}.
    */
-  countCompactionItems?: (items: AgentInputItem[]) => number;
+  shouldTriggerCompaction?: (
+    context: OpenAIResponsesCompactionDecisionContext,
+  ) => boolean | Promise<boolean>;
 };
 
 /**
@@ -82,11 +91,13 @@ export class OpenAIResponsesCompactionSession
 
   private readonly client: OpenAI;
   private readonly underlyingSession: Session;
-  private readonly compactionThreshold: number;
   private readonly model: OpenAI.ResponsesModel;
   private responseId?: string;
-  private readonly countCompactionItems: (items: AgentInputItem[]) => number;
-  private compactionCandidateCount: number | undefined;
+  private readonly shouldTriggerCompaction: (
+    context: OpenAIResponsesCompactionDecisionContext,
+  ) => boolean | Promise<boolean>;
+  private compactionCandidateItems: AgentInputItem[] | undefined;
+  private sessionItems: AgentInputItem[] | undefined;
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -96,32 +107,39 @@ export class OpenAIResponsesCompactionSession
       );
     }
     this.underlyingSession = options.underlyingSession ?? new MemorySession();
-    this.compactionThreshold =
-      options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
     const model = (options.model ?? DEFAULT_OPENAI_MODEL).trim();
 
     assertSupportedOpenAIResponsesCompactionModel(model);
     this.model = model;
 
-    this.countCompactionItems =
-      options.countCompactionItems ?? defaultCountCompactionItems;
-    this.compactionCandidateCount = undefined;
+    this.shouldTriggerCompaction =
+      options.shouldTriggerCompaction ?? defaultShouldTriggerCompaction;
+    this.compactionCandidateItems = undefined;
+    this.sessionItems = undefined;
   }
 
-  async runCompaction(args: OpenAIResponsesCompactionArgs) {
-    this.responseId = args.responseId ?? undefined;
+  async runCompaction(args: OpenAIResponsesCompactionArgs = {}) {
+    this.responseId = args.responseId ?? this.responseId ?? undefined;
 
     if (!this.responseId) {
-      logger.debug('skip: missing responseId');
-      return;
+      throw new UserError(
+        'OpenAIResponsesCompactionSession.runCompaction requires a responseId from the last completed turn.',
+      );
     }
 
-    const candidateCount = await this.ensureCandidateCountInitialized();
-    if (candidateCount < this.compactionThreshold) {
-      logger.debug('skip: below threshold %o', {
+    const { compactionCandidateItems, sessionItems } =
+      await this.ensureCompactionCandidates();
+    const shouldTriggerCompaction =
+      args.force === true
+        ? true
+        : await this.shouldTriggerCompaction({
+            responseId: this.responseId,
+            compactionCandidateItems,
+            sessionItems,
+          });
+    if (!shouldTriggerCompaction) {
+      logger.debug('skip: decision hook %o', {
         responseId: this.responseId,
-        candidateCount,
-        threshold: this.compactionThreshold,
       });
       return;
     }
@@ -129,8 +147,6 @@ export class OpenAIResponsesCompactionSession
     logger.debug('compact: start %o', {
       responseId: this.responseId,
       model: this.model,
-      candidateCount,
-      threshold: this.compactionThreshold,
     });
 
     const compacted = await this.client.responses.compact({
@@ -143,12 +159,13 @@ export class OpenAIResponsesCompactionSession
     if (outputItems.length > 0) {
       await this.underlyingSession.addItems(outputItems);
     }
-    this.compactionCandidateCount = this.countCompactionItems(outputItems);
+    this.compactionCandidateItems = selectCompactionCandidateItems(outputItems);
+    this.sessionItems = outputItems;
 
     logger.debug('compact: done %o', {
       responseId: this.responseId,
       outputItemCount: outputItems.length,
-      candidateCount: this.compactionCandidateCount,
+      candidateCount: this.compactionCandidateItems.length,
     });
   }
 
@@ -166,8 +183,17 @@ export class OpenAIResponsesCompactionSession
     }
 
     await this.underlyingSession.addItems(items);
-    if (this.compactionCandidateCount !== undefined) {
-      this.compactionCandidateCount += this.countCompactionItems(items);
+    if (this.compactionCandidateItems) {
+      const candidates = selectCompactionCandidateItems(items);
+      if (candidates.length > 0) {
+        this.compactionCandidateItems = [
+          ...this.compactionCandidateItems,
+          ...candidates,
+        ];
+      }
+    }
+    if (this.sessionItems) {
+      this.sessionItems = [...this.sessionItems, ...items];
     }
   }
 
@@ -176,34 +202,62 @@ export class OpenAIResponsesCompactionSession
     if (!popped) {
       return popped;
     }
-    if (this.compactionCandidateCount !== undefined) {
-      this.compactionCandidateCount = Math.max(
-        0,
-        this.compactionCandidateCount - this.countCompactionItems([popped]),
-      );
+    if (this.sessionItems) {
+      const index = this.sessionItems.lastIndexOf(popped);
+      if (index >= 0) {
+        this.sessionItems.splice(index, 1);
+      } else {
+        this.sessionItems = await this.underlyingSession.getItems();
+      }
+    }
+    if (this.compactionCandidateItems) {
+      const isCandidate = selectCompactionCandidateItems([popped]).length > 0;
+      if (isCandidate) {
+        const index = this.compactionCandidateItems.indexOf(popped);
+        if (index >= 0) {
+          this.compactionCandidateItems.splice(index, 1);
+        } else {
+          // Fallback when the popped item reference differs from stored candidates.
+          this.compactionCandidateItems = selectCompactionCandidateItems(
+            await this.underlyingSession.getItems(),
+          );
+        }
+      }
     }
     return popped;
   }
 
   async clearSession() {
     await this.underlyingSession.clearSession();
-    this.compactionCandidateCount = 0;
+    this.compactionCandidateItems = [];
+    this.sessionItems = [];
   }
 
-  private async ensureCandidateCountInitialized(): Promise<number> {
-    if (this.compactionCandidateCount !== undefined) {
+  private async ensureCompactionCandidates(): Promise<{
+    compactionCandidateItems: AgentInputItem[];
+    sessionItems: AgentInputItem[];
+  }> {
+    if (this.compactionCandidateItems && this.sessionItems) {
       logger.debug('candidates: cached %o', {
-        candidateCount: this.compactionCandidateCount,
+        candidateCount: this.compactionCandidateItems.length,
       });
-      return this.compactionCandidateCount;
+      return {
+        compactionCandidateItems: [...this.compactionCandidateItems],
+        sessionItems: [...this.sessionItems],
+      };
     }
     const history = await this.underlyingSession.getItems();
-    this.compactionCandidateCount = this.countCompactionItems(history);
+    const compactionCandidates = selectCompactionCandidateItems(history);
+    this.compactionCandidateItems = compactionCandidates;
+    this.sessionItems = history;
     logger.debug('candidates: initialized %o', {
       historyLength: history.length,
-      candidateCount: this.compactionCandidateCount,
+      candidateCount: compactionCandidates.length,
     });
-    return this.compactionCandidateCount;
+    return {
+      compactionCandidateItems: [...compactionCandidates],
+      sessionItems: [...history],
+    };
   }
 }
 
@@ -222,13 +276,21 @@ function resolveClient(
   return new OpenAI();
 }
 
-function defaultCountCompactionItems(items: AgentInputItem[]): number {
+function defaultShouldTriggerCompaction({
+  compactionCandidateItems,
+}: OpenAIResponsesCompactionDecisionContext): boolean {
+  return compactionCandidateItems.length >= DEFAULT_COMPACTION_THRESHOLD;
+}
+
+function selectCompactionCandidateItems(
+  items: AgentInputItem[],
+): AgentInputItem[] {
   return items.filter((item) => {
     if (item.type === 'compaction') {
       return false;
     }
     return !(item.type === 'message' && item.role === 'user');
-  }).length;
+  });
 }
 
 function assertSupportedOpenAIResponsesCompactionModel(model: string): void {
