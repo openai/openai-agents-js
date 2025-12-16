@@ -132,12 +132,89 @@ export type FunctionTool<
 };
 
 /**
+ * Arguments provided to computer initializers.
+ */
+export type ComputerInitializerArgs<Context = UnknownContext> = {
+  runContext: RunContext<Context>;
+};
+
+/**
+ * A function that initializes a computer for the current run.
+ */
+type BivariantComputerCreate<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = {
+  bivarianceHack: (
+    args: ComputerInitializerArgs<Context>,
+  ) => TComputer | Promise<TComputer>;
+}['bivarianceHack'];
+
+// Keep initializer/disposer bivariant so user code can specify narrower Computer types without
+// forcing contravariant function argument types downstream.
+export type ComputerCreate<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = BivariantComputerCreate<Context, TComputer>;
+
+/**
+ * Optional cleanup invoked after a run finishes when the computer was created via an initializer.
+ */
+type BivariantComputerDispose<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = {
+  bivarianceHack: (
+    args: ComputerInitializerArgs<Context> & { computer: TComputer },
+  ) => void | Promise<void>;
+}['bivarianceHack'];
+
+export type ComputerDispose<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = BivariantComputerDispose<Context, TComputer>;
+
+/**
+ * Initializes a computer for the current run and optionally tears it down after the run.
+ */
+export type ComputerProvider<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = {
+  create: ComputerCreate<Context, TComputer>;
+  dispose?: ComputerDispose<Context, TComputer>;
+};
+
+type ComputerInitializer<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = ComputerCreate<Context, TComputer> | ComputerProvider<Context, TComputer>;
+
+export type ComputerConfig<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = Computer | ComputerInitializer<Context, TComputer>;
+
+function isComputerProvider<Context, TComputer extends Computer>(
+  candidate: unknown,
+): candidate is ComputerProvider<Context, TComputer> {
+  return (
+    !!candidate &&
+    typeof candidate === 'object' &&
+    typeof (candidate as { create?: unknown }).create === 'function'
+  );
+}
+
+/**
  * Exposes a computer to the model as a tool to be called
  *
  * @param Context The context of the tool
  * @param Result The result of the tool
  */
-export type ComputerTool = {
+export type ComputerTool<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+> = {
   type: 'computer';
   /**
    * The name of the tool.
@@ -147,23 +224,202 @@ export type ComputerTool = {
   /**
    * The computer to use.
    */
-  computer: Computer;
+  computer: ComputerConfig<Context, TComputer>;
 };
 
 /**
- * Exposes a computer to the agent as a tool to be called
+ * Exposes a computer to the agent as a tool to be called.
  *
  * @param options Additional configuration for the computer tool like specifying the location of your agent
  * @returns a computer tool definition
  */
-export function computerTool(
-  options: Partial<Omit<ComputerTool, 'type'>> & { computer: Computer },
-): ComputerTool {
-  return {
+export function computerTool<
+  Context = UnknownContext,
+  TComputer extends Computer = Computer,
+>(options: {
+  name?: string;
+  computer: ComputerConfig<Context, TComputer>;
+}): ComputerTool<Context, TComputer> {
+  if (!options.computer) {
+    throw new UserError(
+      'computerTool requires a computer instance or an initializer function.',
+    );
+  }
+
+  const tool: ComputerTool<Context, TComputer> = {
     type: 'computer',
     name: options.name ?? 'computer_use_preview',
     computer: options.computer,
   };
+
+  if (
+    typeof options.computer === 'function' ||
+    isComputerProvider(options.computer)
+  ) {
+    computerInitializerMap.set(
+      tool as AnyComputerTool,
+      options.computer as ComputerInitializer<Context, any>,
+    );
+  }
+
+  return tool;
+}
+
+type ResolvedComputer<Context> = {
+  computer: Computer;
+  dispose?: ComputerDispose<Context, Computer>;
+};
+
+type AnyComputerTool = ComputerTool<any, Computer>;
+
+// Keeps per-tool cache of computer instances keyed by RunContext so each run gets its own instance.
+const computerCache = new WeakMap<
+  AnyComputerTool,
+  WeakMap<RunContext<any>, ResolvedComputer<any>>
+>();
+// Tracks the initializer so we do not overwrite the callable on the tool when we memoize the resolved instance.
+const computerInitializerMap = new WeakMap<
+  AnyComputerTool,
+  ComputerInitializer<any, any>
+>();
+// Allows cleanup routines to find all resolved computer instances for a given run context.
+const computersByRunContext = new WeakMap<
+  RunContext<any>,
+  Map<AnyComputerTool, ResolvedComputer<any>>
+>();
+
+function getComputerInitializer<Context>(
+  tool: ComputerTool<Context, any>,
+): ComputerInitializer<Context, any> | undefined {
+  const initializer = computerInitializerMap.get(tool as AnyComputerTool);
+  if (initializer) {
+    return initializer as ComputerInitializer<Context, any>;
+  }
+  if (
+    typeof tool.computer === 'function' ||
+    isComputerProvider(tool.computer)
+  ) {
+    return tool.computer as ComputerInitializer<Context, any>;
+  }
+  return undefined;
+}
+
+function trackResolvedComputer<Context>(
+  tool: ComputerTool<Context, any>,
+  runContext: RunContext<Context>,
+  resolved: ResolvedComputer<Context>,
+) {
+  let resolvedByRun = computersByRunContext.get(runContext);
+  if (!resolvedByRun) {
+    resolvedByRun = new Map();
+    computersByRunContext.set(runContext, resolvedByRun);
+  }
+  resolvedByRun.set(tool as AnyComputerTool, resolved);
+}
+
+/**
+ * Returns a computer instance for the provided run context. Caches per run to avoid sharing across runs.
+ * @internal
+ */
+export async function resolveComputer<
+  Context,
+  TComputer extends Computer = Computer,
+>(args: {
+  tool: ComputerTool<Context, TComputer>;
+  runContext: RunContext<Context>;
+}): Promise<TComputer> {
+  const { tool, runContext } = args;
+  // Cache instances per RunContext so a single Computer is not shared across simultaneous runs.
+  const toolKey = tool as AnyComputerTool;
+  let perContext = computerCache.get(toolKey);
+  if (!perContext) {
+    perContext = new WeakMap();
+    computerCache.set(toolKey, perContext);
+  }
+
+  const cached = perContext.get(runContext);
+  if (cached) {
+    trackResolvedComputer(tool, runContext, cached);
+    return cached.computer as TComputer;
+  }
+
+  const initializerConfig = getComputerInitializer(tool);
+  const lifecycle =
+    initializerConfig && isComputerProvider(initializerConfig)
+      ? initializerConfig
+      : isComputerProvider(tool.computer)
+        ? (tool.computer as ComputerProvider<Context, any>)
+        : undefined;
+  const initializer =
+    typeof initializerConfig === 'function'
+      ? initializerConfig
+      : (lifecycle?.create ??
+        (typeof tool.computer === 'function'
+          ? (tool.computer as ComputerCreate<Context, TComputer>)
+          : undefined));
+  const disposer = lifecycle?.dispose;
+
+  const computer =
+    initializer && typeof initializer === 'function'
+      ? await initializer({ runContext })
+      : (tool.computer as Computer);
+
+  if (!computer) {
+    throw new UserError(
+      'The computer tool did not provide a computer instance.',
+    );
+  }
+
+  const resolved: ResolvedComputer<Context> = {
+    computer,
+    dispose: disposer,
+  };
+  perContext.set(runContext, resolved);
+  trackResolvedComputer(tool, runContext, resolved);
+  tool.computer = computer as ComputerConfig<Context, TComputer>;
+  return computer as TComputer;
+}
+
+/**
+ * Disposes any computer instances created for the provided run context.
+ * @internal
+ */
+export async function disposeResolvedComputers<Context>({
+  runContext,
+}: {
+  runContext: RunContext<Context>;
+}): Promise<void> {
+  const resolvedByRun = computersByRunContext.get(runContext);
+  if (!resolvedByRun) {
+    return;
+  }
+  computersByRunContext.delete(runContext);
+
+  const disposers: Array<() => Promise<void>> = [];
+
+  for (const [tool, resolved] of resolvedByRun.entries()) {
+    const perContext = computerCache.get(tool);
+    perContext?.delete(runContext);
+
+    const storedInitializer = getComputerInitializer(tool);
+    if (storedInitializer) {
+      tool.computer = storedInitializer;
+    }
+
+    if (resolved.dispose) {
+      disposers.push(async () => {
+        await resolved.dispose?.({ runContext, computer: resolved.computer });
+      });
+    }
+  }
+
+  for (const dispose of disposers) {
+    try {
+      await dispose();
+    } catch (error) {
+      logger.warn(`Failed to dispose computer for run context: ${error}`);
+    }
+  }
 }
 
 export type ShellTool = {
@@ -428,7 +684,7 @@ export type HostedTool = {
  */
 export type Tool<Context = unknown> =
   | FunctionTool<Context, any, any>
-  | ComputerTool
+  | ComputerTool<Context, any>
   | ShellTool
   | ApplyPatchTool
   | HostedTool;

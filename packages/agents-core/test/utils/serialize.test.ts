@@ -38,6 +38,20 @@ describe('serialize utilities', () => {
     });
   });
 
+  it('throws when computer tool has not been initialized yet', () => {
+    const t: any = {
+      type: 'computer',
+      name: 'comp',
+      computer: async () => ({
+        environment: 'node',
+        dimensions: { width: 1, height: 2 },
+      }),
+    };
+    expect(() => serializeTool(t)).toThrow(
+      /resolveComputer\(\{ tool, runContext \}\)/,
+    );
+  });
+
   it('serializes shell tools', () => {
     const t: any = {
       type: 'shell',

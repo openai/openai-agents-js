@@ -50,7 +50,12 @@ import {
   prepareInputItemsWithSession,
 } from './runImplementation';
 import { RunItem } from './items';
-import { Tool } from './tool';
+import {
+  ComputerTool,
+  Tool,
+  resolveComputer,
+  disposeResolvedComputers,
+} from './tool';
 import {
   getOrCreateTrace,
   addErrorToCurrentSpan,
@@ -953,6 +958,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
         throw err;
       } finally {
+        if (state._currentStep?.type !== 'next_step_interruption') {
+          try {
+            await disposeResolvedComputers({ runContext: state._context });
+          } catch (error) {
+            logger.warn(`Failed to dispose computers after run: ${error}`);
+          }
+        }
         if (state._currentAgentSpan) {
           if (state._currentStep?.type !== 'next_step_interruption') {
             // don't end the span if the run was interrupted
@@ -1333,6 +1345,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       throw error;
     } finally {
+      if (result.state._currentStep?.type !== 'next_step_interruption') {
+        try {
+          await disposeResolvedComputers({ runContext: result.state._context });
+        } catch (error) {
+          logger.warn(`Failed to dispose computers after run: ${error}`);
+        }
+      }
       if (result.state._currentAgentSpan) {
         if (result.state._currentStep?.type !== 'next_step_interruption') {
           result.state._currentAgentSpan.end();
@@ -2102,6 +2121,18 @@ async function prepareAgentArtifacts<
 >(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
   const handoffs = await state._currentAgent.getEnabledHandoffs(state._context);
   const tools = await state._currentAgent.getAllTools(state._context);
+
+  const computerTools = tools.filter(
+    (tool) => tool.type === 'computer',
+  ) as ComputerTool<TContext, any>[];
+
+  if (computerTools.length > 0) {
+    await Promise.all(
+      computerTools.map(async (tool) => {
+        await resolveComputer({ tool, runContext: state._context });
+      }),
+    );
+  }
 
   if (!state._currentAgentSpan) {
     const handoffNames = handoffs.map((h) => h.agentName);

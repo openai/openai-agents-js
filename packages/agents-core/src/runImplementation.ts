@@ -33,6 +33,7 @@ import {
   HostedMCPTool,
   ShellTool,
   ApplyPatchTool,
+  resolveComputer,
 } from './tool';
 import type { ShellResult } from './shell';
 import { AgentInputItem, UnknownContext } from './types';
@@ -76,7 +77,7 @@ type ToolRunFunction<TContext = UnknownContext> = {
 // Holds a pending computer-use action so we can dispatch to the configured computer tool.
 type ToolRunComputer = {
   toolCall: protocol.ComputerUseCallItem;
-  computer: ComputerTool;
+  computer: ComputerTool<any, any>;
 };
 
 // Captures a shell invocation emitted by the model.
@@ -235,7 +236,9 @@ export function processModelResponse<TContext>(
   const functionMap = new Map(
     tools.filter((t) => t.type === 'function').map((t) => [t.name, t]),
   );
-  const computerTool = tools.find((t) => t.type === 'computer');
+  const computerTool = tools.find(
+    (t): t is ComputerTool<TContext, any> => t.type === 'computer',
+  );
   const shellTool = tools.find((t): t is ShellTool => t.type === 'shell');
   const applyPatchTool = tools.find(
     (t): t is ApplyPatchTool => t.type === 'apply_patch',
@@ -1360,12 +1363,25 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
 
           // Emit agent_tool_end even on error to maintain consistent event lifecycle
           const errorResult = String(error);
-          runner.emit('agent_tool_end', state._context, agent, toolRun.tool, errorResult, {
-            toolCall: toolRun.toolCall,
-          });
-          agent.emit('agent_tool_end', state._context, toolRun.tool, errorResult, {
-            toolCall: toolRun.toolCall,
-          });
+          runner.emit(
+            'agent_tool_end',
+            state._context,
+            agent,
+            toolRun.tool,
+            errorResult,
+            {
+              toolCall: toolRun.toolCall,
+            },
+          );
+          agent.emit(
+            'agent_tool_end',
+            state._context,
+            toolRun.tool,
+            errorResult,
+            {
+              toolCall: toolRun.toolCall,
+            },
+          );
 
           throw error;
         }
@@ -1753,7 +1769,6 @@ export async function executeComputerActions(
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
-    const computer = action.computer.computer;
     const toolCall = action.toolCall;
 
     // Hooks: on_tool_start (global + agent)
@@ -1767,6 +1782,10 @@ export async function executeComputerActions(
     // Run the action and get screenshot
     let output: string;
     try {
+      const computer = await resolveComputer({
+        tool: action.computer,
+        runContext,
+      });
       output = await _runComputerActionAndScreenshot(computer, toolCall);
     } catch (err) {
       _logger.error('Failed to execute computer action:', err);

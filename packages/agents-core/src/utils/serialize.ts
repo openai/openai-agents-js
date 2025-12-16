@@ -3,6 +3,17 @@ import { Handoff } from '../handoff';
 import { Tool } from '../tool';
 import { AgentOutputType } from '../agent';
 import { SerializedHandoff, SerializedTool } from '../model';
+import { UserError } from '../errors';
+import type { Computer } from '../computer';
+
+function isComputerInstance(value: unknown): value is Computer {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'environment' in (value as Record<string, unknown>) &&
+    'dimensions' in (value as Record<string, unknown>)
+  );
+}
 
 export function serializeTool(tool: Tool<any>): SerializedTool {
   if (tool.type === 'function') {
@@ -15,6 +26,12 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
     };
   }
   if (tool.type === 'computer') {
+    // When a computer is created lazily via an initializer, serializeTool can be called before initialization (e.g., manual serialize without running the agent).
+    if (!isComputerInstance(tool.computer)) {
+      throw new UserError(
+        'Computer tool is not initialized for serialization. Call resolveComputer({ tool, runContext }) first (for example, when building a model payload outside Runner.run).',
+      );
+    }
     return {
       type: 'computer',
       name: tool.name,
