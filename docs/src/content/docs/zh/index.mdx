@@ -17,32 +17,33 @@ import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 
 ## 概述
 
-[OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js)
-让你以轻量、易用、极少抽象的方式构建智能体应用。这是我们此前智能体实验
-[Swarm](https://github.com/openai/swarm/tree/main) 的面向生产的升级版，并[也提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只有一小组基础组件：
+[适用于 TypeScript 的 OpenAI Agents SDK](https://github.com/openai/openai-agents-js)
+让你以轻量、易用的方式构建具备智能体能力的 AI 应用，且抽象极少。它是我们此前
+用于智能体的实验项目
+[Swarm](https://github.com/openai/swarm/tree/main) 的生产级升级版本，并且[也可用于 Python](https://github.com/openai/openai-agents-python)。Agents SDK 只包含一小组基本组件：
 
-- **Agents**：配备 instructions 和 tools 的 LLM
-- **Handoffs**：允许智能体将特定任务委托给其他智能体
-- **Guardrails**：用于验证传入智能体的输入
+- **智能体（Agents）**：配备 instructions 和 tools 的 LLM
+- **交接（Handoffs）**：允许智能体将特定任务委派给其他智能体
+- **护栏（Guardrails）**：使传入智能体的输入可以被验证
 
-结合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，让你无需陡峭学习曲线即可构建真实应用。此外，SDK 内置**追踪**，可视化与调试智能体流程，并用于评估、甚至为你的应用微调模型。
+结合 TypeScript，这些基本组件足以表达工具与智能体之间的复杂关系，让你无需陡峭的学习曲线即可构建真实应用。此外，SDK 内置 **追踪（tracing）**，便于可视化与调试智能体流程，进行评估，甚至为你的应用对模型进行微调。
 
-## 为什么使用 Agents SDK
+## 为何使用 Agents SDK
 
-SDK 遵循两条核心设计原则：
+该 SDK 的两条核心设计原则：
 
-1. 功能足够丰富值得使用，但基础组件足够少以便快速上手。
-2. 开箱即用效果好，同时允许你精准自定义实际行为。
+1. 功能足够实用，但保留足够少的基本组件以便快速上手。
+2. 开箱即用体验优秀，同时又可精确自定义执行过程。
 
-主要特性包括：
+主要特性：
 
-- **Agent loop**：内置智能体循环，负责调用工具、将结果回传给 LLM，并循环直至 LLM 完成。
-- **TypeScript 优先**：使用语言内建特性来编排与串联智能体，无需学习新的抽象。
-- **Handoffs**：强大的多智能体协调与委派能力。
-- **Guardrails**：与智能体并行执行输入校验，校验失败将提前中止。
-- **函数工具**：将任意 TypeScript 函数转换为工具，自动生成 schema，并由 Zod 驱动验证。
-- **追踪**：内置追踪用于可视化、调试与监控工作流，并可结合 OpenAI 的评估、微调与蒸馏工具。
-- **实时智能体**：构建强大的语音智能体，包含自动打断检测、上下文管理、护栏等。
+- **智能体循环**：内置循环负责调用工具、将结果回传给 LLM，并在 LLM 完成前持续循环。
+- **TypeScript 优先**：利用语言特性编排与串联智能体，无需学习新抽象。
+- **交接**：在多个智能体间进行协调与委派的强大能力。
+- **护栏**：与智能体并行执行输入校验与检查，失败则提前中止。
+- **函数工具**：将任意 TypeScript 函数变为工具，自动生成模式并使用 Zod 进行验证。
+- **追踪**：内置追踪，支持可视化、调试与监控工作流，并可使用 OpenAI 的评估、微调与蒸馏工具。
+- **实时智能体**：构建强大的语音智能体，包括自动打断检测、上下文管理、护栏等。
 
 ## 安装
 
@@ -54,7 +55,7 @@ npm install @openai/agents zod@3
 
 <Code lang="typescript" code={helloWorldExample} title="Hello World" />
 
-（_运行前请确保已设置 `OPENAI_API_KEY` 环境变量_）
+（_如果要运行，请确保设置 `OPENAI_API_KEY` 环境变量_）
 
 ```bash
 export OPENAI_API_KEY=sk-...

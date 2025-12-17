@@ -7,24 +7,23 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  此适配器仍处于测试阶段。您可能会在某些模型提供商（尤其是较小的提供商）上遇到问题。请通过
-  [GitHub issues](https://github.com/openai/openai-agents-js/issues)
-  报告问题，我们会尽快修复。
+  此适配器仍处于测试阶段。您在使用部分模型提供方（尤其是较小的提供方）时可能会遇到问题。请通过[GitHub
+  issues](https://github.com/openai/openai-agents-js/issues)反馈问题，我们会尽快修复。
 </Aside>
 
-开箱即用，Agents SDK 可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。不过，如果您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了多种受支持的模型，可通过此适配器接入 Agents SDK。
+开箱即用，Agents SDK 可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。不过，如果您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了多种受支持的模型，可以通过此适配器接入 Agents SDK。
 
 ## 设置
 
 <Steps>
 
-1. 通过安装扩展包来安装 AI SDK 适配器：
+1. 安装扩展包以获取 AI SDK 适配器：
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. 从 [Vercel 的 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 选择并安装所需的模型包：
+2. 从[Vercel 的 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)中选择并安装所需的模型包：
 
    ```bash
    npm install @ai-sdk/openai
@@ -37,7 +36,7 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
    import { aisdk } from '@openai/agents-extensions';
    ```
 
-4. 初始化一个模型实例供智能体使用：
+4. 初始化一个由智能体使用的模型实例：
 
    ```typescript
    const model = aisdk(openai('gpt-5-mini'));
@@ -46,19 +45,19 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  我们目前支持 AI SDK 的模型提供方 v2 模块，它与 Vercel AI SDK v5
-  兼容。若您有特定原因需要继续使用 v1 模型提供方，可以从
+  我们当前支持 ai-sdk 的模型提供方 v2 模块，兼容 Vercel AI SDK
+  v5。若您有特定原因需要继续使用 v1 模型提供方，可以从
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   复制该模块并将其包含到您的项目中。
 </Aside>
 
 ## 示例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 设置" />
 
-## 传递提供商元数据
+## 传递提供方元数据
 
-如果需要在消息中发送特定于提供商的选项，请通过 `providerMetadata` 传递。其值会直接转发给底层的 AI SDK 模型。例如，以下在 Agents SDK 中的 `providerData`
+如果需要随消息发送特定于提供方的选项，请通过 `providerMetadata` 传递。其值会直接转发给底层的 AI SDK 模型。比如，Agents SDK 中如下的 `providerData`
 
 ```ts
 providerData: {
@@ -70,7 +69,7 @@ providerData: {
 }
 ```
 
-将会在使用 AI SDK 集成时变为
+在使用 AI SDK 集成时将变为
 
 ```ts
 providerMetadata: {
