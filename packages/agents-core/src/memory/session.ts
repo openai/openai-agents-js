@@ -61,7 +61,7 @@ export type OpenAIResponsesCompactionArgs = {
   force?: boolean;
 };
 
-export type CompactionResult = {
+export type OpenAIResponsesCompactionResult = {
   usage: RequestUsage;
 };
 
@@ -77,7 +77,10 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
    */
   runCompaction(
     args?: OpenAIResponsesCompactionArgs,
-  ): Promise<CompactionResult | null> | CompactionResult | null;
+  ):
+    | Promise<OpenAIResponsesCompactionResult | null>
+    | OpenAIResponsesCompactionResult
+    | null;
 }
 
 export function isOpenAIResponsesCompactionAwareSession(

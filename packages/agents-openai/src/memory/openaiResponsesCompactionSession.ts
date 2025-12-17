@@ -11,7 +11,7 @@ import type {
   OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
   Session,
 } from '@openai/agents-core';
-import type { CompactionResult } from '@openai/agents-core';
+import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import {
   OPENAI_SESSION_API,
@@ -126,7 +126,7 @@ export class OpenAIResponsesCompactionSession
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
-  ): Promise<CompactionResult | null> {
+  ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
 
     if (!this.responseId) {

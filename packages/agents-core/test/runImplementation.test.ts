@@ -70,7 +70,10 @@ import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
 import { Logger } from '../src/logger';
 import type { UnknownContext } from '../src/types';
-import type { CompactionResult, Session } from '../src/memory/session';
+import type {
+  OpenAIResponsesCompactionResult,
+  Session,
+} from '../src/memory/session';
 import type { AgentInputItem } from '../src/types';
 
 beforeAll(() => {
@@ -580,7 +583,7 @@ describe('saveToSession', () => {
 
       async runCompaction(args: {
         responseId: string | undefined;
-      }): Promise<CompactionResult | null> {
+      }): Promise<OpenAIResponsesCompactionResult | null> {
         this.events.push(`runCompaction:${args.responseId}`);
         return null;
       }
@@ -665,7 +668,7 @@ describe('saveToSession', () => {
 
       async runCompaction(args?: {
         responseId?: string;
-      }): Promise<CompactionResult | null> {
+      }): Promise<OpenAIResponsesCompactionResult | null> {
         this.events.push(`runCompaction:${String(args?.responseId)}`);
         return null;
       }
@@ -744,7 +747,7 @@ describe('saveToSession', () => {
         this.items = [];
       }
 
-      async runCompaction(): Promise<CompactionResult | null> {
+      async runCompaction(): Promise<OpenAIResponsesCompactionResult | null> {
         this.events.push('runCompaction:resp_123');
         return {
           usage: new RequestUsage({
