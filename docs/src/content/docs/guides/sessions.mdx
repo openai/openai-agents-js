@@ -8,6 +8,7 @@ import sessionsQuickstart from '../../../../../examples/docs/sessions/basicSessi
 import manageHistory from '../../../../../examples/docs/sessions/manageHistory.ts?raw';
 import customSession from '../../../../../examples/docs/sessions/customSession.ts?raw';
 import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
+import responsesCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
 
 Sessions give the Agents SDK a **persistent memory layer**. Provide any object that implements the `Session` interface to `Runner.run`, and the SDK handles the rest. When a session is present, the runner automatically:
 
@@ -15,7 +16,7 @@ Sessions give the Agents SDK a **persistent memory layer**. Provide any object t
 2. Persists new user input and assistant output after each run completes.
 3. Keeps the session available for future turns, whether you call the runner with new user text or resume from an interrupted `RunState`.
 
-This removes the need to manually call `toInputList()` or stitch history between turns. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. Because they share the `Session` interface, you can plug in your own storage backend. For inspiration beyond the Conversations API, explore the sample session backends under `examples/memory/` (Prisma, file-backed, and more).
+This removes the need to manually call `toInputList()` or stitch history between turns. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. Because they share the `Session` interface, you can plug in your own storage backend. For inspiration beyond the Conversations API, explore the sample session backends under `examples/memory/` (Prisma, file-backed, and more). When you use an OpenAI Responses model, wrap any session with `OpenAIResponsesCompactionSession` to automatically shrink stored transcripts via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact).
 
 > Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
 
@@ -41,6 +42,20 @@ Reusing the same session instance ensures the agent receives the full conversati
 - **After a non-streaming run** one call to `session.addItems()` persists both the original user input and the model outputs from the latest turn.
 - **For streaming runs** it writes the user input first and appends streamed outputs once the turn completes.
 - **When resuming from `RunResult.state`** (for approvals or other interruptions) keep passing the same `session`. The resumed turn is added to memory without re-preparing the input.
+
+---
+
+## Compact OpenAI Responses history automatically
+
+`OpenAIResponsesCompactionSession` decorates any `Session` and relies on the OpenAI Responses API to keep transcripts short. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. The decorator clears and rewrites the underlying session with the compacted output, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
+
+<Code
+  lang="typescript"
+  code={responsesCompactionSession}
+  title="Decorate a session with OpenAIResponsesCompactionSession"
+/>
+
+You can call `runCompaction({ force: true })` at any time to shrink history before archiving or handoff. Enable debug logs with `DEBUG=openai-agents:openai:compaction` to trace compaction decisions.
 
 ---
 
