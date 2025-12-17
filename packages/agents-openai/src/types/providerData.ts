@@ -32,7 +32,7 @@ export type ImageGenerationTool = Omit<
   type: 'image_generation';
   name: 'image_generation' | string;
   background?: 'transparent' | 'opaque' | 'auto' | string;
-  model?: 'gpt-image-1' | string;
+  model?: 'gpt-image-1' | 'gpt-image-1-mini' | 'gpt-image-1.5' | string;
   moderation?: 'auto' | 'low' | string;
   output_format?: 'png' | 'webp' | 'jpeg' | string;
   quality?: 'low' | 'medium' | 'high' | 'auto' | string;

@@ -170,7 +170,7 @@ export type ImageGenerationTool = {
   background?: 'transparent' | 'opaque' | 'auto' | string;
   inputFidelity?: 'high' | 'low' | null;
   inputImageMask?: OpenAI.Responses.Tool.ImageGeneration.InputImageMask;
-  model?: 'gpt-image-1' | string;
+  model?: 'gpt-image-1' | 'gpt-image-1-mini' | 'gpt-image-1.5' | string;
   moderation?: 'auto' | 'low' | string;
   outputCompression?: number;
   outputFormat?: 'png' | 'webp' | 'jpeg' | string;
