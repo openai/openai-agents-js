@@ -40,7 +40,7 @@ import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
-import { tool, hostedMcpTool } from '../src/tool';
+import { tool, hostedMcpTool, computerTool } from '../src/tool';
 import {
   FakeModel,
   fakeModelMessage,
@@ -48,7 +48,9 @@ import {
   FakeTracingExporter,
   TEST_MODEL_MESSAGE,
   TEST_MODEL_RESPONSE_BASIC,
+  TEST_MODEL_FUNCTION_CALL,
   TEST_TOOL,
+  FakeComputer,
 } from './stubs';
 import {
   Model,
@@ -314,6 +316,91 @@ describe('Runner.run', () => {
       expect(runnerEndEvents).toHaveLength(1);
       expect(runnerEndEvents[0].agent).toBe(agent);
       expect(runnerEndEvents[0].output).toBe('Hello World');
+    });
+
+    it('disposes computer lifecycle initializers after a completed run', async () => {
+      const createdComputer = new FakeComputer();
+      const create = vi.fn(async () => createdComputer);
+      const dispose = vi.fn(async () => {});
+      const computer = computerTool({
+        computer: { create, dispose },
+      });
+      const model = new FakeModel([
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'ComputerAgent',
+        model,
+        tools: [computer],
+      });
+
+      const result = await run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('done');
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledWith({
+        runContext: result.state._context,
+        computer: createdComputer,
+      });
+    });
+
+    it('defers disposal while a run is interrupted and cleans up after resuming', async () => {
+      const createdComputer = new FakeComputer();
+      const create = vi.fn(async () => createdComputer);
+      const dispose = vi.fn(async () => {});
+      const computer = computerTool({
+        computer: { create, dispose },
+      });
+
+      const approvalTool = tool({
+        name: 'needsApproval',
+        description: 'requires approval',
+        parameters: z.object({}).strict(),
+        execute: async () => 'ok',
+        needsApproval: true,
+      });
+
+      const functionCall: protocol.FunctionCallItem = {
+        ...TEST_MODEL_FUNCTION_CALL,
+        name: 'needsApproval',
+        callId: 'call-1',
+        arguments: '{}',
+      };
+      const model = new FakeModel([
+        {
+          output: [functionCall, fakeModelMessage('pending')],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('all done')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalAgent',
+        model,
+        tools: [computer, approvalTool],
+      });
+
+      const firstRun = await run(agent, 'hello');
+      expect(firstRun.interruptions).toHaveLength(1);
+      expect(dispose).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledTimes(1);
+
+      const approval = firstRun.interruptions?.[0];
+      if (!approval) {
+        throw new Error('Expected an approval interruption');
+      }
+      firstRun.state.approve(approval);
+
+      const finalRun = await run(agent, firstRun.state);
+
+      expect(finalRun.finalOutput).toBe('all done');
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledWith({
+        runContext: finalRun.state._context,
+        computer: createdComputer,
+      });
     });
   });
 

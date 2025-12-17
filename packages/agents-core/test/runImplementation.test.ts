@@ -45,6 +45,7 @@ import {
   applyPatchTool,
   shellTool,
   hostedMcpTool,
+  resolveComputer,
 } from '../src/tool';
 import { handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
@@ -1910,6 +1911,46 @@ describe('executeComputerActions', () => {
     expect(result).toHaveLength(actions.length);
     expect(comp.screenshot).toHaveBeenCalledTimes(actions.length);
     expect(result.every((r) => r instanceof ToolCallOutputItem)).toBe(true);
+  });
+
+  it('initializes computer with run context using a computer initializer', async () => {
+    const initializer = vi.fn(async () => makeComputer());
+    const tool = computerTool({ computer: initializer });
+    const toolCall: protocol.ComputerUseCallItem = {
+      id: 'id1',
+      type: 'computer_call',
+      callId: 'id1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+
+    const ctxA = new RunContext();
+    const ctxB = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxA,
+    );
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxA,
+    );
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxB,
+    );
+
+    expect(initializer).toHaveBeenCalledTimes(2);
+    const compA = await resolveComputer({ tool, runContext: ctxA });
+    const compB = await resolveComputer({ tool, runContext: ctxB });
+    expect(compA).not.toBe(compB);
   });
 
   it('throws if computer lacks screenshot', async () => {
