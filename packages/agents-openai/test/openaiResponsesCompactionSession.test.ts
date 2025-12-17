@@ -72,6 +72,11 @@ describe('OpenAIResponsesCompactionSession', () => {
           content: [{ type: 'output_text', text: 'compacted output' }],
         },
       ],
+      usage: {
+        input_tokens: 7,
+        output_tokens: 11,
+        total_tokens: 18,
+      },
     });
     const underlyingSession = new MemorySession();
     const decisionHistoryLengths: number[] = [];
@@ -120,6 +125,17 @@ describe('OpenAIResponsesCompactionSession', () => {
         content: [{ type: 'output_text', text: 'compacted output' }],
       },
     ]);
+
+    const compactionResult = await session.runCompaction({
+      responseId: 'resp_2',
+      force: true,
+    });
+    expect(compactionResult?.usage).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 11,
+      totalTokens: 18,
+      endpoint: 'responses.compact',
+    });
   });
 
   it('provides compaction candidates to the decision hook', async () => {

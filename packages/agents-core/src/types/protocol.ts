@@ -769,6 +769,7 @@ export const RequestUsageData = z.object({
   totalTokens: z.number(),
   inputTokensDetails: z.record(z.string(), z.number()).optional(),
   outputTokensDetails: z.record(z.string(), z.number()).optional(),
+  endpoint: z.string().optional(),
 });
 
 export type RequestUsageData = z.infer<typeof RequestUsageData>;

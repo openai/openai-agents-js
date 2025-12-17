@@ -1,4 +1,5 @@
 import type { AgentInputItem } from '../types';
+import type { RequestUsage } from '../usage';
 
 /**
  * A function that combines session history with new input items before the model call.
@@ -60,6 +61,10 @@ export type OpenAIResponsesCompactionArgs = {
   force?: boolean;
 };
 
+export type OpenAIResponsesCompactionResult = {
+  usage: RequestUsage;
+};
+
 export interface OpenAIResponsesCompactionAwareSession extends Session {
   /**
    * Invoked by the runner after it persists a completed turn into the session.
@@ -70,7 +75,12 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
    * This hook is best-effort. Implementations should consider handling transient failures and
    * deciding whether to retry or skip compaction for the current turn.
    */
-  runCompaction(args?: OpenAIResponsesCompactionArgs): Promise<void> | void;
+  runCompaction(
+    args?: OpenAIResponsesCompactionArgs,
+  ):
+    | Promise<OpenAIResponsesCompactionResult | null>
+    | OpenAIResponsesCompactionResult
+    | null;
 }
 
 export function isOpenAIResponsesCompactionAwareSession(

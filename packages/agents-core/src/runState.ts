@@ -78,6 +78,7 @@ const requestUsageSchema = z.object({
   totalTokens: z.number(),
   inputTokensDetails: z.record(z.string(), z.number()).optional(),
   outputTokensDetails: z.record(z.string(), z.number()).optional(),
+  endpoint: z.string().optional(),
 });
 
 const usageSchema = z.object({
@@ -470,6 +471,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
                       totalTokens: entry.totalTokens,
                       inputTokensDetails: entry.inputTokensDetails,
                       outputTokensDetails: entry.outputTokensDetails,
+                      ...(entry.endpoint ? { endpoint: entry.endpoint } : {}),
                     }),
                   ),
                 }
