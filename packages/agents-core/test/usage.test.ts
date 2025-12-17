@@ -163,4 +163,36 @@ describe('Usage', () => {
       },
     ]);
   });
+
+  it('preserves endpoint metadata on request usage entries', () => {
+    const aggregated = new Usage();
+
+    aggregated.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+        requestUsageEntries: [
+          new RequestUsage({
+            inputTokens: 3,
+            outputTokens: 4,
+            totalTokens: 7,
+            endpoint: 'responses.create',
+          }),
+        ],
+      }),
+    );
+
+    expect(aggregated.requestUsageEntries).toEqual([
+      {
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+  });
 });

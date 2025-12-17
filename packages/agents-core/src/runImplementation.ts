@@ -65,6 +65,7 @@ import {
   type Session,
   type SessionInputCallback,
 } from './memory/session';
+import { Usage } from './usage';
 
 // Represents a single handoff function call that still needs to be executed after the model turn.
 type ToolRunHandoff = {
@@ -2296,13 +2297,29 @@ function shouldStripIdForType(type: string): boolean {
 async function runCompactionOnSession(
   session: Session | undefined,
   responseId: string | undefined,
+  state: RunState<any, any>,
 ): Promise<void> {
   if (!isOpenAIResponsesCompactionAwareSession(session)) {
     return;
   }
   // Called after a completed turn is persisted so compaction can consider the latest stored state.
-  await session.runCompaction(
+  const compactionResult = await session.runCompaction(
     typeof responseId === 'undefined' ? undefined : { responseId },
+  );
+  if (!compactionResult) {
+    return;
+  }
+  const usage = compactionResult.usage;
+  state._context.usage.add(
+    new Usage({
+      requests: 1,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      inputTokensDetails: usage.inputTokensDetails,
+      outputTokensDetails: usage.outputTokensDetails,
+      requestUsageEntries: [usage],
+    }),
   );
 }
 
@@ -2335,12 +2352,12 @@ export async function saveToSession(
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
       alreadyPersisted + newRunItems.length;
-    await runCompactionOnSession(session, result.lastResponseId);
+    await runCompactionOnSession(session, result.lastResponseId, state);
     return;
   }
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
-  await runCompactionOnSession(session, result.lastResponseId);
+  await runCompactionOnSession(session, result.lastResponseId, state);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 
@@ -2382,12 +2399,12 @@ export async function saveStreamResultToSession(
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
       alreadyPersisted + newRunItems.length;
-    await runCompactionOnSession(session, result.lastResponseId);
+    await runCompactionOnSession(session, result.lastResponseId, state);
     return;
   }
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
-  await runCompactionOnSession(session, result.lastResponseId);
+  await runCompactionOnSession(session, result.lastResponseId, state);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 

@@ -183,6 +183,7 @@ export type {
   SessionInputCallback,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
+  CompactionResult,
 } from './memory/session';
 export { isOpenAIResponsesCompactionAwareSession } from './memory/session';
 export { MemorySession } from './memory/memorySession';

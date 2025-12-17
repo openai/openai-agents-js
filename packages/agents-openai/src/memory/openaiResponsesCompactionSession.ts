@@ -1,11 +1,17 @@
 import OpenAI from 'openai';
-import { getLogger, MemorySession, UserError } from '@openai/agents-core';
+import {
+  getLogger,
+  MemorySession,
+  RequestUsage,
+  UserError,
+} from '@openai/agents-core';
 import type {
   AgentInputItem,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
   Session,
 } from '@openai/agents-core';
+import type { CompactionResult } from '@openai/agents-core';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import {
   OPENAI_SESSION_API,
@@ -118,7 +124,9 @@ export class OpenAIResponsesCompactionSession
     this.sessionItems = undefined;
   }
 
-  async runCompaction(args: OpenAIResponsesCompactionArgs = {}) {
+  async runCompaction(
+    args: OpenAIResponsesCompactionArgs = {},
+  ): Promise<CompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
 
     if (!this.responseId) {
@@ -141,7 +149,7 @@ export class OpenAIResponsesCompactionSession
       logger.debug('skip: decision hook %o', {
         responseId: this.responseId,
       });
-      return;
+      return null;
     }
 
     logger.debug('compact: start %o', {
@@ -167,6 +175,10 @@ export class OpenAIResponsesCompactionSession
       outputItemCount: outputItems.length,
       candidateCount: this.compactionCandidateItems.length,
     });
+
+    return {
+      usage: toRequestUsage(compacted.usage),
+    };
   }
 
   async getSessionId(): Promise<string> {
@@ -324,6 +336,19 @@ function isOpenAIModelName(model: string): boolean {
   }
 
   return false;
+}
+
+function toRequestUsage(
+  usage: OpenAI.Responses.ResponseUsage | undefined,
+): RequestUsage {
+  return new RequestUsage({
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0,
+    inputTokensDetails: { ...usage?.input_tokens_details },
+    outputTokensDetails: { ...usage?.output_tokens_details },
+    endpoint: 'responses.compact',
+  });
 }
 
 function isOpenAIConversationsSessionDelegate(

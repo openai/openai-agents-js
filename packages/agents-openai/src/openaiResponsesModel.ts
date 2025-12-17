@@ -1,5 +1,6 @@
 import {
   Model,
+  RequestUsage,
   Usage,
   withResponseSpan,
   createResponseSpan,
@@ -1703,6 +1704,9 @@ export class OpenAIResponsesModel implements Model {
         totalTokens: response.usage?.total_tokens ?? 0,
         inputTokensDetails: { ...response.usage?.input_tokens_details },
         outputTokensDetails: { ...response.usage?.output_tokens_details },
+        requestUsageEntries: [
+          toRequestUsageEntry(response.usage, 'responses.create'),
+        ],
       }),
       output: convertToOutputItem(response.output),
       responseId: response.id,
@@ -1759,6 +1763,9 @@ export class OpenAIResponsesModel implements Model {
                 outputTokensDetails: {
                   ...usage?.output_tokens_details,
                 },
+                requestUsageEntries: [
+                  toRequestUsageEntry(usage, 'responses.create'),
+                ],
               },
               providerData: remainingResponse,
             },
@@ -1826,4 +1833,18 @@ function normalizeInstructions(
     return instructions;
   }
   return undefined;
+}
+
+function toRequestUsageEntry(
+  usage: OpenAI.Responses.ResponseUsage | undefined,
+  endpoint: string,
+): RequestUsage {
+  return new RequestUsage({
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0,
+    inputTokensDetails: { ...usage?.input_tokens_details },
+    outputTokensDetails: { ...usage?.output_tokens_details },
+    endpoint,
+  });
 }

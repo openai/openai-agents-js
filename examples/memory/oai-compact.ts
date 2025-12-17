@@ -68,6 +68,10 @@ async function main() {
           console.log(`Assistant: ${event.item.content.trim()}`);
         }
       }
+      console.log(
+        'Usage for the turn:',
+        result.state.usage.requestUsageEntries,
+      );
     }
 
     const compactedHistory = await session.getItems();
@@ -77,7 +81,8 @@ async function main() {
     }
 
     // You can manually run compaction this way:
-    await session.runCompaction({ force: true });
+    const compactionResult = await session.runCompaction({ force: true });
+    console.log('Manual compaction result:', compactionResult);
 
     const finalHistory = await session.getItems();
     console.log('\nStored history after final compaction:');

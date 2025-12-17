@@ -539,12 +539,22 @@ describe('OpenAIResponsesModel', () => {
       const responseDone = received.find((ev) => ev.type === 'response_done');
       expect(responseDone).toBeDefined();
       expect((responseDone as any).response.id).toBe('res-stream');
-      expect((responseDone as any).response.usage).toEqual({
+      expect((responseDone as any).response.usage).toMatchObject({
         inputTokens: 11,
         outputTokens: 5,
         totalTokens: 16,
         inputTokensDetails: { cached_tokens: 2 },
         outputTokensDetails: { reasoning_tokens: 3 },
+        requestUsageEntries: [
+          {
+            inputTokens: 11,
+            outputTokens: 5,
+            totalTokens: 16,
+            inputTokensDetails: { cached_tokens: 2 },
+            outputTokensDetails: { reasoning_tokens: 3 },
+            endpoint: 'responses.create',
+          },
+        ],
       });
     });
   });
