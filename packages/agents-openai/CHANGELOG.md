@@ -1,5 +1,21 @@
 # @openai/agents-openai
 
+## 0.3.6
+
+### Patch Changes
+
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+- 893b6f4: fix(agents-openai): add gpt-image-1-mini and gpt-image-1.5 support to imageGenerationTool
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+
 ## 0.3.5
 
 ### Patch Changes

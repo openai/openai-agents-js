@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.3.6
+
+### Patch Changes
+
+- af20625: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- c536421: fix: #775 tracing: previousSpan is not correctly set
+- 12d4e44: fix: Enable creating and disposing Computer per request ref: #663
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+
 ## 0.3.5
 
 ### Patch Changes
