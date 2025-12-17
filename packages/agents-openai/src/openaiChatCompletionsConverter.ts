@@ -14,15 +14,12 @@ import {
 } from '@openai/agents-core';
 
 export function convertToolChoice(
-  toolChoice: 'auto' | 'required' | 'none' | string | undefined | null,
+  toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
 ): ChatCompletionToolChoiceOption | undefined {
   if (toolChoice == undefined || toolChoice == null) return undefined;
-  if (
-    toolChoice === 'auto' ||
-    toolChoice === 'required' ||
-    toolChoice === 'none'
-  )
-    return toolChoice;
+  if (toolChoice === 'auto') return 'auto';
+  if (toolChoice === 'required') return 'required';
+  if (toolChoice === 'none') return 'none';
   return {
     type: 'function',
     function: { name: toolChoice },

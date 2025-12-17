@@ -285,7 +285,7 @@ export const withGuardrailSpan = _withSpanFactory<
  */
 export function createTranscriptionSpan(
   options: CreateArgs<TranscriptionSpanData> & {
-    data: { input: { data: string; format: 'pcm' | string } };
+    data: { input: { data: string; format: 'pcm' | (string & {}) } };
   },
   parent?: Span<any> | Trace,
 ): Span<TranscriptionSpanData> {
@@ -311,7 +311,7 @@ export const withTranscriptionSpan = _withSpanFactory<
  */
 export function createSpeechSpan(
   options: CreateArgs<SpeechSpanData> & {
-    data: { output: { data: string; format: 'pcm' | string } };
+    data: { output: { data: string; format: 'pcm' | (string & {}) } };
   },
   parent?: Span<any> | Trace,
 ): Span<SpeechSpanData> {

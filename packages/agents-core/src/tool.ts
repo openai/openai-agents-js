@@ -223,7 +223,7 @@ export type ComputerTool<
   /**
    * The name of the tool.
    */
-  name: 'computer_use_preview' | string;
+  name: 'computer_use_preview' | (string & {});
 
   /**
    * The computer to use.
