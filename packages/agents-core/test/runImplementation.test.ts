@@ -1913,9 +1913,9 @@ describe('executeComputerActions', () => {
     expect(result.every((r) => r instanceof ToolCallOutputItem)).toBe(true);
   });
 
-  it('initializes computer with run context using createComputer', async () => {
-    const createComputer = vi.fn(async () => makeComputer());
-    const tool = computerTool({ computer: createComputer });
+  it('initializes computer with run context using a computer initializer', async () => {
+    const initializer = vi.fn(async () => makeComputer());
+    const tool = computerTool({ computer: initializer });
     const toolCall: protocol.ComputerUseCallItem = {
       id: 'id1',
       type: 'computer_call',
@@ -1947,7 +1947,7 @@ describe('executeComputerActions', () => {
       ctxB,
     );
 
-    expect(createComputer).toHaveBeenCalledTimes(2);
+    expect(initializer).toHaveBeenCalledTimes(2);
     const compA = await resolveComputer({ tool, runContext: ctxA });
     const compB = await resolveComputer({ tool, runContext: ctxB });
     expect(compA).not.toBe(compB);

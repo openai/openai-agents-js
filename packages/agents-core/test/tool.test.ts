@@ -44,8 +44,8 @@ describe('Tool', () => {
     expect(t.name).toBe('computer_use_preview');
   });
 
-  it('computerTool initializes computer per run context when createComputer is provided', async () => {
-    const makeComputer = vi.fn(
+  it('computerTool initializes computer per run context when an initializer is provided', async () => {
+    const initializer = vi.fn(
       async (): Promise<Computer> => ({
         environment: 'mac' as const,
         dimensions: [1, 1],
@@ -60,7 +60,7 @@ describe('Tool', () => {
         wait: async () => {},
       }),
     );
-    const t = computerTool({ name: 'comp', computer: makeComputer });
+    const t = computerTool({ name: 'comp', computer: initializer });
 
     const ctxA = new RunContext();
     const ctxB = new RunContext();
@@ -69,7 +69,7 @@ describe('Tool', () => {
     const compA2 = await resolveComputer({ tool: t, runContext: ctxA });
     const compB1 = await resolveComputer({ tool: t, runContext: ctxB });
 
-    expect(makeComputer).toHaveBeenCalledTimes(2);
+    expect(initializer).toHaveBeenCalledTimes(2);
     expect(compA1).toBe(compA2);
     expect(compA1).not.toBe(compB1);
     expect(t.computer).toBe(compB1);
