@@ -28,8 +28,8 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('hosted_tool');
     expect(t.name).toBe('image_generation');
-    expect(t.providerData.type).toBe('image_generation');
-    expect(t.providerData.model).toBe('gpt-image-1');
+    expect(t.providerData!.type).toBe('image_generation');
+    expect(t.providerData!.model).toBe('gpt-image-1');
   });
 
   it('imageGenerationTool with gpt-image-1-mini', () => {
@@ -37,8 +37,8 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('hosted_tool');
     expect(t.name).toBe('image_generation');
-    expect(t.providerData.type).toBe('image_generation');
-    expect(t.providerData.model).toBe('gpt-image-1-mini');
+    expect(t.providerData!.type).toBe('image_generation');
+    expect(t.providerData!.model).toBe('gpt-image-1-mini');
   });
 
   it('imageGenerationTool with gpt-image-1.5', () => {
@@ -46,8 +46,8 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('hosted_tool');
     expect(t.name).toBe('image_generation');
-    expect(t.providerData.type).toBe('image_generation');
-    expect(t.providerData.model).toBe('gpt-image-1.5');
+    expect(t.providerData!.type).toBe('image_generation');
+    expect(t.providerData!.model).toBe('gpt-image-1.5');
   });
 
   it('imageGenerationTool without model', () => {
@@ -55,7 +55,7 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('hosted_tool');
     expect(t.name).toBe('image_generation');
-    expect(t.providerData.type).toBe('image_generation');
-    expect(t.providerData.model).toBeUndefined();
+    expect(t.providerData!.type).toBe('image_generation');
+    expect(t.providerData!.model).toBeUndefined();
   });
 });
