@@ -60,7 +60,11 @@ import type { ApplyPatchResult } from './editor';
 import { RunState } from './runState';
 import { isZodObject } from './utils';
 import * as ProviderData from './types/providerData';
-import type { Session, SessionInputCallback } from './memory/session';
+import {
+  isOpenAIResponsesCompactionAwareSession,
+  type Session,
+  type SessionInputCallback,
+} from './memory/session';
 
 // Represents a single handoff function call that still needs to be executed after the model turn.
 type ToolRunHandoff = {
@@ -2289,6 +2293,19 @@ function shouldStripIdForType(type: string): boolean {
   }
 }
 
+async function runCompactionOnSession(
+  session: Session | undefined,
+  responseId: string | undefined,
+): Promise<void> {
+  if (!isOpenAIResponsesCompactionAwareSession(session)) {
+    return;
+  }
+  // Called after a completed turn is persisted so compaction can consider the latest stored state.
+  await session.runCompaction(
+    typeof responseId === 'undefined' ? undefined : { responseId },
+  );
+}
+
 /**
  * @internal
  * Persist full turn (input + outputs) for non-streaming runs.
@@ -2318,10 +2335,12 @@ export async function saveToSession(
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
       alreadyPersisted + newRunItems.length;
+    await runCompactionOnSession(session, result.lastResponseId);
     return;
   }
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
+  await runCompactionOnSession(session, result.lastResponseId);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 
@@ -2363,10 +2382,12 @@ export async function saveStreamResultToSession(
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
       alreadyPersisted + newRunItems.length;
+    await runCompactionOnSession(session, result.lastResponseId);
     return;
   }
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
+  await runCompactionOnSession(session, result.lastResponseId);
   state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
 }
 

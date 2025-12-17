@@ -178,7 +178,13 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { RequestUsage, Usage } from './usage';
-export type { Session, SessionInputCallback } from './memory/session';
+export type {
+  Session,
+  SessionInputCallback,
+  OpenAIResponsesCompactionArgs,
+  OpenAIResponsesCompactionAwareSession,
+} from './memory/session';
+export { isOpenAIResponsesCompactionAwareSession } from './memory/session';
 export { MemorySession } from './memory/memorySession';
 
 /**

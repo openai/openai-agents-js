@@ -12,6 +12,7 @@ import {
   ApplyPatchCallItem,
   ApplyPatchCallResultItem,
   ReasoningItem,
+  CompactionItem,
   UnknownItem,
 } from './protocol';
 
@@ -42,6 +43,7 @@ export type AgentOutputItem =
   | ShellCallResultItem
   | ApplyPatchCallResultItem
   | ReasoningItem
+  | CompactionItem
   | UnknownItem;
 
 /**
@@ -61,4 +63,5 @@ export type AgentInputItem =
   | ShellCallResultItem
   | ApplyPatchCallResultItem
   | ReasoningItem
+  | CompactionItem
   | UnknownItem;
