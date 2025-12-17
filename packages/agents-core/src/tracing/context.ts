@@ -143,6 +143,8 @@ export function setCurrentSpan(span: Span<any>) {
     context.span.previousSpan = context.previousSpan;
     context.previousSpan = context.span;
   }
+
+  span.previousSpan = context.span ?? context.previousSpan;
   context.span = span;
   getContextAsyncLocalStorage().enterWith(context);
 }
