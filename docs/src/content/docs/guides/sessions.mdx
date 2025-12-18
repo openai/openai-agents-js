@@ -45,20 +45,6 @@ Reusing the same session instance ensures the agent receives the full conversati
 
 ---
 
-## Compact OpenAI Responses history automatically
-
-`OpenAIResponsesCompactionSession` decorates any `Session` and relies on the OpenAI Responses API to keep transcripts short. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. The decorator clears and rewrites the underlying session with the compacted output, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
-
-<Code
-  lang="typescript"
-  code={responsesCompactionSession}
-  title="Decorate a session with OpenAIResponsesCompactionSession"
-/>
-
-You can call `runCompaction({ force: true })` at any time to shrink history before archiving or handoff. Enable debug logs with `DEBUG=openai-agents:openai:compaction` to trace compaction decisions.
-
----
-
 ## Inspecting and editing history
 
 Sessions expose simple CRUD helpers so you can build "undo", "clear chat", or audit features.
@@ -119,3 +105,17 @@ if (result.requiresApproval) {
 ```
 
 When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Human-in-the-loop (HITL) flows stay fully compatible—approval checkpoints still round-trip through `RunState` while the session keeps the transcript complete.
+
+---
+
+## Compact OpenAI Responses history automatically
+
+`OpenAIResponsesCompactionSession` decorates any `Session` and relies on the OpenAI Responses API to keep transcripts short. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. The decorator clears and rewrites the underlying session with the compacted output, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
+
+<Code
+  lang="typescript"
+  code={responsesCompactionSession}
+  title="Decorate a session with OpenAIResponsesCompactionSession"
+/>
+
+You can call `runCompaction({ force: true })` at any time to shrink history before archiving or handoff. Enable debug logs with `DEBUG=openai-agents:openai:compaction` to trace compaction decisions.
