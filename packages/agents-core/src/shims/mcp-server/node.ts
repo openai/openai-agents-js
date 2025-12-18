@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 import {
   BaseMCPServerStdio,
@@ -29,6 +30,18 @@ npm install @modelcontextprotocol/sdk
     `.trim(),
   );
   throw error;
+}
+
+function buildRequestOptions(
+  clientSessionTimeoutSeconds?: number,
+  overrides?: RequestOptions,
+): RequestOptions | undefined {
+  const baseOptions =
+    clientSessionTimeoutSeconds === undefined
+      ? undefined
+      : { timeout: clientSessionTimeoutSeconds * 1000 };
+  const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
+  return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -86,11 +99,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      const connectOptions =
-        this.clientSessionTimeoutSeconds === undefined
-          ? undefined
-          : { timeout: this.clientSessionTimeoutSeconds * 1000 };
-      await this.session.connect(this.transport, connectOptions);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -120,7 +132,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -137,15 +152,17 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -212,11 +229,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      const connectOptions =
-        this.clientSessionTimeoutSeconds === undefined
-          ? undefined
-          : { timeout: this.clientSessionTimeoutSeconds * 1000 };
-      await this.session.connect(this.transport, connectOptions);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -246,7 +262,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -263,15 +282,17 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -342,11 +363,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      const connectOptions =
-        this.clientSessionTimeoutSeconds === undefined
-          ? undefined
-          : { timeout: this.clientSessionTimeoutSeconds * 1000 };
-      await this.session.connect(this.transport, connectOptions);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -376,7 +396,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -393,15 +416,17 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;

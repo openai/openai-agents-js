@@ -14,11 +14,16 @@ import {
 } from '../../../src/shims/mcp-server/node';
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
 
 let lastConnectOptions: any;
+let lastListToolsOptions: any;
+let lastCallToolOptions: any;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
+  lastListToolsOptions = undefined;
+  lastCallToolOptions = undefined;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -70,6 +75,24 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should reuse request options for session methods', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'with-options',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 6,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(6000);
+    expect(lastListToolsOptions?.timeout).toBe(6000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
   });
@@ -115,6 +138,26 @@ class MockClient {
   connect(_transport: any, options?: any): Promise<void> {
     lastConnectOptions = options;
     return Promise.resolve();
+  }
+  listTools(_params?: any, options?: any): Promise<any> {
+    lastListToolsOptions = options;
+    return Promise.resolve({
+      tools: [
+        {
+          name: 'mock-tool',
+          description: 'Mock tool',
+          inputSchema: {
+            type: 'object',
+          },
+        },
+      ],
+    });
+  }
+  callTool(_params: any, _resultSchema?: any, options?: any): Promise<any> {
+    lastCallToolOptions = options;
+    return Promise.resolve({
+      content: [{ type: 'text', text: 'ok' }],
+    });
   }
   close(): Promise<void> {
     return Promise.resolve();
@@ -218,6 +261,24 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
+  test('should pass request options to session calls', async () => {
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-options',
+      clientSessionTimeoutSeconds: 4,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(4000);
+    expect(lastListToolsOptions?.timeout).toBe(4000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
     capturedFetch = undefined;
@@ -296,6 +357,24 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.connect();
 
     expect(lastConnectOptions?.timeout).toBe(8000);
+
+    await server.close();
+  });
+
+  test('should forward request options to session methods', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-options',
+      clientSessionTimeoutSeconds: 9,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(9000);
+    expect(lastListToolsOptions?.timeout).toBe(9000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
 
     await server.close();
   });
