@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.3.7
+
+### Patch Changes
+
+- af1c6c9: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds (re-fix for #781)
+
 ## 0.3.6
 
 ### Patch Changes
