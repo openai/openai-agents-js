@@ -1,6 +1,7 @@
 {
   "private": true,
   "name": "tools",
+  "type": "module",
   "dependencies": {
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",

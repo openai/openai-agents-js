@@ -10,6 +10,7 @@ import {
   withTrace,
 } from '@openai/agents';
 import { describe, afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { z } from 'zod';
 import { codexTool } from '../src/codexTool';
 
 type AnySpan = Span<any>;
@@ -17,16 +18,29 @@ type AnySpan = Span<any>;
 const codexMockState: {
   events: any[];
   threadId: string;
+  lastTurnOptions?: any;
 } = {
   events: [],
   threadId: 'thread-1',
 };
 
+const codexConstructorState: {
+  options?: unknown;
+  instance?: {
+    startThread: ReturnType<typeof vi.fn>;
+    resumeThread: ReturnType<typeof vi.fn>;
+  };
+} = {};
+
 vi.mock('@openai/codex-sdk', () => {
   class FakeThread {
     id: string | null = null;
 
-    async runStreamed(): Promise<{ events: AsyncGenerator<any> }> {
+    async runStreamed(
+      _input?: unknown,
+      turnOptions?: unknown,
+    ): Promise<{ events: AsyncGenerator<any> }> {
+      codexMockState.lastTurnOptions = turnOptions;
       this.id = codexMockState.threadId;
       async function* eventStream(events: any[]) {
         for (const event of events) {
@@ -39,6 +53,10 @@ vi.mock('@openai/codex-sdk', () => {
 
   return {
     Codex: class FakeCodex {
+      constructor(options?: unknown) {
+        codexConstructorState.options = options;
+        codexConstructorState.instance = this;
+      }
       startThread = vi.fn(() => new FakeThread());
       resumeThread = vi.fn(() => new FakeThread());
     },
@@ -65,6 +83,8 @@ class CollectingProcessor implements TracingProcessor {
 
 describe('codexTool', () => {
   const processor = new CollectingProcessor();
+  let originalOpenAIKey: string | undefined;
+  let originalCodexKey: string | undefined;
 
   beforeEach(() => {
     processor.spans = [];
@@ -72,12 +92,26 @@ describe('codexTool', () => {
     setTraceProcessors([processor]);
     codexMockState.events = [];
     codexMockState.threadId = 'thread-1';
+    codexMockState.lastTurnOptions = undefined;
+    codexConstructorState.options = undefined;
+    originalOpenAIKey = process.env.OPENAI_API_KEY;
+    originalCodexKey = process.env.CODEX_API_KEY;
   });
 
   afterEach(() => {
     setTracingDisabled(true);
     setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
     vi.restoreAllMocks();
+    if (originalOpenAIKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+    if (originalCodexKey === undefined) {
+      delete process.env.CODEX_API_KEY;
+    } else {
+      process.env.CODEX_API_KEY = originalCodexKey;
+    }
   });
 
   test('creates child spans for streamed Codex events and returns final response', async () => {
@@ -180,7 +214,13 @@ describe('codexTool', () => {
           tool.invoke(
             runContext,
             JSON.stringify({
-              task: 'Diagnose failure',
+              inputs: [
+                {
+                  type: 'text',
+                  text: 'Diagnose failure',
+                  path: '',
+                },
+              ],
             }),
           ),
         { data: { name: tool.name } },
@@ -241,5 +281,131 @@ describe('codexTool', () => {
       tool: 'search_codex_code',
       status: 'completed',
     });
+  });
+
+  test('defaults Codex api key to OPENAI_API_KEY when CODEX_API_KEY is missing', async () => {
+    process.env.OPENAI_API_KEY = 'openai-key';
+    delete process.env.CODEX_API_KEY;
+
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool();
+    const runContext = new RunContext();
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Check default api key.',
+            path: '',
+          },
+        ],
+      }),
+    );
+
+    const options = codexConstructorState.options as
+      | { apiKey?: string }
+      | undefined;
+    expect(options?.apiKey).toBe('openai-key');
+  });
+
+  test('accepts a Zod output schema descriptor', async () => {
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({
+      outputSchema: z.object({
+        summary: z.string(),
+      }),
+    });
+    const runContext = new RunContext();
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Check schema.',
+            path: '',
+          },
+        ],
+      }),
+    );
+
+    expect(codexMockState.lastTurnOptions?.outputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        summary: { type: 'string' },
+      },
+    });
+  });
+
+  test('reuses the same thread when persistSession is enabled', async () => {
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({ persistSession: true });
+    const runContext = new RunContext();
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'First call.',
+            path: '',
+          },
+        ],
+      }),
+    );
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Second call.',
+            path: '',
+          },
+        ],
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.startThread).toHaveBeenCalledTimes(1);
+    expect(instance?.resumeThread).not.toHaveBeenCalled();
   });
 });

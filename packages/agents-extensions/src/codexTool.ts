@@ -4,46 +4,33 @@ import {
   UserError,
   createCustomSpan,
   tool,
+  getDefaultOpenAIKey,
 } from '@openai/agents';
-import type {
-  CustomSpanData,
-  FunctionTool,
-  Span,
-  JsonObjectSchemaStrict,
-} from '@openai/agents';
-import type {
+import { loadEnv } from '@openai/agents-core/_shims';
+import { isZodObject, zodJsonSchemaCompat } from '@openai/agents-core/utils';
+import type { CustomSpanData, FunctionTool, Span } from '@openai/agents';
+import {
   Codex,
-  CodexOptions,
-  CommandExecutionItem,
-  McpToolCallItem,
-  ReasoningItem,
-  RunStreamedResult,
-  SandboxMode,
-  Thread,
-  ThreadItem,
-  ThreadOptions,
-  TurnOptions,
-  Usage as CodexUsage,
-  UserInput,
+  type CodexOptions,
+  type CommandExecutionItem,
+  type McpToolCallItem,
+  type ReasoningItem,
+  type RunStreamedResult,
+  type SandboxMode,
+  type Thread,
+  type ThreadItem,
+  type ThreadOptions,
+  type TurnOptions,
+  type Usage as CodexUsage,
+  type UserInput,
 } from '@openai/codex-sdk';
 import { z } from 'zod';
 
 type CustomSpan = Span<CustomSpanData>;
 
 type CodexToolCallArguments = {
-  task: string;
   inputs?: UserInput[];
-  threadId?: string;
-  sandboxMode?: SandboxMode;
-  workingDirectory?: string;
-  skipGitRepoCheck?: boolean;
 };
-
-const SANDBOX_MODES = [
-  'read-only',
-  'workspace-write',
-  'danger-full-access',
-] as const;
 
 const JSON_PRIMITIVE_TYPES = [
   'string',
@@ -167,46 +154,11 @@ const OutputSchemaDescriptorSchema = z
 
 const codexParametersSchema = z
   .object({
-    task: z
-      .string()
-      .trim()
-      .min(1, 'Codex tool requires a non-empty "task" string.')
-      .describe(
-        'Detailed instruction for the Codex agent. Provide enough context for the agent to act.',
-      ),
-    thread_id: z
-      .string()
-      .trim()
-      .min(1)
-      .nullable()
-      .describe(
-        'Resume an existing Codex thread by id. Provide null to start a new thread.',
-      ),
-    sandbox_mode: z
-      .enum(SANDBOX_MODES)
-      .nullable()
-      .describe(
-        'Sandbox permissions for the Codex task. Provide null to use Codex defaults.',
-      ),
-    working_directory: z
-      .string()
-      .trim()
-      .min(1)
-      .nullable()
-      .describe(
-        'Absolute path used as the working directory for the Codex thread. Provide null to default to the current process working directory.',
-      ),
-    skip_git_repo_check: z
-      .boolean()
-      .nullable()
-      .describe(
-        'Allow Codex to run outside a Git repository when true. Provide null to use Codex defaults.',
-      ),
     inputs: z
       .array(CodexToolInputItemSchema)
-      .nullable()
+      .min(1, 'Codex tool requires at least one input item.')
       .describe(
-        'Optional structured inputs appended after the task. Provide null when no additional inputs are needed.',
+        'Structured inputs appended to the Codex task. Provide at least one input item.',
       ),
   })
   .strict();
@@ -216,98 +168,7 @@ type CodexToolParameters = z.infer<CodexToolParametersSchema>;
 type OutputSchemaDescriptor = z.infer<typeof OutputSchemaDescriptorSchema>;
 type OutputSchemaField = z.infer<typeof OutputSchemaFieldSchema>;
 
-const codexParametersJsonSchema: JsonObjectSchemaStrict<{
-  task: { type: 'string'; description: string };
-  thread_id: { type: ['string', 'null']; description: string };
-  sandbox_mode: {
-    type: ['string', 'null'];
-    description: string;
-    enum: typeof SANDBOX_MODES extends readonly (infer U)[] ? U[] : string[];
-  };
-  working_directory: { type: ['string', 'null']; description: string };
-  skip_git_repo_check: { type: ['boolean', 'null']; description: string };
-  inputs: {
-    type: ['array', 'null'];
-    description: string;
-    items: {
-      type: 'object';
-      additionalProperties: false;
-      required: ['type', 'text', 'path'];
-      properties: {
-        type: { type: 'string'; enum: ['text', 'local_image'] };
-        text: { type: 'string'; description: string };
-        path: { type: 'string'; description: string };
-      };
-    };
-  };
-}> = {
-  type: 'object',
-  additionalProperties: false,
-  required: [
-    'task',
-    'thread_id',
-    'sandbox_mode',
-    'working_directory',
-    'skip_git_repo_check',
-    'inputs',
-  ],
-  properties: {
-    task: {
-      type: 'string',
-      description:
-        'Detailed instruction for the Codex agent. Provide enough context for the agent to act.',
-    },
-    thread_id: {
-      type: ['string', 'null'],
-      description:
-        'Resume an existing Codex thread by id. Set to null when starting a new thread.',
-    },
-    sandbox_mode: {
-      type: ['string', 'null'],
-      enum: [...SANDBOX_MODES],
-      description:
-        'Sandbox permissions for the Codex task. Set to null to use Codex defaults.',
-    },
-    working_directory: {
-      type: ['string', 'null'],
-      description:
-        'Absolute path used as the working directory for the Codex thread. Set to null to use the current process directory.',
-    },
-    skip_git_repo_check: {
-      type: ['boolean', 'null'],
-      description:
-        'Allow Codex to run outside a Git repository when true. Set to null to use the Codex default (false).',
-    },
-    inputs: {
-      type: ['array', 'null'],
-      description:
-        'Optional structured inputs appended after the task. Supports additional text snippets and local images.',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['type', 'text', 'path'],
-        properties: {
-          type: {
-            type: 'string',
-            enum: ['text', 'local_image'],
-          },
-          text: {
-            type: 'string',
-            description:
-              'Text content added to the Codex task. Provide a non-empty string when the input type is "text"; otherwise set this to an empty string.',
-          },
-          path: {
-            type: 'string',
-            description:
-              'Absolute or relative path to an image on disk when the input type is "local_image"; otherwise set this to an empty string.',
-          },
-        },
-      },
-    },
-  },
-};
-
-type CodexToolOptions = {
+export type CodexToolOptions = {
   /**
    * Name of the tool as exposed to the agent model.
    *
@@ -326,7 +187,10 @@ type CodexToolOptions = {
    * Optional descriptor or JSON schema used for Codex structured output.
    * This schema is applied to every Codex turn unless overridden at call time.
    */
-  outputSchema?: OutputSchemaDescriptor | Record<string, unknown>;
+  outputSchema?:
+    | OutputSchemaDescriptor
+    | Record<string, unknown>
+    | z.ZodTypeAny;
   /**
    * Reuse an existing Codex instance. When omitted a new Codex instance will be created.
    */
@@ -340,25 +204,65 @@ type CodexToolOptions = {
    */
   defaultThreadOptions?: ThreadOptions;
   /**
+   * Resume a specific Codex thread by id.
+   */
+  threadId?: string;
+  /**
+   * Sandbox permissions for the Codex task.
+   */
+  sandboxMode?: SandboxMode;
+  /**
+   * Absolute path used as the working directory for the Codex thread.
+   */
+  workingDirectory?: string;
+  /**
+   * Allow Codex to run outside a Git repository when true.
+   */
+  skipGitRepoCheck?: boolean;
+  /**
    * Default options applied to every Codex turn.
    */
   defaultTurnOptions?: TurnOptions;
+  /**
+   * Reuse a single Codex thread across tool invocations.
+   */
+  persistSession?: boolean;
 };
 
-type CodexModule = typeof import('@openai/codex-sdk');
-
-let cachedCodexModulePromise: Promise<CodexModule> | null = null;
-
-async function importCodexModule(): Promise<CodexModule> {
-  if (!cachedCodexModulePromise) {
-    // The Codex SDK only ships ESM. Wrapping dynamic import in a Function keeps the call site
-    // as `import()` in both ESM and CommonJS builds so we avoid generating a `require()` call.
-    cachedCodexModulePromise = new Function(
-      'specifier',
-      'return import(specifier);',
-    )('@openai/codex-sdk') as Promise<CodexModule>;
+function resolveDefaultCodexApiKey(options?: CodexOptions): string | undefined {
+  if (options?.apiKey) {
+    return options.apiKey;
   }
-  return cachedCodexModulePromise;
+
+  const envOverride = options?.env;
+  if (envOverride?.CODEX_API_KEY) {
+    return envOverride.CODEX_API_KEY;
+  }
+  if (envOverride?.OPENAI_API_KEY) {
+    return envOverride.OPENAI_API_KEY;
+  }
+
+  const env = loadEnv();
+  return env.CODEX_API_KEY ?? getDefaultOpenAIKey();
+}
+
+function resolveCodexOptions(
+  options: CodexOptions | undefined,
+): CodexOptions | undefined {
+  if (options?.apiKey) {
+    return options;
+  }
+
+  const apiKey = resolveDefaultCodexApiKey(options);
+  if (!apiKey) {
+    return options;
+  }
+
+  if (!options) {
+    return { apiKey };
+  }
+
+  return { ...options, apiKey };
 }
 
 function createCodexResolver(
@@ -372,7 +276,6 @@ function createCodexResolver(
   let codexInstance: Codex | null = null;
   return async () => {
     if (!codexInstance) {
-      const { Codex } = await importCodexModule();
       codexInstance = new Codex(options);
     }
     return codexInstance;
@@ -396,7 +299,7 @@ type CodexToolResult = {
  */
 export function codexTool(
   options: CodexToolOptions = {},
-): FunctionTool<unknown, typeof codexParametersJsonSchema, CodexToolResult> {
+): FunctionTool<unknown, typeof codexParametersSchema, CodexToolResult> {
   const {
     name = 'codex',
     description = 'Executes an agentic Codex task against the current workspace.',
@@ -406,25 +309,55 @@ export function codexTool(
     defaultThreadOptions,
     defaultTurnOptions,
     outputSchema: outputSchemaOption,
+    threadId: defaultThreadId,
+    sandboxMode,
+    workingDirectory,
+    skipGitRepoCheck,
+    persistSession = false,
   } = options;
 
-  const resolveCodex = createCodexResolver(providedCodex, codexOptions);
+  const resolvedCodexOptions = resolveCodexOptions(codexOptions);
+  const resolveCodex = createCodexResolver(providedCodex, resolvedCodexOptions);
 
   const validatedOutputSchema = resolveOutputSchema(outputSchemaOption);
+  const resolvedThreadOptions: ThreadOptions | undefined =
+    defaultThreadOptions ||
+    sandboxMode ||
+    workingDirectory ||
+    typeof skipGitRepoCheck === 'boolean'
+      ? {
+          ...(defaultThreadOptions ?? {}),
+          ...(sandboxMode ? { sandboxMode } : {}),
+          ...(workingDirectory ? { workingDirectory } : {}),
+          ...(typeof skipGitRepoCheck === 'boolean'
+            ? { skipGitRepoCheck }
+            : {}),
+        }
+      : undefined;
+  let persistedThread: Thread | null = null;
 
-  return tool<typeof codexParametersJsonSchema, unknown, CodexToolResult>({
+  return tool<typeof codexParametersSchema, unknown, CodexToolResult>({
     name,
     description,
-    parameters: codexParametersJsonSchema,
+    parameters,
     strict: true,
     execute: async (input, runContext = new RunContext()) => {
       const parsed = parameters.parse(input);
       const args = normalizeParameters(parsed);
 
       const codex = await resolveCodex();
-      const thread = getThread(codex, args, defaultThreadOptions);
+      const thread = persistSession
+        ? getOrCreatePersistedThread(
+            codex,
+            defaultThreadId,
+            resolvedThreadOptions,
+            persistedThread,
+          )
+        : getThread(codex, defaultThreadId, resolvedThreadOptions);
+      if (persistSession && !persistedThread) {
+        persistedThread = thread;
+      }
       const turnOptions = buildTurnOptions(
-        args,
         defaultTurnOptions,
         validatedOutputSchema,
       );
@@ -460,10 +393,20 @@ export type CodexOutputSchemaDescriptor = OutputSchemaDescriptor;
 export type CodexOutputSchema = Record<string, unknown>;
 
 function resolveOutputSchema(
-  option?: OutputSchemaDescriptor | Record<string, unknown>,
+  option?: OutputSchemaDescriptor | Record<string, unknown> | z.ZodTypeAny,
 ): Record<string, unknown> | undefined {
   if (!option) {
     return undefined;
+  }
+
+  if (isZodObject(option)) {
+    const schema = zodJsonSchemaCompat(option);
+    if (!schema) {
+      throw new UserError(
+        'Codex output schema must be a Zod object that can be converted to JSON Schema.',
+      );
+    }
+    return schema;
   }
 
   if (isJsonObjectSchema(option)) {
@@ -480,16 +423,10 @@ function resolveOutputSchema(
 }
 
 function buildTurnOptions(
-  args: CodexToolCallArguments,
   defaults: TurnOptions | undefined,
   outputSchema: Record<string, unknown> | undefined,
 ): TurnOptions | undefined {
-  const hasOverrides =
-    typeof args.sandboxMode !== 'undefined' ||
-    typeof args.workingDirectory === 'string' ||
-    typeof args.skipGitRepoCheck === 'boolean';
-
-  if (!defaults && !hasOverrides && !outputSchema) {
+  if (!defaults && !outputSchema) {
     return undefined;
   }
 
@@ -502,37 +439,14 @@ function buildTurnOptions(
 function normalizeParameters(
   params: CodexToolParameters,
 ): CodexToolCallArguments {
-  const inputs = params.inputs
-    ? params.inputs.map<UserInput>((item) =>
-        item.type === 'text'
-          ? { type: 'text', text: item.text.trim() }
-          : { type: 'local_image', path: item.path.trim() },
-      )
-    : undefined;
-
-  const sandboxModeCandidate = params.sandbox_mode ?? undefined;
-  const sandboxMode =
-    sandboxModeCandidate && SANDBOX_MODES.includes(sandboxModeCandidate)
-      ? sandboxModeCandidate
-      : undefined;
+  const inputs = params.inputs.map<UserInput>((item) =>
+    item.type === 'text'
+      ? { type: 'text', text: item.text.trim() }
+      : { type: 'local_image', path: item.path.trim() },
+  );
 
   return {
-    task: params.task.trim(),
     inputs: inputs && inputs.length > 0 ? inputs : undefined,
-    threadId:
-      typeof params.thread_id === 'string' && params.thread_id.trim().length > 0
-        ? params.thread_id.trim()
-        : undefined,
-    sandboxMode,
-    workingDirectory:
-      typeof params.working_directory === 'string' &&
-      params.working_directory.trim().length > 0
-        ? params.working_directory.trim()
-        : undefined,
-    skipGitRepoCheck:
-      typeof params.skip_git_repo_check === 'boolean'
-        ? params.skip_git_repo_check
-        : undefined,
   };
 }
 
@@ -617,42 +531,42 @@ function isJsonObjectSchema(
 
 function getThread(
   codex: Codex,
-  args: CodexToolCallArguments,
+  threadId: string | undefined,
   defaults?: ThreadOptions,
 ): Thread {
-  const hasOverrides =
-    typeof args.sandboxMode !== 'undefined' ||
-    typeof args.workingDirectory === 'string' ||
-    typeof args.skipGitRepoCheck === 'boolean';
-
-  const threadOptions: ThreadOptions | undefined =
-    defaults || hasOverrides
-      ? {
-          ...(defaults ?? {}),
-          ...(args.sandboxMode ? { sandboxMode: args.sandboxMode } : {}),
-          ...(args.workingDirectory
-            ? { workingDirectory: args.workingDirectory }
-            : {}),
-          ...(typeof args.skipGitRepoCheck === 'boolean'
-            ? { skipGitRepoCheck: args.skipGitRepoCheck }
-            : {}),
-        }
-      : undefined;
-
-  if (args.threadId) {
-    return codex.resumeThread(args.threadId, threadOptions);
+  if (threadId) {
+    return codex.resumeThread(threadId, defaults);
   }
-  return codex.startThread(threadOptions);
+  return codex.startThread(defaults);
+}
+
+function getOrCreatePersistedThread(
+  codex: Codex,
+  threadId: string | undefined,
+  threadOptions: ThreadOptions | undefined,
+  existingThread: Thread | null,
+): Thread {
+  if (existingThread) {
+    if (threadId) {
+      const existingId = existingThread.id;
+      if (existingId && existingId !== threadId) {
+        throw new UserError(
+          'Codex tool is configured with persistSession=true and already has an active thread.',
+        );
+      }
+    }
+
+    return existingThread;
+  }
+
+  return getThread(codex, threadId, threadOptions);
 }
 
 function buildCodexInput(args: CodexToolCallArguments): string | UserInput[] {
   if (args.inputs && args.inputs.length > 0) {
-    const base: UserInput[] = args.task.trim().length
-      ? [{ type: 'text', text: args.task }]
-      : [];
-    return base.concat(args.inputs);
+    return args.inputs;
   }
-  return args.task;
+  return '';
 }
 
 async function consumeEvents(
@@ -829,7 +743,8 @@ function updateReasoningSpan(span: CustomSpan, item: ReasoningItem) {
 }
 
 function buildDefaultResponse(args: CodexToolCallArguments): string {
-  return `Codex task completed for "${args.task}".`;
+  const inputSummary = args.inputs?.length ? 'with inputs.' : 'with no inputs.';
+  return `Codex task completed ${inputSummary}`;
 }
 
 function isCommandExecutionItem(

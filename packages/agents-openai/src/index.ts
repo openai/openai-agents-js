@@ -5,6 +5,7 @@ export {
   setDefaultOpenAIClient,
   setOpenAIAPI,
   setDefaultOpenAIKey,
+  getDefaultOpenAIKey,
   setTracingExportApiKey,
 } from './defaults';
 export {

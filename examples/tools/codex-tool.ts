@@ -17,7 +17,7 @@ type CodexToolOutput = {
 };
 
 function ensureEnvironmentVariables(): void {
-  const requiredVariables = ['OPENAI_API_KEY', 'CODEX_API_KEY'];
+  const requiredVariables = ['OPENAI_API_KEY'];
   const missing = requiredVariables.filter((name) => !process.env[name]);
 
   if (missing.length > 0) {
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   });
 
   const task =
-    'Call the codex tool to run `ls -1` in the current directory and summarize the output for the user.';
+    'Call the codex tool with an inputs array containing a text item that asks to run `ls -1` in the current directory, then summarize the output for the user.';
 
   const result = await withTrace('Codex tool example', async () => {
     console.log('Starting Codex tool run...\n');
