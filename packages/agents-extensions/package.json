@@ -15,7 +15,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^2.0.0",
     "@openai/agents-core": "workspace:*",
-    "@openai/codex-sdk": "^0.53.0",
+    "@openai/codex-sdk": "^0.73.0",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
   },

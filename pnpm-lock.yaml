@@ -270,8 +270,8 @@ importers:
         specifier: ^0.515.0
         version: 0.515.0(react@19.1.0)
       next:
-        specifier: 15.4.8
-        version: 15.4.8(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+        specifier: 15.4.10
+        version: 15.4.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       react:
         specifier: ^19.0.0
         version: 19.1.0
@@ -341,8 +341,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       next:
-        specifier: 15.4.8
-        version: 15.4.8(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+        specifier: 15.4.10
+        version: 15.4.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       react:
         specifier: ^19.0.0
         version: 19.1.0
@@ -501,8 +501,8 @@ importers:
         specifier: workspace:*
         version: link:../agents-core
       '@openai/codex-sdk':
-        specifier: ^0.53.0
-        version: 0.53.0
+        specifier: ^0.73.0
+        version: 0.73.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1530,8 +1530,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@next/env@15.4.8':
-    resolution: {integrity: sha512-LydLa2MDI1NMrOFSkO54mTc8iIHSttj6R6dthITky9ylXV2gCGi0bHQjVCtLGRshdRPjyh2kXbxJukDtBWQZtQ==}
+  '@next/env@15.4.10':
+    resolution: {integrity: sha512-knhmoJ0Vv7VRf6pZEPSnciUG1S4bIhWx+qTYBW/AjxEtlzsiNORPk8sFDCEvqLfmKuey56UB9FL1UdHEV3uBrg==}
 
   '@next/swc-darwin-arm64@15.4.8':
     resolution: {integrity: sha512-Pf6zXp7yyQEn7sqMxur6+kYcywx5up1J849psyET7/8pG2gQTVMjU3NzgIt8SeEP5to3If/SaWmaA6H6ysBr1A==}
@@ -1593,8 +1593,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@openai/codex-sdk@0.53.0':
-    resolution: {integrity: sha512-DtJTku9u9VKTfHsR2OM/d+jW3V14Yc18YHNgo+iIDHpSViApMM/2+2p6Yeeri2m5VUOVvUQuqsQQzAwRH2MMBw==}
+  '@openai/codex-sdk@0.73.0':
+    resolution: {integrity: sha512-aqjsBSjBNYr5bZL4G+fBw8mRxOWcYWOQU5+0/UP8qSOtvn1y9r6Q0JNY8UJYiMJs5z6UYSJyfuc0XDNopDkGyw==}
     engines: {node: '>=18'}
 
   '@openrouter/ai-sdk-provider@1.4.1':
@@ -2113,6 +2113,9 @@ packages:
 
   '@standard-schema/spec@1.0.0':
     resolution: {integrity: sha512-m2bOd0f2RT9k8QJx1JN85cZYyH1RqFBdlwtkSlf4tBDYLCiiZnv1fIIwacK6cqwXavOydf0NPToMQgpKq+dVlA==}
+
+  '@standard-schema/spec@1.1.0':
+    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
   '@swc/helpers@0.5.15':
     resolution: {integrity: sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==}
@@ -4723,8 +4726,8 @@ packages:
     resolution: {integrity: sha512-Z4SmBUweYa09+o6pG+eASabEpP6QkQ70yHj351pQoEXIs8uHbaU2DWVmzBANKgflPa47A50PtB2+NgRpQvr7vA==}
     engines: {node: '>= 10'}
 
-  next@15.4.8:
-    resolution: {integrity: sha512-jwOXTz/bo0Pvlf20FSb6VXVeWRssA2vbvq9SdrOPEg9x8E1B27C2rQtvriAn600o9hH61kjrVRexEffv3JybuA==}
+  next@15.4.10:
+    resolution: {integrity: sha512-itVlc79QjpKMFMRhP+kbGKaSG/gZM6RCvwhEbwmCNF06CdDiNaoHcbeg0PqkEa2GOcn8KJ0nnc7+yL7EjoYLHQ==}
     engines: {node: ^18.18.0 || ^19.8.0 || >= 20.0.0}
     hasBin: true
     peerDependencies:
@@ -6399,7 +6402,7 @@ snapshots:
   '@ai-sdk/provider-utils@3.0.5(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
-      '@standard-schema/spec': 1.0.0
+      '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.6
       zod: 3.25.76
       zod-to-json-schema: 3.25.0(zod@3.25.76)
@@ -7290,7 +7293,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@next/env@15.4.8': {}
+  '@next/env@15.4.10': {}
 
   '@next/swc-darwin-arm64@15.4.8':
     optional: true
@@ -7328,13 +7331,13 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
 
+  '@openai/codex-sdk@0.73.0': {}
+
   '@openrouter/ai-sdk-provider@1.4.1(ai@5.0.23(zod@3.25.76))(zod@3.25.76)':
     dependencies:
       '@openrouter/sdk': 0.1.27
       ai: 5.0.23(zod@3.25.76)
       zod: 3.25.76
-
-  '@openai/codex-sdk@0.53.0': {}
 
   '@openrouter/sdk@0.1.27':
     dependencies:
@@ -7724,6 +7727,8 @@ snapshots:
   '@sindresorhus/merge-streams@4.0.0': {}
 
   '@standard-schema/spec@1.0.0': {}
+
+  '@standard-schema/spec@1.1.0': {}
 
   '@swc/helpers@0.5.15':
     dependencies:
@@ -11009,9 +11014,9 @@ snapshots:
 
   neotraverse@0.6.18: {}
 
-  next@15.4.8(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
+  next@15.4.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
     dependencies:
-      '@next/env': 15.4.8
+      '@next/env': 15.4.10
       '@swc/helpers': 0.5.15
       caniuse-lite: 1.0.30001737
       postcss: 8.4.31
