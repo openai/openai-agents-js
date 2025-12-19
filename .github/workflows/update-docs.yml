@@ -34,16 +34,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.25.0
+          version: 10.26.0
           run_install: false
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: 'pnpm'
@@ -76,7 +76,7 @@ jobs:
 
       - name: Create Pull Request
         if: steps.commit.outputs.committed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "Update all translated document pages"
           title: "Update all translated document pages"

@@ -63,7 +63,7 @@ export type TranscriptionSpanData = SpanDataBase & {
   type: 'transcription';
   input: {
     data: string;
-    format: 'pcm' | string;
+    format: 'pcm' | (string & {});
   };
   output?: string;
   model?: string;
@@ -75,7 +75,7 @@ export type SpeechSpanData = SpanDataBase & {
   input?: string;
   output: {
     data: string;
-    format: 'pcm' | string;
+    format: 'pcm' | (string & {});
   };
   model?: string;
   model_config?: Record<string, any>;

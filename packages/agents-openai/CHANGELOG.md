@@ -1,5 +1,46 @@
 # @openai/agents-openai
 
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [af1c6c9]
+  - @openai/agents-core@0.3.7
+
+## 0.3.6
+
+### Patch Changes
+
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+- 893b6f4: fix(agents-openai): add gpt-image-1-mini and gpt-image-1.5 support to imageGenerationTool
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+
+## 0.3.5
+
+### Patch Changes
+
+- 820fbce: feat: track token usage while streaming responses for openai models
+- ef324c4: fix: #745 Export OpenAIConversationsSessionOptions
+- 6aa0550: fix: support input_file for chat completions when possible
+- 5750d8a: fix: propagate providerData for function_calls in chat completions converter
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+
 ## 0.3.4
 
 ### Patch Changes

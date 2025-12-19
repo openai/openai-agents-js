@@ -1,7 +1,9 @@
 import { chromium, Browser, Page } from 'playwright';
-import { Agent, run, withTrace, Computer, computerTool } from '@openai/agents';
+import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
 
-async function main() {
+async function singletonComputer() {
+  // If your app never runs multiple computer using agents at the same time,
+  // you can create a singleton computer and use it in all your agents.
   const computer = await new LocalPlaywrightComputer().init();
   try {
     const agent = new Agent({
@@ -18,6 +20,36 @@ async function main() {
   } finally {
     await computer.dispose();
   }
+}
+
+async function computerPerRequest() {
+  // If your app runs multiple computer using agents at the same time,
+  // you can create a computer per request.
+  const agent = new Agent({
+    name: 'Browser user',
+    model: 'computer-use-preview',
+    instructions: 'You are a helpful agent.',
+    tools: [
+      computerTool({
+        // initialize a new computer for each run and dispose it after the run is complete
+        computer: {
+          create: async ({ runContext }) => {
+            console.log('Initializing computer for run context:', runContext);
+            return await new LocalPlaywrightComputer().init();
+          },
+          dispose: async ({ runContext, computer }) => {
+            console.log('Disposing of computer for run context:', runContext);
+            await computer.dispose();
+          },
+        },
+      }),
+    ],
+    modelSettings: { truncation: 'auto' },
+  });
+  await withTrace('CUA Example', async () => {
+    const result = await run(agent, "What's the weather in Tokyo?");
+    console.log(`\nFinal response:\n${result.finalOutput}`);
+  });
 }
 
 // --- CUA KEY TO PLAYWRIGHT KEY MAP ---
@@ -186,7 +218,18 @@ class LocalPlaywrightComputer implements Computer {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+const mode = (process.argv[2] ?? '').toLowerCase();
+
+if (mode === 'singleton') {
+  // Choose singleton mode for cases where concurrent runs are not expected.
+  singletonComputer().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+} else {
+  // Default to per-request mode to avoid sharing state across runs.
+  computerPerRequest().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

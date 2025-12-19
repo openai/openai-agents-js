@@ -5,6 +5,8 @@ import {
   hostedMcpTool,
   shellTool,
   tool,
+  resolveComputer,
+  disposeResolvedComputers,
 } from '../src/tool';
 import { z } from 'zod';
 import { Computer } from '../src';
@@ -40,6 +42,108 @@ describe('Tool', () => {
     expect(t).toBeDefined();
     expect(t.type).toBe('computer');
     expect(t.name).toBe('computer_use_preview');
+  });
+
+  it('computerTool initializes computer per run context when an initializer is provided', async () => {
+    const initializer = vi.fn(
+      async (): Promise<Computer> => ({
+        environment: 'mac' as const,
+        dimensions: [1, 1],
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+      }),
+    );
+    const t = computerTool({ name: 'comp', computer: initializer });
+
+    const ctxA = new RunContext();
+    const ctxB = new RunContext();
+
+    const compA1 = await resolveComputer({ tool: t, runContext: ctxA });
+    const compA2 = await resolveComputer({ tool: t, runContext: ctxA });
+    const compB1 = await resolveComputer({ tool: t, runContext: ctxB });
+
+    expect(initializer).toHaveBeenCalledTimes(2);
+    expect(compA1).toBe(compA2);
+    expect(compA1).not.toBe(compB1);
+    expect(t.computer).toBe(compB1);
+  });
+
+  it('resolveComputer reuses provided static instance without invoking initializer logic', async () => {
+    const staticComp = {
+      environment: 'mac' as const,
+      dimensions: [1, 1] as [number, number],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+    };
+    const initSpy = vi.fn();
+    const t = computerTool({ computer: staticComp });
+    const ctx = new RunContext();
+
+    const first = await resolveComputer({ tool: t, runContext: ctx });
+    const second = await resolveComputer({ tool: t, runContext: ctx });
+
+    expect(first).toBe(staticComp);
+    expect(second).toBe(staticComp);
+    expect(initSpy).not.toHaveBeenCalled();
+  });
+
+  it('supports lifecycle initializers with dispose per run context', async () => {
+    let counter = 0;
+    const makeComputer = (label: string) =>
+      ({
+        environment: 'mac' as const,
+        dimensions: [1, 1] as [number, number],
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+        label,
+      }) as Computer & { label: string };
+
+    const dispose = vi.fn(async () => {});
+    const initializer = vi.fn(async () => {
+      counter += 1;
+      return makeComputer(`computer-${counter}`);
+    });
+
+    const t = computerTool({
+      computer: {
+        create: initializer,
+        dispose,
+      },
+    });
+    const ctx = new RunContext();
+
+    const first = await resolveComputer({ tool: t, runContext: ctx });
+    expect(initializer).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
+
+    await disposeResolvedComputers({ runContext: ctx });
+
+    const second = await resolveComputer({ tool: t, runContext: ctx });
+    expect(initializer).toHaveBeenCalledTimes(2);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledWith({ runContext: ctx, computer: first });
+    expect(second).not.toBe(first);
   });
 
   it('shellTool assigns default name', () => {

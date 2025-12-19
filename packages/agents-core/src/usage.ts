@@ -7,6 +7,7 @@ type RequestUsageInput = Partial<
     total_tokens: number;
     input_tokens_details: object;
     output_tokens_details: object;
+    endpoint?: string;
   }
 >;
 
@@ -56,6 +57,11 @@ export class RequestUsage {
    */
   public outputTokensDetails: Record<string, number>;
 
+  /**
+   * The endpoint that produced this usage entry (e.g., responses.create, responses.compact).
+   */
+  public endpoint?: 'responses.create' | 'responses.compact' | (string & {});
+
   constructor(input?: RequestUsageInput) {
     this.inputTokens = input?.inputTokens ?? input?.input_tokens ?? 0;
     this.outputTokens = input?.outputTokens ?? input?.output_tokens ?? 0;
@@ -73,6 +79,9 @@ export class RequestUsage {
     this.outputTokensDetails = outputTokensDetails
       ? (outputTokensDetails as Record<string, number>)
       : {};
+    if (typeof input?.endpoint !== 'undefined') {
+      this.endpoint = input.endpoint;
+    }
   }
 }
 

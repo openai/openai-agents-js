@@ -7,47 +7,47 @@ import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 
-护栏可以与您的智能体并行运行，或在其完成前阻塞执行，从而对用户输入或智能体输出进行检查与校验。例如，您可以在调用昂贵模型前先运行一个轻量模型作为护栏。如果护栏检测到恶意使用，它可以触发错误并阻止昂贵模型运行。
+护栏可以与您的智能体并行运行，或在完成前阻塞执行，从而对用户输入或智能体输出进行检查与验证。比如，您可以在调用昂贵模型前，先运行一个轻量模型作为护栏。如果护栏检测到恶意使用，它可以触发错误并阻止昂贵模型运行。
 
-护栏分为两类：
+护栏有两种类型：
 
 1. **输入护栏** 运行在初始用户输入上。
-2. **输出护栏** 运行在最终智能体输出上。
+2. **输出护栏** 运行在最终的智能体输出上。
 
 ## 输入护栏
 
 输入护栏分三步运行：
 
 1. 护栏接收与智能体相同的输入。
-2. 护栏函数执行并返回一个封装在[`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult)中的[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)。
-3. 如果 `tripwireTriggered` 为 `true`，则抛出一个[`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) 错误。
+2. 护栏函数执行并返回一个 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)，被封装在 [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) 中。
+3. 若 `tripwireTriggered` 为 `true`，则抛出 [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) 错误。
 
-> **Note**
-> 输入护栏面向用户输入，因此仅当该智能体是工作流中的第一个智能体时才会运行。护栏在智能体上进行配置，因为不同智能体通常需要不同的护栏。
+> **注意**
+> 输入护栏面向用户输入，因此只在该智能体是工作流中的*第一个*智能体时运行。护栏在智能体本身上配置，因为不同智能体通常需要不同的护栏。
 
 ### 执行模式
 
-- `runInParallel: true`（默认）会在 LLM/工具调用的同时启动护栏。这样可最小化延迟，但如果护栏之后触发，模型可能已经消耗了 tokens 或运行了工具。
-- `runInParallel: false` 会在调用模型之前运行护栏，当护栏阻止请求时可避免 token 消耗与工具执行。当您更看重安全与成本而非延迟时使用此模式。
+- `runInParallel: true`（默认）在 LLM/工具调用的同时启动护栏。这样可以最小化时延，但如果护栏随后触发，模型可能已经消耗了一些 tokens 或执行了工具。
+- `runInParallel: false` 在调用模型之前运行护栏，若护栏阻断请求，可避免 token 消耗与工具执行。当您更看重安全与成本而非时延时使用此模式。
 
 ## 输出护栏
 
 输出护栏分三步运行：
 
 1. 护栏接收由智能体产生的输出。
-2. 护栏函数执行并返回一个封装在[`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult)中的[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)。
-3. 如果 `tripwireTriggered` 为 `true`，则抛出一个[`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 错误。
+2. 护栏函数执行并返回一个 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)，被封装在 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 中。
+3. 若 `tripwireTriggered` 为 `true`，则抛出 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 错误。
 
-> **Note**
-> 仅当该智能体是工作流中的最后一个智能体时，输出护栏才会运行。有关实时语音交互，请参阅[构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
+> **注意**
+> 只有当该智能体是工作流中的*最后一个*智能体时，输出护栏才会运行。关于实时语音交互，参见[构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
 
-## 触发线
+## 触发线（Tripwires）
 
-当护栏失败时，它会通过触发线发出信号。一旦触发线被触发，runner 会抛出相应错误并停止执行。
+当护栏失败时，会通过触发线发出信号。一旦触发线被触发，运行器会抛出相应错误并停止执行。
 
 ## 护栏实现
 
-护栏就是一个返回 `GuardrailFunctionOutput` 的函数。下面是一个最小示例：通过在幕后运行另一个智能体来检查用户是否在请求数学作业帮助。
+护栏本质上是一个返回 `GuardrailFunctionOutput` 的函数。下面是一个最小示例，通过在幕后运行另一个智能体来检查用户是否在寻求数学作业帮助。
 
 <Code lang="typescript" code={inputGuardrailExample} title="输入护栏示例" />
 
@@ -55,7 +55,7 @@ import outputGuardrailExample from '../../../../../../examples/docs/guardrails/g
 
 <Code lang="typescript" code={outputGuardrailExample} title="输出护栏示例" />
 
-1. `guardrailAgent` 在护栏函数内部使用。
-2. 护栏函数接收智能体输入或输出并返回结果。
+1. `guardrailAgent` 用于护栏函数内部。
+2. 护栏函数接收智能体的输入或输出并返回结果。
 3. 可以在护栏结果中包含额外信息。
-4. `agent` 定义应用护栏的实际工作流。
+4. `agent` 定义了实际应用护栏的工作流。

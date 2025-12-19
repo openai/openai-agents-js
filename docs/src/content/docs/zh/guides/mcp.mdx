@@ -13,17 +13,17 @@ import streamableHttpExample from '../../../../../../examples/docs/mcp/streamabl
 import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
 
-[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) 是一种开放协议，用于标准化应用如何向 LLM 提供工具与上下文。来自 MCP 文档：
+[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) 是一个开放协议，用于标准化应用向 LLM 提供工具和上下文的方式。摘自 MCP 文档：
 
-> MCP 是一种开放协议，用于标准化应用如何向 LLM 提供上下文。可以把 MCP 想象成 AI 应用的 USB‑C 接口。正如 USB‑C 为设备连接各种外设与配件提供了标准化方式，MCP 为将 AI 模型连接到不同数据源和工具提供了标准化方式。
+> MCP 是一个开放协议，标准化了应用向 LLM 提供上下文的方式。可以把 MCP 想象成 AI 应用的 USB‑C 接口。正如 USB‑C 提供了连接各种外设的标准方式，MCP 也提供了将 AI 模型连接到不同数据源和工具的标准方式。
 
-本 SDK 支持三种 MCP 服务器类型：
+本 SDK 支持三种类型的 MCP 服务器：
 
-1. **Hosted MCP server tools** – 被 [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) 作为工具使用的远程 MCP 服务器
-2. **Streamable HTTP MCP servers** – 本地或远程服务器，实施了 [Streamable HTTP 传输](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)
-3. **Stdio MCP servers** – 通过标准输入/输出访问的服务器（最简单的选项）
+1. **Hosted MCP server tools** —— 由 [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) 作为工具使用的远程 MCP 服务器
+2. **Streamable HTTP MCP servers** —— 实现了[Streamable HTTP 传输](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)的本地或远程服务器
+3. **Stdio MCP servers** —— 通过标准输入/输出访问的服务器（最简单的选项）
 
-请基于您的用例选择服务器类型：
+请根据您的用例选择服务器类型：
 
 | 您的需求                                                    | 推荐选项                |
 | ----------------------------------------------------------- | ----------------------- |
@@ -35,13 +35,13 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
 
 ## 1. Hosted MCP server tools
 
-托管工具将整个往返交互推送进模型中。不是由您的代码调用 MCP 服务器，而是由 OpenAI Responses API 调用远程工具端点并将结果流式返回给模型。
+托管工具将完整的往返过程交给模型处理。不是由您的代码调用 MCP 服务器，而是由 OpenAI Responses API 调用远程工具端点并将结果流式返回给模型。
 
-下面是使用托管 MCP 工具的最简例子。您可以将远程 MCP 服务器的标签与 URL 传递给 `hostedMcpTool` 工具函数，用于创建托管 MCP 服务器工具。
+下面是使用托管 MCP 工具的最简单示例。您可以将远程 MCP 服务器的标签和 URL 传给 `hostedMcpTool` 工具函数，以便创建托管 MCP 服务器工具。
 
 <Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
 
-然后，使用 `run` 函数（或您自定义的 `Runner` 实例的 `run` 方法）运行该 Agent：
+然后，您可以使用 `run` 函数（或您自定义的 `Runner` 实例的 `run` 方法）来运行该智能体：
 
 <Code
   lang="typescript"
@@ -49,7 +49,7 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Run with hosted MCP tools"
 />
 
-如需流式接收增量 MCP 结果，运行 `Agent` 时传入 `stream: true`：
+若要流式获取增量 MCP 结果，在运行 `Agent` 时传入 `stream: true`：
 
 <Code
   lang="typescript"
@@ -57,11 +57,11 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Run with hosted MCP tools (streaming)"
 />
 
-#### 可选审批流程
+#### 可选的审批流程
 
-对于敏感操作，您可以要求对单个工具调用进行人工审批。传入 `requireApproval: 'always'`，或传入一个细粒度对象，将工具名映射为 `'never'`/`'always'`。
+对于敏感操作，您可以要求对单个工具调用进行人工审批。传入 `requireApproval: 'always'`，或传入一个将工具名映射到 `'never'`/`'always'` 的细粒度对象。
 
-如果您能以编程方式判断工具调用是否安全，可以使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)批准或拒绝该调用。若需要人工审批，您可以像本地函数工具一样，配合 `interruptions` 使用相同的[人机协作](/openai-agents-js/zh/guides/human-in-the-loop/)方法。
+如果您可以以编程方式判断工具调用是否安全，可以使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)来批准或拒绝该调用。如果需要人工审批，您可以使用与本地函数工具相同的基于 `interruptions` 的[人机协作](/openai-agents-js/zh/guides/human-in-the-loop/)方式。
 
 <Code
   lang="typescript"
@@ -69,9 +69,9 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Human in the loop with hosted MCP tools"
 />
 
-### 由 Connector 支持的托管服务器
+### 基于 Connector 的托管服务器
 
-托管 MCP 也支持 OpenAI connectors。无需提供 `serverUrl`，改为传入 connector 的 `connectorId` 和 `authorization` 令牌。Responses API 将处理认证，并通过托管 MCP 接口暴露该 connector 的工具。
+托管 MCP 也支持 OpenAI connectors。无需提供 `serverUrl`，改为传入 connector 的 `connectorId` 和一个 `authorization` 令牌。Responses API 将处理身份验证，并通过托管 MCP 接口暴露该 connector 的工具。
 
 <Code
   lang="typescript"
@@ -79,13 +79,13 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Connector-backed hosted MCP tool"
 />
 
-在此示例中，环境变量 `GOOGLE_CALENDAR_AUTHORIZATION` 保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权由 connector 支持的服务器调用 Calendar API。包含可运行示例（同时演示流式传输）的样例参见 [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
+在此示例中，环境变量 `GOOGLE_CALENDAR_AUTHORIZATION` 保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权基于 connector 的服务器调用 Calendar API。有关包含流式演示的可运行示例，请参阅 [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
 
-完整可运行的示例（托管工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）请见我们 GitHub 仓库中的 [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp)。
+完整可运行示例（托管工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）可见我们 GitHub 仓库中的 [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp)。
 
 ## 2. Streamable HTTP MCP servers
 
-当您的 Agent 直接与 Streamable HTTP MCP 服务器（本地或远程）通信时，请使用服务器的 `url`、`name` 和可选设置实例化 `MCPServerStreamableHttp`：
+当您的智能体直接与本地或远程的 Streamable HTTP MCP 服务器通信时，使用服务器的 `url`、`name` 以及可选设置实例化 `MCPServerStreamableHttp`：
 
 <Code
   lang="typescript"
@@ -93,11 +93,11 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
   title="Run with Streamable HTTP MCP servers"
 />
 
-该构造函数还接受其他 MCP TypeScript‑SDK 选项，例如 `authProvider`、`requestInit`、`fetch`、`reconnectionOptions` 和 `sessionId`。详情见 [MCP TypeScript SDK 仓库](https://github.com/modelcontextprotocol/typescript-sdk)及其文档。
+该构造函数还接受其他 MCP TypeScript‑SDK 选项，如 `authProvider`、`requestInit`、`fetch`、`reconnectionOptions` 和 `sessionId`。详情请参阅 [MCP TypeScript SDK 仓库](https://github.com/modelcontextprotocol/typescript-sdk)及其文档。
 
 ## 3. Stdio MCP servers
 
-对于仅通过标准 I/O 暴露的服务器，使用 `fullCommand` 实例化 `MCPServerStdio`：
+对于仅通过标准 I/O 暴露的服务器，使用 `fullCommand` 来实例化 `MCPServerStdio`：
 
 <Code
   lang="typescript"
@@ -107,18 +107,18 @@ import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.t
 
 ## 其他须知
 
-对于 **Streamable HTTP** 和 **Stdio** 服务器，每次运行 `Agent` 时可能会调用 `list_tools()` 来发现可用工具。由于该往返会增加延迟（尤其对远程服务器），您可以通过向 `MCPServerStdio` 或 `MCPServerStreamableHttp` 传入 `cacheToolsList: true` 将结果缓存在内存中。
+对于 **Streamable HTTP** 和 **Stdio** 服务器，每次运行 `Agent` 时都可能会调用 `list_tools()` 来发现可用工具。由于该往返会增加延迟（尤其是远程服务器），您可以通过向 `MCPServerStdio` 或 `MCPServerStreamableHttp` 传入 `cacheToolsList: true` 来在内存中缓存结果。
 
-仅当您确信工具列表不会变化时才启用此功能。若需之后使缓存失效，请在服务器实例上调用 `invalidateToolsCache()`。
+仅在您确信工具列表不会变化时启用此选项。若需在之后使缓存失效，可在服务器实例上调用 `invalidateToolsCache()`。
 
 ### 工具过滤
 
-您可以限制每个服务器对外暴露的工具集，可通过 `createMCPToolStaticFilter` 传入静态过滤器或自定义函数。下面是一个结合两种方式的示例：
+您可以通过 `createMCPToolStaticFilter` 传入静态过滤器，或传入自定义函数，来限制每个服务器暴露哪些工具。下面是同时展示两种方式的示例：
 
 <Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
 
 ## 延伸阅读
 
-- [Model Context Protocol](https://modelcontextprotocol.io/) – 官方规范。
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上文提到的可运行
+- [Model Context Protocol](https://modelcontextprotocol.io/) —— 官方规范。
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) —— 上文提到的可运行
   演示。

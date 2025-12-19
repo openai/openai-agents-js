@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 import {
   BaseMCPServerStdio,
@@ -29,6 +30,18 @@ npm install @modelcontextprotocol/sdk
     `.trim(),
   );
   throw error;
+}
+
+function buildRequestOptions(
+  clientSessionTimeoutSeconds?: number,
+  overrides?: RequestOptions,
+): RequestOptions | undefined {
+  const baseOptions =
+    clientSessionTimeoutSeconds === undefined
+      ? undefined
+      : { timeout: clientSessionTimeoutSeconds * 1000 };
+  const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
+  return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -68,12 +81,14 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
 
   async connect(): Promise<void> {
     try {
-      const { StdioClientTransport } = await import(
-        '@modelcontextprotocol/sdk/client/stdio.js'
-      ).catch(failedToImport);
-      const { Client } = await import(
-        '@modelcontextprotocol/sdk/client/index.js'
-      ).catch(failedToImport);
+      const { StdioClientTransport } =
+        await import('@modelcontextprotocol/sdk/client/stdio.js').catch(
+          failedToImport,
+        );
+      const { Client } =
+        await import('@modelcontextprotocol/sdk/client/index.js').catch(
+          failedToImport,
+        );
       this.transport = new StdioClientTransport({
         command: this.params.command,
         args: this.params.args,
@@ -84,7 +99,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -102,9 +120,8 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { ListToolsResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -115,7 +132,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -125,23 +145,24 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     toolName: string,
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    const { CallToolResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { CallToolResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -190,12 +211,14 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
 
   async connect(): Promise<void> {
     try {
-      const { SSEClientTransport } = await import(
-        '@modelcontextprotocol/sdk/client/sse.js'
-      ).catch(failedToImport);
-      const { Client } = await import(
-        '@modelcontextprotocol/sdk/client/index.js'
-      ).catch(failedToImport);
+      const { SSEClientTransport } =
+        await import('@modelcontextprotocol/sdk/client/sse.js').catch(
+          failedToImport,
+        );
+      const { Client } =
+        await import('@modelcontextprotocol/sdk/client/index.js').catch(
+          failedToImport,
+        );
       this.transport = new SSEClientTransport(new URL(this.params.url), {
         authProvider: this.params.authProvider,
         requestInit: this.params.requestInit,
@@ -206,7 +229,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -224,9 +250,8 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { ListToolsResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -237,7 +262,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -247,23 +275,24 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     toolName: string,
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    const { CallToolResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { CallToolResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -312,12 +341,14 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
   async connect(): Promise<void> {
     try {
-      const { StreamableHTTPClientTransport } = await import(
-        '@modelcontextprotocol/sdk/client/streamableHttp.js'
-      ).catch(failedToImport);
-      const { Client } = await import(
-        '@modelcontextprotocol/sdk/client/index.js'
-      ).catch(failedToImport);
+      const { StreamableHTTPClientTransport } =
+        await import('@modelcontextprotocol/sdk/client/streamableHttp.js').catch(
+          failedToImport,
+        );
+      const { Client } =
+        await import('@modelcontextprotocol/sdk/client/index.js').catch(
+          failedToImport,
+        );
       this.transport = new StreamableHTTPClientTransport(
         new URL(this.params.url),
         {
@@ -332,7 +363,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -350,9 +384,8 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { ListToolsResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -363,7 +396,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -373,23 +409,24 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     toolName: string,
     args: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    const { CallToolResultSchema } = await import(
-      '@modelcontextprotocol/sdk/types.js'
-    ).catch(failedToImport);
+    const { CallToolResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
     const response = await this.session.callTool(
       {
         name: toolName,
         arguments: args ?? {},
       },
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;

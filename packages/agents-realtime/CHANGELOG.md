@@ -1,5 +1,40 @@
 # @openai/agents-realtime
 
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [af1c6c9]
+  - @openai/agents-core@0.3.7
+
+## 0.3.6
+
+### Patch Changes
+
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+
+## 0.3.5
+
+### Patch Changes
+
+- 1300121: feat(realtime): Add usage field to input audio transcription completed event
+- 2a4a696: feat: #762 Add turnInput (optional) to agent_start event hooks
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+
 ## 0.3.4
 
 ### Patch Changes

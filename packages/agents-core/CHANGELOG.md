@@ -1,5 +1,35 @@
 # @openai/agents-core
 
+## 0.3.7
+
+### Patch Changes
+
+- af1c6c9: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds (re-fix for #781)
+
+## 0.3.6
+
+### Patch Changes
+
+- af20625: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- c536421: fix: #775 tracing: previousSpan is not correctly set
+- 12d4e44: fix: Enable creating and disposing Computer per request ref: #663
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+
+## 0.3.5
+
+### Patch Changes
+
+- 2cb61b0: feat: Add onStream handler to agents as tools
+- 2a4a696: feat: #762 Add turnInput (optional) to agent_start event hooks
+- 820fbce: feat: track token usage while streaming responses for openai models
+- 970b086: chore(deps): bump @modelcontextprotocol/sdk from 1.12.1 to 1.24.0
+- dccc9b3: fix: #753 Emit agent_tool_end event when function tools throw errors
+- 378d421: fix: #701 prevent duplicate function_call items in session history after resuming from interruption
+- bdbc87d: fix: event data adjustment for #749
+- dd1a813: SpanData types are exported from distribution types for use when writing custom TracingExporters and Tracingprocessors
+
 ## 0.3.4
 
 ### Patch Changes

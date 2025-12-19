@@ -7,6 +7,7 @@ import {
   ShellTool,
   ApplyPatchTool,
 } from './tool';
+import { Computer } from './computer';
 import { Handoff } from './handoff';
 import {
   AgentInputItem,
@@ -178,8 +179,8 @@ export type SerializedFunctionTool = {
 export type SerializedComputerTool = {
   type: ComputerTool['type'];
   name: ComputerTool['name'];
-  environment: ComputerTool['computer']['environment'];
-  dimensions: ComputerTool['computer']['dimensions'];
+  environment: Computer['environment'];
+  dimensions: Computer['dimensions'];
 };
 
 export type SerializedShellTool = {

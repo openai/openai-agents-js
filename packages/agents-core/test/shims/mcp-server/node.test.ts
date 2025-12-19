@@ -1,10 +1,30 @@
-import { describe, test, expect, vi, afterAll, beforeAll } from 'vitest';
+import {
+  describe,
+  test,
+  expect,
+  vi,
+  afterAll,
+  beforeAll,
+  beforeEach,
+} from 'vitest';
 import {
   NodeMCPServerStdio,
   NodeMCPServerSSE,
+  NodeMCPServerStreamableHttp,
 } from '../../../src/shims/mcp-server/node';
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
+
+let lastConnectOptions: any;
+let lastListToolsOptions: any;
+let lastCallToolOptions: any;
+
+beforeEach(() => {
+  lastConnectOptions = undefined;
+  lastListToolsOptions = undefined;
+  lastCallToolOptions = undefined;
+});
 
 describe('NodeMCPServerStdio', () => {
   beforeAll(() => {
@@ -37,6 +57,39 @@ describe('NodeMCPServerStdio', () => {
     expect(server.name).toBe('test');
     expect(server.cacheToolsList).toBe(true);
     await server.connect();
+    expect(lastConnectOptions?.timeout).toBe(5000);
+    await server.close();
+  });
+
+  test('should apply custom client session timeout when connecting', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'custom-timeout',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 12,
+    });
+
+    await server.connect();
+
+    expect(lastConnectOptions?.timeout).toBe(12000);
+
+    await server.close();
+  });
+
+  test('should reuse request options for session methods', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'with-options',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 6,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(6000);
+    expect(lastListToolsOptions?.timeout).toBe(6000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
     await server.close();
   });
 
@@ -82,8 +135,29 @@ class MockClient {
   constructor(options: { name: string; version: string }) {
     this.options = options;
   }
-  connect(): Promise<void> {
+  connect(_transport: any, options?: any): Promise<void> {
+    lastConnectOptions = options;
     return Promise.resolve();
+  }
+  listTools(_params?: any, options?: any): Promise<any> {
+    lastListToolsOptions = options;
+    return Promise.resolve({
+      tools: [
+        {
+          name: 'mock-tool',
+          description: 'Mock tool',
+          inputSchema: {
+            type: 'object',
+          },
+        },
+      ],
+    });
+  }
+  callTool(_params: any, _resultSchema?: any, options?: any): Promise<any> {
+    lastCallToolOptions = options;
+    return Promise.resolve({
+      content: [{ type: 'text', text: 'ok' }],
+    });
   }
   close(): Promise<void> {
     return Promise.resolve();
@@ -170,6 +244,7 @@ describe('NodeMCPServerSSE', () => {
     await server.connect();
 
     expect(capturedFetch).toBe(customFetch);
+    expect(lastConnectOptions?.timeout).toBe(5000);
 
     await server.close();
   });
@@ -182,11 +257,129 @@ describe('NodeMCPServerSSE', () => {
 
     expect(server).toBeDefined();
     await server.connect();
+    expect(lastConnectOptions?.timeout).toBe(5000);
+    await server.close();
+  });
+
+  test('should pass request options to session calls', async () => {
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-options',
+      clientSessionTimeoutSeconds: 4,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(4000);
+    expect(lastListToolsOptions?.timeout).toBe(4000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
     await server.close();
   });
 
   afterAll(() => {
     vi.clearAllMocks();
     capturedFetch = undefined;
+  });
+});
+
+class MockStreamableHTTPClientTransport {
+  url: URL;
+  options: {
+    authProvider?: any;
+    requestInit?: any;
+    fetch?: any;
+    reconnectionOptions?: any;
+    sessionId?: string;
+  };
+
+  constructor(
+    url: URL,
+    options: {
+      authProvider?: any;
+      requestInit?: any;
+      fetch?: any;
+      reconnectionOptions?: any;
+      sessionId?: string;
+    },
+  ) {
+    this.url = url;
+    this.options = options;
+  }
+
+  start(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  send(
+    _message: JSONRPCMessage,
+    _options?: TransportSendOptions,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+describe('NodeMCPServerStreamableHttp', () => {
+  beforeAll(() => {
+    vi.mock(
+      '@modelcontextprotocol/sdk/client/streamableHttp.js',
+      async (importOriginal) => {
+        return {
+          ...(await importOriginal()),
+          StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
+        };
+      },
+    );
+    vi.mock(
+      '@modelcontextprotocol/sdk/client/index.js',
+      async (importOriginal) => {
+        return {
+          ...(await importOriginal()),
+          Client: MockClient,
+        };
+      },
+    );
+  });
+
+  test('should apply session timeout when connecting', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream',
+      clientSessionTimeoutSeconds: 8,
+    });
+
+    await server.connect();
+
+    expect(lastConnectOptions?.timeout).toBe(8000);
+
+    await server.close();
+  });
+
+  test('should forward request options to session methods', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-options',
+      clientSessionTimeoutSeconds: 9,
+    });
+
+    await server.connect();
+    await server.listTools();
+    await server.callTool('mock-tool', {});
+
+    expect(lastConnectOptions?.timeout).toBe(9000);
+    expect(lastListToolsOptions?.timeout).toBe(9000);
+    expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
+  afterAll(() => {
+    vi.clearAllMocks();
   });
 });

@@ -1,5 +1,6 @@
 import {
   Model,
+  RequestUsage,
   Usage,
   withResponseSpan,
   createResponseSpan,
@@ -1231,6 +1232,19 @@ function getInputItems(
       );
     }
 
+    if (item.type === 'compaction') {
+      const encryptedContent =
+        (item as any).encrypted_content ?? (item as any).encryptedContent;
+      if (typeof encryptedContent !== 'string') {
+        throw new UserError('Compaction item missing encrypted_content');
+      }
+      return {
+        type: 'compaction',
+        id: item.id ?? undefined,
+        encrypted_content: encryptedContent,
+      } as OpenAI.Responses.ResponseInputItem;
+    }
+
     if (item.type === 'unknown') {
       return {
         ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
@@ -1524,6 +1538,23 @@ function convertToOutputItem(
         providerData,
       };
       return output;
+    } else if (item.type === 'compaction') {
+      const { encrypted_content, created_by, ...providerData } = item as {
+        encrypted_content?: string;
+        created_by?: string;
+        id?: string;
+      };
+      if (typeof encrypted_content !== 'string') {
+        throw new UserError('Compaction item missing encrypted_content');
+      }
+      const output: protocol.CompactionItem = {
+        type: 'compaction',
+        id: item.id ?? undefined,
+        encrypted_content,
+        created_by,
+        providerData,
+      };
+      return output;
     }
 
     return {
@@ -1673,6 +1704,9 @@ export class OpenAIResponsesModel implements Model {
         totalTokens: response.usage?.total_tokens ?? 0,
         inputTokensDetails: { ...response.usage?.input_tokens_details },
         outputTokensDetails: { ...response.usage?.output_tokens_details },
+        requestUsageEntries: [
+          toRequestUsageEntry(response.usage, 'responses.create'),
+        ],
       }),
       output: convertToOutputItem(response.output),
       responseId: response.id,
@@ -1729,6 +1763,9 @@ export class OpenAIResponsesModel implements Model {
                 outputTokensDetails: {
                   ...usage?.output_tokens_details,
                 },
+                requestUsageEntries: [
+                  toRequestUsageEntry(usage, 'responses.create'),
+                ],
               },
               providerData: remainingResponse,
             },
@@ -1796,4 +1833,18 @@ function normalizeInstructions(
     return instructions;
   }
   return undefined;
+}
+
+function toRequestUsageEntry(
+  usage: OpenAI.Responses.ResponseUsage | undefined,
+  endpoint: string,
+): RequestUsage {
+  return new RequestUsage({
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0,
+    inputTokensDetails: { ...usage?.input_tokens_details },
+    outputTokensDetails: { ...usage?.output_tokens_details },
+    endpoint,
+  });
 }

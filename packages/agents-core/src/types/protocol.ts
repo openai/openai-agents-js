@@ -685,6 +685,24 @@ export const ReasoningItem = SharedBase.extend({
 
 export type ReasoningItem = z.infer<typeof ReasoningItem>;
 
+export const CompactionItem = ItemBase.extend({
+  type: z.literal('compaction'),
+  /**
+   * Encrypted payload returned by the compaction endpoint.
+   */
+  encrypted_content: z.string(),
+  /**
+   * Identifier for the compaction item.
+   */
+  id: z.string().optional(),
+  /**
+   * Identifier for the generator of this compaction item.
+   */
+  created_by: z.string().optional(),
+});
+
+export type CompactionItem = z.infer<typeof CompactionItem>;
+
 /**
  * This is a catch all for items that are not part of the protocol.
  *
@@ -715,6 +733,7 @@ export const OutputModelItem = z.discriminatedUnion('type', [
   ShellCallResultItem,
   ApplyPatchCallResultItem,
   ReasoningItem,
+  CompactionItem,
   UnknownItem,
 ]);
 
@@ -734,6 +753,7 @@ export const ModelItem = z.union([
   ShellCallResultItem,
   ApplyPatchCallResultItem,
   ReasoningItem,
+  CompactionItem,
   UnknownItem,
 ]);
 
@@ -749,6 +769,7 @@ export const RequestUsageData = z.object({
   totalTokens: z.number(),
   inputTokensDetails: z.record(z.string(), z.number()).optional(),
   outputTokensDetails: z.record(z.string(), z.number()).optional(),
+  endpoint: z.string().optional(),
 });
 
 export type RequestUsageData = z.infer<typeof RequestUsageData>;

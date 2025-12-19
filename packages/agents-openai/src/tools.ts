@@ -34,7 +34,7 @@ export const ImageGenerationStatus = z
  */
 export type WebSearchTool = {
   type: 'web_search';
-  name?: 'web_search' | 'web_search_preview' | string;
+  name?: 'web_search' | 'web_search_preview' | (string & {});
   /**
    * Optional location for the search. Lets you customize results to be relevant to a location.
    */
@@ -81,7 +81,7 @@ export function webSearchTool(
  */
 export type FileSearchTool = {
   type: 'file_search';
-  name?: 'file_search' | string;
+  name?: 'file_search' | (string & {});
   /**
    * The IDs of the vector stores to search.
    */
@@ -135,7 +135,7 @@ export function fileSearchTool(
 
 export type CodeInterpreterTool = {
   type: 'code_interpreter';
-  name?: 'code_interpreter' | string;
+  name?: 'code_interpreter' | (string & {});
   container?:
     | string
     | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
@@ -166,17 +166,17 @@ export function codeInterpreterTool(
  */
 export type ImageGenerationTool = {
   type: 'image_generation';
-  name?: 'image_generation' | string;
-  background?: 'transparent' | 'opaque' | 'auto' | string;
+  name?: 'image_generation' | (string & {});
+  background?: 'transparent' | 'opaque' | 'auto' | (string & {});
   inputFidelity?: 'high' | 'low' | null;
   inputImageMask?: OpenAI.Responses.Tool.ImageGeneration.InputImageMask;
-  model?: 'gpt-image-1' | string;
-  moderation?: 'auto' | 'low' | string;
+  model?: 'gpt-image-1' | 'gpt-image-1-mini' | 'gpt-image-1.5' | (string & {});
+  moderation?: 'auto' | 'low' | (string & {});
   outputCompression?: number;
-  outputFormat?: 'png' | 'webp' | 'jpeg' | string;
+  outputFormat?: 'png' | 'webp' | 'jpeg' | (string & {});
   partialImages?: number;
-  quality?: 'low' | 'medium' | 'high' | 'auto' | string;
-  size?: '1024x1024' | '1024x1536' | '1536x1024' | 'auto' | string;
+  quality?: 'low' | 'medium' | 'high' | 'auto' | (string & {});
+  size?: '1024x1024' | '1024x1536' | '1536x1024' | 'auto' | (string & {});
 };
 
 /**

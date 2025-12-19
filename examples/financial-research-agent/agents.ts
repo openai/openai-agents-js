@@ -69,9 +69,8 @@ Focus on key numbers, events, or quotes that will be useful to a financial analy
 export const searchAgent = new Agent({
   name: 'FinancialSearchAgent',
   instructions: searchAgentPrompt,
-  model: 'gpt-4.1',
+  model: 'gpt-5.2',
   tools: [webSearchTool()],
-  modelSettings: { toolChoice: 'required' },
 });
 
 // --- Verification Agent ---
@@ -93,7 +92,7 @@ export type VerificationResult = z.infer<typeof VerificationResult>;
 export const verifierAgent = new Agent({
   name: 'VerificationAgent',
   instructions: verifierPrompt,
-  model: 'gpt-4.1',
+  model: 'gpt-5.2',
   outputType: VerificationResult,
 });
 
@@ -116,6 +115,6 @@ export type FinancialReportData = z.infer<typeof FinancialReportData>;
 export const writerAgent = new Agent({
   name: 'FinancialWriterAgent',
   instructions: writerPrompt,
-  model: 'gpt-4.1',
+  model: 'gpt-5.2',
   outputType: FinancialReportData,
 });

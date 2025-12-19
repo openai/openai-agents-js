@@ -45,11 +45,12 @@ import {
   applyPatchTool,
   shellTool,
   hostedMcpTool,
+  resolveComputer,
 } from '../src/tool';
 import { handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
 import { Computer } from '../src/computer';
-import { Usage } from '../src/usage';
+import { RequestUsage, Usage } from '../src/usage';
 import { setTracingDisabled, withTrace } from '../src';
 
 import {
@@ -69,7 +70,10 @@ import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
 import { Logger } from '../src/logger';
 import type { UnknownContext } from '../src/types';
-import type { Session } from '../src/memory/session';
+import type {
+  OpenAIResponsesCompactionResult,
+  Session,
+} from '../src/memory/session';
 import type { AgentInputItem } from '../src/types';
 
 beforeAll(() => {
@@ -549,6 +553,282 @@ describe('saveToSession', () => {
     const latest = session.items[4] as protocol.FunctionCallResultItem;
     expect(latest.type).toBe('function_call_result');
     expect(latest.callId).toBe(approvalCall.callId);
+  });
+
+  it('propagates lastResponseId to sessions after persisting items', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.items];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async runCompaction(args: {
+        responseId: string | undefined;
+      }): Promise<OpenAIResponsesCompactionResult | null> {
+        this.events.push(`runCompaction:${args.responseId}`);
+        return null;
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Recorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_123',
+    });
+    state._generatedItems = [
+      new MessageOutputItem(
+        {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg_123',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'here is the reply',
+            },
+          ],
+          providerData: {},
+        },
+        textAgent,
+      ),
+    ];
+    state._currentStep = {
+      type: 'next_step_final_output',
+      output: 'here is the reply',
+    };
+
+    const result = new RunResult(state);
+    await saveToSession(session, toInputItemList(state._originalInput), result);
+
+    expect(session.events).toEqual(['addItems:2', 'runCompaction:resp_123']);
+    expect(session.items).toHaveLength(2);
+  });
+
+  it('invokes runCompaction when responseId is undefined', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.items];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async runCompaction(args?: {
+        responseId?: string;
+      }): Promise<OpenAIResponsesCompactionResult | null> {
+        this.events.push(`runCompaction:${String(args?.responseId)}`);
+        return null;
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Recorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    state._modelResponses = [];
+    state._generatedItems = [
+      new MessageOutputItem(
+        {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg_123',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'here is the reply',
+            },
+          ],
+          providerData: {},
+        },
+        textAgent,
+      ),
+    ];
+    state._currentStep = {
+      type: 'next_step_final_output',
+      output: 'here is the reply',
+    };
+
+    const result = new RunResult(state);
+    await saveToSession(session, toInputItemList(state._originalInput), result);
+
+    expect(session.events).toEqual(['addItems:2', 'runCompaction:undefined']);
+    expect(session.items).toHaveLength(2);
+  });
+
+  it('aggregates compaction usage into the run usage', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.items];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async runCompaction(): Promise<OpenAIResponsesCompactionResult | null> {
+        this.events.push('runCompaction:resp_123');
+        return {
+          usage: new RequestUsage({
+            inputTokens: 4,
+            outputTokens: 6,
+            totalTokens: 10,
+            endpoint: 'responses.compact',
+          }),
+        };
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Recorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const modelUsage = new Usage({
+      requests: 1,
+      inputTokens: 2,
+      outputTokens: 3,
+      totalTokens: 5,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 2,
+          outputTokens: 3,
+          totalTokens: 5,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+    state._modelResponses.push({
+      output: [],
+      usage: modelUsage,
+      responseId: 'resp_123',
+    });
+    state._context.usage.add(modelUsage);
+    state._generatedItems = [
+      new MessageOutputItem(
+        {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg_123',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'here is the reply',
+            },
+          ],
+          providerData: {},
+        },
+        textAgent,
+      ),
+    ];
+    state._currentStep = {
+      type: 'next_step_final_output',
+      output: 'here is the reply',
+    };
+
+    const result = new RunResult(state);
+    await saveToSession(session, toInputItemList(state._originalInput), result);
+
+    expect(session.events).toEqual(['addItems:2', 'runCompaction:resp_123']);
+    expect(state.usage.inputTokens).toBe(6);
+    expect(state.usage.outputTokens).toBe(9);
+    expect(state.usage.totalTokens).toBe(15);
+    expect(
+      state.usage.requestUsageEntries?.map((entry) => entry.endpoint),
+    ).toEqual(['responses.create', 'responses.compact']);
   });
 });
 
@@ -1910,6 +2190,46 @@ describe('executeComputerActions', () => {
     expect(result).toHaveLength(actions.length);
     expect(comp.screenshot).toHaveBeenCalledTimes(actions.length);
     expect(result.every((r) => r instanceof ToolCallOutputItem)).toBe(true);
+  });
+
+  it('initializes computer with run context using a computer initializer', async () => {
+    const initializer = vi.fn(async () => makeComputer());
+    const tool = computerTool({ computer: initializer });
+    const toolCall: protocol.ComputerUseCallItem = {
+      id: 'id1',
+      type: 'computer_call',
+      callId: 'id1',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+
+    const ctxA = new RunContext();
+    const ctxB = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxA,
+    );
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxA,
+    );
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall, computer: tool }],
+      runner,
+      ctxB,
+    );
+
+    expect(initializer).toHaveBeenCalledTimes(2);
+    const compA = await resolveComputer({ tool, runContext: ctxA });
+    const compB = await resolveComputer({ tool, runContext: ctxB });
+    expect(compA).not.toBe(compB);
   });
 
   it('throws if computer lacks screenshot', async () => {

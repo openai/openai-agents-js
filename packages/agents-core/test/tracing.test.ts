@@ -31,9 +31,11 @@ import {
   getCurrentSpan,
   setTraceProcessors,
   setTracingDisabled,
+  setCurrentSpan,
+  resetCurrentSpan,
 } from '../src/tracing';
 
-import { withAgentSpan } from '../src/tracing/createSpans';
+import { withAgentSpan, createAgentSpan } from '../src/tracing/createSpans';
 
 import { TraceProvider } from '../src/tracing/provider';
 
@@ -265,6 +267,31 @@ describe('withTrace & span helpers (integration)', () => {
     const endedIds = processor.spansEnded.map((s) => s.spanId);
     expect(startedIds).toContain(capturedSpanId);
     expect(endedIds).toContain(capturedSpanId);
+  });
+
+  it('sets previousSpan when updating the current span and maintains reset stack', async () => {
+    await withTrace('workflow', async () => {
+      const spanA = createAgentSpan({ data: { name: 'A' } });
+      setCurrentSpan(spanA);
+      expect(getCurrentSpan()).toBe(spanA);
+
+      const spanB = createAgentSpan({ data: { name: 'B' } });
+      setCurrentSpan(spanB);
+      expect(spanB.previousSpan).toBe(spanA);
+
+      const spanC = createAgentSpan({ data: { name: 'C' } });
+      setCurrentSpan(spanC);
+      expect(spanC.previousSpan).toBe(spanB);
+
+      resetCurrentSpan();
+      expect(getCurrentSpan()).toBe(spanB);
+
+      resetCurrentSpan();
+      expect(getCurrentSpan()).toBe(spanA);
+
+      resetCurrentSpan();
+      expect(getCurrentSpan()).toBeNull();
+    });
   });
 
   it('streaming run waits for stream loop to complete before calling onTraceEnd', async () => {
