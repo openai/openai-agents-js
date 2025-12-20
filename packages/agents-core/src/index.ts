@@ -140,6 +140,7 @@ export {
   ToolExecuteArgument,
   ToolEnabledFunction,
 } from './tool';
+export type { ToolInputParameters, ToolOptions } from './tool';
 export type {
   ToolOutputText,
   ToolOutputImage,
