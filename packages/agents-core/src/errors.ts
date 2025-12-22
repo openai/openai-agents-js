@@ -4,8 +4,10 @@ import {
   OutputGuardrailMetadata,
   OutputGuardrailResult,
 } from './guardrail';
+import { RunContext } from './runContext';
 import { RunState } from './runState';
 import { TextOutput } from './types';
+import * as protocol from './types/protocol';
 
 /**
  * Base class for all errors thrown by the library.
@@ -34,6 +36,38 @@ export class MaxTurnsExceededError extends AgentsError {}
  * Error thrown when a model behavior is unexpected.
  */
 export class ModelBehaviorError extends AgentsError {}
+
+/**
+ * Error thrown when a model produces invalid tool input.
+ */
+export class InvalidToolInputError extends ModelBehaviorError {
+  /** The original error thrown during validation, if any. */
+  originalError?: unknown;
+
+  /** The invalid tool input produced by the model. */
+  toolInput?: string;
+
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+
+  /** The details of the tool call made by the model. */
+  toolCallDetails?: { toolCall: protocol.FunctionCallItem };
+
+  constructor(
+    message: string,
+    state?: RunState<any, Agent<any, any>>,
+    originalError?: unknown,
+    toolInput?: string,
+    runContext?: RunContext<any>,
+    toolCallDetails?: { toolCall: protocol.FunctionCallItem },
+  ) {
+    super(message, state);
+    this.originalError = originalError;
+    this.toolInput = toolInput;
+    this.runContext = runContext;
+    this.toolCallDetails = toolCallDetails;
+  }
+}
 
 /**
  * Error thrown when the error is caused by the library user's misconfiguration.
