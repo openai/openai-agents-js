@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-Expose raw input and validation error in tool parsing failures via new InvalidToolInputError class, enabling self-healing implementations
+fix: #799 Expose raw input and validation error in tool parsing failures
