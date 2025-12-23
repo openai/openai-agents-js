@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.3.8
+
+### Patch Changes
+
+- 5d9b751: fix: #799 Expose raw input and validation error in tool parsing failures
+- a0fc1dc: feat: #794 Expose `ToolInputParameters` and `ToolOptions` from the top-level exports so wrappers can import the tool types
+
 ## 0.3.7
 
 ### Patch Changes
