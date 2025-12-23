@@ -155,6 +155,176 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('merges reasoning into assistant tool-call message for DeepSeek thinking mode (deepseek-reasoner)', () => {
+    const deepseekModel = {
+      ...stubModel({}),
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-reasoner',
+    } as any;
+    const items: protocol.ModelItem[] = [
+      { type: 'reasoning', content: [{ text: 'thinking' }] } as any,
+      {
+        type: 'function_call',
+        callId: '1',
+        name: 'foo',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: '1',
+        name: 'foo',
+        output: { type: 'text', text: 'out' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(deepseekModel, items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'thinking', providerOptions: {} },
+          {
+            type: 'tool-call',
+            toolCallId: '1',
+            toolName: 'foo',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: '1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'out' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('does not merge reasoning into tool-call message for DeepSeek without thinking mode', () => {
+    const deepseekModel = {
+      ...stubModel({}),
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+    } as any;
+    const items: protocol.ModelItem[] = [
+      { type: 'reasoning', content: [{ text: 'thinking' }] } as any,
+      {
+        type: 'function_call',
+        callId: '1',
+        name: 'foo',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: '1',
+        name: 'foo',
+        output: { type: 'text', text: 'out' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(deepseekModel, items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', text: 'thinking', providerOptions: {} }],
+        providerOptions: {},
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: '1',
+            toolName: 'foo',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: '1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'out' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('merges reasoning into tool-call message for DeepSeek thinking mode (providerOptions)', () => {
+    const deepseekModel = {
+      ...stubModel({}),
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+    } as any;
+    const items: protocol.ModelItem[] = [
+      { type: 'reasoning', content: [{ text: 'thinking' }] } as any,
+      {
+        type: 'function_call',
+        callId: '1',
+        name: 'foo',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: '1',
+        name: 'foo',
+        output: { type: 'text', text: 'out' },
+      } as any,
+    ];
+
+    const providerData = {
+      providerOptions: { deepseek: { thinking: { type: 'enabled' } } },
+    };
+
+    const msgs = itemsToLanguageV2Messages(deepseekModel, items, providerData);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'thinking', providerOptions: {} },
+          {
+            type: 'tool-call',
+            toolCallId: '1',
+            toolName: 'foo',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: '1',
+            toolName: 'foo',
+            output: { type: 'text', value: 'out' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('throws on built-in tool calls', () => {
     const items: protocol.ModelItem[] = [
       { type: 'hosted_tool_call', name: 'search' } as any,
