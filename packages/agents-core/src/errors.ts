@@ -38,34 +38,36 @@ export class MaxTurnsExceededError extends AgentsError {}
 export class ModelBehaviorError extends AgentsError {}
 
 /**
+ * Context from tool invocation that failed validation.
+ */
+export type ToolInvocationErrorContext = {
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+  /** The invalid tool input produced by the model. */
+  input?: string;
+  /** The details of the tool call made by the model. */
+  details?: { toolCall: protocol.FunctionCallItem };
+};
+
+/**
  * Error thrown when a model produces invalid tool input.
  */
 export class InvalidToolInputError extends ModelBehaviorError {
   /** The original error thrown during validation, if any. */
   originalError?: unknown;
 
-  /** The invalid tool input produced by the model. */
-  toolInput?: string;
-
-  /** The run context at the time of the error. */
-  runContext?: RunContext<any>;
-
-  /** The details of the tool call made by the model. */
-  toolCallDetails?: { toolCall: protocol.FunctionCallItem };
+  /** Context from the tool invocation that failed. */
+  toolInvocation?: ToolInvocationErrorContext;
 
   constructor(
     message: string,
     state?: RunState<any, Agent<any, any>>,
     originalError?: unknown,
-    toolInput?: string,
-    runContext?: RunContext<any>,
-    toolCallDetails?: { toolCall: protocol.FunctionCallItem },
+    toolInvocation?: ToolInvocationErrorContext,
   ) {
     super(message, state);
     this.originalError = originalError;
-    this.toolInput = toolInput;
-    this.runContext = runContext;
-    this.toolCallDetails = toolCallDetails;
+    this.toolInvocation = toolInvocation;
   }
 }
 

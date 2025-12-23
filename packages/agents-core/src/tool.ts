@@ -1037,9 +1037,7 @@ export function tool<
         'Invalid JSON input for tool',
         undefined, // no RunState available in this context
         error,
-        input,
-        runContext,
-        details,
+        { runContext, input, details },
       );
     }
 
