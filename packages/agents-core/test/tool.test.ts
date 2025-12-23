@@ -262,6 +262,73 @@ describe('tool.invoke', () => {
     expect(res).toBe('bad');
   });
 
+  it('throws InvalidToolInputError with context on malformed JSON', async () => {
+    const t = tool({
+      name: 'test',
+      description: 'test',
+      parameters: z.object({ foo: z.string() }),
+      execute: async () => 'ok',
+      errorFunction: null, // disable error handling to let the error propagate
+    });
+    const ctx = new RunContext();
+    const malformedInput = '{invalid json}';
+
+    await expect(t.invoke(ctx, malformedInput)).rejects.toMatchObject({
+      message: 'Invalid JSON input for tool',
+      toolInvocation: {
+        runContext: ctx,
+        input: malformedInput,
+      },
+    });
+  });
+
+  it('throws InvalidToolInputError with context on Zod validation failure', async () => {
+    const t = tool({
+      name: 'test',
+      description: 'test',
+      parameters: z.object({ age: z.number() }),
+      execute: async () => 'ok',
+      errorFunction: null,
+    });
+    const ctx = new RunContext();
+    const invalidInput = '{"age": "not a number"}';
+
+    await expect(t.invoke(ctx, invalidInput)).rejects.toMatchObject({
+      message: 'Invalid JSON input for tool',
+      toolInvocation: {
+        runContext: ctx,
+        input: invalidInput,
+      },
+    });
+  });
+
+  it('errorFunction receives InvalidToolInputError with originalError and toolInvocation', async () => {
+    let capturedError: unknown;
+    const t = tool({
+      name: 'test',
+      description: 'test',
+      parameters: z.object({ count: z.number() }),
+      execute: async () => 'ok',
+      errorFunction: (_ctx, error) => {
+        capturedError = error;
+        return 'handled';
+      },
+    });
+    const ctx = new RunContext();
+    const invalidInput = '{"count": "not a number"}';
+
+    const res = await t.invoke(ctx, invalidInput);
+    expect(res).toBe('handled');
+    expect(capturedError).toMatchObject({
+      message: 'Invalid JSON input for tool',
+      toolInvocation: {
+        runContext: ctx,
+        input: invalidInput,
+      },
+    });
+    expect((capturedError as any).originalError).toBeDefined();
+  });
+
   it('needsApproval boolean becomes function', async () => {
     const t = tool({
       name: 'appr',

@@ -14,7 +14,7 @@ import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
 import { RunContext } from './runContext';
 import type { RunResult } from './result';
-import { ModelBehaviorError, UserError } from './errors';
+import { InvalidToolInputError, UserError } from './errors';
 import logger from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -1030,7 +1030,15 @@ export function tool<
       } else {
         logger.debug(`Invalid JSON input for tool ${name}: ${input}`);
       }
-      throw new ModelBehaviorError('Invalid JSON input for tool');
+
+      // supply the same context as options.execute for consuming
+      // downstream code to implement self-healing and/or tracing
+      throw new InvalidToolInputError(
+        'Invalid JSON input for tool',
+        undefined, // no RunState available in this context
+        error,
+        { runContext, input, details },
+      );
     }
 
     if (logger.dontLogToolData) {
