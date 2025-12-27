@@ -23,7 +23,7 @@ const mathGuardrail: InputGuardrail = {
     const result = await run(guardrailAgent, input, { context });
     return {
       outputInfo: result.finalOutput,
-      tripwireTriggered: result.finalOutput?.isMathHomework ?? false,
+      tripwireTriggered: result.finalOutput?.isMathHomework === false,
     };
   },
 };
