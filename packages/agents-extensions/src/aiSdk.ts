@@ -760,19 +760,17 @@ export class AiSdkModel implements Model {
         const response = {
           responseId: (result as any).response?.id ?? 'FAKE_ID',
           usage: new Usage({
-            inputTokens: Number.isNaN((result as any).usage?.inputTokens)
-              ? 0
-              : ((result as any).usage?.inputTokens ?? 0),
-            outputTokens: Number.isNaN((result as any).usage?.outputTokens)
-              ? 0
-              : ((result as any).usage?.outputTokens ?? 0),
+            inputTokens: extractTokenCount(
+              (result as any).usage,
+              'inputTokens',
+            ),
+            outputTokens: extractTokenCount(
+              (result as any).usage,
+              'outputTokens',
+            ),
             totalTokens:
-              (Number.isNaN((result as any).usage?.inputTokens)
-                ? 0
-                : ((result as any).usage?.inputTokens ?? 0)) +
-                (Number.isNaN((result as any).usage?.outputTokens)
-                  ? 0
-                  : ((result as any).usage?.outputTokens ?? 0)) || 0,
+              extractTokenCount((result as any).usage, 'inputTokens') +
+                extractTokenCount((result as any).usage, 'outputTokens') || 0,
           }),
           output,
           providerData: result,
@@ -1008,14 +1006,14 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'finish': {
-            usagePromptTokens = Number.isNaN((part as any).usage?.inputTokens)
-              ? 0
-              : ((part as any).usage?.inputTokens ?? 0);
-            usageCompletionTokens = Number.isNaN(
-              (part as any).usage?.outputTokens,
-            )
-              ? 0
-              : ((part as any).usage?.outputTokens ?? 0);
+            usagePromptTokens = extractTokenCount(
+              (part as any).usage,
+              'inputTokens',
+            );
+            usageCompletionTokens = extractTokenCount(
+              (part as any).usage,
+              'outputTokens',
+            );
             break;
           }
           case 'error': {
@@ -1166,6 +1164,22 @@ export class AiSdkModel implements Model {
  */
 export function aisdk(model: LanguageModelV2) {
   return new AiSdkModel(model);
+}
+
+function extractTokenCount(usage: any, key: string): number {
+  const val = usage?.[key];
+  if (typeof val === 'number') {
+    return Number.isNaN(val) ? 0 : val;
+  }
+  // Handle Google AI SDK object format ({ total: number, ... })
+  if (
+    typeof val === 'object' &&
+    val !== null &&
+    typeof val.total === 'number'
+  ) {
+    return val.total;
+  }
+  return 0;
 }
 
 export function parseArguments(args: string | undefined | null): any {
