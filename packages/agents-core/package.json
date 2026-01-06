@@ -67,7 +67,7 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "@modelcontextprotocol/sdk": "^1.24.0"
+    "@modelcontextprotocol/sdk": "^1.25.1"
   },
   "dependencies": {
     "debug": "^4.4.0",
