@@ -99,12 +99,13 @@ export class OpenAIChatCompletionsModel implements Model {
           ],
         });
       }
-      if (
+      const hasContent =
         message.content !== undefined &&
         message.content !== null &&
         // Azure OpenAI returns empty string instead of null for tool calls, causing parser rejection
-        !(message.tool_calls && message.content === '')
-      ) {
+        !(message.tool_calls && message.content === '');
+
+      if (hasContent) {
         const { content, ...rest } = message;
         output.push({
           id: response.id,
@@ -149,7 +150,9 @@ export class OpenAIChatCompletionsModel implements Model {
           ],
           status: 'completed',
         });
-      } else if (message.tool_calls) {
+      }
+
+      if (message.tool_calls) {
         for (const tool_call of message.tool_calls) {
           if (tool_call.type === 'function') {
             // Note: custom tools are not supported for now
