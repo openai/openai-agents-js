@@ -79,6 +79,25 @@ import {
   isSerializedBufferSnapshot,
 } from './utils/smartString';
 
+const isAbortError = (error: unknown): boolean => {
+  if (!error) {
+    return false;
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return true;
+  }
+  const DomExceptionCtor =
+    typeof DOMException !== 'undefined' ? DOMException : undefined;
+  if (
+    DomExceptionCtor &&
+    error instanceof DomExceptionCtor &&
+    error.name === 'AbortError'
+  ) {
+    return true;
+  }
+  return false;
+};
+
 // --------------------------------------------------------------
 //  Configuration
 // --------------------------------------------------------------
@@ -1174,47 +1193,54 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           handedInputToModel = true;
           await persistStreamInputIfNeeded();
 
-          for await (const event of preparedCall.model.getStreamedResponse({
-            systemInstructions: preparedCall.modelInput.instructions,
-            prompt: preparedCall.prompt,
-            // Streaming requests should also honor explicitly chosen models.
-            ...(preparedCall.explictlyModelSet
-              ? { overridePromptModel: true }
-              : {}),
-            input: preparedCall.modelInput.input,
-            previousResponseId: preparedCall.previousResponseId,
-            conversationId: preparedCall.conversationId,
-            modelSettings: preparedCall.modelSettings,
-            tools: preparedCall.serializedTools,
-            toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-            handoffs: preparedCall.serializedHandoffs,
-            outputType: convertAgentOutputTypeToSerializable(
-              currentAgent.outputType,
-            ),
-            tracing: getTracing(
-              this.config.tracingDisabled,
-              this.config.traceIncludeSensitiveData,
-            ),
-            signal: options.signal,
-          })) {
-            if (guardrailError) {
-              throw guardrailError;
+          try {
+            for await (const event of preparedCall.model.getStreamedResponse({
+              systemInstructions: preparedCall.modelInput.instructions,
+              prompt: preparedCall.prompt,
+              // Streaming requests should also honor explicitly chosen models.
+              ...(preparedCall.explictlyModelSet
+                ? { overridePromptModel: true }
+                : {}),
+              input: preparedCall.modelInput.input,
+              previousResponseId: preparedCall.previousResponseId,
+              conversationId: preparedCall.conversationId,
+              modelSettings: preparedCall.modelSettings,
+              tools: preparedCall.serializedTools,
+              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+              handoffs: preparedCall.serializedHandoffs,
+              outputType: convertAgentOutputTypeToSerializable(
+                currentAgent.outputType,
+              ),
+              tracing: getTracing(
+                this.config.tracingDisabled,
+                this.config.traceIncludeSensitiveData,
+              ),
+              signal: options.signal,
+            })) {
+              if (guardrailError) {
+                throw guardrailError;
+              }
+              if (event.type === 'response_done') {
+                const parsed = StreamEventResponseCompleted.parse(event);
+                finalResponse = {
+                  usage: new Usage(parsed.response.usage),
+                  output: parsed.response.output,
+                  responseId: parsed.response.id,
+                };
+                result.state._context.usage.add(finalResponse.usage);
+              }
+              if (result.cancelled) {
+                // When the user's code exits a loop to consume the stream, we need to break
+                // this loop to prevent internal false errors and unnecessary processing
+                return;
+              }
+              result._addItem(new RunRawModelStreamEvent(event));
             }
-            if (event.type === 'response_done') {
-              const parsed = StreamEventResponseCompleted.parse(event);
-              finalResponse = {
-                usage: new Usage(parsed.response.usage),
-                output: parsed.response.output,
-                responseId: parsed.response.id,
-              };
-              result.state._context.usage.add(finalResponse.usage);
-            }
-            if (result.cancelled) {
-              // When the user's code exits a loop to consume the stream, we need to break
-              // this loop to prevent internal false errors and unnecessary processing
+          } catch (error) {
+            if (isAbortError(error)) {
               return;
             }
-            result._addItem(new RunRawModelStreamEvent(event));
+            throw error;
           }
 
           if (parallelGuardrailPromise) {
@@ -1397,14 +1423,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         signal: options.signal,
         state,
       });
+      const streamOptions: StreamRunOptions<TContext> = {
+        ...options,
+        signal: result._getAbortSignal(),
+      };
 
       // Setup defaults
-      result.maxTurns = options.maxTurns ?? state._maxTurns;
+      result.maxTurns = streamOptions.maxTurns ?? state._maxTurns;
 
       // Continue the stream loop without blocking
       const streamLoopPromise = this.#runStreamLoop(
         result,
-        options,
+        streamOptions,
         isResumedState,
         ensureStreamInputPersisted,
         sessionInputUpdate,
