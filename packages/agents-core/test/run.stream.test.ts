@@ -510,7 +510,8 @@ describe('Runner.run (streaming)', () => {
     });
 
     const result = await run(agent, 'go', { stream: true });
-    const reader = result.toStream().getReader();
+    const stream = result.toStream() as any;
+    const reader = stream.getReader();
 
     const first = await reader.read();
     expect(first.done).toBe(false);
