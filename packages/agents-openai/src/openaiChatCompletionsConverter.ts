@@ -179,7 +179,11 @@ export function itemsToMessages(
   };
   const ensureAssistantMessage = () => {
     if (!currentAssistantMsg) {
-      currentAssistantMsg = { role: 'assistant', tool_calls: [] };
+      currentAssistantMsg = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [],
+      };
     }
     return currentAssistantMsg;
   };

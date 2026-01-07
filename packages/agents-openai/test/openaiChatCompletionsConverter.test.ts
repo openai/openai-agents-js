@@ -297,6 +297,7 @@ describe('itemsToMessages', () => {
     expect(msgs).toEqual([
       {
         role: 'assistant',
+        content: null,
         tool_calls: [
           {
             id: 'call1',
@@ -335,6 +336,24 @@ describe('itemsToMessages', () => {
     expect(() => itemsToMessages(bad)).toThrow(UserError);
   });
 
+  test('includes explicit null content for assistant tool calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    const toolMsg = msgs[0] as any;
+    expect(toolMsg.role).toBe('assistant');
+    expect(toolMsg).toHaveProperty('content', null);
+  });
+
   test('converts reasoning items into assistant reasoning', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -347,6 +366,7 @@ describe('itemsToMessages', () => {
     expect(msgs).toEqual([
       {
         role: 'assistant',
+        content: null,
         reasoning: 'why',
       },
     ]);
