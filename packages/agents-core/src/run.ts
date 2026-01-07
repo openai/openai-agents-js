@@ -65,6 +65,7 @@ import {
   withTrace,
 } from './tracing/context';
 import { createAgentSpan, withGuardrailSpan } from './tracing';
+import type { TracingConfig } from './tracing';
 import { Usage } from './usage';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import { RunState } from './runState';
@@ -156,6 +157,11 @@ export type RunConfig = {
   traceMetadata?: Record<string, string>;
 
   /**
+   * Tracing configuration for this run. Use this to override the API key used when exporting traces.
+   */
+  tracing?: TracingConfig;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -180,6 +186,7 @@ type SharedRunOptions<TContext = undefined> = {
   session?: Session;
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
+  tracing?: TracingConfig;
 };
 
 /**
@@ -273,6 +280,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       traceId: config.traceId,
       groupId: config.groupId,
       traceMetadata: config.traceMetadata,
+      tracing: config.tracing,
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
     };
@@ -334,6 +342,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const callModelInputFilter =
       resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
+    const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const effectiveOptions = {
       ...resolvedOptions,
       sessionInputCallback,
@@ -595,6 +604,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       name: this.config.workflowName,
       groupId: this.config.groupId,
       metadata: this.config.traceMetadata,
+      // Per-run tracing config overrides exporter defaults such as environment API key.
+      tracingApiKey: tracingConfig?.apiKey,
     });
   }
 

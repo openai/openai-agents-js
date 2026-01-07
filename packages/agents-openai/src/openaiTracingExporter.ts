@@ -43,72 +43,88 @@ export class OpenAITracingExporter implements TracingExporter {
     items: (Trace | Span<any>)[],
     signal?: AbortSignal,
   ): Promise<void> {
-    const apiKey = this.#options.apiKey ?? getTracingExportApiKey();
-    if (!apiKey) {
-      logger.error(
-        'No API key provided for OpenAI tracing exporter. Exports will be skipped',
-      );
-      return;
+    const defaultApiKey = this.#options.apiKey ?? getTracingExportApiKey();
+    const itemsByKey = new Map<string | undefined, (Trace | Span<any>)[]>();
+
+    for (const item of items) {
+      const mapKey = (item as Trace & { tracingApiKey?: string }).tracingApiKey;
+      const list = itemsByKey.get(mapKey) ?? [];
+      list.push(item);
+      itemsByKey.set(mapKey, list);
     }
 
-    const payload = {
-      data: items.map((items) => items.toJSON()).filter((item) => !!item),
-    };
-
-    let attempts = 0;
-    let delay = this.#options.baseDelay;
-
-    while (attempts < this.#options.maxRetries) {
-      try {
-        const response = await fetch(this.#options.endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-            'OpenAI-Beta': 'traces=v1',
-            ...HEADERS,
-          },
-          body: JSON.stringify(payload),
-          signal,
-        });
-
-        if (response.ok) {
-          logger.debug(`Exported ${payload.data.length} items`);
-          return;
-        }
-
-        if (response.status >= 400 && response.status < 500) {
-          logger.error(
-            `[non-fatal] Tracing client error ${
-              response.status
-            }: ${await response.text()}`,
-          );
-          return;
-        }
-
-        logger.warn(
-          `[non-fatal] Tracing: server error ${response.status}, retrying.`,
+    for (const [key, groupedItems] of itemsByKey.entries()) {
+      // Item-level key wins; fall back to exporter config or environment.
+      const apiKey = key ?? defaultApiKey;
+      if (!apiKey) {
+        logger.error(
+          'No API key provided for OpenAI tracing exporter. Exports will be skipped',
         );
-      } catch (error: any) {
-        logger.error('[non-fatal] Tracing: request failed: ', error);
+        continue;
       }
 
-      if (signal?.aborted) {
-        logger.error('Tracing: request aborted');
-        return;
+      const payloadItems = groupedItems
+        .map((entry) => entry.toJSON())
+        .filter((item) => !!item);
+      const payload = { data: payloadItems };
+
+      let attempts = 0;
+      let delay = this.#options.baseDelay;
+
+      while (attempts < this.#options.maxRetries) {
+        try {
+          const response = await fetch(this.#options.endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              'OpenAI-Beta': 'traces=v1',
+              ...HEADERS,
+            },
+            body: JSON.stringify(payload),
+            signal,
+          });
+
+          if (response.ok) {
+            logger.debug(`Exported ${payload.data.length} items`);
+            break;
+          }
+
+          if (response.status >= 400 && response.status < 500) {
+            logger.error(
+              `[non-fatal] Tracing client error ${
+                response.status
+              }: ${await response.text()}`,
+            );
+            break;
+          }
+
+          logger.warn(
+            `[non-fatal] Tracing: server error ${response.status}, retrying.`,
+          );
+        } catch (error: any) {
+          logger.error('[non-fatal] Tracing: request failed: ', error);
+        }
+
+        if (signal?.aborted) {
+          logger.error('Tracing: request aborted');
+          break;
+        }
+
+        const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        await new Promise((resolve) => setTimeout(resolve, sleepTime));
+        delay = Math.min(delay * 2, this.#options.maxDelay);
+        attempts++;
       }
 
-      const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
-      await new Promise((resolve) => setTimeout(resolve, sleepTime));
-      delay = Math.min(delay * 2, this.#options.maxDelay);
-      attempts++;
+      if (attempts >= this.#options.maxRetries) {
+        logger.error(
+          `Tracing: failed to export traces after ${
+            this.#options.maxRetries
+          } attempts`,
+        );
+      }
     }
-
-    logger.error(
-      `Tracing: failed to export traces after ${
-        this.#options.maxRetries
-      } attempts`,
-    );
   }
 }
 

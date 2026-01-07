@@ -91,11 +91,85 @@ describe('OpenAITracingExporter', () => {
 
   it('stops on client error', async () => {
     const item = fakeSpan;
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'bad' });
     vi.stubGlobal('fetch', fetchMock);
-    const exporter = new OpenAITracingExporter({ apiKey: 'key3', endpoint: 'u', maxRetries: 2 });
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses item-level API keys when exporting', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'default-key',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 1,
+      maxDelay: 2,
+    });
+
+    const items = [
+      { tracingApiKey: 'key-a', toJSON: () => ({ id: 'a' }) },
+      { tracingApiKey: undefined, toJSON: () => ({ id: 'b' }) },
+      { tracingApiKey: 'key-b', toJSON: () => ({ id: 'c' }) },
+    ] as any;
+
+    await exporter.export(items);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const authHeaders = fetchMock.mock.calls.map(
+      ([, opts]) => (opts as any).headers.Authorization,
+    );
+    expect(authHeaders).toEqual(
+      expect.arrayContaining([
+        'Bearer key-a',
+        'Bearer default-key',
+        'Bearer key-b',
+      ]),
+    );
+  });
+
+  it('groups items by api key', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'default-key',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 1,
+      maxDelay: 2,
+    });
+
+    const items = [
+      { tracingApiKey: 'key-a', toJSON: () => ({ id: 'a' }) },
+      { tracingApiKey: 'key-a', toJSON: () => ({ id: 'b' }) },
+      { tracingApiKey: undefined, toJSON: () => ({ id: 'c' }) },
+    ] as any;
+
+    await exporter.export(items);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstCall = fetchMock.mock.calls.find(
+      ([, opts]) => (opts as any).headers.Authorization === 'Bearer key-a',
+    );
+    const defaultCall = fetchMock.mock.calls.find(
+      ([, opts]) =>
+        (opts as any).headers.Authorization === 'Bearer default-key',
+    );
+
+    expect(firstCall).toBeDefined();
+    expect(JSON.parse(firstCall![1].body as string).data).toHaveLength(2);
+    expect(defaultCall).toBeDefined();
+    expect(JSON.parse(defaultCall![1].body as string).data).toHaveLength(1);
   });
 
   it('setDefaultOpenAITracingExporter registers processor', async () => {
