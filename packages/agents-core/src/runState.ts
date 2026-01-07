@@ -31,6 +31,10 @@ import { handoff } from './handoff';
 import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
+import type {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
 import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
 
@@ -217,6 +221,25 @@ const guardrailFunctionOutputSchema = z.object({
   outputInfo: z.any(),
 });
 
+const toolGuardrailBehaviorSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('allow') }),
+  z.object({
+    type: z.literal('rejectContent'),
+    message: z.string(),
+  }),
+  z.object({ type: z.literal('throwException') }),
+]);
+
+const toolGuardrailFunctionOutputSchema = z.object({
+  outputInfo: z.any().optional(),
+  behavior: toolGuardrailBehaviorSchema,
+});
+
+const toolGuardrailMetadataSchema = z.object({
+  type: z.union([z.literal('tool_input'), z.literal('tool_output')]),
+  name: z.string(),
+});
+
 const inputGuardrailResultSchema = z.object({
   guardrail: z.object({
     type: z.literal('input'),
@@ -233,6 +256,20 @@ const outputGuardrailResultSchema = z.object({
   agentOutput: z.any(),
   agent: serializedAgentSchema,
   output: guardrailFunctionOutputSchema,
+});
+
+const toolInputGuardrailResultSchema = z.object({
+  guardrail: toolGuardrailMetadataSchema.extend({
+    type: z.literal('tool_input'),
+  }),
+  output: toolGuardrailFunctionOutputSchema,
+});
+
+const toolOutputGuardrailResultSchema = z.object({
+  guardrail: toolGuardrailMetadataSchema.extend({
+    type: z.literal('tool_output'),
+  }),
+  output: toolGuardrailFunctionOutputSchema,
 });
 
 export const SerializedRunState = z.object({
@@ -258,6 +295,14 @@ export const SerializedRunState = z.object({
   noActiveAgentRun: z.boolean(),
   inputGuardrailResults: z.array(inputGuardrailResultSchema),
   outputGuardrailResults: z.array(outputGuardrailResultSchema),
+  toolInputGuardrailResults: z
+    .array(toolInputGuardrailResultSchema)
+    .optional()
+    .default([]),
+  toolOutputGuardrailResults: z
+    .array(toolOutputGuardrailResultSchema)
+    .optional()
+    .default([]),
   currentStep: nextStepSchema.optional(),
   lastModelResponse: modelResponseSchema.optional(),
   generatedItems: z.array(itemSchema),
@@ -346,6 +391,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _outputGuardrailResults: OutputGuardrailResult[];
   /**
+   * Results from tool input guardrails applied during tool execution.
+   */
+  public _toolInputGuardrailResults: ToolInputGuardrailResult[];
+  /**
+   * Results from tool output guardrails applied during tool execution.
+   */
+  public _toolOutputGuardrailResults: ToolOutputGuardrailResult[];
+  /**
    * Next step computed for the agent to take.
    */
   public _currentStep: NextStep | undefined = undefined;
@@ -376,6 +429,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
     this._outputGuardrailResults = [];
+    this._toolInputGuardrailResults = [];
+    this._toolOutputGuardrailResults = [];
     this._trace = getCurrentTrace();
   }
 
@@ -492,6 +547,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         ...r,
         agent: r.agent.toJSON(),
       })),
+      toolInputGuardrailResults: this._toolInputGuardrailResults,
+      toolOutputGuardrailResults: this._toolOutputGuardrailResults,
       currentStep: this._currentStep as any,
       lastModelResponse: this._lastTurnResponse as any,
       generatedItems: this._generatedItems.map((item) => item.toJSON() as any),
@@ -618,6 +675,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         agent: agentMap.get(r.agent.name) as Agent<any, any>,
       }),
     ) as OutputGuardrailResult[];
+    state._toolInputGuardrailResults =
+      stateJson.toolInputGuardrailResults as ToolInputGuardrailResult[];
+    state._toolOutputGuardrailResults =
+      stateJson.toolOutputGuardrailResults as ToolOutputGuardrailResult[];
 
     state._currentStep = stateJson.currentStep;
 

@@ -40,6 +40,8 @@ describe('RunState', () => {
     expect(state._currentStep).toBeUndefined();
     expect(state._trace).toBeNull();
     expect(state._context.context).toEqual({ foo: 'bar' });
+    expect(state._toolInputGuardrailResults).toEqual([]);
+    expect(state._toolOutputGuardrailResults).toEqual([]);
   });
 
   it('returns history including original input and generated items', () => {
@@ -214,6 +216,24 @@ describe('RunState', () => {
         output: { tripwireTriggered: true, outputInfo: { done: true } },
       },
     ];
+    state._toolInputGuardrailResults = [
+      {
+        guardrail: { type: 'tool_input', name: 'tig' },
+        output: {
+          behavior: { type: 'rejectContent', message: 'nope' },
+          outputInfo: { a: 1 },
+        },
+      },
+    ];
+    state._toolOutputGuardrailResults = [
+      {
+        guardrail: { type: 'tool_output', name: 'tog' },
+        output: {
+          behavior: { type: 'allow' },
+          outputInfo: { b: 2 },
+        },
+      },
+    ];
 
     const str = state.toString();
     const newState = await RunState.fromString(agentA, str);
@@ -231,6 +251,12 @@ describe('RunState', () => {
       tripwireTriggered: true,
       outputInfo: { done: true },
     });
+    expect(newState._toolInputGuardrailResults).toEqual(
+      state._toolInputGuardrailResults,
+    );
+    expect(newState._toolOutputGuardrailResults).toEqual(
+      state._toolOutputGuardrailResults,
+    );
   });
 
   it('buildAgentMap collects agents without looping', () => {

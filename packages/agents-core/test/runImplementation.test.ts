@@ -48,7 +48,13 @@ import {
   resolveComputer,
 } from '../src/tool';
 import { handoff } from '../src/handoff';
-import { ModelBehaviorError, UserError } from '../src/errors';
+import {
+  ModelBehaviorError,
+  ToolCallError,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
+  UserError,
+} from '../src/errors';
 import { Computer } from '../src/computer';
 import { RequestUsage, Usage } from '../src/usage';
 import { setTracingDisabled, withTrace } from '../src';
@@ -75,6 +81,11 @@ import type {
   Session,
 } from '../src/memory/session';
 import type { AgentInputItem } from '../src/types';
+import {
+  ToolGuardrailFunctionOutputFactory,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+} from '../src/toolGuardrail';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -2093,6 +2104,223 @@ describe('executeFunctionToolCalls', () => {
       expect.stringContaining(errorMessage),
       { toolCall },
     );
+  });
+
+  it('skips tool execution when input guardrail rejects content', async () => {
+    const guardrail = defineToolInputGuardrail({
+      name: 'block',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent(
+          'blocked by guardrail',
+        ),
+    });
+    const t = tool({
+      name: 'guarded_tool',
+      description: 'tool with input guardrail',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'should-not-run'),
+      inputGuardrails: [guardrail],
+    }) as unknown as FunctionTool;
+    const invokeSpy = vi.spyOn(t, 'invoke');
+
+    const res = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ),
+    );
+
+    const first = res[0];
+    expect(first.type).toBe('function_output');
+    if (first.type === 'function_output') {
+      expect(first.output).toBe('blocked by guardrail');
+    }
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(state._toolInputGuardrailResults).toHaveLength(1);
+    expect(state._toolOutputGuardrailResults).toHaveLength(0);
+  });
+
+  it('throws when output guardrail requests exception', async () => {
+    const guardrail = defineToolOutputGuardrail({
+      name: 'halt',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const t = tool({
+      name: 'output_guarded_tool',
+      description: 'tool with output guardrail',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'raw'),
+      outputGuardrails: [guardrail],
+    }) as unknown as FunctionTool;
+    const invokeSpy = vi.spyOn(t, 'invoke');
+
+    const error = (await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ).catch((e) => e),
+    )) as unknown;
+
+    expect(error).toBeInstanceOf(ToolCallError);
+    if (error instanceof ToolCallError) {
+      expect(error.error).toBeInstanceOf(ToolOutputGuardrailTripwireTriggered);
+    }
+
+    expect(invokeSpy).toHaveBeenCalled();
+    expect(state._toolOutputGuardrailResults).toHaveLength(1);
+  });
+
+  it('supports inputGuardrails/outputGuardrails without define helpers', async () => {
+    const t = tool({
+      name: 'guardrails_no_define',
+      description: 'tool with inline guardrails',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'ok'),
+      inputGuardrails: [
+        {
+          name: 'inline_block',
+          run: async () =>
+            ToolGuardrailFunctionOutputFactory.rejectContent('blocked inline'),
+        },
+      ],
+      outputGuardrails: [
+        {
+          name: 'inline_out',
+          run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+        },
+      ],
+    }) as unknown as FunctionTool;
+
+    const res = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ),
+    );
+
+    const first = res[0];
+    expect(first.type).toBe('function_output');
+    if (first.type === 'function_output') {
+      expect(first.output).toBe('blocked inline');
+    }
+    expect(state._toolInputGuardrailResults).toHaveLength(1);
+    expect(state._toolOutputGuardrailResults).toHaveLength(0);
+  });
+
+  it('wraps input guardrail throwException in ToolCallError with tripwire detail', async () => {
+    const guardrail = defineToolInputGuardrail({
+      name: 'trip',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const t = tool({
+      name: 'input_trip_tool',
+      description: 'tool with throwing input guardrail',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'never'),
+      inputGuardrails: [guardrail],
+    }) as unknown as FunctionTool;
+
+    const error = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ).catch((e) => e),
+    );
+
+    expect(error).toBeInstanceOf(ToolCallError);
+    if (error instanceof ToolCallError) {
+      expect(error.error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
+    }
+    expect(state._toolInputGuardrailResults).toHaveLength(1);
+    expect(vi.spyOn(t, 'invoke')).not.toHaveBeenCalled();
+  });
+
+  it('stops evaluating further input guardrails after rejectContent', async () => {
+    const first = defineToolInputGuardrail({
+      name: 'rejector',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('blocked'),
+    });
+    const secondRun = vi.fn();
+    const second = defineToolInputGuardrail({
+      name: 'should_not_run',
+      run: async (...args) => {
+        secondRun(...args);
+        return ToolGuardrailFunctionOutputFactory.allow();
+      },
+    });
+    const t = tool({
+      name: 'multi_input_guardrail_tool',
+      description: 'tool with multiple input guardrails',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'should-not-run'),
+      inputGuardrails: [first, second],
+    }) as unknown as FunctionTool;
+
+    const res = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ),
+    );
+
+    const firstResult = res[0];
+    expect(firstResult.type).toBe('function_output');
+    if (firstResult.type === 'function_output') {
+      expect(firstResult.output).toBe('blocked');
+    }
+    expect(secondRun).not.toHaveBeenCalled();
+    expect(state._toolInputGuardrailResults).toHaveLength(1);
+  });
+
+  it('stops evaluating further output guardrails after rejectContent and returns replacement', async () => {
+    const first = defineToolOutputGuardrail({
+      name: 'replace',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('redacted'),
+    });
+    const secondRun = vi.fn();
+    const second = defineToolOutputGuardrail({
+      name: 'should_not_run',
+      run: async (...args) => {
+        secondRun(...args);
+        return ToolGuardrailFunctionOutputFactory.allow();
+      },
+    });
+    const t = tool({
+      name: 'multi_output_guardrail_tool',
+      description: 'tool with multiple output guardrails',
+      parameters: z.object({}),
+      execute: vi.fn(async () => ({ secret: true })),
+      outputGuardrails: [first, second],
+    }) as unknown as FunctionTool;
+
+    const res = await withTrace('test', () =>
+      executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+      ),
+    );
+
+    const firstResult = res[0];
+    expect(firstResult.type).toBe('function_output');
+    if (firstResult.type === 'function_output') {
+      expect(firstResult.output).toBe('redacted');
+    }
+    expect(secondRun).not.toHaveBeenCalled();
+    expect(state._toolOutputGuardrailResults).toHaveLength(1);
   });
 
   it('propagates nested run result interruptions when provided by agent tools', async () => {

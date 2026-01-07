@@ -23,6 +23,8 @@ export {
   MaxTurnsExceededError,
   ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
   ToolCallError,
   UserError,
   SystemError,
@@ -48,6 +50,24 @@ export {
   OutputGuardrailMetadata,
   OutputGuardrailResult,
 } from './guardrail';
+export {
+  ToolGuardrailBehavior,
+  ToolGuardrailFunctionOutput,
+  ToolGuardrailMetadata,
+  ToolInputGuardrailData,
+  ToolInputGuardrailDefinition,
+  ToolInputGuardrailFunction,
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailData,
+  ToolOutputGuardrailDefinition,
+  ToolOutputGuardrailFunction,
+  ToolOutputGuardrailResult,
+  ToolGuardrailFunctionOutputFactory,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  resolveToolInputGuardrails,
+  resolveToolOutputGuardrails,
+} from './toolGuardrail';
 export {
   getHandoff,
   getTransferMessage,
@@ -139,6 +159,7 @@ export {
   tool,
   ToolExecuteArgument,
   ToolEnabledFunction,
+  ToolOptionsWithGuardrails,
 } from './tool';
 export type { ToolInputParameters, ToolOptions } from './tool';
 export type {
@@ -150,6 +171,10 @@ export type {
 } from './types/protocol';
 export * from './tracing';
 export { getGlobalTraceProvider, TraceProvider } from './tracing/provider';
+export {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from './utils/toolGuardrails';
 /* only export the types not the parsers */
 export type {
   AgentInputItem,

@@ -54,6 +54,10 @@ import {
   isValidRealtimeTool,
   toRealtimeToolDefinition,
 } from './tool';
+import {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from '@openai/agents-core';
 
 /**
  * The context data for a realtime session. This is the context data that is passed to the agent.
@@ -566,6 +570,13 @@ export class RealtimeSession<
       }
     }
 
+    const inputGuardrailResult = await runToolInputGuardrails({
+      guardrails: tool.inputGuardrails,
+      context: this.#context,
+      agent: this.#currentAgent,
+      toolCall: toolCall as any,
+    });
+
     this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
       toolCall,
     });
@@ -574,16 +585,29 @@ export class RealtimeSession<
     });
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
-    const result = await tool.invoke(this.#context, toolCall.arguments, {
-      toolCall,
-    });
+    const result =
+      inputGuardrailResult.type === 'reject'
+        ? inputGuardrailResult.message
+        : await tool.invoke(this.#context, toolCall.arguments, {
+            toolCall,
+          });
+    const guardedResult =
+      inputGuardrailResult.type === 'reject'
+        ? result
+        : await runToolOutputGuardrails({
+            guardrails: tool.outputGuardrails,
+            context: this.#context,
+            agent: this.#currentAgent,
+            toolCall: toolCall as any,
+            toolOutput: result,
+          });
     let stringResult: string;
-    if (isBackgroundResult(result)) {
+    if (isBackgroundResult(guardedResult)) {
       // Don't generate a new response, just send the result
-      stringResult = toSmartString(result.content);
+      stringResult = toSmartString(guardedResult.content);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, false);
     } else {
-      stringResult = toSmartString(result);
+      stringResult = toSmartString(guardedResult);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
     }
     this.emit(

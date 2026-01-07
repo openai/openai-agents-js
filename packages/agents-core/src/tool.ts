@@ -22,6 +22,14 @@ import { toSmartString } from './utils/smartString';
 import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
 import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
+import {
+  resolveToolInputGuardrails,
+  resolveToolOutputGuardrails,
+  ToolInputGuardrailDefinition,
+  ToolOutputGuardrailDefinition,
+  ToolInputGuardrailFunction,
+  ToolOutputGuardrailFunction,
+} from './toolGuardrail';
 
 export type {
   ToolOutputText,
@@ -129,6 +137,14 @@ export type FunctionTool<
    * Determines whether the tool should be made available to the model for the current run.
    */
   isEnabled: ToolEnabledFunction<Context>;
+  /**
+   * Guardrails that run before the tool executes.
+   */
+  inputGuardrails?: ToolInputGuardrailDefinition<Context>[];
+  /**
+   * Guardrails that run after the tool executes.
+   */
+  outputGuardrails?: ToolOutputGuardrailDefinition<Context>[];
 };
 
 /**
@@ -846,6 +862,27 @@ type ToolErrorFunction = (
   error: Error | unknown,
 ) => Promise<string> | string;
 
+type ToolGuardrailOptions<Context = UnknownContext> = {
+  /**
+   * Guardrails that validate or block tool invocation before it runs.
+   */
+  inputGuardrails?:
+    | ToolInputGuardrailDefinition<Context>[]
+    | {
+        name: string;
+        run: ToolInputGuardrailFunction<Context>;
+      }[];
+  /**
+   * Guardrails that validate or alter tool output after it runs.
+   */
+  outputGuardrails?:
+    | ToolOutputGuardrailDefinition<Context>[]
+    | {
+        name: string;
+        run: ToolOutputGuardrailFunction<Context>;
+      }[];
+};
+
 /**
  * The default function to invoke when an error occurs while running the tool.
  *
@@ -868,7 +905,7 @@ function defaultToolErrorFunction(context: RunContext, error: Error | unknown) {
 type StrictToolOptions<
   TParameters extends ToolInputParametersStrict,
   Context = UnknownContext,
-> = {
+> = ToolGuardrailOptions<Context> & {
   /**
    * The name of the tool. Must be unique within the agent.
    */
@@ -922,7 +959,7 @@ type StrictToolOptions<
 type NonStrictToolOptions<
   TParameters extends ToolInputParametersNonStrict,
   Context = UnknownContext,
-> = {
+> = ToolGuardrailOptions<Context> & {
   /**
    * The name of the tool. Must be unique within the agent.
    */
@@ -980,6 +1017,11 @@ export type ToolOptions<
       Extract<TParameters, ToolInputParametersNonStrict>,
       Context
     >;
+
+export type ToolOptionsWithGuardrails<
+  TParameters extends ToolInputParameters,
+  Context = UnknownContext,
+> = ToolOptions<TParameters, Context>;
 
 /**
  * Exposes a function to the agent as a tool to be called
@@ -1108,6 +1150,8 @@ export function tool<
     invoke,
     needsApproval,
     isEnabled,
+    inputGuardrails: resolveToolInputGuardrails(options.inputGuardrails),
+    outputGuardrails: resolveToolOutputGuardrails(options.outputGuardrails),
   };
 }
 

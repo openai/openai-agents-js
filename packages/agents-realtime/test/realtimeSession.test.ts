@@ -8,6 +8,11 @@ import {
   Usage,
   ModelBehaviorError,
   RunToolApprovalItem,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  ToolGuardrailFunctionOutputFactory,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
 } from '@openai/agents-core';
 import * as utils from '../src/utils';
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
@@ -16,6 +21,8 @@ import {
   OpenAIRealtimeBase,
 } from '../src/openaiRealtimeBase';
 import { toNewSessionConfig } from '../src/clientMessages';
+import { tool } from '@openai/agents-core';
+import { z } from 'zod';
 
 function createMessage(id: string, text: string): RealtimeItem {
   return {
@@ -256,6 +263,175 @@ describe('RealtimeSession', () => {
     await vi.waitFor(() =>
       expect(errors[0].error).toBeInstanceOf(ModelBehaviorError),
     );
+  });
+
+  it('applies input tool guardrail rejectContent and skips tool execution', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolInputGuardrail({
+      name: 'rejector',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('blocked'),
+    });
+    const guardedTool = tool({
+      name: 'guarded',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'should-not-run'),
+      inputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const errors: any[] = [];
+    localSession.on('error', (e) => errors.push(e));
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded',
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() =>
+      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe('blocked');
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(errors.length).toBe(0);
+  });
+
+  it('emits error when input tool guardrail throws', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolInputGuardrail({
+      name: 'thrower',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const guardedTool = tool({
+      name: 'guarded_throw',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'never'),
+      inputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const errors: any[] = [];
+    localSession.on('error', (e) => errors.push(e));
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_throw',
+      callId: 'c2',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() => expect(errors.length).toBe(1));
+    expect(errors[0].error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
+    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('applies output tool guardrail rejectContent and replaces output', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolOutputGuardrail({
+      name: 'replace',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('redacted'),
+    });
+    const guardedTool = tool({
+      name: 'guarded_output',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => ({ secret: true })),
+      outputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_output',
+      callId: 'c3',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() =>
+      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe('redacted');
+    expect(invokeSpy).toHaveBeenCalled();
+  });
+
+  it('emits error when output tool guardrail throws', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolOutputGuardrail({
+      name: 'thrower_out',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const guardedTool = tool({
+      name: 'guarded_output_throw',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'ok'),
+      outputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const errors: any[] = [];
+    localSession.on('error', (e) => errors.push(e));
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_output_throw',
+      callId: 'c4',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() => expect(errors.length).toBe(1));
+    expect(errors[0].error).toBeInstanceOf(
+      ToolOutputGuardrailTripwireTriggered,
+    );
+    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    expect(invokeSpy).toHaveBeenCalled();
   });
 
   it('approve and reject work with tool and error without', async () => {

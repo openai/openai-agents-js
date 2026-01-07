@@ -21,6 +21,10 @@ import { RunState } from './runState';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import logger from './logger';
 import { StreamEventTextStream } from './types/protocol';
+import type {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from './toolGuardrail';
 
 /**
  * Data returned by the run() method of an agent.
@@ -67,6 +71,16 @@ export interface RunResultData<
   outputGuardrailResults: OutputGuardrailResult[];
 
   /**
+   * Guardrail results for tool inputs during the run.
+   */
+  toolInputGuardrailResults: ToolInputGuardrailResult[];
+
+  /**
+   * Guardrail results for tool outputs during the run.
+   */
+  toolOutputGuardrailResults: ToolOutputGuardrailResult[];
+
+  /**
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
@@ -84,9 +98,10 @@ export interface RunResultData<
   state: RunState<any, TAgent>;
 }
 
-class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
-  implements RunResultData<TAgent>
-{
+class RunResultBase<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> implements RunResultData<TAgent> {
   readonly state: RunState<TContext, TAgent>;
 
   constructor(state: RunState<TContext, TAgent>) {
@@ -170,6 +185,20 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
   }
 
   /**
+   * Guardrail results for tool inputs.
+   */
+  get toolInputGuardrailResults(): ToolInputGuardrailResult[] {
+    return this.state._toolInputGuardrailResults;
+  }
+
+  /**
+   * Guardrail results for tool outputs.
+   */
+  get toolOutputGuardrailResults(): ToolOutputGuardrailResult[] {
+    return this.state._toolOutputGuardrailResults;
+  }
+
+  /**
    * Any interruptions that occurred during the agent run for example for tool approvals.
    */
   get interruptions(): RunToolApprovalItem[] {
@@ -212,9 +241,9 @@ export class RunResult<
  * The result of an agent run in streaming mode.
  */
 export class StreamedRunResult<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>
   extends RunResultBase<TContext, TAgent>
   implements AsyncIterable<RunStreamEvent>
 {
