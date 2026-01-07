@@ -31,6 +31,51 @@ import {
 import { isZodObject } from '@openai/agents/utils';
 import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 
+// Minimal compatibility type to allow V3 (or future) models that follow the same shape as V2.
+type LanguageModelV3Compatible = {
+  specificationVersion: string;
+  provider: string;
+  modelId: string;
+  supportedUrls: any;
+  doGenerate: (options: any) => PromiseLike<any> | any;
+  doStream: (
+    options: any,
+  ) =>
+    | PromiseLike<{ stream: AsyncIterable<any> }>
+    | { stream: AsyncIterable<any> }
+    | any;
+};
+
+type LanguageModelCompatible = LanguageModelV2 | LanguageModelV3Compatible;
+
+function getSpecVersion(
+  model: LanguageModelCompatible,
+): 'v2' | 'v3' | 'unknown' {
+  const spec = (model as any)?.specificationVersion;
+  if (!spec) {
+    // Default to v2 for backward compatibility with older AI SDK model wrappers.
+    return 'v2';
+  }
+  if (spec === 'v2') {
+    return 'v2';
+  }
+  if (typeof spec === 'string' && spec.toLowerCase().startsWith('v3')) {
+    return 'v3';
+  }
+  return 'unknown';
+}
+
+function ensureSupportedModel(model: LanguageModelCompatible): void {
+  const spec = getSpecVersion(model);
+  if (spec === 'unknown') {
+    throw new UserError(
+      `Unsupported AI SDK specificationVersion: ${String(
+        (model as any)?.specificationVersion,
+      )}. Only v2 and v3 are supported.`,
+    );
+  }
+}
+
 /**
  * @internal
  * Converts a list of model items to a list of language model V2 messages.
@@ -40,7 +85,7 @@ import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
  * @returns The list of language model V2 messages.
  */
 export function itemsToLanguageV2Messages(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   items: protocol.ModelItem[],
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
@@ -53,9 +98,7 @@ export function itemsToLanguageV2Messages(
         messages.push({
           role: 'system',
           content: content,
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(providerData, model),
         });
         continue;
       }
@@ -72,9 +115,10 @@ export function itemsToLanguageV2Messages(
                     return {
                       type: 'text',
                       text: c.text,
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
+                      providerOptions: toProviderOptions(
+                        contentProviderData,
+                        model,
+                      ),
                     };
                   }
                   if (c.type === 'input_image') {
@@ -96,9 +140,10 @@ export function itemsToLanguageV2Messages(
                       type: 'file',
                       data: url,
                       mediaType: 'image/*',
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
+                      providerOptions: toProviderOptions(
+                        contentProviderData,
+                        model,
+                      ),
                     };
                   }
                   if (c.type === 'input_file') {
@@ -106,9 +151,7 @@ export function itemsToLanguageV2Messages(
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(providerData, model),
         });
         continue;
       }
@@ -128,14 +171,10 @@ export function itemsToLanguageV2Messages(
               return {
                 type: 'text',
                 text: c.text,
-                providerOptions: {
-                  ...(contentProviderData ?? {}),
-                },
+                providerOptions: toProviderOptions(contentProviderData, model),
               };
             }),
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(providerData, model),
         });
         continue;
       }
@@ -147,9 +186,7 @@ export function itemsToLanguageV2Messages(
         currentAssistantMessage = {
           role: 'assistant',
           content: [],
-          providerOptions: {
-            ...(item.providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(item.providerData, model),
         };
       }
 
@@ -162,9 +199,7 @@ export function itemsToLanguageV2Messages(
           toolCallId: item.callId,
           toolName: item.name,
           input: parseArguments(item.arguments),
-          providerOptions: {
-            ...(item.providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(item.providerData, model),
         };
         currentAssistantMessage.content.push(content);
       }
@@ -179,16 +214,12 @@ export function itemsToLanguageV2Messages(
         toolCallId: item.callId,
         toolName: item.name,
         output: convertToAiSdkOutput(item.output),
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       };
       messages.push({
         role: 'tool',
         content: [toolResult],
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       });
       continue;
     }
@@ -232,12 +263,10 @@ export function itemsToLanguageV2Messages(
           {
             type: 'reasoning',
             text: item.content[0].text,
-            providerOptions: { ...(item.providerData ?? {}) },
+            providerOptions: toProviderOptions(item.providerData, model),
           },
         ],
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       });
       continue;
     }
@@ -270,7 +299,7 @@ export function itemsToLanguageV2Messages(
  * @param handoff - The handoff to convert.
  */
 function handoffToLanguageV2Tool(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   handoff: SerializedHandoff,
 ): LanguageModelV2FunctionTool {
   return {
@@ -478,6 +507,102 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
 }
 
+function getModelIdentifier(model: LanguageModelCompatible): string {
+  return `${model.provider}:${model.modelId}`;
+}
+
+function isProviderDataForModel(
+  providerData: Record<string, any>,
+  model: LanguageModelCompatible,
+): boolean {
+  const providerDataModel = providerData.model;
+  if (typeof providerDataModel !== 'string') {
+    return true;
+  }
+
+  const target = getModelIdentifier(model).toLowerCase();
+  const pdLower = providerDataModel.toLowerCase();
+  return (
+    pdLower === target ||
+    pdLower === model.modelId.toLowerCase() ||
+    pdLower === model.provider.toLowerCase()
+  );
+}
+
+function isGeminiModel(model: LanguageModelCompatible): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  return (
+    target.includes('gemini') || model.modelId.toLowerCase().includes('gemini')
+  );
+}
+
+function toProviderOptions(
+  providerData: Record<string, any> | undefined,
+  model: LanguageModelCompatible,
+): Record<string, any> {
+  if (!isRecord(providerData)) {
+    return {};
+  }
+
+  if (!isProviderDataForModel(providerData, model)) {
+    return {};
+  }
+
+  const options: Record<string, any> = { ...providerData };
+  delete options.model;
+  delete options.responseId;
+  delete options.response_id;
+
+  if (isGeminiModel(model)) {
+    const googleFields = isRecord(options.google) ? { ...options.google } : {};
+    const thoughtSignature =
+      googleFields.thoughtSignature ??
+      googleFields.thought_signature ??
+      options.thoughtSignature ??
+      options.thought_signature;
+
+    if (thoughtSignature) {
+      googleFields.thoughtSignature = thoughtSignature;
+    }
+
+    if (Object.keys(googleFields).length > 0) {
+      options.google = googleFields;
+    }
+
+    delete options.thoughtSignature;
+    delete options.thought_signature;
+  }
+
+  return options;
+}
+
+function buildBaseProviderData(
+  model: LanguageModelCompatible,
+  responseId?: string,
+): Record<string, any> {
+  const base: Record<string, any> = { model: getModelIdentifier(model) };
+  if (responseId) {
+    base.responseId = responseId;
+  }
+  return base;
+}
+
+function mergeProviderData(
+  base: Record<string, any> | undefined,
+  ...sources: Array<Record<string, any> | undefined>
+): Record<string, any> | undefined {
+  const merged: Record<string, any> = {};
+  if (isRecord(base)) {
+    Object.assign(merged, base);
+  }
+  for (const src of sources) {
+    if (isRecord(src)) {
+      Object.assign(merged, src);
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 function getImageInlineMediaType(
   source: Record<string, any>,
 ): string | undefined {
@@ -504,7 +629,7 @@ function formatInlineData(
  * @param tool - The tool to convert.
  */
 export function toolToLanguageV2Tool(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   tool: SerializedTool,
 ): LanguageModelV2FunctionTool | LanguageModelV2ProviderDefinedTool {
   if (tool.type === 'function') {
@@ -589,9 +714,10 @@ export function getResponseFormat(
  * @returns The wrapped model.
  */
 export class AiSdkModel implements Model {
-  #model: LanguageModelV2;
+  #model: LanguageModelCompatible;
   #logger = getLogger('openai-agents:extensions:ai-sdk');
-  constructor(model: LanguageModelV2) {
+  constructor(model: LanguageModelCompatible) {
+    ensureSupportedModel(model);
     this.#model = model;
   }
 
@@ -667,6 +793,10 @@ export class AiSdkModel implements Model {
         }
 
         const result = await this.#model.doGenerate(aiSdkRequest);
+        const baseProviderData = buildBaseProviderData(
+          this.#model,
+          (result as any).response?.id,
+        );
 
         const output: ModelResponse['output'] = [];
 
@@ -684,7 +814,10 @@ export class AiSdkModel implements Model {
             content: [{ type: 'input_text', text: reasoningText }],
             rawContent: [{ type: 'reasoning_text', text: reasoningText }],
             // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
-            providerData: reasoningPart.providerMetadata ?? undefined,
+            providerData: mergeProviderData(
+              baseProviderData,
+              reasoningPart.providerMetadata,
+            ),
           });
         }
 
@@ -728,9 +861,11 @@ export class AiSdkModel implements Model {
             name: toolCall.toolName,
             arguments: toolCallArguments,
             status: 'completed',
-            providerData:
+            providerData: mergeProviderData(
+              baseProviderData,
               toolCall.providerMetadata ??
-              (hasToolCalls ? result.providerMetadata : undefined),
+                (hasToolCalls ? result.providerMetadata : undefined),
+            ),
           });
         }
 
@@ -748,7 +883,10 @@ export class AiSdkModel implements Model {
               content: [{ type: 'output_text', text: textItem.text }],
               role: 'assistant',
               status: 'completed',
-              providerData: (result as any).providerMetadata,
+              providerData: mergeProviderData(
+                baseProviderData,
+                (result as any).providerMetadata,
+              ),
             });
           }
         }
@@ -915,6 +1053,7 @@ export class AiSdkModel implements Model {
       }
 
       const { stream } = await this.#model.doStream(aiSdkRequest);
+      const baseProviderData = buildBaseProviderData(this.#model);
 
       let started = false;
       let responseId: string | undefined;
@@ -992,9 +1131,10 @@ export class AiSdkModel implements Model {
                 name: (part as any).toolName,
                 arguments: (part as any).input ?? '',
                 status: 'completed',
-                ...((part as any).providerMetadata
-                  ? { providerData: (part as any).providerMetadata }
-                  : {}),
+                providerData: mergeProviderData(
+                  baseProviderData,
+                  (part as any).providerMetadata,
+                ),
               };
             }
             break;
@@ -1038,7 +1178,11 @@ export class AiSdkModel implements Model {
             content: [{ type: 'input_text', text: reasoningBlock.text }],
             rawContent: [{ type: 'reasoning_text', text: reasoningBlock.text }],
             // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
-            providerData: reasoningBlock.providerMetadata ?? undefined,
+            providerData: mergeProviderData(
+              baseProviderData,
+              reasoningBlock.providerMetadata,
+              responseId ? { responseId } : undefined,
+            ),
           });
         }
       }
@@ -1049,10 +1193,21 @@ export class AiSdkModel implements Model {
           role: 'assistant',
           content: [textOutput],
           status: 'completed',
+          providerData: mergeProviderData(
+            baseProviderData,
+            responseId ? { responseId } : undefined,
+          ),
         });
       }
       for (const fc of Object.values(functionCalls)) {
-        outputs.push(fc);
+        outputs.push({
+          ...fc,
+          providerData: mergeProviderData(
+            baseProviderData,
+            fc.providerData,
+            responseId ? { responseId } : undefined,
+          ),
+        });
       }
 
       const finalEvent: protocol.StreamEventResponseCompleted = {
@@ -1162,7 +1317,7 @@ export class AiSdkModel implements Model {
  * @param model - The Vercel AI SDK model to wrap.
  * @returns The wrapped model.
  */
-export function aisdk(model: LanguageModelV2) {
+export function aisdk(model: LanguageModelCompatible) {
   return new AiSdkModel(model);
 }
 

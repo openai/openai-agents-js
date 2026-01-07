@@ -2,10 +2,12 @@
   "private": true,
   "name": "ai-sdk",
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.53",
+    "@ai-sdk/anthropic": "^3.0.9",
+    "@ai-sdk/google": "^3.0.6",
+    "@ai-sdk/openai": "^3.0.7",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
-    "@openrouter/ai-sdk-provider": "^1.2.0"
+    "@openrouter/ai-sdk-provider": "^1.5.4"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
