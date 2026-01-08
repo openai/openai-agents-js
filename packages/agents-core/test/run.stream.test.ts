@@ -447,6 +447,87 @@ describe('Runner.run (streaming)', () => {
     expect(result.finalOutput).toBeUndefined();
   });
 
+  it('cancels streaming promptly when the consumer cancels the stream', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    class DelayedStreamingModel implements Model {
+      constructor(private readonly delayMs: number) {}
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('final')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'hello' } as any;
+        await waitWithAbort(this.delayMs, request.signal);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'delayed',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('final')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'SlowStream',
+      model: new DelayedStreamingModel(400),
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+    const stream = result.toStream() as any;
+    const reader = stream.getReader();
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    const start = Date.now();
+    const cancelPromise = reader.cancel('timeout');
+
+    await expect(result.completed).resolves.toBeUndefined();
+    await cancelPromise;
+
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(250);
+    expect(result.cancelled).toBe(true);
+    expect(result.error).toBe(null);
+  });
+
   it('streams tool_called before the tool finishes executing', async () => {
     let releaseTool: (() => void) | undefined;
     const toolExecuted = vi.fn();

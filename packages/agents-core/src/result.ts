@@ -26,6 +26,43 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 
+function combineAbortSignals(
+  ...signals: (AbortSignal | undefined)[]
+): AbortSignal | undefined {
+  const active = signals.filter(Boolean) as AbortSignal[];
+  if (active.length === 0) {
+    return undefined;
+  }
+
+  const anyFn = (AbortSignal as any).any;
+  if (typeof anyFn === 'function') {
+    try {
+      return anyFn(active);
+    } catch (error) {
+      logger.debug(`AbortSignal.any failed, falling back: ${error}`);
+    }
+  }
+
+  const controller = new AbortController();
+  const abortCombined = (reason: unknown) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+    }
+  };
+
+  for (const signal of active) {
+    if (signal.aborted) {
+      abortCombined(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', () => abortCombined(signal.reason), {
+      once: true,
+    });
+  }
+
+  return controller.signal;
+}
+
 /**
  * Data returned by the run() method of an agent.
  */
@@ -265,7 +302,8 @@ export class StreamedRunResult<
   public maxTurns: number | undefined;
 
   #error: unknown = null;
-  #signal?: AbortSignal;
+  #combinedSignal?: AbortSignal;
+  #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
   #completedPromise: Promise<void>;
@@ -282,14 +320,20 @@ export class StreamedRunResult<
   ) {
     super(result.state);
 
-    this.#signal = result.signal;
+    this.#abortController = new AbortController();
+    this.#combinedSignal = combineAbortSignals(
+      result.signal,
+      this.#abortController.signal,
+    );
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
         this.#readableController = controller;
       },
       cancel: () => {
-        this.#cancelled = true;
+        if (!this.#abortController.signal.aborted) {
+          this.#abortController.abort();
+        }
       },
     });
 
@@ -298,7 +342,7 @@ export class StreamedRunResult<
       this.#completedPromiseReject = reject;
     });
 
-    if (this.#signal) {
+    if (this.#combinedSignal) {
       const handleAbort = () => {
         if (this.#cancelled) {
           return;
@@ -309,29 +353,23 @@ export class StreamedRunResult<
         const controller = this.#readableController;
         this.#readableController = undefined;
 
-        if (this.#readableStream.locked) {
-          if (controller) {
-            try {
-              controller.close();
-            } catch (err) {
-              logger.debug(`Failed to close readable stream on abort: ${err}`);
-            }
+        if (controller) {
+          try {
+            controller.close();
+          } catch (err) {
+            logger.debug(`Failed to close readable stream on abort: ${err}`);
           }
-        } else {
-          void this.#readableStream
-            .cancel(this.#signal?.reason)
-            .catch((err) => {
-              logger.debug(`Failed to cancel readable stream on abort: ${err}`);
-            });
         }
 
         this.#completedPromiseResolve?.();
       };
 
-      if (this.#signal.aborted) {
+      if (this.#combinedSignal.aborted) {
         handleAbort();
       } else {
-        this.#signal.addEventListener('abort', handleAbort, { once: true });
+        this.#combinedSignal.addEventListener('abort', handleAbort, {
+          once: true,
+        });
       }
     }
   }
@@ -460,5 +498,13 @@ export class StreamedRunResult<
    */
   _getStreamLoopPromise(): Promise<void> | undefined {
     return this.#streamLoopPromise;
+  }
+
+  /**
+   * @internal
+   * Returns the abort signal that should be used to cancel the streaming run.
+   */
+  _getAbortSignal(): AbortSignal | undefined {
+    return this.#combinedSignal;
   }
 }
