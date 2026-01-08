@@ -153,6 +153,9 @@ importers:
       '@openai/agents-extensions':
         specifier: workspace:*
         version: link:../../packages/agents-extensions
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
 
   examples/basic:
     dependencies:
