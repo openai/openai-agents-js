@@ -90,6 +90,9 @@ export function itemsToLanguageV2Messages(
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
   let currentAssistantMessage: LanguageModelV2Message | undefined;
+  let pendingReasonerReasoning:
+    | { text: string; providerOptions: Record<string, any> }
+    | undefined;
 
   for (const item of items) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
@@ -194,6 +197,19 @@ export function itemsToLanguageV2Messages(
         Array.isArray(currentAssistantMessage.content) &&
         currentAssistantMessage.role === 'assistant'
       ) {
+        // Reasoner models (e.g., DeepSeek Reasoner) require reasoning_content on tool-call messages.
+        if (isReasonerModel(model) && pendingReasonerReasoning) {
+          currentAssistantMessage.content.push({
+            type: 'reasoning',
+            text: pendingReasonerReasoning.text,
+            providerOptions: pendingReasonerReasoning.providerOptions,
+          });
+          currentAssistantMessage.providerOptions = {
+            ...pendingReasonerReasoning.providerOptions,
+            ...currentAssistantMessage.providerOptions,
+          };
+          pendingReasonerReasoning = undefined;
+        }
         const content: LanguageModelV2ToolCallPart = {
           type: 'tool-call',
           toolCallId: item.callId,
@@ -258,6 +274,13 @@ export function itemsToLanguageV2Messages(
       typeof item.content[0].text === 'string'
     ) {
       // Only forward provider data when it targets this model so signatures stay scoped correctly.
+      if (isReasonerModel(model)) {
+        pendingReasonerReasoning = {
+          text: item.content[0].text,
+          providerOptions: toProviderOptions(item.providerData, model),
+        };
+        continue;
+      }
       messages.push({
         role: 'assistant',
         content: [
@@ -287,6 +310,19 @@ export function itemsToLanguageV2Messages(
 
   if (currentAssistantMessage) {
     messages.push(currentAssistantMessage);
+  }
+  if (isReasonerModel(model) && pendingReasonerReasoning) {
+    messages.push({
+      role: 'assistant',
+      content: [
+        {
+          type: 'reasoning',
+          text: pendingReasonerReasoning.text,
+          providerOptions: pendingReasonerReasoning.providerOptions,
+        },
+      ],
+      providerOptions: pendingReasonerReasoning.providerOptions,
+    });
   }
 
   return messages;
@@ -534,6 +570,14 @@ function isGeminiModel(model: LanguageModelCompatible): boolean {
   const target = getModelIdentifier(model).toLowerCase();
   return (
     target.includes('gemini') || model.modelId.toLowerCase().includes('gemini')
+  );
+}
+
+function isReasonerModel(model: LanguageModelCompatible): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  return (
+    target.includes('reasoner') ||
+    model.modelId.toLowerCase().includes('reasoner')
   );
 }
 
