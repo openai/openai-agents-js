@@ -4,6 +4,10 @@ import {
   OutputGuardrailMetadata,
   OutputGuardrailResult,
 } from './guardrail';
+import {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from './toolGuardrail';
 import { RunContext } from './runContext';
 import { RunState } from './runState';
 import { TextOutput } from './types';
@@ -132,6 +136,36 @@ export class OutputGuardrailTripwireTriggered<
   constructor(
     message: string,
     result: OutputGuardrailResult<TMeta, TOutputType>,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}
+
+/**
+ * Error thrown when a tool input guardrail tripwire is triggered.
+ */
+export class ToolInputGuardrailTripwireTriggered extends AgentsError {
+  result: ToolInputGuardrailResult;
+  constructor(
+    message: string,
+    result: ToolInputGuardrailResult,
+    state?: RunState<any, any>,
+  ) {
+    super(message, state);
+    this.result = result;
+  }
+}
+
+/**
+ * Error thrown when a tool output guardrail tripwire is triggered.
+ */
+export class ToolOutputGuardrailTripwireTriggered extends AgentsError {
+  result: ToolOutputGuardrailResult;
+  constructor(
+    message: string,
+    result: ToolOutputGuardrailResult,
     state?: RunState<any, any>,
   ) {
     super(message, state);

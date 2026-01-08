@@ -66,6 +66,10 @@ import {
   type SessionInputCallback,
 } from './memory/session';
 import { Usage } from './usage';
+import {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from './utils/toolGuardrails';
 
 // Represents a single handoff function call that still needs to be executed after the model turn.
 type ToolRunHandoff = {
@@ -1302,17 +1306,42 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         }
 
         try {
+          const inputGuardrailResult = await runToolInputGuardrails({
+            guardrails: toolRun.tool.inputGuardrails,
+            context: state._context,
+            agent,
+            toolCall: toolRun.toolCall,
+            onResult: (result) => {
+              state._toolInputGuardrailResults.push(result);
+            },
+          });
+
           runner.emit('agent_tool_start', state._context, agent, toolRun.tool, {
             toolCall: toolRun.toolCall,
           });
           agent.emit('agent_tool_start', state._context, toolRun.tool, {
             toolCall: toolRun.toolCall,
           });
-          const toolOutput = await toolRun.tool.invoke(
-            state._context,
-            toolRun.toolCall.arguments,
-            { toolCall: toolRun.toolCall },
-          );
+          let toolOutput: unknown;
+          if (inputGuardrailResult.type === 'reject') {
+            toolOutput = inputGuardrailResult.message;
+          } else {
+            toolOutput = await toolRun.tool.invoke(
+              state._context,
+              toolRun.toolCall.arguments,
+              { toolCall: toolRun.toolCall },
+            );
+            toolOutput = await runToolOutputGuardrails({
+              guardrails: toolRun.tool.outputGuardrails,
+              context: state._context,
+              agent,
+              toolCall: toolRun.toolCall,
+              toolOutput,
+              onResult: (result) => {
+                state._toolOutputGuardrailResults.push(result);
+              },
+            });
+          }
           // Use string data for tracing and event emitter
           const stringResult = toSmartString(toolOutput);
 
