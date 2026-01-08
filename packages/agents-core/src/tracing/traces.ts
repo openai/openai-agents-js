@@ -7,6 +7,7 @@ export type TraceOptions = {
   groupId?: string;
   metadata?: Record<string, any>;
   started?: boolean;
+  tracingApiKey?: string;
 };
 
 export class Trace {
@@ -15,6 +16,7 @@ export class Trace {
   public name: string;
   public groupId: string | null = null;
   public metadata?: Record<string, any>;
+  public tracingApiKey?: string;
 
   #processor: TracingProcessor;
   #started: boolean;
@@ -24,6 +26,7 @@ export class Trace {
     this.name = options.name ?? 'Agent workflow';
     this.groupId = options.groupId ?? null;
     this.metadata = options.metadata ?? {};
+    this.tracingApiKey = options.tracingApiKey;
     this.#processor = processor ?? defaultProcessor();
     this.#started = options.started ?? false;
   }
@@ -53,6 +56,7 @@ export class Trace {
       groupId: this.groupId ?? undefined,
       metadata: this.metadata,
       started: this.#started,
+      tracingApiKey: this.tracingApiKey,
     });
   }
 

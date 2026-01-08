@@ -123,6 +123,7 @@ export type {
 } from './run';
 export { RunContext } from './runContext';
 export { RunState } from './runState';
+export type { TracingConfig } from './tracing';
 export {
   HostedTool,
   ComputerTool,

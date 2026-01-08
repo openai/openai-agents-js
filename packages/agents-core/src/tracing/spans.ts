@@ -113,6 +113,7 @@ export type SpanOptions<TData extends SpanData> = {
   startedAt?: string;
   endedAt?: string;
   error?: SpanError;
+  tracingApiKey?: string;
 };
 
 export type SpanError = {
@@ -131,6 +132,7 @@ export class Span<TData extends SpanData> {
   #startedAt: string | null;
   #endedAt: string | null;
   #error: SpanError | null;
+  #tracingApiKey: string | undefined;
 
   #previousSpan: Span<any> | undefined;
 
@@ -143,6 +145,7 @@ export class Span<TData extends SpanData> {
     this.#error = options.error ?? null;
     this.#startedAt = options.startedAt ?? null;
     this.#endedAt = options.endedAt ?? null;
+    this.#tracingApiKey = options.tracingApiKey;
   }
 
   get traceId() {
@@ -205,6 +208,10 @@ export class Span<TData extends SpanData> {
     return this.#endedAt;
   }
 
+  get tracingApiKey() {
+    return this.#tracingApiKey;
+  }
+
   clone(): Span<TData> {
     const span = new Span(
       {
@@ -215,6 +222,7 @@ export class Span<TData extends SpanData> {
         startedAt: this.#startedAt ?? undefined,
         endedAt: this.#endedAt ?? undefined,
         error: this.#error ?? undefined,
+        tracingApiKey: this.#tracingApiKey,
       },
       this.#processor,
     );

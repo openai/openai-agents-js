@@ -121,6 +121,12 @@ describe('tracing/utils', () => {
 
 describe('Trace & Span lifecycle', () => {
   const processor = new TestProcessor();
+  beforeEach(() => {
+    setTracingDisabled(false);
+  });
+  afterEach(() => {
+    setTracingDisabled(true);
+  });
 
   it('Trace start/end invokes processor callbacks', async () => {
     const trace = new Trace({ name: 'test-trace' }, processor);
@@ -166,6 +172,80 @@ describe('Trace & Span lifecycle', () => {
     expect(json.id).toBe(span.spanId);
     expect(json.trace_id).toBe(span.traceId);
     expect(json.span_data).toHaveProperty('type', 'custom');
+  });
+
+  it('propagates tracing api key from trace to spans', async () => {
+    await withTrace(
+      'workflow',
+      async () => {
+        const trace = getCurrentTrace();
+        expect(trace?.tracingApiKey).toBe('run-key');
+        const span = createAgentSpan({ data: { name: 'span' } });
+        expect(span.tracingApiKey).toBe('run-key');
+      },
+      { tracingApiKey: 'run-key' },
+    );
+  });
+});
+
+describe('Span creation inherits tracing api key from parents', () => {
+  const provider = new TraceProvider();
+  beforeEach(() => {
+    provider.setDisabled(false);
+  });
+
+  it('inherits from parent trace', () => {
+    const trace = provider.createTrace({ tracingApiKey: 'trace-key' });
+    const span = provider.createSpan(
+      { data: { type: 'custom', name: 's', data: {} } },
+      trace,
+    );
+    expect(span.tracingApiKey).toBe('trace-key');
+  });
+
+  it('inherits from parent span', () => {
+    const trace = provider.createTrace({ tracingApiKey: 'trace-key' });
+    const parent = provider.createSpan(
+      { data: { type: 'custom', name: 'p', data: {} } },
+      trace,
+    );
+    const child = provider.createSpan(
+      { data: { type: 'custom', name: 'c', data: {} } },
+      parent,
+    );
+    expect(child.tracingApiKey).toBe('trace-key');
+  });
+});
+
+describe('Runner tracing configuration', () => {
+  beforeEach(() => {
+    setDefaultModelProvider(new FakeModelProvider());
+    setTracingDisabled(false);
+  });
+
+  afterEach(() => {
+    setTraceProcessors([defaultProcessor()]);
+    setTracingDisabled(true);
+  });
+
+  it('uses per-run tracing api key when creating trace', async () => {
+    const processor = new TestProcessor();
+    setTraceProcessors([processor]);
+
+    const agent = new Agent({
+      name: 'TestAgent',
+      model: new FakeModel([
+        {
+          output: [fakeModelMessage('hi')],
+          usage: new Usage(),
+        },
+      ]),
+    });
+
+    const runner = new Runner({ tracingDisabled: false });
+    await runner.run(agent, 'hello', { tracing: { apiKey: 'runner-key' } });
+
+    expect(processor.tracesStarted[0]?.tracingApiKey).toBe('runner-key');
   });
 });
 

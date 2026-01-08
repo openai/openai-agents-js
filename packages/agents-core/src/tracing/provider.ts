@@ -86,6 +86,7 @@ export class TraceProvider {
 
     let parentId;
     let traceId;
+    let tracingApiKey: string | undefined;
 
     if (!parent) {
       const currentTrace = getCurrentTrace();
@@ -109,6 +110,7 @@ export class TraceProvider {
       }
 
       traceId = currentTrace.traceId;
+      tracingApiKey = currentTrace.tracingApiKey;
       if (currentSpan) {
         logger.debug('Using parent span %s', currentSpan.spanId);
         parentId = currentSpan.spanId;
@@ -125,6 +127,7 @@ export class TraceProvider {
       }
 
       traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
     } else if (parent instanceof Span) {
       if (parent instanceof NoopSpan) {
         logger.debug('Parent span is no-op, returning NoopSpan');
@@ -133,6 +136,7 @@ export class TraceProvider {
 
       parentId = parent.spanId;
       traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
     }
 
     if (!traceId) {
@@ -151,6 +155,7 @@ export class TraceProvider {
         ...spanOptions,
         traceId,
         parentId,
+        tracingApiKey: tracingApiKey ?? spanOptions.tracingApiKey,
       },
       this.#multiProcessor,
     );
