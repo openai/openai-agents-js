@@ -51,6 +51,23 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(config.audio?.output?.voice).toBeUndefined();
   });
 
+  it('preserves explicit null audio input config values', () => {
+    const base = new TestBase();
+    const config = (base as any)._getMergedSessionConfig({
+      audio: {
+        input: {
+          noiseReduction: null,
+          transcription: null,
+          turnDetection: null,
+        },
+      },
+    });
+
+    expect(config.audio?.input?.noise_reduction).toBeNull();
+    expect(config.audio?.input?.transcription).toBeNull();
+    expect(config.audio?.input?.turn_detection).toBeNull();
+  });
+
   it('preserves falsy turn detection values when building payload', () => {
     const base = new TestBase();
     const config = (base as any)._getMergedSessionConfig({
