@@ -546,6 +546,12 @@ export abstract class OpenAIRealtimeBase
   ): RealtimeSessionPayload {
     const newConfig = toNewSessionConfig(config);
 
+    const noiseReductionOverride = newConfig.audio?.input?.noiseReduction;
+    const transcriptionOverride = newConfig.audio?.input?.transcription;
+    const turnDetectionOverride = OpenAIRealtimeBase.buildTurnDetectionConfig(
+      newConfig.audio?.input?.turnDetection,
+    );
+
     const sessionData: RealtimeSessionPayload = {
       type: 'realtime',
       instructions: newConfig.instructions,
@@ -559,16 +565,20 @@ export abstract class OpenAIRealtimeBase
             newConfig.audio?.input?.format ??
             DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.format,
           noise_reduction:
-            newConfig.audio?.input?.noiseReduction ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.noiseReduction,
+            noiseReductionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.noiseReduction
+              : noiseReductionOverride,
           transcription:
-            newConfig.audio?.input?.transcription ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
+            transcriptionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.transcription
+              : transcriptionOverride,
           turn_detection:
-            OpenAIRealtimeBase.buildTurnDetectionConfig(
-              newConfig.audio?.input?.turnDetection,
-            ) ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.turnDetection,
+            turnDetectionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.turnDetection
+              : turnDetectionOverride,
         },
         output: {
           format:
@@ -624,10 +634,13 @@ export abstract class OpenAIRealtimeBase
   }
 
   private static buildTurnDetectionConfig(
-    c: RealtimeTurnDetectionConfig | undefined,
-  ): RealtimeTurnDetectionConfigAsIs | undefined {
+    c: RealtimeTurnDetectionConfig | null | undefined,
+  ): RealtimeTurnDetectionConfigAsIs | null | undefined {
     if (typeof c === 'undefined') {
       return undefined;
+    }
+    if (c === null) {
+      return null;
     }
     const {
       type,

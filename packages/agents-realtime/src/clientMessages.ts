@@ -104,8 +104,8 @@ export type RealtimeTurnDetectionConfig = (
 export type RealtimeAudioInputConfig = {
   format?: RealtimeAudioFormat;
   noiseReduction?: RealtimeInputAudioNoiseReductionConfig | null;
-  transcription?: RealtimeInputAudioTranscriptionConfig;
-  turnDetection?: RealtimeTurnDetectionConfig;
+  transcription?: RealtimeInputAudioTranscriptionConfig | null;
+  turnDetection?: RealtimeTurnDetectionConfig | null;
 };
 
 export type RealtimeAudioOutputConfig = {
