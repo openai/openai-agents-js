@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime UMD Example</title>
+  <style id="page-style">body { font-family: system-ui, sans-serif; padding: 16px; }</style>
+  <style id="debug-style">/* debug styles to help diagnose missing CSS */
+    body.debug-detected { background: #fff8e1; }
+    #css-detect { position: fixed; right: 12px; top: 12px; padding: 6px 8px; background: #ffd54f; color: #000; z-index: 99999; border-radius: 6px; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+  </style>
+</head>
+<body>
+  <div id="css-detect" style="display:none">CSS test</div>
+  <h1>Realtime UMD Example</h1>
+  <div style="margin-bottom:12px">
+    <label>Ephemeral key: <input id="ephemeral-key" placeholder="paste ephemeral key here" style="width:420px"></label>
+    <label style="margin-left:8px"><input type="checkbox" id="use-mock"> Use mock key</label>
+    <button id="connect-btn" style="margin-left:8px">Connect</button>
+  </div>
+  <pre id="log"></pre>
+
+    <!-- Use a relative script path so the page works when opened directly (file://)
+      Adjust the path if you copy this file elsewhere. -->
+    <script src="../../packages/agents-realtime/dist/bundle/openai-realtime-agents.umd.js"></script>
+  <script>
+    const logEl = document.getElementById('log');
+    const log = (s) => { logEl.textContent += s + '\n'; };
+
+    // The UMD bundle attaches to a global. The built file sets
+    // `OpenAIAgentsRealtime` as the global name. Keep older fallbacks
+    // and also scan the window object for an export that contains
+    // `OpenAIRealtimeWebSocket` so this demo works even if the global
+    // name differs.
+    const lib = window.OpenAIAgentsRealtime || window.OpenAIRealtimeAgents || window.openaiRealtimeAgents || window.openai || (function(){
+      for (const key of Object.keys(window)){
+        try{
+          const v = window[key];
+          if (v && typeof v === 'object' && 'OpenAIRealtimeWebSocket' in v) return v;
+        }catch(e){ /* ignore read errors */ }
+      }
+      return null;
+    })();
+
+    if (!lib) {
+      log('UMD bundle not found on window - check script path and built file name.');
+      throw new Error('UMD bundle not found');
+    }
+
+    const { OpenAIRealtimeWebSocket } = lib;
+
+    async function run() {
+      // Allow manual ephemeral key input or using a mock key so this page
+      // can be opened directly from disk or a static host without a server.
+      const apiKeyInput = document.getElementById('ephemeral-key');
+      const useMock = document.getElementById('use-mock');
+      let ephemeralKey = apiKeyInput && apiKeyInput.value ? apiKeyInput.value.trim() : null;
+      if (!ephemeralKey && useMock && useMock.checked) ephemeralKey = 'MOCK_EPHEMERAL_KEY';
+
+      const ws = new OpenAIRealtimeWebSocket({ url: 'wss://api.openai.com/v1/realtime?model=gpt-5-mini' });
+
+      ws.on('connection_change', s => log('connection_change: ' + s));
+      ws.on('message', m => log('message: ' + JSON.stringify(m)));
+      ws.on('audio', a => log('audio event: ' + (a && a.responseId)));
+
+      if (!ephemeralKey) {
+        log('No ephemeral key provided. Enter one above or enable "Use mock key" to proceed without a server.');
+        log('UMD bundle loaded successfully and event handlers are registered.');
+        return;
+      }
+
+      await ws.connect({ apiKey: ephemeralKey });
+      log('connected: ' + ws.status);
+
+      ws.sendEvent({
+        type: 'response.create',
+        response: { instructions: [{ role: 'user', content: 'Hello from static browser demo' }] },
+      });
+    }
+
+    document.getElementById('connect-btn').addEventListener('click', ()=>run().catch(e => log('error: ' + e)));
+    // Simple runtime test: show a debug badge and add a body class
+    try {
+      const badge = document.getElementById('css-detect');
+      if (badge) {
+        badge.style.display = 'block';
+        badge.textContent = 'CSS loaded (inline test)';
+      }
+      // add a class so the body background (debug) is visible if CSS applied
+      document.body.classList.add('debug-detected');
+    } catch (e) {
+      console.warn('CSS debug test failed', e);
+    }
+  </script>
+</body>
+</html>

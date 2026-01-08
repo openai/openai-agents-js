@@ -9,15 +9,17 @@ import {
   OutputGuardrailTripwireTriggered,
   RealtimeOutputGuardrail,
 } from '@openai/agents/realtime';
+import { CustomTransport } from '@/lib/realtime/CustomTransport'; // インポート
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { WavRecorder, WavStreamPlayer } from 'wavtools';
-import { handleRefundRequest } from '../server/backendAgent.action';
-import { getToken } from '../server/token.action';
+//import { handleRefundRequest } from '../server/backendAgent.action';
+import { getToken } from '@/lib/getToken';
 import { App } from '@/components/App';
 import { hostedMcpTool } from '@openai/agents';
 import { CameraCapture } from '@/components/CameraCapture';
 
+/*
 const refundBackchannel = tool({
   name: 'refundBackchannel',
   description: 'Evaluate a refund',
@@ -28,6 +30,7 @@ const refundBackchannel = tool({
     return handleRefundRequest(request);
   },
 });
+*/
 
 const guardrails: RealtimeOutputGuardrail[] = [
   {
@@ -111,8 +114,13 @@ export default function Home() {
   // Image capture handled by CameraCapture component.
 
   useEffect(() => {
+    // 自作トランスポートを使用 — OpenAI Realtime WebSocket for testing
+    const ctransport = new CustomTransport(
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+    );
+
     session.current = new RealtimeSession(agent, {
-      transport: 'websocket',
+      transport: ctransport, //'websocket',
       model: 'gpt-realtime',
       outputGuardrails: guardrails,
       config: {
@@ -162,8 +170,9 @@ export default function Home() {
       'tool_approval_requested',
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
+        const item: any = approvalRequest.approvalItem;
         const approved = confirm(
-          `Approve tool call to ${approvalRequest.approvalItem.name} with parameters:\n ${approvalRequest.approvalItem.arguments ?? '{}'}?`,
+          `Approve tool call to ${item.name} with parameters:\n ${item.arguments ?? '{}'}?`,
         );
         if (approved) {
           session.current?.approve(approvalRequest.approvalItem);
@@ -197,10 +206,17 @@ export default function Home() {
       setIsConnected(false);
     } else {
       await player.current?.connect();
+      console.log('[websocket page] connect() called');
       const token = await getToken();
-      await session.current?.connect({
-        apiKey: token,
-      });
+      console.log('[websocket page] got token', !!token);
+      try {
+        await session.current?.connect({
+          apiKey: token ?? '',
+        });
+        console.log('[websocket page] session.connect returned');
+      } catch (e) {
+        console.error('[websocket page] session.connect error', e);
+      }
       await recorder.current?.begin();
       await record();
       setIsConnected(true);

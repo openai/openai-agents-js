@@ -2,7 +2,8 @@
 
 import { TransportEvent, OpenAIRealtimeWebRTC } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
-import { getToken } from '../server/token.action';
+import { getToken } from '@/lib/getToken';
+
 import { App } from '@/components/App';
 
 export default function Home() {
@@ -28,7 +29,7 @@ export default function Home() {
     } else {
       const token = await getToken();
       await connection.current?.connect({
-        apiKey: token,
+        apiKey: token ?? '',
         model: 'gpt-4o-mini-realtime-preview',
         initialSessionConfig: {
           instructions: 'Speak like a pirate',

@@ -12,8 +12,8 @@ import {
 } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
-import { handleRefundRequest } from './server/backendAgent.action';
-import { getToken } from './server/token.action';
+//import { handleRefundRequest } from './server/backendAgent.action';
+import { getToken } from '@/lib/getToken';
 import { App } from '@/components/App';
 import { hostedMcpTool } from '@openai/agents';
 import { CameraCapture } from '@/components/CameraCapture';
@@ -21,6 +21,8 @@ import { CameraCapture } from '@/components/CameraCapture';
 const params = z.object({
   request: z.string(),
 });
+
+/*
 const refundBackchannel = tool<typeof params, RealtimeContextData>({
   name: 'Refund Expert',
   description: 'Evaluate a refund',
@@ -30,6 +32,7 @@ const refundBackchannel = tool<typeof params, RealtimeContextData>({
     return handleRefundRequest(request, history);
   },
 });
+*/
 
 const weatherTool = tool({
   name: 'weather',
@@ -71,7 +74,7 @@ const agent = new RealtimeAgent({
   name: 'Greeter',
   instructions: 'You are a greeter',
   tools: [
-    refundBackchannel,
+    //refundBackchannel,
     secretTool,
     hostedMcpTool({
       serverLabel: 'deepwiki',
@@ -141,8 +144,9 @@ export default function Home() {
       'tool_approval_requested',
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
+        const item: any = approvalRequest.approvalItem;
         const approved = confirm(
-          `Approve tool call to ${approvalRequest.approvalItem.name} with parameters:\n ${approvalRequest.approvalItem.arguments ?? '{}'}?`,
+          `Approve tool call to ${item.name} with parameters:\n ${item.arguments ?? '{}'}?`,
         );
         if (approved) {
           session.current?.approve(approvalRequest.approvalItem);
@@ -161,7 +165,7 @@ export default function Home() {
       const token = await getToken();
       try {
         await session.current?.connect({
-          apiKey: token,
+          apiKey: token ?? '',
         });
         setIsConnected(true);
       } catch (error) {
