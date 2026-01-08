@@ -136,7 +136,7 @@ The SDK throws a small set of errors you can catch:
 
 All extend the base `AgentsError` class, which could provide the `state` property to access the current run state.
 
-Here is an example code that handles `GuardrailExecutionError`:
+Here is an example code that handles `GuardrailExecutionError`. Because input guardrails only run on the first user input, the example restarts the run with the original input and context. It also shows reusing the saved state to retry output guardrails without calling the model again:
 
 <Code
   lang="typescript"
@@ -144,11 +144,18 @@ Here is an example code that handles `GuardrailExecutionError`:
   title="Guardrail execution error"
 />
 
+Input vs. output retries:
+
+- Input guardrails run only on the very first user input of a run, so you must start a fresh run with the same input/context to retry them—passing a saved `state` will not re-trigger input guardrails.
+- Output guardrails run after the model response, so you can reuse the saved `state` from a `GuardrailExecutionError` to rerun output guardrails without another model call.
+
 When you run the above example, you will see the following output:
 
 ```
-Guardrail execution failed: Error: Input guardrail failed to complete: Error: Something is wrong!
-Math homework guardrail tripped
+Guardrail execution failed (input): Error: Input guardrail failed to complete: Error: Something is wrong!
+Math homework input guardrail tripped on retry
+Guardrail execution failed (output): Error: Output guardrail failed to complete: Error: Output guardrail crashed.
+Output guardrail tripped after retry with saved state
 ```
 
 ---
