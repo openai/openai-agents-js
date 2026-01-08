@@ -13,7 +13,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## API キーとクライアント
 
-デフォルトでは、SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み取ります。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
+デフォルトでは SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。環境変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="Set default OpenAI key"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合は、デフォルトのキーを使って自動的に作成されます。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK はデフォルトキーで自動的に作成します。
 
 <Code
   lang="typescript"
@@ -35,9 +35,9 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## トレーシング
 
-トレーシングはデフォルトで有効で、上記の OpenAI キーを使用します。
+トレーシングはデフォルトで有効で、上記セクションの OpenAI キーを使用します。
 
-別のキーは `setTracingExportApiKey()` で設定できます。
+別キーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
@@ -53,21 +53,21 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="Disable tracing"
 />
 
-トレーシング機能の詳細は、[トレーシング](/openai-agents-js/ja/guides/tracing)をご覧ください。
+トレーシング機能の詳細は [トレーシング](/openai-agents-js/ja/guides/tracing) をご参照ください。
 
-## デバッグロギング
+## デバッグログ
 
-SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-`@openai/agents` の `getLogger(namespace)` を使用して、独自モジュール向けの名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使って、独自モジュール用の名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
-### ログ内の機微なデータ
+### ログ内の機微情報
 
 一部のログにはユーザー データが含まれる場合があります。以下の環境変数を設定して無効化できます。
 
