@@ -18,6 +18,9 @@ pnpm build
 echo "Running pnpm -r build-check..."
 pnpm -r build-check
 
+echo "Running pnpm -r -F \"@openai/*\" dist:check..."
+pnpm -r -F "@openai/*" dist:check
+
 echo "Running pnpm lint..."
 pnpm lint
 

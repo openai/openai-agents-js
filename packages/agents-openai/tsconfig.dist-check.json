@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": false,
+    "types": ["node"],
+    "lib": ["ES2018", "DOM"],
+    "baseUrl": ".",
+    "paths": {
+      "@openai/agents-core/_shims": [
+        "../agents-core/dist/shims/shims-node.d.ts"
+      ],
+      "@openai/agents-core": ["../agents-core/dist/index.d.ts"],
+      "@openai/agents-core/*": ["../agents-core/dist/*"]
+    }
+  },
+  "include": ["./dist/**/*.d.ts"],
+  "exclude": []
+}
