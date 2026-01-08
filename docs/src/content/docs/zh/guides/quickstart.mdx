@@ -11,7 +11,7 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
 
 <Steps>
 
-1. 创建项目并初始化 npm。此步骤只需执行一次。
+1. 创建项目并初始化 npm。只需执行一次。
 
    ```bash
    mkdir my_project
@@ -25,18 +25,18 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    npm install @openai/agents zod@3
    ```
 
-3. 设置 OpenAI API key。如果还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建一个 OpenAI API key。
+3. 设置 OpenAI API key。如果还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建 OpenAI API key。
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   或者，您也可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置密钥，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
-   详细信息参见[SDK 配置](/openai-agents-js/zh/guides/config)。
+   或者，你也可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置 key，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
+   详见[SDK 配置](/openai-agents-js/zh/guides/config)。
 
 </Steps>
 
-## 第一个智能体
+## 创建第一个智能体
 
 智能体由 instructions 和名称定义。
 
@@ -52,9 +52,9 @@ const agent = new Agent({
 
 ## 运行第一个智能体
 
-您可以使用 `run` 方法来运行智能体。通过传入要启动的智能体和要传递的输入来触发一次运行。
+你可以使用 `run` 方法运行你的智能体。通过传入要启动的智能体以及你想提供的输入来触发一次运行。
 
-这将返回一个执行结果，其中包含最终输出以及该次运行期间执行的任何操作。
+这将返回一次运行的执行结果，其中包含最终输出以及期间执行的任何操作。
 
 ```typescript
 import { Agent, run } from '@openai/agents';
@@ -72,7 +72,7 @@ console.log(result.finalOutput);
 
 ## 为智能体提供工具
 
-您可以为智能体提供工具以查询信息或执行操作。
+你可以为智能体提供工具以查询信息或执行操作。
 
 ```typescript
 import { Agent, tool } from '@openai/agents';
@@ -99,9 +99,9 @@ const agent = new Agent({
 });
 ```
 
-## 添加更多智能体
+## 再添加几个智能体
 
-可以用类似方式定义更多智能体，将问题拆解为更小的部分，让智能体更专注于当前任务。还可以在智能体上定义所用模型，从而针对不同问题使用不同模型。
+可以用相似的方式定义更多智能体，将问题拆解为更小的部分，使智能体更专注于当前任务。你也可以通过在智能体上定义模型，为不同问题使用不同的模型。
 
 ```typescript
 const historyTutorAgent = new Agent({
@@ -117,9 +117,9 @@ const mathTutorAgent = new Agent({
 });
 ```
 
-## 交接定义
+## 定义交接
 
-为在多个智能体之间进行编排，您可以为智能体定义 `handoffs`。这将使智能体能够将对话传递给下一个智能体。这会在运行过程中自动发生。
+为了在多个智能体之间进行编排，你可以为某个智能体定义 `handoffs`。这将使智能体能够将对话交给下一个智能体。在运行过程中，这将自动发生。
 
 ```typescript
 // Using the Agent.create method to ensures type safety for the final output
@@ -131,11 +131,11 @@ const triageAgent = Agent.create({
 });
 ```
 
-运行结束后，您可以通过查看结果中的 `finalAgent` 属性来了解哪个智能体生成了最终响应。
+运行结束后，你可以查看执行结果中的 `finalAgent` 属性，了解是哪一个智能体生成了最终响应。
 
-## 智能体编排运行
+## 运行智能体编排
 
-Runner 负责处理各个智能体的执行、可能的交接以及工具执行。
+Runner 负责处理各个智能体的执行、任何可能的交接以及工具执行。
 
 ```typescript
 import { run } from '@openai/agents';
@@ -148,22 +148,22 @@ async function main() {
 main().catch((err) => console.error(err));
 ```
 
-## 整合
+## 汇总示例
 
-让我们把以上内容整合成一个完整示例。将其放入 `index.js` 文件并运行。
+让我们把它们整合为一个完整示例。将以下内容放入你的 `index.js` 文件并运行。
 
 <Code lang="typescript" code={quickstartExample} title="快速上手" />
 
 ## 查看追踪
 
-Agents SDK 会自动为您生成追踪。您可以据此审查智能体的运行情况、调用了哪些工具或将会话交接给了哪个智能体。
+Agents SDK 会自动为你生成追踪。这可以让你回顾智能体的运行情况、调用了哪些工具或交接给了哪个智能体。
 
-要查看智能体运行期间发生的情况，请前往
-[OpenAI Dashboard 中的 Trace viewer](https://platform.openai.com/traces)。
+要查看智能体在运行期间发生的情况，请前往
+[OpenAI 控制台中的 Trace 查看器](https://platform.openai.com/traces)。
 
 ## 后续步骤
 
-了解如何构建更复杂的智能体流程：
+学习如何构建更复杂的智能体流程：
 
 - 了解如何配置[智能体](/openai-agents-js/zh/guides/agents)。
 - 了解[运行智能体](/openai-agents-js/zh/guides/running-agents)。
