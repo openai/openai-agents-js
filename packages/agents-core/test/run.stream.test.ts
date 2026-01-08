@@ -27,7 +27,7 @@ import {
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
-import * as runImplementation from '../src/runImplementation';
+import * as sessionPersistence from '../src/runner/sessionPersistence';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -1259,7 +1259,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input only after the run completes successfully', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1296,7 +1296,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input when the model stream rejects before completion', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1330,7 +1330,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists filtered streaming input instead of the raw turn payload', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1390,10 +1390,10 @@ describe('Runner.run (streaming)', () => {
 
   it('skips streaming session persistence when the server manages the conversation', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1423,10 +1423,10 @@ describe('Runner.run (streaming)', () => {
 
   it('skips persisting streaming input when an input guardrail triggers', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const guardrail = {
@@ -1466,10 +1466,10 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input but drops the result when an output guardrail trips', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const guardrail = {
@@ -1503,10 +1503,10 @@ describe('Runner.run (streaming)', () => {
 
   it('does not persist streaming result when the consumer cancels early', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1537,10 +1537,10 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input/result exactly once on success', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();

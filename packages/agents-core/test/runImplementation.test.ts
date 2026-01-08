@@ -17,26 +17,32 @@ import { ModelResponse } from '../src/model';
 import { RunResult, StreamedRunResult } from '../src/result';
 import { getTracing } from '../src/run';
 import { RunState } from '../src/runState';
-import type { ProcessedResponse } from '../src/runImplementation';
+import type { ProcessedResponse } from '../src/runner/types';
 import {
   addStepToRunResult,
-  AgentToolUseTracker,
+  streamStepItemsToRunResult,
+} from '../src/runner/streaming';
+import {
   checkForFinalOutputFromTools,
   getToolCallOutputItem,
-  maybeResetToolChoice,
-  processModelResponse,
-  prepareInputItemsWithSession,
   executeFunctionToolCalls,
   executeComputerActions,
   executeShellActions,
   executeApplyPatchOperations,
   executeHandoffCalls,
-  resolveTurnAfterModelResponse,
-  streamStepItemsToRunResult,
+} from '../src/runner/toolExecution';
+import { maybeResetToolChoice } from '../src/runner/modelSettings';
+import { processModelResponse } from '../src/runner/modelOutputs';
+import {
+  prepareInputItemsWithSession,
   saveToSession,
+} from '../src/runner/sessionPersistence';
+import {
+  resolveTurnAfterModelResponse,
   resolveInterruptedTurn,
-  toInputItemList,
-} from '../src/runImplementation';
+} from '../src/runner/turnResolution';
+import { toInputItemList } from '../src/runner/items';
+import { AgentToolUseTracker } from '../src/runner/toolUseTracker';
 import {
   FunctionTool,
   FunctionToolResult,
