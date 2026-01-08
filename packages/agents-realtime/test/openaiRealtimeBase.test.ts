@@ -51,6 +51,35 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(config.audio?.output?.voice).toBeUndefined();
   });
 
+  it('preserves falsy turn detection values when building payload', () => {
+    const base = new TestBase();
+    const config = (base as any)._getMergedSessionConfig({
+      audio: {
+        input: {
+          turnDetection: {
+            type: 'semantic_vad',
+            createResponse: false,
+            interruptResponse: false,
+            prefixPaddingMs: 0,
+            silenceDurationMs: 0,
+            idleTimeoutMs: 0,
+            threshold: 0,
+          },
+        },
+      },
+    });
+
+    expect(config.audio?.input?.turn_detection).toEqual({
+      type: 'semantic_vad',
+      create_response: false,
+      interrupt_response: false,
+      prefix_padding_ms: 0,
+      silence_duration_ms: 0,
+      idle_timeout_ms: 0,
+      threshold: 0,
+    });
+  });
+
   it('updateSessionConfig sends session.update', () => {
     const base = new TestBase();
     base.updateSessionConfig({ voice: 'echo' });

@@ -648,16 +648,12 @@ export abstract class OpenAIRealtimeBase
 
     const config: RealtimeTurnDetectionConfigAsIs & Record<string, any> = {
       type,
-      create_response: createResponse ? createResponse : create_response,
+      create_response: createResponse ?? create_response,
       eagerness,
-      interrupt_response: interruptResponse
-        ? interruptResponse
-        : interrupt_response,
-      prefix_padding_ms: prefixPaddingMs ? prefixPaddingMs : prefix_padding_ms,
-      silence_duration_ms: silenceDurationMs
-        ? silenceDurationMs
-        : silence_duration_ms,
-      idle_timeout_ms: idleTimeoutMs ? idleTimeoutMs : idle_timeout_ms,
+      interrupt_response: interruptResponse ?? interrupt_response,
+      prefix_padding_ms: prefixPaddingMs ?? prefix_padding_ms,
+      silence_duration_ms: silenceDurationMs ?? silence_duration_ms,
+      idle_timeout_ms: idleTimeoutMs ?? idle_timeout_ms,
       threshold,
       ...rest,
     };
