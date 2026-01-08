@@ -61,7 +61,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 Before submitting changes, ensure all checks pass and augment tests when you touch code:
 
-After any code modification, invoke the `$verify-changes` skill to run the required verification stack from the repository root. The skill runs `pnpm i`, `pnpm build`, `pnpm -r build-check`, `pnpm lint`, and `pnpm test` in that order; rerun the full stack after fixes.
+After any code modification, invoke the `$verify-changes` skill to run the required verification stack from the repository root. Rerun the full stack after fixes.
 
 - Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
 
