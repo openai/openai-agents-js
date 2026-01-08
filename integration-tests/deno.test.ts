@@ -18,6 +18,15 @@ describe('Deno', () => {
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
+  test(
+    'aisdk runner should not lose tracing context',
+    { timeout: 60000 },
+    async () => {
+      const { stdout } = await execa`deno --allow-all aisdk.ts`;
+      expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
+    },
+  );
+
   afterAll(async () => {
     await execa`rm -f deno.lock`;
   });

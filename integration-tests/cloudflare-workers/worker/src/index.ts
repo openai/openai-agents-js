@@ -21,16 +21,50 @@ import {
   ConsoleSpanExporter,
   getGlobalTraceProvider,
   run,
+  Runner,
   setDefaultOpenAIKey,
   setTraceProcessors,
   withTrace,
 } from '@openai/agents';
+import { aisdk } from '@openai/agents-extensions';
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     try {
       setDefaultOpenAIKey(env.OPENAI_API_KEY!);
       setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+      const url = new URL(request.url);
+
+      if (url.pathname === '/aisdk') {
+        // AISDK-backed fake model used to validate context propagation without
+        // hitting external services.
+        return await withTrace('Cloudflare AISDK', async () => {
+          const fakeModel = {
+            provider: 'fake',
+            modelId: 'fake-model',
+            async doGenerate() {
+              return {
+                content: [{ type: 'text', text: 'hello' }],
+                usage: { inputTokens: 1, outputTokens: 1 },
+                providerMetadata: {},
+              };
+            },
+          };
+
+          const agent = new Agent({
+            name: 'AISDK Agent',
+            instructions: 'Respond with a short greeting.',
+            model: aisdk(fakeModel as any),
+          });
+
+          const runner = new Runner({ tracingDisabled: true });
+          const result = await runner.run(agent, 'ping');
+
+          return new Response(
+            `[AISDK_RESPONSE]${result.finalOutput}[/AISDK_RESPONSE]`,
+          );
+        });
+      }
 
       // Optionally wrap your code into a trace if you want to make multiple runs in a single trace
       return await withTrace('Cloudflare Worker', async () => {

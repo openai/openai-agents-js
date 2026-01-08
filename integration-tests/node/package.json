@@ -3,10 +3,12 @@
   "type": "commonjs",
   "scripts": {
     "start:cjs": "node --no-experimental-require-module index.cjs",
-    "start:esm": "node --no-experimental-require-module index.mjs"
+    "start:esm": "node --no-experimental-require-module index.mjs",
+    "start:aisdk:cjs": "node aisdk.cjs"
   },
   "dependencies": {
     "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest",
     "typescript": "^5.9.3"
   }
 }

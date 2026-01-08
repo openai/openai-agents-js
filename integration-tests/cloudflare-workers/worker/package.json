@@ -11,7 +11,8 @@
     "build": "wrangler deploy --dry-run --outdir dist"
   },
   "dependencies": {
-    "@openai/agents": "latest"
+    "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest"
   },
   "devDependencies": {
     "typescript": "^5.5.2",
