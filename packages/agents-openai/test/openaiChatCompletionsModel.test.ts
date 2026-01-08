@@ -395,6 +395,80 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('handles content and tool calls in the same message', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [
+        {
+          message: {
+            content: 'hi',
+            tool_calls: [
+              {
+                id: 'call1',
+                type: 'function',
+                function: { name: 'do', arguments: '{"a":1}' },
+                extra: 'y',
+              },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'hi',
+            providerData: {
+              tool_calls: [
+                {
+                  id: 'call1',
+                  type: 'function',
+                  function: { name: 'do', arguments: '{"a":1}' },
+                  extra: 'y',
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        id: 'r',
+        type: 'function_call',
+        arguments: '{"a":1}',
+        name: 'do',
+        callId: 'call1',
+        status: 'completed',
+        providerData: {
+          type: 'function',
+          function: { name: 'do', arguments: '{"a":1}' },
+          extra: 'y',
+        },
+      },
+    ]);
+  });
+
   it('uses correct response_format for different output types', async () => {
     const client = new FakeClient();
     const emptyResp = {
