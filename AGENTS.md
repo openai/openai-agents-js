@@ -7,19 +7,25 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 ## ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
+Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
 
 ## Table of Contents
 
-1.  [Overview](#overview)
-2.  [Repo Structure & Important Files](#repo-structure--important-files)
-3.  [Testing & Automated Checks](#testing--automated-checks)
-4.  [Repo-Specific Utilities](#repo-specific-utilities)
-5.  [Style, Linting & Type Checking](#style-linting--type-checking)
-6.  [Development Workflow](#development-workflow)
-7.  [Pull Request & Commit Guidelines](#pull-request--commit-guidelines)
-8.  [Review Process & What Reviewers Look For](#review-process--what-reviewers-look-for)
-9.  [Tips for Navigating the Repo](#tips-for-navigating-the-repo)
-10. [Prerequisites](#prerequisites)
+1.  [Mandatory Skill Usage](#mandatory-skill-usage)
+2.  [Overview](#overview)
+3.  [Repo Structure & Important Files](#repo-structure--important-files)
+4.  [Testing & Automated Checks](#testing--automated-checks)
+5.  [Repo-Specific Utilities](#repo-specific-utilities)
+6.  [Style, Linting & Type Checking](#style-linting--type-checking)
+7.  [Development Workflow](#development-workflow)
+8.  [Pull Request & Commit Guidelines](#pull-request--commit-guidelines)
+9.  [Review Process & What Reviewers Look For](#review-process--what-reviewers-look-for)
+10. [Tips for Navigating the Repo](#tips-for-navigating-the-repo)
+11. [Prerequisites](#prerequisites)
+
+## Mandatory Skill Usage
+
+Always load and use the `$verify-changes` skill immediately after any code change and before you consider the work complete. It executes the mandatory verification stack from the repository root; rerun the stack after fixing failures.
 
 ## Overview
 
@@ -38,7 +44,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 ## Repo Structure & Important Files
 
 - `packages/agents-core/`, `packages/agents-openai/`, `packages/agents-realtime/`, `packages/agents-extensions/`: Each has its own `package.json`, `src/`, `test/`, and build scripts.
-- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`.
+- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`. Translated docs under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are generated via `pnpm docs:translate`; do not edit them manually.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
@@ -54,6 +60,8 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 ## Testing & Automated Checks
 
 Before submitting changes, ensure all checks pass and augment tests when you touch code:
+
+After any code modification, invoke the `$verify-changes` skill to run the required verification stack from the repository root. The skill runs `pnpm i`, `pnpm build`, `pnpm -r build-check`, `pnpm lint`, and `pnpm test` in that order; rerun the full stack after fixes.
 
 - Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
 
@@ -110,11 +118,7 @@ See [this README](integration-tests/README.md) for details.
 
 ### Mandatory Local Run Order
 
-For every code change, run the full validation sequence locally:
-
-```bash
-pnpm lint && pnpm build && pnpm -r build-check && pnpm test
-```
+For every code change, run the full validation sequence locally via the `$verify-changes` skill; do not skip any step or change the order.
 
 ### Pre-commit Hooks
 
@@ -171,10 +175,7 @@ pnpm lint && pnpm build && pnpm -r build-check && pnpm test
     git checkout -b feat/<short-description>
     ```
 3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
-4.  Run all checks (in this order):
-    ```bash
-    pnpm lint && pnpm build && pnpm -r build-check && pnpm test
-    ```
+4.  Run all checks using the `$verify-changes` skill to execute the full verification stack in order before considering the work complete.
 5.  Commit using Conventional Commits.
 6.  Push and open a pull request.
 
