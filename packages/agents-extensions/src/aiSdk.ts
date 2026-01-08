@@ -257,6 +257,7 @@ export function itemsToLanguageV2Messages(
       item.content.length > 0 &&
       typeof item.content[0].text === 'string'
     ) {
+      // Only forward provider data when it targets this model so signatures stay scoped correctly.
       messages.push({
         role: 'assistant',
         content: [
@@ -802,6 +803,7 @@ export class AiSdkModel implements Model {
 
         const resultContent = (result as any).content ?? [];
 
+        // Emit reasoning before tool calls so Anthropic thinking signatures propagate into the next turn.
         // Extract and add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
         const reasoningParts = resultContent.filter(
           (c: any) => c && c.type === 'reasoning',
@@ -1062,7 +1064,8 @@ export class AiSdkModel implements Model {
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
 
-      // State for tracking reasoning blocks (for Anthropic extended thinking)
+      // State for tracking reasoning blocks (for Anthropic extended thinking):
+      // Track reasoning deltas so we can preserve Anthropic signatures even when text is redacted.
       const reasoningBlocks: Record<
         string,
         {
