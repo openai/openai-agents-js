@@ -3523,6 +3523,81 @@ describe('resolveInterruptedTurn', () => {
     expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
+  it('skips rerunning already completed computer actions when resuming an interruption', async () => {
+    const fakeComputer: Computer = {
+      environment: 'mac',
+      dimensions: [1, 1],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(async (_x: number, _y: number, _button: any) => {}),
+      doubleClick: vi.fn(async (_x: number, _y: number) => {}),
+      drag: vi.fn(async (_path: [number, number][]) => {}),
+      keypress: vi.fn(async (_keys: string[]) => {}),
+      move: vi.fn(async (_x: number, _y: number) => {}),
+      scroll: vi.fn(
+        async (_x: number, _y: number, _sx: number, _sy: number) => {},
+      ),
+      type: vi.fn(async (_text: string) => {}),
+      wait: vi.fn(async () => {}),
+    };
+    const computer = computerTool({ computer: fakeComputer });
+    const agent = new Agent({ name: 'ComputerAgent', tools: [computer] });
+    const computerCall: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      id: 'comp1',
+      callId: 'comp1',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const computerResult: protocol.ComputerCallResultItem = {
+      type: 'computer_call_result',
+      callId: 'comp1',
+      output: { type: 'computer_screenshot', data: 'data:image/png;base64,ok' },
+    };
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new ToolCallItem(computerCall, agent)],
+      handoffs: [],
+      functions: [],
+      computerActions: [{ toolCall: computerCall, computer }],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['computer_use'],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const originalItems = [
+      new ToolCallItem(computerCall, agent),
+      new ToolCallOutputItem(computerResult, agent, ''),
+    ];
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      originalItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    const toolOutputs = result.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+
+    expect(toolOutputs).toHaveLength(0);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+  });
+
   it('runs shell actions after approval when resuming an interruption', async () => {
     const shell = new FakeShell();
     const shellToolDef = shellTool({

@@ -267,6 +267,25 @@ export async function resolveInterruptedTurn<TContext>(
     'shell_call',
   );
 
+  const previouslyCompletedComputerCallIds = new Set<string>();
+  for (const item of originalPreStepItems) {
+    const rawItem = item.rawItem;
+    if (
+      rawItem &&
+      typeof rawItem === 'object' &&
+      (rawItem as { type?: string }).type === 'computer_call_result'
+    ) {
+      const callId = (rawItem as { callId?: string }).callId;
+      if (typeof callId === 'string') {
+        previouslyCompletedComputerCallIds.add(callId);
+      }
+    }
+  }
+  const pendingComputerActions = processedResponse.computerActions.filter(
+    (action) =>
+      !previouslyCompletedComputerCallIds.has(action.toolCall.callId ?? ''),
+  );
+
   const applyPatchRuns = filterActionsByApproval(
     originalPreStepItems,
     processedResponse.applyPatchActions,
@@ -283,10 +302,10 @@ export async function resolveInterruptedTurn<TContext>(
   // There is no built-in HITL approval surface for computer tools today, so every pending action
   // is executed immediately when the turn resumes.
   const computerResults =
-    processedResponse.computerActions.length > 0
+    pendingComputerActions.length > 0
       ? await executeComputerActions(
           agent,
-          processedResponse.computerActions,
+          pendingComputerActions,
           runner,
           state._context,
         )
