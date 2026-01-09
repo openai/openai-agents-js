@@ -13,6 +13,8 @@ import {
   toAgentInputList,
 } from './items';
 
+export { getTurnInput } from './items';
+
 export type ModelInputData = {
   input: AgentInputItem[];
   instructions?: string;
@@ -27,23 +29,6 @@ export type CallModelInputFilterArgs<TContext = unknown> = {
 export type CallModelInputFilter<TContext = unknown> = (
   args: CallModelInputFilterArgs<TContext>,
 ) => ModelInputData | Promise<ModelInputData>;
-
-/**
- * Constructs the model input array for the current turn by combining the original turn input with
- * any new run items (excluding tool approval placeholders). This helps ensure that repeated calls
- * to the Responses API only send newly generated content.
- *
- * See: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses.
- */
-export function getTurnInput(
-  originalInput: string | AgentInputItem[],
-  generatedItems: RunItem[],
-): AgentInputItem[] {
-  const rawItems = generatedItems
-    .filter((item) => item.type !== 'tool_approval_item')
-    .map((item) => item.rawItem);
-  return [...toAgentInputList(originalInput), ...rawItems];
-}
 
 /**
  * Result of applying a `callModelInputFilter`.

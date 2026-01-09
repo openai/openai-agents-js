@@ -639,6 +639,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
             );
 
+            let guardrailError: unknown;
             let parallelGuardrailPromise:
               | Promise<InputGuardrailResult[]>
               | undefined;
@@ -653,11 +654,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 await runInputGuardrails(state, guardrails.blocking);
               }
               if (guardrails.parallel.length > 0) {
-                parallelGuardrailPromise = runInputGuardrails(
-                  state,
-                  guardrails.parallel,
-                );
-                parallelGuardrailPromise.catch(() => {});
+                const promise = runInputGuardrails(state, guardrails.parallel);
+                parallelGuardrailPromise = promise.catch((err) => {
+                  guardrailError = err;
+                  return [];
+                });
               }
             }
 
@@ -691,6 +692,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               serverConversationTracker,
               sessionInputUpdate,
             );
+
+            if (guardrailError) {
+              throw guardrailError;
+            }
 
             state._lastTurnResponse = await preparedCall.model.getResponse({
               systemInstructions: preparedCall.modelInput.instructions,
@@ -757,6 +762,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             if (parallelGuardrailPromise) {
               await parallelGuardrailPromise;
+              if (guardrailError) {
+                throw guardrailError;
+              }
             }
           }
 
