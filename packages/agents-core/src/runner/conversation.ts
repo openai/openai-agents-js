@@ -324,6 +324,9 @@ export class ServerConversationTracker {
     options?: { filterApplied?: boolean; allTurnItems?: AgentInputItem[] },
   ) {
     const delivered = new Set<AgentInputItem>();
+    const dropRemainingInitialInput =
+      options?.filterApplied && items.length === 0;
+
     for (const item of items) {
       if (!item || typeof item !== 'object' || delivered.has(item)) {
         continue;
@@ -352,6 +355,9 @@ export class ServerConversationTracker {
       this.remainingInitialInput.length === 0 ||
       delivered.size === 0
     ) {
+      if (dropRemainingInitialInput && this.remainingInitialInput) {
+        this.remainingInitialInput = null;
+      }
       return;
     }
 

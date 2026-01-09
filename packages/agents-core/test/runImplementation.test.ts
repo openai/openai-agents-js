@@ -943,6 +943,18 @@ describe('ServerConversationTracker', () => {
     const nextTurnInput = tracker.prepareInput(initialInput, []);
     expect(nextTurnInput).toHaveLength(0);
   });
+
+  it('clears pending initial inputs when filter outputs are empty without turn context', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_234',
+    });
+
+    tracker.prepareInput(toAgentInputList('secret'), []);
+    tracker.markInputAsSent([], { filterApplied: true });
+
+    const nextTurnInput = tracker.prepareInput([], []);
+    expect(nextTurnInput).toHaveLength(0);
+  });
 });
 
 describe('prepareInputItemsWithSession', () => {
