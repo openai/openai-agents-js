@@ -27,6 +27,7 @@ import {
   executeFunctionToolCalls,
   executeHandoffCalls,
   executeShellActions,
+  collectInterruptions,
 } from './toolExecution';
 import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
@@ -39,6 +40,13 @@ type ApprovalItemLike =
       rawItem?: protocol.FunctionCallItem | protocol.HostedToolCallItem;
       agent?: Agent<any, any>;
     };
+
+const APPROVAL_ITEM_TYPES = [
+  'function_call',
+  'hosted_tool_call',
+  'shell_call',
+  'apply_patch_call',
+] as const;
 
 function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
   if (!value || typeof value !== 'object') {
@@ -55,7 +63,9 @@ function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
   }
 
   const itemType = (rawItem as { type?: unknown }).type;
-  return itemType === 'function_call' || itemType === 'hosted_tool_call';
+  return APPROVAL_ITEM_TYPES.includes(
+    itemType as (typeof APPROVAL_ITEM_TYPES)[number],
+  );
 }
 
 function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
@@ -93,6 +103,44 @@ function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
   } catch {
     return `${agentName}:${rawItem.type}`;
   }
+}
+
+function buildApprovedCallIdSet(
+  items: RunItem[],
+  type: (typeof APPROVAL_ITEM_TYPES)[number],
+): Set<string> {
+  const callIds = new Set<string>();
+  for (const item of items) {
+    if (!(item instanceof RunToolApprovalItem)) {
+      continue;
+    }
+    const rawItem = item.rawItem;
+    if (!rawItem || rawItem.type !== type) {
+      continue;
+    }
+    if ('callId' in rawItem && rawItem.callId) {
+      callIds.add(rawItem.callId);
+    } else if ('id' in rawItem && rawItem.id) {
+      callIds.add(rawItem.id);
+    }
+  }
+  return callIds;
+}
+
+function filterActionsByApproval<T extends { toolCall: { callId?: string } }>(
+  preStepItems: RunItem[],
+  actions: T[],
+  type: (typeof APPROVAL_ITEM_TYPES)[number],
+): T[] {
+  const allowedCallIds = buildApprovedCallIdSet(preStepItems, type);
+  if (allowedCallIds.size === 0) {
+    return [];
+  }
+  return actions.filter(
+    (action) =>
+      typeof action.toolCall.callId === 'string' &&
+      allowedCallIds.has(action.toolCall.callId),
+  );
 }
 
 function truncateForDeveloper(message: string, maxLength = 160): string {
@@ -213,6 +261,18 @@ export async function resolveInterruptedTurn<TContext>(
     return functionCallIds.includes(run.toolCall.callId);
   });
 
+  const shellRuns = filterActionsByApproval(
+    originalPreStepItems,
+    processedResponse.shellActions,
+    'shell_call',
+  );
+
+  const applyPatchRuns = filterActionsByApproval(
+    originalPreStepItems,
+    processedResponse.applyPatchActions,
+    'apply_patch_call',
+  );
+
   const functionResults = await executeFunctionToolCalls(
     agent,
     functionToolRuns,
@@ -227,6 +287,21 @@ export async function resolveInterruptedTurn<TContext>(
       ? await executeComputerActions(
           agent,
           processedResponse.computerActions,
+          runner,
+          state._context,
+        )
+      : [];
+
+  const shellResults =
+    shellRuns.length > 0
+      ? await executeShellActions(agent, shellRuns, runner, state._context)
+      : [];
+
+  const applyPatchResults =
+    applyPatchRuns.length > 0
+      ? await executeApplyPatchOperations(
+          agent,
+          applyPatchRuns,
           runner,
           state._context,
         )
@@ -251,6 +326,19 @@ export async function resolveInterruptedTurn<TContext>(
   for (const result of computerResults) {
     appendIfNew(result);
   }
+
+  for (const result of shellResults) {
+    appendIfNew(result);
+  }
+
+  for (const result of applyPatchResults) {
+    appendIfNew(result);
+  }
+
+  const additionalInterruptions = collectInterruptions(
+    [],
+    [...shellResults, ...applyPatchResults],
+  );
 
   // Run MCP tools that require approval after they get their approval results
   const mcpApprovalRuns = processedResponse.mcpApprovalRequests.filter(
@@ -341,6 +429,7 @@ export async function resolveInterruptedTurn<TContext>(
     newResponse,
     preStepItems,
     newItems,
+    additionalInterruptions,
   });
 
   if (completedStep) {
@@ -430,6 +519,11 @@ export async function resolveTurnAfterModelResponse<TContext>(
     appendIfNew(item);
   }
 
+  const additionalInterruptions = collectInterruptions(
+    [],
+    [...shellResults, ...applyPatchResults],
+  );
+
   // run hosted MCP approval requests
   if (processedResponse.mcpApprovalRequests.length > 0) {
     for (const approvalRequest of processedResponse.mcpApprovalRequests) {
@@ -504,6 +598,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
     newResponse,
     preStepItems,
     newItems,
+    additionalInterruptions,
   });
 
   if (completedStep) {
@@ -554,9 +649,10 @@ export async function resolveTurnAfterModelResponse<TContext>(
   }
 
   // Keep looping if any tool output placeholders still require an approval follow-up.
-  const hasPendingToolsOrApprovals = functionResults.some(
-    (result) => result.runItem instanceof RunToolApprovalItem,
-  );
+  const hasPendingToolsOrApprovals =
+    functionResults.some(
+      (result) => result.runItem instanceof RunToolApprovalItem,
+    ) || additionalInterruptions.length > 0;
 
   if (!hasPendingToolsOrApprovals) {
     if (agent.outputType === 'text') {
@@ -618,6 +714,7 @@ type TurnFinalizationParams<TContext> = {
   newResponse: ModelResponse;
   preStepItems: RunItem[];
   newItems: RunItem[];
+  additionalInterruptions?: RunToolApprovalItem[];
 };
 
 // Consolidates the logic that determines whether tool results yielded a final answer,
@@ -631,11 +728,13 @@ async function maybeCompleteTurnFromToolResults<TContext>({
   newResponse,
   preStepItems,
   newItems,
+  additionalInterruptions = [],
 }: TurnFinalizationParams<TContext>): Promise<SingleStepResult | null> {
   const toolOutcome = await checkForFinalOutputFromTools(
     agent,
     functionResults,
     state,
+    additionalInterruptions,
   );
 
   if (toolOutcome.isFinalOutput) {

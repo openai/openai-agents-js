@@ -3459,4 +3459,184 @@ describe('resolveInterruptedTurn', () => {
     ).toBe(computerCall.callId);
     expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
+
+  it('runs shell actions after approval when resuming an interruption', async () => {
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({ name: 'ShellAgent', tools: [shellToolDef] });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new ToolCallItem(shellCall, agent)],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['shell'],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 2);
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const turnResult = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(turnResult.nextStep.type).toBe('next_step_interruption');
+    const approvalItem = turnResult.newStepItems.find(
+      (item): item is ToolApprovalItem => item instanceof ToolApprovalItem,
+    );
+    expect(approvalItem).toBeDefined();
+    expect(shell.calls).toHaveLength(0);
+
+    state._generatedItems = turnResult.generatedItems;
+    state._currentStep = turnResult.nextStep;
+    state._currentTurnPersistedItemCount = turnResult.generatedItems.length;
+
+    if (!approvalItem) {
+      throw new Error('Expected approval item to be present.');
+    }
+    state.approve(approvalItem);
+
+    const resumedResult = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      state._generatedItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    const shellOutputs = resumedResult.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+
+    expect(shellOutputs).toHaveLength(1);
+    expect(shell.calls).toHaveLength(1);
+    expect(
+      resumedResult.newStepItems.some(
+        (item) => item instanceof ToolApprovalItem,
+      ),
+    ).toBe(false);
+  });
+
+  it('resumes mixed shell/apply_patch approvals and executes both actions', async () => {
+    const shell = new FakeShell();
+    const editor = new FakeEditor();
+    const shellToolDef = shellTool({ shell, needsApproval: async () => true });
+    const applyPatchToolDef = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({
+      name: 'MixedAgent',
+      tools: [shellToolDef, applyPatchToolDef],
+    });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const applyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'patch_1',
+      status: 'in_progress',
+      operation: { type: 'create_file', path: 'a.txt', diff: 'hi' },
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        new ToolCallItem(shellCall, agent),
+        new ToolCallItem(applyPatchCall, agent),
+      ],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [
+        { toolCall: applyPatchCall, applyPatch: applyPatchToolDef },
+      ],
+      mcpApprovalRequests: [],
+      toolsUsed: ['shell', 'apply_patch'],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const firstStep = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(firstStep.nextStep.type).toBe('next_step_interruption');
+    const approvals = firstStep.newStepItems.filter(
+      (item): item is ToolApprovalItem => item instanceof ToolApprovalItem,
+    );
+    expect(approvals).toHaveLength(2);
+
+    state._generatedItems = firstStep.generatedItems;
+    state._currentStep = firstStep.nextStep;
+    state._currentTurnPersistedItemCount = firstStep.generatedItems.length;
+
+    for (const approval of approvals) {
+      state.approve(approval);
+    }
+
+    const resumed = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      state._generatedItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    const outputs = resumed.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+    expect(outputs).toHaveLength(2);
+    expect(shell.calls).toHaveLength(1);
+    expect(editor.operations).toHaveLength(1);
+    expect(
+      resumed.newStepItems.some(
+        (item): item is ToolApprovalItem => item instanceof ToolApprovalItem,
+      ),
+    ).toBe(false);
+  });
 });

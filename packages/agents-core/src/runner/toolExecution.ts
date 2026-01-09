@@ -846,23 +846,21 @@ const NOT_FINAL_OUTPUT: ToolsToFinalOutputResult = {
 };
 
 /**
- * @internal
- * Determines whether tool executions produced a final agent output, triggered an interruption,
- * or whether the agent loop should continue collecting more responses.
+ * Collects approval interruptions from tool execution results and any additional
+ * RunItems (e.g., shell/apply_patch approval placeholders).
  */
-export async function checkForFinalOutputFromTools<
-  TContext,
-  TOutput extends AgentOutputType,
->(
-  agent: Agent<TContext, TOutput>,
+export function collectInterruptions(
   toolResults: FunctionToolResult[],
-  state: RunState<TContext, Agent<TContext, TOutput>>,
-): Promise<ToolsToFinalOutputResult> {
-  if (toolResults.length === 0) {
-    return NOT_FINAL_OUTPUT;
+  additionalItems: RunItem[] = [],
+): RunToolApprovalItem[] {
+  const interruptions: RunToolApprovalItem[] = [];
+
+  for (const item of additionalItems) {
+    if (item instanceof RunToolApprovalItem) {
+      interruptions.push(item);
+    }
   }
 
-  const interruptions: RunToolApprovalItem[] = [];
   for (const result of toolResults) {
     if (result.runItem instanceof RunToolApprovalItem) {
       interruptions.push(result.runItem);
@@ -879,6 +877,32 @@ export async function checkForFinalOutputFromTools<
       }
     }
   }
+
+  return interruptions;
+}
+
+/**
+ * @internal
+ * Determines whether tool executions produced a final agent output, triggered an interruption,
+ * or whether the agent loop should continue collecting more responses.
+ */
+export async function checkForFinalOutputFromTools<
+  TContext,
+  TOutput extends AgentOutputType,
+>(
+  agent: Agent<TContext, TOutput>,
+  toolResults: FunctionToolResult[],
+  state: RunState<TContext, Agent<TContext, TOutput>>,
+  additionalInterruptions: RunItem[] = [],
+): Promise<ToolsToFinalOutputResult> {
+  if (toolResults.length === 0 && additionalInterruptions.length === 0) {
+    return NOT_FINAL_OUTPUT;
+  }
+
+  const interruptions = collectInterruptions(
+    toolResults,
+    additionalInterruptions,
+  );
 
   if (interruptions.length > 0) {
     return {
