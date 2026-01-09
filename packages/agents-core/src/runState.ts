@@ -667,6 +667,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       state._toolUseTracker.addToolUse(
         agentMap.get(agentName) as TAgent,
         toolNames,
+        { allowEmpty: true },
       );
     }
 
