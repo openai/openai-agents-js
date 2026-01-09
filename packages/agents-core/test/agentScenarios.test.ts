@@ -1721,7 +1721,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(model.calls.length).toBe(2);
     expect(model.firstTurnArgs?.conversationId).toBe('conv-session');
     expect(model.lastTurnArgs?.conversationId).toBe('conv-session');
-    expect(model.lastTurnArgs?.previousResponseId).toBeUndefined();
+    expect(model.lastTurnArgs?.previousResponseId).toBe('resp-1');
 
     const secondTurnInput = model.lastTurnArgs?.input;
     if (Array.isArray(secondTurnInput)) {

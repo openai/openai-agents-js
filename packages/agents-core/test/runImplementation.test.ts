@@ -361,6 +361,43 @@ describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
   });
 });
 
+describe('ServerConversationTracker', () => {
+  it('updates previousResponseId even when conversationId is set', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv-1',
+      previousResponseId: 'resp-old',
+    });
+
+    tracker.trackServerItems({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp-new',
+    });
+
+    expect(tracker.previousResponseId).toBe('resp-new');
+    expect(tracker.conversationId).toBe('conv-1');
+  });
+
+  it('preserves initial input when resuming without prior responses', () => {
+    const tracker = new ServerConversationTracker({ conversationId: 'conv-2' });
+    const originalInput = 'hello there';
+
+    tracker.primeFromState({
+      originalInput,
+      generatedItems: [],
+      modelResponses: [],
+    });
+
+    const prepared = tracker.prepareInput(originalInput, []);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatchObject({
+      type: 'message',
+      role: 'user',
+      content: originalInput,
+    });
+  });
+});
+
 describe('saveToSession', () => {
   class MemorySession implements Session {
     items: AgentInputItem[] = [];
@@ -1051,7 +1088,7 @@ describe('ServerConversationTracker', () => {
     expect(nextTurnInput).toHaveLength(0);
   });
 
-  it('does not resend initial inputs when resuming a server-managed conversation without responses', () => {
+  it('requeues initial inputs when resuming a server-managed conversation without responses', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_no_response',
     });
@@ -1064,7 +1101,11 @@ describe('ServerConversationTracker', () => {
     });
 
     const nextTurnInput = tracker.prepareInput(initialInput, []);
-    expect(nextTurnInput).toHaveLength(0);
+    expect(nextTurnInput).toHaveLength(1);
+    expect(nextTurnInput[0]).toMatchObject({
+      role: 'user',
+      content: 'needs resend',
+    });
   });
 
   it('requeues initial inputs when resuming without responses and no server conversation context', () => {

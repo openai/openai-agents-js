@@ -223,9 +223,6 @@ export class ServerConversationTracker {
 
     const originalItems = toAgentInputList(originalInput);
     const hasResponses = modelResponses.length > 0;
-    const serverManagesConversation =
-      typeof this.conversationId !== 'undefined' ||
-      typeof this.previousResponseId !== 'undefined';
 
     const serverItemKeys = new Set<string>();
     for (const response of modelResponses) {
@@ -238,7 +235,7 @@ export class ServerConversationTracker {
       }
     }
 
-    if (hasResponses || serverManagesConversation) {
+    if (hasResponses) {
       for (const item of originalItems) {
         if (item && typeof item === 'object') {
           this.sentItems.add(item);
@@ -250,7 +247,7 @@ export class ServerConversationTracker {
     }
 
     const latestResponse = modelResponses[modelResponses.length - 1];
-    if (!this.conversationId && latestResponse?.responseId) {
+    if (latestResponse?.responseId) {
       this.previousResponseId = latestResponse.responseId;
     }
 
@@ -283,7 +280,7 @@ export class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    if (!this.conversationId && modelResponse.responseId) {
+    if (modelResponse.responseId) {
       this.previousResponseId = modelResponse.responseId;
     }
   }
