@@ -742,6 +742,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               signal: options.signal,
             });
+            if (serverConversationTracker) {
+              serverConversationTracker.markInputAsSent(
+                preparedCall.sourceItems,
+                {
+                  filterApplied: preparedCall.filterApplied,
+                  allTurnItems: preparedCall.turnInput,
+                },
+              );
+            }
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
@@ -1085,6 +1094,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           let finalResponse: ModelResponse | undefined = undefined;
+          let inputMarked = false;
 
           const preparedCall = await this.#prepareModelCall(
             result.state,
@@ -1132,6 +1142,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (guardrailError) {
                 throw guardrailError;
               }
+              if (!inputMarked && serverConversationTracker) {
+                serverConversationTracker.markInputAsSent(
+                  preparedCall.sourceItems,
+                  {
+                    filterApplied: preparedCall.filterApplied,
+                    allTurnItems: preparedCall.turnInput,
+                  },
+                );
+                inputMarked = true;
+              }
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1155,6 +1175,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               return;
             }
             throw error;
+          }
+
+          if (!inputMarked && serverConversationTracker && finalResponse) {
+            serverConversationTracker.markInputAsSent(
+              preparedCall.sourceItems,
+              {
+                filterApplied: preparedCall.filterApplied,
+                allTurnItems: preparedCall.turnInput,
+              },
+            );
+            inputMarked = true;
           }
 
           await awaitGuardrailsAndPersistInput();
@@ -1451,12 +1482,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         systemInstructions,
       );
 
-    // Inform the tracker which exact original objects made it to the provider so future turns
-    // only send the delta that has not yet been acknowledged by the server.
-    serverConversationTracker?.markInputAsSent(sourceItems, {
-      filterApplied,
-      allTurnItems: turnInput,
-    });
     // Provide filtered clones whenever filters run so session history mirrors the model payload.
     // Returning an empty array is intentional: it tells the session layer to persist "nothing"
     // instead of falling back to the unfiltered originals when the filter redacts everything.
@@ -1480,6 +1505,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       prompt,
       previousResponseId,
       conversationId,
+      sourceItems,
+      filterApplied,
+      turnInput,
     };
   }
 }

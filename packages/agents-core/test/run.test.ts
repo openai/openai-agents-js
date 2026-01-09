@@ -29,6 +29,7 @@ import {
   assistant,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
+import { ServerConversationTracker } from '../src/runner/conversation';
 import { handoff } from '../src/handoff';
 import {
   RunMessageOutputItem as MessageOutputItem,
@@ -2634,6 +2635,79 @@ describe('Runner.run', () => {
       description: 'test tool',
       parameters: z.object({ test: z.string() }),
       execute: async ({ test }) => `result:${test}`,
+    });
+
+    it('marks server-managed inputs as sent only after a successful response', async () => {
+      /* eslint-disable require-yield */
+      class SingleResponseModel implements Model {
+        public readonly requests: ModelRequest[] = [];
+        constructor(private readonly response: ModelResponse) {}
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return this.response;
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('not used');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+
+      const model = new SingleResponseModel(TEST_MODEL_RESPONSE_BASIC);
+      const agent = new Agent({ name: 'MarkSuccess', model });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'hi there', {
+        conversationId: 'conv-mark-success',
+      });
+
+      expect(result.finalOutput).toBe('Hello World');
+      expect(markSpy).toHaveBeenCalledTimes(1);
+      const [sourceItems, options] = markSpy.mock.calls[0];
+      expect(Array.isArray(sourceItems)).toBe(true);
+      expect(options?.filterApplied).toBe(false);
+      expect(model.requests[0]?.conversationId).toBe('conv-mark-success');
+
+      markSpy.mockRestore();
+    });
+
+    it('does not mark server inputs as sent when the model call fails before sending', async () => {
+      /* eslint-disable require-yield */
+      class ThrowingModel implements Model {
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('boom');
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('not used');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({
+        name: 'MarkFailure',
+        model: new ThrowingModel(),
+      });
+      const runner = new Runner();
+
+      await expect(
+        runner.run(agent, 'please fail', {
+          conversationId: 'conv-mark-failure',
+        }),
+      ).rejects.toThrow('boom');
+
+      expect(markSpy).not.toHaveBeenCalled();
+      markSpy.mockRestore();
     });
 
     it('skips persisting turns when the server manages conversation history via conversationId', async () => {

@@ -29,6 +29,7 @@ import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
 import * as sessionPersistence from '../src/runner/sessionPersistence';
 import type { GuardrailFunctionOutput } from '../src/guardrail';
+import { ServerConversationTracker } from '../src/runner/conversation';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -1120,6 +1121,68 @@ describe('Runner.run (streaming)', () => {
             (item as protocol.FunctionCallResultItem).callId === 'call-1',
         ),
       ).toBe(true);
+    });
+
+    it('marks streaming inputs as sent only after the response stream begins', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('hello')], 'resp-stream-1'),
+      ]);
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({ name: 'StreamMark', model });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'ping', {
+        stream: true,
+        conversationId: 'conv-stream-mark',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('hello');
+      expect(markSpy).toHaveBeenCalledTimes(1);
+      const [sourceItems, options] = markSpy.mock.calls[0];
+      expect(Array.isArray(sourceItems)).toBe(true);
+      expect(options?.filterApplied).toBe(false);
+
+      markSpy.mockRestore();
+    });
+
+    it('does not mark streaming inputs as sent when the stream fails before any events', async () => {
+      /* eslint-disable require-yield */
+      class ThrowingStreamingModel implements Model {
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('not used');
+        }
+
+        async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+          throw new Error('stream failure');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({
+        name: 'StreamFail',
+        model: new ThrowingStreamingModel(),
+      });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'ping', {
+        stream: true,
+        conversationId: 'conv-stream-fail',
+      });
+
+      await expect(drain(result)).rejects.toThrow('stream failure');
+      expect(markSpy).not.toHaveBeenCalled();
+
+      markSpy.mockRestore();
     });
 
     it('only sends new items and updates previousResponseId across turns', async () => {

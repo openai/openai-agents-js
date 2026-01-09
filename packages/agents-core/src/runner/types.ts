@@ -15,7 +15,7 @@ import {
   ShellTool,
 } from '../tool';
 import { Tool } from '../tool';
-import { UnknownContext } from '../types';
+import { AgentInputItem, UnknownContext } from '../types';
 import * as protocol from '../types/protocol';
 import { ModelInputData } from './conversation';
 
@@ -78,6 +78,9 @@ export type PreparedModelCall<TContext = UnknownContext> =
     prompt?: Prompt;
     previousResponseId?: string;
     conversationId?: string;
+    sourceItems: (AgentInputItem | undefined)[];
+    filterApplied: boolean;
+    turnInput: AgentInputItem[];
   };
 
 export type {
