@@ -189,8 +189,6 @@ export class ServerConversationTracker {
   private sentItems = new WeakSet<object>();
   // The items received from the server; using WeakSet for memory efficiency.
   private serverItems = new WeakSet<object>();
-  // Tracks server items by content so we can detect matches after serialization round-trips.
-  private serverItemKeys = new Set<string>();
   // Track initial input items that have not yet been sent so they can be retried on later turns.
   private remainingInitialInput: AgentInputItem[] | null = null;
 
@@ -230,7 +228,6 @@ export class ServerConversationTracker {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
-          this.serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
         }
       }
     }
@@ -263,8 +260,6 @@ export class ServerConversationTracker {
         }
       }
     }
-
-    this.serverItemKeys = serverItemKeys;
   }
 
   /**
