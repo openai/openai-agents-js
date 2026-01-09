@@ -7,7 +7,7 @@ description: Run all mandatory verification steps for code changes in the OpenAI
 
 ## Overview
 
-Ensure work is only marked complete after installing dependencies, building, linting, type checking, and tests pass. Use this skill whenever wrapping up a task, before opening a PR, or when asked to confirm that changes are ready to hand off.
+Ensure work is only marked complete after installing dependencies, building, linting, type checking (including generated declarations), and tests pass. Use this skill whenever wrapping up a task, before opening a PR, or when asked to confirm that changes are ready to hand off.
 
 ## Quick start
 
@@ -19,7 +19,7 @@ Ensure work is only marked complete after installing dependencies, building, lin
 
 ## Manual workflow
 
-- Run from the repository root in this order: `pnpm i`, `pnpm build`, `pnpm -r build-check`, `pnpm lint`, `pnpm test`.
+- Run from the repository root in this order: `pnpm i`, `pnpm build`, `pnpm -r build-check`, `pnpm -r -F "@openai/*" dist:check`, `pnpm lint`, `pnpm test`.
 - Do not skip steps; stop and fix issues immediately when a command fails.
 - Re-run the full stack after applying fixes so the commands execute in the required order.
 
@@ -27,7 +27,7 @@ Ensure work is only marked complete after installing dependencies, building, lin
 
 ### scripts/run.sh
 
-- Executes the full verification sequence with fail-fast semantics.
+- Executes the full verification sequence (including declaration checks) with fail-fast semantics.
 - Prefer this entry point to ensure the commands always run in the correct order from the repo root.
 
 ### scripts/run.ps1

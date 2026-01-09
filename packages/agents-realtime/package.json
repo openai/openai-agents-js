@@ -51,6 +51,7 @@
     "prebuild": "tsx ../../scripts/embedMeta.ts",
     "build": "tsc",
     "build-check": "tsc --noEmit -p ./tsconfig.test.json",
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json",
     "bundle": "vite build"
   },
   "dependencies": {

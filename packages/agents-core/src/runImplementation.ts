@@ -2438,7 +2438,6 @@ export async function saveStreamResultToSession(
 }
 
 /**
- * @internal
  * If a session is provided, expands the input with session history; otherwise returns the input.
  */
 export type PreparedInputWithSessionResult = {

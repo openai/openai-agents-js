@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": false,
+    "types": ["node"],
+    "lib": ["ES2018", "DOM"]
+  },
+  "include": ["./dist/**/*.d.ts"],
+  "exclude": ["./dist/runner/**"]
+}

@@ -32,6 +32,8 @@ jobs:
         run: pnpm install
       - name: Build all packages
         run: pnpm build
+      - name: Check generated declarations
+        run: pnpm -r -F "@openai/*" dist:check
       - name: Run linter
         run: pnpm lint
       - name: Type-check docs scripts

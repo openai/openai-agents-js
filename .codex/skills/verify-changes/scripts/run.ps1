@@ -34,6 +34,7 @@ function Invoke-PnpmStep {
 Invoke-PnpmStep -Args @("i")
 Invoke-PnpmStep -Args @("build")
 Invoke-PnpmStep -Args @("-r", "build-check")
+Invoke-PnpmStep -Args @("-r", "-F", "@openai/*", "dist:check")
 Invoke-PnpmStep -Args @("lint")
 Invoke-PnpmStep -Args @("test")
 
