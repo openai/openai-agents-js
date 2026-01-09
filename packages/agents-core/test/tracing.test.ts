@@ -34,10 +34,6 @@ import {
   setCurrentSpan,
   resetCurrentSpan,
 } from '../src/tracing';
-import {
-  cloneCurrentContext,
-  withNewSpanContext,
-} from '../src/tracing/context';
 
 import { withAgentSpan, createAgentSpan } from '../src/tracing/createSpans';
 
@@ -329,122 +325,29 @@ describe('withTrace & span helpers (integration)', () => {
     expect(processor.tracesEnded.length).toBe(1);
   });
 
-  it('clears global fallback even when a cloned context is installed', async () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
+  it('does not allow setting spans after a trace ends', async () => {
+    let error: unknown;
 
     await withTrace('workflow', async () => {
-      const current = (globalThis as any)[CONTEXT_SYMBOL];
-      expect(current?.trace?.traceId).toBeDefined();
-
-      const cloned = cloneCurrentContext(current);
-      // Simulate a nested scope installing a cloned context on the global fallback.
-      (globalThis as any)[CONTEXT_SYMBOL] = cloned;
+      setTimeout(() => {
+        try {
+          const span = new Span(
+            {
+              traceId: 'trace_123',
+              data: { type: 'custom', name: 'late-span', data: {} },
+            },
+            processor,
+          );
+          setCurrentSpan(span);
+        } catch (caught) {
+          error = caught;
+        }
+      }, 0);
     });
 
-    expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
-  });
-
-  it('uses global fallback only when a single trace owner is active', () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-    const ownerToken = Symbol('owner');
-
-    const context = {
-      trace: new Trace({ name: 'global-fallback' }),
-      active: true,
-      fallbackOwnerToken: ownerToken,
-    } as any;
-
-    (globalThis as any)[OWNERS_SYMBOL] = new Set<symbol>([ownerToken]);
-    (globalThis as any)[CONTEXT_SYMBOL] = context;
-
-    expect(getCurrentTrace()?.traceId).toBe(context.trace.traceId);
-
-    (globalThis as any)[OWNERS_SYMBOL].clear();
-    delete (globalThis as any)[CONTEXT_SYMBOL];
-  });
-
-  it('ignores global fallback when multiple trace owners are active', () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-    const ownerA = Symbol('ownerA');
-    const ownerB = Symbol('ownerB');
-
-    const contextA = {
-      trace: new Trace({ name: 'A' }),
-      active: true,
-      fallbackOwnerToken: ownerA,
-    } as any;
-
-    const owners = new Set<symbol>();
-    owners.add(ownerA);
-    owners.add(ownerB);
-    (globalThis as any)[OWNERS_SYMBOL] = owners;
-    (globalThis as any)[CONTEXT_SYMBOL] = contextA;
-
-    expect(getCurrentTrace()).toBeNull();
-
-    owners.clear();
-    delete (globalThis as any)[CONTEXT_SYMBOL];
-  });
-
-  it('does not restore a foreign global context into ALS when there was no store', async () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-    const foreignOwner = Symbol('foreign');
-    const otherOwner = Symbol('other');
-
-    const foreignContext = {
-      trace: new Trace({ name: 'foreign' }),
-      active: true,
-      fallbackOwnerToken: foreignOwner,
-    } as any;
-
-    const owners = new Set<symbol>([foreignOwner, otherOwner]);
-    (globalThis as any)[OWNERS_SYMBOL] = owners;
-    (globalThis as any)[CONTEXT_SYMBOL] = foreignContext;
-
-    await withTrace('local', async (trace) => {
-      expect(getCurrentTrace()?.traceId).toBe(trace.traceId);
-    });
-
-    // Fallback is gated (owners > 1) so the ALS store must not have been
-    // restored to the foreign context; otherwise the current trace would
-    // resolve to the foreign one here.
-    expect(getCurrentTrace()).toBeNull();
-
-    owners.clear();
-    delete (globalThis as any)[CONTEXT_SYMBOL];
-  });
-
-  it('consults global fallback when ALS store is inactive', () => {
-    const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-    const ownerToken = Symbol('owner');
-
-    // Ensure the global ALS exists for this test.
-    expect(getCurrentTrace()).toBeNull();
-
-    const context = {
-      trace: new Trace({ name: 'global-fallback' }),
-      active: true,
-      fallbackOwnerToken: ownerToken,
-    } as any;
-
-    const owners = new Set<symbol>([ownerToken]);
-    (globalThis as any)[OWNERS_SYMBOL] = owners;
-    (globalThis as any)[CONTEXT_SYMBOL] = context;
-
-    const als = (globalThis as any)[ALS_SYMBOL] as any;
-    expect(als).toBeDefined();
-
-    als.run({ active: false }, () => {
-      expect(getCurrentTrace()?.traceId).toBe(context.trace.traceId);
-    });
-
-    owners.clear();
-    delete (globalThis as any)[CONTEXT_SYMBOL];
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('No existing trace found');
   });
 
   it('withAgentSpan nests a span within a trace and resets current span afterwards', async () => {
@@ -469,82 +372,6 @@ describe('withTrace & span helpers (integration)', () => {
     const endedIds = processor.spansEnded.map((s) => s.spanId);
     expect(startedIds).toContain(capturedSpanId);
     expect(endedIds).toContain(capturedSpanId);
-  });
-
-  it('withNewSpanContext restores the previous global fallback after exiting', async () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-
-    await withTrace('workflow', async () => {
-      const outerContext = (globalThis as any)[CONTEXT_SYMBOL];
-      expect(outerContext?.trace?.traceId).toBeDefined();
-
-      await withNewSpanContext(async () => {
-        const innerContext = (globalThis as any)[CONTEXT_SYMBOL];
-        expect(innerContext).not.toBe(outerContext);
-        expect(innerContext?.trace?.traceId).toBe(outerContext.trace?.traceId);
-      });
-
-      expect((globalThis as any)[CONTEXT_SYMBOL]).toBe(outerContext);
-    });
-
-    expect((globalThis as any)[CONTEXT_SYMBOL]).toBeUndefined();
-  });
-
-  it('withNewSpanContext keeps ALS context when global fallback is absent', async () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-
-    await withTrace('workflow', async () => {
-      // Simulate a locked-down global by clearing fallback visibility.
-      delete (globalThis as any)[CONTEXT_SYMBOL];
-      delete (globalThis as any)[OWNERS_SYMBOL];
-
-      await withNewSpanContext(async () => {
-        expect(getCurrentTrace()).not.toBeNull();
-      });
-
-      // After exiting, ALS should still have the outer trace.
-      expect(getCurrentTrace()).not.toBeNull();
-    });
-  });
-
-  it('withNewSpanContext does not drop owner token when another trace overwrote fallback', async () => {
-    const CONTEXT_SYMBOL = Symbol.for('openai.agents.core.lastContext');
-    const OWNERS_SYMBOL = Symbol.for('openai.agents.core.globalFallbackOwners');
-
-    await withTrace('outer', async () => {
-      const owners: Set<symbol> =
-        (globalThis as any)[OWNERS_SYMBOL] ?? new Set<symbol>();
-      const outerContext = (globalThis as any)[CONTEXT_SYMBOL];
-      const outerOwner = outerContext?.fallbackOwnerToken;
-      expect(outerOwner).toBeDefined();
-
-      const foreignOwner = Symbol('foreign');
-      owners.add(foreignOwner);
-      (globalThis as any)[OWNERS_SYMBOL] = owners;
-      // Simulate another trace overwriting the global fallback while the outer
-      // trace is still active.
-      const foreignTrace = new Trace({
-        name: 'foreign',
-        traceId: outerContext.trace?.traceId,
-      });
-      (globalThis as any)[CONTEXT_SYMBOL] = {
-        trace: foreignTrace,
-        active: true,
-        fallbackOwnerToken: foreignOwner,
-      };
-
-      await withNewSpanContext(async () => {
-        expect(getCurrentTrace()).not.toBeNull();
-      });
-
-      // Owner set should still include the outer owner token.
-      expect(owners.has(outerOwner)).toBe(true);
-      expect(owners.size).toBeGreaterThanOrEqual(2);
-
-      owners.clear();
-      delete (globalThis as any)[CONTEXT_SYMBOL];
-    });
   });
 
   it('sets previousSpan when updating the current span and maintains reset stack', async () => {

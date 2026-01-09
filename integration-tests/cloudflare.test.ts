@@ -47,6 +47,28 @@ describe('Cloudflare Workers', () => {
     },
   );
 
+  test(
+    'AsyncLocalStorage propagation preserves tracing context',
+    { timeout: 60000 },
+    async () => {
+      const response = await fetch('http://localhost:8787/als-propagation');
+      const report = (await response.json()) as Record<string, boolean>;
+
+      expect(report).toEqual(
+        expect.objectContaining({
+          sync: true,
+          promiseThen: true,
+          queueMicrotask: true,
+          setTimeout: true,
+          cryptoDigest: true,
+          readablePull: true,
+          transformStreamTransform: true,
+          transformStreamFlush: true,
+        }),
+      );
+    },
+  );
+
   afterAll(async () => {
     if (server) {
       server.kill();

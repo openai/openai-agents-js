@@ -20,6 +20,7 @@ import {
   BatchTraceProcessor,
   ConsoleSpanExporter,
   getGlobalTraceProvider,
+  getCurrentTrace,
   run,
   Runner,
   setDefaultOpenAIKey,
@@ -63,6 +64,75 @@ export default {
           return new Response(
             `[AISDK_RESPONSE]${result.finalOutput}[/AISDK_RESPONSE]`,
           );
+        });
+      }
+
+      if (url.pathname === '/als-propagation') {
+        const report = await withTrace(
+          'Cloudflare ALS propagation',
+          async (trace) => {
+            const matchesTrace = () =>
+              getCurrentTrace()?.traceId === trace.traceId;
+            const results: Record<string, boolean> = {
+              sync: matchesTrace(),
+            };
+
+            await Promise.resolve().then(() => {
+              results.promiseThen = matchesTrace();
+            });
+
+            await new Promise<void>((resolve) =>
+              queueMicrotask(() => {
+                results.queueMicrotask = matchesTrace();
+                resolve();
+              }),
+            );
+
+            await new Promise<void>((resolve) =>
+              setTimeout(() => {
+                results.setTimeout = matchesTrace();
+                resolve();
+              }, 0),
+            );
+
+            await crypto.subtle.digest('SHA-256', new Uint8Array([1, 2, 3]));
+            results.cryptoDigest = matchesTrace();
+
+            const pullStream = new ReadableStream({
+              pull(controller) {
+                results.readablePull = matchesTrace();
+                controller.enqueue('x');
+                controller.close();
+              },
+            });
+            await pullStream.getReader().read();
+
+            const transform = new TransformStream({
+              transform(chunk, controller) {
+                results.transformStreamTransform = matchesTrace();
+                controller.enqueue(chunk);
+              },
+              flush() {
+                results.transformStreamFlush = matchesTrace();
+              },
+            });
+            const source = new ReadableStream({
+              start(controller) {
+                controller.enqueue('y');
+                controller.close();
+              },
+            });
+            const transformed = source.pipeThrough(transform);
+            const reader = transformed.getReader();
+            await reader.read();
+            await reader.read();
+
+            return results;
+          },
+        );
+
+        return new Response(JSON.stringify(report, null, 2), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
         });
       }
 
