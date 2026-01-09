@@ -1112,7 +1112,7 @@ describe('Runner.run (streaming)', () => {
             item.type === 'message' &&
             getFirstTextContent(item) === 'First input',
         ),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         secondInput.some(
           (item) =>

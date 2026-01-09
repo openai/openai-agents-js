@@ -69,6 +69,7 @@ import {
 import { Computer } from '../src/computer';
 import { RequestUsage, Usage } from '../src/usage';
 import { setTracingDisabled, withTrace } from '../src';
+import type { AgentInputItem } from '../src/types';
 
 import {
   TEST_AGENT,
@@ -92,7 +93,6 @@ import type {
   OpenAIResponsesCompactionResult,
   Session,
 } from '../src/memory/session';
-import type { AgentInputItem } from '../src/types';
 import {
   ToolGuardrailFunctionOutputFactory,
   defineToolInputGuardrail,
@@ -953,6 +953,34 @@ describe('ServerConversationTracker', () => {
     tracker.markInputAsSent([], { filterApplied: true });
 
     const nextTurnInput = tracker.prepareInput([], []);
+    expect(nextTurnInput).toHaveLength(0);
+  });
+
+  it('drops partially filtered initial inputs from subsequent turns', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_partial',
+    });
+
+    const keep: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'keep',
+    };
+    const drop: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'drop',
+    };
+
+    const turnInput = tracker.prepareInput([keep, drop], []);
+    expect(turnInput).toHaveLength(2);
+
+    tracker.markInputAsSent([keep], {
+      filterApplied: true,
+      allTurnItems: turnInput,
+    });
+
+    const nextTurnInput = tracker.prepareInput([keep, drop], []);
     expect(nextTurnInput).toHaveLength(0);
   });
 });

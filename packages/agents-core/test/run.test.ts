@@ -2151,8 +2151,7 @@ describe('Runner.run', () => {
       const secondMessages = secondInput.filter(
         (item) => item.type === 'message',
       );
-      expect(secondMessages).toHaveLength(1);
-      expect(getFirstTextContent(secondMessages[0])).toBe('First input');
+      expect(secondMessages).toHaveLength(0);
 
       expect(
         secondInput.some(

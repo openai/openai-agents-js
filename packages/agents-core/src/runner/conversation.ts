@@ -326,6 +326,8 @@ export class ServerConversationTracker {
     const delivered = new Set<AgentInputItem>();
     const dropRemainingInitialInput =
       options?.filterApplied && items.length === 0;
+    const markFilteredItemsAsSent =
+      options?.filterApplied && Boolean(options.allTurnItems);
 
     for (const item of items) {
       if (!item || typeof item !== 'object' || delivered.has(item)) {
@@ -336,13 +338,15 @@ export class ServerConversationTracker {
       this.sentItems.add(item);
     }
 
-    const shouldMarkAllTurnItems =
-      options?.filterApplied && options.allTurnItems && items.length === 0;
-
     const allTurnItems = options?.allTurnItems;
-    if (shouldMarkAllTurnItems && allTurnItems) {
+    if (markFilteredItemsAsSent && allTurnItems) {
       for (const item of allTurnItems) {
-        if (!item || typeof item !== 'object' || delivered.has(item)) {
+        if (
+          !item ||
+          typeof item !== 'object' ||
+          delivered.has(item) ||
+          this.sentItems.has(item)
+        ) {
           continue;
         }
         delivered.add(item);
