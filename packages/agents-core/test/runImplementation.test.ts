@@ -319,6 +319,46 @@ describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
     expect(result.providerData?.text?.verbosity).toBeUndefined();
     spy.mockRestore();
   });
+
+  it('does not throw when providerData contains non-serializable values', () => {
+    const spy = withGpt5Default();
+    const uncloneable = () => 'noop';
+    const agentModelSettings: ModelSettings = {
+      providerData: {
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+        fn: uncloneable,
+      },
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    };
+    const modelSettings: ModelSettings = {
+      providerData: {
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+        fn: uncloneable,
+      },
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    };
+
+    const result = adjustModelSettingsForNonGPT5RunnerModel(
+      true,
+      agentModelSettings,
+      'gpt-4o',
+      modelSettings,
+      'gpt-4o',
+    );
+
+    expect(result.providerData?.fn).toBe(uncloneable);
+    expect(result.providerData?.reasoning).toBeUndefined();
+    expect(result.providerData?.text?.verbosity).toBeUndefined();
+    expect(result.text?.verbosity).toBeUndefined();
+    expect(modelSettings.providerData?.reasoning).toBeDefined();
+    expect(modelSettings.providerData?.text?.verbosity).toBe('low');
+    expect(modelSettings.text?.verbosity).toBe('low');
+    spy.mockRestore();
+  });
 });
 
 describe('saveToSession', () => {

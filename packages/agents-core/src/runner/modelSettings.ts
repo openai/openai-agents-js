@@ -88,11 +88,25 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
       agentModelSettings.providerData?.text?.verbosity ||
       (agentModelSettings.providerData as any)?.reasoning_effort)
   ) {
+    const copiedProviderData = modelSettings.providerData
+      ? { ...modelSettings.providerData }
+      : undefined;
+
+    if (copiedProviderData) {
+      if (
+        copiedProviderData.text &&
+        typeof copiedProviderData.text === 'object'
+      ) {
+        copiedProviderData.text = { ...copiedProviderData.text };
+        delete (copiedProviderData.text as any).verbosity;
+      }
+      delete (copiedProviderData as any).reasoning;
+      delete (copiedProviderData as any).reasoning_effort;
+    }
+
     const copiedModelSettings: ModelSettings = {
       ...modelSettings,
-      providerData: modelSettings.providerData
-        ? structuredClone(modelSettings.providerData)
-        : undefined,
+      providerData: copiedProviderData,
     };
     if (modelSettings.reasoning) {
       copiedModelSettings.reasoning = { ...modelSettings.reasoning };

@@ -589,7 +589,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._toolUseTracker.addToolUse(
               state._currentAgent,
-              state._lastProcessedResponse.toolsUsed,
+              state._lastProcessedResponse.toolsUsed ?? [],
             );
 
             state._originalInput = turnResult.originalInput;
@@ -944,7 +944,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._toolUseTracker.addToolUse(
             result.state._currentAgent,
-            result.state._lastProcessedResponse.toolsUsed,
+            result.state._lastProcessedResponse.toolsUsed ?? [],
           );
 
           result.state._originalInput = turnResult.originalInput;
