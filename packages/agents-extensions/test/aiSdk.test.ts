@@ -1934,6 +1934,59 @@ describe('Extended thinking / Reasoning support', () => {
       ]);
     });
 
+    test('bundles reasoning when DeepSeek thinking lives under providerOptions', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [
+            {
+              type: 'input_text',
+              text: 'Provider options thinking.',
+            },
+          ],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-provider-options',
+          name: 'viaOptions',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        {
+          providerData: {
+            providerOptions: { deepseek: { thinking: { type: 'enabled' } } },
+          },
+        },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Provider options thinking.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-provider-options',
+              toolName: 'viaOptions',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
     test('emits pending DeepSeek reasoning with assistant text when no tool call follows', () => {
       const items: protocol.ModelItem[] = [
         {

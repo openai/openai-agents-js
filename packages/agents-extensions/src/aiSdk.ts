@@ -674,13 +674,12 @@ function hasEnabledDeepSeekThinking(
     return false;
   }
 
-  const nestedDeepSeek = isRecord(providerData.deepseek)
-    ? providerData.deepseek
-    : undefined;
-  const thinkingOption =
-    providerData.thinking !== undefined
-      ? providerData.thinking
-      : nestedDeepSeek?.thinking;
+  const thinkingOption = [
+    providerData.thinking,
+    providerData.deepseek?.thinking,
+    providerData.providerOptions?.thinking,
+    providerData.providerOptions?.deepseek?.thinking,
+  ].find((value) => value !== undefined);
 
   return isThinkingEnabled(thinkingOption);
 }
