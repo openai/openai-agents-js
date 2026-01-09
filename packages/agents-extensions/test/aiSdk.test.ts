@@ -1752,6 +1752,287 @@ describe('Extended thinking / Reasoning support', () => {
         google: { thoughtSignature: 'sig-123' },
       });
     });
+
+    test('bundles reasoning with tool call for DeepSeek Reasoner', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Internal chain.' }],
+          providerData: {
+            model: 'deepseek:deepseek-reasoner',
+            deepseek: { signature: 'sig' },
+          },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c1',
+          name: 'foo',
+          arguments: '{}',
+          providerData: {
+            model: 'deepseek:deepseek-reasoner',
+            deepseek: { signature: 'sig' },
+          },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-reasoner' }),
+        items,
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Internal chain.',
+              providerOptions: { deepseek: { signature: 'sig' } },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c1',
+              toolName: 'foo',
+              input: {},
+              providerOptions: { deepseek: { signature: 'sig' } },
+            },
+          ],
+          providerOptions: { deepseek: { signature: 'sig' } },
+        },
+      ]);
+    });
+
+    test('bundles reasoning with tool call when DeepSeek thinking mode is enabled', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking...' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c2',
+          name: 'bar',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking...',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c2',
+              toolName: 'bar',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('bundles reasoning when DeepSeek thinking flag is a string', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking as a flag.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-string',
+          name: 'flagged',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: 'enabled' } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking as a flag.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-string',
+              toolName: 'flagged',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('bundles reasoning when DeepSeek thinking is nested', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Nested thinking.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-nested',
+          name: 'nested',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { deepseek: { thinking: { type: 'enabled' } } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Nested thinking.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-nested',
+              toolName: 'nested',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('does not bundle reasoning when DeepSeek thinking is disabled', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Disabled thinking' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-off',
+          name: 'offTool',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { deepseek: { thinking: { type: 'disabled' } } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Disabled thinking',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c-off',
+              toolName: 'offTool',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('does not bundle reasoning for non-DeepSeek models even when thinking is set', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Other chain' }],
+          providerData: { vendor: 'other' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c3',
+          name: 'baz',
+          arguments: '{}',
+          providerData: { vendor: 'other' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'other', modelId: 'some-reasoner' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Other chain',
+              providerOptions: { vendor: 'other' },
+            },
+          ],
+          providerOptions: { vendor: 'other' },
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c3',
+              toolName: 'baz',
+              input: {},
+              providerOptions: { vendor: 'other' },
+            },
+          ],
+          providerOptions: { vendor: 'other' },
+        },
+      ]);
+    });
   });
 });
 

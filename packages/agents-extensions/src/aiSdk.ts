@@ -15,6 +15,7 @@ import {
   Model,
   ModelRequest,
   ModelResponse,
+  ModelSettings,
   protocol,
   resetCurrentSpan,
   ResponseStreamEvent,
@@ -87,6 +88,7 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
 export function itemsToLanguageV2Messages(
   model: LanguageModelCompatible,
   items: protocol.ModelItem[],
+  modelSettings?: ModelSettings,
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
   let currentAssistantMessage: LanguageModelV2Message | undefined;
@@ -198,7 +200,10 @@ export function itemsToLanguageV2Messages(
         currentAssistantMessage.role === 'assistant'
       ) {
         // Reasoner models (e.g., DeepSeek Reasoner) require reasoning_content on tool-call messages.
-        if (isReasonerModel(model) && pendingReasonerReasoning) {
+        if (
+          shouldIncludeReasoningContent(model, modelSettings) &&
+          pendingReasonerReasoning
+        ) {
           currentAssistantMessage.content.push({
             type: 'reasoning',
             text: pendingReasonerReasoning.text,
@@ -274,7 +279,7 @@ export function itemsToLanguageV2Messages(
       typeof item.content[0].text === 'string'
     ) {
       // Only forward provider data when it targets this model so signatures stay scoped correctly.
-      if (isReasonerModel(model)) {
+      if (shouldIncludeReasoningContent(model, modelSettings)) {
         pendingReasonerReasoning = {
           text: item.content[0].text,
           providerOptions: toProviderOptions(item.providerData, model),
@@ -311,7 +316,10 @@ export function itemsToLanguageV2Messages(
   if (currentAssistantMessage) {
     messages.push(currentAssistantMessage);
   }
-  if (isReasonerModel(model) && pendingReasonerReasoning) {
+  if (
+    shouldIncludeReasoningContent(model, modelSettings) &&
+    pendingReasonerReasoning
+  ) {
     messages.push({
       role: 'assistant',
       content: [
@@ -573,12 +581,78 @@ function isGeminiModel(model: LanguageModelCompatible): boolean {
   );
 }
 
-function isReasonerModel(model: LanguageModelCompatible): boolean {
+function isDeepSeekModel(model: LanguageModelCompatible): boolean {
   const target = getModelIdentifier(model).toLowerCase();
   return (
-    target.includes('reasoner') ||
-    model.modelId.toLowerCase().includes('reasoner')
+    target.includes('deepseek') ||
+    model.modelId.toLowerCase().includes('deepseek') ||
+    model.provider.toLowerCase().includes('deepseek')
   );
+}
+
+function shouldIncludeReasoningContent(
+  model: LanguageModelCompatible,
+  modelSettings?: ModelSettings,
+): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  const modelIdLower = model.modelId.toLowerCase();
+
+  // DeepSeek models require reasoning_content to be sent alongside tool calls when
+  // either the dedicated reasoner model is used or thinking mode is explicitly enabled.
+  const isDeepSeekReasoner =
+    target.includes('deepseek-reasoner') ||
+    modelIdLower.includes('deepseek-reasoner');
+
+  if (isDeepSeekReasoner) {
+    return true;
+  }
+
+  if (!isDeepSeekModel(model)) {
+    return false;
+  }
+
+  return hasEnabledDeepSeekThinking(modelSettings?.providerData);
+}
+
+function hasEnabledDeepSeekThinking(
+  providerData: Record<string, any> | undefined,
+): boolean {
+  if (!isRecord(providerData)) {
+    return false;
+  }
+
+  const nestedDeepSeek = isRecord(providerData.deepseek)
+    ? providerData.deepseek
+    : undefined;
+  const thinkingOption =
+    providerData.thinking !== undefined
+      ? providerData.thinking
+      : nestedDeepSeek?.thinking;
+
+  return isThinkingEnabled(thinkingOption);
+}
+
+function isThinkingEnabled(option: unknown): boolean {
+  if (option === undefined || option === null) {
+    return false;
+  }
+
+  if (option === true) {
+    return true;
+  }
+
+  if (typeof option === 'string') {
+    return option.toLowerCase() === 'enabled';
+  }
+
+  if (isRecord(option)) {
+    const type = option.type ?? option.mode ?? option.status;
+    if (typeof type === 'string') {
+      return type.toLowerCase() === 'enabled';
+    }
+  }
+
+  return false;
 }
 
 function toProviderOptions(
@@ -783,7 +857,11 @@ export class AiSdkModel implements Model {
                   content: [{ type: 'text', text: request.input }],
                 },
               ]
-            : itemsToLanguageV2Messages(this.#model, request.input);
+            : itemsToLanguageV2Messages(
+                this.#model,
+                request.input,
+                request.modelSettings,
+              );
 
         if (request.systemInstructions) {
           input = [
@@ -1049,7 +1127,11 @@ export class AiSdkModel implements Model {
                 content: [{ type: 'text', text: request.input }],
               },
             ]
-          : itemsToLanguageV2Messages(this.#model, request.input);
+          : itemsToLanguageV2Messages(
+              this.#model,
+              request.input,
+              request.modelSettings,
+            );
 
       if (request.systemInstructions) {
         input = [

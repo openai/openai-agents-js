@@ -1,8 +1,11 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, ModelSettings, run, tool } from '@openai/agents';
 import { aisdk, AiSdkModel } from '@openai/agents-extensions';
 import { z } from 'zod';
 
-export async function runAgents(model: AiSdkModel) {
+export async function runAgents(
+  model: AiSdkModel,
+  modelSettings: ModelSettings,
+) {
   const sleep = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -23,6 +26,7 @@ export async function runAgents(model: AiSdkModel) {
       'When you are asked about the weather, you will use tools to get the weather.',
     tools: [getWeatherTool],
     model, // Using the AI SDK model for this agent
+    modelSettings,
   });
 
   const agent = new Agent({
@@ -31,6 +35,7 @@ export async function runAgents(model: AiSdkModel) {
       'You are a helpful assistant. When you need to get the weather, you can hand off the task to the Weather Data Agent.',
     handoffs: [dataAgent],
     model, // Using the AI SDK model for this agent
+    modelSettings,
   });
 
   const result = await run(
@@ -60,5 +65,16 @@ import { google } from '@ai-sdk/google';
   // Switch the model to use for testing
   const model = _gptOSS;
 
-  await runAgents(model);
+  const modelSettings: ModelSettings =
+    model === _claude
+      ? {
+          providerData: {
+            providerOptions: {
+              anthropic: { thinking: { type: 'enabled', budgetTokens: 10000 } },
+            },
+          },
+        }
+      : {};
+
+  await runAgents(model, modelSettings);
 })();
