@@ -69,6 +69,22 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
   modelSettings: ModelSettings,
   resolvedModelName?: string,
 ): ModelSettings {
+  const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
+    const providerData = settings?.providerData as
+      | {
+          reasoning?: unknown;
+          text?: { verbosity?: unknown };
+          reasoning_effort?: unknown;
+        }
+      | undefined;
+    return Boolean(
+      providerData?.reasoning ||
+      providerData?.text?.verbosity ||
+      (providerData as { reasoning_effort?: unknown } | undefined)
+        ?.reasoning_effort,
+    );
+  };
+
   const modelName =
     resolvedModelName ??
     (typeof runnerModel === 'string'
@@ -79,14 +95,15 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
     typeof modelName === 'string'
       ? !gpt5ReasoningSettingsRequired(modelName)
       : true;
+  const hasGpt5Defaults =
+    hasGpt5OnlySettings(agentModelSettings) ||
+    hasGpt5OnlySettings(modelSettings);
 
   if (
     isGpt5Default() &&
     explictlyModelSet &&
     isNonGpt5RunnerModel &&
-    (agentModelSettings.providerData?.reasoning ||
-      agentModelSettings.providerData?.text?.verbosity ||
-      (agentModelSettings.providerData as any)?.reasoning_effort)
+    hasGpt5Defaults
   ) {
     const copiedProviderData = modelSettings.providerData
       ? { ...modelSettings.providerData }

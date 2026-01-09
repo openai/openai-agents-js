@@ -617,8 +617,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const artifacts = await prepareAgentArtifacts(state);
-
             const isResumingFromInterruption =
               isResumedState && continuingInterruptedTurn;
             continuingInterruptedTurn = false;
@@ -668,6 +666,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 });
               }
             }
+
+            const artifacts = await prepareAgentArtifacts(state);
 
             const turnInput = serverConversationTracker
               ? serverConversationTracker.prepareInput(
@@ -972,8 +972,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          const artifacts = await prepareAgentArtifacts(result.state);
-
           const isResumingFromInterruption =
             isResumedState && continuingInterruptedTurn;
           continuingInterruptedTurn = false;
@@ -1028,6 +1026,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               });
             }
           }
+
+          const artifacts = await prepareAgentArtifacts(result.state);
 
           const delayStreamInputPersistence = Boolean(parallelGuardrailPromise);
           const turnInput = serverConversationTracker
