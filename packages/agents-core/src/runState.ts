@@ -151,6 +151,9 @@ const serializedTraceSchema = z.object({
   workflow_name: z.string(),
   group_id: z.string().nullable(),
   metadata: z.record(z.string(), z.any()),
+  // Populated only if the trace was created with a per-run tracingApiKey (e.g., Runner.run({ tracing: { apiKey } }))
+  // and serialization opts in to include it. By default this is omitted to avoid persisting secrets.
+  tracing_api_key: z.string().optional().nullable(),
 });
 
 const serializedProcessedResponseSchema = z.object({
@@ -499,7 +502,16 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @returns The serialized run state.
    */
-  toJSON(): z.infer<typeof SerializedRunState> {
+  /**
+   * Serializes the run state. By default, tracing API keys are omitted to prevent
+   * accidental persistence of secrets. Pass `includeTracingApiKey: true` only when you
+   * intentionally need to migrate a run along with its tracing credentials (e.g., to
+   * rehydrate in a separate process that lacks the original environment variables).
+   */
+  toJSON(
+    options: { includeTracingApiKey?: boolean } = {},
+  ): z.infer<typeof SerializedRunState> {
+    const includeTracingApiKey = options.includeTracingApiKey === true;
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -554,7 +566,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       generatedItems: this._generatedItems.map((item) => item.toJSON() as any),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
       lastProcessedResponse: this._lastProcessedResponse as any,
-      trace: this._trace ? (this._trace.toJSON() as any) : null,
+      trace: this._trace
+        ? (this._trace.toJSON({ includeTracingApiKey }) as any)
+        : null,
     };
 
     // parsing the schema to ensure the output is valid for reparsing
@@ -576,8 +590,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @returns The serialized run state.
    */
-  toString() {
-    return JSON.stringify(this.toJSON());
+  toString(options: { includeTracingApiKey?: boolean } = {}) {
+    return JSON.stringify(this.toJSON(options));
   }
 
   /**
@@ -657,6 +671,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         name: stateJson.trace?.workflow_name,
         groupId: stateJson.trace?.group_id ?? undefined,
         metadata: stateJson.trace?.metadata,
+        tracingApiKey: stateJson.trace?.tracing_api_key ?? undefined,
       });
 
       state._currentAgentSpan = deserializeSpan(

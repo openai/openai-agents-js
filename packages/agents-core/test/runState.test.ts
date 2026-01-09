@@ -89,6 +89,45 @@ describe('RunState', () => {
     expect(JSON.parse(str)).toEqual(json);
   });
 
+  it('only serializes tracing api key when explicitly requested', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Tracey' });
+    const state = new RunState(context, 'input', agent, 1);
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+    const trace = provider.createTrace({
+      traceId: 'trace_test',
+      name: 'workflow',
+      tracingApiKey: 'trace-key',
+    });
+    const agentSpan = provider.createSpan(
+      { data: { type: 'agent', name: 'TestAgentSpan' } },
+      trace,
+    );
+    state._currentAgentSpan = agentSpan;
+    state._trace = trace;
+
+    const defaultJson = state.toJSON();
+    expect(defaultJson.trace?.tracing_api_key).toBeUndefined();
+
+    const optInJson = state.toJSON({ includeTracingApiKey: true });
+    expect(optInJson.trace?.tracing_api_key).toBe('trace-key');
+
+    const restoredWithKey = await RunState.fromString(
+      agent,
+      state.toString({ includeTracingApiKey: true }),
+    );
+    expect(restoredWithKey._trace?.tracingApiKey).toBe('trace-key');
+
+    const restoredWithoutKey = await RunState.fromString(
+      agent,
+      state.toString(),
+    );
+    expect(restoredWithoutKey._trace?.tracingApiKey).toBeUndefined();
+
+    provider.setDisabled(true);
+  });
+
   it('throws error if schema version is missing or invalid', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent1' });
