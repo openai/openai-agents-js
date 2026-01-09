@@ -1464,6 +1464,57 @@ describe('Runner.run (streaming)', () => {
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
   });
 
+  it('skips persisting streaming input when a parallel input guardrail triggers after streaming starts', async () => {
+    const saveInputSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const guardrail = {
+      name: 'parallel-block',
+      execute: vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  tripwireTriggered: true,
+                  outputInfo: { reason: 'blocked' },
+                }),
+              0,
+            ),
+          ),
+      ),
+    };
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamGuardrailParallel',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should not run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'blocked input', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
   it('persists streaming input but drops the result when an output guardrail trips', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')

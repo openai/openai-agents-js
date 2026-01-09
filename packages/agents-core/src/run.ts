@@ -875,6 +875,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       await ensureStreamInputPersisted();
       streamInputPersisted = true;
     };
+    let guardrailError: unknown;
+    let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
+    let guardrailsPending = false;
+    let guardrailFailed = false;
 
     if (serverConversationTracker && isResumedState) {
       serverConversationTracker.primeFromState({
@@ -976,10 +980,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
           );
 
-          let guardrailError: unknown;
-          let parallelGuardrailPromise:
-            | Promise<InputGuardrailResult[]>
-            | undefined;
+          guardrailError = undefined;
+          guardrailFailed = false;
+          guardrailsPending = false;
+          parallelGuardrailPromise = undefined;
           // Only run input guardrails on the first turn of a new run.
           if (result.state._currentTurn === 1 && !isResumingFromInterruption) {
             const guardrailDefs = buildInputGuardrailDefinitions(
@@ -991,17 +995,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               await runInputGuardrails(result.state, guardrails.blocking);
             }
             if (guardrails.parallel.length > 0) {
+              guardrailsPending = true;
               const promise = runInputGuardrails(
                 result.state,
                 guardrails.parallel,
               );
               parallelGuardrailPromise = promise.catch((err) => {
                 guardrailError = err;
+                guardrailFailed = true;
+                guardrailsPending = false;
                 return [];
               });
             }
           }
 
+          const delayStreamInputPersistence = Boolean(parallelGuardrailPromise);
           const turnInput = serverConversationTracker
             ? serverConversationTracker.prepareInput(
                 result.input,
@@ -1036,11 +1044,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
           if (guardrailError) {
+            guardrailFailed = true;
             throw guardrailError;
           }
 
           handedInputToModel = true;
-          await persistStreamInputIfNeeded();
+          if (!delayStreamInputPersistence) {
+            await persistStreamInputIfNeeded();
+          }
 
           try {
             for await (const event of preparedCall.model.getStreamedResponse({
@@ -1095,8 +1106,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (parallelGuardrailPromise) {
             await parallelGuardrailPromise;
             if (guardrailError) {
+              guardrailFailed = true;
               throw guardrailError;
             }
+            guardrailsPending = false;
+            await persistStreamInputIfNeeded();
           }
 
           result.state._noActiveAgentRun = false;
@@ -1210,7 +1224,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       }
     } catch (error) {
-      if (handedInputToModel && !streamInputPersisted) {
+      if (guardrailsPending && parallelGuardrailPromise) {
+        await parallelGuardrailPromise;
+        guardrailsPending = false;
+      }
+      if (guardrailError) {
+        guardrailFailed = true;
+      }
+      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
         await persistStreamInputIfNeeded();
       }
       if (result.state._currentAgentSpan) {
