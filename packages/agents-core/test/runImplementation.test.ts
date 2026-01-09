@@ -46,6 +46,7 @@ import {
   resolveInterruptedTurn,
 } from '../src/runner/turnResolution';
 import { toAgentInputList } from '../src/runner/items';
+import { ServerConversationTracker } from '../src/runner/conversation';
 import { AgentToolUseTracker } from '../src/runner/toolUseTracker';
 import {
   FunctionTool,
@@ -921,6 +922,26 @@ describe('saveToSession', () => {
     expect(
       state.usage.requestUsageEntries?.map((entry) => entry.endpoint),
     ).toEqual(['responses.create', 'responses.compact']);
+  });
+});
+
+describe('ServerConversationTracker', () => {
+  it('marks filtered-out inputs as sent when the callModelInputFilter drops them', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_123',
+    });
+    const initialInput = toAgentInputList('hello');
+
+    const turnInput = tracker.prepareInput(initialInput, []);
+    expect(turnInput).toHaveLength(1);
+
+    tracker.markInputAsSent([], {
+      filterApplied: true,
+      allTurnItems: turnInput,
+    });
+
+    const nextTurnInput = tracker.prepareInput(initialInput, []);
+    expect(nextTurnInput).toHaveLength(0);
   });
 });
 

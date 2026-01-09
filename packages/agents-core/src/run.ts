@@ -1405,7 +1405,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     // Inform the tracker which exact original objects made it to the provider so future turns
     // only send the delta that has not yet been acknowledged by the server.
-    serverConversationTracker?.markInputAsSent(sourceItems);
+    serverConversationTracker?.markInputAsSent(sourceItems, {
+      filterApplied,
+      allTurnItems: turnInput,
+    });
     // Provide filtered clones whenever filters run so session history mirrors the model payload.
     // Returning an empty array is intentional: it tells the session layer to persist "nothing"
     // instead of falling back to the unfiltered originals when the filter redacts everything.

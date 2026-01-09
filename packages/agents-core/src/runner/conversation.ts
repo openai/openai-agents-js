@@ -319,11 +319,10 @@ export class ServerConversationTracker {
    * Marks the provided originals as delivered so future turns do not resend them and any
    * pending initial inputs can be dropped once the server acknowledges receipt.
    */
-  markInputAsSent(items: (AgentInputItem | undefined)[]) {
-    if (!items.length) {
-      return;
-    }
-
+  markInputAsSent(
+    items: (AgentInputItem | undefined)[],
+    options?: { filterApplied?: boolean; allTurnItems?: AgentInputItem[] },
+  ) {
     const delivered = new Set<AgentInputItem>();
     for (const item of items) {
       if (!item || typeof item !== 'object' || delivered.has(item)) {
@@ -334,9 +333,24 @@ export class ServerConversationTracker {
       this.sentItems.add(item);
     }
 
+    const shouldMarkAllTurnItems =
+      options?.filterApplied && options.allTurnItems && items.length === 0;
+
+    const allTurnItems = options?.allTurnItems;
+    if (shouldMarkAllTurnItems && allTurnItems) {
+      for (const item of allTurnItems) {
+        if (!item || typeof item !== 'object' || delivered.has(item)) {
+          continue;
+        }
+        delivered.add(item);
+        this.sentItems.add(item);
+      }
+    }
+
     if (
       !this.remainingInitialInput ||
-      this.remainingInitialInput.length === 0
+      this.remainingInitialInput.length === 0 ||
+      delivered.size === 0
     ) {
       return;
     }
