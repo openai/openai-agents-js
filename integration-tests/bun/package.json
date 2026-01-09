@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run index.ts"
+    "start": "bun run index.ts",
+    "start:aisdk": "bun run aisdk.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -13,6 +14,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@openai/agents": "latest"
+    "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest"
   }
 }

@@ -325,6 +325,31 @@ describe('withTrace & span helpers (integration)', () => {
     expect(processor.tracesEnded.length).toBe(1);
   });
 
+  it('does not allow setting spans after a trace ends', async () => {
+    let error: unknown;
+
+    await withTrace('workflow', async () => {
+      setTimeout(() => {
+        try {
+          const span = new Span(
+            {
+              traceId: 'trace_123',
+              data: { type: 'custom', name: 'late-span', data: {} },
+            },
+            processor,
+          );
+          setCurrentSpan(span);
+        } catch (caught) {
+          error = caught;
+        }
+      }, 0);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('No existing trace found');
+  });
+
   it('withAgentSpan nests a span within a trace and resets current span afterwards', async () => {
     let capturedSpanId: string | null = null;
 

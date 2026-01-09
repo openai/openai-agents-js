@@ -146,7 +146,7 @@ importers:
     dependencies:
       '@ai-sdk/openai':
         specifier: '1'
-        version: 1.3.24(zod@4.3.5)
+        version: 1.3.24(zod@3.25.76)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -6360,11 +6360,11 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.5(zod@4.3.5)
       zod: 4.3.5
 
-  '@ai-sdk/openai@1.3.24(zod@4.3.5)':
+  '@ai-sdk/openai@1.3.24(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 1.1.3
-      '@ai-sdk/provider-utils': 2.2.8(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 2.2.8(zod@3.25.76)
+      zod: 3.25.76
 
   '@ai-sdk/openai@2.0.15(zod@3.25.76)':
     dependencies:
@@ -6378,12 +6378,12 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.18(zod@4.3.5)
       zod: 4.3.5
 
-  '@ai-sdk/provider-utils@2.2.8(zod@4.3.5)':
+  '@ai-sdk/provider-utils@2.2.8(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 1.1.3
       nanoid: 3.3.11
       secure-json-parse: 2.7.0
-      zod: 4.3.5
+      zod: 3.25.76
 
   '@ai-sdk/provider-utils@3.0.18(zod@4.3.5)':
     dependencies:

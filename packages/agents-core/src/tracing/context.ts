@@ -8,13 +8,49 @@ type ContextState = {
   trace?: Trace;
   span?: Span<any>;
   previousSpan?: Span<any>;
+  active: boolean;
 };
 
-let _contextAsyncLocalStorage: AsyncLocalStorage<ContextState> | undefined;
+const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
+let localFallbackAls: AsyncLocalStorage<ContextState | undefined> | undefined;
 
+// Global symbols ensure that if multiple copies of agents-core are loaded
+// (e.g., via different npm resolution paths or bundlers), they all share the
+// same AsyncLocalStorage instance. This prevents losing trace/span state when a
+// downstream package pulls in a duplicate copy.
 function getContextAsyncLocalStorage() {
-  _contextAsyncLocalStorage ??= new AsyncLocalStorage<ContextState>();
-  return _contextAsyncLocalStorage;
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      AsyncLocalStorage<ContextState | undefined> | undefined
+    >;
+
+    const globalALS = globalScope[ALS_SYMBOL];
+
+    if (globalALS) {
+      return globalALS;
+    }
+
+    const newALS = new AsyncLocalStorage<ContextState | undefined>();
+    globalScope[ALS_SYMBOL] = newALS;
+    return newALS;
+  } catch {
+    // As a defensive fallback (e.g., if globalThis is locked down or ALS
+    // construction throws in a constrained runtime), keep a module-local ALS so
+    // tracing still functions instead of crashing callers.
+    if (!localFallbackAls) {
+      localFallbackAls = new AsyncLocalStorage<ContextState | undefined>();
+    }
+    return localFallbackAls;
+  }
+}
+
+function getActiveContext() {
+  const store = getContextAsyncLocalStorage().getStore();
+  if (store?.active === true) {
+    return store;
+  }
+  return undefined;
 }
 
 /**
@@ -23,7 +59,7 @@ function getContextAsyncLocalStorage() {
  * @returns The current trace or null if there is no trace.
  */
 export function getCurrentTrace() {
-  const currentTrace = getContextAsyncLocalStorage().getStore();
+  const currentTrace = getActiveContext();
   if (currentTrace?.trace) {
     return currentTrace.trace;
   }
@@ -37,7 +73,7 @@ export function getCurrentTrace() {
  * @returns The current span or null if there is no span.
  */
 export function getCurrentSpan() {
-  const currentSpan = getContextAsyncLocalStorage().getStore();
+  const currentSpan = getActiveContext();
   if (currentSpan?.span) {
     return currentSpan.span;
   }
@@ -50,29 +86,67 @@ export function getCurrentSpan() {
  *
  * The functions below should be the only way that this context gets interfaced with.
  */
-function _wrapFunctionWithTraceLifecycle<T>(fn: (trace: Trace) => Promise<T>) {
+function _wrapFunctionWithTraceLifecycle<T>(
+  fn: (trace: Trace) => Promise<T>,
+  currentContext: ContextState,
+  previousAlsStore?: ContextState,
+) {
   return async () => {
     const trace = getCurrentTrace();
     if (!trace) {
       throw new Error('No trace found');
     }
 
-    await trace.start();
-    const result = await fn(trace);
+    let cleanupDeferred = false;
+    let started = false;
 
-    // If result is a StreamedRunResult, defer trace end until stream loop completes
-    if (result instanceof StreamedRunResult) {
-      const streamLoopPromise = result._getStreamLoopPromise();
-      if (streamLoopPromise) {
-        streamLoopPromise.finally(() => trace.end());
-        return result;
+    const cleanupContext = () => {
+      currentContext.active = false;
+      currentContext.trace = undefined;
+      currentContext.span = undefined;
+      currentContext.previousSpan = undefined;
+      getContextAsyncLocalStorage().enterWith(previousAlsStore);
+    };
+
+    try {
+      await trace.start();
+      started = true;
+
+      const result = await fn(trace);
+
+      // If result is a StreamedRunResult, defer trace end until stream loop completes
+      if (result instanceof StreamedRunResult) {
+        const streamLoopPromise = result._getStreamLoopPromise();
+        if (streamLoopPromise) {
+          cleanupDeferred = true;
+          streamLoopPromise.finally(async () => {
+            try {
+              if (started) {
+                await trace.end();
+              }
+            } finally {
+              cleanupContext();
+            }
+          });
+
+          return result;
+        }
+      }
+
+      // For non-streaming results, end trace synchronously
+      if (started) {
+        await trace.end();
+      }
+
+      return result;
+    } finally {
+      // If cleanup was deferred to the streaming loop, keep the context marked
+      // active so concurrent traces do not clear it prematurely. Otherwise,
+      // mark inactive and restore now.
+      if (!cleanupDeferred) {
+        cleanupContext();
       }
     }
-
-    // For non-streaming results, end trace synchronously
-    await trace.end();
-
-    return result;
   };
 }
 
@@ -97,9 +171,15 @@ export async function withTrace<T>(
         })
       : trace;
 
+  const context: ContextState = {
+    trace: newTrace,
+    active: true,
+  };
+  const previousAlsStore = getContextAsyncLocalStorage().getStore();
+
   return getContextAsyncLocalStorage().run(
-    { trace: newTrace },
-    _wrapFunctionWithTraceLifecycle(fn),
+    context,
+    _wrapFunctionWithTraceLifecycle(fn, context, previousAlsStore),
   );
 }
 /**
@@ -116,15 +196,19 @@ export async function getOrCreateTrace<T>(
 ): Promise<T> {
   const currentTrace = getCurrentTrace();
   if (currentTrace) {
-    // if this execution context already has a trace instance in it we just continue
     return await fn();
   }
 
   const newTrace = getGlobalTraceProvider().createTrace(options);
 
+  const newContext: ContextState = {
+    trace: newTrace,
+    active: true,
+  };
+  const previousAlsStore = getContextAsyncLocalStorage().getStore();
   return getContextAsyncLocalStorage().run(
-    { trace: newTrace },
-    _wrapFunctionWithTraceLifecycle(fn),
+    newContext,
+    _wrapFunctionWithTraceLifecycle(fn, newContext, previousAlsStore),
   );
 }
 
@@ -134,7 +218,7 @@ export async function getOrCreateTrace<T>(
  * @param span - The span to set as the current span.
  */
 export function setCurrentSpan(span: Span<any>) {
-  const context = getContextAsyncLocalStorage().getStore();
+  const context = getActiveContext();
   if (!context) {
     throw new Error('No existing trace found');
   }
@@ -150,7 +234,7 @@ export function setCurrentSpan(span: Span<any>) {
 }
 
 export function resetCurrentSpan() {
-  const context = getContextAsyncLocalStorage().getStore();
+  const context = getActiveContext();
   if (context) {
     context.span = context.previousSpan;
     context.previousSpan = context.previousSpan?.previousSpan;
@@ -182,6 +266,7 @@ export function cloneCurrentContext(context: ContextState) {
     trace: context.trace?.clone(),
     span: context.span?.clone(),
     previousSpan: context.previousSpan?.clone(),
+    active: context.active,
   };
 }
 
@@ -191,12 +276,11 @@ export function cloneCurrentContext(context: ContextState) {
  * @param fn - The function to run with the new span context.
  */
 export function withNewSpanContext<T>(fn: () => Promise<T>) {
-  const currentContext = getContextAsyncLocalStorage().getStore();
+  const currentContext = getActiveContext();
   if (!currentContext) {
-    throw new Error('No existing trace found');
+    return fn();
   }
 
   const copyOfContext = cloneCurrentContext(currentContext);
-
   return getContextAsyncLocalStorage().run(copyOfContext, fn);
 }

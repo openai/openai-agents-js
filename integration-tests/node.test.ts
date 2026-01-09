@@ -29,4 +29,9 @@ describe('Node.js', () => {
     const { stdout } = await execa`npm run start:esm`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
+
+  test('aisdk runner should not lose tracing context', async () => {
+    const { stdout } = await execa`npm run start:aisdk:cjs`;
+    expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
+  });
 });
