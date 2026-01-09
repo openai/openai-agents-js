@@ -28,6 +28,7 @@ import {
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
 import * as sessionPersistence from '../src/runner/sessionPersistence';
+import type { GuardrailFunctionOutput } from '../src/guardrail';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -1584,6 +1585,58 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(result.cancelled).toBe(true);
+  });
+
+  it('persists streaming input after cancellation once parallel guardrails finish', async () => {
+    const saveInputSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    let resolveGuardrail:
+      | ((value: GuardrailFunctionOutput) => void)
+      | undefined;
+    const guardrail = {
+      name: 'parallel-allow',
+      execute: vi.fn(
+        () =>
+          new Promise<GuardrailFunctionOutput>((resolve) => {
+            resolveGuardrail = resolve;
+          }),
+      ),
+    };
+
+    const session = createSessionMock();
+    const agent = new Agent({
+      name: 'StreamCancelAfterGuardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('Chunk1')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+    const result = await runner.run(agent, 'hi', { stream: true, session });
+    const reader = (result.toStream() as any).getReader();
+
+    await reader.read();
+    await reader.cancel('stop');
+
+    if (!resolveGuardrail) {
+      throw new Error('Expected guardrail resolver to be set.');
+    }
+    resolveGuardrail({
+      tripwireTriggered: false,
+      outputInfo: { ok: true },
+    });
+
+    await result._getStreamLoopPromise();
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
   });
 
   it('persists streaming input/result exactly once on success', async () => {

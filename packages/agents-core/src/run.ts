@@ -879,6 +879,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
     let guardrailsPending = false;
     let guardrailFailed = false;
+    const awaitGuardrailsAndPersistInput = async () => {
+      if (parallelGuardrailPromise) {
+        await parallelGuardrailPromise;
+        guardrailsPending = false;
+      }
+      if (guardrailError) {
+        guardrailFailed = true;
+        throw guardrailError;
+      }
+      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
+        await persistStreamInputIfNeeded();
+      }
+    };
 
     if (serverConversationTracker && isResumedState) {
       serverConversationTracker.primeFromState({
@@ -1092,25 +1105,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
+                await awaitGuardrailsAndPersistInput();
                 return;
               }
               result._addItem(new RunRawModelStreamEvent(event));
             }
           } catch (error) {
             if (isAbortError(error)) {
+              await awaitGuardrailsAndPersistInput();
               return;
             }
             throw error;
           }
 
-          if (parallelGuardrailPromise) {
-            await parallelGuardrailPromise;
-            if (guardrailError) {
-              guardrailFailed = true;
-              throw guardrailError;
-            }
-            guardrailsPending = false;
-            await persistStreamInputIfNeeded();
+          await awaitGuardrailsAndPersistInput();
+
+          if (result.cancelled) {
+            return;
           }
 
           result.state._noActiveAgentRun = false;
@@ -1242,6 +1253,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       throw error;
     } finally {
+      if (guardrailsPending && parallelGuardrailPromise) {
+        await parallelGuardrailPromise;
+        guardrailsPending = false;
+      }
+      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
+        await persistStreamInputIfNeeded();
+      }
       if (result.state._currentStep?.type !== 'next_step_interruption') {
         try {
           await disposeResolvedComputers({ runContext: result.state._context });
