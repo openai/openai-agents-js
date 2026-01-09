@@ -14,11 +14,16 @@ import type { SerializedOutputType } from '@openai/agents';
 
 function stubModel(
   partial: Partial<Pick<LanguageModelV2, 'doGenerate' | 'doStream'>>,
+  options?: {
+    provider?: string;
+    modelId?: string;
+    specificationVersion?: string;
+  },
 ): LanguageModelV2 {
   return {
-    specificationVersion: 'v2',
-    provider: 'stub',
-    modelId: 'm',
+    specificationVersion: options?.specificationVersion ?? 'v2',
+    provider: options?.provider ?? 'stub',
+    modelId: options?.modelId ?? 'm',
     supportedUrls: {} as any,
     async doGenerate(options) {
       if (partial.doGenerate) {
@@ -481,9 +486,51 @@ describe('AiSdkModel.getResponse', () => {
         role: 'assistant',
         content: [{ type: 'output_text', text: 'ok' }],
         status: 'completed',
-        providerData: { p: 1 },
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+          p: 1,
+        },
       },
     ]);
+  });
+
+  test('accepts specificationVersion v3 models with compatible shape', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [{ type: 'text', text: 'ok v3' }],
+              usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+              providerMetadata: {},
+              response: { id: 'id-v3' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        },
+        { specificationVersion: 'v3' },
+      ),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output[0]).toMatchObject({
+      providerData: {
+        model: 'stub:m',
+        responseId: 'id-v3',
+      },
+    });
   });
 
   test('normalizes empty string tool input for object schemas', async () => {
@@ -740,7 +787,11 @@ describe('AiSdkModel.getResponse', () => {
         name: 'foo',
         arguments: '{}',
         status: 'completed',
-        providerData: { p: 1 },
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+          p: 1,
+        },
       },
     ]);
   });
@@ -799,7 +850,11 @@ describe('AiSdkModel.getResponse', () => {
       type: 'function_call',
       callId: 'c1',
       name: 'get_weather',
-      providerData: toolCallProviderMetadata,
+      providerData: {
+        model: 'stub:m',
+        responseId: 'resp-1',
+        ...toolCallProviderMetadata,
+      },
     });
     // Ensure we get per-tool-call metadata, not result-level metadata
     expect(res.output[0].providerData).not.toEqual(resultProviderMetadata);
@@ -842,7 +897,11 @@ describe('AiSdkModel.getResponse', () => {
       } as any),
     );
 
-    expect(res.output[0].providerData).toEqual(resultProviderMetadata);
+    expect(res.output[0].providerData).toEqual({
+      model: 'stub:m',
+      responseId: 'id',
+      ...resultProviderMetadata,
+    });
   });
 
   test('propagates errors', async () => {
@@ -994,6 +1053,10 @@ describe('AiSdkModel.getStreamedResponse', () => {
         role: 'assistant',
         content: [{ type: 'output_text', text: 'a' }],
         status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
       },
       {
         type: 'function_call',
@@ -1001,6 +1064,10 @@ describe('AiSdkModel.getStreamedResponse', () => {
         name: 'foo',
         arguments: '{"k":"v"}',
         status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
       },
     ]);
   });
@@ -1062,11 +1129,15 @@ describe('AiSdkModel.getStreamedResponse', () => {
       type: 'function_call',
       callId: 'c1',
       name: 'get_weather',
-      providerData: toolCallProviderMetadata,
+      providerData: {
+        model: 'stub:m',
+        responseId: 'resp-stream-1',
+        ...toolCallProviderMetadata,
+      },
     });
   });
 
-  test('omits providerData in streaming mode when providerMetadata is not present', async () => {
+  test('includes base providerData in streaming mode even when providerMetadata is not present', async () => {
     const parts = [
       {
         type: 'tool-call',
@@ -1111,8 +1182,10 @@ describe('AiSdkModel.getStreamedResponse', () => {
       callId: 'c1',
       name: 'foo',
     });
-    // providerData should not be present when providerMetadata was not provided
-    expect(final.response.output[0].providerData).toBeUndefined();
+    // Base provider data should be present to preserve model origin
+    expect(final.response.output[0].providerData).toEqual({
+      model: 'stub:m',
+    });
   });
 
   test('propagates stream errors', async () => {
@@ -1360,7 +1433,11 @@ describe('Extended thinking / Reasoning support', () => {
             text: 'Let me think through this step by step...',
           },
         ],
-        providerData: { anthropic: { signature: 'sig_abc123' } },
+        providerData: {
+          model: 'stub:m',
+          responseId: 'resp-1',
+          anthropic: { signature: 'sig_abc123' },
+        },
       });
       expect(res.output[1]).toMatchObject({
         type: 'function_call',
@@ -1409,7 +1486,10 @@ describe('Extended thinking / Reasoning support', () => {
         content: [
           { type: 'input_text', text: 'Thinking about this problem...' },
         ],
-        providerData: undefined,
+        providerData: {
+          model: 'stub:m',
+          responseId: 'resp-2',
+        },
       });
       expect(res.output[1]).toMatchObject({
         type: 'message',
@@ -1487,7 +1567,11 @@ describe('Extended thinking / Reasoning support', () => {
         rawContent: [
           { type: 'reasoning_text', text: 'Let me think... step by step.' },
         ],
-        providerData: { anthropic: { signature: 'sig_stream_123' } },
+        providerData: {
+          model: 'stub:m',
+          responseId: 'resp-stream-1',
+          anthropic: { signature: 'sig_stream_123' },
+        },
       });
       expect(final.response.output[1]).toMatchObject({
         type: 'function_call',
@@ -1620,6 +1704,489 @@ describe('Extended thinking / Reasoning support', () => {
         ],
         providerOptions: { anthropic: { signature: 'preserved_sig_456' } },
       });
+    });
+
+    test('omits providerOptions when providerData model does not match target model', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'c1',
+          name: 'foo',
+          arguments: '{}',
+          providerData: { model: 'anthropic:claude-3' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'google', modelId: 'gemini-2.0-pro' }),
+        items,
+      );
+      expect(msgs).toHaveLength(1);
+      const assistant = msgs[0];
+      if (assistant.role !== 'assistant') {
+        throw new Error('Expected assistant message');
+      }
+      expect((assistant as any).content[0].providerOptions).toEqual({});
+    });
+
+    test('preserves Gemini thoughtSignature in providerOptions when model matches', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'c1',
+          name: 'foo',
+          arguments: '{}',
+          providerData: {
+            model: 'google:gemini-2.0-pro',
+            google: { thoughtSignature: 'sig-123' },
+          },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'google', modelId: 'gemini-2.0-pro' }),
+        items,
+      );
+      const assistant = msgs[0] as any;
+      expect(assistant.content[0].providerOptions).toMatchObject({
+        google: { thoughtSignature: 'sig-123' },
+      });
+    });
+
+    test('bundles reasoning with tool call for DeepSeek Reasoner', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Internal chain.' }],
+          providerData: {
+            model: 'deepseek:deepseek-reasoner',
+            deepseek: { signature: 'sig' },
+          },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c1',
+          name: 'foo',
+          arguments: '{}',
+          providerData: {
+            model: 'deepseek:deepseek-reasoner',
+            deepseek: { signature: 'sig' },
+          },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-reasoner' }),
+        items,
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Internal chain.',
+              providerOptions: { deepseek: { signature: 'sig' } },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c1',
+              toolName: 'foo',
+              input: {},
+              providerOptions: { deepseek: { signature: 'sig' } },
+            },
+          ],
+          providerOptions: { deepseek: { signature: 'sig' } },
+        },
+      ]);
+    });
+
+    test('bundles reasoning with tool call when DeepSeek thinking mode is enabled', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking...' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c2',
+          name: 'bar',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking...',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c2',
+              toolName: 'bar',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('bundles reasoning when DeepSeek thinking flag is a string', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking as a flag.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-string',
+          name: 'flagged',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: 'enabled' } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking as a flag.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-string',
+              toolName: 'flagged',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('bundles reasoning when DeepSeek thinking is nested', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Nested thinking.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-nested',
+          name: 'nested',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { deepseek: { thinking: { type: 'enabled' } } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Nested thinking.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-nested',
+              toolName: 'nested',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('bundles reasoning when DeepSeek thinking lives under providerOptions', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [
+            {
+              type: 'input_text',
+              text: 'Provider options thinking.',
+            },
+          ],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-provider-options',
+          name: 'viaOptions',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        {
+          providerData: {
+            providerOptions: { deepseek: { thinking: { type: 'enabled' } } },
+          },
+        },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Provider options thinking.',
+              providerOptions: {},
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c-provider-options',
+              toolName: 'viaOptions',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('emits pending DeepSeek reasoning with assistant text when no tool call follows', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking in order.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Here is the reply.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking in order.',
+              providerOptions: {},
+            },
+            {
+              type: 'text',
+              text: 'Here is the reply.',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('emits pending DeepSeek reasoning before tool calls when assistant text precedes tools', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Initial reasoning.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Responding first.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-before-tools',
+          name: 'afterMessage',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Initial reasoning.',
+              providerOptions: {},
+            },
+            {
+              type: 'text',
+              text: 'Responding first.',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c-before-tools',
+              toolName: 'afterMessage',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('does not bundle reasoning when DeepSeek thinking is disabled', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Disabled thinking' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-off',
+          name: 'offTool',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { deepseek: { thinking: { type: 'disabled' } } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Disabled thinking',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c-off',
+              toolName: 'offTool',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('does not bundle reasoning for non-DeepSeek models even when thinking is set', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Other chain' }],
+          providerData: { vendor: 'other' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c3',
+          name: 'baz',
+          arguments: '{}',
+          providerData: { vendor: 'other' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'other', modelId: 'some-reasoner' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Other chain',
+              providerOptions: { vendor: 'other' },
+            },
+          ],
+          providerOptions: { vendor: 'other' },
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c3',
+              toolName: 'baz',
+              input: {},
+              providerOptions: { vendor: 'other' },
+            },
+          ],
+          providerOptions: { vendor: 'other' },
+        },
+      ]);
     });
   });
 });

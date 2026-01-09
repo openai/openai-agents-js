@@ -6,6 +6,8 @@ import type {
   LanguageModelV2Message,
   LanguageModelV2Prompt,
   LanguageModelV2ProviderDefinedTool,
+  LanguageModelV2ReasoningPart,
+  LanguageModelV2TextPart,
   LanguageModelV2ToolCallPart,
   LanguageModelV2ToolChoice,
   LanguageModelV2ToolResultPart,
@@ -15,6 +17,7 @@ import {
   Model,
   ModelRequest,
   ModelResponse,
+  ModelSettings,
   protocol,
   resetCurrentSpan,
   ResponseStreamEvent,
@@ -31,6 +34,51 @@ import {
 import { isZodObject } from '@openai/agents/utils';
 import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 
+// Minimal compatibility type to allow V3 (or future) models that follow the same shape as V2.
+type LanguageModelV3Compatible = {
+  specificationVersion: string;
+  provider: string;
+  modelId: string;
+  supportedUrls: any;
+  doGenerate: (options: any) => PromiseLike<any> | any;
+  doStream: (
+    options: any,
+  ) =>
+    | PromiseLike<{ stream: AsyncIterable<any> }>
+    | { stream: AsyncIterable<any> }
+    | any;
+};
+
+type LanguageModelCompatible = LanguageModelV2 | LanguageModelV3Compatible;
+
+function getSpecVersion(
+  model: LanguageModelCompatible,
+): 'v2' | 'v3' | 'unknown' {
+  const spec = (model as any)?.specificationVersion;
+  if (!spec) {
+    // Default to v2 for backward compatibility with older AI SDK model wrappers.
+    return 'v2';
+  }
+  if (spec === 'v2') {
+    return 'v2';
+  }
+  if (typeof spec === 'string' && spec.toLowerCase().startsWith('v3')) {
+    return 'v3';
+  }
+  return 'unknown';
+}
+
+function ensureSupportedModel(model: LanguageModelCompatible): void {
+  const spec = getSpecVersion(model);
+  if (spec === 'unknown') {
+    throw new UserError(
+      `Unsupported AI SDK specificationVersion: ${String(
+        (model as any)?.specificationVersion,
+      )}. Only v2 and v3 are supported.`,
+    );
+  }
+}
+
 /**
  * @internal
  * Converts a list of model items to a list of language model V2 messages.
@@ -40,27 +88,67 @@ import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
  * @returns The list of language model V2 messages.
  */
 export function itemsToLanguageV2Messages(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   items: protocol.ModelItem[],
+  modelSettings?: ModelSettings,
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
   let currentAssistantMessage: LanguageModelV2Message | undefined;
+  let pendingReasonerReasoning:
+    | { text: string; providerOptions: Record<string, any> }
+    | undefined;
+  const flushPendingReasonerReasoningToMessages = () => {
+    if (
+      !(
+        shouldIncludeReasoningContent(model, modelSettings) &&
+        pendingReasonerReasoning
+      )
+    ) {
+      return;
+    }
+
+    const reasoningPart: LanguageModelV2ReasoningPart = {
+      type: 'reasoning',
+      text: pendingReasonerReasoning.text,
+      providerOptions: pendingReasonerReasoning.providerOptions,
+    };
+
+    if (
+      currentAssistantMessage &&
+      Array.isArray(currentAssistantMessage.content) &&
+      currentAssistantMessage.role === 'assistant'
+    ) {
+      currentAssistantMessage.content.unshift(reasoningPart);
+      currentAssistantMessage.providerOptions = {
+        ...pendingReasonerReasoning.providerOptions,
+        ...currentAssistantMessage.providerOptions,
+      };
+    } else {
+      messages.push({
+        role: 'assistant',
+        content: [reasoningPart],
+        providerOptions: pendingReasonerReasoning.providerOptions,
+      });
+    }
+
+    pendingReasonerReasoning = undefined;
+  };
 
   for (const item of items) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
       const { role, content, providerData } = item;
       if (role === 'system') {
+        flushPendingReasonerReasoningToMessages();
         messages.push({
           role: 'system',
           content: content,
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(providerData, model),
         });
         continue;
       }
 
       if (role === 'user') {
+        flushPendingReasonerReasoningToMessages();
         messages.push({
           role,
           content:
@@ -72,9 +160,10 @@ export function itemsToLanguageV2Messages(
                     return {
                       type: 'text',
                       text: c.text,
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
+                      providerOptions: toProviderOptions(
+                        contentProviderData,
+                        model,
+                      ),
                     };
                   }
                   if (c.type === 'input_image') {
@@ -96,9 +185,10 @@ export function itemsToLanguageV2Messages(
                       type: 'file',
                       data: url,
                       mediaType: 'image/*',
-                      providerOptions: {
-                        ...(contentProviderData ?? {}),
-                      },
+                      providerOptions: toProviderOptions(
+                        contentProviderData,
+                        model,
+                      ),
                     };
                   }
                   if (c.type === 'input_file') {
@@ -106,9 +196,7 @@ export function itemsToLanguageV2Messages(
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(providerData, model),
         });
         continue;
       }
@@ -119,23 +207,45 @@ export function itemsToLanguageV2Messages(
           currentAssistantMessage = undefined;
         }
 
+        const assistantProviderOptions = toProviderOptions(providerData, model);
+        const assistantContent: Array<
+          LanguageModelV2ReasoningPart | LanguageModelV2TextPart
+        > = content
+          .filter((c) => c.type === 'output_text')
+          .map<LanguageModelV2TextPart>((c) => {
+            const { providerData: contentProviderData } = c;
+            return {
+              type: 'text',
+              text: c.text,
+              providerOptions: toProviderOptions(contentProviderData, model),
+            };
+          });
+
+        if (
+          shouldIncludeReasoningContent(model, modelSettings) &&
+          pendingReasonerReasoning
+        ) {
+          assistantContent.unshift({
+            type: 'reasoning',
+            text: pendingReasonerReasoning.text,
+            providerOptions: pendingReasonerReasoning.providerOptions,
+          });
+          messages.push({
+            role,
+            content: assistantContent,
+            providerOptions: {
+              ...pendingReasonerReasoning.providerOptions,
+              ...assistantProviderOptions,
+            },
+          });
+          pendingReasonerReasoning = undefined;
+          continue;
+        }
+
         messages.push({
           role,
-          content: content
-            .filter((c) => c.type === 'output_text')
-            .map((c) => {
-              const { providerData: contentProviderData } = c;
-              return {
-                type: 'text',
-                text: c.text,
-                providerOptions: {
-                  ...(contentProviderData ?? {}),
-                },
-              };
-            }),
-          providerOptions: {
-            ...(providerData ?? {}),
-          },
+          content: assistantContent,
+          providerOptions: assistantProviderOptions,
         });
         continue;
       }
@@ -147,9 +257,7 @@ export function itemsToLanguageV2Messages(
         currentAssistantMessage = {
           role: 'assistant',
           content: [],
-          providerOptions: {
-            ...(item.providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(item.providerData, model),
         };
       }
 
@@ -157,19 +265,34 @@ export function itemsToLanguageV2Messages(
         Array.isArray(currentAssistantMessage.content) &&
         currentAssistantMessage.role === 'assistant'
       ) {
+        // Reasoner models (e.g., DeepSeek Reasoner) require reasoning_content on tool-call messages.
+        if (
+          shouldIncludeReasoningContent(model, modelSettings) &&
+          pendingReasonerReasoning
+        ) {
+          currentAssistantMessage.content.push({
+            type: 'reasoning',
+            text: pendingReasonerReasoning.text,
+            providerOptions: pendingReasonerReasoning.providerOptions,
+          });
+          currentAssistantMessage.providerOptions = {
+            ...pendingReasonerReasoning.providerOptions,
+            ...currentAssistantMessage.providerOptions,
+          };
+          pendingReasonerReasoning = undefined;
+        }
         const content: LanguageModelV2ToolCallPart = {
           type: 'tool-call',
           toolCallId: item.callId,
           toolName: item.name,
           input: parseArguments(item.arguments),
-          providerOptions: {
-            ...(item.providerData ?? {}),
-          },
+          providerOptions: toProviderOptions(item.providerData, model),
         };
         currentAssistantMessage.content.push(content);
       }
       continue;
     } else if (item.type === 'function_call_result') {
+      flushPendingReasonerReasoningToMessages();
       if (currentAssistantMessage) {
         messages.push(currentAssistantMessage);
         currentAssistantMessage = undefined;
@@ -179,16 +302,12 @@ export function itemsToLanguageV2Messages(
         toolCallId: item.callId,
         toolName: item.name,
         output: convertToAiSdkOutput(item.output),
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       };
       messages.push({
         role: 'tool',
         content: [toolResult],
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       });
       continue;
     }
@@ -226,23 +345,30 @@ export function itemsToLanguageV2Messages(
       item.content.length > 0 &&
       typeof item.content[0].text === 'string'
     ) {
+      // Only forward provider data when it targets this model so signatures stay scoped correctly.
+      if (shouldIncludeReasoningContent(model, modelSettings)) {
+        pendingReasonerReasoning = {
+          text: item.content[0].text,
+          providerOptions: toProviderOptions(item.providerData, model),
+        };
+        continue;
+      }
       messages.push({
         role: 'assistant',
         content: [
           {
             type: 'reasoning',
             text: item.content[0].text,
-            providerOptions: { ...(item.providerData ?? {}) },
+            providerOptions: toProviderOptions(item.providerData, model),
           },
         ],
-        providerOptions: {
-          ...(item.providerData ?? {}),
-        },
+        providerOptions: toProviderOptions(item.providerData, model),
       });
       continue;
     }
 
     if (item.type === 'unknown') {
+      flushPendingReasonerReasoningToMessages();
       messages.push({ ...(item.providerData ?? {}) } as LanguageModelV2Message);
       continue;
     }
@@ -255,6 +381,7 @@ export function itemsToLanguageV2Messages(
     throw new UserError(`Unknown item type: ${itemType}`);
   }
 
+  flushPendingReasonerReasoningToMessages();
   if (currentAssistantMessage) {
     messages.push(currentAssistantMessage);
   }
@@ -270,7 +397,7 @@ export function itemsToLanguageV2Messages(
  * @param handoff - The handoff to convert.
  */
 function handoffToLanguageV2Tool(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   handoff: SerializedHandoff,
 ): LanguageModelV2FunctionTool {
   return {
@@ -478,6 +605,175 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
 }
 
+function getModelIdentifier(model: LanguageModelCompatible): string {
+  return `${model.provider}:${model.modelId}`;
+}
+
+function isProviderDataForModel(
+  providerData: Record<string, any>,
+  model: LanguageModelCompatible,
+): boolean {
+  const providerDataModel = providerData.model;
+  if (typeof providerDataModel !== 'string') {
+    return true;
+  }
+
+  const target = getModelIdentifier(model).toLowerCase();
+  const pdLower = providerDataModel.toLowerCase();
+  return (
+    pdLower === target ||
+    pdLower === model.modelId.toLowerCase() ||
+    pdLower === model.provider.toLowerCase()
+  );
+}
+
+function isGeminiModel(model: LanguageModelCompatible): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  return (
+    target.includes('gemini') || model.modelId.toLowerCase().includes('gemini')
+  );
+}
+
+function isDeepSeekModel(model: LanguageModelCompatible): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  return (
+    target.includes('deepseek') ||
+    model.modelId.toLowerCase().includes('deepseek') ||
+    model.provider.toLowerCase().includes('deepseek')
+  );
+}
+
+function shouldIncludeReasoningContent(
+  model: LanguageModelCompatible,
+  modelSettings?: ModelSettings,
+): boolean {
+  const target = getModelIdentifier(model).toLowerCase();
+  const modelIdLower = model.modelId.toLowerCase();
+
+  // DeepSeek models require reasoning_content to be sent alongside tool calls when
+  // either the dedicated reasoner model is used or thinking mode is explicitly enabled.
+  const isDeepSeekReasoner =
+    target.includes('deepseek-reasoner') ||
+    modelIdLower.includes('deepseek-reasoner');
+
+  if (isDeepSeekReasoner) {
+    return true;
+  }
+
+  if (!isDeepSeekModel(model)) {
+    return false;
+  }
+
+  return hasEnabledDeepSeekThinking(modelSettings?.providerData);
+}
+
+function hasEnabledDeepSeekThinking(
+  providerData: Record<string, any> | undefined,
+): boolean {
+  if (!isRecord(providerData)) {
+    return false;
+  }
+
+  const thinkingOption = [
+    providerData.thinking,
+    providerData.deepseek?.thinking,
+    providerData.providerOptions?.thinking,
+    providerData.providerOptions?.deepseek?.thinking,
+  ].find((value) => value !== undefined);
+
+  return isThinkingEnabled(thinkingOption);
+}
+
+function isThinkingEnabled(option: unknown): boolean {
+  if (option === undefined || option === null) {
+    return false;
+  }
+
+  if (option === true) {
+    return true;
+  }
+
+  if (typeof option === 'string') {
+    return option.toLowerCase() === 'enabled';
+  }
+
+  if (isRecord(option)) {
+    const type = option.type ?? option.mode ?? option.status;
+    if (typeof type === 'string') {
+      return type.toLowerCase() === 'enabled';
+    }
+  }
+
+  return false;
+}
+
+function toProviderOptions(
+  providerData: Record<string, any> | undefined,
+  model: LanguageModelCompatible,
+): Record<string, any> {
+  if (!isRecord(providerData)) {
+    return {};
+  }
+
+  if (!isProviderDataForModel(providerData, model)) {
+    return {};
+  }
+
+  const options: Record<string, any> = { ...providerData };
+  delete options.model;
+  delete options.responseId;
+  delete options.response_id;
+
+  if (isGeminiModel(model)) {
+    const googleFields = isRecord(options.google) ? { ...options.google } : {};
+    const thoughtSignature =
+      googleFields.thoughtSignature ??
+      googleFields.thought_signature ??
+      options.thoughtSignature ??
+      options.thought_signature;
+
+    if (thoughtSignature) {
+      googleFields.thoughtSignature = thoughtSignature;
+    }
+
+    if (Object.keys(googleFields).length > 0) {
+      options.google = googleFields;
+    }
+
+    delete options.thoughtSignature;
+    delete options.thought_signature;
+  }
+
+  return options;
+}
+
+function buildBaseProviderData(
+  model: LanguageModelCompatible,
+  responseId?: string,
+): Record<string, any> {
+  const base: Record<string, any> = { model: getModelIdentifier(model) };
+  if (responseId) {
+    base.responseId = responseId;
+  }
+  return base;
+}
+
+function mergeProviderData(
+  base: Record<string, any> | undefined,
+  ...sources: Array<Record<string, any> | undefined>
+): Record<string, any> | undefined {
+  const merged: Record<string, any> = {};
+  if (isRecord(base)) {
+    Object.assign(merged, base);
+  }
+  for (const src of sources) {
+    if (isRecord(src)) {
+      Object.assign(merged, src);
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 function getImageInlineMediaType(
   source: Record<string, any>,
 ): string | undefined {
@@ -504,7 +800,7 @@ function formatInlineData(
  * @param tool - The tool to convert.
  */
 export function toolToLanguageV2Tool(
-  model: LanguageModelV2,
+  model: LanguageModelCompatible,
   tool: SerializedTool,
 ): LanguageModelV2FunctionTool | LanguageModelV2ProviderDefinedTool {
   if (tool.type === 'function') {
@@ -589,9 +885,10 @@ export function getResponseFormat(
  * @returns The wrapped model.
  */
 export class AiSdkModel implements Model {
-  #model: LanguageModelV2;
+  #model: LanguageModelCompatible;
   #logger = getLogger('openai-agents:extensions:ai-sdk');
-  constructor(model: LanguageModelV2) {
+  constructor(model: LanguageModelCompatible) {
+    ensureSupportedModel(model);
     this.#model = model;
   }
 
@@ -612,7 +909,11 @@ export class AiSdkModel implements Model {
                   content: [{ type: 'text', text: request.input }],
                 },
               ]
-            : itemsToLanguageV2Messages(this.#model, request.input);
+            : itemsToLanguageV2Messages(
+                this.#model,
+                request.input,
+                request.modelSettings,
+              );
 
         if (request.systemInstructions) {
           input = [
@@ -667,11 +968,16 @@ export class AiSdkModel implements Model {
         }
 
         const result = await this.#model.doGenerate(aiSdkRequest);
+        const baseProviderData = buildBaseProviderData(
+          this.#model,
+          (result as any).response?.id,
+        );
 
         const output: ModelResponse['output'] = [];
 
         const resultContent = (result as any).content ?? [];
 
+        // Emit reasoning before tool calls so Anthropic thinking signatures propagate into the next turn.
         // Extract and add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
         const reasoningParts = resultContent.filter(
           (c: any) => c && c.type === 'reasoning',
@@ -684,7 +990,10 @@ export class AiSdkModel implements Model {
             content: [{ type: 'input_text', text: reasoningText }],
             rawContent: [{ type: 'reasoning_text', text: reasoningText }],
             // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
-            providerData: reasoningPart.providerMetadata ?? undefined,
+            providerData: mergeProviderData(
+              baseProviderData,
+              reasoningPart.providerMetadata,
+            ),
           });
         }
 
@@ -728,9 +1037,11 @@ export class AiSdkModel implements Model {
             name: toolCall.toolName,
             arguments: toolCallArguments,
             status: 'completed',
-            providerData:
+            providerData: mergeProviderData(
+              baseProviderData,
               toolCall.providerMetadata ??
-              (hasToolCalls ? result.providerMetadata : undefined),
+                (hasToolCalls ? result.providerMetadata : undefined),
+            ),
           });
         }
 
@@ -748,7 +1059,10 @@ export class AiSdkModel implements Model {
               content: [{ type: 'output_text', text: textItem.text }],
               role: 'assistant',
               status: 'completed',
-              providerData: (result as any).providerMetadata,
+              providerData: mergeProviderData(
+                baseProviderData,
+                (result as any).providerMetadata,
+              ),
             });
           }
         }
@@ -865,7 +1179,11 @@ export class AiSdkModel implements Model {
                 content: [{ type: 'text', text: request.input }],
               },
             ]
-          : itemsToLanguageV2Messages(this.#model, request.input);
+          : itemsToLanguageV2Messages(
+              this.#model,
+              request.input,
+              request.modelSettings,
+            );
 
       if (request.systemInstructions) {
         input = [
@@ -915,6 +1233,7 @@ export class AiSdkModel implements Model {
       }
 
       const { stream } = await this.#model.doStream(aiSdkRequest);
+      const baseProviderData = buildBaseProviderData(this.#model);
 
       let started = false;
       let responseId: string | undefined;
@@ -923,7 +1242,8 @@ export class AiSdkModel implements Model {
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
 
-      // State for tracking reasoning blocks (for Anthropic extended thinking)
+      // State for tracking reasoning blocks (for Anthropic extended thinking):
+      // Track reasoning deltas so we can preserve Anthropic signatures even when text is redacted.
       const reasoningBlocks: Record<
         string,
         {
@@ -992,9 +1312,10 @@ export class AiSdkModel implements Model {
                 name: (part as any).toolName,
                 arguments: (part as any).input ?? '',
                 status: 'completed',
-                ...((part as any).providerMetadata
-                  ? { providerData: (part as any).providerMetadata }
-                  : {}),
+                providerData: mergeProviderData(
+                  baseProviderData,
+                  (part as any).providerMetadata,
+                ),
               };
             }
             break;
@@ -1038,7 +1359,11 @@ export class AiSdkModel implements Model {
             content: [{ type: 'input_text', text: reasoningBlock.text }],
             rawContent: [{ type: 'reasoning_text', text: reasoningBlock.text }],
             // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
-            providerData: reasoningBlock.providerMetadata ?? undefined,
+            providerData: mergeProviderData(
+              baseProviderData,
+              reasoningBlock.providerMetadata,
+              responseId ? { responseId } : undefined,
+            ),
           });
         }
       }
@@ -1049,10 +1374,21 @@ export class AiSdkModel implements Model {
           role: 'assistant',
           content: [textOutput],
           status: 'completed',
+          providerData: mergeProviderData(
+            baseProviderData,
+            responseId ? { responseId } : undefined,
+          ),
         });
       }
       for (const fc of Object.values(functionCalls)) {
-        outputs.push(fc);
+        outputs.push({
+          ...fc,
+          providerData: mergeProviderData(
+            baseProviderData,
+            fc.providerData,
+            responseId ? { responseId } : undefined,
+          ),
+        });
       }
 
       const finalEvent: protocol.StreamEventResponseCompleted = {
@@ -1162,7 +1498,7 @@ export class AiSdkModel implements Model {
  * @param model - The Vercel AI SDK model to wrap.
  * @returns The wrapped model.
  */
-export function aisdk(model: LanguageModelV2) {
+export function aisdk(model: LanguageModelCompatible) {
   return new AiSdkModel(model);
 }
 
