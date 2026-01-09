@@ -707,10 +707,19 @@ describe('saveToSession', () => {
     const resumedResult = new RunResult(state);
     await saveToSession(session, [], resumedResult);
 
-    expect(session.items).toHaveLength(5);
-    const latest = session.items[4] as protocol.FunctionCallResultItem;
-    expect(latest.type).toBe('function_call_result');
-    expect(latest.callId).toBe(approvalCall.callId);
+    const functionResults = session.items.filter(
+      (item): item is protocol.FunctionCallResultItem =>
+        item.type === 'function_call_result',
+    );
+    expect(
+      functionResults.some((item) => item.callId === autoCall.callId),
+    ).toBe(true);
+    expect(
+      functionResults.some((item) => item.callId === approvalCall.callId),
+    ).toBe(true);
+    expect(functionResults[functionResults.length - 1]?.callId).toBe(
+      approvalCall.callId,
+    );
   });
 
   it('propagates lastResponseId to sessions after persisting items', async () => {
@@ -3699,7 +3708,57 @@ describe('resolveInterruptedTurn', () => {
     expect(state._currentTurnPersistedItemCount).toBe(
       generatedItems.length - 1,
     );
-    expect(result.preStepItems).toEqual([firstOutput]);
+    expect(result.preStepItems).toEqual(generatedItems);
+  });
+
+  it('retains non-hosted approvals when resuming interruptions', async () => {
+    const agent = new Agent({ name: 'KeepApprovalAgent' });
+    const approvalCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call-keep',
+      callId: 'call-keep',
+      name: 'keep_tool',
+    };
+    const approvalItem = new ToolApprovalItem(approvalCall, agent);
+    const originalPreStepItems = [approvalItem];
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [approvalItem],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const resumedState = new RunState(new RunContext(), 'hello', agent, 2);
+    resumedState._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      originalPreStepItems,
+      resumedResponse,
+      processedResponse,
+      runner,
+      resumedState,
+    );
+
+    expect(result.generatedItems).toContain(approvalItem);
   });
 
   it('dispatches approved computer actions when resuming an interruption', async () => {

@@ -394,12 +394,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
-      if (session && Array.isArray(preparedInput) && !sessionInputCallback) {
-        throw new UserError(
-          'RunConfig.sessionInputCallback must be provided when using session history with list inputs.',
-        );
-      }
-
       const prepared = await prepareInputItemsWithSession(
         preparedInput,
         session,

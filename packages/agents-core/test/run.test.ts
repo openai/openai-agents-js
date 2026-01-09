@@ -1172,16 +1172,33 @@ describe('Runner.run', () => {
         expect(firstPart?.providerData).toEqual({ annotations: [] });
       });
 
-      it('rejects list inputs when using session history', async () => {
+      it('allows list inputs with session history and no session input callback', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('list response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'ListSession', model });
+        const historyItem = user('History stays');
+        const session = new MemorySession([historyItem]);
         const runner = new Runner();
-        const agent = new Agent({ name: 'ListSession' });
-        const session = new MemorySession();
 
-        await expect(
-          runner.run(agent, [user('Hello')], {
-            session,
-          }),
-        ).rejects.toThrow('RunConfig.sessionInputCallback');
+        await runner.run(agent, [user('Hello')], { session });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(Array.isArray(recordedInput)).toBe(true);
+        expect(recordedInput).toHaveLength(2);
+        expect(getFirstTextContent(recordedInput[0])).toBe('History stays');
+        expect(getFirstTextContent(recordedInput[1])).toBe('Hello');
+
+        expect(session.added).toHaveLength(1);
+        expect(getFirstTextContent(session.added[0][0])).toBe('Hello');
+        expect(
+          session.added[0][1] &&
+            typeof session.added[0][1] === 'object' &&
+            'type' in session.added[0][1],
+        ).toBe(true);
       });
 
       it('allows list inputs when session input callback is provided', async () => {

@@ -455,7 +455,9 @@ export async function resolveInterruptedTurn<TContext>(
       return false;
     }
 
-    return false;
+    // Preserve all other approval items so resumptions can continue to reference the
+    // original approval requests (e.g., function/shell/apply_patch).
+    return true;
   });
 
   const completedStep = await maybeCompleteTurnFromToolResults({
