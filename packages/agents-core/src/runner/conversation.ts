@@ -223,6 +223,9 @@ export class ServerConversationTracker {
 
     const originalItems = toAgentInputList(originalInput);
     const hasResponses = modelResponses.length > 0;
+    const serverManagesConversation =
+      typeof this.conversationId !== 'undefined' ||
+      typeof this.previousResponseId !== 'undefined';
 
     const serverItemKeys = new Set<string>();
     for (const response of modelResponses) {
@@ -235,7 +238,7 @@ export class ServerConversationTracker {
       }
     }
 
-    if (hasResponses) {
+    if (hasResponses || serverManagesConversation) {
       for (const item of originalItems) {
         if (item && typeof item === 'object') {
           this.sentItems.add(item);
@@ -251,18 +254,16 @@ export class ServerConversationTracker {
       this.previousResponseId = latestResponse.responseId;
     }
 
-    if (!hasResponses) {
-      return;
-    }
-
-    for (const item of generatedItems) {
-      const rawItem = item.rawItem;
-      if (!rawItem || typeof rawItem !== 'object') {
-        continue;
-      }
-      const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
-      if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
-        this.sentItems.add(rawItem);
+    if (hasResponses) {
+      for (const item of generatedItems) {
+        const rawItem = item.rawItem;
+        if (!rawItem || typeof rawItem !== 'object') {
+          continue;
+        }
+        const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
+        if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
+          this.sentItems.add(rawItem);
+        }
       }
     }
 

@@ -1051,10 +1051,24 @@ describe('ServerConversationTracker', () => {
     expect(nextTurnInput).toHaveLength(0);
   });
 
-  it('sends initial inputs again when resuming without any server responses', () => {
+  it('does not resend initial inputs when resuming a server-managed conversation without responses', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_no_response',
     });
+    const initialInput = toAgentInputList('needs resend');
+
+    tracker.primeFromState({
+      originalInput: initialInput,
+      generatedItems: [],
+      modelResponses: [],
+    });
+
+    const nextTurnInput = tracker.prepareInput(initialInput, []);
+    expect(nextTurnInput).toHaveLength(0);
+  });
+
+  it('requeues initial inputs when resuming without responses and no server conversation context', () => {
+    const tracker = new ServerConversationTracker({});
     const initialInput = toAgentInputList('needs resend');
 
     tracker.primeFromState({
