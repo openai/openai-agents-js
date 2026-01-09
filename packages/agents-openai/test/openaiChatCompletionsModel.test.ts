@@ -493,7 +493,7 @@ describe('OpenAIChatCompletionsModel', () => {
     );
     expect(
       client.chat.completions.create.mock.calls[0][0].response_format,
-    ).toEqual({ type: 'text' });
+    ).toBeUndefined();
 
     const schema: SerializedOutputType = {
       type: 'json_schema',

@@ -334,7 +334,13 @@ export class OpenAIChatCompletionsModel implements Model {
       providerData.verbosity = request.modelSettings.text.verbosity;
     }
 
-    const requestData = {
+    type ChatCompletionRequestParams =
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming &
+          Record<string, unknown>)
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming &
+          Record<string, unknown>);
+
+    const requestData: ChatCompletionRequestParams = {
       model: this.#model,
       messages,
       tools: tools.length ? tools : undefined,
@@ -344,14 +350,17 @@ export class OpenAIChatCompletionsModel implements Model {
       presence_penalty: request.modelSettings.presencePenalty,
       max_tokens: request.modelSettings.maxTokens,
       tool_choice: convertToolChoice(request.modelSettings.toolChoice),
-      response_format: responseFormat,
       parallel_tool_calls: parallelToolCalls,
-      stream,
+      stream: stream ? true : false,
       stream_options: stream ? { include_usage: true } : undefined,
       store: request.modelSettings.store,
       prompt_cache_retention: request.modelSettings.promptCacheRetention,
       ...providerData,
     };
+
+    if (responseFormat) {
+      requestData.response_format = responseFormat;
+    }
 
     if (logger.dontLogModelData) {
       logger.debug('Calling LLM');
@@ -377,9 +386,16 @@ export class OpenAIChatCompletionsModel implements Model {
 
 function getResponseFormat(
   outputType: SerializedOutputType,
-): ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject {
+):
+  | ResponseFormatText
+  | ResponseFormatJSONSchema
+  | ResponseFormatJSONObject
+  | undefined {
   if (outputType === 'text') {
-    return { type: 'text' };
+    // Avoid sending response_format for plain text responses because some Chat Completions
+    // compatible providers (e.g., Claude) reject non-json_schema values here. OpenAI's API
+    // already treats text as the default when the field is omitted.
+    return undefined;
   }
 
   if (outputType.type === 'json_schema') {
