@@ -388,7 +388,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   /**
    * Results from output guardrails applied to the run.
    */
-  public _outputGuardrailResults: OutputGuardrailResult[];
+  public _outputGuardrailResults: OutputGuardrailResult<any, any>[];
   /**
    * Results from tool input guardrails applied during tool execution.
    */
@@ -685,7 +685,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         ...r,
         agent: agentMap.get(r.agent.name) as Agent<any, any>,
       }),
-    ) as OutputGuardrailResult[];
+    ) as OutputGuardrailResult<any, any>[];
     state._toolInputGuardrailResults =
       stateJson.toolInputGuardrailResults as ToolInputGuardrailResult[];
     state._toolOutputGuardrailResults =

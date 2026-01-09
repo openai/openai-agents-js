@@ -538,6 +538,13 @@ describe('Runner.run', () => {
       const result = await runner.run(agent, 'input');
       expect(result.finalOutput).toBe('hi');
       expect(guardrailFn).toHaveBeenCalledTimes(1);
+      expect(result.outputGuardrailResults).toHaveLength(1);
+      expect(result.outputGuardrailResults[0].guardrail.name).toBe('og');
+      expect(result.outputGuardrailResults[0].output.tripwireTriggered).toBe(
+        false,
+      );
+      expect(result.outputGuardrailResults[0].agentOutput).toBe('hi');
+      expect(result.outputGuardrailResults[0].agent).toBe(agent);
     });
 
     it('output guardrail tripwire throws', async () => {

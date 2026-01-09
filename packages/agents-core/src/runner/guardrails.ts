@@ -150,6 +150,7 @@ export async function runOutputGuardrails<
         );
       }),
     );
+    state._outputGuardrailResults.push(...results);
     for (const result of results) {
       if (result.output.tripwireTriggered) {
         if (state._currentAgentSpan) {
