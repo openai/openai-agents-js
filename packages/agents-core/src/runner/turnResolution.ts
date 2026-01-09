@@ -328,11 +328,30 @@ export async function resolveInterruptedTurn<TContext>(
 
   // When resuming we receive the original RunItem references; suppress duplicates so history and streaming do not double-emit the same items.
   const originalPreStepItemSet = new Set(originalPreStepItems);
+  const seenApprovalIdentities = new Set<string>();
+  for (const item of originalPreStepItems) {
+    if (item instanceof RunToolApprovalItem) {
+      const identity = getApprovalIdentity(item);
+      if (identity) {
+        seenApprovalIdentities.add(identity);
+      }
+    }
+  }
   const newItems: RunItem[] = [];
   const newItemsSet = new Set<RunItem>();
   const appendIfNew = (item: RunItem) => {
     if (originalPreStepItemSet.has(item) || newItemsSet.has(item)) {
       return;
+    }
+    if (item instanceof RunToolApprovalItem) {
+      const identity = getApprovalIdentity(item);
+      if (identity) {
+        // Avoid duplicating the same approval request when a turn is resumed multiple times.
+        if (seenApprovalIdentities.has(identity)) {
+          return;
+        }
+        seenApprovalIdentities.add(identity);
+      }
     }
     newItems.push(item);
     newItemsSet.add(item);
@@ -483,10 +502,29 @@ export async function resolveTurnAfterModelResponse<TContext>(
   // append new items, ensuring we never double-stream existing RunItems.
   const preStepItems = originalPreStepItems;
   const seenItems = new Set<RunItem>(originalPreStepItems);
+  const seenApprovalIdentities = new Set<string>();
+  for (const item of originalPreStepItems) {
+    if (item instanceof RunToolApprovalItem) {
+      const identity = getApprovalIdentity(item);
+      if (identity) {
+        seenApprovalIdentities.add(identity);
+      }
+    }
+  }
   const newItems: RunItem[] = [];
   const appendIfNew = (item: RunItem) => {
     if (seenItems.has(item)) {
       return;
+    }
+    if (item instanceof RunToolApprovalItem) {
+      const identity = getApprovalIdentity(item);
+      if (identity) {
+        // Avoid adding duplicate approval placeholders across successive turns/reruns.
+        if (seenApprovalIdentities.has(identity)) {
+          return;
+        }
+        seenApprovalIdentities.add(identity);
+      }
     }
     newItems.push(item);
     seenItems.add(item);
