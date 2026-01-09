@@ -4,6 +4,9 @@ export class AgentToolUseTracker {
   #agentToTools = new Map<Agent<any, any>, string[]>();
 
   addToolUse(agent: Agent<any, any>, toolNames: string[]): void {
+    if (toolNames.length === 0 && !this.#agentToTools.has(agent)) {
+      return;
+    }
     this.#agentToTools.set(agent, toolNames);
   }
 

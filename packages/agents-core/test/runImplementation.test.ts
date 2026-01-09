@@ -1713,6 +1713,14 @@ describe('AgentToolUseTracker', () => {
     expect(tracker.hasUsedTools(agent)).toBe(true);
     expect(tracker.toJSON()).toEqual({ Track: ['foo'] });
   });
+
+  it('ignores empty tool lists so unused agents do not mark tool usage', () => {
+    const tracker = new AgentToolUseTracker();
+    const agent = new Agent({ name: 'Track' });
+    tracker.addToolUse(agent, []);
+    expect(tracker.hasUsedTools(agent)).toBe(false);
+    expect(tracker.toJSON()).toEqual({});
+  });
 });
 
 describe('executeComputerActions', () => {

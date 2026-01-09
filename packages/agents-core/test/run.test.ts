@@ -318,6 +318,43 @@ describe('Runner.run', () => {
       expect(runnerEndEvents[0].output).toBe('Hello World');
     });
 
+    it('emits agent_end once when final output comes from tool results', async () => {
+      const model = new FakeModel([
+        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'ToolAgent',
+        model,
+        tools: [TEST_TOOL],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const agentEndEvents: Array<{ context: any; output: string }> = [];
+      const runnerEndEvents: Array<{
+        context: any;
+        agent: any;
+        output: string;
+      }> = [];
+
+      agent.on('agent_end', (context, output) => {
+        agentEndEvents.push({ context, output });
+      });
+
+      const runner = new Runner();
+      runner.on('agent_end', (context, endAgent, output) => {
+        runnerEndEvents.push({ context, agent: endAgent, output });
+      });
+
+      const result = await runner.run(agent, 'trigger tool');
+
+      expect(result.finalOutput).toBe('Hello World');
+      expect(agentEndEvents).toHaveLength(1);
+      expect(agentEndEvents[0].output).toBe('Hello World');
+      expect(runnerEndEvents).toHaveLength(1);
+      expect(runnerEndEvents[0].agent).toBe(agent);
+      expect(runnerEndEvents[0].output).toBe('Hello World');
+    });
+
     it('disposes computer lifecycle initializers after a completed run', async () => {
       const createdComputer = new FakeComputer();
       const create = vi.fn(async () => createdComputer);

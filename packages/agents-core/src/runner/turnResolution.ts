@@ -572,8 +572,6 @@ export async function resolveTurnAfterModelResponse<TContext>(
           ),
         );
       } else {
-        // receive a user's approval on the next turn
-        newItems.push(approvalRequest.requestItem);
         const approvalItem = {
           type: 'hosted_mcp_tool_approval' as const,
           tool: approvalRequest.mcpTool,
@@ -740,7 +738,7 @@ type TurnFinalizationParams<TContext> = {
 // triggered an interruption, or require the agent loop to continue running.
 async function maybeCompleteTurnFromToolResults<TContext>({
   agent,
-  runner,
+  runner: _runner,
   state,
   functionResults,
   originalInput,
@@ -757,9 +755,6 @@ async function maybeCompleteTurnFromToolResults<TContext>({
   );
 
   if (toolOutcome.isFinalOutput) {
-    runner.emit('agent_end', state._context, agent, toolOutcome.finalOutput);
-    agent.emit('agent_end', state._context, toolOutcome.finalOutput);
-
     return new SingleStepResult(
       originalInput,
       newResponse,
