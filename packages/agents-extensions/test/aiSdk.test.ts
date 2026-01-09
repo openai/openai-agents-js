@@ -9,7 +9,7 @@ import {
 } from '../src/aiSdk';
 import { protocol, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
-import type { LanguageModelV2 } from '@ai-sdk/provider';
+import type { JSONSchema7, LanguageModelV2 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 
 function stubModel(
@@ -86,6 +86,180 @@ describe('getResponseFormat', () => {
       name: outputType.name,
       schema: outputType.schema,
     });
+  });
+});
+
+describe('AiSdkModel end-to-end scenarios', () => {
+  test('streams interleaved text and multiple tool calls with usage', async () => {
+    const parts = [
+      { type: 'text-delta', delta: 'Hello ' },
+      {
+        type: 'tool-call',
+        toolCallId: 'c1',
+        toolName: 'search',
+        input: '{"q":"a"}',
+        providerMetadata: { meta: 1 },
+      },
+      { type: 'text-delta', delta: 'world' },
+      {
+        type: 'tool-call',
+        toolCallId: 'c2',
+        toolName: 'lookup',
+        input: '{"id":2}',
+        providerMetadata: { meta: 2 },
+      },
+      {
+        type: 'response-metadata',
+        id: 'resp-stream',
+      },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 3, outputTokens: 5 },
+      },
+    ];
+
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    const final = events.at(-1);
+    expect(final.type).toBe('response_done');
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: { model: 'stub:m', responseId: 'resp-stream' },
+      },
+      {
+        type: 'function_call',
+        callId: 'c1',
+        name: 'search',
+        arguments: '{"q":"a"}',
+        status: 'completed',
+        providerData: { model: 'stub:m', meta: 1, responseId: 'resp-stream' },
+      },
+      {
+        type: 'function_call',
+        callId: 'c2',
+        name: 'lookup',
+        arguments: '{"id":2}',
+        status: 'completed',
+        providerData: { model: 'stub:m', meta: 2, responseId: 'resp-stream' },
+      },
+    ]);
+    expect(final.response.usage).toEqual({
+      inputTokens: 3,
+      outputTokens: 5,
+      totalTokens: 8,
+    });
+  });
+
+  test('supports v3 models without throwing during conversion', async () => {
+    const v3Model: any = {
+      specificationVersion: 'v3',
+      provider: 'v3-provider',
+      modelId: 'v3-model',
+      supportedUrls: {},
+      async doGenerate(options: any) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'hello v3',
+            },
+          ],
+          usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+          response: { id: 'resp-v3' },
+          providerMetadata: options,
+          finishReason: 'stop',
+          warnings: [],
+        };
+      },
+      async doStream() {
+        return { stream: partsStream([{ type: 'text-delta', delta: 'hi' }]) };
+      },
+    };
+
+    const model = new AiSdkModel(v3Model);
+    const resp = await withTrace('v3-model', () =>
+      model.getResponse({
+        input: 'prompt',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: true,
+      } as any),
+    );
+
+    expect(resp.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'hello v3' }],
+    });
+  });
+
+  test('returns JSON schema output in streaming finish', async () => {
+    const schema: JSONSchema7 = {
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: ['a'],
+    };
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream([
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 1, outputTokens: 1 },
+                response: { id: 'resp-json' },
+              },
+            ]),
+          };
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: {
+        type: 'json_schema',
+        name: 'output',
+        schema,
+        strict: false,
+      },
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    const final = events.at(-1);
+    expect(final.type).toBe('response_done');
+    expect(final.response.output).toEqual([]);
   });
 });
 

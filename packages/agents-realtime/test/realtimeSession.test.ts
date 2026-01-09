@@ -202,6 +202,89 @@ describe('RealtimeSession', () => {
     vi.restoreAllMocks();
   });
 
+  it('runs tool calls end-to-end and emits lifecycle events', async () => {
+    const transport = new FakeTransport();
+    const echoTool = tool({
+      name: 'echo',
+      description: 'echo tool',
+      parameters: z.object({ message: z.string() }),
+      execute: async ({ message }) => `echo:${message}`,
+    });
+    const agent = new RealtimeAgent({
+      name: 'Tool Agent',
+      tools: [echoTool],
+    });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const toolStart = vi.fn();
+    const toolEnd = vi.fn();
+    scenarioSession.on('agent_tool_start', toolStart);
+    scenarioSession.on('agent_tool_end', toolEnd);
+    const agentToolStart = vi.fn();
+    const agentToolEnd = vi.fn();
+    agent.on('agent_tool_start', agentToolStart);
+    agent.on('agent_tool_end', agentToolEnd);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('function_call', {
+      type: 'function_call',
+      name: 'echo',
+      callId: 'call-1',
+      arguments: JSON.stringify({ message: 'hi' }),
+    });
+
+    await vi.waitFor(() =>
+      expect(transport.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+
+    const [toolCall, output, startResponse] =
+      transport.sendFunctionCallOutputCalls[0];
+    expect(toolCall.name).toBe('echo');
+    expect(output).toBe('echo:hi');
+    expect(startResponse).toBe(true);
+    expect(toolStart).toHaveBeenCalledTimes(1);
+    expect(toolEnd).toHaveBeenCalledTimes(1);
+    expect(agentToolStart).toHaveBeenCalledTimes(1);
+    expect(agentToolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges completed audio transcripts into history', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const historyEvents: any[] = [];
+    scenarioSession.on('history_updated', (h) => historyEvents.push([...h]));
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('item_update', {
+      itemId: 'audio-1',
+      type: 'message',
+      role: 'user',
+      status: 'in_progress',
+      content: [
+        {
+          type: 'input_audio',
+          audio: 'AA==',
+          transcript: null,
+        },
+      ],
+    } as any);
+
+    expect(scenarioSession.history[0]?.itemId).toBe('audio-1');
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'audio-1',
+      transcript: 'hello audio',
+    });
+
+    await vi.waitFor(() => {
+      const latest = historyEvents.at(-1);
+      expect(latest?.[0]?.content?.[0]?.transcript).toBe('hello audio');
+      expect(latest?.[0]?.status).toBe('completed');
+    });
+  });
+
   it('resets guardrail debounce per transcript item', async () => {
     const runMock = vi.fn(async () => ({ output: {} }));
     vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({

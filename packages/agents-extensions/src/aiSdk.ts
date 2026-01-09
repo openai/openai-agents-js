@@ -1212,6 +1212,9 @@ export class AiSdkModel implements Model {
 
       const aiSdkRequest: LanguageModelV2CallOptions = {
         tools,
+        toolChoice: toolChoiceToLanguageV2Format(
+          request.modelSettings.toolChoice,
+        ),
         prompt: input,
         temperature: request.modelSettings.temperature,
         topP: request.modelSettings.topP,
