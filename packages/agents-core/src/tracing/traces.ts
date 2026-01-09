@@ -60,14 +60,26 @@ export class Trace {
     });
   }
 
-  toJSON(): object | null {
-    return {
+  /**
+   * Serializes the trace for export or persistence.
+   * Set `includeTracingApiKey` to true only when you intentionally need to persist the
+   * exporter credentials (for example, when handing off a run to another process that
+   * cannot access the original environment). Defaults to false to avoid leaking secrets.
+   */
+  toJSON(options?: { includeTracingApiKey?: boolean }): object | null {
+    const base = {
       object: this.type,
       id: this.traceId,
       workflow_name: this.name,
       group_id: this.groupId,
       metadata: this.metadata,
-    };
+    } as Record<string, any>;
+
+    if (options?.includeTracingApiKey && this.tracingApiKey) {
+      base.tracing_api_key = this.tracingApiKey;
+    }
+
+    return base;
   }
 }
 

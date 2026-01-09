@@ -186,6 +186,19 @@ describe('Trace & Span lifecycle', () => {
       { tracingApiKey: 'run-key' },
     );
   });
+
+  it('only serializes tracing api key when explicitly requested', () => {
+    const trace = new Trace({
+      name: 'test-trace',
+      tracingApiKey: 'secret-key',
+    });
+
+    const defaultJson = trace.toJSON();
+    expect(defaultJson).not.toHaveProperty('tracing_api_key');
+
+    const withKey = trace.toJSON({ includeTracingApiKey: true }) as any;
+    expect(withKey.tracing_api_key).toBe('secret-key');
+  });
 });
 
 describe('Span creation inherits tracing api key from parents', () => {
