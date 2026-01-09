@@ -88,7 +88,19 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
       agentModelSettings.providerData?.text?.verbosity ||
       (agentModelSettings.providerData as any)?.reasoning_effort)
   ) {
-    const copiedModelSettings = { ...modelSettings };
+    const copiedModelSettings: ModelSettings = {
+      ...modelSettings,
+      providerData: modelSettings.providerData
+        ? structuredClone(modelSettings.providerData)
+        : undefined,
+    };
+    if (modelSettings.reasoning) {
+      copiedModelSettings.reasoning = { ...modelSettings.reasoning };
+    }
+    if (modelSettings.text) {
+      copiedModelSettings.text = { ...modelSettings.text };
+    }
+
     delete copiedModelSettings.providerData?.reasoning;
     delete (copiedModelSettings.providerData as any)?.text?.verbosity;
     delete (copiedModelSettings.providerData as any)?.reasoning_effort;
