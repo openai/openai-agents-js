@@ -67,12 +67,23 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
   agentModelSettings: ModelSettings,
   runnerModel: string | Model,
   modelSettings: ModelSettings,
+  resolvedModelName?: string,
 ): ModelSettings {
+  const modelName =
+    resolvedModelName ??
+    (typeof runnerModel === 'string'
+      ? runnerModel
+      : ((runnerModel as { model?: string; name?: string } | undefined)
+          ?.model ?? (runnerModel as { name?: string } | undefined)?.name));
+  const isNonGpt5RunnerModel =
+    typeof modelName === 'string'
+      ? !gpt5ReasoningSettingsRequired(modelName)
+      : true;
+
   if (
     isGpt5Default() &&
     explictlyModelSet &&
-    (typeof runnerModel !== 'string' ||
-      !gpt5ReasoningSettingsRequired(runnerModel)) &&
+    isNonGpt5RunnerModel &&
     (agentModelSettings.providerData?.reasoning ||
       agentModelSettings.providerData?.text?.verbosity ||
       (agentModelSettings.providerData as any)?.reasoning_effort)

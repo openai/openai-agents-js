@@ -13,6 +13,7 @@ import {
   RunToolCallOutputItem as ToolCallOutputItem,
   RunToolApprovalItem as ToolApprovalItem,
 } from '../src/items';
+import type { Model, ModelSettings } from '../src/model';
 import { ModelResponse } from '../src/model';
 import { RunResult, StreamedRunResult } from '../src/result';
 import { getTracing } from '../src/run';
@@ -31,7 +32,10 @@ import {
   executeApplyPatchOperations,
   executeHandoffCalls,
 } from '../src/runner/toolExecution';
-import { maybeResetToolChoice } from '../src/runner/modelSettings';
+import {
+  adjustModelSettingsForNonGPT5RunnerModel,
+  maybeResetToolChoice,
+} from '../src/runner/modelSettings';
 import { processModelResponse } from '../src/runner/modelOutputs';
 import {
   prepareInputItemsWithSession,
@@ -78,6 +82,7 @@ import {
 } from './stubs';
 import * as protocol from '../src/types/protocol';
 import { Runner } from '../src/run';
+import * as defaultModelModule from '../src/defaultModel';
 import { RunContext } from '../src/runContext';
 import { setDefaultModelProvider } from '../src';
 import { Logger } from '../src/logger';
@@ -254,6 +259,64 @@ describe('maybeResetToolChoice', () => {
 
     const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
     expect(result.toolChoice).toBeUndefined();
+  });
+});
+
+describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
+  const gpt5Settings: ModelSettings = {
+    providerData: { reasoning: { effort: 'low' }, text: { verbosity: 'low' } },
+    reasoning: { effort: 'low' },
+    text: { verbosity: 'low' },
+  };
+
+  const withGpt5Default = () =>
+    vi.spyOn(defaultModelModule, 'isGpt5Default').mockReturnValue(true);
+
+  it('keeps GPT-5 provider data when the explicit model is GPT-5', () => {
+    const spy = withGpt5Default();
+    const result = adjustModelSettingsForNonGPT5RunnerModel(
+      true,
+      gpt5Settings,
+      'gpt-5-mini',
+      { ...gpt5Settings },
+      'gpt-5-mini',
+    );
+    expect(result.providerData?.reasoning).toBeDefined();
+    expect(result.providerData?.text?.verbosity).toBe('low');
+    spy.mockRestore();
+  });
+
+  it('strips GPT-5 provider data when the resolved model name is unavailable', () => {
+    const spy = withGpt5Default();
+    const anonymousModel = {
+      getResponse: vi.fn(),
+      getStreamedResponse: vi.fn(),
+    } as unknown as Model;
+
+    const result = adjustModelSettingsForNonGPT5RunnerModel(
+      true,
+      gpt5Settings,
+      anonymousModel,
+      { ...gpt5Settings },
+      undefined,
+    );
+    expect(result.providerData?.reasoning).toBeUndefined();
+    expect(result.providerData?.text?.verbosity).toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('strips GPT-5-only provider data when a non-GPT-5 model is explicitly set', () => {
+    const spy = withGpt5Default();
+    const result = adjustModelSettingsForNonGPT5RunnerModel(
+      true,
+      gpt5Settings,
+      'gpt-4o',
+      { ...gpt5Settings },
+      'gpt-4o',
+    );
+    expect(result.providerData?.reasoning).toBeUndefined();
+    expect(result.providerData?.text?.verbosity).toBeUndefined();
+    spy.mockRestore();
   });
 });
 

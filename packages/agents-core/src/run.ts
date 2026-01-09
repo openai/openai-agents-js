@@ -491,17 +491,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
    */
   async #resolveModelForAgent<TContext>(
     agent: Agent<TContext, AgentOutputType>,
-  ): Promise<{ model: Model; explictlyModelSet: boolean }> {
+  ): Promise<{
+    model: Model;
+    explictlyModelSet: boolean;
+    resolvedModelName?: string;
+  }> {
     const explictlyModelSet =
       (agent.model !== undefined &&
         agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
       (this.config.model !== undefined &&
         this.config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER);
-    let resolvedModel = selectModel(agent.model, this.config.model);
-    if (typeof resolvedModel === 'string') {
-      resolvedModel = await this.config.modelProvider.getModel(resolvedModel);
-    }
-    return { model: resolvedModel, explictlyModelSet };
+    const selectedModel = selectModel(agent.model, this.config.model);
+    const resolvedModelName =
+      typeof selectedModel === 'string' ? selectedModel : undefined;
+    const resolvedModel =
+      typeof selectedModel === 'string'
+        ? await this.config.modelProvider.getModel(selectedModel)
+        : selectedModel;
+    return { model: resolvedModel, explictlyModelSet, resolvedModelName };
   }
 
   /**
@@ -1362,9 +1369,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<PreparedModelCall<TContext>> {
-    const { model, explictlyModelSet } = await this.#resolveModelForAgent(
-      state._currentAgent,
-    );
+    const { model, explictlyModelSet, resolvedModelName } =
+      await this.#resolveModelForAgent(state._currentAgent);
 
     let modelSettings = {
       ...this.config.modelSettings,
@@ -1375,6 +1381,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._currentAgent.modelSettings,
       model,
       modelSettings,
+      resolvedModelName,
     );
     modelSettings = maybeResetToolChoice(
       state._currentAgent,
