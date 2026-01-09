@@ -16,7 +16,7 @@ import {
 } from '../utils/smartString';
 import {
   extractOutputItemsFromRunItems,
-  toInputItemList,
+  toAgentInputList,
   getAgentInputItemKey,
 } from './items';
 
@@ -296,9 +296,7 @@ export async function prepareInputItemsWithSession(
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
 
   const history = await session.getItems();
-  const newInputItems = Array.isArray(input)
-    ? [...input]
-    : toInputItemList(input);
+  const newInputItems = toAgentInputList(input);
 
   if (!sessionInputCallback) {
     return {

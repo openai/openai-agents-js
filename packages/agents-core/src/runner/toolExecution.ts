@@ -33,7 +33,7 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
-import { Runner } from '../run';
+import type { Runner } from '../run';
 import {
   runToolInputGuardrails,
   runToolOutputGuardrails,

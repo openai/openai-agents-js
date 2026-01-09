@@ -117,22 +117,6 @@ export function agentInputSerializationReplacer(
   return value;
 }
 
-// Converts a user-provided input into a standard AgentInputItem list.
-export function toInputItemList(
-  input: string | AgentInputItem[],
-): AgentInputItem[] {
-  if (typeof input === 'string') {
-    return [
-      {
-        type: 'message',
-        role: 'user',
-        content: input,
-      },
-    ];
-  }
-  return [...input];
-}
-
 // Extracts model-ready output items from run items, excluding approval placeholders.
 export function extractOutputItemsFromRunItems(
   items: RunItem[],

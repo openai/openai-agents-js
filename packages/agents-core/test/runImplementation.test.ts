@@ -41,7 +41,7 @@ import {
   resolveTurnAfterModelResponse,
   resolveInterruptedTurn,
 } from '../src/runner/turnResolution';
-import { toInputItemList } from '../src/runner/items';
+import { toAgentInputList } from '../src/runner/items';
 import { AgentToolUseTracker } from '../src/runner/toolUseTracker';
 import {
   FunctionTool,
@@ -321,7 +321,7 @@ describe('saveToSession', () => {
     const preApprovalResult = new RunResult(state);
     await saveToSession(
       session,
-      toInputItemList(state._originalInput),
+      toAgentInputList(state._originalInput),
       preApprovalResult,
     );
 
@@ -477,7 +477,7 @@ describe('saveToSession', () => {
     const preApprovalResult = new RunResult(state);
     await saveToSession(
       session,
-      toInputItemList(state._originalInput),
+      toAgentInputList(state._originalInput),
       preApprovalResult,
     );
 
@@ -651,7 +651,11 @@ describe('saveToSession', () => {
     };
 
     const result = new RunResult(state);
-    await saveToSession(session, toInputItemList(state._originalInput), result);
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      result,
+    );
 
     expect(session.events).toEqual(['addItems:2', 'runCompaction:resp_123']);
     expect(session.items).toHaveLength(2);
@@ -732,7 +736,11 @@ describe('saveToSession', () => {
     };
 
     const result = new RunResult(state);
-    await saveToSession(session, toInputItemList(state._originalInput), result);
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      result,
+    );
 
     expect(session.events).toEqual(['addItems:2', 'runCompaction:undefined']);
     expect(session.items).toHaveLength(2);
@@ -837,7 +845,11 @@ describe('saveToSession', () => {
     };
 
     const result = new RunResult(state);
-    await saveToSession(session, toInputItemList(state._originalInput), result);
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      result,
+    );
 
     expect(session.events).toEqual(['addItems:2', 'runCompaction:resp_123']);
     expect(state.usage.inputTokens).toBe(6);
@@ -1032,8 +1044,8 @@ describe('prepareInputItemsWithSession', () => {
       { includeHistoryInPreparedInput: false },
     );
 
-    expect(result.preparedInput).toEqual(toInputItemList('fresh input'));
-    expect(result.sessionItems).toEqual(toInputItemList('fresh input'));
+    expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
   });
 });
 

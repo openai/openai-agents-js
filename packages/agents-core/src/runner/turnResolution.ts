@@ -8,7 +8,7 @@ import {
   RunToolCallItem,
 } from '../items';
 import { ModelResponse } from '../model';
-import { Runner } from '../run';
+import type { Runner } from '../run';
 import { RunState } from '../runState';
 import { getLastTextFromOutputMessage } from '../utils/messages';
 import { getSchemaAndParserFromInputType } from '../utils/tools';
