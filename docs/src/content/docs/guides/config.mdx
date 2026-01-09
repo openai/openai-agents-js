@@ -1,84 +1,18 @@
----
-title: Configuring the SDK
-description: Customize API keys, tracing and logging behavior
----
+var debug = require('debug')('http')
+  , http = require('http')
+  , name = 'My App';
 
-import { Code } from '@astrojs/starlight/components';
-import setDefaultOpenAIKeyExample from '../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
-import setDefaultOpenAIClientExample from '../../../../../examples/docs/config/setDefaultOpenAIClient.ts?raw';
-import setOpenAIAPIExample from '../../../../../examples/docs/config/setOpenAIAPI.ts?raw';
-import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
-import setTracingDisabledExample from '../../../../../examples/docs/config/setTracingDisabled.ts?raw';
-import getLoggerExample from '../../../../../examples/docs/config/getLogger.ts?raw';
+// fake app
 
-## API keys and clients
+debug('booting %o', name);
 
-By default the SDK reads the `OPENAI_API_KEY` environment variable when first imported. If setting the variable is not possible you can call `setDefaultOpenAIKey()` manually.
+http.createServer(function(req, res){
+  debug(req.method + ' ' + req.url);
+  res.end('hello\n');
+}).listen(3000, function(){
+  debug('listening');
+});
 
-<Code
-  lang="typescript"
-  code={setDefaultOpenAIKeyExample}
-  title="Set default OpenAI key"
-/>
+// fake worker of some kind
 
-You may also pass your own `OpenAI` client instance. The SDK will otherwise create one automatically using the default key.
-
-<Code
-  lang="typescript"
-  code={setDefaultOpenAIClientExample}
-  title="Set default OpenAI client"
-/>
-
-Finally you can switch between the Responses API and the Chat Completions API.
-
-<Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
-
-## Tracing
-
-Tracing is enabled by default and uses the OpenAI key from the section above.
-
-A separate key may be set via `setTracingExportApiKey()`:
-
-<Code
-  lang="typescript"
-  code={setTracingExportApiKeyExample}
-  title="Set tracing export API key"
-/>
-
-Tracing can also be disabled entirely:
-
-<Code
-  lang="typescript"
-  code={setTracingDisabledExample}
-  title="Disable tracing"
-/>
-
-If you’d like to learn more about the tracing feature, please check out [Tracing guide](/openai-agents-js/guides/tracing).
-
-## Debug logging
-
-The SDK uses the [`debug`](https://www.npmjs.com/package/debug) package for debug logging. Set the `DEBUG` environment variable to `openai-agents*` to see verbose logs.
-
-```bash
-export DEBUG=openai-agents*
-```
-
-You can obtain a namespaced logger for your own modules using `getLogger(namespace)` from `@openai/agents`.
-
-<Code lang="typescript" code={getLoggerExample} title="Get logger" />
-
-### Sensitive data in logs
-
-Certain logs may contain user data. Disable them by setting these environment variables.
-
-To disable logging LLM inputs and outputs:
-
-```bash
-export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
-```
-
-To disable logging tool inputs and outputs:
-
-```bash
-export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
-```
+require('./worker');
