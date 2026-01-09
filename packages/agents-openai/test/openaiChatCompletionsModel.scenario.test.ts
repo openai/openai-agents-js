@@ -100,7 +100,6 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
             content: 'hi there',
           },
         ],
-        response_format: { type: 'text' },
         reasoning_effort: 'medium',
         verbosity: 'high',
       }),
