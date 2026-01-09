@@ -307,6 +307,8 @@ export const SerializedRunState = z.object({
   generatedItems: z.array(itemSchema),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  conversationId: z.string().optional(),
+  previousResponseId: z.string().optional(),
   trace: serializedTraceSchema.nullable(),
 });
 
@@ -335,6 +337,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Responses from the model so far.
    */
   public _modelResponses: ModelResponse[];
+  /**
+   * Conversation identifier when the server manages conversation history.
+   */
+  public _conversationId: string | undefined;
+  /**
+   * Latest response identifier returned by the server for server-managed conversations.
+   */
+  public _previousResponseId: string | undefined;
   /**
    * Active tracing span for the current agent if tracing is enabled.
    */
@@ -562,6 +572,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       generatedItems: this._generatedItems.map((item) => item.toJSON() as any),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
       lastProcessedResponse: this._lastProcessedResponse as any,
+      conversationId: this._conversationId,
+      previousResponseId: this._previousResponseId,
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
@@ -644,6 +656,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       stateJson.maxTurns,
     );
     state._currentTurn = stateJson.currentTurn;
+    state._conversationId = stateJson.conversationId ?? undefined;
+    state._previousResponseId = stateJson.previousResponseId ?? undefined;
 
     // rebuild tool use tracker
     state._toolUseTracker = new AgentToolUseTracker();

@@ -1070,6 +1070,53 @@ describe('ServerConversationTracker', () => {
       content: 'needs resend',
     });
   });
+
+  it('serializes and restores server-managed conversation identifiers', async () => {
+    const state = new RunState(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'hello',
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      3,
+    );
+    state._conversationId = 'conv_abc';
+    state._previousResponseId = 'resp_123';
+
+    const restored = await RunState.fromString(
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      state.toString(),
+    );
+
+    expect(restored._conversationId).toBe('conv_abc');
+    expect(restored._previousResponseId).toBe('resp_123');
+  });
+
+  it('reuses server-managed conversation state when resuming a run', async () => {
+    const state = new RunState(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'hello',
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      3,
+    );
+    state._conversationId = 'conv_resume';
+    state._previousResponseId = 'resp_prev';
+
+    const prepareInputSpy = vi.spyOn(
+      ServerConversationTracker.prototype,
+      'prepareInput',
+    );
+
+    const runner = new Runner();
+    const result = await runner.run(
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      state,
+    );
+
+    expect(prepareInputSpy).toHaveBeenCalled();
+    expect(result.state._conversationId).toBe('conv_resume');
+    expect(result.state._previousResponseId).toBe('resp_prev');
+
+    prepareInputSpy.mockRestore();
+  });
 });
 
 describe('prepareInputItemsWithSession', () => {

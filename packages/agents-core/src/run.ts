@@ -372,13 +372,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback,
       callModelInputFilter,
     };
+    const resumingFromState = input instanceof RunState;
+    const resumedConversationId = resumingFromState
+      ? (input as RunState<TContext, TAgent>)._conversationId
+      : undefined;
+    const resumedPreviousResponseId = resumingFromState
+      ? (input as RunState<TContext, TAgent>)._previousResponseId
+      : undefined;
     const serverManagesConversation =
-      Boolean(effectiveOptions.conversationId) ||
-      Boolean(effectiveOptions.previousResponseId);
+      Boolean(effectiveOptions.conversationId ?? resumedConversationId) ||
+      Boolean(effectiveOptions.previousResponseId ?? resumedPreviousResponseId);
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
-    const resumingFromState = input instanceof RunState;
     const sessionPersistence = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter,
@@ -543,11 +549,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
 
+      const resolvedConversationId =
+        options.conversationId ??
+        (isResumedState ? state._conversationId : undefined);
+      const resolvedPreviousResponseId =
+        options.previousResponseId ??
+        (isResumedState ? state._previousResponseId : undefined);
+
+      if (!isResumedState) {
+        state._conversationId = resolvedConversationId;
+        state._previousResponseId = resolvedPreviousResponseId;
+      }
+
       const serverConversationTracker =
-        options.conversationId || options.previousResponseId
+        resolvedConversationId || resolvedPreviousResponseId
           ? new ServerConversationTracker({
-              conversationId: options.conversationId,
-              previousResponseId: options.previousResponseId,
+              conversationId: resolvedConversationId,
+              previousResponseId: resolvedPreviousResponseId,
             })
           : undefined;
 
@@ -557,6 +575,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           generatedItems: state._generatedItems,
           modelResponses: state._modelResponses,
         });
+        state._conversationId = serverConversationTracker.conversationId;
+        state._previousResponseId =
+          serverConversationTracker.previousResponseId;
       }
 
       let continuingInterruptedTurn = false;
@@ -736,6 +757,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             serverConversationTracker?.trackServerItems(
               state._lastTurnResponse,
             );
+            if (serverConversationTracker) {
+              state._conversationId = serverConversationTracker.conversationId;
+              state._previousResponseId =
+                serverConversationTracker.previousResponseId;
+            }
 
             const processedResponse = processModelResponse(
               state._lastTurnResponse,
@@ -863,14 +889,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<void> {
+    const resolvedConversationId =
+      options.conversationId ?? result.state._conversationId;
+    const resolvedPreviousResponseId =
+      options.previousResponseId ?? result.state._previousResponseId;
     const serverManagesConversation =
-      Boolean(options.conversationId) || Boolean(options.previousResponseId);
+      Boolean(resolvedConversationId) || Boolean(resolvedPreviousResponseId);
     const serverConversationTracker = serverManagesConversation
       ? new ServerConversationTracker({
-          conversationId: options.conversationId,
-          previousResponseId: options.previousResponseId,
+          conversationId: resolvedConversationId,
+          previousResponseId: resolvedPreviousResponseId,
         })
       : undefined;
+    if (serverConversationTracker) {
+      result.state._conversationId = serverConversationTracker.conversationId;
+      result.state._previousResponseId =
+        serverConversationTracker.previousResponseId;
+    }
 
     let handedInputToModel = false;
     let streamInputPersisted = false;
@@ -906,6 +941,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         generatedItems: result.state._generatedItems,
         modelResponses: result.state._modelResponses,
       });
+      result.state._conversationId = serverConversationTracker.conversationId;
+      result.state._previousResponseId =
+        serverConversationTracker.previousResponseId;
     }
 
     let continuingInterruptedTurn = false;
@@ -1143,6 +1181,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._lastTurnResponse = finalResponse;
           // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
+          if (serverConversationTracker) {
+            result.state._conversationId =
+              serverConversationTracker.conversationId;
+            result.state._previousResponseId =
+              serverConversationTracker.previousResponseId;
+          }
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
           const processedResponse = processModelResponse(
@@ -1313,6 +1357,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             agent,
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
+      const resolvedConversationId =
+        options.conversationId ??
+        (isResumedState ? state._conversationId : undefined);
+      const resolvedPreviousResponseId =
+        options.previousResponseId ??
+        (isResumedState ? state._previousResponseId : undefined);
+      if (!isResumedState) {
+        state._conversationId = resolvedConversationId;
+        state._previousResponseId = resolvedPreviousResponseId;
+      }
 
       // Initialize the streamed result with existing state
       const result = new StreamedRunResult<TContext, TAgent>({
