@@ -983,6 +983,53 @@ describe('ServerConversationTracker', () => {
     const nextTurnInput = tracker.prepareInput([keep, drop], []);
     expect(nextTurnInput).toHaveLength(0);
   });
+
+  it('does not resend generated items when resuming from a serialized state', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_resume',
+    });
+    const initialInput = toAgentInputList('hello');
+    const modelMessage = fakeModelMessage('hi there');
+
+    const generatedItems = [
+      new MessageOutputItem(structuredClone(modelMessage), TEST_AGENT),
+    ];
+    const modelResponses: ModelResponse[] = [
+      {
+        output: [structuredClone(modelMessage)],
+        usage: new Usage(),
+      },
+    ];
+
+    tracker.primeFromState({
+      originalInput: initialInput,
+      generatedItems,
+      modelResponses,
+    });
+
+    const nextTurnInput = tracker.prepareInput(initialInput, generatedItems);
+    expect(nextTurnInput).toHaveLength(0);
+  });
+
+  it('sends initial inputs again when resuming without any server responses', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_no_response',
+    });
+    const initialInput = toAgentInputList('needs resend');
+
+    tracker.primeFromState({
+      originalInput: initialInput,
+      generatedItems: [],
+      modelResponses: [],
+    });
+
+    const nextTurnInput = tracker.prepareInput(initialInput, []);
+    expect(nextTurnInput).toHaveLength(1);
+    expect(nextTurnInput[0]).toMatchObject({
+      role: 'user',
+      content: 'needs resend',
+    });
+  });
 });
 
 describe('prepareInputItemsWithSession', () => {

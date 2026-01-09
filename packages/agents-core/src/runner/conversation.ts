@@ -189,6 +189,8 @@ export class ServerConversationTracker {
   private sentItems = new WeakSet<object>();
   // The items received from the server; using WeakSet for memory efficiency.
   private serverItems = new WeakSet<object>();
+  // Tracks server items by content so we can detect matches after serialization round-trips.
+  private serverItemKeys = new Set<string>();
   // Track initial input items that have not yet been sent so they can be retried on later turns.
   private remainingInitialInput: AgentInputItem[] | null = null;
 
@@ -219,26 +221,38 @@ export class ServerConversationTracker {
       return;
     }
 
-    for (const item of toAgentInputList(originalInput)) {
-      if (item && typeof item === 'object') {
-        this.sentItems.add(item);
-      }
-    }
+    const originalItems = toAgentInputList(originalInput);
+    const hasResponses = modelResponses.length > 0;
 
-    this.sentInitialInput = true;
-    this.remainingInitialInput = null;
-
-    const latestResponse = modelResponses[modelResponses.length - 1];
+    const serverItemKeys = new Set<string>();
     for (const response of modelResponses) {
       for (const item of response.output) {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
+          serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
+          this.serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
         }
       }
     }
 
+    if (hasResponses) {
+      for (const item of originalItems) {
+        if (item && typeof item === 'object') {
+          this.sentItems.add(item);
+        }
+      }
+
+      this.sentInitialInput = true;
+      this.remainingInitialInput = null;
+    }
+
+    const latestResponse = modelResponses[modelResponses.length - 1];
     if (!this.conversationId && latestResponse?.responseId) {
       this.previousResponseId = latestResponse.responseId;
+    }
+
+    if (!hasResponses) {
+      return;
     }
 
     for (const item of generatedItems) {
@@ -246,10 +260,13 @@ export class ServerConversationTracker {
       if (!rawItem || typeof rawItem !== 'object') {
         continue;
       }
-      if (this.serverItems.has(rawItem)) {
+      const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
+      if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
         this.sentItems.add(rawItem);
       }
     }
+
+    this.serverItemKeys = serverItemKeys;
   }
 
   /**
