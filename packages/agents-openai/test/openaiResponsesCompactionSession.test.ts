@@ -168,6 +168,98 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
+  it('replaces history after compaction and reuses the stored response id', async () => {
+    const compact = vi
+      .fn()
+      .mockResolvedValueOnce({
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'compacted output' }],
+          },
+        ],
+        usage: {
+          input_tokens: 2,
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+      })
+      .mockResolvedValueOnce({
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'second pass' }],
+          },
+        ],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          total_tokens: 2,
+        },
+      });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hi' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'first output' }],
+      },
+    ] as any);
+
+    await session.runCompaction({ responseId: 'resp_store', force: true });
+
+    expect(compact).toHaveBeenCalledWith({
+      previous_response_id: 'resp_store',
+      model: 'gpt-4.1',
+    });
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'compacted output' }],
+      },
+    ]);
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'follow up' }],
+      },
+    ] as any);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(compact).toHaveBeenLastCalledWith({
+      previous_response_id: 'resp_store',
+      model: 'gpt-4.1',
+    });
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'second pass' }],
+      },
+    ]);
+  });
+
   it('throws when runCompaction is called without a responseId', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({

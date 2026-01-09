@@ -23,6 +23,7 @@ import {
   user,
   Session,
   InputGuardrailTripwireTriggered,
+  OutputGuardrailTripwireTriggered,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -1424,6 +1425,9 @@ describe('Runner.run (streaming)', () => {
     const saveInputSpy = vi
       .spyOn(runImplementation, 'saveStreamInputToSession')
       .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
 
     const guardrail = {
       name: 'block',
@@ -1456,6 +1460,103 @@ describe('Runner.run (streaming)', () => {
     );
 
     expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists streaming input but drops the result when an output guardrail trips', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const guardrail = {
+      name: 'output-block',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'pii' },
+      }),
+    };
+
+    const session = createSessionMock();
+    const agent = new Agent({
+      name: 'StreamOutputGuardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('PII: 123-456-7890')],
+        usage: new Usage(),
+      }),
+      outputGuardrails: [guardrail],
+    });
+
+    const result = await run(agent, 'filter me', { stream: true, session });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      OutputGuardrailTripwireTriggered,
+    );
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not persist streaming result when the consumer cancels early', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+    const agent = new Agent({
+      name: 'StreamCancelPersistence',
+      model: new ImmediateStreamingModel({
+        output: [
+          fakeModelMessage('Chunk1'),
+          fakeModelMessage('Chunk2'),
+          fakeModelMessage('Chunk3'),
+        ],
+        usage: new Usage(),
+      }),
+    });
+
+    const result = await run(agent, 'cancel me', { stream: true, session });
+    const reader = (result.toStream() as any).getReader();
+
+    // Read the first delta then cancel the stream.
+    await reader.read();
+    await reader.cancel('stop');
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(result.cancelled).toBe(true);
+  });
+
+  it('persists streaming input/result exactly once on success', async () => {
+    const saveInputSpy = vi
+      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const session = createSessionMock();
+    const agent = new Agent({
+      name: 'StreamPersistOnce',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const result = await run(agent, 'hello', { stream: true, session });
+    await result.completed;
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).toHaveBeenCalledTimes(1);
   });
 
   it('runs blocking input guardrails before streaming starts', async () => {

@@ -439,4 +439,141 @@ describe('OpenAIConversationsSession', () => {
       items: converted,
     });
   });
+
+  it('handles a conversation lifecycle across list, add, pop, and clear', async () => {
+    convertToOutputItemMock.mockReturnValueOnce([
+      {
+        id: 'assistant-1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'hello' }],
+      },
+    ] as any);
+    convertToOutputItemMock.mockReturnValueOnce([
+      {
+        id: 'assistant-2',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'newest' }],
+      },
+      {
+        id: 'assistant-3',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'newest-2' }],
+      },
+    ] as any);
+    getInputItemsMock.mockReturnValueOnce([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'follow-up' }],
+      },
+    ] as any);
+
+    const list = vi.fn((_conversationId: string, options: any) => {
+      if (options.order === 'asc') {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              id: 'user-1',
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_text', text: 'hi' },
+                { type: 'input_image', image_url: 'https://example.com/image' },
+                { type: 'input_file', file_id: 'file_123', filename: 'a.txt' },
+              ],
+            } as any;
+            yield {
+              id: 'resp-1',
+              type: 'message',
+              role: 'assistant',
+              content: [],
+            } as any;
+          },
+        };
+      }
+
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            id: 'resp-2',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+          } as any;
+        },
+      };
+    });
+    const createItems = vi.fn();
+    const deleteItem = vi.fn();
+    const createConversation = vi.fn().mockResolvedValue({ id: 'conv-new' });
+    const deleteConversation = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: createItems,
+            delete: deleteItem,
+          },
+          create: createConversation,
+          delete: deleteConversation,
+        },
+      } as any,
+    });
+
+    const items = await session.getItems();
+
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith('conv-new', { order: 'asc' });
+    expect(items).toEqual([
+      {
+        id: 'user-1',
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'hi' },
+          { type: 'input_image', image: 'https://example.com/image' },
+          { type: 'input_file', file: { id: 'file_123' }, filename: 'a.txt' },
+        ],
+      },
+      {
+        id: 'assistant-1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'hello' }],
+      },
+    ]);
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'follow-up' }],
+      },
+    ] as any);
+    expect(getInputItemsMock).toHaveBeenCalled();
+    expect(createItems).toHaveBeenCalledWith('conv-new', {
+      items: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'follow-up' }],
+        },
+      ],
+    });
+
+    const popped = await session.popItem();
+    expect(list).toHaveBeenCalledWith('conv-new', { limit: 1, order: 'desc' });
+    expect(deleteItem).toHaveBeenCalledWith('assistant-3', {
+      conversation_id: 'conv-new',
+    });
+    expect(popped?.id).toBe('assistant-3');
+
+    await session.clearSession();
+    expect(deleteConversation).toHaveBeenCalledWith('conv-new');
+  });
 });

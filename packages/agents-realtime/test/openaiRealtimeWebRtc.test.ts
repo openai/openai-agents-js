@@ -462,4 +462,35 @@ describe('OpenAIRealtimeWebRTC.callId', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(rtc.callId).toBeUndefined();
   });
+
+  it('honors changePeerConnection hook and preserves callId', async () => {
+    class CustomRTCPeerConnection extends FakeRTCPeerConnection {
+      closed = false;
+      close() {
+        this.closed = true;
+        super.close();
+      }
+    }
+
+    (global as any).RTCPeerConnection = CustomRTCPeerConnection as any;
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async (pc) => {
+        const custom = new CustomRTCPeerConnection();
+        // carry over listeners from the original instance
+        custom.onconnectionstatechange = pc.onconnectionstatechange as any;
+        custom.ontrack = pc.ontrack as any;
+        return custom as any;
+      },
+    });
+
+    await rtc.connect({ apiKey: 'ek_test', model: 'rtc-model' });
+
+    const state = rtc.connectionState;
+    expect(state.peerConnection).toBeInstanceOf(CustomRTCPeerConnection);
+    expect(rtc.callId).toBe(callId);
+
+    rtc.close();
+    expect((state.peerConnection as any).closed).toBe(true);
+  });
 });

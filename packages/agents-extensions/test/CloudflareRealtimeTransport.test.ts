@@ -84,4 +84,30 @@ describe('CloudflareRealtimeTransportLayer', () => {
       transport.connect({ apiKey: 'ek_x', model: 'bar' }),
     ).rejects.toThrow('Failed to upgrade websocket: 400 No upgrade');
   });
+
+  it('attaches headers and surfaces accept errors', async () => {
+    const fakeSocket = new FakeWorkersWebSocket('ws://example');
+    const acceptError = new Error('accept failed');
+    fakeSocket.accept = vi.fn(() => {
+      throw acceptError;
+    });
+    const fetchSpy = vi.fn().mockResolvedValue({
+      webSocket: fakeSocket,
+      status: 101,
+      text: vi.fn().mockResolvedValue(''),
+    });
+    (globalThis as any).fetch = fetchSpy;
+
+    const transport = new CloudflareRealtimeTransportLayer({
+      url: 'wss://api.openai.com/v1/realtime?model=foo',
+    });
+
+    await expect(
+      transport.connect({ apiKey: 'ek_hdr', model: 'foo' }),
+    ).rejects.toThrow('accept failed');
+
+    const init = fetchSpy.mock.calls[0][1];
+    expect(init.headers['User-Agent']).toBeDefined();
+    expect(init.headers['Sec-WebSocket-Protocol']).toBe('realtime');
+  });
 });

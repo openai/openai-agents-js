@@ -133,4 +133,63 @@ describe('AiSdkModel issue #802', () => {
       totalTokens: 13,
     });
   });
+
+  test('preserves toolChoice and provider options through streaming tool calls', async () => {
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'tool-1',
+        toolName: 'search',
+        input: '{"q":"hello"}',
+        providerMetadata: { google: { routing: 'edge' } },
+      },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ];
+
+    const receivedOptions: any[] = [];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(options) {
+          receivedOptions.push(options);
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {
+        toolChoice: 'search',
+        providerData: { google: { routing: 'edge' } },
+      },
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    expect(receivedOptions[0].toolChoice).toEqual({
+      type: 'tool',
+      toolName: 'search',
+    });
+    expect(receivedOptions[0].google).toEqual({ routing: 'edge' });
+
+    const final = events.at(-1);
+    expect(final.response.output[0]).toMatchObject({
+      type: 'function_call',
+      callId: 'tool-1',
+      name: 'search',
+      providerData: {
+        model: 'stub:m',
+        google: { routing: 'edge' },
+      },
+    });
+  });
 });
