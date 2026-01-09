@@ -244,7 +244,7 @@ export class ServerConversationTracker {
     }
 
     const latestResponse = modelResponses[modelResponses.length - 1];
-    if (latestResponse?.responseId) {
+    if (!this.conversationId && latestResponse?.responseId) {
       this.previousResponseId = latestResponse.responseId;
     }
 
@@ -275,7 +275,7 @@ export class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    if (modelResponse.responseId) {
+    if (!this.conversationId && modelResponse.responseId) {
       this.previousResponseId = modelResponse.responseId;
     }
   }

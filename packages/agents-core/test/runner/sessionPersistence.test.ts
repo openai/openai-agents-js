@@ -44,7 +44,7 @@ beforeAll(() => {
 });
 
 describe('ServerConversationTracker', () => {
-  it('updates previousResponseId even when conversationId is set', () => {
+  it('does not update previousResponseId when conversationId is set', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv-1',
       previousResponseId: 'resp-old',
@@ -56,7 +56,7 @@ describe('ServerConversationTracker', () => {
       responseId: 'resp-new',
     });
 
-    expect(tracker.previousResponseId).toBe('resp-new');
+    expect(tracker.previousResponseId).toBe('resp-old');
     expect(tracker.conversationId).toBe('conv-1');
   });
 
