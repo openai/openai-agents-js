@@ -1934,6 +1934,108 @@ describe('Extended thinking / Reasoning support', () => {
       ]);
     });
 
+    test('emits pending DeepSeek reasoning with assistant text when no tool call follows', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Thinking in order.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Here is the reply.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Thinking in order.',
+              providerOptions: {},
+            },
+            {
+              type: 'text',
+              text: 'Here is the reply.',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('emits pending DeepSeek reasoning before tool calls when assistant text precedes tools', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Initial reasoning.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Responding first.' }],
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'c-before-tools',
+          name: 'afterMessage',
+          arguments: '{}',
+          providerData: { model: 'deepseek:deepseek-chat' },
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'deepseek', modelId: 'deepseek-chat' }),
+        items,
+        { providerData: { thinking: { type: 'enabled' } } },
+      );
+
+      expect(msgs).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Initial reasoning.',
+              providerOptions: {},
+            },
+            {
+              type: 'text',
+              text: 'Responding first.',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c-before-tools',
+              toolName: 'afterMessage',
+              input: {},
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
     test('does not bundle reasoning when DeepSeek thinking is disabled', () => {
       const items: protocol.ModelItem[] = [
         {

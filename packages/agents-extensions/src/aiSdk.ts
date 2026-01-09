@@ -6,6 +6,8 @@ import type {
   LanguageModelV2Message,
   LanguageModelV2Prompt,
   LanguageModelV2ProviderDefinedTool,
+  LanguageModelV2ReasoningPart,
+  LanguageModelV2TextPart,
   LanguageModelV2ToolCallPart,
   LanguageModelV2ToolChoice,
   LanguageModelV2ToolResultPart,
@@ -95,11 +97,48 @@ export function itemsToLanguageV2Messages(
   let pendingReasonerReasoning:
     | { text: string; providerOptions: Record<string, any> }
     | undefined;
+  const flushPendingReasonerReasoningToMessages = () => {
+    if (
+      !(
+        shouldIncludeReasoningContent(model, modelSettings) &&
+        pendingReasonerReasoning
+      )
+    ) {
+      return;
+    }
+
+    const reasoningPart: LanguageModelV2ReasoningPart = {
+      type: 'reasoning',
+      text: pendingReasonerReasoning.text,
+      providerOptions: pendingReasonerReasoning.providerOptions,
+    };
+
+    if (
+      currentAssistantMessage &&
+      Array.isArray(currentAssistantMessage.content) &&
+      currentAssistantMessage.role === 'assistant'
+    ) {
+      currentAssistantMessage.content.unshift(reasoningPart);
+      currentAssistantMessage.providerOptions = {
+        ...pendingReasonerReasoning.providerOptions,
+        ...currentAssistantMessage.providerOptions,
+      };
+    } else {
+      messages.push({
+        role: 'assistant',
+        content: [reasoningPart],
+        providerOptions: pendingReasonerReasoning.providerOptions,
+      });
+    }
+
+    pendingReasonerReasoning = undefined;
+  };
 
   for (const item of items) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
       const { role, content, providerData } = item;
       if (role === 'system') {
+        flushPendingReasonerReasoningToMessages();
         messages.push({
           role: 'system',
           content: content,
@@ -109,6 +148,7 @@ export function itemsToLanguageV2Messages(
       }
 
       if (role === 'user') {
+        flushPendingReasonerReasoningToMessages();
         messages.push({
           role,
           content:
@@ -167,19 +207,45 @@ export function itemsToLanguageV2Messages(
           currentAssistantMessage = undefined;
         }
 
+        const assistantProviderOptions = toProviderOptions(providerData, model);
+        const assistantContent: Array<
+          LanguageModelV2ReasoningPart | LanguageModelV2TextPart
+        > = content
+          .filter((c) => c.type === 'output_text')
+          .map<LanguageModelV2TextPart>((c) => {
+            const { providerData: contentProviderData } = c;
+            return {
+              type: 'text',
+              text: c.text,
+              providerOptions: toProviderOptions(contentProviderData, model),
+            };
+          });
+
+        if (
+          shouldIncludeReasoningContent(model, modelSettings) &&
+          pendingReasonerReasoning
+        ) {
+          assistantContent.unshift({
+            type: 'reasoning',
+            text: pendingReasonerReasoning.text,
+            providerOptions: pendingReasonerReasoning.providerOptions,
+          });
+          messages.push({
+            role,
+            content: assistantContent,
+            providerOptions: {
+              ...pendingReasonerReasoning.providerOptions,
+              ...assistantProviderOptions,
+            },
+          });
+          pendingReasonerReasoning = undefined;
+          continue;
+        }
+
         messages.push({
           role,
-          content: content
-            .filter((c) => c.type === 'output_text')
-            .map((c) => {
-              const { providerData: contentProviderData } = c;
-              return {
-                type: 'text',
-                text: c.text,
-                providerOptions: toProviderOptions(contentProviderData, model),
-              };
-            }),
-          providerOptions: toProviderOptions(providerData, model),
+          content: assistantContent,
+          providerOptions: assistantProviderOptions,
         });
         continue;
       }
@@ -226,6 +292,7 @@ export function itemsToLanguageV2Messages(
       }
       continue;
     } else if (item.type === 'function_call_result') {
+      flushPendingReasonerReasoningToMessages();
       if (currentAssistantMessage) {
         messages.push(currentAssistantMessage);
         currentAssistantMessage = undefined;
@@ -301,6 +368,7 @@ export function itemsToLanguageV2Messages(
     }
 
     if (item.type === 'unknown') {
+      flushPendingReasonerReasoningToMessages();
       messages.push({ ...(item.providerData ?? {}) } as LanguageModelV2Message);
       continue;
     }
@@ -313,24 +381,9 @@ export function itemsToLanguageV2Messages(
     throw new UserError(`Unknown item type: ${itemType}`);
   }
 
+  flushPendingReasonerReasoningToMessages();
   if (currentAssistantMessage) {
     messages.push(currentAssistantMessage);
-  }
-  if (
-    shouldIncludeReasoningContent(model, modelSettings) &&
-    pendingReasonerReasoning
-  ) {
-    messages.push({
-      role: 'assistant',
-      content: [
-        {
-          type: 'reasoning',
-          text: pendingReasonerReasoning.text,
-          providerOptions: pendingReasonerReasoning.providerOptions,
-        },
-      ],
-      providerOptions: pendingReasonerReasoning.providerOptions,
-    });
   }
 
   return messages;
