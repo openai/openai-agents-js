@@ -24,6 +24,7 @@ import {
   Session,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
+  RunState,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -529,6 +530,91 @@ describe('Runner.run (streaming)', () => {
     expect(elapsed).toBeLessThan(250);
     expect(result.cancelled).toBe(true);
     expect(result.error).toBe(null);
+  });
+
+  it('marks inputs as sent when aborted before first stream event in server-managed conversations', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    let streamStarted: (() => void) | undefined;
+    const streamStartedPromise = new Promise<void>((resolve) => {
+      streamStarted = resolve;
+    });
+
+    class SlowFirstEventStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('not used');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        streamStarted?.();
+        await waitWithAbort(500, request.signal);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-delayed',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('should not reach')],
+          },
+        } as any;
+      }
+    }
+
+    const markSpy = vi.spyOn(
+      ServerConversationTracker.prototype,
+      'markInputAsSent',
+    );
+
+    const agent = new Agent({
+      name: 'AbortBeforeFirstEvent',
+      model: new SlowFirstEventStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'initial', {
+      stream: true,
+      conversationId: 'conv-abort-before-event',
+    });
+
+    await streamStartedPromise;
+    const reader = (result.toStream() as any).getReader();
+    await reader.cancel('stop');
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(markSpy).toHaveBeenCalledTimes(1);
+    const [sourceItems] = markSpy.mock.calls[0];
+    expect(Array.isArray(sourceItems)).toBe(true);
+
+    markSpy.mockRestore();
   });
 
   it('streams tool_called before the tool finishes executing', async () => {
@@ -1700,6 +1786,67 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes a cancelled in-progress turn without double-counting turns', async () => {
+    class HangingStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('unused');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const abortError = new Error('aborted');
+        (abortError as any).name = 'AbortError';
+        const signal = (request as any).signal as AbortSignal | undefined;
+        await new Promise((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(abortError);
+            return;
+          }
+          const onAbort = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(abortError);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+
+        // Keep the generator shape for the streaming contract while intentionally yielding nothing.
+        yield* [] as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ResumeAfterCancel',
+      model: new HangingStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const streaming = await runner.run(agent, 'hello', { stream: true });
+    const reader = (streaming.toStream() as any).getReader();
+
+    // Allow the streaming loop to enter before cancellation.
+    await new Promise((resolve) => setImmediate(resolve));
+    await reader.cancel('stop');
+    await streaming._getStreamLoopPromise();
+
+    expect(streaming.state._currentTurn).toBe(1);
+    expect(streaming.state._currentTurnInProgress).toBe(true);
+
+    const serialized = streaming.state.toString();
+    const restored = await RunState.fromString(agent, serialized);
+
+    agent.model = new ImmediateStreamingModel({
+      output: [fakeModelMessage('resumed')],
+      usage: new Usage(),
+    });
+
+    const resumed = await runner.run(agent, restored);
+
+    expect(resumed.finalOutput).toBe('resumed');
+    expect(resumed.state._currentTurn).toBe(1);
+    expect(resumed.state._currentTurnInProgress).toBe(false);
   });
 
   it('persists streaming input/result exactly once on success', async () => {

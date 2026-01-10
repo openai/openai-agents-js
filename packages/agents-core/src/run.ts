@@ -1182,6 +1182,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           } catch (error) {
             if (isAbortError(error)) {
+              if (
+                !inputMarked &&
+                serverConversationTracker &&
+                handedInputToModel
+              ) {
+                serverConversationTracker.markInputAsSent(
+                  preparedCall.sourceItems,
+                  {
+                    filterApplied: preparedCall.filterApplied,
+                    allTurnItems: preparedCall.modelInput.input,
+                  },
+                );
+                inputMarked = true;
+              }
               await awaitGuardrailsAndPersistInput();
               return;
             }
