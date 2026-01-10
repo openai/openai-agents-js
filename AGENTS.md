@@ -191,7 +191,7 @@ When `$code-change-verification` applies (see Mandatory Skill Usage), run the fu
 4.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack in order before considering the work complete.
 5.  Commit using Conventional Commits.
 6.  Push and open a pull request.
-7.  When reporting code changes as complete, include what you changed plus a draft pull request title and description for your local changes; start the description with prose such as “This pull request resolves/updates/adds …” using a verb that matches the change (you can use bullets later), explain the change background (for bugs, clearly describe the bug, symptoms, or repro; for features, what is needed and why), any behavior changes or considerations to be aware of, and you do not need to mention any tests you ran.
+7.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` to generate the required PR summary block with change summary, PR title, and draft description.
 
 ## Pull Request & Commit Guidelines
 
