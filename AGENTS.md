@@ -40,8 +40,6 @@ You can skip `$code-change-verification` for docs-only or repo-meta changes (for
 
 When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
 
-Optional skills: `$ai-sdk-knowledge` (Vercel AI SDK) and `$mcp-sdk-knowledge` (MCP TypeScript SDK). Use them only when the task clearly involves those areas or the user requests them; they are not required by default.
-
 ## Overview
 
 The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
