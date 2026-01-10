@@ -858,6 +858,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
         }
       } catch (err) {
+        state._currentTurnInProgress = false;
         if (state._currentAgentSpan) {
           state._currentAgentSpan.setError({
             message: 'Error in agent run',
@@ -1341,6 +1342,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       }
     } catch (error) {
+      result.state._currentTurnInProgress = false;
       if (guardrailsPending && parallelGuardrailPromise) {
         await parallelGuardrailPromise;
         guardrailsPending = false;
