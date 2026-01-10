@@ -25,7 +25,20 @@ Call out potential backward compatibility or public API risks in your plan and c
 
 ## Mandatory Skill Usage
 
-Always load and use the `$verify-changes` skill immediately after any code change and before you consider the work complete. It executes the mandatory verification stack from the repository root; rerun the stack after fixing failures.
+### `$code-change-verification`
+
+Run `$code-change-verification` before marking work complete when changes affect runtime code, tests, or build/test behavior.
+
+Run it when you change:
+
+- `packages/`, `examples/`, `helpers/`, `scripts/`, or `integration-tests/`
+- Root build/test config such as `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `eslint.config.*`, or `vitest*.ts`
+
+You can skip `$code-change-verification` for docs-only or repo-meta changes (for example, `docs/`, `.codex/`, `README.md`, `AGENTS.md`, `.github/`), unless a user explicitly asks to run the full verification stack.
+
+### `$openai-knowledge`
+
+When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
 
 ## Overview
 
@@ -61,7 +74,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 Before submitting changes, ensure all checks pass and augment tests when you touch code:
 
-After any code modification, invoke the `$verify-changes` skill to run the required verification stack from the repository root. Rerun the full stack after fixes.
+When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it to run the required verification stack from the repository root. Rerun the full stack after fixes.
 
 - Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
 
@@ -118,7 +131,7 @@ See [this README](integration-tests/README.md) for details.
 
 ### Mandatory Local Run Order
 
-For every code change, run the full validation sequence locally via the `$verify-changes` skill; do not skip any step or change the order.
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step or change the order.
 
 ### Pre-commit Hooks
 
@@ -175,7 +188,7 @@ For every code change, run the full validation sequence locally via the `$verify
     git checkout -b feat/<short-description>
     ```
 3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
-4.  Run all checks using the `$verify-changes` skill to execute the full verification stack in order before considering the work complete.
+4.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack in order before considering the work complete.
 5.  Commit using Conventional Commits.
 6.  Push and open a pull request.
 

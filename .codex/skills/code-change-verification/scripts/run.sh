@@ -27,4 +27,4 @@ pnpm lint
 echo "Running pnpm test..."
 pnpm test
 
-echo "verify-changes: all commands passed."
+echo "code-change-verification: all commands passed."
