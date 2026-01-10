@@ -72,99 +72,26 @@ export function createSessionPersistenceTracker(options: {
     const pendingCounts = pendingWriteCounts;
     if (filteredItems !== undefined) {
       if (!pendingCounts) {
-        filteredSnapshot = filteredItems.map((item) => structuredClone(item));
+        filteredSnapshot = cloneItems(filteredItems);
         return;
       }
-      const persistableItems: AgentInputItem[] = [];
-      const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
-      for (const source of sourceItems) {
-        if (!source || typeof source !== 'object') {
-          continue;
-        }
-        const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
-        sourceOccurrenceCounts.set(source, nextCount);
-      }
-      const consumeAnyPendingWriteSlot = () => {
-        for (const [key, remaining] of pendingCounts) {
-          if (remaining > 0) {
-            pendingCounts.set(key, remaining - 1);
-            return true;
-          }
-        }
-        return false;
-      };
-      for (let i = 0; i < filteredItems.length; i++) {
-        const filteredItem = filteredItems[i];
-        if (!filteredItem) {
-          continue;
-        }
-        let allocated = false;
-        const source = sourceItems[i];
-        if (source && typeof source === 'object') {
-          const pendingOccurrences =
-            (sourceOccurrenceCounts.get(source) ?? 0) - 1;
-          sourceOccurrenceCounts.set(source, pendingOccurrences);
-          if (pendingOccurrences > 0) {
-            continue;
-          }
-          const sourceKey = getAgentInputItemKey(source);
-          const remaining = pendingCounts.get(sourceKey) ?? 0;
-          if (remaining > 0) {
-            pendingCounts.set(sourceKey, remaining - 1);
-            persistableItems.push(structuredClone(filteredItem));
-            allocated = true;
-            continue;
-          }
-        }
-        const filteredKey = getAgentInputItemKey(filteredItem);
-        const filteredRemaining = pendingCounts.get(filteredKey) ?? 0;
-        if (filteredRemaining > 0) {
-          pendingCounts.set(filteredKey, filteredRemaining - 1);
-          persistableItems.push(structuredClone(filteredItem));
-          allocated = true;
-          continue;
-        }
-        if (!source && consumeAnyPendingWriteSlot()) {
-          persistableItems.push(structuredClone(filteredItem));
-          allocated = true;
-        }
-        if (!allocated && !source && filteredSnapshot === undefined) {
-          persistableItems.push(structuredClone(filteredItem));
-        }
-      }
-      if (persistableItems.length > 0 || filteredSnapshot === undefined) {
-        filteredSnapshot = persistableItems;
+      const nextSnapshot = collectPersistableFilteredItems({
+        pendingCounts,
+        sourceItems,
+        filteredItems,
+        existingSnapshot: filteredSnapshot,
+      });
+      if (nextSnapshot !== undefined) {
+        filteredSnapshot = nextSnapshot;
       }
       return;
     }
 
-    const filtered: AgentInputItem[] = [];
-    if (!pendingCounts) {
-      for (const item of sourceItems) {
-        if (!item) {
-          continue;
-        }
-        filtered.push(structuredClone(item));
-      }
-    } else {
-      for (const item of sourceItems) {
-        if (!item) {
-          continue;
-        }
-        const key = getAgentInputItemKey(item);
-        const remaining = pendingCounts.get(key) ?? 0;
-        if (remaining <= 0) {
-          continue;
-        }
-        pendingCounts.set(key, remaining - 1);
-        filtered.push(structuredClone(item));
-      }
-    }
-    if (filtered.length > 0) {
-      filteredSnapshot = filtered;
-    } else if (filteredSnapshot === undefined) {
-      filteredSnapshot = [];
-    }
+    filteredSnapshot = buildSnapshotForUnfilteredItems({
+      pendingCounts,
+      sourceItems,
+      existingSnapshot: filteredSnapshot,
+    });
   };
 
   const resolveSessionItems = () => {
@@ -204,6 +131,124 @@ export function createSessionPersistenceTracker(options: {
     resolveSessionItems,
     buildEnsureStreamInputPersisted,
   };
+}
+
+function cloneItems(items: AgentInputItem[]): AgentInputItem[] {
+  return items.map((item) => structuredClone(item));
+}
+
+function buildSourceOccurrenceCounts(
+  sourceItems: (AgentInputItem | undefined)[],
+) {
+  const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
+  for (const source of sourceItems) {
+    if (!source || typeof source !== 'object') {
+      continue;
+    }
+    const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
+    sourceOccurrenceCounts.set(source, nextCount);
+  }
+  return sourceOccurrenceCounts;
+}
+
+function collectPersistableFilteredItems(options: {
+  pendingCounts: Map<string, number>;
+  sourceItems: (AgentInputItem | undefined)[];
+  filteredItems: AgentInputItem[];
+  existingSnapshot: AgentInputItem[] | undefined;
+}): AgentInputItem[] | undefined {
+  const { pendingCounts, sourceItems, filteredItems, existingSnapshot } =
+    options;
+  const persistableItems: AgentInputItem[] = [];
+  const sourceOccurrenceCounts = buildSourceOccurrenceCounts(sourceItems);
+  const consumeAnyPendingWriteSlot = () => {
+    for (const [key, remaining] of pendingCounts) {
+      if (remaining > 0) {
+        pendingCounts.set(key, remaining - 1);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (let i = 0; i < filteredItems.length; i++) {
+    const filteredItem = filteredItems[i];
+    if (!filteredItem) {
+      continue;
+    }
+    let allocated = false;
+    const source = sourceItems[i];
+    if (source && typeof source === 'object') {
+      const pendingOccurrences = (sourceOccurrenceCounts.get(source) ?? 0) - 1;
+      sourceOccurrenceCounts.set(source, pendingOccurrences);
+      if (pendingOccurrences > 0) {
+        continue;
+      }
+      const sourceKey = getAgentInputItemKey(source);
+      const remaining = pendingCounts.get(sourceKey) ?? 0;
+      if (remaining > 0) {
+        pendingCounts.set(sourceKey, remaining - 1);
+        persistableItems.push(structuredClone(filteredItem));
+        allocated = true;
+        continue;
+      }
+    }
+    const filteredKey = getAgentInputItemKey(filteredItem);
+    const filteredRemaining = pendingCounts.get(filteredKey) ?? 0;
+    if (filteredRemaining > 0) {
+      pendingCounts.set(filteredKey, filteredRemaining - 1);
+      persistableItems.push(structuredClone(filteredItem));
+      allocated = true;
+      continue;
+    }
+    if (!source && consumeAnyPendingWriteSlot()) {
+      persistableItems.push(structuredClone(filteredItem));
+      allocated = true;
+    }
+    if (!allocated && !source && existingSnapshot === undefined) {
+      persistableItems.push(structuredClone(filteredItem));
+    }
+  }
+  if (persistableItems.length > 0 || existingSnapshot === undefined) {
+    return persistableItems;
+  }
+  return existingSnapshot;
+}
+
+function buildSnapshotForUnfilteredItems(options: {
+  pendingCounts: Map<string, number> | undefined;
+  sourceItems: (AgentInputItem | undefined)[];
+  existingSnapshot: AgentInputItem[] | undefined;
+}): AgentInputItem[] {
+  const { pendingCounts, sourceItems, existingSnapshot } = options;
+  if (!pendingCounts) {
+    const filtered = sourceItems
+      .filter((item): item is AgentInputItem => Boolean(item))
+      .map((item) => structuredClone(item));
+    return filtered.length > 0
+      ? filtered
+      : existingSnapshot === undefined
+        ? []
+        : existingSnapshot;
+  }
+
+  const filtered: AgentInputItem[] = [];
+  for (const item of sourceItems) {
+    if (!item) {
+      continue;
+    }
+    const key = getAgentInputItemKey(item);
+    const remaining = pendingCounts.get(key) ?? 0;
+    if (remaining <= 0) {
+      continue;
+    }
+    pendingCounts.set(key, remaining - 1);
+    filtered.push(structuredClone(item));
+  }
+  if (filtered.length > 0) {
+    return filtered;
+  }
+  return existingSnapshot === undefined ? [] : existingSnapshot;
 }
 
 export async function saveToSession(

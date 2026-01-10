@@ -3,6 +3,22 @@ import { gpt5ReasoningSettingsRequired, isGpt5Default } from '../defaultModel';
 import { Model, ModelSettings, ModelTracing } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
 
+const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
+  const providerData = settings?.providerData as
+    | {
+        reasoning?: unknown;
+        text?: { verbosity?: unknown };
+        reasoning_effort?: unknown;
+      }
+    | undefined;
+  return Boolean(
+    providerData?.reasoning ||
+    providerData?.text?.verbosity ||
+    (providerData as { reasoning_effort?: unknown } | undefined)
+      ?.reasoning_effort,
+  );
+};
+
 /**
  * Resolves the effective model for the next turn by giving precedence to the agent-specific
  * configuration when present, otherwise falling back to the runner-level default.
@@ -69,22 +85,6 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
   modelSettings: ModelSettings,
   resolvedModelName?: string,
 ): ModelSettings {
-  const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
-    const providerData = settings?.providerData as
-      | {
-          reasoning?: unknown;
-          text?: { verbosity?: unknown };
-          reasoning_effort?: unknown;
-        }
-      | undefined;
-    return Boolean(
-      providerData?.reasoning ||
-      providerData?.text?.verbosity ||
-      (providerData as { reasoning_effort?: unknown } | undefined)
-        ?.reasoning_effort,
-    );
-  };
-
   const modelName =
     resolvedModelName ??
     (typeof runnerModel === 'string'
@@ -105,44 +105,48 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
     isNonGpt5RunnerModel &&
     hasGpt5Defaults
   ) {
-    const copiedProviderData = modelSettings.providerData
-      ? { ...modelSettings.providerData }
-      : undefined;
-
-    if (copiedProviderData) {
-      if (
-        copiedProviderData.text &&
-        typeof copiedProviderData.text === 'object'
-      ) {
-        copiedProviderData.text = { ...copiedProviderData.text };
-        delete (copiedProviderData.text as any).verbosity;
-      }
-      delete (copiedProviderData as any).reasoning;
-      delete (copiedProviderData as any).reasoning_effort;
-    }
-
-    const copiedModelSettings: ModelSettings = {
-      ...modelSettings,
-      providerData: copiedProviderData,
-    };
-    if (modelSettings.reasoning) {
-      copiedModelSettings.reasoning = { ...modelSettings.reasoning };
-    }
-    if (modelSettings.text) {
-      copiedModelSettings.text = { ...modelSettings.text };
-    }
-
-    delete copiedModelSettings.providerData?.reasoning;
-    delete (copiedModelSettings.providerData as any)?.text?.verbosity;
-    delete (copiedModelSettings.providerData as any)?.reasoning_effort;
-    if (copiedModelSettings.reasoning) {
-      delete copiedModelSettings.reasoning.effort;
-      delete copiedModelSettings.reasoning.summary;
-    }
-    if (copiedModelSettings.text) {
-      delete copiedModelSettings.text.verbosity;
-    }
-    return copiedModelSettings;
+    return stripGpt5OnlySettings(modelSettings);
   }
   return modelSettings;
+}
+
+function stripGpt5OnlySettings(modelSettings: ModelSettings): ModelSettings {
+  const copiedProviderData = modelSettings.providerData
+    ? { ...modelSettings.providerData }
+    : undefined;
+
+  if (copiedProviderData) {
+    if (
+      copiedProviderData.text &&
+      typeof copiedProviderData.text === 'object'
+    ) {
+      copiedProviderData.text = { ...copiedProviderData.text };
+      delete (copiedProviderData.text as any).verbosity;
+    }
+    delete (copiedProviderData as any).reasoning;
+    delete (copiedProviderData as any).reasoning_effort;
+  }
+
+  const copiedModelSettings: ModelSettings = {
+    ...modelSettings,
+    providerData: copiedProviderData,
+  };
+  if (modelSettings.reasoning) {
+    copiedModelSettings.reasoning = { ...modelSettings.reasoning };
+  }
+  if (modelSettings.text) {
+    copiedModelSettings.text = { ...modelSettings.text };
+  }
+
+  delete copiedModelSettings.providerData?.reasoning;
+  delete (copiedModelSettings.providerData as any)?.text?.verbosity;
+  delete (copiedModelSettings.providerData as any)?.reasoning_effort;
+  if (copiedModelSettings.reasoning) {
+    delete copiedModelSettings.reasoning.effort;
+    delete copiedModelSettings.reasoning.summary;
+  }
+  if (copiedModelSettings.text) {
+    delete copiedModelSettings.text.verbosity;
+  }
+  return copiedModelSettings;
 }

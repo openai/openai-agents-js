@@ -31,6 +31,7 @@ import {
   FakeModelProvider,
   FakeShell,
   TEST_AGENT,
+  TEST_MODEL_RESPONSE_BASIC,
   TEST_MODEL_FUNCTION_CALL,
   TEST_MODEL_MESSAGE,
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
@@ -238,6 +239,60 @@ describe('resolveTurnAfterModelResponse', () => {
 });
 
 describe('resolveInterruptedTurn', () => {
+  it('ignores already-completed approvals when resuming', async () => {
+    const agent = new Agent({ name: 'rewind-agent2' });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+
+    const approvalItem = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 't',
+        callId: 'c1',
+        arguments: '{}',
+        status: 'in_progress',
+      },
+      agent,
+    );
+    const completionItem = new ToolCallOutputItem(
+      getToolCallOutputItem(
+        approvalItem.rawItem as protocol.FunctionCallItem,
+        'done',
+      ),
+      agent,
+      'done',
+    );
+    state._currentTurnPersistedItemCount = 2;
+    const preStepItems = [approvalItem, completionItem];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+
+    const processedResponse: ProcessedResponse = {
+      newItems: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => false,
+    };
+
+    await resolveInterruptedTurn(
+      agent,
+      'input',
+      preStepItems,
+      TEST_MODEL_RESPONSE_BASIC,
+      processedResponse,
+      new Runner(),
+      state,
+    );
+
+    expect(state._currentTurnPersistedItemCount).toBe(1);
+  });
+
   it('rewinds persisted count only for pending approval placeholders', async () => {
     const textAgent = new Agent<UnknownContext, 'text'>({
       name: 'SequentialApprovalsAgent',

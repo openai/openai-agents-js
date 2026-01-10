@@ -21,7 +21,7 @@ import {
 } from '../items';
 import logger, { Logger } from '../logger';
 import { ModelResponse } from '../model';
-import { FunctionToolResult, resolveComputer } from '../tool';
+import { FunctionToolResult, resolveComputer, Tool } from '../tool';
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
@@ -95,7 +95,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   runner: Runner,
   state: RunState<TContext, Agent<any, any>>,
 ): Promise<FunctionToolResult[]> {
-  async function runSingleTool(toolRun: ToolRunFunction<unknown>) {
+  function parseToolArguments(toolRun: ToolRunFunction<unknown>) {
     let parsedArgs: any = toolRun.toolCall.arguments;
     if (toolRun.tool.parameters) {
       if (isZodObject(toolRun.tool.parameters)) {
@@ -104,63 +104,85 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         parsedArgs = JSON.parse(parsedArgs);
       }
     }
-    // Some tools require a human or policy check before execution; defer until approval is recorded.
+    return parsedArgs;
+  }
+
+  function buildApprovalRequestResult(
+    toolRun: ToolRunFunction<unknown>,
+  ): FunctionToolResult {
+    return {
+      type: 'function_approval' as const,
+      tool: toolRun.tool,
+      runItem: new RunToolApprovalItem(toolRun.toolCall, agent),
+    };
+  }
+
+  async function buildApprovalRejectionResult(
+    toolRun: ToolRunFunction<unknown>,
+  ): Promise<FunctionToolResult> {
+    return withFunctionSpan(
+      async (span) => {
+        const response = 'Tool execution was not approved.';
+
+        span.setError({
+          message: response,
+          data: {
+            tool_name: toolRun.tool.name,
+            error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
+          },
+        });
+
+        span.spanData.output = response;
+        return {
+          type: 'function_output' as const,
+          tool: toolRun.tool,
+          output: response,
+          runItem: new RunToolCallOutputItem(
+            getToolCallOutputItem(toolRun.toolCall, response),
+            agent,
+            response,
+          ),
+        };
+      },
+      {
+        data: {
+          name: toolRun.tool.name,
+        },
+      },
+    );
+  }
+
+  async function handleFunctionApproval(
+    toolRun: ToolRunFunction<unknown>,
+    parsedArgs: any,
+  ): Promise<'approved' | FunctionToolResult> {
     const needsApproval = await toolRun.tool.needsApproval(
       state._context,
       parsedArgs,
       toolRun.toolCall.callId,
     );
 
-    if (needsApproval) {
-      const approval = state._context.isToolApproved({
-        toolName: toolRun.tool.name,
-        callId: toolRun.toolCall.callId,
-      });
-
-      if (approval === false) {
-        // rejected
-        return withFunctionSpan(
-          async (span) => {
-            const response = 'Tool execution was not approved.';
-
-            span.setError({
-              message: response,
-              data: {
-                tool_name: toolRun.tool.name,
-                error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
-              },
-            });
-
-            span.spanData.output = response;
-            return {
-              type: 'function_output' as const,
-              tool: toolRun.tool,
-              output: response,
-              runItem: new RunToolCallOutputItem(
-                getToolCallOutputItem(toolRun.toolCall, response),
-                agent,
-                response,
-              ),
-            };
-          },
-          {
-            data: {
-              name: toolRun.tool.name,
-            },
-          },
-        );
-      }
-
-      if (approval !== true) {
-        // this approval process needs to be done in the next turn
-        return {
-          type: 'function_approval' as const,
-          tool: toolRun.tool,
-          runItem: new RunToolApprovalItem(toolRun.toolCall, agent),
-        };
-      }
+    if (!needsApproval) {
+      return 'approved';
     }
 
+    const approval = state._context.isToolApproved({
+      toolName: toolRun.tool.name,
+      callId: toolRun.toolCall.callId,
+    });
+
+    if (approval === false) {
+      return await buildApprovalRejectionResult(toolRun);
+    }
+
+    if (approval !== true) {
+      return buildApprovalRequestResult(toolRun);
+    }
+
+    return 'approved';
+  }
+
+  async function runApprovedFunctionTool(toolRun: ToolRunFunction<unknown>) {
     return withFunctionSpan(
       async (span) => {
         if (runner.config.traceIncludeSensitiveData) {
@@ -178,12 +200,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
             },
           });
 
-          runner.emit('agent_tool_start', state._context, agent, toolRun.tool, {
-            toolCall: toolRun.toolCall,
-          });
-          agent.emit('agent_tool_start', state._context, toolRun.tool, {
-            toolCall: toolRun.toolCall,
-          });
+          emitToolStart(
+            runner,
+            state._context,
+            agent,
+            toolRun.tool,
+            toolRun.toolCall,
+          );
+
           let toolOutput: unknown;
           if (inputGuardrailResult.type === 'reject') {
             toolOutput = inputGuardrailResult.message;
@@ -207,20 +231,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           // Use string data for tracing and event emitter
           const stringResult = toSmartString(toolOutput);
 
-          runner.emit(
-            'agent_tool_end',
+          emitToolEnd(
+            runner,
             state._context,
             agent,
             toolRun.tool,
             stringResult,
-            { toolCall: toolRun.toolCall },
-          );
-          agent.emit(
-            'agent_tool_end',
-            state._context,
-            toolRun.tool,
-            stringResult,
-            { toolCall: toolRun.toolCall },
+            toolRun.toolCall,
           );
 
           if (runner.config.traceIncludeSensitiveData) {
@@ -259,24 +276,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
 
           // Emit agent_tool_end even on error to maintain consistent event lifecycle
           const errorResult = String(error);
-          runner.emit(
-            'agent_tool_end',
+          emitToolEnd(
+            runner,
             state._context,
             agent,
             toolRun.tool,
             errorResult,
-            {
-              toolCall: toolRun.toolCall,
-            },
-          );
-          agent.emit(
-            'agent_tool_end',
-            state._context,
-            toolRun.tool,
-            errorResult,
-            {
-              toolCall: toolRun.toolCall,
-            },
+            toolRun.toolCall,
           );
 
           throw error;
@@ -288,6 +294,16 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         },
       },
     );
+  }
+
+  async function runSingleTool(toolRun: ToolRunFunction<unknown>) {
+    const parsedArgs = parseToolArguments(toolRun);
+    const approvalOutcome = await handleFunctionApproval(toolRun, parsedArgs);
+    if (approvalOutcome !== 'approved') {
+      return approvalOutcome;
+    }
+
+    return runApprovedFunctionTool(toolRun);
   }
 
   try {
@@ -375,6 +391,84 @@ function toErrorMessage(error: unknown): string {
   }
 }
 
+type ApprovalResolution = 'approved' | 'rejected' | 'pending';
+
+async function resolveToolApproval(options: {
+  runContext: RunContext;
+  toolName: string;
+  callId: string;
+  approvalItem: RunToolApprovalItem;
+  needsApproval: boolean;
+  onApproval?:
+    | ((
+        runContext: RunContext,
+        approvalItem: RunToolApprovalItem,
+      ) => Promise<{ approve?: boolean }>)
+    | undefined;
+}): Promise<ApprovalResolution> {
+  const {
+    runContext,
+    toolName,
+    callId,
+    approvalItem,
+    needsApproval,
+    onApproval,
+  } = options;
+
+  if (!needsApproval) {
+    return 'approved';
+  }
+
+  if (onApproval) {
+    const decision = await onApproval(runContext, approvalItem);
+    if (decision.approve === true) {
+      runContext.approveTool(approvalItem);
+    } else if (decision.approve === false) {
+      runContext.rejectTool(approvalItem);
+    }
+  }
+
+  const approval = runContext.isToolApproved({
+    toolName,
+    callId,
+  });
+
+  if (approval === true) {
+    return 'approved';
+  }
+  if (approval === false) {
+    return 'rejected';
+  }
+  return 'pending';
+}
+
+function emitToolStart(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: Tool<any>,
+  toolCall: protocol.ToolCallItem,
+): void {
+  runner.emit('agent_tool_start', runContext, agent, tool, { toolCall });
+  if (typeof agent.emit === 'function') {
+    agent.emit('agent_tool_start', runContext, tool, { toolCall });
+  }
+}
+
+function emitToolEnd(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: Tool<any>,
+  output: string,
+  toolCall: protocol.ToolCallItem,
+): void {
+  runner.emit('agent_tool_end', runContext, agent, tool, output, { toolCall });
+  if (typeof agent.emit === 'function') {
+    agent.emit('agent_tool_end', runContext, tool, output, { toolCall });
+  }
+}
+
 export async function executeShellActions(
   agent: Agent<any, any>,
   actions: ToolRunShell[],
@@ -393,60 +487,46 @@ export async function executeShellActions(
       agent,
       shellTool.name,
     );
-    const requiresApproval = await shellTool.needsApproval(
+    const approvalState = await resolveToolApproval({
       runContext,
-      toolCall.action,
-      toolCall.callId,
-    );
-
-    if (requiresApproval) {
-      if (shellTool.onApproval) {
-        const decision = await shellTool.onApproval(runContext, approvalItem);
-        if (decision.approve === true) {
-          runContext.approveTool(approvalItem);
-        } else if (decision.approve === false) {
-          runContext.rejectTool(approvalItem);
-        }
-      }
-
-      const approval = runContext.isToolApproved({
-        toolName: shellTool.name,
-        callId: toolCall.callId,
-      });
-
-      if (approval === false) {
-        const response = 'Tool execution was not approved.';
-        const rejectionOutput: protocol.ShellCallOutputContent = {
-          stdout: '',
-          stderr: response,
-          outcome: { type: 'exit', exitCode: null },
-        };
-        results.push(
-          new RunToolCallOutputItem(
-            {
-              type: 'shell_call_output',
-              callId: toolCall.callId,
-              output: [rejectionOutput],
-            },
-            agent,
-            response,
-          ),
-        );
-        continue;
-      }
-
-      if (approval !== true) {
-        results.push(approvalItem);
-        continue;
-      }
-    }
-
-    runner.emit('agent_tool_start', runContext, agent, shellTool, {
-      toolCall,
+      toolName: shellTool.name,
+      callId: toolCall.callId,
+      approvalItem,
+      needsApproval: await shellTool.needsApproval(
+        runContext,
+        toolCall.action,
+        toolCall.callId,
+      ),
+      onApproval: shellTool.onApproval,
     });
-    if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_start', runContext, shellTool, { toolCall });
+
+    if (approvalState === 'rejected') {
+      const response = 'Tool execution was not approved.';
+      const rejectionOutput: protocol.ShellCallOutputContent = {
+        stdout: '',
+        stderr: response,
+        outcome: { type: 'exit', exitCode: null },
+      };
+      results.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'shell_call_output',
+            callId: toolCall.callId,
+            output: [rejectionOutput],
+          },
+          agent,
+          response,
+        ),
+      );
+      continue;
     }
+
+    if (approvalState === 'pending') {
+      results.push(approvalItem);
+      continue;
+    }
+
+    emitToolStart(runner, runContext, agent, shellTool, toolCall);
 
     let shellOutputs: ShellResult['output'] | undefined;
     const providerMeta: Record<string, unknown> = {};
@@ -477,27 +557,14 @@ export async function executeShellActions(
 
     shellOutputs = shellOutputs ?? [];
 
-    runner.emit(
-      'agent_tool_end',
+    emitToolEnd(
+      runner,
       runContext,
       agent,
       shellTool,
       JSON.stringify(shellOutputs),
-      {
-        toolCall,
-      },
+      toolCall,
     );
-    if (typeof agent.emit === 'function') {
-      agent.emit(
-        'agent_tool_end',
-        runContext,
-        shellTool,
-        JSON.stringify(shellOutputs),
-        {
-          toolCall,
-        },
-      );
-    }
 
     const rawItem: protocol.ShellCallResultItem = {
       type: 'shell_call_output',
@@ -537,61 +604,42 @@ export async function executeApplyPatchOperations(
       agent,
       applyPatchTool.name,
     );
-    const requiresApproval = await applyPatchTool.needsApproval(
+    const approvalState = await resolveToolApproval({
       runContext,
-      toolCall.operation,
-      toolCall.callId,
-    );
-
-    if (requiresApproval) {
-      if (applyPatchTool.onApproval) {
-        const decision = await applyPatchTool.onApproval(
-          runContext,
-          approvalItem,
-        );
-        if (decision.approve === true) {
-          runContext.approveTool(approvalItem);
-        } else if (decision.approve === false) {
-          runContext.rejectTool(approvalItem);
-        }
-      }
-
-      const approval = runContext.isToolApproved({
-        toolName: applyPatchTool.name,
-        callId: toolCall.callId,
-      });
-
-      if (approval === false) {
-        const response = 'Tool execution was not approved.';
-        results.push(
-          new RunToolCallOutputItem(
-            {
-              type: 'apply_patch_call_output',
-              callId: toolCall.callId,
-              status: 'failed',
-              output: response,
-            },
-            agent,
-            response,
-          ),
-        );
-        continue;
-      }
-
-      if (approval !== true) {
-        results.push(approvalItem);
-        continue;
-      }
-    }
-
-    runner.emit('agent_tool_start', runContext, agent, applyPatchTool, {
-      toolCall,
+      toolName: applyPatchTool.name,
+      callId: toolCall.callId,
+      approvalItem,
+      needsApproval: await applyPatchTool.needsApproval(
+        runContext,
+        toolCall.operation,
+        toolCall.callId,
+      ),
+      onApproval: applyPatchTool.onApproval,
     });
-    if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_start', runContext, applyPatchTool, {
-        toolCall,
-      });
+
+    if (approvalState === 'rejected') {
+      const response = 'Tool execution was not approved.';
+      results.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'apply_patch_call_output',
+            callId: toolCall.callId,
+            status: 'failed',
+            output: response,
+          },
+          agent,
+          response,
+        ),
+      );
+      continue;
     }
+
+    if (approvalState === 'pending') {
+      results.push(approvalItem);
+      continue;
+    }
+
+    emitToolStart(runner, runContext, agent, applyPatchTool, toolCall);
 
     let status: 'completed' | 'failed' = 'completed';
     let output = '';
@@ -625,14 +673,7 @@ export async function executeApplyPatchOperations(
       _logger.error('Failed to execute apply_patch operation:', err);
     }
 
-    runner.emit('agent_tool_end', runContext, agent, applyPatchTool, output, {
-      toolCall,
-    });
-    if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_end', runContext, applyPatchTool, output, {
-        toolCall,
-      });
-    }
+    emitToolEnd(runner, runContext, agent, applyPatchTool, output, toolCall);
 
     const rawItem: protocol.ApplyPatchCallResultItem = {
       type: 'apply_patch_call_output',
@@ -668,12 +709,7 @@ export async function executeComputerActions(
     const toolCall = action.toolCall;
 
     // Hooks: on_tool_start (global + agent)
-    runner.emit('agent_tool_start', runContext, agent, action.computer, {
-      toolCall,
-    });
-    if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_start', runContext, action.computer, { toolCall });
-    }
+    emitToolStart(runner, runContext, agent, action.computer, toolCall);
 
     // Run the action and get screenshot
     let output: string;
@@ -689,14 +725,7 @@ export async function executeComputerActions(
     }
 
     // Hooks: on_tool_end (global + agent)
-    runner.emit('agent_tool_end', runContext, agent, action.computer, output, {
-      toolCall,
-    });
-    if (typeof agent.emit === 'function') {
-      agent.emit('agent_tool_end', runContext, action.computer, output, {
-        toolCall,
-      });
-    }
+    emitToolEnd(runner, runContext, agent, action.computer, output, toolCall);
 
     // Return the screenshot as a data URL when available; fall back to an empty string on failures.
     const imageUrl = output ? `data:image/png;base64,${output}` : '';

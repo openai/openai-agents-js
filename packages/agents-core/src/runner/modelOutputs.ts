@@ -29,6 +29,51 @@ import type {
   ToolRunMCPApprovalRequest,
   ToolRunShell,
 } from './types';
+import * as protocol from '../types/protocol';
+
+function ensureToolAvailable<T>(
+  tool: T | undefined,
+  message: string,
+  data: Record<string, unknown>,
+): T {
+  if (!tool) {
+    addErrorToCurrentSpan({
+      message,
+      data,
+    });
+    throw new ModelBehaviorError(message);
+  }
+  return tool;
+}
+
+function resolveFunctionOrHandoff(
+  toolCall: protocol.FunctionCallItem,
+  handoffMap: Map<string, Handoff<any, any>>,
+  functionMap: Map<string, FunctionTool<any>>,
+  agent: Agent<any, any>,
+):
+  | { type: 'handoff'; handoff: Handoff<any, any> }
+  | { type: 'function'; tool: FunctionTool<any> } {
+  const handoff = handoffMap.get(toolCall.name);
+  if (handoff) {
+    return { type: 'handoff', handoff };
+  }
+
+  const functionTool = functionMap.get(toolCall.name);
+  if (!functionTool) {
+    const message = `Tool ${toolCall.name} not found in agent ${agent.name}.`;
+    addErrorToCurrentSpan({
+      message,
+      data: {
+        tool_name: toolCall.name,
+        agent_name: agent.name,
+      },
+    });
+
+    throw new ModelBehaviorError(message);
+  }
+  return { type: 'function', tool: functionTool };
+}
 
 /**
  * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
@@ -126,57 +171,38 @@ export function processModelResponse<TContext>(
     } else if (output.type === 'computer_call') {
       items.push(new RunToolCallItem(output, agent));
       toolsUsed.push('computer_use');
-      if (!computerTool) {
-        addErrorToCurrentSpan({
-          message: 'Model produced computer action without a computer tool.',
-          data: {
-            agent_name: agent.name,
-          },
-        });
-        throw new ModelBehaviorError(
-          'Model produced computer action without a computer tool.',
-        );
-      }
+      const resolvedComputerTool = ensureToolAvailable(
+        computerTool,
+        'Model produced computer action without a computer tool.',
+        { agent_name: agent.name },
+      );
       runComputerActions.push({
         toolCall: output,
-        computer: computerTool,
+        computer: resolvedComputerTool,
       });
     } else if (output.type === 'shell_call') {
       items.push(new RunToolCallItem(output, agent));
       toolsUsed.push('shell');
-      if (!shellTool) {
-        addErrorToCurrentSpan({
-          message: 'Model produced shell action without a shell tool.',
-          data: {
-            agent_name: agent.name,
-          },
-        });
-        throw new ModelBehaviorError(
-          'Model produced shell action without a shell tool.',
-        );
-      }
+      const resolvedShellTool = ensureToolAvailable(
+        shellTool,
+        'Model produced shell action without a shell tool.',
+        { agent_name: agent.name },
+      );
       runShellActions.push({
         toolCall: output,
-        shell: shellTool,
+        shell: resolvedShellTool,
       });
     } else if (output.type === 'apply_patch_call') {
       items.push(new RunToolCallItem(output, agent));
       toolsUsed.push('apply_patch');
-      if (!applyPatchTool) {
-        addErrorToCurrentSpan({
-          message:
-            'Model produced apply_patch action without an apply_patch tool.',
-          data: {
-            agent_name: agent.name,
-          },
-        });
-        throw new ModelBehaviorError(
-          'Model produced apply_patch action without an apply_patch tool.',
-        );
-      }
+      const resolvedApplyPatchTool = ensureToolAvailable(
+        applyPatchTool,
+        'Model produced apply_patch action without an apply_patch tool.',
+        { agent_name: agent.name },
+      );
       runApplyPatchActions.push({
         toolCall: output,
-        applyPatch: applyPatchTool,
+        applyPatch: resolvedApplyPatchTool,
       });
     }
 
@@ -186,32 +212,23 @@ export function processModelResponse<TContext>(
 
     toolsUsed.push(output.name);
 
-    const handoff = handoffMap.get(output.name);
-    if (handoff) {
+    const resolved = resolveFunctionOrHandoff(
+      output,
+      handoffMap,
+      functionMap,
+      agent,
+    );
+    if (resolved.type === 'handoff') {
       items.push(new RunHandoffCallItem(output, agent));
       runHandoffs.push({
         toolCall: output,
-        handoff: handoff,
+        handoff: resolved.handoff,
       });
     } else {
-      const functionTool = functionMap.get(output.name);
-      if (!functionTool) {
-        addErrorToCurrentSpan({
-          message: `Tool ${output.name} not found in agent ${agent.name}.`,
-          data: {
-            tool_name: output.name,
-            agent_name: agent.name,
-          },
-        });
-
-        throw new ModelBehaviorError(
-          `Tool ${output.name} not found in agent ${agent.name}.`,
-        );
-      }
       items.push(new RunToolCallItem(output, agent));
       runFunctions.push({
         toolCall: output,
-        tool: functionTool,
+        tool: resolved.tool,
       });
     }
   }

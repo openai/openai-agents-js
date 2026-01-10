@@ -160,6 +160,39 @@ describe('getToolCallOutputItem', () => {
     ]);
   });
 
+  it('converts file outputs with referenced ids and provider data', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'file',
+      file: { id: 'file_123', filename: 'x.txt' },
+      providerData: { source: 'test' },
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_file',
+        file: { id: 'file_123' },
+        filename: 'x.txt',
+        providerData: { source: 'test' },
+      },
+    ]);
+  });
+
+  it('converts image outputs with file references', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      image: { fileId: 'img_1', mediaType: 'image/png' },
+      detail: 'auto',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: { id: 'img_1' },
+        detail: 'auto',
+      },
+    ]);
+  });
+
   it('returns plain text output when normalization fails', () => {
     const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
       type: 'unknown',

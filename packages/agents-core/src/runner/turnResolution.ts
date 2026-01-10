@@ -105,6 +105,46 @@ function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
   }
 }
 
+type AppendContext = {
+  seenItems: Set<RunItem>;
+  seenApprovalIdentities: Set<string>;
+};
+
+function buildAppendContext(existingItems: RunItem[]): AppendContext {
+  const seenItems = new Set<RunItem>(existingItems);
+  const seenApprovalIdentities = new Set<string>();
+  for (const item of existingItems) {
+    if (item instanceof RunToolApprovalItem) {
+      const identity = getApprovalIdentity(item);
+      if (identity) {
+        seenApprovalIdentities.add(identity);
+      }
+    }
+  }
+  return { seenItems, seenApprovalIdentities };
+}
+
+function appendRunItemIfNew(
+  item: RunItem,
+  target: RunItem[],
+  context: AppendContext,
+) {
+  if (context.seenItems.has(item)) {
+    return;
+  }
+  if (item instanceof RunToolApprovalItem) {
+    const identity = getApprovalIdentity(item);
+    if (identity) {
+      if (context.seenApprovalIdentities.has(identity)) {
+        return;
+      }
+      context.seenApprovalIdentities.add(identity);
+    }
+  }
+  context.seenItems.add(item);
+  target.push(item);
+}
+
 function buildApprovedCallIdSet(
   items: RunItem[],
   type: (typeof APPROVAL_ITEM_TYPES)[number],
@@ -127,6 +167,24 @@ function buildApprovedCallIdSet(
   return callIds;
 }
 
+function collectCompletedCallIds(items: RunItem[], type: string): Set<string> {
+  const completed = new Set<string>();
+  for (const item of items) {
+    const rawItem = item.rawItem;
+    if (!rawItem || typeof rawItem !== 'object') {
+      continue;
+    }
+    if ((rawItem as { type?: string }).type !== type) {
+      continue;
+    }
+    const callId = (rawItem as { callId?: unknown }).callId;
+    if (typeof callId === 'string') {
+      completed.add(callId);
+    }
+  }
+  return completed;
+}
+
 function filterActionsByApproval<T extends { toolCall: { callId?: string } }>(
   preStepItems: RunItem[],
   actions: T[],
@@ -141,6 +199,62 @@ function filterActionsByApproval<T extends { toolCall: { callId?: string } }>(
       typeof action.toolCall.callId === 'string' &&
       allowedCallIds.has(action.toolCall.callId),
   );
+}
+
+function rewindTurnPersistenceForPendingApprovals<TContext>(
+  originalPreStepItems: RunItem[],
+  state: RunState<TContext, Agent<TContext, any>>,
+) {
+  const pendingApprovalItems = state
+    .getInterruptions()
+    .filter(isApprovalItemLike);
+
+  if (pendingApprovalItems.length === 0) {
+    return;
+  }
+
+  const pendingApprovalIdentities = new Set<string>();
+  for (const approval of pendingApprovalItems) {
+    const identity = getApprovalIdentity(approval);
+    if (identity) {
+      pendingApprovalIdentities.add(identity);
+    }
+  }
+
+  if (pendingApprovalIdentities.size === 0) {
+    return;
+  }
+
+  let rewindCount = 0;
+  for (let index = originalPreStepItems.length - 1; index >= 0; index--) {
+    const item = originalPreStepItems[index];
+    if (!(item instanceof RunToolApprovalItem)) {
+      continue;
+    }
+
+    const identity = getApprovalIdentity(item);
+    if (!identity) {
+      continue;
+    }
+
+    if (!pendingApprovalIdentities.has(identity)) {
+      continue;
+    }
+
+    rewindCount++;
+    pendingApprovalIdentities.delete(identity);
+
+    if (pendingApprovalIdentities.size === 0) {
+      break;
+    }
+  }
+
+  if (rewindCount > 0) {
+    state._currentTurnPersistedItemCount = Math.max(
+      0,
+      state._currentTurnPersistedItemCount - rewindCount,
+    );
+  }
 }
 
 function truncateForDeveloper(message: string, maxLength = 160): string {
@@ -205,33 +319,18 @@ export async function resolveInterruptedTurn<TContext>(
     )
     .map((item) => (item.rawItem as protocol.FunctionCallItem).callId);
 
-  const completedFunctionCallIds = new Set<string>();
-  const completedShellCallIds = new Set<string>();
-  const completedApplyPatchCallIds = new Set<string>();
-
-  for (const item of originalPreStepItems) {
-    const rawItem = item.rawItem;
-    if (!rawItem || typeof rawItem !== 'object') {
-      continue;
-    }
-    const itemType = (rawItem as { type?: string }).type;
-    if (itemType === 'function_call_result') {
-      const callId = (rawItem as { callId?: unknown }).callId;
-      if (typeof callId === 'string') {
-        completedFunctionCallIds.add(callId);
-      }
-    } else if (itemType === 'shell_call_output') {
-      const callId = (rawItem as { callId?: unknown }).callId;
-      if (typeof callId === 'string') {
-        completedShellCallIds.add(callId);
-      }
-    } else if (itemType === 'apply_patch_call_output') {
-      const callId = (rawItem as { callId?: unknown }).callId;
-      if (typeof callId === 'string') {
-        completedApplyPatchCallIds.add(callId);
-      }
-    }
-  }
+  const completedFunctionCallIds = collectCompletedCallIds(
+    originalPreStepItems,
+    'function_call_result',
+  );
+  const completedShellCallIds = collectCompletedCallIds(
+    originalPreStepItems,
+    'shell_call_output',
+  );
+  const completedApplyPatchCallIds = collectCompletedCallIds(
+    originalPreStepItems,
+    'apply_patch_call_output',
+  );
 
   // We already persisted the turn once when the approval interrupt was raised, so the
   // counter reflects the approval items as "flushed". When we resume the same turn we need
@@ -241,48 +340,9 @@ export async function resolveInterruptedTurn<TContext>(
     .filter(isApprovalItemLike);
 
   if (pendingApprovalItems.length > 0) {
-    const pendingApprovalIdentities = new Set<string>();
-    for (const approval of pendingApprovalItems) {
-      const identity = getApprovalIdentity(approval);
-      if (identity) {
-        pendingApprovalIdentities.add(identity);
-      }
-    }
-
-    if (pendingApprovalIdentities.size > 0) {
-      let rewindCount = 0;
-      for (let index = originalPreStepItems.length - 1; index >= 0; index--) {
-        const item = originalPreStepItems[index];
-        if (!(item instanceof RunToolApprovalItem)) {
-          continue;
-        }
-
-        const identity = getApprovalIdentity(item);
-        if (!identity) {
-          continue;
-        }
-
-        if (!pendingApprovalIdentities.has(identity)) {
-          continue;
-        }
-
-        rewindCount++;
-        pendingApprovalIdentities.delete(identity);
-
-        if (pendingApprovalIdentities.size === 0) {
-          break;
-        }
-      }
-
-      // Persisting the approval request already advanced the counter once, so undo the increment
-      // to make sure we write the final tool output back to the session when the turn resumes.
-      if (rewindCount > 0) {
-        state._currentTurnPersistedItemCount = Math.max(
-          0,
-          state._currentTurnPersistedItemCount - rewindCount,
-        );
-      }
-    }
+    // Persisting the approval request already advanced the counter once, so undo the increment
+    // to make sure we write the final tool output back to the session when the turn resumes.
+    rewindTurnPersistenceForPendingApprovals(originalPreStepItems, state);
   }
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
@@ -299,20 +359,10 @@ export async function resolveInterruptedTurn<TContext>(
     'shell_call',
   ).filter((run) => !completedShellCallIds.has(run.toolCall.callId ?? ''));
 
-  const previouslyCompletedComputerCallIds = new Set<string>();
-  for (const item of originalPreStepItems) {
-    const rawItem = item.rawItem;
-    if (
-      rawItem &&
-      typeof rawItem === 'object' &&
-      (rawItem as { type?: string }).type === 'computer_call_result'
-    ) {
-      const callId = (rawItem as { callId?: string }).callId;
-      if (typeof callId === 'string') {
-        previouslyCompletedComputerCallIds.add(callId);
-      }
-    }
-  }
+  const previouslyCompletedComputerCallIds = collectCompletedCallIds(
+    originalPreStepItems,
+    'computer_call_result',
+  );
   const pendingComputerActions = processedResponse.computerActions.filter(
     (action) =>
       !previouslyCompletedComputerCallIds.has(action.toolCall.callId ?? ''),
@@ -358,36 +408,10 @@ export async function resolveInterruptedTurn<TContext>(
         )
       : [];
 
-  // When resuming we receive the original RunItem references; suppress duplicates so history and streaming do not double-emit the same items.
-  const originalPreStepItemSet = new Set(originalPreStepItems);
-  const seenApprovalIdentities = new Set<string>();
-  for (const item of originalPreStepItems) {
-    if (item instanceof RunToolApprovalItem) {
-      const identity = getApprovalIdentity(item);
-      if (identity) {
-        seenApprovalIdentities.add(identity);
-      }
-    }
-  }
   const newItems: RunItem[] = [];
-  const newItemsSet = new Set<RunItem>();
-  const appendIfNew = (item: RunItem) => {
-    if (originalPreStepItemSet.has(item) || newItemsSet.has(item)) {
-      return;
-    }
-    if (item instanceof RunToolApprovalItem) {
-      const identity = getApprovalIdentity(item);
-      if (identity) {
-        // Avoid duplicating the same approval request when a turn is resumed multiple times.
-        if (seenApprovalIdentities.has(identity)) {
-          return;
-        }
-        seenApprovalIdentities.add(identity);
-      }
-    }
-    newItems.push(item);
-    newItemsSet.add(item);
-  };
+  const appendContext = buildAppendContext(originalPreStepItems);
+  const appendIfNew = (item: RunItem) =>
+    appendRunItemIfNew(item, newItems, appendContext);
 
   for (const result of functionResults) {
     appendIfNew(result.runItem);
@@ -535,34 +559,10 @@ export async function resolveTurnAfterModelResponse<TContext>(
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
   const preStepItems = originalPreStepItems;
-  const seenItems = new Set<RunItem>(originalPreStepItems);
-  const seenApprovalIdentities = new Set<string>();
-  for (const item of originalPreStepItems) {
-    if (item instanceof RunToolApprovalItem) {
-      const identity = getApprovalIdentity(item);
-      if (identity) {
-        seenApprovalIdentities.add(identity);
-      }
-    }
-  }
   const newItems: RunItem[] = [];
-  const appendIfNew = (item: RunItem) => {
-    if (seenItems.has(item)) {
-      return;
-    }
-    if (item instanceof RunToolApprovalItem) {
-      const identity = getApprovalIdentity(item);
-      if (identity) {
-        // Avoid adding duplicate approval placeholders across successive turns/reruns.
-        if (seenApprovalIdentities.has(identity)) {
-          return;
-        }
-        seenApprovalIdentities.add(identity);
-      }
-    }
-    newItems.push(item);
-    seenItems.add(item);
-  };
+  const appendContext = buildAppendContext(originalPreStepItems);
+  const appendIfNew = (item: RunItem) =>
+    appendRunItemIfNew(item, newItems, appendContext);
 
   for (const item of processedResponse.newItems) {
     appendIfNew(item);
@@ -697,14 +697,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
   // If the model issued any tool calls or handoffs in this turn,
   // we must NOT treat any assistant message in the same turn as the final output.
   // We should run the loop again so the model can see the tool results and respond.
-  const hadToolCallsOrActions =
-    (processedResponse.functions?.length ?? 0) > 0 ||
-    (processedResponse.computerActions?.length ?? 0) > 0 ||
-    (processedResponse.shellActions?.length ?? 0) > 0 ||
-    (processedResponse.applyPatchActions?.length ?? 0) > 0 ||
-    (processedResponse.mcpApprovalRequests?.length ?? 0) > 0 ||
-    (processedResponse.handoffs?.length ?? 0) > 0;
-  if (hadToolCallsOrActions) {
+  if (processedResponse.hasToolsOrApprovalsToRun()) {
     return new SingleStepResult(
       originalInput,
       newResponse,

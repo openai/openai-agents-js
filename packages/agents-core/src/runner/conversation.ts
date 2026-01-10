@@ -339,6 +339,23 @@ export class ServerConversationTracker {
     const markFilteredItemsAsSent =
       options?.filterApplied && Boolean(options.allTurnItems);
 
+    this.addDeliveredItems(delivered, items);
+
+    const allTurnItems = options?.allTurnItems;
+    if (markFilteredItemsAsSent && allTurnItems) {
+      this.addDeliveredItems(delivered, allTurnItems);
+    }
+
+    this.updateRemainingInitialInput(
+      delivered,
+      Boolean(dropRemainingInitialInput),
+    );
+  }
+
+  private addDeliveredItems(
+    delivered: Set<AgentInputItem>,
+    items: (AgentInputItem | undefined)[],
+  ) {
     for (const item of items) {
       if (!item || typeof item !== 'object' || delivered.has(item)) {
         continue;
@@ -347,23 +364,12 @@ export class ServerConversationTracker {
       delivered.add(item);
       this.sentItems.add(item);
     }
+  }
 
-    const allTurnItems = options?.allTurnItems;
-    if (markFilteredItemsAsSent && allTurnItems) {
-      for (const item of allTurnItems) {
-        if (
-          !item ||
-          typeof item !== 'object' ||
-          delivered.has(item) ||
-          this.sentItems.has(item)
-        ) {
-          continue;
-        }
-        delivered.add(item);
-        this.sentItems.add(item);
-      }
-    }
-
+  private updateRemainingInitialInput(
+    delivered: Set<AgentInputItem>,
+    dropRemainingInitialInput: boolean,
+  ) {
     if (
       !this.remainingInitialInput ||
       this.remainingInitialInput.length === 0 ||

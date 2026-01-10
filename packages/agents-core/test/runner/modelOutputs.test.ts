@@ -6,6 +6,7 @@ import { ModelBehaviorError } from '../../src/errors';
 import { handoff } from '../../src/handoff';
 import {
   RunMessageOutputItem as MessageOutputItem,
+  RunReasoningItem as ReasoningItem,
   RunToolCallItem as ToolCallItem,
 } from '../../src/items';
 import { ModelResponse } from '../../src/model';
@@ -143,6 +144,43 @@ describe('processModelResponse', () => {
     expect(() =>
       processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
     ).toThrow(ModelBehaviorError);
+  });
+
+  it('throws when hosted MCP approval references missing server', () => {
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_123',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'missing',
+        name: 'mcp_approval_request',
+        id: 'mcpr_123',
+        arguments: {},
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [TEST_TOOL], []),
+    ).toThrow(ModelBehaviorError);
+  });
+
+  it('captures reasoning items', () => {
+    const reasoning: protocol.ReasoningItem = {
+      id: 'r1',
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    };
+    const response: ModelResponse = { output: [reasoning], usage: new Usage() };
+    const result = processModelResponse(response, TEST_AGENT, [TEST_TOOL], []);
+
+    expect(result.newItems[0]).toBeInstanceOf(ReasoningItem);
+    expect(result.toolsUsed).toEqual([]);
   });
 });
 
