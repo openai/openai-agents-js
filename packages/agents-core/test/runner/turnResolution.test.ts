@@ -362,7 +362,8 @@ describe('resolveInterruptedTurn', () => {
     expect(state._currentTurnPersistedItemCount).toBe(
       generatedItems.length - 1,
     );
-    expect(result.preStepItems).toEqual(generatedItems);
+    // Only the still-pending approval (secondApproval) should remain alongside prior outputs.
+    expect(result.preStepItems).toEqual([firstOutput, secondApproval]);
   });
 
   it('retains non-hosted approvals when resuming interruptions', async () => {

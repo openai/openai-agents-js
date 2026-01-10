@@ -334,10 +334,7 @@ export class ServerConversationTracker {
     options?: { filterApplied?: boolean; allTurnItems?: AgentInputItem[] },
   ) {
     const delivered = new Set<AgentInputItem>();
-    const dropRemainingInitialInput =
-      options?.filterApplied &&
-      items.length === 0 &&
-      (options.allTurnItems?.length ?? 0) === 0;
+    const dropRemainingInitialInput = options?.filterApplied ?? false;
     const markFilteredItemsAsSent =
       options?.filterApplied && Boolean(options.allTurnItems);
 
@@ -387,6 +384,8 @@ export class ServerConversationTracker {
       (item) => !delivered.has(item),
     );
     if (this.remainingInitialInput.length === 0) {
+      this.remainingInitialInput = null;
+    } else if (dropRemainingInitialInput) {
       this.remainingInitialInput = null;
     }
   }

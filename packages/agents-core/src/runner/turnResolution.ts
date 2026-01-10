@@ -338,11 +338,18 @@ export async function resolveInterruptedTurn<TContext>(
   const pendingApprovalItems = state
     .getInterruptions()
     .filter(isApprovalItemLike);
-
   if (pendingApprovalItems.length > 0) {
     // Persisting the approval request already advanced the counter once, so undo the increment
     // to make sure we write the final tool output back to the session when the turn resumes.
     rewindTurnPersistenceForPendingApprovals(originalPreStepItems, state);
+  }
+
+  const pendingApprovalIdentities = new Set<string>();
+  for (const approval of pendingApprovalItems) {
+    const identity = getApprovalIdentity(approval);
+    if (identity) {
+      pendingApprovalIdentities.add(identity);
+    }
   }
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
@@ -512,8 +519,12 @@ export async function resolveInterruptedTurn<TContext>(
     }
 
     // Preserve all other approval items so resumptions can continue to reference the
-    // original approval requests (e.g., function/shell/apply_patch).
-    return true;
+    // original approval requests (e.g., function/shell/apply_patch) ONLY while they are still pending.
+    const identity = getApprovalIdentity(item);
+    if (!identity) {
+      return false;
+    }
+    return pendingApprovalIdentities.has(identity);
   });
 
   const completedStep = await maybeCompleteTurnFromToolResults({
