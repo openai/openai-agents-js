@@ -379,6 +379,54 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.close();
   });
 
+  test('should terminate session before closing transport', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'terminate-session',
+    });
+
+    const terminateSession = vi.fn().mockResolvedValue(undefined);
+    const closeTransport = vi.fn().mockResolvedValue(undefined);
+    const closeSession = vi.fn().mockResolvedValue(undefined);
+
+    (server as any).transport = {
+      getSessionId: vi.fn(() => 'session-123'),
+      sessionId: 'session-123',
+      terminateSession,
+      close: closeTransport,
+    };
+    (server as any).session = { close: closeSession };
+
+    await server.close();
+
+    expect(terminateSession).toHaveBeenCalledTimes(1);
+    expect(closeTransport).toHaveBeenCalledTimes(1);
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(terminateSession.mock.invocationCallOrder[0]).toBeLessThan(
+      closeTransport.mock.invocationCallOrder[0],
+    );
+  });
+
+  test('should still close cleanly when transport lacks terminateSession', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'no-terminate',
+    });
+
+    const closeTransport = vi.fn().mockResolvedValue(undefined);
+    const closeSession = vi.fn().mockResolvedValue(undefined);
+
+    (server as any).transport = {
+      close: closeTransport,
+    };
+    (server as any).session = { close: closeSession };
+
+    await server.close();
+
+    expect(closeTransport).toHaveBeenCalledTimes(1);
+    expect(closeSession).toHaveBeenCalledTimes(1);
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
   });
