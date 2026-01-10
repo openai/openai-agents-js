@@ -1,19 +1,19 @@
 ---
-name: verify-changes
-description: Run all mandatory verification steps for code changes in the OpenAI Agents JS monorepo.
+name: code-change-verification
+description: Run the mandatory verification stack when changes affect runtime code, tests, or build/test behavior in the OpenAI Agents JS monorepo.
 ---
 
-# Verify Changes
+# Code Change Verification
 
 ## Overview
 
-Ensure work is only marked complete after installing dependencies, building, linting, type checking (including generated declarations), and tests pass. Use this skill whenever wrapping up a task, before opening a PR, or when asked to confirm that changes are ready to hand off.
+Ensure work is only marked complete after installing dependencies, building, linting, type checking (including generated declarations), and tests pass. Use this skill when changes affect runtime code, tests, or build/test configuration.
 
 ## Quick start
 
-1. Keep this skill at `./.codex/skills/verify-changes` so it loads automatically for the repository.
-2. macOS/Linux: `bash .codex/skills/verify-changes/scripts/run.sh`.
-3. Windows: `powershell -ExecutionPolicy Bypass -File .codex/skills/verify-changes/scripts/run.ps1`.
+1. Keep this skill at `./.codex/skills/code-change-verification` so it loads automatically for the repository.
+2. macOS/Linux: `bash .codex/skills/code-change-verification/scripts/run.sh`.
+3. Windows: `powershell -ExecutionPolicy Bypass -File .codex/skills/code-change-verification/scripts/run.ps1`.
 4. If any command fails, fix the issue, rerun the script, and report the failing output.
 5. Confirm completion only when all commands succeed with no remaining issues.
 

@@ -26,7 +26,7 @@ function Invoke-PnpmStep {
     & pnpm @Args
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "verify-changes: $commandText failed with exit code $LASTEXITCODE."
+        Write-Error "code-change-verification: $commandText failed with exit code $LASTEXITCODE."
         exit $LASTEXITCODE
     }
 }
@@ -38,4 +38,4 @@ Invoke-PnpmStep -Args @("-r", "-F", "@openai/*", "dist:check")
 Invoke-PnpmStep -Args @("lint")
 Invoke-PnpmStep -Args @("test")
 
-Write-Host "verify-changes: all commands passed."
+Write-Host "code-change-verification: all commands passed."
