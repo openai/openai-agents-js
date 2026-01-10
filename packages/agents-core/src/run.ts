@@ -636,16 +636,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             const isResumingFromInterruption =
               isResumedState && continuingInterruptedTurn;
+            const resumingTurnInProgress =
+              isResumedState && state._currentTurnInProgress === true;
             continuingInterruptedTurn = false;
 
             // Do not advance the turn when resuming from an interruption; the next model call is
             // still part of the same logical turn.
-            if (!isResumingFromInterruption) {
+            if (!isResumingFromInterruption && !resumingTurnInProgress) {
               state._currentTurn++;
-              if (!isResumedState) {
-                state._currentTurnPersistedItemCount = 0;
-              }
+              state._currentTurnPersistedItemCount = 0;
             }
+            state._currentTurnInProgress = true;
 
             if (state._currentTurn > state._maxTurns) {
               state._currentAgentSpan?.setError({
@@ -818,6 +819,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this.outputGuardrailDefs,
               state._currentStep.output,
             );
+            state._currentTurnInProgress = false;
             this.emit(
               'agent_end',
               state._context,
@@ -841,6 +843,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._currentAgentSpan = undefined;
             }
             state._noActiveAgentRun = true;
+            state._currentTurnInProgress = false;
 
             // we've processed the handoff, so we need to run the loop again
             state._currentStep = { type: 'next_step_run_again' };
@@ -1022,16 +1025,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           const isResumingFromInterruption =
             isResumedState && continuingInterruptedTurn;
+          const resumingTurnInProgress =
+            isResumedState && result.state._currentTurnInProgress === true;
           continuingInterruptedTurn = false;
 
           // Do not advance the turn when resuming from an interruption; the next model call is
           // still part of the same logical turn.
-          if (!isResumingFromInterruption) {
+          if (!isResumingFromInterruption && !resumingTurnInProgress) {
             result.state._currentTurn++;
-            if (!isResumedState) {
-              result.state._currentTurnPersistedItemCount = 0;
-            }
+            result.state._currentTurnPersistedItemCount = 0;
           }
+          result.state._currentTurnInProgress = true;
 
           if (result.state._currentTurn > result.state._maxTurns) {
             result.state._currentAgentSpan?.setError({
@@ -1273,6 +1277,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             this.outputGuardrailDefs,
             result.state._currentStep.output,
           );
+          result.state._currentTurnInProgress = false;
           await persistStreamInputIfNeeded();
           // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
           if (!serverManagesConversation) {
@@ -1311,6 +1316,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             new RunAgentUpdatedStreamEvent(result.state._currentAgent),
           );
           result.state._noActiveAgentRun = true;
+          result.state._currentTurnInProgress = false;
 
           // we've processed the handoff, so we need to run the loop again
           result.state._currentStep = {

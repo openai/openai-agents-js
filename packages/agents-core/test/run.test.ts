@@ -2090,6 +2090,84 @@ describe('Runner.run', () => {
       expect(userItems).toHaveLength(0);
     });
 
+    it('resets per-turn persistence when resuming from a prior run state', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'persist-reset-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const model = new FakeModel([
+        { output: [fakeModelMessage('first turn')], usage: new Usage() },
+        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({ name: 'PersistCounterAgent', model });
+      const session = new RecordingSession();
+      const runner = new Runner();
+
+      const firstRun = await runner.run(agent, 'hello', { session });
+
+      expect(firstRun.state._currentTurnPersistedItemCount).toBe(1);
+
+      const resumedState = firstRun.state;
+      resumedState._originalInput = 'follow-up';
+      resumedState._currentStep = { type: 'next_step_run_again' } as const;
+      resumedState._lastTurnResponse = undefined;
+      resumedState._lastProcessedResponse = undefined;
+      resumedState._noActiveAgentRun = true;
+      resumedState._currentTurnPersistedItemCount = 5;
+
+      const secondRun = await runner.run(agent, resumedState, { session });
+
+      expect(secondRun.finalOutput).toBe('second turn');
+      expect(session.added.length).toBeGreaterThanOrEqual(2);
+      const newlyPersisted = session.added[session.added.length - 1];
+      const texts = newlyPersisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(texts).toContain('second turn');
+    });
+
+    it('does not double-count turns when resuming an in-progress turn', async () => {
+      const model = new FakeModel([
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({ name: 'TurnResumeAgent', model });
+      const runner = new Runner();
+
+      const state = new RunState(new RunContext(), 'hi', agent, 1);
+      state._currentTurn = 1;
+      (state as any)._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+
+      const result = await runner.run(agent, state);
+
+      expect(result.state._currentTurn).toBe(1);
+      expect(result.finalOutput).toBe('done');
+    });
+
     it('keeps original inputs when filters prepend new items', async () => {
       class RecordingSession implements Session {
         #history: AgentInputItem[] = [];

@@ -304,6 +304,7 @@ export const SerializedRunState = z.object({
     .array(toolOutputGuardrailResultSchema)
     .optional()
     .default([]),
+  currentTurnInProgress: z.boolean().optional(),
   currentStep: nextStepSchema.optional(),
   lastModelResponse: modelResponseSchema.optional(),
   generatedItems: z.array(itemSchema),
@@ -327,6 +328,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Current turn number in the conversation.
    */
   public _currentTurn = 0;
+  /**
+   * Whether the current turn has already been counted (useful when resuming mid-turn).
+   */
+  public _currentTurnInProgress = false;
   /**
    * The agent currently handling the conversation.
    */
@@ -562,6 +567,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       maxTurns: this._maxTurns,
       currentAgentSpan: this._currentAgentSpan?.toJSON() as any,
       noActiveAgentRun: this._noActiveAgentRun,
+      currentTurnInProgress: this._currentTurnInProgress,
       inputGuardrailResults: this._inputGuardrailResults,
       outputGuardrailResults: this._outputGuardrailResults.map((r) => ({
         ...r,
@@ -658,6 +664,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       stateJson.maxTurns,
     );
     state._currentTurn = stateJson.currentTurn;
+    state._currentTurnInProgress = stateJson.currentTurnInProgress ?? false;
     state._conversationId = stateJson.conversationId ?? undefined;
     state._previousResponseId = stateJson.previousResponseId ?? undefined;
 
