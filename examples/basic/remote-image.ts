@@ -1,7 +1,7 @@
 import { Agent, run } from '@openai/agents';
 
 const url =
-  'https://upload.wikimedia.org/wikipedia/commons/0/0c/GoldenGateBridge-001.jpg';
+  'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
 
 async function main() {
   const agent = new Agent({
@@ -29,7 +29,7 @@ async function main() {
   ]);
 
   console.log(result.finalOutput);
-  // This image shows the Golden Gate Bridge, a famous suspension bridge located in San Francisco, California. The bridge is painted in its signature "International Orange" color and spans the Golden Gate Strait, connecting San Francisco to Marin County. The photo is taken during daylight, with the city and hills visible in the background and water beneath the bridge. The bridge is an iconic landmark and a symbol of San Francisco.
+  // This image features the clock tower commonly known as Big Ben attached to the Palace of Westminster in London, captured against a clear blue sky. The ornate architecture and the clock face stand out prominently above surrounding buildings, with a hint of passing traffic below.
 }
 
 main().catch((error) => {

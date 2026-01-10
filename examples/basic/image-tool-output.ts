@@ -10,7 +10,7 @@ const fetchRandomImage = tool({
     return {
       type: 'image',
       image:
-        'https://upload.wikimedia.org/wikipedia/commons/0/0c/GoldenGateBridge-001.jpg',
+        'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80',
       detail: 'auto',
     };
   },
@@ -29,7 +29,7 @@ async function main() {
   );
 
   console.log(result.finalOutput);
-  // The image shows a large, iconic suspension bridge painted in a bright reddish-orange color. The bridge spans over a large body of water, connecting two landmasses. The weather is clear, with a blue sky and soft clouds in the background. Vehicles can be seen traveling along the bridge, and there is some greenery in the foreground. The overall atmosphere is serene and scenic.
+  // This image features the clock tower commonly known as Big Ben attached to the Palace of Westminster in London, captured against a clear blue sky. The ornate architecture and the clock face stand out prominently above surrounding buildings, with a hint of passing traffic below.
 }
 
 if (require.main === module) {
