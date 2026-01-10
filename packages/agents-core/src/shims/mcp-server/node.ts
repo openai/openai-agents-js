@@ -1,6 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 import {
   BaseMCPServerStdio,
@@ -42,6 +43,22 @@ function buildRequestOptions(
       : { timeout: clientSessionTimeoutSeconds * 1000 };
   const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
+}
+
+type MaybeSessionTransport = Transport & {
+  terminateSession?: () => Promise<void>;
+  sessionId?: string;
+};
+
+function hasSessionTransport(
+  transport: any,
+): transport is MaybeSessionTransport {
+  return (
+    transport != null &&
+    typeof transport.close === 'function' &&
+    (typeof transport.terminateSession === 'function' ||
+      transport.sessionId !== undefined)
+  );
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -178,8 +195,19 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport: any = this.transport;
+
+    if (transport && typeof transport.terminateSession === 'function') {
+      try {
+        // Best-effort cleanup: we do not actively manage session lifecycles,
+        // but if the server supports sessions we terminate to avoid leaks.
+        await transport.terminateSession();
+      } catch (error) {
+        this.logger.warn('Failed to terminate MCP session:', error);
+      }
+    }
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {
@@ -308,8 +336,24 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport = this.transport;
+
+    if (hasSessionTransport(transport)) {
+      const sessionId = transport.sessionId;
+
+      if (sessionId && typeof transport.terminateSession === 'function') {
+        try {
+          // Best-effort cleanup: we do not actively manage session lifecycles,
+          // but if the server supports sessions we terminate to avoid leaks.
+          await transport.terminateSession();
+        } catch (error) {
+          this.logger.warn('Failed to terminate MCP session:', error);
+        }
+      }
+    }
+
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {
@@ -442,8 +486,24 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport = this.transport;
+
+    if (hasSessionTransport(transport)) {
+      const sessionId = transport.sessionId;
+
+      if (sessionId && typeof transport.terminateSession === 'function') {
+        try {
+          // Best-effort cleanup: we do not actively manage session lifecycles,
+          // but if the server supports sessions we terminate to avoid leaks.
+          await transport.terminateSession();
+        } catch (error) {
+          this.logger.warn('Failed to terminate MCP session:', error);
+        }
+      }
+    }
+
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {
