@@ -1667,6 +1667,117 @@ describe('Runner.run', () => {
         // The fix ensures only 1 function_call item is saved
         expect(functionCalls).toHaveLength(1);
       });
+
+      it('does not duplicate already persisted items when the resumed run continues into additional turns', async () => {
+        // Regression test for session persistence across resumed runs that execute additional turns.
+        //
+        // Scenario:
+        // 1. First run is interrupted for tool approval, persisting the initial function_call.
+        // 2. The run is resumed and continues into another tool call (additional turn).
+        //
+        // Expected behavior: Session history must not contain duplicate function_call items from the
+        // already-persisted portion of the run.
+
+        const getWeatherTool = tool({
+          name: 'get_weather',
+          description: 'Get weather for a city',
+          parameters: z.object({ city: z.string() }),
+          needsApproval: async () => true,
+          execute: async ({ city }) => `Sunny, 72°F in ${city}`,
+        });
+
+        const getTimeTool = tool({
+          name: 'get_time',
+          description: 'Get the current time for a city',
+          parameters: z.object({ city: z.string() }),
+          execute: async ({ city }) => `12:00PM in ${city}`,
+        });
+
+        const model = new FakeModel([
+          // First response: tool call that requires approval.
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_weather_1',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second response: after approval, request another tool call without approval.
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_2',
+                callId: 'call_time_1',
+                name: 'get_time',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Third response: final answer after tool results are available.
+          {
+            output: [
+              fakeModelMessage('It is sunny in Oakland and it is noon.'),
+            ],
+            usage: new Usage(),
+          },
+        ]);
+
+        const agent = new Agent({
+          name: 'Assistant',
+          instructions:
+            'Use get_weather and get_time tools to answer questions about Oakland.',
+          model,
+          tools: [getWeatherTool, getTimeTool],
+          toolUseBehavior: 'run_llm_again',
+        });
+
+        const session = new MemorySession();
+
+        const sessionInputCallback = async (
+          historyItems: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => {
+          return [...historyItems, ...newItems];
+        };
+
+        // Step 1: Initial run creates an interruption for tool approval.
+        let result = await run(
+          agent,
+          [
+            {
+              role: 'user',
+              content: "What's the weather and time in Oakland?",
+            },
+          ],
+          { session, sessionInputCallback },
+        );
+
+        for (const interruption of result.interruptions || []) {
+          result.state.approve(interruption);
+        }
+
+        // Step 2: Resume the run; it continues into another turn due to a second tool call.
+        result = await run(agent, result.state, { session });
+
+        const allItems = await session.getItems();
+        const weatherCalls = allItems.filter(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' && item.callId === 'call_weather_1',
+        );
+
+        expect(weatherCalls).toHaveLength(1);
+      });
     });
   });
 

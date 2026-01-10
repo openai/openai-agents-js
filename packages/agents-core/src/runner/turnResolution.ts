@@ -205,6 +205,34 @@ export async function resolveInterruptedTurn<TContext>(
     )
     .map((item) => (item.rawItem as protocol.FunctionCallItem).callId);
 
+  const completedFunctionCallIds = new Set<string>();
+  const completedShellCallIds = new Set<string>();
+  const completedApplyPatchCallIds = new Set<string>();
+
+  for (const item of originalPreStepItems) {
+    const rawItem = item.rawItem;
+    if (!rawItem || typeof rawItem !== 'object') {
+      continue;
+    }
+    const itemType = (rawItem as { type?: string }).type;
+    if (itemType === 'function_call_result') {
+      const callId = (rawItem as { callId?: unknown }).callId;
+      if (typeof callId === 'string') {
+        completedFunctionCallIds.add(callId);
+      }
+    } else if (itemType === 'shell_call_output') {
+      const callId = (rawItem as { callId?: unknown }).callId;
+      if (typeof callId === 'string') {
+        completedShellCallIds.add(callId);
+      }
+    } else if (itemType === 'apply_patch_call_output') {
+      const callId = (rawItem as { callId?: unknown }).callId;
+      if (typeof callId === 'string') {
+        completedApplyPatchCallIds.add(callId);
+      }
+    }
+  }
+
   // We already persisted the turn once when the approval interrupt was raised, so the
   // counter reflects the approval items as "flushed". When we resume the same turn we need
   // to rewind it so the eventual tool output for this call is still written to the session.
@@ -258,14 +286,18 @@ export async function resolveInterruptedTurn<TContext>(
   }
   // Run function tools that require approval after they get their approval results
   const functionToolRuns = processedResponse.functions.filter((run) => {
-    return functionCallIds.includes(run.toolCall.callId);
+    const callId = run.toolCall.callId;
+    if (!functionCallIds.includes(callId)) {
+      return false;
+    }
+    return !completedFunctionCallIds.has(callId);
   });
 
   const shellRuns = filterActionsByApproval(
     originalPreStepItems,
     processedResponse.shellActions,
     'shell_call',
-  );
+  ).filter((run) => !completedShellCallIds.has(run.toolCall.callId ?? ''));
 
   const previouslyCompletedComputerCallIds = new Set<string>();
   for (const item of originalPreStepItems) {
@@ -290,7 +322,7 @@ export async function resolveInterruptedTurn<TContext>(
     originalPreStepItems,
     processedResponse.applyPatchActions,
     'apply_patch_call',
-  );
+  ).filter((run) => !completedApplyPatchCallIds.has(run.toolCall.callId ?? ''));
 
   const functionResults = await executeFunctionToolCalls(
     agent,

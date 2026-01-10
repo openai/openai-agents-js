@@ -642,7 +642,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // still part of the same logical turn.
             if (!isResumingFromInterruption) {
               state._currentTurn++;
-              state._currentTurnPersistedItemCount = 0;
+              if (!isResumedState) {
+                state._currentTurnPersistedItemCount = 0;
+              }
             }
 
             if (state._currentTurn > state._maxTurns) {
@@ -791,7 +793,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             state._originalInput = turnResult.originalInput;
             state._generatedItems = turnResult.generatedItems;
-            if (turnResult.nextStep.type === 'next_step_run_again') {
+            if (
+              turnResult.nextStep.type === 'next_step_run_again' &&
+              !isResumedState
+            ) {
               state._currentTurnPersistedItemCount = 0;
             }
             state._currentStep = turnResult.nextStep;
@@ -1023,7 +1028,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // still part of the same logical turn.
           if (!isResumingFromInterruption) {
             result.state._currentTurn++;
-            result.state._currentTurnPersistedItemCount = 0;
+            if (!isResumedState) {
+              result.state._currentTurnPersistedItemCount = 0;
+            }
           }
 
           if (result.state._currentTurn > result.state._maxTurns) {
@@ -1251,7 +1258,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           result.state._originalInput = turnResult.originalInput;
           result.state._generatedItems = turnResult.generatedItems;
-          if (turnResult.nextStep.type === 'next_step_run_again') {
+          if (
+            turnResult.nextStep.type === 'next_step_run_again' &&
+            !isResumedState
+          ) {
             result.state._currentTurnPersistedItemCount = 0;
           }
           result.state._currentStep = turnResult.nextStep;

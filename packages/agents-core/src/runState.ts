@@ -111,7 +111,9 @@ const itemSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('tool_call_output_item'),
-    rawItem: protocol.FunctionCallResultItem,
+    rawItem: protocol.FunctionCallResultItem.or(protocol.ComputerCallResultItem)
+      .or(protocol.ShellCallResultItem)
+      .or(protocol.ApplyPatchCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
   }),

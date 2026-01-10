@@ -24,7 +24,7 @@ import type { ProcessedResponse } from '../../src/runner/types';
 import { RunContext } from '../../src/runContext';
 import { RunState } from '../../src/runState';
 import { Runner } from '../../src/run';
-import { computerTool, applyPatchTool, shellTool } from '../../src/tool';
+import { computerTool, applyPatchTool, shellTool, tool } from '../../src/tool';
 import { Usage } from '../../src/usage';
 import {
   FakeEditor,
@@ -630,6 +630,204 @@ describe('resolveInterruptedTurn', () => {
 
     expect(toolOutputs).toHaveLength(1);
     expect(editor.operations).toHaveLength(1);
+  });
+
+  it('does not rerun completed tools when approvals are handled across resumes', async () => {
+    const executedFunctionCallIds: string[] = [];
+    const approvalTool = tool({
+      name: 'approval_tool',
+      description: 'Approval-gated tool.',
+      parameters: z.object({}),
+      needsApproval: async () => true,
+      execute: async (_input, _context, details) => {
+        const callId = details?.toolCall?.callId;
+        if (callId) {
+          executedFunctionCallIds.push(callId);
+        }
+        return 'ok';
+      },
+    });
+
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+    });
+
+    const editor = new FakeEditor();
+    const applyPatch = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+    });
+
+    const agent = new Agent({
+      name: 'MultiApprovalAgent',
+      tools: [approvalTool, shellToolDef, applyPatch],
+    });
+
+    const functionCall1: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'call-func-1',
+      callId: 'call-func-1',
+      status: 'completed',
+      name: approvalTool.name,
+      arguments: '{}',
+    };
+    const functionCall2: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'call-func-2',
+      callId: 'call-func-2',
+      status: 'completed',
+      name: approvalTool.name,
+      arguments: '{}',
+    };
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call-shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const patchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call-patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+
+    const functionApproval1 = new ToolApprovalItem(functionCall1, agent);
+    const functionApproval2 = new ToolApprovalItem(functionCall2, agent);
+    const shellApproval = new ToolApprovalItem(
+      shellCall,
+      agent,
+      shellToolDef.name,
+    );
+    const patchApproval = new ToolApprovalItem(
+      patchCall,
+      agent,
+      applyPatch.name,
+    );
+
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [],
+      handoffs: [],
+      functions: [
+        { toolCall: functionCall1, tool: approvalTool as any },
+        { toolCall: functionCall2, tool: approvalTool as any },
+      ],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [{ toolCall: patchCall, applyPatch }],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 5);
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const originalItems = [
+      new ToolCallItem(functionCall1, agent),
+      functionApproval1,
+      new ToolCallItem(functionCall2, agent),
+      functionApproval2,
+      new ToolCallItem(shellCall, agent),
+      shellApproval,
+      new ToolCallItem(patchCall, agent),
+      patchApproval,
+    ];
+    state._generatedItems = originalItems;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          shellApproval,
+          functionApproval1,
+          patchApproval,
+          functionApproval2,
+        ],
+      },
+    };
+
+    state._context.approveTool(shellApproval);
+    let result = await withTrace('test', () =>
+      resolveInterruptedTurn(
+        agent,
+        'hello',
+        state._generatedItems,
+        modelResponse,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+    state._generatedItems = result.generatedItems;
+    state._currentStep = result.nextStep;
+    expect(shell.calls).toHaveLength(1);
+    expect(editor.operations).toHaveLength(0);
+    expect(executedFunctionCallIds).toEqual([]);
+
+    state._context.approveTool(functionApproval1);
+    result = await withTrace('test', () =>
+      resolveInterruptedTurn(
+        agent,
+        'hello',
+        state._generatedItems,
+        modelResponse,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+    state._generatedItems = result.generatedItems;
+    state._currentStep = result.nextStep;
+    expect(shell.calls).toHaveLength(1);
+    expect(editor.operations).toHaveLength(0);
+    expect(executedFunctionCallIds).toEqual(['call-func-1']);
+
+    state._context.approveTool(patchApproval);
+    result = await withTrace('test', () =>
+      resolveInterruptedTurn(
+        agent,
+        'hello',
+        state._generatedItems,
+        modelResponse,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+    state._generatedItems = result.generatedItems;
+    state._currentStep = result.nextStep;
+    expect(shell.calls).toHaveLength(1);
+    expect(editor.operations).toHaveLength(1);
+    expect(executedFunctionCallIds).toEqual(['call-func-1']);
+
+    state._context.approveTool(functionApproval2);
+    result = await withTrace('test', () =>
+      resolveInterruptedTurn(
+        agent,
+        'hello',
+        state._generatedItems,
+        modelResponse,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+    expect(shell.calls).toHaveLength(1);
+    expect(editor.operations).toHaveLength(1);
+    expect(executedFunctionCallIds).toEqual(['call-func-1', 'call-func-2']);
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
   it('removes resolved hosted MCP approvals but keeps unresolved ones', async () => {
