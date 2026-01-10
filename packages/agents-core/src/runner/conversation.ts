@@ -335,7 +335,9 @@ export class ServerConversationTracker {
   ) {
     const delivered = new Set<AgentInputItem>();
     const dropRemainingInitialInput =
-      options?.filterApplied && items.length === 0;
+      options?.filterApplied &&
+      items.length === 0 &&
+      (options.allTurnItems?.length ?? 0) === 0;
     const markFilteredItemsAsSent =
       options?.filterApplied && Boolean(options.allTurnItems);
 
