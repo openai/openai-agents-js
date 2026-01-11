@@ -46,6 +46,38 @@ function ensureToolAvailable<T>(
   return tool;
 }
 
+function handleToolCallAction<
+  TTool extends {
+    name: string;
+  },
+  TAction,
+>({
+  output,
+  tool,
+  agent,
+  errorMessage,
+  errorData,
+  items,
+  toolsUsed,
+  actions,
+  buildAction,
+}: {
+  output: protocol.ToolCallItem;
+  tool: TTool | undefined;
+  agent: Agent<any, any>;
+  errorMessage: string;
+  errorData: Record<string, unknown>;
+  items: RunItem[];
+  toolsUsed: string[];
+  actions: TAction[];
+  buildAction: (resolvedTool: TTool) => TAction;
+}) {
+  const resolvedTool = ensureToolAvailable(tool, errorMessage, errorData);
+  items.push(new RunToolCallItem(output, agent));
+  toolsUsed.push(resolvedTool.name);
+  actions.push(buildAction(resolvedTool));
+}
+
 function resolveFunctionOrHandoff(
   toolCall: protocol.FunctionCallItem,
   handoffMap: Map<string, Handoff<any, any>>,
@@ -169,43 +201,56 @@ export function processModelResponse<TContext>(
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
     } else if (output.type === 'computer_call') {
-      items.push(new RunToolCallItem(output, agent));
-      toolsUsed.push('computer_use');
-      const resolvedComputerTool = ensureToolAvailable(
-        computerTool,
-        'Model produced computer action without a computer tool.',
-        { agent_name: agent.name },
-      );
-      runComputerActions.push({
-        toolCall: output,
-        computer: resolvedComputerTool,
+      handleToolCallAction({
+        output,
+        tool: computerTool,
+        agent,
+        errorMessage: 'Model produced computer action without a computer tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runComputerActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          computer: resolvedTool,
+        }),
       });
     } else if (output.type === 'shell_call') {
-      items.push(new RunToolCallItem(output, agent));
-      toolsUsed.push('shell');
-      const resolvedShellTool = ensureToolAvailable(
-        shellTool,
-        'Model produced shell action without a shell tool.',
-        { agent_name: agent.name },
-      );
-      runShellActions.push({
-        toolCall: output,
-        shell: resolvedShellTool,
+      handleToolCallAction({
+        output,
+        tool: shellTool,
+        agent,
+        errorMessage: 'Model produced shell action without a shell tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runShellActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          shell: resolvedTool,
+        }),
       });
     } else if (output.type === 'apply_patch_call') {
-      items.push(new RunToolCallItem(output, agent));
-      toolsUsed.push('apply_patch');
-      const resolvedApplyPatchTool = ensureToolAvailable(
-        applyPatchTool,
-        'Model produced apply_patch action without an apply_patch tool.',
-        { agent_name: agent.name },
-      );
-      runApplyPatchActions.push({
-        toolCall: output,
-        applyPatch: resolvedApplyPatchTool,
+      handleToolCallAction({
+        output,
+        tool: applyPatchTool,
+        agent,
+        errorMessage:
+          'Model produced apply_patch action without an apply_patch tool.',
+        errorData: { agent_name: agent.name },
+        items,
+        toolsUsed,
+        actions: runApplyPatchActions,
+        buildAction: (resolvedTool) => ({
+          toolCall: output,
+          applyPatch: resolvedTool,
+        }),
       });
     }
-
+    /*
+     * Intentionally skip returning here so function_call processing can still
+     * run when output.type matches other tool call types.
+     */
     if (output.type !== 'function_call') {
       continue;
     }

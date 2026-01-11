@@ -60,16 +60,17 @@ import {
   saveStreamResultToSession,
   saveToSession,
 } from './runner/sessionPersistence';
+import { resolveTurnAfterModelResponse } from './runner/turnResolution';
+import { prepareTurn } from './runner/turnPreparation';
 import {
-  resolveInterruptedTurn,
-  resolveTurnAfterModelResponse,
-} from './runner/turnResolution';
-import { prepareRunAgainTurn } from './runner/turnPreparation';
+  applyTurnResult,
+  handleInterruptedOutcome,
+  resumeInterruptedTurn,
+} from './runner/runLoop';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
   PreparedModelCall,
-  ProcessedResponse,
 } from './runner/types';
 
 export type {
@@ -645,6 +646,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
 
+      // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
 
       try {
@@ -663,43 +665,28 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const turnResult = await resolveInterruptedTurn<TContext>(
-              state._currentAgent,
-              state._originalInput,
-              state._generatedItems,
-              state._lastTurnResponse,
-              state._lastProcessedResponse as ProcessedResponse<unknown>,
-              this,
+            const interruptedOutcome = await resumeInterruptedTurn({
               state,
-            );
+              runner: this,
+            });
 
-            state._toolUseTracker.addToolUse(
-              state._currentAgent,
-              state._lastProcessedResponse.toolsUsed ?? [],
-            );
-
-            state._originalInput = turnResult.originalInput;
-            state._generatedItems = turnResult.generatedItems;
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
             // The counter will be reset when _currentTurn is incremented (starting a new turn)
 
-            if (turnResult.nextStep.type === 'next_step_interruption') {
+            const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
+              state,
+              outcome: interruptedOutcome,
+              setContinuingInterruptedTurn: (value) => {
+                continuingInterruptedTurn = value;
+              },
+            });
+            if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
-              state._currentStep = turnResult.nextStep;
               return new RunResult<TContext, TAgent>(state);
             }
-
-            // If continuing from interruption with next_step_run_again, set step to undefined
-            // so the loop treats it as a new step without incrementing the turn.
-            // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              continuingInterruptedTurn = true;
-              state._currentStep = undefined;
+            if (shouldContinue) {
               continue;
             }
-
-            continuingInterruptedTurn = false;
-            state._currentStep = turnResult.nextStep;
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
@@ -707,7 +694,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             continuingInterruptedTurn = false;
             const guardrailTracker = createGuardrailTracker();
             const { artifacts, turnInput, parallelGuardrailPromise } =
-              await prepareRunAgainTurn({
+              await prepareTurn({
                 state,
                 input: state._originalInput,
                 generatedItems: state._generatedItems,
@@ -802,69 +789,64 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state,
             );
 
-            state._toolUseTracker.addToolUse(
-              state._currentAgent,
-              state._lastProcessedResponse!.toolsUsed,
-            );
-
-            state._originalInput = turnResult.originalInput;
-            state._generatedItems = turnResult.generatedItems;
-            if (
-              turnResult.nextStep.type === 'next_step_run_again' &&
-              !isResumedState
-            ) {
-              state.resetTurnPersistence();
-            }
-            state._currentStep = turnResult.nextStep;
+            applyTurnResult({
+              state,
+              turnResult,
+              agent: state._currentAgent,
+              toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
+              resetTurnPersistence: !isResumedState,
+            });
 
             await guardrailTracker.awaitCompletion();
           }
 
-          if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_final_output'
-          ) {
-            await runOutputGuardrails(
-              state,
-              this.outputGuardrailDefs,
-              state._currentStep.output,
-            );
-            state._currentTurnInProgress = false;
-            this.emit(
-              'agent_end',
-              state._context,
-              state._currentAgent,
-              state._currentStep.output,
-            );
-            state._currentAgent.emit(
-              'agent_end',
-              state._context,
-              state._currentStep.output,
-            );
-            return new RunResult<TContext, TAgent>(state);
-          } else if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_handoff'
-          ) {
-            state.setCurrentAgent(state._currentStep.newAgent as TAgent);
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.end();
-              resetCurrentSpan();
-              state.setCurrentAgentSpan(undefined);
-            }
-            state._noActiveAgentRun = true;
-            state._currentTurnInProgress = false;
-
-            // we've processed the handoff, so we need to run the loop again
-            state._currentStep = { type: 'next_step_run_again' };
-          } else if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_interruption'
-          ) {
-            // interrupted. Don't run any guardrails
-            return new RunResult<TContext, TAgent>(state);
-          } else {
+          const currentStep = state._currentStep;
+          if (!currentStep) {
             logger.debug('Running next loop');
+            continue;
+          }
+
+          switch (currentStep.type) {
+            case 'next_step_final_output':
+              await runOutputGuardrails(
+                state,
+                this.outputGuardrailDefs,
+                currentStep.output,
+              );
+              state._currentTurnInProgress = false;
+              this.emit(
+                'agent_end',
+                state._context,
+                state._currentAgent,
+                currentStep.output,
+              );
+              state._currentAgent.emit(
+                'agent_end',
+                state._context,
+                currentStep.output,
+              );
+              return new RunResult<TContext, TAgent>(state);
+            case 'next_step_handoff':
+              state.setCurrentAgent(currentStep.newAgent as TAgent);
+              if (state._currentAgentSpan) {
+                state._currentAgentSpan.end();
+                resetCurrentSpan();
+                state.setCurrentAgentSpan(undefined);
+              }
+              state._noActiveAgentRun = true;
+              state._currentTurnInProgress = false;
+
+              // We've processed the handoff, so we need to run the loop again.
+              state._currentStep = { type: 'next_step_run_again' };
+              break;
+            case 'next_step_interruption':
+              // Interrupted. Don't run any guardrails.
+              return new RunResult<TContext, TAgent>(state);
+            case 'next_step_run_again':
+              logger.debug('Running next loop');
+              break;
+            default:
+              logger.debug('Running next loop');
           }
         }
       } catch (err) {
@@ -930,7 +912,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       );
     }
 
-    let handedInputToModel = false;
+    let sentInputToModel = false;
     let streamInputPersisted = false;
     let guardrailTracker = createGuardrailTracker();
     const persistStreamInputIfNeeded = async () => {
@@ -948,7 +930,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         throw guardrailTracker.error;
       }
       if (
-        handedInputToModel &&
+        sentInputToModel &&
         !streamInputPersisted &&
         !guardrailTracker.failed
       ) {
@@ -968,6 +950,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       );
     }
 
+    // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
 
     try {
@@ -990,45 +973,31 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
 
-          const turnResult = await resolveInterruptedTurn<TContext>(
-            result.state._currentAgent,
-            result.state._originalInput,
-            result.state._generatedItems,
-            result.state._lastTurnResponse,
-            result.state._lastProcessedResponse as ProcessedResponse<unknown>,
-            this,
-            result.state,
-          );
+          const interruptedOutcome = await resumeInterruptedTurn({
+            state: result.state,
+            runner: this,
+            onStepItems: (turnResult) => {
+              addStepToRunResult(result, turnResult);
+            },
+          });
 
-          addStepToRunResult(result, turnResult);
-
-          result.state._toolUseTracker.addToolUse(
-            result.state._currentAgent,
-            result.state._lastProcessedResponse.toolsUsed ?? [],
-          );
-
-          result.state._originalInput = turnResult.originalInput;
-          result.state._generatedItems = turnResult.generatedItems;
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
           // The counter will be reset when _currentTurn is incremented (starting a new turn)
 
-          if (turnResult.nextStep.type === 'next_step_interruption') {
+          const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
+            state: result.state,
+            outcome: interruptedOutcome,
+            setContinuingInterruptedTurn: (value) => {
+              continuingInterruptedTurn = value;
+            },
+          });
+          if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
-            result.state._currentStep = turnResult.nextStep;
             return;
           }
-
-          // If continuing from interruption with next_step_run_again, set step to undefined
-          // so the loop treats it as a new step without incrementing the turn.
-          // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            continuingInterruptedTurn = true;
-            result.state._currentStep = undefined;
+          if (shouldContinue) {
             continue;
           }
-
-          continuingInterruptedTurn = false;
-          result.state._currentStep = turnResult.nextStep;
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
@@ -1036,7 +1005,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           guardrailTracker = createGuardrailTracker();
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
-          const preparedTurn = await prepareRunAgainTurn({
+          const preparedTurn = await prepareTurn({
             state: result.state,
             input: result.input,
             generatedItems: result.newItems,
@@ -1059,23 +1028,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const { artifacts, turnInput } = preparedTurn;
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);
+          // If guardrails are still running, defer input persistence until they finish.
           const delayStreamInputPersistence = guardrailTracker.pending;
-
-          let finalResponse: ModelResponse | undefined = undefined;
-          let inputMarked = false;
-          const markInputOnce = () => {
-            if (inputMarked || !serverConversationTracker) {
-              return;
-            }
-            serverConversationTracker.markInputAsSent(
-              preparedCall.sourceItems,
-              {
-                filterApplied: preparedCall.filterApplied,
-                allTurnItems: preparedCall.turnInput,
-              },
-            );
-            inputMarked = true;
-          };
 
           const preparedCall = await this.#prepareModelCall(
             result.state,
@@ -1088,7 +1042,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           guardrailTracker.throwIfError();
 
-          handedInputToModel = true;
+          let finalResponse: ModelResponse | undefined = undefined;
+          let inputMarked = false;
+          const markInputOnce = () => {
+            if (inputMarked || !serverConversationTracker) {
+              return;
+            }
+            // Record the exact input that was sent so the server tracker can advance safely.
+            serverConversationTracker.markInputAsSent(
+              preparedCall.sourceItems,
+              {
+                filterApplied: preparedCall.filterApplied,
+                allTurnItems: preparedCall.turnInput,
+              },
+            );
+            inputMarked = true;
+          };
+
+          sentInputToModel = true;
           if (!delayStreamInputPersistence) {
             await persistStreamInputIfNeeded();
           }
@@ -1138,7 +1109,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           } catch (error) {
             if (isAbortError(error)) {
-              if (handedInputToModel) {
+              if (sentInputToModel) {
                 markInputOnce();
               }
               await awaitGuardrailsAndPersistInput();
@@ -1203,80 +1174,74 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
           );
 
-          addStepToRunResult(result, turnResult, {
-            skipItems: preToolItems,
+          applyTurnResult({
+            state: result.state,
+            turnResult,
+            agent: currentAgent,
+            toolsUsed: processedResponse.toolsUsed,
+            resetTurnPersistence: !isResumedState,
+            onStepItems: (step) => {
+              addStepToRunResult(result, step, { skipItems: preToolItems });
+            },
           });
-
-          result.state._toolUseTracker.addToolUse(
-            currentAgent,
-            processedResponse.toolsUsed,
-          );
-
-          result.state._originalInput = turnResult.originalInput;
-          result.state._generatedItems = turnResult.generatedItems;
-          if (
-            turnResult.nextStep.type === 'next_step_run_again' &&
-            !isResumedState
-          ) {
-            result.state.resetTurnPersistence();
-          }
-          result.state._currentStep = turnResult.nextStep;
         }
 
-        if (result.state._currentStep.type === 'next_step_final_output') {
-          await runOutputGuardrails(
-            result.state,
-            this.outputGuardrailDefs,
-            result.state._currentStep.output,
-          );
-          result.state._currentTurnInProgress = false;
-          await persistStreamInputIfNeeded();
-          // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
-          if (!serverManagesConversation) {
-            await saveStreamResultToSession(options.session, result);
-          }
-          this.emit(
-            'agent_end',
-            result.state._context,
-            currentAgent,
-            result.state._currentStep.output,
-          );
-          currentAgent.emit(
-            'agent_end',
-            result.state._context,
-            result.state._currentStep.output,
-          );
-          return;
-        } else if (
-          result.state._currentStep.type === 'next_step_interruption'
-        ) {
-          // we are done for now. Don't run any output guardrails
-          await persistStreamInputIfNeeded();
-          if (!serverManagesConversation) {
-            await saveStreamResultToSession(options.session, result);
-          }
-          return;
-        } else if (result.state._currentStep.type === 'next_step_handoff') {
-          result.state.setCurrentAgent(
-            result.state._currentStep?.newAgent as TAgent,
-          );
-          if (result.state._currentAgentSpan) {
-            result.state._currentAgentSpan.end();
-            resetCurrentSpan();
-          }
-          result.state.setCurrentAgentSpan(undefined);
-          result._addItem(
-            new RunAgentUpdatedStreamEvent(result.state._currentAgent),
-          );
-          result.state._noActiveAgentRun = true;
-          result.state._currentTurnInProgress = false;
+        const currentStep = result.state._currentStep;
+        switch (currentStep.type) {
+          case 'next_step_final_output':
+            await runOutputGuardrails(
+              result.state,
+              this.outputGuardrailDefs,
+              currentStep.output,
+            );
+            result.state._currentTurnInProgress = false;
+            await persistStreamInputIfNeeded();
+            // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
+            if (!serverManagesConversation) {
+              await saveStreamResultToSession(options.session, result);
+            }
+            this.emit(
+              'agent_end',
+              result.state._context,
+              currentAgent,
+              currentStep.output,
+            );
+            currentAgent.emit(
+              'agent_end',
+              result.state._context,
+              currentStep.output,
+            );
+            return;
+          case 'next_step_interruption':
+            // We are done for now. Don't run any output guardrails.
+            await persistStreamInputIfNeeded();
+            if (!serverManagesConversation) {
+              await saveStreamResultToSession(options.session, result);
+            }
+            return;
+          case 'next_step_handoff':
+            result.state.setCurrentAgent(currentStep.newAgent as TAgent);
+            if (result.state._currentAgentSpan) {
+              result.state._currentAgentSpan.end();
+              resetCurrentSpan();
+            }
+            result.state.setCurrentAgentSpan(undefined);
+            result._addItem(
+              new RunAgentUpdatedStreamEvent(result.state._currentAgent),
+            );
+            result.state._noActiveAgentRun = true;
+            result.state._currentTurnInProgress = false;
 
-          // we've processed the handoff, so we need to run the loop again
-          result.state._currentStep = {
-            type: 'next_step_run_again',
-          };
-        } else {
-          logger.debug('Running next loop');
+            // We've processed the handoff, so we need to run the loop again.
+            result.state._currentStep = {
+              type: 'next_step_run_again',
+            };
+            break;
+          case 'next_step_run_again':
+            logger.debug('Running next loop');
+            break;
+          default:
+            logger.debug('Running next loop');
         }
       }
     } catch (error) {
@@ -1285,7 +1250,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
       if (
-        handedInputToModel &&
+        sentInputToModel &&
         !streamInputPersisted &&
         !guardrailTracker.failed
       ) {
@@ -1303,7 +1268,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
       if (
-        handedInputToModel &&
+        sentInputToModel &&
         !streamInputPersisted &&
         !guardrailTracker.failed
       ) {

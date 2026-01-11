@@ -137,12 +137,16 @@ describe('saveStreamResultToSession', () => {
       outputType: 'text',
       instructions: 'stream test',
     });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
     const session = new TrackingSession();
     const context = new RunContext<UnknownContext>(undefined as UnknownContext);
     const state = new RunState<
       UnknownContext,
       Agent<UnknownContext, AgentOutputType>
-    >(context, 'hello', textAgent, 10);
+    >(context, 'hello', agent, 10);
 
     state._modelResponses.push({
       output: [],
@@ -173,12 +177,16 @@ describe('saveStreamResultToSession', () => {
       outputType: 'text',
       instructions: 'stream test',
     });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
     const session = new TrackingSession();
     const context = new RunContext<UnknownContext>(undefined as UnknownContext);
     const state = new RunState<
       UnknownContext,
       Agent<UnknownContext, AgentOutputType>
-    >(context, 'hello', textAgent, 10);
+    >(context, 'hello', agent, 10);
 
     state._modelResponses.push({
       output: [],

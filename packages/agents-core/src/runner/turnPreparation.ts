@@ -23,13 +23,13 @@ type GuardrailHandlers = {
   onParallelError?: (error: unknown) => void;
 };
 
-type RunAgainTurnPreparation<TContext> = {
+type PreparedTurn<TContext> = {
   artifacts: AgentArtifacts<TContext>;
   turnInput: AgentInputItem[];
   parallelGuardrailPromise?: Promise<InputGuardrailResult[]>;
 };
 
-type PrepareRunAgainTurnOptions<
+type PrepareTurnOptions<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
 > = {
@@ -48,12 +48,12 @@ type PrepareRunAgainTurnOptions<
   ) => void;
 };
 
-export async function prepareRunAgainTurn<
+export async function prepareTurn<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
 >(
-  options: PrepareRunAgainTurnOptions<TContext, TAgent>,
-): Promise<RunAgainTurnPreparation<TContext>> {
+  options: PrepareTurnOptions<TContext, TAgent>,
+): Promise<PreparedTurn<TContext>> {
   const {
     state,
     input,
@@ -67,7 +67,7 @@ export async function prepareRunAgainTurn<
   } = options;
   const artifacts = await prepareAgentArtifacts(state);
 
-  const { isResumingFromInterruption } = beginRunAgainTurn(state, {
+  const { isResumingFromInterruption } = beginTurn(state, {
     isResumedState,
     continuingInterruptedTurn,
   });
@@ -147,10 +147,7 @@ async function runInputGuardrailsForTurn<
   return {};
 }
 
-function beginRunAgainTurn<
-  TContext,
-  TAgent extends Agent<TContext, AgentOutputType>,
->(
+function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   state: RunState<TContext, TAgent>,
   options: {
     isResumedState: boolean;

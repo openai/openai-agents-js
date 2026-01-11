@@ -1,11 +1,6 @@
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
-import { encodeUint8ArrayToBase64 } from '../utils/base64';
-import {
-  isArrayBufferView,
-  isNodeBuffer,
-  isSerializedBufferSnapshot,
-} from '../utils/smartString';
+import { serializeBinary } from '../utils/binary';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
 
@@ -60,58 +55,30 @@ export function takeAgentInputFromPool(
 export function removeAgentInputFromPool(
   pool: AgentInputItemPool,
   item: AgentInputItem,
-) {
+): boolean {
   const key = getAgentInputItemKey(item);
   const candidates = pool.get(key);
   if (!candidates || candidates.length === 0) {
-    return;
+    return false;
   }
   const index = candidates.findIndex((candidate) => candidate === item);
   if (index === -1) {
-    return;
+    return false;
   }
   candidates.splice(index, 1);
   if (candidates.length === 0) {
     pool.delete(key);
   }
+  return true;
 }
 
 export function agentInputSerializationReplacer(
   _key: string,
   value: unknown,
 ): unknown {
-  if (value instanceof ArrayBuffer) {
-    return {
-      __type: 'ArrayBuffer',
-      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
-    };
-  }
-
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __type: view.constructor.name,
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isSerializedBufferSnapshot(value)) {
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
-    };
+  const serialized = serializeBinary(value);
+  if (serialized) {
+    return serialized;
   }
 
   return value;
@@ -137,8 +104,6 @@ export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
 ): AgentInputItem[] {
-  const rawItems = generatedItems
-    .filter((item) => item.type !== 'tool_approval_item')
-    .map((item) => item.rawItem);
-  return [...toAgentInputList(originalInput), ...rawItems];
+  const outputItems = extractOutputItemsFromRunItems(generatedItems);
+  return [...toAgentInputList(originalInput), ...outputItems];
 }

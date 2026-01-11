@@ -265,7 +265,7 @@ describe('processModelResponse edge cases', () => {
     expect(result.functions[0]?.toolCall).toBe(funcCall);
     expect(result.computerActions[0]?.toolCall).toBe(compCall);
     expect(result.handoffs[0]?.toolCall).toBe(handCall);
-    expect(result.toolsUsed).toEqual(['test', 'computer_use', h.toolName]);
+    expect(result.toolsUsed).toEqual(['test', computer.name, h.toolName]);
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
     expect(result.newItems[3]).toBeInstanceOf(MessageOutputItem);
   });

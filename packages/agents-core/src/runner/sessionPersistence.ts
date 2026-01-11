@@ -10,15 +10,13 @@ import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
+import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
-  isArrayBufferView,
-  isNodeBuffer,
-  isSerializedBufferSnapshot,
-} from '../utils/smartString';
-import {
+  buildAgentInputPool,
   extractOutputItemsFromRunItems,
   toAgentInputList,
   getAgentInputItemKey,
+  removeAgentInputFromPool,
 } from './items';
 import logger from '../logger';
 
@@ -363,19 +361,19 @@ export async function prepareInputItemsWithSession(
 
   const historyCounts = buildItemFrequencyMap(historySnapshot);
   const newInputCounts = buildItemFrequencyMap(newInputSnapshot);
-  const historyRefs = buildItemReferenceMap(historySnapshot);
-  const newInputRefs = buildItemReferenceMap(newInputSnapshot);
+  const historyRefs = buildAgentInputPool(historySnapshot);
+  const newInputRefs = buildAgentInputPool(newInputSnapshot);
 
   const appended: AgentInputItem[] = [];
   for (const item of combined) {
-    const key = sessionItemKey(item);
-    if (consumeReference(newInputRefs, key, item)) {
+    const key = getAgentInputItemKey(item);
+    if (removeAgentInputFromPool(newInputRefs, item)) {
       decrementCount(newInputCounts, key);
       appended.push(item);
       continue;
     }
 
-    if (consumeReference(historyRefs, key, item)) {
+    if (removeAgentInputFromPool(historyRefs, item)) {
       decrementCount(historyCounts, key);
       continue;
     }
@@ -449,7 +447,7 @@ function sanitizeValueForSession(
     return value;
   }
 
-  const binary = toUint8ArrayIfBinary(value);
+  const binary = toUint8ArrayFromBinary(value);
   if (binary) {
     return toDataUrlFromBytes(binary, context.mediaType);
   }
@@ -477,25 +475,6 @@ function sanitizeValueForSession(
   }
 
   return result;
-}
-
-function toUint8ArrayIfBinary(value: unknown): Uint8Array | undefined {
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value);
-  }
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-  }
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-  }
-  if (isSerializedBufferSnapshot(value)) {
-    const snapshot = value as { data: number[] };
-    return Uint8Array.from(snapshot.data);
-  }
-  return undefined;
 }
 
 function toDataUrlFromBytes(bytes: Uint8Array, mediaType?: string): string {
@@ -621,46 +600,10 @@ async function runCompactionOnSession(
 function buildItemFrequencyMap(items: AgentInputItem[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const key = sessionItemKey(item);
+    const key = getAgentInputItemKey(item);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
-}
-
-function buildItemReferenceMap(
-  items: AgentInputItem[],
-): Map<string, AgentInputItem[]> {
-  const refs = new Map<string, AgentInputItem[]>();
-  for (const item of items) {
-    const key = sessionItemKey(item);
-    const list = refs.get(key);
-    if (list) {
-      list.push(item);
-    } else {
-      refs.set(key, [item]);
-    }
-  }
-  return refs;
-}
-
-function consumeReference(
-  refs: Map<string, AgentInputItem[]>,
-  key: string,
-  target: AgentInputItem,
-): boolean {
-  const candidates = refs.get(key);
-  if (!candidates || candidates.length === 0) {
-    return false;
-  }
-  const index = candidates.findIndex((candidate) => candidate === target);
-  if (index === -1) {
-    return false;
-  }
-  candidates.splice(index, 1);
-  if (candidates.length === 0) {
-    refs.delete(key);
-  }
-  return true;
 }
 
 function decrementCount(map: Map<string, number>, key: string) {
@@ -670,46 +613,4 @@ function decrementCount(map: Map<string, number>, key: string) {
   } else {
     map.set(key, remaining);
   }
-}
-
-function sessionItemKey(item: AgentInputItem): string {
-  return JSON.stringify(item, sessionSerializationReplacer);
-}
-
-function sessionSerializationReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof ArrayBuffer) {
-    return {
-      __type: 'ArrayBuffer',
-      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
-    };
-  }
-
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __type: view.constructor.name,
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isSerializedBufferSnapshot(value)) {
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
-    };
-  }
-
-  return value;
 }

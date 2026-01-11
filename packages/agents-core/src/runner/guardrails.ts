@@ -16,6 +16,72 @@ import {
 import { RunState } from '../runState';
 import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
+import type { GuardrailFunctionOutput } from '../guardrail';
+
+type GuardrailResultLike = {
+  guardrail: { name: string };
+  output: GuardrailFunctionOutput;
+};
+
+async function runGuardrailsWithTripwire<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TArgs,
+  TResult extends GuardrailResultLike,
+>(options: {
+  state: RunState<TContext, TAgent>;
+  guardrails: { name: string; run: (args: TArgs) => Promise<TResult> }[];
+  guardrailArgs: TArgs;
+  resultsTarget: TResult[];
+  onTripwire: (result: TResult) => never;
+  isTripwireError: (error: unknown) => boolean;
+  onError: (error: unknown) => never;
+}): Promise<TResult[]> {
+  const {
+    state,
+    guardrails,
+    guardrailArgs,
+    resultsTarget,
+    onTripwire,
+    isTripwireError,
+    onError,
+  } = options;
+
+  try {
+    const results = await Promise.all(
+      guardrails.map(async (guardrail) => {
+        return withGuardrailSpan(
+          async (span) => {
+            const result = await guardrail.run(guardrailArgs);
+            span.spanData.triggered = result.output.tripwireTriggered;
+            return result;
+          },
+          { data: { name: guardrail.name } },
+          state._currentAgentSpan,
+        );
+      }),
+    );
+    resultsTarget.push(...results);
+    for (const result of results) {
+      if (result.output.tripwireTriggered) {
+        if (state._currentAgentSpan) {
+          state._currentAgentSpan.setError({
+            message: 'Guardrail tripwire triggered',
+            data: { guardrail: result.guardrail.name },
+          });
+        }
+        onTripwire(result);
+      }
+    }
+    return results;
+  } catch (error) {
+    if (isTripwireError(error)) {
+      throw error;
+    }
+    onError(error);
+    return [];
+  }
+}
 
 export function buildInputGuardrailDefinitions<
   TContext,
@@ -62,49 +128,30 @@ export async function runInputGuardrails<
     input: state._originalInput,
     context: state._context,
   };
-  try {
-    const results = await Promise.all(
-      guardrails.map(async (guardrail) => {
-        return withGuardrailSpan(
-          async (span) => {
-            const result = await guardrail.run(guardrailArgs);
-            span.spanData.triggered = result.output.tripwireTriggered;
-            return result;
-          },
-          { data: { name: guardrail.name } },
-          state._currentAgentSpan,
-        );
-      }),
-    );
-    state._inputGuardrailResults.push(...results);
-    for (const result of results) {
-      if (result.output.tripwireTriggered) {
-        if (state._currentAgentSpan) {
-          state._currentAgentSpan.setError({
-            message: 'Guardrail tripwire triggered',
-            data: { guardrail: result.guardrail.name },
-          });
-        }
-        throw new InputGuardrailTripwireTriggered(
-          `Input guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-          result,
-          state,
-        );
-      }
-    }
-    return results;
-  } catch (e) {
-    if (e instanceof InputGuardrailTripwireTriggered) {
-      throw e;
-    }
-    // roll back the current turn to enable reruns
-    state._currentTurn--;
-    throw new GuardrailExecutionError(
-      `Input guardrail failed to complete: ${e}`,
-      e as Error,
-      state,
-    );
-  }
+  return await runGuardrailsWithTripwire({
+    state,
+    guardrails,
+    guardrailArgs,
+    resultsTarget: state._inputGuardrailResults,
+    onTripwire: (result) => {
+      throw new InputGuardrailTripwireTriggered(
+        `Input guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
+        result,
+        state,
+      );
+    },
+    isTripwireError: (error) =>
+      error instanceof InputGuardrailTripwireTriggered,
+    onError: (error) => {
+      // roll back the current turn to enable reruns
+      state._currentTurn--;
+      throw new GuardrailExecutionError(
+        `Input guardrail failed to complete: ${error}`,
+        error as Error,
+        state,
+      );
+    },
+  });
 }
 
 export async function runOutputGuardrails<
@@ -136,44 +183,26 @@ export async function runOutputGuardrails<
       output: runOutput,
     },
   };
-  try {
-    const results = await Promise.all(
-      guardrails.map(async (guardrail) => {
-        return withGuardrailSpan(
-          async (span) => {
-            const result = await guardrail.run(guardrailArgs);
-            span.spanData.triggered = result.output.tripwireTriggered;
-            return result;
-          },
-          { data: { name: guardrail.name } },
-          state._currentAgentSpan,
-        );
-      }),
-    );
-    state._outputGuardrailResults.push(...results);
-    for (const result of results) {
-      if (result.output.tripwireTriggered) {
-        if (state._currentAgentSpan) {
-          state._currentAgentSpan.setError({
-            message: 'Guardrail tripwire triggered',
-            data: { guardrail: result.guardrail.name },
-          });
-        }
-        throw new OutputGuardrailTripwireTriggered(
-          `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-          result,
-          state,
-        );
-      }
-    }
-  } catch (e) {
-    if (e instanceof OutputGuardrailTripwireTriggered) {
-      throw e;
-    }
-    throw new GuardrailExecutionError(
-      `Output guardrail failed to complete: ${e}`,
-      e as Error,
-      state,
-    );
-  }
+  await runGuardrailsWithTripwire({
+    state,
+    guardrails,
+    guardrailArgs,
+    resultsTarget: state._outputGuardrailResults,
+    onTripwire: (result) => {
+      throw new OutputGuardrailTripwireTriggered(
+        `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
+        result,
+        state,
+      );
+    },
+    isTripwireError: (error) =>
+      error instanceof OutputGuardrailTripwireTriggered,
+    onError: (error) => {
+      throw new GuardrailExecutionError(
+        `Output guardrail failed to complete: ${error}`,
+        error as Error,
+        state,
+      );
+    },
+  });
 }

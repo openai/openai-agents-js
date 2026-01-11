@@ -447,7 +447,7 @@ describe('resolveInterruptedTurn', () => {
       shellActions: [],
       applyPatchActions: [],
       mcpApprovalRequests: [],
-      toolsUsed: ['computer_use'],
+      toolsUsed: [computer.name],
       hasToolsOrApprovalsToRun() {
         return true;
       },
@@ -530,7 +530,7 @@ describe('resolveInterruptedTurn', () => {
       shellActions: [],
       applyPatchActions: [],
       mcpApprovalRequests: [],
-      toolsUsed: ['computer_use'],
+      toolsUsed: [computer.name],
       hasToolsOrApprovalsToRun() {
         return true;
       },
@@ -587,7 +587,7 @@ describe('resolveInterruptedTurn', () => {
       shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
       applyPatchActions: [],
       mcpApprovalRequests: [],
-      toolsUsed: ['shell'],
+      toolsUsed: [shellToolDef.name],
       hasToolsOrApprovalsToRun() {
         return true;
       },
@@ -650,7 +650,7 @@ describe('resolveInterruptedTurn', () => {
       shellActions: [],
       applyPatchActions: [{ toolCall, applyPatch }],
       mcpApprovalRequests: [],
-      toolsUsed: ['apply_patch'],
+      toolsUsed: [applyPatch.name],
       hasToolsOrApprovalsToRun() {
         return true;
       },

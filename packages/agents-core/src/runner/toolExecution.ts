@@ -54,6 +54,8 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   state: RunState<TContext, Agent<TContext, any>>;
 };
 
+const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+
 /**
  * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
@@ -463,6 +465,52 @@ async function resolveToolApproval(options: {
   return 'pending';
 }
 
+type ApprovalDecisionResult =
+  | { status: 'approved' }
+  | { status: 'pending' | 'rejected'; item: RunItem };
+
+async function handleToolApprovalDecision(options: {
+  runContext: RunContext;
+  toolName: string;
+  callId: string;
+  approvalItem: RunToolApprovalItem;
+  needsApproval: boolean;
+  onApproval?:
+    | ((
+        runContext: RunContext,
+        approvalItem: RunToolApprovalItem,
+      ) => Promise<{ approve?: boolean }>)
+    | undefined;
+  buildRejectionItem: () => RunItem;
+}): Promise<ApprovalDecisionResult> {
+  const {
+    runContext,
+    toolName,
+    callId,
+    approvalItem,
+    needsApproval,
+    onApproval,
+    buildRejectionItem,
+  } = options;
+
+  const approvalState = await resolveToolApproval({
+    runContext,
+    toolName,
+    callId,
+    approvalItem,
+    needsApproval,
+    onApproval,
+  });
+
+  if (approvalState === 'rejected') {
+    return { status: 'rejected', item: buildRejectionItem() };
+  }
+  if (approvalState === 'pending') {
+    return { status: 'pending', item: approvalItem };
+  }
+  return { status: 'approved' };
+}
+
 function emitToolStart(
   runner: Runner,
   runContext: RunContext,
@@ -508,7 +556,7 @@ export async function executeShellActions(
       agent,
       shellTool.name,
     );
-    const approvalState = await resolveToolApproval({
+    const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: shellTool.name,
       callId: toolCall.callId,
@@ -519,17 +567,14 @@ export async function executeShellActions(
         toolCall.callId,
       ),
       onApproval: shellTool.onApproval,
-    });
-
-    if (approvalState === 'rejected') {
-      const response = 'Tool execution was not approved.';
-      const rejectionOutput: protocol.ShellCallOutputContent = {
-        stdout: '',
-        stderr: response,
-        outcome: { type: 'exit', exitCode: null },
-      };
-      results.push(
-        new RunToolCallOutputItem(
+      buildRejectionItem: () => {
+        const response = TOOL_APPROVAL_REJECTION_MESSAGE;
+        const rejectionOutput: protocol.ShellCallOutputContent = {
+          stdout: '',
+          stderr: response,
+          outcome: { type: 'exit', exitCode: null },
+        };
+        return new RunToolCallOutputItem(
           {
             type: 'shell_call_output',
             callId: toolCall.callId,
@@ -537,13 +582,12 @@ export async function executeShellActions(
           },
           agent,
           response,
-        ),
-      );
-      continue;
-    }
+        );
+      },
+    });
 
-    if (approvalState === 'pending') {
-      results.push(approvalItem);
+    if (approvalDecision.status !== 'approved') {
+      results.push(approvalDecision.item);
       continue;
     }
 
@@ -625,7 +669,7 @@ export async function executeApplyPatchOperations(
       agent,
       applyPatchTool.name,
     );
-    const approvalState = await resolveToolApproval({
+    const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: applyPatchTool.name,
       callId: toolCall.callId,
@@ -636,12 +680,9 @@ export async function executeApplyPatchOperations(
         toolCall.callId,
       ),
       onApproval: applyPatchTool.onApproval,
-    });
-
-    if (approvalState === 'rejected') {
-      const response = 'Tool execution was not approved.';
-      results.push(
-        new RunToolCallOutputItem(
+      buildRejectionItem: () => {
+        const response = TOOL_APPROVAL_REJECTION_MESSAGE;
+        return new RunToolCallOutputItem(
           {
             type: 'apply_patch_call_output',
             callId: toolCall.callId,
@@ -650,13 +691,12 @@ export async function executeApplyPatchOperations(
           },
           agent,
           response,
-        ),
-      );
-      continue;
-    }
+        );
+      },
+    });
 
-    if (approvalState === 'pending') {
-      results.push(approvalItem);
+    if (approvalDecision.status !== 'approved') {
+      results.push(approvalDecision.item);
       continue;
     }
 
