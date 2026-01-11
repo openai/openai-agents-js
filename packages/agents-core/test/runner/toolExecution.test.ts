@@ -33,6 +33,7 @@ import {
   executeShellActions,
   getToolCallOutputItem,
 } from '../../src/runner/toolExecution';
+import type { Logger } from '../../src/logger';
 import { Runner } from '../../src/run';
 import { RunContext } from '../../src/runContext';
 import { RunResult, StreamedRunResult } from '../../src/result';
@@ -71,6 +72,15 @@ import {
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { z } from 'zod';
+
+const createMockLogger = (): Logger => ({
+  namespace: 'test',
+  debug: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  dontLogModelData: true,
+  dontLogToolData: true,
+});
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -713,11 +723,13 @@ describe('executeShellActions', () => {
       action: { commands: ['echo hi'] },
     };
 
+    const mockLogger = createMockLogger();
     const results = await executeShellActions(
       agent,
       [{ toolCall, shell: shellToolDef } as any],
       runner,
       runContext,
+      mockLogger,
     );
 
     const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
@@ -727,6 +739,10 @@ describe('executeShellActions', () => {
       stderr: 'boom',
       outcome: { type: 'exit', exitCode: null },
     });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'Failed to execute shell action:',
+      shell.error,
+    );
   });
 
   describe('executeApplyPatchOperations', () => {
@@ -777,16 +793,22 @@ describe('executeShellActions', () => {
         },
       };
 
+      const mockLogger = createMockLogger();
       const results = await executeApplyPatchOperations(
         agent,
         [{ toolCall, applyPatch } as any],
         runner,
         runContext,
+        mockLogger,
       );
 
       const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
       expect(rawItem.status).toBe('failed');
       expect(rawItem.output).toBe('cannot delete');
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Failed to execute apply_patch operation:',
+        editor.errors.delete_file,
+      );
     });
 
     it('returns approval item when not yet approved', async () => {
@@ -1339,12 +1361,14 @@ describe('executeShellActions', () => {
         computer: tool,
       };
 
+      const mockLogger = createMockLogger();
       const [result] = await withTrace('test', () =>
         executeComputerActions(
           new Agent({ name: 'C' }),
           [call],
           new Runner(),
           new RunContext(),
+          mockLogger,
         ),
       );
 
@@ -1353,6 +1377,10 @@ describe('executeShellActions', () => {
         type: 'computer_screenshot',
         data: '',
       });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Failed to execute computer action:',
+        expect.any(Error),
+      );
     });
   });
 

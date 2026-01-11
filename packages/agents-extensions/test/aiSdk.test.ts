@@ -921,6 +921,7 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('handles function call output', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = new AiSdkModel(
       stubModel({
         async doGenerate() {
@@ -968,6 +969,10 @@ describe('AiSdkModel.getResponse', () => {
         },
       },
     ]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Received tool call for unknown tool 'foo'.",
+    );
+    warnSpy.mockRestore();
   });
 
   test('preserves per-tool-call providerMetadata (e.g., Gemini thoughtSignature)', async () => {
@@ -1035,6 +1040,7 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('falls back to result.providerMetadata when toolCall.providerMetadata is undefined', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resultProviderMetadata = { fallback: true };
 
     const model = new AiSdkModel(
@@ -1076,6 +1082,10 @@ describe('AiSdkModel.getResponse', () => {
       responseId: 'id',
       ...resultProviderMetadata,
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Received tool call for unknown tool 'foo'.",
+    );
+    warnSpy.mockRestore();
   });
 
   test('propagates errors', async () => {

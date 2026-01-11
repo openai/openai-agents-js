@@ -31,6 +31,7 @@ import * as protocol from '../src/types/protocol';
 import * as sessionPersistence from '../src/runner/sessionPersistence';
 import type { GuardrailFunctionOutput } from '../src/guardrail';
 import { ServerConversationTracker } from '../src/runner/conversation';
+import logger from '../src/logger';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -431,6 +432,7 @@ describe('Runner.run (streaming)', () => {
     const result = await runner.run(agent, 'do expensive work', {
       stream: true,
     });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     const MAX_TOKENS = 10_000;
     let aborted = false;
@@ -449,6 +451,10 @@ describe('Runner.run (streaming)', () => {
     expect(aborted).toBe(true);
     expect(result.state.usage.totalTokens).toBe(16_000);
     expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+    warnSpy.mockRestore();
   });
 
   it('cancels streaming promptly when the consumer cancels the stream', async () => {

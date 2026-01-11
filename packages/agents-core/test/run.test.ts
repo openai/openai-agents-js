@@ -42,6 +42,7 @@ import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { tool, hostedMcpTool, computerTool } from '../src/tool';
+import logger from '../src/logger';
 import {
   FakeModel,
   fakeModelMessage,
@@ -3094,11 +3095,16 @@ describe('Runner.run', () => {
       };
       const runner = new Runner();
 
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       await runner.run(agent, 'Latest user input', {
         session,
         conversationId: 'conv-history-only',
         sessionInputCallback: (historyItems) => historyItems,
       });
+      expect(warnSpy).toHaveBeenCalledWith(
+        'sessionInputCallback dropped all new inputs in a server-managed conversation; original turn inputs were restored to avoid losing the API delta. Keep at least one new item or omit conversationId if you intended to drop them.',
+      );
+      warnSpy.mockRestore();
 
       const firstInput = model.firstRequest?.input;
       expect(Array.isArray(firstInput)).toBe(true);
