@@ -18,6 +18,81 @@ import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
 
+export type GuardrailTracker = {
+  readonly pending: boolean;
+  readonly failed: boolean;
+  readonly error: unknown;
+  markPending: () => void;
+  setPromise: (promise?: Promise<InputGuardrailResult[]>) => void;
+  setError: (err: unknown) => void;
+  throwIfError: () => void;
+  awaitCompletion: (options?: { suppressErrors?: boolean }) => Promise<void>;
+};
+
+export const createGuardrailTracker = (): GuardrailTracker => {
+  let pending = false;
+  let failed = false;
+  let error: unknown = undefined;
+  let promise: Promise<InputGuardrailResult[]> | undefined;
+
+  const setError = (err: unknown) => {
+    failed = true;
+    error = err;
+    pending = false;
+  };
+
+  const setPromise = (incoming?: Promise<InputGuardrailResult[]>) => {
+    if (!incoming) {
+      return;
+    }
+    pending = true;
+    promise = incoming
+      .then((results) => results)
+      .catch((err) => {
+        setError(err);
+        // Swallow to keep downstream flow consistent; failure is signaled via `failed`.
+        return [];
+      })
+      .finally(() => {
+        pending = false;
+      });
+  };
+
+  const throwIfError = () => {
+    if (error) {
+      throw error;
+    }
+  };
+
+  const awaitCompletion = async (options?: { suppressErrors?: boolean }) => {
+    if (promise) {
+      await promise;
+    }
+    if (error && !options?.suppressErrors) {
+      throw error;
+    }
+  };
+
+  return {
+    get pending() {
+      return pending;
+    },
+    get failed() {
+      return failed;
+    },
+    get error() {
+      return error;
+    },
+    markPending: () => {
+      pending = true;
+    },
+    setPromise,
+    setError,
+    throwIfError,
+    awaitCompletion,
+  };
+};
+
 type GuardrailResultLike = {
   guardrail: { name: string };
   output: GuardrailFunctionOutput;

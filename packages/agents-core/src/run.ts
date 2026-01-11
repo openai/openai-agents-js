@@ -5,11 +5,11 @@ import {
   defineInputGuardrail,
   defineOutputGuardrail,
   InputGuardrail,
-  InputGuardrailResult,
   OutputGuardrail,
 } from './guardrail';
 import type {
   InputGuardrailDefinition,
+  InputGuardrailResult,
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
 } from './guardrail';
@@ -41,7 +41,10 @@ import {
   ServerConversationTracker,
   applyCallModelInputFilter,
 } from './runner/conversation';
-import { runOutputGuardrails } from './runner/guardrails';
+import {
+  createGuardrailTracker,
+  runOutputGuardrails,
+} from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
   getTracing,
@@ -52,6 +55,7 @@ import { processModelResponse } from './runner/modelOutputs';
 import {
   addStepToRunResult,
   streamStepItemsToRunResult,
+  isAbortError,
 } from './runner/streaming';
 import {
   createSessionPersistenceTracker,
@@ -81,99 +85,7 @@ export type {
 export { getTracing, selectModel } from './runner/modelSettings';
 export { getTurnInput } from './runner/items';
 
-type GuardrailTracker = {
-  readonly pending: boolean;
-  readonly failed: boolean;
-  readonly error: unknown;
-  markPending: () => void;
-  setPromise: (promise?: Promise<InputGuardrailResult[]>) => void;
-  setError: (err: unknown) => void;
-  throwIfError: () => void;
-  awaitCompletion: (options?: { suppressErrors?: boolean }) => Promise<void>;
-};
-
-const createGuardrailTracker = (): GuardrailTracker => {
-  let pending = false;
-  let failed = false;
-  let error: unknown = undefined;
-  let promise: Promise<InputGuardrailResult[]> | undefined;
-
-  const setError = (err: unknown) => {
-    failed = true;
-    error = err;
-    pending = false;
-  };
-
-  const setPromise = (incoming?: Promise<InputGuardrailResult[]>) => {
-    if (!incoming) {
-      return;
-    }
-    pending = true;
-    promise = incoming
-      .then((results) => results)
-      .catch((err) => {
-        setError(err);
-        // Swallow to keep downstream flow consistent; failure is signaled via `failed`.
-        return [];
-      })
-      .finally(() => {
-        pending = false;
-      });
-  };
-
-  const throwIfError = () => {
-    if (error) {
-      throw error;
-    }
-  };
-
-  const awaitCompletion = async (options?: { suppressErrors?: boolean }) => {
-    if (promise) {
-      await promise;
-    }
-    if (error && !options?.suppressErrors) {
-      throw error;
-    }
-  };
-
-  return {
-    get pending() {
-      return pending;
-    },
-    get failed() {
-      return failed;
-    },
-    get error() {
-      return error;
-    },
-    markPending: () => {
-      pending = true;
-    },
-    setPromise,
-    setError,
-    throwIfError,
-    awaitCompletion,
-  };
-};
-
-const isAbortError = (error: unknown): boolean => {
-  if (!error) {
-    return false;
-  }
-  if (error instanceof Error && error.name === 'AbortError') {
-    return true;
-  }
-  const DomExceptionCtor =
-    typeof DOMException !== 'undefined' ? DOMException : undefined;
-  if (
-    DomExceptionCtor &&
-    error instanceof DomExceptionCtor &&
-    error.name === 'AbortError'
-  ) {
-    return true;
-  }
-  return false;
-};
+// Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
 // --------------------------------------------------------------
 //  Configuration
