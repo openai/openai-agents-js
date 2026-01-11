@@ -15,13 +15,14 @@ import {
 import { ModelResponse } from '../../src/model';
 import {
   prepareInputItemsWithSession,
+  saveStreamResultToSession,
   saveToSession,
 } from '../../src/runner/sessionPersistence';
 import { ServerConversationTracker } from '../../src/runner/conversation';
 import { getToolCallOutputItem } from '../../src/runner/toolExecution';
 import { Runner } from '../../src/run';
 import { RunContext } from '../../src/runContext';
-import { RunResult } from '../../src/result';
+import { RunResult, StreamedRunResult } from '../../src/result';
 import { RunState } from '../../src/runState';
 import { resolveInterruptedTurn } from '../../src/runner/turnResolution';
 import type { ProcessedResponse } from '../../src/runner/types';
@@ -78,6 +79,131 @@ describe('ServerConversationTracker', () => {
       role: 'user',
       content: originalInput,
     });
+  });
+});
+
+describe('saveStreamResultToSession', () => {
+  class TrackingSession implements Session {
+    items: AgentInputItem[] = [];
+    events: string[] = [];
+
+    async getSessionId(): Promise<string> {
+      return 'session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.items];
+    }
+
+    async addItems(items: AgentInputItem[]): Promise<void> {
+      this.events.push(`addItems:${items.length}`);
+      this.items.push(...items);
+    }
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return undefined;
+    }
+
+    async clearSession(): Promise<void> {
+      this.items = [];
+    }
+
+    async runCompaction(args?: {
+      responseId: string | undefined;
+    }): Promise<OpenAIResponsesCompactionResult | null> {
+      this.events.push(`runCompaction:${args?.responseId}`);
+      return null;
+    }
+  }
+
+  const buildAssistantMessage = (id: string, text: string) =>
+    ({
+      type: 'message',
+      role: 'assistant',
+      id,
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text,
+        },
+      ],
+      providerData: {},
+    }) satisfies protocol.AssistantMessageItem;
+
+  it('persists streamed outputs and advances the persisted counter', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Streamer',
+      outputType: 'text',
+      instructions: 'stream test',
+    });
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', textAgent, 10);
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_stream',
+    });
+    state._generatedItems = [
+      new MessageOutputItem(
+        buildAssistantMessage('msg_stream', 'hi'),
+        textAgent,
+      ),
+    ];
+
+    const streamedResult = new StreamedRunResult({
+      state,
+    });
+
+    await saveStreamResultToSession(session, streamedResult);
+
+    expect(session.events).toEqual(['addItems:1', 'runCompaction:resp_stream']);
+    expect(session.items).toHaveLength(1);
+    expect(state._currentTurnPersistedItemCount).toBe(1);
+  });
+
+  it('skips writes when there is no new streamed output but still runs compaction', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'StreamerNoDelta',
+      outputType: 'text',
+      instructions: 'stream test',
+    });
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', textAgent, 10);
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_stream_empty',
+    });
+    state._generatedItems = [
+      new MessageOutputItem(
+        buildAssistantMessage('msg_persisted', 'persisted'),
+        textAgent,
+      ),
+    ];
+    state._currentTurnPersistedItemCount = state._generatedItems.length;
+
+    const streamedResult = new StreamedRunResult({
+      state,
+    });
+
+    await saveStreamResultToSession(session, streamedResult);
+
+    expect(session.events).toEqual(['runCompaction:resp_stream_empty']);
+    expect(session.items).toHaveLength(0);
+    expect(state._currentTurnPersistedItemCount).toBe(
+      state._generatedItems.length,
+    );
   });
 });
 

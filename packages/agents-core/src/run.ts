@@ -80,6 +80,81 @@ export type {
 export { getTracing, selectModel } from './runner/modelSettings';
 export { getTurnInput } from './runner/items';
 
+type GuardrailTracker = {
+  readonly pending: boolean;
+  readonly failed: boolean;
+  readonly error: unknown;
+  markPending: () => void;
+  setPromise: (promise?: Promise<InputGuardrailResult[]>) => void;
+  setError: (err: unknown) => void;
+  throwIfError: () => void;
+  awaitCompletion: (options?: { suppressErrors?: boolean }) => Promise<void>;
+};
+
+const createGuardrailTracker = (): GuardrailTracker => {
+  let pending = false;
+  let failed = false;
+  let error: unknown = undefined;
+  let promise: Promise<InputGuardrailResult[]> | undefined;
+
+  const setError = (err: unknown) => {
+    failed = true;
+    error = err;
+    pending = false;
+  };
+
+  const setPromise = (incoming?: Promise<InputGuardrailResult[]>) => {
+    if (!incoming) {
+      return;
+    }
+    pending = true;
+    promise = incoming
+      .then((results) => results)
+      .catch((err) => {
+        setError(err);
+        // Swallow to keep downstream flow consistent; failure is signaled via `failed`.
+        return [];
+      })
+      .finally(() => {
+        pending = false;
+      });
+  };
+
+  const throwIfError = () => {
+    if (error) {
+      throw error;
+    }
+  };
+
+  const awaitCompletion = async (options?: { suppressErrors?: boolean }) => {
+    if (promise) {
+      await promise;
+    }
+    if (error && !options?.suppressErrors) {
+      throw error;
+    }
+  };
+
+  return {
+    get pending() {
+      return pending;
+    },
+    get failed() {
+      return failed;
+    },
+    get error() {
+      return error;
+    },
+    markPending: () => {
+      pending = true;
+    },
+    setPromise,
+    setError,
+    throwIfError,
+    awaitCompletion,
+  };
+};
+
 const isAbortError = (error: unknown): boolean => {
   if (!error) {
     return false;
@@ -630,7 +705,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (state._currentStep.type === 'next_step_run_again') {
             const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
-            let guardrailError: unknown;
+            const guardrailTracker = createGuardrailTracker();
             const { artifacts, turnInput, parallelGuardrailPromise } =
               await prepareRunAgainTurn({
                 state,
@@ -641,15 +716,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 serverConversationTracker,
                 inputGuardrailDefs: this.inputGuardrailDefs,
                 guardrailHandlers: {
-                  onParallelError: (err) => {
-                    guardrailError = err;
-                  },
+                  onParallelStart: guardrailTracker.markPending,
+                  onParallelError: guardrailTracker.setError,
                 },
                 emitAgentStart: (context, agent, inputItems) => {
                   this.emit('agent_start', context, agent, inputItems);
                 },
               });
 
+            guardrailTracker.setPromise(parallelGuardrailPromise);
             const preparedCall = await this.#prepareModelCall(
               state,
               options,
@@ -659,9 +734,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               sessionInputUpdate,
             );
 
-            if (guardrailError) {
-              throw guardrailError;
-            }
+            guardrailTracker.throwIfError();
 
             state._lastTurnResponse = await preparedCall.model.getResponse({
               systemInstructions: preparedCall.modelInput.instructions,
@@ -744,12 +817,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             state._currentStep = turnResult.nextStep;
 
-            if (parallelGuardrailPromise) {
-              await parallelGuardrailPromise;
-              if (guardrailError) {
-                throw guardrailError;
-              }
-            }
+            await guardrailTracker.awaitCompletion();
           }
 
           if (
@@ -864,6 +932,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     let handedInputToModel = false;
     let streamInputPersisted = false;
+    let guardrailTracker = createGuardrailTracker();
     const persistStreamInputIfNeeded = async () => {
       if (streamInputPersisted || !ensureStreamInputPersisted) {
         return;
@@ -872,20 +941,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       await ensureStreamInputPersisted();
       streamInputPersisted = true;
     };
-    let guardrailError: unknown;
     let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
-    let guardrailsPending = false;
-    let guardrailFailed = false;
     const awaitGuardrailsAndPersistInput = async () => {
-      if (parallelGuardrailPromise) {
-        await parallelGuardrailPromise;
-        guardrailsPending = false;
+      await guardrailTracker.awaitCompletion();
+      if (guardrailTracker.failed) {
+        throw guardrailTracker.error;
       }
-      if (guardrailError) {
-        guardrailFailed = true;
-        throw guardrailError;
-      }
-      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
+      if (
+        handedInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
         await persistStreamInputIfNeeded();
       }
     };
@@ -966,10 +1032,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          guardrailError = undefined;
-          guardrailFailed = false;
-          guardrailsPending = false;
           parallelGuardrailPromise = undefined;
+          guardrailTracker = createGuardrailTracker();
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
           const preparedTurn = await prepareRunAgainTurn({
@@ -982,12 +1046,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             inputGuardrailDefs: this.inputGuardrailDefs,
             guardrailHandlers: {
               onParallelStart: () => {
-                guardrailsPending = true;
+                guardrailTracker.markPending();
               },
               onParallelError: (err) => {
-                guardrailError = err;
-                guardrailFailed = true;
-                guardrailsPending = false;
+                guardrailTracker.setError(err);
               },
             },
             emitAgentStart: (context, agent, inputItems) => {
@@ -996,7 +1058,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           });
           const { artifacts, turnInput } = preparedTurn;
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
-          const delayStreamInputPersistence = Boolean(parallelGuardrailPromise);
+          guardrailTracker.setPromise(parallelGuardrailPromise);
+          const delayStreamInputPersistence = guardrailTracker.pending;
 
           let finalResponse: ModelResponse | undefined = undefined;
           let inputMarked = false;
@@ -1023,10 +1086,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionInputUpdate,
           );
 
-          if (guardrailError) {
-            guardrailFailed = true;
-            throw guardrailError;
-          }
+          guardrailTracker.throwIfError();
 
           handedInputToModel = true;
           if (!delayStreamInputPersistence) {
@@ -1057,9 +1117,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               signal: options.signal,
             })) {
-              if (guardrailError) {
-                throw guardrailError;
-              }
+              guardrailTracker.throwIfError();
               markInputOnce();
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
@@ -1223,14 +1281,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
     } catch (error) {
       result.state._currentTurnInProgress = false;
-      if (guardrailsPending && parallelGuardrailPromise) {
-        await parallelGuardrailPromise;
-        guardrailsPending = false;
+      if (guardrailTracker.pending) {
+        await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
-      if (guardrailError) {
-        guardrailFailed = true;
-      }
-      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
+      if (
+        handedInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
         await persistStreamInputIfNeeded();
       }
       if (result.state._currentAgentSpan) {
@@ -1241,11 +1299,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       throw error;
     } finally {
-      if (guardrailsPending && parallelGuardrailPromise) {
-        await parallelGuardrailPromise;
-        guardrailsPending = false;
+      if (guardrailTracker.pending) {
+        await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
-      if (handedInputToModel && !streamInputPersisted && !guardrailFailed) {
+      if (
+        handedInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
         await persistStreamInputIfNeeded();
       }
       if (result.state._currentStep?.type !== 'next_step_interruption') {

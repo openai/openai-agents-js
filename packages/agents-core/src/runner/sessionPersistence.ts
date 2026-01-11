@@ -6,6 +6,7 @@ import {
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
 import { RunState } from '../runState';
+import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
@@ -266,31 +267,25 @@ export async function saveToSession(
   sessionInputItems: AgentInputItem[] | undefined,
   result: RunResult<any, any>,
 ): Promise<void> {
-  if (!session) {
-    return;
-  }
-  const inputItems = sessionInputItems ?? [];
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   const newRunItems = result.newItems.slice(alreadyPersisted);
+
   if (process.env.OPENAI_AGENTS__DEBUG_SAVE_SESSION) {
     console.debug(
       'saveToSession:newRunItems',
       newRunItems.map((item) => item.type),
     );
   }
-  const outputItems = extractOutputItemsFromRunItems(newRunItems);
-  const itemsToSave = [...inputItems, ...outputItems];
-  if (itemsToSave.length === 0) {
-    state._currentTurnPersistedItemCount =
-      alreadyPersisted + newRunItems.length;
-    await runCompactionOnSession(session, result.lastResponseId, state);
-    return;
-  }
-  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
-  await session.addItems(sanitizedItems);
-  await runCompactionOnSession(session, result.lastResponseId, state);
-  state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
+
+  await persistRunItemsToSession({
+    session,
+    state,
+    newRunItems,
+    extraInputItems: sessionInputItems,
+    lastResponseId: result.lastResponseId,
+    alreadyPersistedCount: alreadyPersisted,
+  });
 }
 
 export async function saveStreamInputToSession(
@@ -311,23 +306,17 @@ export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,
 ): Promise<void> {
-  if (!session) {
-    return;
-  }
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   const newRunItems = result.newItems.slice(alreadyPersisted);
-  const itemsToSave = extractOutputItemsFromRunItems(newRunItems);
-  if (itemsToSave.length === 0) {
-    state._currentTurnPersistedItemCount =
-      alreadyPersisted + newRunItems.length;
-    await runCompactionOnSession(session, result.lastResponseId, state);
-    return;
-  }
-  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
-  await session.addItems(sanitizedItems);
-  await runCompactionOnSession(session, result.lastResponseId, state);
-  state._currentTurnPersistedItemCount = alreadyPersisted + newRunItems.length;
+
+  await persistRunItemsToSession({
+    session,
+    state,
+    newRunItems,
+    lastResponseId: result.lastResponseId,
+    alreadyPersistedCount: alreadyPersisted,
+  });
 }
 
 export async function prepareInputItemsWithSession(
@@ -559,6 +548,46 @@ function shouldStripIdForType(type: string): boolean {
     default:
       return false;
   }
+}
+
+async function persistRunItemsToSession(options: {
+  session?: Session;
+  state: RunState<any, any>;
+  newRunItems: RunItem[];
+  extraInputItems?: AgentInputItem[] | undefined;
+  lastResponseId?: string;
+  alreadyPersistedCount: number;
+}): Promise<void> {
+  const {
+    session,
+    state,
+    newRunItems,
+    extraInputItems = [],
+    lastResponseId,
+    alreadyPersistedCount,
+  } = options;
+
+  if (!session) {
+    return;
+  }
+
+  const itemsToSave = [
+    ...extraInputItems,
+    ...extractOutputItemsFromRunItems(newRunItems),
+  ];
+
+  if (itemsToSave.length === 0) {
+    state._currentTurnPersistedItemCount =
+      alreadyPersistedCount + newRunItems.length;
+    await runCompactionOnSession(session, lastResponseId, state);
+    return;
+  }
+
+  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  await session.addItems(sanitizedItems);
+  await runCompactionOnSession(session, lastResponseId, state);
+  state._currentTurnPersistedItemCount =
+    alreadyPersistedCount + newRunItems.length;
 }
 
 async function runCompactionOnSession(
