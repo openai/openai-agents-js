@@ -1,13 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
   Agent,
   type AgentInputItem,
+  MemorySession,
   type Model,
   type ModelRequest,
   type ModelResponse,
@@ -18,7 +15,6 @@ import {
   setDefaultModelProvider,
   tool,
 } from '../src';
-import { FileSession } from '../../../examples/memory/sessions/file';
 import { FakeModelProvider } from './stubs';
 
 const TOOL_ECHO = 'approved_echo';
@@ -98,16 +94,14 @@ class ScenarioModel implements Model {
   }
 }
 
-describe('FileSession HITL scenario', () => {
+describe('MemorySession HITL scenario', () => {
   beforeAll(() => {
     setDefaultModelProvider(new FakeModelProvider());
   });
 
   it('persists approvals, rehydration, and rejections across tools', async () => {
-    const tempDir = await mkdtemp(
-      path.join(os.tmpdir(), 'agents-file-session-'),
-    );
-    const session = new FileSession({ dir: tempDir });
+    executeCounts.clear();
+    const session = new MemorySession();
     const sessionId = await session.getSessionId();
     const model = new ScenarioModel();
 
@@ -135,14 +129,14 @@ describe('FileSession HITL scenario', () => {
       },
     ];
 
-    let rehydrated: FileSession | undefined;
+    let rehydrated: MemorySession | undefined;
 
     try {
       const first = await runScenarioStep(session, model, steps[0]);
       expectCounts(first.items, 1);
       expectStepOutput(first.items, first.approvalItem, steps[0]);
 
-      rehydrated = new FileSession({ dir: tempDir, sessionId });
+      rehydrated = new MemorySession({ sessionId, initialItems: first.items });
       const second = await runScenarioStep(rehydrated, model, steps[1]);
       expectCounts(second.items, 2);
       expectStepOutput(second.items, second.approvalItem, steps[1]);
@@ -155,13 +149,12 @@ describe('FileSession HITL scenario', () => {
       expect(executeCounts.get(TOOL_NOTE)).toBe(1);
     } finally {
       await (rehydrated ?? session).clearSession();
-      await rm(tempDir, { recursive: true, force: true });
     }
   });
 });
 
 async function runScenarioStep(
-  session: FileSession,
+  session: MemorySession,
   model: ScenarioModel,
   step: ScenarioStep,
 ): Promise<{
@@ -169,7 +162,7 @@ async function runScenarioStep(
   items: AgentInputItem[];
 }> {
   const agent = new Agent({
-    name: `FileSession ${step.label}`,
+    name: `MemorySession ${step.label}`,
     instructions: `Always call ${step.toolName} before responding.`,
     model,
     tools: [approvalEchoTool, approvalNoteTool],
