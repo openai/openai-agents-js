@@ -23,6 +23,7 @@ import {
 import { toNewSessionConfig } from '../src/clientMessages';
 import { tool } from '@openai/agents-core';
 import { z } from 'zod';
+import logger from '../src/logger';
 
 function createMessage(id: string, text: string): RealtimeItem {
   return {
@@ -56,6 +57,7 @@ describe('RealtimeSession', () => {
   });
 
   it('sets the trace config correctly', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     transport.connectCalls = [];
     session.options.tracingDisabled = true;
     session.options.workflowName = 'test';
@@ -65,6 +67,10 @@ describe('RealtimeSession', () => {
     expect(transport.connectCalls[0]?.initialSessionConfig?.tracing).toEqual(
       null,
     );
+    expect(warnSpy).toHaveBeenCalledWith(
+      'In order to set traceMetadata or a groupId you need to specify a workflowName.',
+    );
+    warnSpy.mockClear();
 
     transport.connectCalls = [];
     session.options.tracingDisabled = undefined;
@@ -75,6 +81,7 @@ describe('RealtimeSession', () => {
     expect(transport.connectCalls[0]?.initialSessionConfig?.tracing).toEqual(
       'auto',
     );
+    expect(warnSpy).not.toHaveBeenCalled();
     transport.connectCalls = [];
     session.options.tracingDisabled = undefined;
     session.options.workflowName = 'test';
@@ -85,6 +92,8 @@ describe('RealtimeSession', () => {
       workflow_name: 'test',
       group_id: 'test',
     });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('updates history and emits history_updated', () => {
@@ -335,6 +344,7 @@ describe('RealtimeSession', () => {
   });
 
   it('propagates errors from handleFunctionCall', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const errors: any[] = [];
     session.on('error', (e) => errors.push(e));
     transport.emit('function_call', {
@@ -346,6 +356,11 @@ describe('RealtimeSession', () => {
     await vi.waitFor(() =>
       expect(errors[0].error).toBeInstanceOf(ModelBehaviorError),
     );
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it('applies input tool guardrail rejectContent and skips tool execution', async () => {
@@ -393,6 +408,7 @@ describe('RealtimeSession', () => {
   });
 
   it('emits error when input tool guardrail throws', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const localTransport = new FakeTransport();
     const guardrail = defineToolInputGuardrail({
       name: 'thrower',
@@ -431,6 +447,11 @@ describe('RealtimeSession', () => {
     expect(errors[0].error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
     expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it('applies output tool guardrail rejectContent and replaces output', async () => {
@@ -475,6 +496,7 @@ describe('RealtimeSession', () => {
   });
 
   it('emits error when output tool guardrail throws', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const localTransport = new FakeTransport();
     const guardrail = defineToolOutputGuardrail({
       name: 'thrower_out',
@@ -515,6 +537,11 @@ describe('RealtimeSession', () => {
     );
     expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it('approve and reject work with tool and error without', async () => {

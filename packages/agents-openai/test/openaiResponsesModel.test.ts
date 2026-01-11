@@ -75,6 +75,36 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('omits previous_response_id when conversation is provided', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-conv', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+        conversationId: 'conv_123',
+        previousResponseId: 'resp_123',
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.conversation).toBe('conv_123');
+      expect(args.previous_response_id).toBeUndefined();
+    });
+  });
+
   it('sends prompt cache retention setting to the Responses API', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-cache', usage: {}, output: [] };

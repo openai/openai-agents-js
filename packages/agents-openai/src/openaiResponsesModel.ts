@@ -1641,8 +1641,10 @@ export class OpenAIResponsesModel implements Model {
       input,
       include,
       ...(shouldSendTools ? { tools } : {}),
-      previous_response_id: request.previousResponseId,
       conversation: request.conversationId,
+      ...(request.conversationId
+        ? {}
+        : { previous_response_id: request.previousResponseId }),
       prompt,
       temperature: request.modelSettings.temperature,
       top_p: request.modelSettings.topP,

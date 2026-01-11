@@ -16,7 +16,7 @@ import {
 } from '@openai/agents-core/_shims';
 import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
-import { getTurnInput } from './run';
+import { getTurnInput } from './runner/items';
 import { RunState } from './runState';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import logger from './logger';

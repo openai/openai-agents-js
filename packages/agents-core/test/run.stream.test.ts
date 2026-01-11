@@ -24,10 +24,14 @@ import {
   Session,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
+  RunState,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
-import * as runImplementation from '../src/runImplementation';
+import * as sessionPersistence from '../src/runner/sessionPersistence';
+import type { GuardrailFunctionOutput } from '../src/guardrail';
+import { ServerConversationTracker } from '../src/runner/conversation';
+import logger from '../src/logger';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -428,6 +432,7 @@ describe('Runner.run (streaming)', () => {
     const result = await runner.run(agent, 'do expensive work', {
       stream: true,
     });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     const MAX_TOKENS = 10_000;
     let aborted = false;
@@ -446,6 +451,10 @@ describe('Runner.run (streaming)', () => {
     expect(aborted).toBe(true);
     expect(result.state.usage.totalTokens).toBe(16_000);
     expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+    warnSpy.mockRestore();
   });
 
   it('cancels streaming promptly when the consumer cancels the stream', async () => {
@@ -527,6 +536,91 @@ describe('Runner.run (streaming)', () => {
     expect(elapsed).toBeLessThan(250);
     expect(result.cancelled).toBe(true);
     expect(result.error).toBe(null);
+  });
+
+  it('marks inputs as sent when aborted before first stream event in server-managed conversations', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    let streamStarted: (() => void) | undefined;
+    const streamStartedPromise = new Promise<void>((resolve) => {
+      streamStarted = resolve;
+    });
+
+    class SlowFirstEventStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('not used');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        streamStarted?.();
+        await waitWithAbort(500, request.signal);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-delayed',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('should not reach')],
+          },
+        } as any;
+      }
+    }
+
+    const markSpy = vi.spyOn(
+      ServerConversationTracker.prototype,
+      'markInputAsSent',
+    );
+
+    const agent = new Agent({
+      name: 'AbortBeforeFirstEvent',
+      model: new SlowFirstEventStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'initial', {
+      stream: true,
+      conversationId: 'conv-abort-before-event',
+    });
+
+    await streamStartedPromise;
+    const reader = (result.toStream() as any).getReader();
+    await reader.cancel('stop');
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(markSpy).toHaveBeenCalledTimes(1);
+    const [sourceItems] = markSpy.mock.calls[0];
+    expect(Array.isArray(sourceItems)).toBe(true);
+
+    markSpy.mockRestore();
   });
 
   it('streams tool_called before the tool finishes executing', async () => {
@@ -1111,7 +1205,7 @@ describe('Runner.run (streaming)', () => {
             item.type === 'message' &&
             getFirstTextContent(item) === 'First input',
         ),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         secondInput.some(
           (item) =>
@@ -1119,6 +1213,68 @@ describe('Runner.run (streaming)', () => {
             (item as protocol.FunctionCallResultItem).callId === 'call-1',
         ),
       ).toBe(true);
+    });
+
+    it('marks streaming inputs as sent only after the response stream begins', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('hello')], 'resp-stream-1'),
+      ]);
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({ name: 'StreamMark', model });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'ping', {
+        stream: true,
+        conversationId: 'conv-stream-mark',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('hello');
+      expect(markSpy).toHaveBeenCalledTimes(1);
+      const [sourceItems, options] = markSpy.mock.calls[0];
+      expect(Array.isArray(sourceItems)).toBe(true);
+      expect(options?.filterApplied).toBe(false);
+
+      markSpy.mockRestore();
+    });
+
+    it('does not mark streaming inputs as sent when the stream fails before any events', async () => {
+      /* eslint-disable require-yield */
+      class ThrowingStreamingModel implements Model {
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('not used');
+        }
+
+        async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+          throw new Error('stream failure');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({
+        name: 'StreamFail',
+        model: new ThrowingStreamingModel(),
+      });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'ping', {
+        stream: true,
+        conversationId: 'conv-stream-fail',
+      });
+
+      await expect(drain(result)).rejects.toThrow('stream failure');
+      expect(markSpy).not.toHaveBeenCalled();
+
+      markSpy.mockRestore();
     });
 
     it('only sends new items and updates previousResponseId across turns', async () => {
@@ -1259,7 +1415,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input only after the run completes successfully', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1296,7 +1452,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists streaming input when the model stream rejects before completion', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1330,7 +1486,7 @@ describe('Runner.run (streaming)', () => {
 
   it('persists filtered streaming input instead of the raw turn payload', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1390,10 +1546,10 @@ describe('Runner.run (streaming)', () => {
 
   it('skips streaming session persistence when the server manages the conversation', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1423,10 +1579,10 @@ describe('Runner.run (streaming)', () => {
 
   it('skips persisting streaming input when an input guardrail triggers', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const guardrail = {
@@ -1464,12 +1620,63 @@ describe('Runner.run (streaming)', () => {
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('persists streaming input but drops the result when an output guardrail trips', async () => {
+  it('skips persisting streaming input when a parallel input guardrail triggers after streaming starts', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    const guardrail = {
+      name: 'parallel-block',
+      execute: vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  tripwireTriggered: true,
+                  outputInfo: { reason: 'blocked' },
+                }),
+              0,
+            ),
+          ),
+      ),
+    };
+
+    const session = createSessionMock();
+
+    const agent = new Agent({
+      name: 'StreamGuardrailParallel',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should not run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'blocked input', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists streaming input but drops the result when an output guardrail trips', async () => {
+    const saveInputSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const guardrail = {
@@ -1503,10 +1710,10 @@ describe('Runner.run (streaming)', () => {
 
   it('does not persist streaming result when the consumer cancels early', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();
@@ -1535,12 +1742,125 @@ describe('Runner.run (streaming)', () => {
     expect(result.cancelled).toBe(true);
   });
 
-  it('persists streaming input/result exactly once on success', async () => {
+  it('persists streaming input after cancellation once parallel guardrails finish', async () => {
     const saveInputSpy = vi
-      .spyOn(runImplementation, 'saveStreamInputToSession')
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
     const saveResultSpy = vi
-      .spyOn(runImplementation, 'saveStreamResultToSession')
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
+      .mockResolvedValue();
+
+    let resolveGuardrail:
+      | ((value: GuardrailFunctionOutput) => void)
+      | undefined;
+    const guardrail = {
+      name: 'parallel-allow',
+      execute: vi.fn(
+        () =>
+          new Promise<GuardrailFunctionOutput>((resolve) => {
+            resolveGuardrail = resolve;
+          }),
+      ),
+    };
+
+    const session = createSessionMock();
+    const agent = new Agent({
+      name: 'StreamCancelAfterGuardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('Chunk1')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+    const result = await runner.run(agent, 'hi', { stream: true, session });
+    const reader = (result.toStream() as any).getReader();
+
+    await reader.read();
+    await reader.cancel('stop');
+
+    if (!resolveGuardrail) {
+      throw new Error('Expected guardrail resolver to be set.');
+    }
+    resolveGuardrail({
+      tripwireTriggered: false,
+      outputInfo: { ok: true },
+    });
+
+    await result._getStreamLoopPromise();
+
+    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes a cancelled in-progress turn without double-counting turns', async () => {
+    class HangingStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('unused');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const abortError = new Error('aborted');
+        (abortError as any).name = 'AbortError';
+        const signal = (request as any).signal as AbortSignal | undefined;
+        await new Promise((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(abortError);
+            return;
+          }
+          const onAbort = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(abortError);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+
+        // Keep the generator shape for the streaming contract while intentionally yielding nothing.
+        yield* [] as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ResumeAfterCancel',
+      model: new HangingStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const streaming = await runner.run(agent, 'hello', { stream: true });
+    const reader = (streaming.toStream() as any).getReader();
+
+    // Allow the streaming loop to enter before cancellation.
+    await new Promise((resolve) => setImmediate(resolve));
+    await reader.cancel('stop');
+    await streaming._getStreamLoopPromise();
+
+    expect(streaming.state._currentTurn).toBe(1);
+    expect(streaming.state._currentTurnInProgress).toBe(true);
+
+    const serialized = streaming.state.toString();
+    const restored = await RunState.fromString(agent, serialized);
+
+    agent.model = new ImmediateStreamingModel({
+      output: [fakeModelMessage('resumed')],
+      usage: new Usage(),
+    });
+
+    const resumed = await runner.run(agent, restored);
+
+    expect(resumed.finalOutput).toBe('resumed');
+    expect(resumed.state._currentTurn).toBe(1);
+    expect(resumed.state._currentTurnInProgress).toBe(false);
+  });
+
+  it('persists streaming input/result exactly once on success', async () => {
+    const saveInputSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamInputToSession')
+      .mockResolvedValue();
+    const saveResultSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
       .mockResolvedValue();
 
     const session = createSessionMock();

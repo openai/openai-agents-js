@@ -12,15 +12,11 @@ import {
 } from './items';
 import type { ModelResponse } from './model';
 import { RunContext } from './runContext';
-import { getTurnInput } from './run';
-import {
-  AgentToolUseTracker,
-  nextStepSchema,
-  NextStep,
-  ProcessedResponse,
-} from './runImplementation';
-import type { AgentSpanData } from './tracing/spans';
-import type { Span } from './tracing/spans';
+import { getTurnInput } from './runner/items';
+import { AgentToolUseTracker } from './runner/toolUseTracker';
+import { nextStepSchema, NextStep } from './runner/steps';
+import type { ProcessedResponse } from './runner/types';
+import type { AgentSpanData, Span } from './tracing/spans';
 import { SystemError, UserError } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
 import { Usage } from './usage';
@@ -115,7 +111,9 @@ const itemSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('tool_call_output_item'),
-    rawItem: protocol.FunctionCallResultItem,
+    rawItem: protocol.FunctionCallResultItem.or(protocol.ComputerCallResultItem)
+      .or(protocol.ShellCallResultItem)
+      .or(protocol.ApplyPatchCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
   }),
@@ -306,11 +304,14 @@ export const SerializedRunState = z.object({
     .array(toolOutputGuardrailResultSchema)
     .optional()
     .default([]),
+  currentTurnInProgress: z.boolean().optional(),
   currentStep: nextStepSchema.optional(),
   lastModelResponse: modelResponseSchema.optional(),
   generatedItems: z.array(itemSchema),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  conversationId: z.string().optional(),
+  previousResponseId: z.string().optional(),
   trace: serializedTraceSchema.nullable(),
 });
 
@@ -328,6 +329,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentTurn = 0;
   /**
+   * Whether the current turn has already been counted (useful when resuming mid-turn).
+   */
+  public _currentTurnInProgress = false;
+  /**
    * The agent currently handling the conversation.
    */
   public _currentAgent: TAgent;
@@ -339,6 +344,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Responses from the model so far.
    */
   public _modelResponses: ModelResponse[];
+  /**
+   * Conversation identifier when the server manages conversation history.
+   */
+  public _conversationId: string | undefined;
+  /**
+   * Latest response identifier returned by the server for server-managed conversations.
+   */
+  public _previousResponseId: string | undefined;
   /**
    * Active tracing span for the current agent if tracing is enabled.
    */
@@ -392,7 +405,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   /**
    * Results from output guardrails applied to the run.
    */
-  public _outputGuardrailResults: OutputGuardrailResult[];
+  public _outputGuardrailResults: OutputGuardrailResult<any, any>[];
   /**
    * Results from tool input guardrails applied during tool execution.
    */
@@ -435,6 +448,51 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._toolInputGuardrailResults = [];
     this._toolOutputGuardrailResults = [];
     this._trace = getCurrentTrace();
+  }
+
+  /**
+   * Updates server-managed conversation identifiers as a single operation.
+   */
+  public setConversationContext(
+    conversationId?: string,
+    previousResponseId?: string,
+  ): void {
+    this._conversationId = conversationId;
+    this._previousResponseId = previousResponseId;
+  }
+
+  /**
+   * Updates the agent span associated with the current run.
+   */
+  public setCurrentAgentSpan(span?: Span<AgentSpanData>): void {
+    this._currentAgentSpan = span;
+  }
+
+  /**
+   * Switches the active agent handling the run.
+   */
+  public setCurrentAgent(agent: TAgent): void {
+    this._currentAgent = agent;
+  }
+
+  /**
+   * Resets the counter that tracks how many items were persisted for the current turn.
+   */
+  public resetTurnPersistence(): void {
+    this._currentTurnPersistedItemCount = 0;
+  }
+
+  /**
+   * Rewinds the persisted item counter when pending approvals require re-writing outputs.
+   */
+  public rewindTurnPersistence(count: number): void {
+    if (count <= 0) {
+      return;
+    }
+    this._currentTurnPersistedItemCount = Math.max(
+      0,
+      this._currentTurnPersistedItemCount - count,
+    );
   }
 
   /**
@@ -554,6 +612,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       maxTurns: this._maxTurns,
       currentAgentSpan: this._currentAgentSpan?.toJSON() as any,
       noActiveAgentRun: this._noActiveAgentRun,
+      currentTurnInProgress: this._currentTurnInProgress,
       inputGuardrailResults: this._inputGuardrailResults,
       outputGuardrailResults: this._outputGuardrailResults.map((r) => ({
         ...r,
@@ -566,6 +625,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       generatedItems: this._generatedItems.map((item) => item.toJSON() as any),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
       lastProcessedResponse: this._lastProcessedResponse as any,
+      conversationId: this._conversationId,
+      previousResponseId: this._previousResponseId,
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
@@ -648,6 +709,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       stateJson.maxTurns,
     );
     state._currentTurn = stateJson.currentTurn;
+    state._currentTurnInProgress = stateJson.currentTurnInProgress ?? false;
+    state._conversationId = stateJson.conversationId ?? undefined;
+    state._previousResponseId = stateJson.previousResponseId ?? undefined;
 
     // rebuild tool use tracker
     state._toolUseTracker = new AgentToolUseTracker();
@@ -657,6 +721,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       state._toolUseTracker.addToolUse(
         agentMap.get(agentName) as TAgent,
         toolNames,
+        { allowEmpty: true },
       );
     }
 
@@ -689,7 +754,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         ...r,
         agent: agentMap.get(r.agent.name) as Agent<any, any>,
       }),
-    ) as OutputGuardrailResult[];
+    ) as OutputGuardrailResult<any, any>[];
     state._toolInputGuardrailResults =
       stateJson.toolInputGuardrailResults as ToolInputGuardrailResult[];
     state._toolOutputGuardrailResults =

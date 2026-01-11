@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  afterAll,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -33,6 +41,7 @@ import {
 import { getDefaultModelProvider } from '../src/providers';
 import { user } from '../src/helpers/message';
 import * as protocol from '../src/types/protocol';
+import logger from '../src/logger';
 
 /**
  * Fake model for scenario-style tests. It queues per-turn outputs (or errors),
@@ -456,12 +465,19 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       modelSettings: { toolChoice: 'required' },
     });
 
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
     const result = await run(agent, 'run the secure tool');
 
     expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
     expect(result.interruptions?.length).toBe(1);
     expect(result.interruptions?.[0].name).toBe('secure_tool');
     expect(executed).toBe(0);
+
+    warnSpy.mockRestore();
   });
 
   it('applies callModelInputFilter edits before calling the model', async () => {
@@ -977,10 +993,16 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       modelSettings: { toolChoice: 'required' },
     });
 
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
     const first = await run(agent, 'hello');
     expect(first.interruptions?.length).toBe(1);
     expect(first.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
     expect(model.calls.length).toBe(1);
+    warnSpy.mockRestore();
 
     first.state._context.approveTool(first.interruptions![0], {
       alwaysApprove: true,
@@ -2042,6 +2064,8 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       tools: [mcpTool],
     });
 
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
     const result = await run(agent, 'Check the repo language', {
       conversationId: 'conv-mcp',
     });
@@ -2049,11 +2073,16 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(result.interruptions?.length).toBe(1);
     expect(result.interruptions?.[0].name).toBe('search_codex_code');
     expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
     expect(model.lastTurnArgs?.conversationId).toBe('conv-mcp');
     expect(model.lastTurnArgs?.tools?.[0]).toMatchObject({
       name: 'hosted_mcp',
       providerData: { server_label: 'gitmcp' },
     });
+
+    warnSpy.mockRestore();
   });
 
   it('orchestrator calls multiple translation tools then summarizes', async () => {
