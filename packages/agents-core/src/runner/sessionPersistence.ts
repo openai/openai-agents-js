@@ -19,6 +19,7 @@ import {
   toAgentInputList,
   getAgentInputItemKey,
 } from './items';
+import logger from '../logger';
 
 export type PreparedInputWithSessionResult = {
   preparedInput: string | AgentInputItem[];
@@ -404,6 +405,17 @@ export async function prepareInputItemsWithSession(
       : preserveDroppedNewItems
         ? newInputSnapshot
         : [];
+
+  if (
+    preserveDroppedNewItems &&
+    appended.length === 0 &&
+    newInputSnapshot.length > 0
+  ) {
+    // In server-managed conversations we cannot drop the turn delta; restore it and warn callers.
+    logger.warn(
+      'sessionInputCallback dropped all new inputs in a server-managed conversation; original turn inputs were restored to avoid losing the API delta. Keep at least one new item or omit conversationId if you intended to drop them.',
+    );
+  }
 
   return {
     preparedInput: preparedItems,

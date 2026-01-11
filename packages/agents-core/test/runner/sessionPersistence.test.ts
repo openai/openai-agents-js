@@ -37,6 +37,7 @@ import { z } from 'zod';
 import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 import { FakeModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
+import logger from '../../src/logger';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -437,6 +438,31 @@ describe('prepareInputItemsWithSession', () => {
 
     expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
     expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('warns and restores new inputs when callback drops them under server-managed conversations', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const session = new StubSession([]);
+    const newItems: AgentInputItem[] = [
+      { type: 'message', role: 'user', content: 'keep-me' },
+    ];
+
+    const result = await prepareInputItemsWithSession(
+      newItems,
+      session,
+      () => [],
+      {
+        includeHistoryInPreparedInput: false,
+        preserveDroppedNewItems: true,
+      },
+    );
+
+    expect(result.preparedInput).toEqual(newItems);
+    expect(result.sessionItems).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstCallArgs = warnSpy.mock.calls[0];
+    expect(firstCallArgs[0]).toContain('server-managed conversation');
+    warnSpy.mockRestore();
   });
 });
 
