@@ -417,15 +417,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       } else {
         preparedInput = prepared.preparedInput;
       }
-      sessionPersistence?.notePreparedSessionItems(prepared.sessionItems);
+      sessionPersistence?.setPreparedItems(prepared.sessionItems);
     }
 
     // Streaming runs persist the input asynchronously, so track a one-shot helper
     // that can be awaited from multiple branches without double-writing.
     const ensureStreamInputPersisted =
-      sessionPersistence?.buildEnsureStreamInputPersisted(
-        serverManagesConversation,
-      );
+      sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
     const executeRun = async () => {
       if (effectiveOptions.stream) {
@@ -434,7 +432,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preparedInput,
           effectiveOptions,
           ensureStreamInputPersisted,
-          sessionPersistence?.recordSessionItems,
+          sessionPersistence?.recordTurnItems,
         );
         return streamResult;
       }
@@ -442,14 +440,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
-        sessionPersistence?.recordSessionItems,
+        sessionPersistence?.recordTurnItems,
       );
       // See note above: allow sessions to run for callbacks/state but skip writes when the server
       // is the source of truth for transcript history.
       if (sessionPersistence && !serverManagesConversation) {
         await saveToSession(
           session,
-          sessionPersistence.resolveSessionItems(),
+          sessionPersistence.getItemsForPersistence(),
           runResult,
         );
       }
@@ -1107,6 +1105,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           let finalResponse: ModelResponse | undefined = undefined;
           let inputMarked = false;
+          const markInputOnce = () => {
+            if (inputMarked || !serverConversationTracker) {
+              return;
+            }
+            serverConversationTracker.markInputAsSent(
+              preparedCall.sourceItems,
+              {
+                filterApplied: preparedCall.filterApplied,
+                allTurnItems: preparedCall.turnInput,
+              },
+            );
+            inputMarked = true;
+          };
 
           const preparedCall = await this.#prepareModelCall(
             result.state,
@@ -1154,16 +1165,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (guardrailError) {
                 throw guardrailError;
               }
-              if (!inputMarked && serverConversationTracker) {
-                serverConversationTracker.markInputAsSent(
-                  preparedCall.sourceItems,
-                  {
-                    filterApplied: preparedCall.filterApplied,
-                    allTurnItems: preparedCall.turnInput,
-                  },
-                );
-                inputMarked = true;
-              }
+              markInputOnce();
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1183,19 +1185,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           } catch (error) {
             if (isAbortError(error)) {
-              if (
-                !inputMarked &&
-                serverConversationTracker &&
-                handedInputToModel
-              ) {
-                serverConversationTracker.markInputAsSent(
-                  preparedCall.sourceItems,
-                  {
-                    filterApplied: preparedCall.filterApplied,
-                    allTurnItems: preparedCall.turnInput,
-                  },
-                );
-                inputMarked = true;
+              if (handedInputToModel) {
+                markInputOnce();
               }
               await awaitGuardrailsAndPersistInput();
               return;
@@ -1203,15 +1194,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             throw error;
           }
 
-          if (!inputMarked && serverConversationTracker && finalResponse) {
-            serverConversationTracker.markInputAsSent(
-              preparedCall.sourceItems,
-              {
-                filterApplied: preparedCall.filterApplied,
-                allTurnItems: preparedCall.turnInput,
-              },
-            );
-            inputMarked = true;
+          if (finalResponse) {
+            markInputOnce();
           }
 
           await awaitGuardrailsAndPersistInput();

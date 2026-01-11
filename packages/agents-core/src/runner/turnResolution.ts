@@ -15,11 +15,7 @@ import { getSchemaAndParserFromInputType } from '../utils/tools';
 import { safeExecute } from '../utils/safeExecute';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import { NextStep, SingleStepResult, nextStepSchema } from './steps';
-import type {
-  ProcessedResponse,
-  ToolRunFunction,
-  ToolRunHandoff,
-} from './types';
+import type { ProcessedResponse, ToolRunHandoff } from './types';
 import {
   checkForFinalOutputFromTools,
   executeApplyPatchOperations,
@@ -31,7 +27,7 @@ import {
 } from './toolExecution';
 import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
-import { AgentInputItem, UnknownContext } from '../types';
+import { AgentInputItem } from '../types';
 import type { FunctionToolResult } from '../tool';
 
 type ApprovalItemLike =
@@ -584,7 +580,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
     await Promise.all([
       executeFunctionToolCalls(
         agent,
-        processedResponse.functions as ToolRunFunction<UnknownContext>[],
+        processedResponse.functions,
         runner,
         state,
       ),
@@ -802,7 +798,7 @@ type TurnFinalizationParams<TContext> = {
   agent: Agent<TContext, any>;
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
-  functionResults: FunctionToolResult[];
+  functionResults: FunctionToolResult<TContext>[];
   originalInput: string | AgentInputItem[];
   newResponse: ModelResponse;
   preStepItems: RunItem[];

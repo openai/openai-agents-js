@@ -27,13 +27,13 @@ export type PreparedInputWithSessionResult = {
 };
 
 export type SessionPersistenceTracker = {
-  notePreparedSessionItems: (items?: AgentInputItem[]) => void;
-  recordSessionItems: (
+  setPreparedItems: (items?: AgentInputItem[]) => void;
+  recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
     filteredItems?: AgentInputItem[],
   ) => void;
-  resolveSessionItems: () => AgentInputItem[] | undefined;
-  buildEnsureStreamInputPersisted: (
+  getItemsForPersistence: () => AgentInputItem[] | undefined;
+  buildPersistInputOnce: (
     serverManagesConversation: boolean,
   ) => (() => Promise<void>) | undefined;
 };
@@ -44,94 +44,103 @@ export function createSessionPersistenceTracker(options: {
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
 }): SessionPersistenceTracker | undefined {
-  const { session, hasCallModelInputFilter } = options;
+  const { session } = options;
   if (!session) {
     return undefined;
   }
 
-  let originalSnapshot: AgentInputItem[] | undefined = options.resumingFromState
-    ? []
-    : undefined;
-  let filteredSnapshot: AgentInputItem[] | undefined = undefined;
-  let pendingWriteCounts: Map<string, number> | undefined =
-    options.resumingFromState ? new Map() : undefined;
+  class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
+    private readonly session?: Session;
+    private readonly hasCallModelInputFilter: boolean;
+    private readonly persistInput?: typeof saveStreamInputToSession;
+    private originalSnapshot: AgentInputItem[] | undefined;
+    private filteredSnapshot: AgentInputItem[] | undefined;
+    private pendingWriteCounts: Map<string, number> | undefined;
+    private persistedInput = false;
 
-  const notePreparedSessionItems = (items?: AgentInputItem[]) => {
-    const sessionItems = items ?? [];
-    originalSnapshot = sessionItems.map((item) => structuredClone(item));
-    pendingWriteCounts = new Map();
-    for (const item of sessionItems) {
-      const key = getAgentInputItemKey(item);
-      pendingWriteCounts.set(key, (pendingWriteCounts.get(key) ?? 0) + 1);
+    constructor() {
+      this.session = options.session;
+      this.hasCallModelInputFilter = options.hasCallModelInputFilter;
+      this.persistInput = options.persistInput;
+      this.originalSnapshot = options.resumingFromState ? [] : undefined;
+      this.filteredSnapshot = undefined;
+      this.pendingWriteCounts = options.resumingFromState
+        ? new Map()
+        : undefined;
     }
-  };
 
-  const recordSessionItems = (
-    sourceItems: (AgentInputItem | undefined)[],
-    filteredItems?: AgentInputItem[],
-  ) => {
-    const pendingCounts = pendingWriteCounts;
-    if (filteredItems !== undefined) {
-      if (!pendingCounts) {
-        filteredSnapshot = cloneItems(filteredItems);
+    setPreparedItems = (items?: AgentInputItem[]) => {
+      const sessionItems = items ?? [];
+      this.originalSnapshot = sessionItems.map((item) => structuredClone(item));
+      this.pendingWriteCounts = new Map();
+      for (const item of sessionItems) {
+        const key = getAgentInputItemKey(item);
+        this.pendingWriteCounts.set(
+          key,
+          (this.pendingWriteCounts.get(key) ?? 0) + 1,
+        );
+      }
+    };
+
+    recordTurnItems = (
+      sourceItems: (AgentInputItem | undefined)[],
+      filteredItems?: AgentInputItem[],
+    ) => {
+      const pendingCounts = this.pendingWriteCounts;
+      if (filteredItems !== undefined) {
+        if (!pendingCounts) {
+          this.filteredSnapshot = cloneItems(filteredItems);
+          return;
+        }
+        const nextSnapshot = collectPersistableFilteredItems({
+          pendingCounts,
+          sourceItems,
+          filteredItems,
+          existingSnapshot: this.filteredSnapshot,
+        });
+        if (nextSnapshot !== undefined) {
+          this.filteredSnapshot = nextSnapshot;
+        }
         return;
       }
-      const nextSnapshot = collectPersistableFilteredItems({
+
+      this.filteredSnapshot = buildSnapshotForUnfilteredItems({
         pendingCounts,
         sourceItems,
-        filteredItems,
-        existingSnapshot: filteredSnapshot,
+        existingSnapshot: this.filteredSnapshot,
       });
-      if (nextSnapshot !== undefined) {
-        filteredSnapshot = nextSnapshot;
-      }
-      return;
-    }
-
-    filteredSnapshot = buildSnapshotForUnfilteredItems({
-      pendingCounts,
-      sourceItems,
-      existingSnapshot: filteredSnapshot,
-    });
-  };
-
-  const resolveSessionItems = () => {
-    if (filteredSnapshot !== undefined) {
-      return filteredSnapshot;
-    }
-    if (hasCallModelInputFilter) {
-      return undefined;
-    }
-    return originalSnapshot;
-  };
-
-  const buildEnsureStreamInputPersisted = (
-    serverManagesConversation: boolean,
-  ) => {
-    if (!session || serverManagesConversation) {
-      return undefined;
-    }
-    const persistInput = options.persistInput ?? saveStreamInputToSession;
-    let persisted = false;
-    return async () => {
-      if (persisted) {
-        return;
-      }
-      const itemsToPersist = resolveSessionItems();
-      if (!itemsToPersist || itemsToPersist.length === 0) {
-        return;
-      }
-      persisted = true;
-      await persistInput(session, itemsToPersist);
     };
-  };
 
-  return {
-    notePreparedSessionItems,
-    recordSessionItems,
-    resolveSessionItems,
-    buildEnsureStreamInputPersisted,
-  };
+    getItemsForPersistence = () => {
+      if (this.filteredSnapshot !== undefined) {
+        return this.filteredSnapshot;
+      }
+      if (this.hasCallModelInputFilter) {
+        return undefined;
+      }
+      return this.originalSnapshot;
+    };
+
+    buildPersistInputOnce = (serverManagesConversation: boolean) => {
+      if (!this.session || serverManagesConversation) {
+        return undefined;
+      }
+      const persistInput = this.persistInput ?? saveStreamInputToSession;
+      return async () => {
+        if (this.persistedInput) {
+          return;
+        }
+        const itemsToPersist = this.getItemsForPersistence();
+        if (!itemsToPersist || itemsToPersist.length === 0) {
+          return;
+        }
+        this.persistedInput = true;
+        await persistInput(this.session, itemsToPersist);
+      };
+    };
+  }
+
+  return new SessionPersistenceTrackerImpl();
 }
 
 function cloneItems(items: AgentInputItem[]): AgentInputItem[] {

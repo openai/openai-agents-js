@@ -25,10 +25,12 @@ describe('sessionPersistence tracker (extended)', () => {
       hasCallModelInputFilter: true,
     })!;
 
-    tracker.notePreparedSessionItems(toAgentInputList('hi'));
-    tracker.recordSessionItems([], toAgentInputList('filtered'));
+    tracker.setPreparedItems(toAgentInputList('hi'));
+    tracker.recordTurnItems([], toAgentInputList('filtered'));
 
-    expect(tracker.resolveSessionItems()).toEqual(toAgentInputList('filtered'));
+    expect(tracker.getItemsForPersistence()).toEqual(
+      toAgentInputList('filtered'),
+    );
   });
 
   it('persists filtered items when pending counts are satisfied', () => {
@@ -43,12 +45,12 @@ describe('sessionPersistence tracker (extended)', () => {
       sessionItems: toAgentInputList('keep'),
     };
 
-    tracker.notePreparedSessionItems(prepared.sessionItems);
+    tracker.setPreparedItems(prepared.sessionItems);
 
     const filtered = toAgentInputList('keep');
-    tracker.recordSessionItems(prepared.sessionItems ?? [], filtered);
+    tracker.recordTurnItems(prepared.sessionItems ?? [], filtered);
 
-    expect(tracker.resolveSessionItems()).toEqual(filtered);
+    expect(tracker.getItemsForPersistence()).toEqual(filtered);
   });
 
   it('deduplicates multiple references to the same source item when filtering', () => {
@@ -63,16 +65,16 @@ describe('sessionPersistence tracker (extended)', () => {
       role: 'user',
       content: 'shared',
     } as const;
-    tracker.notePreparedSessionItems([shared, shared]);
+    tracker.setPreparedItems([shared, shared]);
 
     const filtered = toAgentInputList('shared');
-    tracker.recordSessionItems([shared, shared], filtered);
+    tracker.recordTurnItems([shared, shared], filtered);
 
-    const resolved = tracker.resolveSessionItems();
+    const resolved = tracker.getItemsForPersistence();
     expect(resolved).toEqual([]);
   });
 
-  it('buildEnsureStreamInputPersisted writes once and skips empty payloads', async () => {
+  it('buildPersistInputOnce writes once and skips empty payloads', async () => {
     const persist = vi.fn();
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
@@ -82,13 +84,13 @@ describe('sessionPersistence tracker (extended)', () => {
     })!;
 
     // No prepared items → resolves undefined
-    const ensure = tracker.buildEnsureStreamInputPersisted(false);
+    const ensure = tracker.buildPersistInputOnce(false);
     expect(ensure).toBeDefined();
     await ensure?.();
     expect(persist).not.toHaveBeenCalled();
 
-    tracker.notePreparedSessionItems(toAgentInputList('stream me'));
-    tracker.recordSessionItems(toAgentInputList('stream me'));
+    tracker.setPreparedItems(toAgentInputList('stream me'));
+    tracker.recordTurnItems(toAgentInputList('stream me'));
 
     await ensure?.();
     expect(persist).toHaveBeenCalledTimes(1);
