@@ -1,11 +1,10 @@
 import { Agent, AgentOutputType } from '../agent';
-import { createAgentSpan } from '../tracing';
-import { setCurrentSpan } from '../tracing/context';
 import { serializeHandoff, serializeTool } from '../utils/serialize';
 import { RunState } from '../runState';
 import { ComputerTool, Tool, resolveComputer } from '../tool';
 import { AgentArtifacts } from './types';
 import { Handoff } from '../handoff';
+import { ensureAgentSpan } from './tracing';
 
 /**
  * Collects tools and handoffs for the current agent so model calls and tracing share the same
@@ -17,7 +16,14 @@ export async function prepareAgentArtifacts<
 >(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
   const capabilities = await collectAgentCapabilities(state);
   await warmUpComputerTools(capabilities.tools, state._context);
-  ensureAgentSpan(state, capabilities.handoffs, capabilities.tools);
+  state.setCurrentAgentSpan(
+    ensureAgentSpan({
+      agent: state._currentAgent,
+      handoffs: capabilities.handoffs,
+      tools: capabilities.tools,
+      currentSpan: state._currentAgentSpan,
+    }),
+  );
 
   return {
     ...capabilities,
@@ -59,27 +65,4 @@ async function warmUpComputerTools<TContext>(
       await resolveComputer({ tool, runContext });
     }),
   );
-}
-
-function ensureAgentSpan<TContext>(
-  state: RunState<TContext, Agent<TContext, AgentOutputType>>,
-  handoffs: Handoff<any, any>[],
-  tools: Tool<TContext>[],
-): void {
-  if (!state._currentAgentSpan) {
-    const handoffNames = handoffs.map((h) => h.agentName);
-    state._currentAgentSpan = createAgentSpan({
-      data: {
-        name: state._currentAgent.name,
-        handoffs: handoffNames,
-        tools: tools.map((t) => t.name),
-        output_type: state._currentAgent.outputSchemaName,
-      },
-    });
-    state._currentAgentSpan.start();
-    setCurrentSpan(state._currentAgentSpan);
-    return;
-  }
-
-  state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
 }

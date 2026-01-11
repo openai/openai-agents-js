@@ -451,6 +451,51 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   /**
+   * Updates server-managed conversation identifiers as a single operation.
+   */
+  public setConversationContext(
+    conversationId?: string,
+    previousResponseId?: string,
+  ): void {
+    this._conversationId = conversationId;
+    this._previousResponseId = previousResponseId;
+  }
+
+  /**
+   * Updates the agent span associated with the current run.
+   */
+  public setCurrentAgentSpan(span?: Span<AgentSpanData>): void {
+    this._currentAgentSpan = span;
+  }
+
+  /**
+   * Switches the active agent handling the run.
+   */
+  public setCurrentAgent(agent: TAgent): void {
+    this._currentAgent = agent;
+  }
+
+  /**
+   * Resets the counter that tracks how many items were persisted for the current turn.
+   */
+  public resetTurnPersistence(): void {
+    this._currentTurnPersistedItemCount = 0;
+  }
+
+  /**
+   * Rewinds the persisted item counter when pending approvals require re-writing outputs.
+   */
+  public rewindTurnPersistence(count: number): void {
+    if (count <= 0) {
+      return;
+    }
+    this._currentTurnPersistedItemCount = Math.max(
+      0,
+      this._currentTurnPersistedItemCount - count,
+    );
+  }
+
+  /**
    * The history of the agent run. This includes the input items and the new items generated during the run.
    *
    * This can be used as inputs for the next agent run.

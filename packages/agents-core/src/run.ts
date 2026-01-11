@@ -33,6 +33,7 @@ import {
 import type { TracingConfig } from './tracing';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
+import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
 import type { AgentInputItem } from './types';
@@ -543,8 +544,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         (isResumedState ? state._previousResponseId : undefined);
 
       if (!isResumedState) {
-        state._conversationId = resolvedConversationId;
-        state._previousResponseId = resolvedPreviousResponseId;
+        state.setConversationContext(
+          resolvedConversationId,
+          resolvedPreviousResponseId,
+        );
       }
 
       const serverConversationTracker =
@@ -561,9 +564,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           generatedItems: state._generatedItems,
           modelResponses: state._modelResponses,
         });
-        state._conversationId = serverConversationTracker.conversationId;
-        state._previousResponseId =
-          serverConversationTracker.previousResponseId;
+        state.setConversationContext(
+          serverConversationTracker.conversationId,
+          serverConversationTracker.previousResponseId,
+        );
       }
 
       let continuingInterruptedTurn = false;
@@ -701,9 +705,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._lastTurnResponse,
             );
             if (serverConversationTracker) {
-              state._conversationId = serverConversationTracker.conversationId;
-              state._previousResponseId =
-                serverConversationTracker.previousResponseId;
+              state.setConversationContext(
+                serverConversationTracker.conversationId,
+                serverConversationTracker.previousResponseId,
+              );
             }
 
             const processedResponse = processModelResponse(
@@ -735,7 +740,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               turnResult.nextStep.type === 'next_step_run_again' &&
               !isResumedState
             ) {
-              state._currentTurnPersistedItemCount = 0;
+              state.resetTurnPersistence();
             }
             state._currentStep = turnResult.nextStep;
 
@@ -773,11 +778,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             state._currentStep &&
             state._currentStep.type === 'next_step_handoff'
           ) {
-            state._currentAgent = state._currentStep.newAgent as TAgent;
+            state.setCurrentAgent(state._currentStep.newAgent as TAgent);
             if (state._currentAgentSpan) {
               state._currentAgentSpan.end();
               resetCurrentSpan();
-              state._currentAgentSpan = undefined;
+              state.setCurrentAgentSpan(undefined);
             }
             state._noActiveAgentRun = true;
             state._currentTurnInProgress = false;
@@ -851,9 +856,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         })
       : undefined;
     if (serverConversationTracker) {
-      result.state._conversationId = serverConversationTracker.conversationId;
-      result.state._previousResponseId =
-        serverConversationTracker.previousResponseId;
+      result.state.setConversationContext(
+        serverConversationTracker.conversationId,
+        serverConversationTracker.previousResponseId,
+      );
     }
 
     let handedInputToModel = false;
@@ -890,9 +896,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         generatedItems: result.state._generatedItems,
         modelResponses: result.state._modelResponses,
       });
-      result.state._conversationId = serverConversationTracker.conversationId;
-      result.state._previousResponseId =
-        serverConversationTracker.previousResponseId;
+      result.state.setConversationContext(
+        serverConversationTracker.conversationId,
+        serverConversationTracker.previousResponseId,
+      );
     }
 
     let continuingInterruptedTurn = false;
@@ -1105,10 +1112,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
           if (serverConversationTracker) {
-            result.state._conversationId =
-              serverConversationTracker.conversationId;
-            result.state._previousResponseId =
-              serverConversationTracker.previousResponseId;
+            result.state.setConversationContext(
+              serverConversationTracker.conversationId,
+              serverConversationTracker.previousResponseId,
+            );
           }
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
@@ -1153,7 +1160,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             turnResult.nextStep.type === 'next_step_run_again' &&
             !isResumedState
           ) {
-            result.state._currentTurnPersistedItemCount = 0;
+            result.state.resetTurnPersistence();
           }
           result.state._currentStep = turnResult.nextStep;
         }
@@ -1192,13 +1199,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
           return;
         } else if (result.state._currentStep.type === 'next_step_handoff') {
-          result.state._currentAgent = result.state._currentStep
-            ?.newAgent as TAgent;
+          result.state.setCurrentAgent(
+            result.state._currentStep?.newAgent as TAgent,
+          );
           if (result.state._currentAgentSpan) {
             result.state._currentAgentSpan.end();
             resetCurrentSpan();
           }
-          result.state._currentAgentSpan = undefined;
+          result.state.setCurrentAgentSpan(undefined);
           result._addItem(
             new RunAgentUpdatedStreamEvent(result.state._currentAgent),
           );
@@ -1293,8 +1301,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         options.previousResponseId ??
         (isResumedState ? state._previousResponseId : undefined);
       if (!isResumedState) {
-        state._conversationId = resolvedConversationId;
-        state._previousResponseId = resolvedPreviousResponseId;
+        state.setConversationContext(
+          resolvedConversationId,
+          resolvedPreviousResponseId,
+        );
       }
 
       // Initialize the streamed result with existing state
@@ -1417,8 +1427,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 }
 
 // internal helpers and constants
-
-const DEFAULT_MAX_TURNS = 10;
 
 let defaultRunner: Runner | undefined;
 

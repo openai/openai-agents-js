@@ -166,7 +166,7 @@ function beginRunAgainTurn<
   // still part of the same logical turn.
   if (!isResumingFromInterruption && !resumingTurnInProgress) {
     state._currentTurn++;
-    state._currentTurnPersistedItemCount = 0;
+    state.resetTurnPersistence();
   }
   state._currentTurnInProgress = true;
 

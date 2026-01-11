@@ -1,12 +1,7 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
 import { ModelBehaviorError } from '../errors';
-import {
-  RunItem,
-  RunMessageOutputItem,
-  RunToolApprovalItem,
-  RunToolCallItem,
-} from '../items';
+import { RunItem, RunMessageOutputItem, RunToolApprovalItem } from '../items';
 import { ModelResponse } from '../model';
 import type { Runner } from '../run';
 import { RunState } from '../runState';
@@ -25,6 +20,7 @@ import {
   executeShellActions,
   collectInterruptions,
 } from './toolExecution';
+import { handleHostedMcpApprovals } from './mcpApprovals';
 import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
@@ -197,6 +193,32 @@ function filterActionsByApproval<T extends { toolCall: { callId?: string } }>(
   );
 }
 
+type ToolActionWithCallId = { toolCall: { callId?: string } };
+
+function filterPendingActions<T extends ToolActionWithCallId>(
+  actions: T[],
+  options: {
+    completedCallIds: Set<string>;
+    allowedCallIds?: Set<string>;
+  },
+): T[] {
+  return actions.filter((action) => {
+    const callId = action.toolCall.callId;
+    const hasCallId = typeof callId === 'string';
+    if (options.allowedCallIds && options.allowedCallIds.size > 0) {
+      if (!hasCallId || !options.allowedCallIds.has(callId)) {
+        return false;
+      }
+    }
+
+    if (hasCallId && options.completedCallIds.has(callId)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function rewindTurnPersistenceForPendingApprovals<TContext>(
   originalPreStepItems: RunItem[],
   state: RunState<TContext, Agent<TContext, any>>,
@@ -246,10 +268,7 @@ function rewindTurnPersistenceForPendingApprovals<TContext>(
   }
 
   if (rewindCount > 0) {
-    state._currentTurnPersistedItemCount = Math.max(
-      0,
-      state._currentTurnPersistedItemCount - rewindCount,
-    );
+    state.rewindTurnPersistence(rewindCount);
   }
 }
 
@@ -356,26 +375,37 @@ export async function resolveInterruptedTurn<TContext>(
     return !completedFunctionCallIds.has(callId);
   });
 
-  const shellRuns = filterActionsByApproval(
-    originalPreStepItems,
-    processedResponse.shellActions,
-    'shell_call',
-  ).filter((run) => !completedShellCallIds.has(run.toolCall.callId ?? ''));
-
-  const previouslyCompletedComputerCallIds = collectCompletedCallIds(
-    originalPreStepItems,
-    'computer_call_result',
-  );
-  const pendingComputerActions = processedResponse.computerActions.filter(
-    (action) =>
-      !previouslyCompletedComputerCallIds.has(action.toolCall.callId ?? ''),
+  const shellRuns = filterPendingActions(
+    filterActionsByApproval(
+      originalPreStepItems,
+      processedResponse.shellActions,
+      'shell_call',
+    ),
+    {
+      completedCallIds: completedShellCallIds,
+    },
   );
 
-  const applyPatchRuns = filterActionsByApproval(
-    originalPreStepItems,
-    processedResponse.applyPatchActions,
-    'apply_patch_call',
-  ).filter((run) => !completedApplyPatchCallIds.has(run.toolCall.callId ?? ''));
+  const pendingComputerActions = filterPendingActions(
+    processedResponse.computerActions,
+    {
+      completedCallIds: collectCompletedCallIds(
+        originalPreStepItems,
+        'computer_call_result',
+      ),
+    },
+  );
+
+  const applyPatchRuns = filterPendingActions(
+    filterActionsByApproval(
+      originalPreStepItems,
+      processedResponse.applyPatchActions,
+      'apply_patch_call',
+    ),
+    {
+      completedCallIds: completedApplyPatchCallIds,
+    },
+  );
 
   const functionResults = await executeFunctionToolCalls(
     agent,
@@ -437,59 +467,25 @@ export async function resolveInterruptedTurn<TContext>(
     [...shellResults, ...applyPatchResults],
   );
 
-  // Run MCP tools that require approval after they get their approval results
-  const mcpApprovalRuns = processedResponse.mcpApprovalRequests.filter(
-    (run) => {
-      return (
-        run.requestItem.type === 'tool_approval_item' &&
-        run.requestItem.rawItem.type === 'hosted_tool_call' &&
-        run.requestItem.rawItem.providerData?.type === 'mcp_approval_request'
-      );
-    },
-  );
-  // Hosted MCP approvals may still be waiting on a human decision when the turn resumes.
-  const pendingHostedMCPApprovals = new Set<RunToolApprovalItem>();
-  const pendingHostedMCPApprovalIds = new Set<string>();
-  // Keep track of approvals we still need to surface next turn so HITL flows can resume cleanly.
-  for (const run of mcpApprovalRuns) {
-    // the approval_request_id "mcpr_123..."
-    const rawItem = run.requestItem.rawItem;
-    if (rawItem.type !== 'hosted_tool_call') {
-      continue;
-    }
-    const approvalRequestId = rawItem.id!;
-    const approved = state._context.isToolApproved({
-      // Since this item name must be the same with the one sent from Responses API server
-      toolName: rawItem.name,
-      callId: approvalRequestId,
-    });
-    if (typeof approved !== 'undefined') {
-      const providerData: ProviderData.HostedMCPApprovalResponse = {
-        approve: approved,
-        approval_request_id: approvalRequestId,
-        reason: undefined,
-      };
-      // Tell Responses API server the approval result in the next turn
-      const responseItem = new RunToolCallItem(
-        {
-          type: 'hosted_tool_call',
-          name: 'mcp_approval_response',
-          providerData,
-        },
-        agent as Agent<unknown, 'text'>,
-      );
-      appendIfNew(responseItem);
-    } else {
-      pendingHostedMCPApprovals.add(run.requestItem);
-      pendingHostedMCPApprovalIds.add(approvalRequestId);
-      functionResults.push({
-        type: 'hosted_mcp_tool_approval',
-        tool: run.mcpTool,
-        runItem: run.requestItem,
+  const hostedMcpApprovals = await handleHostedMcpApprovals({
+    requests: processedResponse.mcpApprovalRequests,
+    agent,
+    state,
+    functionResults,
+    appendIfNew,
+    resolveApproval: (rawItem) => {
+      const providerData =
+        rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
+      const approvalRequestId = rawItem.id ?? providerData?.id;
+      if (!approvalRequestId) {
+        return undefined;
+      }
+      return state._context.isToolApproved({
+        toolName: rawItem.name,
+        callId: approvalRequestId,
       });
-      appendIfNew(run.requestItem);
-    }
-  }
+    },
+  });
 
   // Server-managed conversations rely on preStepItems to re-surface pending approvals.
   // Keep unresolved hosted MCP approvals in place so HITL flows still have something to approve next turn.
@@ -504,12 +500,18 @@ export async function resolveInterruptedTurn<TContext>(
       item.rawItem.type === 'hosted_tool_call' &&
       item.rawItem.providerData?.type === 'mcp_approval_request'
     ) {
-      if (pendingHostedMCPApprovals.has(item)) {
+      if (hostedMcpApprovals.pendingApprovals.has(item)) {
         return true;
       }
-      const approvalRequestId = item.rawItem.id;
+      const approvalRequestId =
+        item.rawItem.id ??
+        (
+          item.rawItem.providerData as
+            | ProviderData.HostedMCPApprovalRequest
+            | undefined
+        )?.id;
       if (approvalRequestId) {
-        return pendingHostedMCPApprovalIds.has(approvalRequestId);
+        return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);
       }
       return false;
     }
@@ -622,53 +624,14 @@ export async function resolveTurnAfterModelResponse<TContext>(
     [...shellResults, ...applyPatchResults],
   );
 
-  // run hosted MCP approval requests
   if (processedResponse.mcpApprovalRequests.length > 0) {
-    for (const approvalRequest of processedResponse.mcpApprovalRequests) {
-      const toolData = approvalRequest.mcpTool
-        .providerData as ProviderData.HostedMCPTool<TContext>;
-      const requestData = approvalRequest.requestItem.rawItem
-        .providerData as ProviderData.HostedMCPApprovalRequest;
-      if (toolData.on_approval) {
-        // synchronously handle the approval process here
-        const approvalResult = await toolData.on_approval(
-          state._context,
-          approvalRequest.requestItem,
-        );
-        const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
-          approve: approvalResult.approve,
-          approval_request_id: requestData.id,
-          reason: approvalResult.reason,
-        };
-        newItems.push(
-          new RunToolCallItem(
-            {
-              type: 'hosted_tool_call',
-              name: 'mcp_approval_response',
-              providerData: approvalResponseData,
-            },
-            agent as Agent<unknown, 'text'>,
-          ),
-        );
-      } else {
-        const approvalItem = {
-          type: 'hosted_mcp_tool_approval' as const,
-          tool: approvalRequest.mcpTool,
-          runItem: new RunToolApprovalItem(
-            {
-              type: 'hosted_tool_call',
-              name: requestData.name,
-              id: requestData.id,
-              arguments: requestData.arguments,
-              status: 'in_progress',
-              providerData: requestData,
-            },
-            agent,
-          ),
-        };
-        functionResults.push(approvalItem);
-      }
-    }
+    await handleHostedMcpApprovals({
+      requests: processedResponse.mcpApprovalRequests,
+      agent,
+      state,
+      functionResults,
+      appendIfNew,
+    });
   }
 
   // process handoffs
