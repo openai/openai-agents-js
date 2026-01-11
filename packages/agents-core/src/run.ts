@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { MaxTurnsExceededError, ModelBehaviorError, UserError } from './errors';
+import { ModelBehaviorError, UserError } from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -40,14 +40,7 @@ import {
   ServerConversationTracker,
   applyCallModelInputFilter,
 } from './runner/conversation';
-import {
-  buildInputGuardrailDefinitions,
-  runInputGuardrails,
-  runOutputGuardrails,
-  splitInputGuardrails,
-} from './runner/guardrails';
-import { getTurnInput } from './runner/items';
-import { prepareAgentArtifacts } from './runner/modelPreparation';
+import { runOutputGuardrails } from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
   getTracing,
@@ -70,6 +63,7 @@ import {
   resolveInterruptedTurn,
   resolveTurnAfterModelResponse,
 } from './runner/turnResolution';
+import { prepareRunAgainTurn } from './runner/turnPreparation';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
@@ -630,82 +624,27 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const artifacts = await prepareAgentArtifacts(state);
-
-            const isResumingFromInterruption =
-              isResumedState && continuingInterruptedTurn;
-            const resumingTurnInProgress =
-              isResumedState && state._currentTurnInProgress === true;
+            const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
-
-            // Do not advance the turn when resuming from an interruption; the next model call is
-            // still part of the same logical turn.
-            if (!isResumingFromInterruption && !resumingTurnInProgress) {
-              state._currentTurn++;
-              state._currentTurnPersistedItemCount = 0;
-            }
-            state._currentTurnInProgress = true;
-
-            if (state._currentTurn > state._maxTurns) {
-              state._currentAgentSpan?.setError({
-                message: 'Max turns exceeded',
-                data: { max_turns: state._maxTurns },
-              });
-
-              throw new MaxTurnsExceededError(
-                `Max turns (${state._maxTurns}) exceeded`,
-                state,
-              );
-            }
-
-            logger.debug(
-              `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
-            );
-
             let guardrailError: unknown;
-            let parallelGuardrailPromise:
-              | Promise<InputGuardrailResult[]>
-              | undefined;
-            // Only run input guardrails on the first turn of a new run.
-            if (state._currentTurn === 1 && !isResumingFromInterruption) {
-              const guardrailDefs = buildInputGuardrailDefinitions(
+            const { artifacts, turnInput, parallelGuardrailPromise } =
+              await prepareRunAgainTurn({
                 state,
-                this.inputGuardrailDefs,
-              );
-              const guardrails = splitInputGuardrails(guardrailDefs);
-              if (guardrails.blocking.length > 0) {
-                await runInputGuardrails(state, guardrails.blocking);
-              }
-              if (guardrails.parallel.length > 0) {
-                const promise = runInputGuardrails(state, guardrails.parallel);
-                parallelGuardrailPromise = promise.catch((err) => {
-                  guardrailError = err;
-                  return [];
-                });
-              }
-            }
-
-            const turnInput = serverConversationTracker
-              ? serverConversationTracker.prepareInput(
-                  state._originalInput,
-                  state._generatedItems,
-                )
-              : getTurnInput(state._originalInput, state._generatedItems);
-
-            if (state._noActiveAgentRun) {
-              state._currentAgent.emit(
-                'agent_start',
-                state._context,
-                state._currentAgent,
-                turnInput,
-              );
-              this.emit(
-                'agent_start',
-                state._context,
-                state._currentAgent,
-                turnInput,
-              );
-            }
+                input: state._originalInput,
+                generatedItems: state._generatedItems,
+                isResumedState,
+                continuingInterruptedTurn: wasContinuingInterruptedTurn,
+                serverConversationTracker,
+                inputGuardrailDefs: this.inputGuardrailDefs,
+                guardrailHandlers: {
+                  onParallelError: (err) => {
+                    guardrailError = err;
+                  },
+                },
+                emitAgentStart: (context, agent, inputItems) => {
+                  this.emit('agent_start', context, agent, inputItems);
+                },
+              });
 
             const preparedCall = await this.#prepareModelCall(
               state,
@@ -1020,88 +959,37 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          const artifacts = await prepareAgentArtifacts(result.state);
-
-          const isResumingFromInterruption =
-            isResumedState && continuingInterruptedTurn;
-          const resumingTurnInProgress =
-            isResumedState && result.state._currentTurnInProgress === true;
-          continuingInterruptedTurn = false;
-
-          // Do not advance the turn when resuming from an interruption; the next model call is
-          // still part of the same logical turn.
-          if (!isResumingFromInterruption && !resumingTurnInProgress) {
-            result.state._currentTurn++;
-            result.state._currentTurnPersistedItemCount = 0;
-          }
-          result.state._currentTurnInProgress = true;
-
-          if (result.state._currentTurn > result.state._maxTurns) {
-            result.state._currentAgentSpan?.setError({
-              message: 'Max turns exceeded',
-              data: { max_turns: result.state._maxTurns },
-            });
-            throw new MaxTurnsExceededError(
-              `Max turns (${result.state._maxTurns}) exceeded`,
-              result.state,
-            );
-          }
-
-          logger.debug(
-            `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
-          );
-
           guardrailError = undefined;
           guardrailFailed = false;
           guardrailsPending = false;
           parallelGuardrailPromise = undefined;
-          // Only run input guardrails on the first turn of a new run.
-          if (result.state._currentTurn === 1 && !isResumingFromInterruption) {
-            const guardrailDefs = buildInputGuardrailDefinitions(
-              result.state,
-              this.inputGuardrailDefs,
-            );
-            const guardrails = splitInputGuardrails(guardrailDefs);
-            if (guardrails.blocking.length > 0) {
-              await runInputGuardrails(result.state, guardrails.blocking);
-            }
-            if (guardrails.parallel.length > 0) {
-              guardrailsPending = true;
-              const promise = runInputGuardrails(
-                result.state,
-                guardrails.parallel,
-              );
-              parallelGuardrailPromise = promise.catch((err) => {
+          const wasContinuingInterruptedTurn = continuingInterruptedTurn;
+          continuingInterruptedTurn = false;
+          const preparedTurn = await prepareRunAgainTurn({
+            state: result.state,
+            input: result.input,
+            generatedItems: result.newItems,
+            isResumedState,
+            continuingInterruptedTurn: wasContinuingInterruptedTurn,
+            serverConversationTracker,
+            inputGuardrailDefs: this.inputGuardrailDefs,
+            guardrailHandlers: {
+              onParallelStart: () => {
+                guardrailsPending = true;
+              },
+              onParallelError: (err) => {
                 guardrailError = err;
                 guardrailFailed = true;
                 guardrailsPending = false;
-                return [];
-              });
-            }
-          }
-
+              },
+            },
+            emitAgentStart: (context, agent, inputItems) => {
+              this.emit('agent_start', context, agent, inputItems);
+            },
+          });
+          const { artifacts, turnInput } = preparedTurn;
+          parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           const delayStreamInputPersistence = Boolean(parallelGuardrailPromise);
-          const turnInput = serverConversationTracker
-            ? serverConversationTracker.prepareInput(
-                result.input,
-                result.newItems,
-              )
-            : getTurnInput(result.input, result.newItems);
-
-          if (result.state._noActiveAgentRun) {
-            currentAgent.emit(
-              'agent_start',
-              result.state._context,
-              currentAgent,
-              turnInput,
-            );
-            this.emit(
-              'agent_start',
-              result.state._context,
-              currentAgent,
-              turnInput,
-            );
-          }
 
           let finalResponse: ModelResponse | undefined = undefined;
           let inputMarked = false;
