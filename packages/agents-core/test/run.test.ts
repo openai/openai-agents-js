@@ -2522,6 +2522,129 @@ describe('Runner.run', () => {
       expect(secondTexts).not.toContain('Sensitive payload');
     });
 
+    it('does not requeue filtered tool outputs in server-managed conversations', async () => {
+      class ConversationTrackingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        constructor(private readonly responses: ModelResponse[]) {}
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          const cloned: ModelRequest = {
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          };
+          this.requests.push(cloned);
+          const response = this.responses.shift();
+          if (!response) {
+            throw new Error('No response configured');
+          }
+          return response;
+        }
+
+        getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ConversationTrackingModel([
+        {
+          output: [
+            {
+              id: 'call-1',
+              type: 'function_call',
+              name: 'filterTool',
+              callId: 'call-1',
+              status: 'completed',
+              arguments: JSON.stringify({ test: 'first' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+          responseId: 'resp-1',
+        },
+        {
+          output: [
+            {
+              id: 'call-2',
+              type: 'function_call',
+              name: 'filterTool',
+              callId: 'call-2',
+              status: 'completed',
+              arguments: JSON.stringify({ test: 'second' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+          responseId: 'resp-2',
+        },
+        {
+          output: [fakeModelMessage('all done')],
+          usage: new Usage(),
+          responseId: 'resp-3',
+        },
+      ]);
+
+      const filterTool = tool({
+        name: 'filterTool',
+        description: 'test tool',
+        parameters: z.object({ test: z.string() }),
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls += 1;
+          if (filterCalls === 2) {
+            return {
+              instructions: modelData.instructions,
+              input: modelData.input.filter(
+                (item) => item.type !== 'function_call_result',
+              ),
+            };
+          }
+          return modelData;
+        },
+      });
+
+      const agent = new Agent({
+        name: 'ToolOutputFilterAgent',
+        model,
+        tools: [filterTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await runner.run(agent, [user('Run it')], {
+        conversationId: 'conv-filter-tool-output',
+      });
+
+      expect(result.finalOutput).toBe('all done');
+      expect(filterCalls).toBe(3);
+      expect(model.requests).toHaveLength(3);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'function_call_result' &&
+            (item as protocol.FunctionCallResultItem).callId === 'call-1',
+        ),
+      ).toBe(false);
+
+      const thirdInput = model.requests[2].input as AgentInputItem[];
+      expect(Array.isArray(thirdInput)).toBe(true);
+      const toolResults = thirdInput.filter(
+        (item): item is protocol.FunctionCallResultItem =>
+          item.type === 'function_call_result',
+      );
+      const callIds = toolResults.map((item) => item.callId);
+      expect(callIds).toContain('call-2');
+      expect(callIds).not.toContain('call-1');
+    });
+
     it('preserves providerData when saving streaming session items', async () => {
       class MetadataStreamingModel implements Model {
         constructor(private readonly response: ModelResponse) {}

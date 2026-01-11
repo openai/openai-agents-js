@@ -750,7 +750,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 preparedCall.sourceItems,
                 {
                   filterApplied: preparedCall.filterApplied,
-                  allTurnItems: preparedCall.modelInput.input,
+                  allTurnItems: preparedCall.turnInput,
                 },
               );
             }
@@ -1159,7 +1159,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   preparedCall.sourceItems,
                   {
                     filterApplied: preparedCall.filterApplied,
-                    allTurnItems: preparedCall.modelInput.input,
+                    allTurnItems: preparedCall.turnInput,
                   },
                 );
                 inputMarked = true;
@@ -1192,7 +1192,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   preparedCall.sourceItems,
                   {
                     filterApplied: preparedCall.filterApplied,
-                    allTurnItems: preparedCall.modelInput.input,
+                    allTurnItems: preparedCall.turnInput,
                   },
                 );
                 inputMarked = true;
@@ -1208,7 +1208,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.sourceItems,
               {
                 filterApplied: preparedCall.filterApplied,
-                allTurnItems: preparedCall.modelInput.input,
+                allTurnItems: preparedCall.turnInput,
               },
             );
             inputMarked = true;
