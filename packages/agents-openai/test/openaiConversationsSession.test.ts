@@ -404,7 +404,7 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
-        providerData: { model: 'claude-3-opus', extra: 'keep-me' },
+        providerData: { model: 'some-model', extra: 'keep-me' },
       },
     ];
     const converted = [
