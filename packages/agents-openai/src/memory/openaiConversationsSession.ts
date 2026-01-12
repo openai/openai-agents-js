@@ -227,6 +227,11 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     const rest = { ...(item as Record<string, unknown>) };
     const providerData = (item as { providerData?: unknown }).providerData;
     const itemType = (rest as { type?: unknown }).type;
+    const itemRole = (rest as { role?: unknown }).role;
+    const isMessageLike =
+      itemType === 'message' ||
+      (typeof itemRole === 'string' &&
+        ['user', 'assistant', 'system', 'tool'].includes(itemRole));
 
     if (
       providerData &&
@@ -237,7 +242,7 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
         typeof (providerData as { type?: unknown }).type === 'string';
       if (hasProviderType) {
         (rest as Record<string, unknown>).providerData = providerData;
-      } else if (itemType === 'message') {
+      } else if (isMessageLike) {
         const { model: _model, ...pdRest } = providerData as Record<
           string,
           unknown
