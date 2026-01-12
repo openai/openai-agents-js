@@ -226,33 +226,16 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     // Only strip providerData.model from message-like items; keep IDs intact for tool linkage.
     const rest = { ...(item as Record<string, unknown>) };
     const providerData = (item as { providerData?: unknown }).providerData;
-    const itemType = (rest as { type?: unknown }).type;
-    const itemRole = (rest as { role?: unknown }).role;
-    const isMessageLike =
-      itemType === 'message' ||
-      (typeof itemRole === 'string' &&
-        ['user', 'assistant', 'system', 'tool'].includes(itemRole));
 
     if (
       providerData &&
       typeof providerData === 'object' &&
       !Array.isArray(providerData)
     ) {
-      const hasProviderType =
-        typeof (providerData as { type?: unknown }).type === 'string';
-      if (hasProviderType) {
-        (rest as Record<string, unknown>).providerData = providerData;
-      } else if (isMessageLike) {
-        const { model: _model, ...pdRest } = providerData as Record<
-          string,
-          unknown
-        >;
-        (rest as Record<string, unknown>).providerData =
-          Object.keys(pdRest).length > 0 ? pdRest : undefined;
-      } else {
-        // Preserve providerData (including model) for non-message items to keep model-specific metadata.
-        (rest as Record<string, unknown>).providerData = providerData;
-      }
+      const pdObj = providerData as Record<string, unknown>;
+      const { model: _model, ...pdRest } = pdObj;
+      (rest as Record<string, unknown>).providerData =
+        Object.keys(pdRest).length > 0 ? pdRest : undefined;
     }
     return rest as AgentInputItem;
   });

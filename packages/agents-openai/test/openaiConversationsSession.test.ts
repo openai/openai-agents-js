@@ -464,7 +464,11 @@ describe('OpenAIConversationsSession', () => {
         name: 'search',
         callId: 'call-1',
         arguments: '{}',
-        providerData: { type: 'web_search', user_location: 'JP' },
+        providerData: {
+          type: 'web_search',
+          user_location: 'JP',
+          model: 'some-model',
+        },
       },
     ];
     const converted = [
@@ -497,7 +501,13 @@ describe('OpenAIConversationsSession', () => {
 
     await session.addItems(inputItems as any);
 
-    expect(getInputItemsMock).toHaveBeenCalledWith(inputItems);
+    expect(getInputItemsMock).toHaveBeenCalledWith(
+      inputItems.map((item) => {
+        const { providerData, ...rest } = item as any;
+        const { model: _model, ...pdRest } = providerData;
+        return { ...rest, providerData: pdRest };
+      }),
+    );
     expect(createMock).toHaveBeenCalledWith('conv-123', {
       items: converted,
     });
