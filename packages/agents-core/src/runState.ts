@@ -39,7 +39,7 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  * run state is compatible with the current version of the SDK.
  * If anything in this schema changes, the version will have to be incremented.
  */
-export const CURRENT_SCHEMA_VERSION = '1.0' as const;
+export const CURRENT_SCHEMA_VERSION = '1.1' as const;
 const $schemaVersion = z.literal(CURRENT_SCHEMA_VERSION);
 
 const serializedAgentSchema = z.object({
