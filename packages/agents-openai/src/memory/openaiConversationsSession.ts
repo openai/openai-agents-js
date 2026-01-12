@@ -180,8 +180,9 @@ export class OpenAIConversationsSession
     }
 
     const conversationId = await this.getSessionId();
+    const sanitizedItems = stripIdsAndProviderData(items);
     await this.#client.conversations.items.create(conversationId, {
-      items: getInputItems(items),
+      items: getInputItems(sanitizedItems),
     });
   }
 
@@ -215,6 +216,22 @@ export class OpenAIConversationsSession
 // --------------------------------------------------------------
 //  Internals
 // --------------------------------------------------------------
+
+function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
+  return items.map((item) => {
+    if (Array.isArray(item) || item === null || typeof item !== 'object') {
+      return item;
+    }
+    // Conversations API rejects unknown top-level fields (e.g., model/providerData) on items;
+    // strip them before conversion to keep requests schema-valid.
+    const {
+      id: _id,
+      providerData: _providerData,
+      ...rest
+    } = item as Record<string, unknown>;
+    return rest as AgentInputItem;
+  });
+}
 
 const INPUT_CONTENT_TYPES = new Set([
   'input_text',

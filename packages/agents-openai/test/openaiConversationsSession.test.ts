@@ -434,7 +434,12 @@ describe('OpenAIConversationsSession', () => {
 
     await session.addItems(inputItems as any);
 
-    expect(getInputItemsMock).toHaveBeenCalledWith(inputItems);
+    expect(getInputItemsMock).toHaveBeenCalledWith(
+      inputItems.map((item) => {
+        const { id: _id, providerData: _providerData, ...rest } = item as any;
+        return rest;
+      }),
+    );
     expect(createMock).toHaveBeenCalledWith('conv-123', {
       items: converted,
     });

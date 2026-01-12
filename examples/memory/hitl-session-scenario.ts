@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   Agent,
   type AgentInputItem,
+  type Model,
   type Session,
   OpenAIConversationsSession,
   run,
@@ -62,6 +63,7 @@ async function runScenario(
   session: Session,
   label: string,
   step: ScenarioStep,
+  options: { model?: string | Model } = {},
 ): Promise<void> {
   const agent = new Agent({
     name: `${label} HITL scenario`,
@@ -69,6 +71,7 @@ async function runScenario(
       `You must call ${step.toolName} exactly once before responding.` +
       ` Pass the user input as the "query" argument.`,
     tools: [approvalEchoTool, approvalNoteTool],
+    model: options.model,
     modelSettings: { toolChoice: step.toolName },
     toolUseBehavior: 'stop_on_first_tool',
   });
@@ -143,7 +146,7 @@ async function runScenario(
   );
 }
 
-async function runFileSessionScenario(): Promise<void> {
+async function runFileSessionScenario(model?: string | Model): Promise<void> {
   const tmpRoot = path.resolve(process.cwd(), 'tmp');
   await mkdir(tmpRoot, { recursive: true });
   const tempDir = await mkdtemp(path.join(tmpRoot, 'hitl-scenario-'));
@@ -181,18 +184,22 @@ async function runFileSessionScenario(): Promise<void> {
   ];
 
   try {
-    await runScenario(session, `FileSession ${steps[0].name}`, steps[0]);
+    await runScenario(session, `FileSession ${steps[0].name}`, steps[0], {
+      model,
+    });
     rehydratedSession = new FileSession({ dir: tempDir, sessionId });
     console.log(`[FileSession] rehydrated session id: ${sessionId}`);
     await runScenario(
       rehydratedSession,
       `FileSession ${steps[1].name}`,
       steps[1],
+      { model },
     );
     await runScenario(
       rehydratedSession,
       `FileSession ${steps[2].name}`,
       steps[2],
+      { model },
     );
   } finally {
     await (rehydratedSession ?? session).clearSession();
@@ -200,7 +207,7 @@ async function runFileSessionScenario(): Promise<void> {
   }
 }
 
-async function runOpenAISessionScenario(): Promise<void> {
+async function runOpenAISessionScenario(model?: string | Model): Promise<void> {
   const existingSessionId = process.env.OPENAI_SESSION_ID;
   const session = new OpenAIConversationsSession({
     conversationId: existingSessionId,
@@ -247,6 +254,7 @@ async function runOpenAISessionScenario(): Promise<void> {
     session,
     `OpenAIConversationsSession ${steps[0].name}`,
     steps[0],
+    { model },
   );
 
   const rehydratedSession = new OpenAIConversationsSession({
@@ -259,11 +267,13 @@ async function runOpenAISessionScenario(): Promise<void> {
     rehydratedSession,
     `OpenAIConversationsSession ${steps[1].name}`,
     steps[1],
+    { model },
   );
   await runScenario(
     rehydratedSession,
     `OpenAIConversationsSession ${steps[2].name}`,
     steps[2],
+    { model },
   );
   if (shouldKeep) {
     console.log(`[OpenAIConversationsSession] kept session id: ${sessionId}`);
@@ -420,8 +430,9 @@ async function main() {
     process.exit(1);
   }
 
-  await runFileSessionScenario();
-  await runOpenAISessionScenario();
+  const modelOverride = process.env.HITL_MODEL ?? 'gpt-5.2';
+  await runFileSessionScenario(modelOverride);
+  await runOpenAISessionScenario(modelOverride);
 }
 
 main().catch((error) => {
