@@ -40,6 +40,50 @@ const APPROVAL_ITEM_TYPES = [
   'apply_patch_call',
 ] as const;
 
+function isHostedMcpApprovalItem(item: RunToolApprovalItem): boolean {
+  return (
+    item.rawItem.type === 'hosted_tool_call' &&
+    item.rawItem.providerData?.type === 'mcp_approval_request'
+  );
+}
+
+type ApprovalResolution = 'approved' | 'rejected' | 'pending';
+
+function resolveApprovalState(
+  item: RunToolApprovalItem,
+  state: RunState<any, any>,
+): ApprovalResolution {
+  if (isHostedMcpApprovalItem(item)) {
+    return 'pending';
+  }
+
+  const rawItem = item.rawItem;
+  const toolName =
+    item.toolName ??
+    ('name' in rawItem && typeof rawItem.name === 'string'
+      ? rawItem.name
+      : undefined);
+  const callId =
+    'callId' in rawItem && typeof rawItem.callId === 'string'
+      ? rawItem.callId
+      : 'id' in rawItem && typeof rawItem.id === 'string'
+        ? rawItem.id
+        : undefined;
+
+  if (!toolName || !callId) {
+    return 'pending';
+  }
+
+  const approval = state._context.isToolApproved({ toolName, callId });
+  if (approval === true) {
+    return 'approved';
+  }
+  if (approval === false) {
+    return 'rejected';
+  }
+  return 'pending';
+}
+
 function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
   if (!value || typeof value !== 'object') {
     return false;
@@ -219,59 +263,6 @@ function filterPendingActions<T extends ToolActionWithCallId>(
   });
 }
 
-function rewindTurnPersistenceForPendingApprovals<TContext>(
-  originalPreStepItems: RunItem[],
-  state: RunState<TContext, Agent<TContext, any>>,
-) {
-  const pendingApprovalItems = state
-    .getInterruptions()
-    .filter(isApprovalItemLike);
-
-  if (pendingApprovalItems.length === 0) {
-    return;
-  }
-
-  const pendingApprovalIdentities = new Set<string>();
-  for (const approval of pendingApprovalItems) {
-    const identity = getApprovalIdentity(approval);
-    if (identity) {
-      pendingApprovalIdentities.add(identity);
-    }
-  }
-
-  if (pendingApprovalIdentities.size === 0) {
-    return;
-  }
-
-  let rewindCount = 0;
-  for (let index = originalPreStepItems.length - 1; index >= 0; index--) {
-    const item = originalPreStepItems[index];
-    if (!(item instanceof RunToolApprovalItem)) {
-      continue;
-    }
-
-    const identity = getApprovalIdentity(item);
-    if (!identity) {
-      continue;
-    }
-
-    if (!pendingApprovalIdentities.has(identity)) {
-      continue;
-    }
-
-    rewindCount++;
-    pendingApprovalIdentities.delete(identity);
-
-    if (pendingApprovalIdentities.size === 0) {
-      break;
-    }
-  }
-
-  if (rewindCount > 0) {
-    state.rewindTurnPersistence(rewindCount);
-  }
-}
-
 function truncateForDeveloper(message: string, maxLength = 160): string {
   const trimmed = message.trim();
   if (!trimmed) {
@@ -353,17 +344,42 @@ export async function resolveInterruptedTurn<TContext>(
   const pendingApprovalItems = state
     .getInterruptions()
     .filter(isApprovalItemLike);
-  if (pendingApprovalItems.length > 0) {
-    // Persisting the approval request already advanced the counter once, so undo the increment
-    // to make sure we write the final tool output back to the session when the turn resumes.
-    rewindTurnPersistenceForPendingApprovals(originalPreStepItems, state);
-  }
 
   const pendingApprovalIdentities = new Set<string>();
   for (const approval of pendingApprovalItems) {
+    if (!(approval instanceof RunToolApprovalItem)) {
+      continue;
+    }
+    if (isHostedMcpApprovalItem(approval)) {
+      continue;
+    }
+    const rawItem = approval.rawItem;
+    if (
+      rawItem.type === 'function_call' &&
+      rawItem.callId &&
+      completedFunctionCallIds.has(rawItem.callId)
+    ) {
+      continue;
+    }
+    if (
+      rawItem.type === 'shell_call' &&
+      rawItem.callId &&
+      completedShellCallIds.has(rawItem.callId)
+    ) {
+      continue;
+    }
+    if (
+      rawItem.type === 'apply_patch_call' &&
+      rawItem.callId &&
+      completedApplyPatchCallIds.has(rawItem.callId)
+    ) {
+      continue;
+    }
     const identity = getApprovalIdentity(approval);
     if (identity) {
-      pendingApprovalIdentities.add(identity);
+      if (resolveApprovalState(approval, state) === 'pending') {
+        pendingApprovalIdentities.add(identity);
+      }
     }
   }
   // Run function tools that require approval after they get their approval results
@@ -496,10 +512,7 @@ export async function resolveInterruptedTurn<TContext>(
       return true;
     }
 
-    if (
-      item.rawItem.type === 'hosted_tool_call' &&
-      item.rawItem.providerData?.type === 'mcp_approval_request'
-    ) {
+    if (isHostedMcpApprovalItem(item)) {
       if (hostedMcpApprovals.pendingApprovals.has(item)) {
         return true;
       }
@@ -520,10 +533,28 @@ export async function resolveInterruptedTurn<TContext>(
     // original approval requests (e.g., function/shell/apply_patch) ONLY while they are still pending.
     const identity = getApprovalIdentity(item);
     if (!identity) {
-      return false;
+      return true;
     }
     return pendingApprovalIdentities.has(identity);
   });
+
+  const keptApprovalItems = new Set<RunToolApprovalItem>();
+  for (const item of preStepItems) {
+    if (item instanceof RunToolApprovalItem) {
+      keptApprovalItems.add(item);
+    }
+  }
+  let removedApprovalCount = 0;
+  for (const item of originalPreStepItems) {
+    if (item instanceof RunToolApprovalItem && !keptApprovalItems.has(item)) {
+      removedApprovalCount++;
+    }
+  }
+  if (removedApprovalCount > 0) {
+    // Persisting the approval request already advanced the counter once, so undo the increment
+    // to make sure we write the final tool output back to the session when the turn resumes.
+    state.rewindTurnPersistence(removedApprovalCount);
+  }
 
   const completedStep = await maybeCompleteTurnFromToolResults({
     agent,

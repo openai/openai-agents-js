@@ -913,6 +913,10 @@ describe('saveToSession', () => {
       (item): item is protocol.FunctionCallResultItem =>
         item.type === 'function_call_result',
     );
+    const autoResults = functionResults.filter(
+      (item) => item.callId === autoCall.callId,
+    );
+    expect(autoResults).toHaveLength(1);
     expect(
       functionResults.some((item) => item.callId === autoCall.callId),
     ).toBe(true);
