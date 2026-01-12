@@ -241,9 +241,8 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
           string,
           unknown
         >;
-        if (Object.keys(pdRest).length > 0) {
-          (rest as Record<string, unknown>).providerData = pdRest;
-        }
+        (rest as Record<string, unknown>).providerData =
+          Object.keys(pdRest).length > 0 ? pdRest : undefined;
       }
     }
     return rest as AgentInputItem;
