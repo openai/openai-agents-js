@@ -1642,7 +1642,8 @@ export class OpenAIResponsesModel implements Model {
       input,
       include,
       ...(shouldSendTools ? { tools } : {}),
-      // Prefer server-managed conversation tracking when an ID is provided.
+      // The Responses API treats `conversation` and `previous_response_id` as mutually exclusive,
+      // so we only send `previous_response_id` when no conversation is provided.
       conversation: request.conversationId,
       ...(request.conversationId
         ? {}
