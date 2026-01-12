@@ -404,6 +404,7 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
+        providerData: { model: 'claude-3-opus', extra: 'keep-me' },
       },
     ];
     const converted = [
@@ -412,6 +413,8 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
+        // model should be stripped, but other providerData should stay if present
+        providerData: { extra: 'keep-me' },
       },
     ];
 
@@ -436,10 +439,60 @@ describe('OpenAIConversationsSession', () => {
 
     expect(getInputItemsMock).toHaveBeenCalledWith(
       inputItems.map((item) => {
-        const { id: _id, providerData: _providerData, ...rest } = item as any;
+        const { id: _id, ...rest } = item as any;
+        if (rest.providerData) {
+          const { model: _model, ...pdRest } = rest.providerData as any;
+          rest.providerData = Object.keys(pdRest).length ? pdRest : undefined;
+        }
         return rest;
       }),
     );
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: converted,
+    });
+  });
+
+  it('keeps providerData for hosted tool calls', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      {
+        type: 'function_call',
+        name: 'search',
+        callId: 'call-1',
+        arguments: '{}',
+        providerData: { type: 'web_search', user_location: 'JP' },
+      },
+    ];
+    const converted = [
+      {
+        type: 'function_call',
+        name: 'search',
+        call_id: 'call-1',
+        arguments: '{}',
+        providerData: { type: 'web_search', user_location: 'JP' },
+      },
+    ];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(getInputItemsMock).toHaveBeenCalledWith(inputItems);
     expect(createMock).toHaveBeenCalledWith('conv-123', {
       items: converted,
     });

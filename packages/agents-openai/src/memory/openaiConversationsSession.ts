@@ -222,13 +222,30 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     if (Array.isArray(item) || item === null || typeof item !== 'object') {
       return item;
     }
-    // Conversations API rejects unknown top-level fields (e.g., model/providerData) on items;
-    // strip them before conversion to keep requests schema-valid.
-    const {
-      id: _id,
-      providerData: _providerData,
-      ...rest
-    } = item as Record<string, unknown>;
+    // Conversations API rejects unknown top-level fields (e.g., model merged from providerData).
+    // Drop transient IDs and only strip providerData.model for message-like items while keeping
+    // providerData for hosted tool calls that rely on it.
+    const { id: _id, ...rest } = item as Record<string, unknown>;
+    const providerData = (item as { providerData?: unknown }).providerData;
+    if (
+      providerData &&
+      typeof providerData === 'object' &&
+      !Array.isArray(providerData)
+    ) {
+      const hasProviderType =
+        typeof (providerData as { type?: unknown }).type === 'string';
+      if (hasProviderType) {
+        (rest as Record<string, unknown>).providerData = providerData;
+      } else {
+        const { model: _model, ...pdRest } = providerData as Record<
+          string,
+          unknown
+        >;
+        if (Object.keys(pdRest).length > 0) {
+          (rest as Record<string, unknown>).providerData = pdRest;
+        }
+      }
+    }
     return rest as AgentInputItem;
   });
 }
