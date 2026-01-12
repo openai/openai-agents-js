@@ -900,9 +900,34 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
-        logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
-        );
+        // logger.warn(
+        //   'Function calls cannot be manually added or updated at the moment. Ignoring.',
+        // );
+        const toolCall = addition as any;
+        const itemEntry: Record<string, any> = {
+          type: 'function_call',
+          id: toolCall.itemId, // Maps the SDK's local ID
+          call_id: toolCall.callId || toolCall.call_id,
+          name: toolCall.name,
+          arguments: toolCall.arguments,
+        };
+
+        this.sendEvent({
+          type: 'conversation.item.create',
+          item: itemEntry,
+        });
+      } else if ((addition.type as any) === 'function_call_output') {
+        const toolOutput = addition as any;
+
+        this.sendEvent({
+          type: 'conversation.item.create',
+          item: {
+            id: toolOutput.itemId,
+            type: 'function_call_output',
+            call_id: toolOutput.callId,
+            output: toolOutput.output,
+          },
+        });
       }
     }
   }

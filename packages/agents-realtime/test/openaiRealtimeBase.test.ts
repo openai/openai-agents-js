@@ -167,4 +167,48 @@ describe('OpenAIRealtimeBase helpers', () => {
       },
     });
   });
+  it('resetHistory handles function_call and output items', () => {
+    const base = new TestBase();
+    const oldHist: any[] = [];
+    const newHist: any[] = [
+      {
+        itemId: 'call_1',
+        type: 'function_call',
+        callId: 'c1',
+        name: 'get_weather',
+        arguments: '{}',
+      },
+      {
+        itemId: 'out_1',
+        type: 'function_call_output',
+        callId: 'c1',
+        output: 'sunny',
+      },
+    ];
+
+    base.resetHistory(oldHist, newHist);
+
+    // Check the first event (the call)
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        id: 'call_1',
+        type: 'function_call',
+        call_id: 'c1',
+        name: 'get_weather',
+        arguments: '{}',
+      },
+    });
+
+    // Check the second event (the output)
+    expect(base.events[1]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        id: 'out_1',
+        type: 'function_call_output',
+        call_id: 'c1',
+        output: 'sunny',
+      },
+    });
+  });
 });
