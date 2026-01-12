@@ -84,6 +84,46 @@ describe('applyCallModelInputFilter', () => {
     expect(second.content).toBe('keep me');
   });
 
+  it('leaves sourceItems undefined for injected filter items', async () => {
+    const agent = makeAgent('FilterInject');
+    const context = new RunContext();
+    const first: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'first',
+    };
+    const second: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'second',
+    };
+
+    const result = await applyCallModelInputFilter(
+      agent,
+      async ({ modelData }) => {
+        return {
+          input: [
+            modelData.input[0] as AgentInputItem,
+            modelData.input[1] as AgentInputItem,
+            { type: 'message', role: 'user', content: 'injected' },
+          ],
+        };
+      },
+      context,
+      [first, second],
+      undefined,
+    );
+
+    expect(result.filterApplied).toBe(true);
+    expect(result.sourceItems).toEqual([first, second, undefined]);
+    expect(result.persistedItems).toHaveLength(3);
+    expect(result.persistedItems[2]).toMatchObject({
+      type: 'message',
+      role: 'user',
+      content: 'injected',
+    });
+  });
+
   it('throws a UserError when the filter returns an invalid shape', async () => {
     const agent = makeAgent('InvalidFilter');
     const context = new RunContext();

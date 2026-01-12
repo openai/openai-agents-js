@@ -1641,6 +1641,7 @@ export class OpenAIResponsesModel implements Model {
       input,
       include,
       ...(shouldSendTools ? { tools } : {}),
+      // Prefer server-managed conversation tracking when an ID is provided.
       conversation: request.conversationId,
       ...(request.conversationId
         ? {}

@@ -5,6 +5,7 @@ import {
   PreparedInputWithSessionResult,
 } from '../../src/runner/sessionPersistence';
 import type { Session } from '../../src/memory/session';
+import type { AgentInputItem } from '../../src/types';
 import { toAgentInputList } from '../../src/runner/items';
 
 function makeSession(): Session {
@@ -72,6 +73,37 @@ describe('sessionPersistence tracker (extended)', () => {
 
     const resolved = tracker.getItemsForPersistence();
     expect(resolved).toEqual([]);
+  });
+
+  it('persists injected filtered items alongside mapped originals', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: false,
+    })!;
+
+    const first = {
+      type: 'message',
+      role: 'user',
+      content: 'first',
+    } as const;
+    const second = {
+      type: 'message',
+      role: 'user',
+      content: 'second',
+    } as const;
+
+    tracker.setPreparedItems([first, second]);
+
+    const filtered: AgentInputItem[] = [
+      { ...first, content: 'first filtered' },
+      { ...second, content: 'second filtered' },
+      { type: 'message', role: 'user', content: 'injected' },
+    ];
+
+    tracker.recordTurnItems([first, second, undefined], filtered);
+
+    expect(tracker.getItemsForPersistence()).toEqual(filtered);
   });
 
   it('buildPersistInputOnce writes once and skips empty payloads', async () => {
