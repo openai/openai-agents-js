@@ -177,13 +177,7 @@ describe('OpenAIRealtimeBase helpers', () => {
         callId: 'c1',
         name: 'get_weather',
         arguments: '{}',
-      },
-      {
-        itemId: 'out_1',
-        type: 'function_call_output',
-        callId: 'c1',
-        output: 'sunny',
-      },
+      }
     ];
 
     base.resetHistory(oldHist, newHist);
@@ -197,17 +191,6 @@ describe('OpenAIRealtimeBase helpers', () => {
         call_id: 'c1',
         name: 'get_weather',
         arguments: '{}',
-      },
-    });
-
-    // Check the second event (the output)
-    expect(base.events[1]).toEqual({
-      type: 'conversation.item.create',
-      item: {
-        id: 'out_1',
-        type: 'function_call_output',
-        call_id: 'c1',
-        output: 'sunny',
       },
     });
   });

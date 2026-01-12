@@ -916,18 +916,6 @@ export abstract class OpenAIRealtimeBase
           type: 'conversation.item.create',
           item: itemEntry,
         });
-      } else if ((addition.type as any) === 'function_call_output') {
-        const toolOutput = addition as any;
-
-        this.sendEvent({
-          type: 'conversation.item.create',
-          item: {
-            id: toolOutput.itemId,
-            type: 'function_call_output',
-            call_id: toolOutput.callId,
-            output: toolOutput.output,
-          },
-        });
       }
     }
   }
