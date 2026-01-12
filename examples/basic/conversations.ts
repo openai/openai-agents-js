@@ -41,8 +41,8 @@ async function main() {
   console.log(`Second run: ${result.finalOutput}`);
 
   result = await run(agent, 'What is the weather in the city today?', options);
-  // Thrid run: The weather in Brasília today is sunny.
-  console.log(`Thrid run: ${result.finalOutput}`);
+  // Third run: The weather in Brasília today is sunny.
+  console.log(`Third run: ${result.finalOutput}`);
 
   result = await run(
     agent,

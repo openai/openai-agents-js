@@ -6,8 +6,8 @@ import { FAKE_ID } from './openaiChatCompletionsModel';
 
 type StreamingState = {
   started: boolean;
-  text_content_index_and_output: [number, protocol.OutputText] | null;
-  refusal_content_index_and_output: [number, protocol.Refusal] | null;
+  text_content: protocol.OutputText | null;
+  refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
   reasoning: string;
 };
@@ -19,8 +19,8 @@ export async function* convertChatCompletionsStreamToResponses(
   let usage: CompletionUsage | undefined = undefined;
   const state: StreamingState = {
     started: false,
-    text_content_index_and_output: null,
-    refusal_content_index_and_output: null,
+    text_content: null,
+    refusal_content: null,
     function_calls: {},
     reasoning: '',
   };
@@ -50,11 +50,12 @@ export async function* convertChatCompletionsStreamToResponses(
 
     // Handle text
     if (delta.content) {
-      if (!state.text_content_index_and_output) {
-        state.text_content_index_and_output = [
-          !state.refusal_content_index_and_output ? 0 : 1,
-          { text: '', type: 'output_text', providerData: { annotations: [] } },
-        ];
+      if (!state.text_content) {
+        state.text_content = {
+          text: '',
+          type: 'output_text',
+          providerData: { annotations: [] },
+        };
       }
       yield {
         type: 'output_text_delta',
@@ -63,7 +64,7 @@ export async function* convertChatCompletionsStreamToResponses(
           ...chunk,
         },
       };
-      state.text_content_index_and_output[1].text += delta.content;
+      state.text_content.text += delta.content;
     }
 
     if (
@@ -76,13 +77,10 @@ export async function* convertChatCompletionsStreamToResponses(
 
     // Handle refusals
     if ('refusal' in delta && delta.refusal) {
-      if (!state.refusal_content_index_and_output) {
-        state.refusal_content_index_and_output = [
-          !state.text_content_index_and_output ? 0 : 1,
-          { refusal: '', type: 'refusal' },
-        ];
+      if (!state.refusal_content) {
+        state.refusal_content = { refusal: '', type: 'refusal' };
       }
-      state.refusal_content_index_and_output[1].refusal += delta.refusal;
+      state.refusal_content.refusal += delta.refusal;
     }
 
     // Handle tool calls
@@ -117,24 +115,21 @@ export async function* convertChatCompletionsStreamToResponses(
     });
   }
 
-  if (
-    state.text_content_index_and_output ||
-    state.refusal_content_index_and_output
-  ) {
-    const assistant_msg: protocol.AssistantMessageItem = {
+  if (state.text_content || state.refusal_content) {
+    const content: protocol.AssistantContent[] = [];
+    if (state.text_content) {
+      content.push(state.text_content);
+    }
+    if (state.refusal_content) {
+      content.push(state.refusal_content);
+    }
+    outputs.push({
       id: FAKE_ID,
-      content: [],
+      content,
       role: 'assistant',
       type: 'message',
       status: 'completed',
-    };
-    if (state.text_content_index_and_output) {
-      assistant_msg.content.push(state.text_content_index_and_output[1]);
-    }
-    if (state.refusal_content_index_and_output) {
-      assistant_msg.content.push(state.refusal_content_index_and_output[1]);
-    }
-    outputs.push(assistant_msg);
+    });
   }
 
   for (const function_call of Object.values(state.function_calls)) {

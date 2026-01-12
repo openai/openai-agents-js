@@ -180,8 +180,9 @@ export class OpenAIConversationsSession
     }
 
     const conversationId = await this.getSessionId();
+    const sanitizedItems = stripIdsAndProviderData(items);
     await this.#client.conversations.items.create(conversationId, {
-      items: getInputItems(items),
+      items: getInputItems(sanitizedItems),
     });
   }
 
@@ -215,6 +216,30 @@ export class OpenAIConversationsSession
 // --------------------------------------------------------------
 //  Internals
 // --------------------------------------------------------------
+
+function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
+  return items.map((item) => {
+    if (Array.isArray(item) || item === null || typeof item !== 'object') {
+      return item;
+    }
+    // Conversations API rejects unknown top-level fields (e.g., model merged from providerData).
+    // Only strip providerData.model from message-like items; keep IDs intact for tool linkage.
+    const rest = { ...(item as Record<string, unknown>) };
+    const providerData = (item as { providerData?: unknown }).providerData;
+
+    if (
+      providerData &&
+      typeof providerData === 'object' &&
+      !Array.isArray(providerData)
+    ) {
+      const pdObj = providerData as Record<string, unknown>;
+      const { model: _model, ...pdRest } = pdObj;
+      (rest as Record<string, unknown>).providerData =
+        Object.keys(pdRest).length > 0 ? pdRest : undefined;
+    }
+    return rest as AgentInputItem;
+  });
+}
 
 const INPUT_CONTENT_TYPES = new Set([
   'input_text',

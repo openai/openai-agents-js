@@ -9,6 +9,7 @@
     "build-check": "tsc --noEmit",
     "start:memory": "tsx memory.ts",
     "start:memory-hitl": "tsx memory-hitl.ts",
+    "start:hitl-session-scenario": "tsx hitl-session-scenario.ts",
     "start:oai": "tsx oai.ts",
     "start:oai-hitl": "tsx oai-hitl.ts",
     "start:oai-compact": "tsx oai-compact.ts",

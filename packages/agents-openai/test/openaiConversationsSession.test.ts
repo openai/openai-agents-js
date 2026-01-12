@@ -404,6 +404,7 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
+        providerData: { model: 'some-model', extra: 'keep-me' },
       },
     ];
     const converted = [
@@ -412,6 +413,8 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
+        // model should be stripped, but other providerData should stay if present
+        providerData: { extra: 'keep-me' },
       },
     ];
 
@@ -434,7 +437,77 @@ describe('OpenAIConversationsSession', () => {
 
     await session.addItems(inputItems as any);
 
-    expect(getInputItemsMock).toHaveBeenCalledWith(inputItems);
+    expect(getInputItemsMock).toHaveBeenCalledWith(
+      inputItems.map((item) => {
+        const { providerData, ...rest } = item as any;
+        if (rest.providerData) {
+          const { model: _model, ...pdRest } = rest.providerData as any;
+          rest.providerData = Object.keys(pdRest).length ? pdRest : undefined;
+        } else if (providerData) {
+          const { model: _model, ...pdRest } = providerData as any;
+          rest.providerData = Object.keys(pdRest).length ? pdRest : undefined;
+        }
+        return rest;
+      }),
+    );
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: converted,
+    });
+  });
+
+  it('keeps providerData for hosted tool calls', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      {
+        id: 'call-1',
+        type: 'function_call',
+        name: 'search',
+        callId: 'call-1',
+        arguments: '{}',
+        providerData: {
+          type: 'web_search',
+          user_location: 'JP',
+          model: 'some-model',
+        },
+      },
+    ];
+    const converted = [
+      {
+        id: 'call-1',
+        type: 'function_call',
+        name: 'search',
+        call_id: 'call-1',
+        arguments: '{}',
+        providerData: { type: 'web_search', user_location: 'JP' },
+      },
+    ];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(getInputItemsMock).toHaveBeenCalledWith(
+      inputItems.map((item) => {
+        const { providerData, ...rest } = item as any;
+        const { model: _model, ...pdRest } = providerData;
+        return { ...rest, providerData: pdRest };
+      }),
+    );
     expect(createMock).toHaveBeenCalledWith('conv-123', {
       items: converted,
     });
