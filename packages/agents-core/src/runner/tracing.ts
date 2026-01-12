@@ -1,5 +1,6 @@
 import { Agent } from '../agent';
 import { Handoff } from '../handoff';
+import { ModelTracing } from '../model';
 import { Tool } from '../tool';
 import { setCurrentSpan } from '../tracing/context';
 import { createAgentSpan } from '../tracing';
@@ -10,6 +11,26 @@ type EnsureAgentSpanParams<TContext> = {
   tools: Tool<TContext>[];
   currentSpan?: ReturnType<typeof createAgentSpan>;
 };
+
+/**
+ * Normalizes tracing configuration into the format expected by model providers.
+ * Returns `false` to disable tracing, `true` to include full payload data, or
+ * `'enabled_without_data'` to omit sensitive content while still emitting spans.
+ */
+export function getTracing(
+  tracingDisabled: boolean,
+  traceIncludeSensitiveData: boolean,
+): ModelTracing {
+  if (tracingDisabled) {
+    return false;
+  }
+
+  if (traceIncludeSensitiveData) {
+    return true;
+  }
+
+  return 'enabled_without_data';
+}
 
 /**
  * Ensures an agent span exists and updates tool metadata if already present.

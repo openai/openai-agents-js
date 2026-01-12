@@ -1,6 +1,6 @@
 import { Agent } from '../agent';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from '../defaultModel';
-import { Model, ModelSettings, ModelTracing } from '../model';
+import { Model, ModelSettings } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
 
 const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
@@ -35,26 +35,6 @@ export function selectModel(
     return agentModel;
   }
   return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
-}
-
-/**
- * Normalizes tracing configuration into the format expected by model providers.
- * Returns `false` to disable tracing, `true` to include full payload data, or
- * `'enabled_without_data'` to omit sensitive content while still emitting spans.
- */
-export function getTracing(
-  tracingDisabled: boolean,
-  traceIncludeSensitiveData: boolean,
-): ModelTracing {
-  if (tracingDisabled) {
-    return false;
-  }
-
-  if (traceIncludeSensitiveData) {
-    return true;
-  }
-
-  return 'enabled_without_data';
 }
 
 /**

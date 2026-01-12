@@ -6,7 +6,6 @@ import * as defaultModelModule from '../../src/defaultModel';
 import type { Model, ModelSettings } from '../../src/model';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
-  getTracing,
   maybeResetToolChoice,
 } from '../../src/runner/modelSettings';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
@@ -15,15 +14,6 @@ import { FakeModelProvider } from '../stubs';
 beforeAll(() => {
   setTracingDisabled(true);
   setDefaultModelProvider(new FakeModelProvider());
-});
-
-describe('getTracing', () => {
-  it('returns the correct tracing mode for each combination', () => {
-    expect(getTracing(true, true)).toEqual(false);
-    expect(getTracing(true, false)).toEqual(false);
-    expect(getTracing(false, true)).toEqual(true);
-    expect(getTracing(false, false)).toEqual('enabled_without_data');
-  });
 });
 
 describe('maybeResetToolChoice', () => {

@@ -47,7 +47,6 @@ import {
 } from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
-  getTracing,
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
@@ -71,6 +70,7 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
+import { getTracing } from './runner/tracing';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
@@ -82,7 +82,8 @@ export type {
   CallModelInputFilterArgs,
   ModelInputData,
 } from './runner/types';
-export { getTracing, selectModel } from './runner/modelSettings';
+export { getTracing } from './runner/tracing';
+export { selectModel } from './runner/modelSettings';
 export { getTurnInput } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
