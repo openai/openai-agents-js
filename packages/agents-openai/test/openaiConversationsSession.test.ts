@@ -439,9 +439,12 @@ describe('OpenAIConversationsSession', () => {
 
     expect(getInputItemsMock).toHaveBeenCalledWith(
       inputItems.map((item) => {
-        const { id: _id, ...rest } = item as any;
+        const { providerData, ...rest } = item as any;
         if (rest.providerData) {
           const { model: _model, ...pdRest } = rest.providerData as any;
+          rest.providerData = Object.keys(pdRest).length ? pdRest : undefined;
+        } else if (providerData) {
+          const { model: _model, ...pdRest } = providerData as any;
           rest.providerData = Object.keys(pdRest).length ? pdRest : undefined;
         }
         return rest;
