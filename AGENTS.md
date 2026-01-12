@@ -4,24 +4,20 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 
 **Location:** `AGENTS.md` at the repository root.
 
-## ExecPlans
-
-When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
-Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
-
 ## Table of Contents
 
 1.  [Mandatory Skill Usage](#mandatory-skill-usage)
-2.  [Overview](#overview)
-3.  [Repo Structure & Important Files](#repo-structure--important-files)
-4.  [Testing & Automated Checks](#testing--automated-checks)
-5.  [Repo-Specific Utilities](#repo-specific-utilities)
-6.  [Style, Linting & Type Checking](#style-linting--type-checking)
-7.  [Development Workflow](#development-workflow)
-8.  [Pull Request & Commit Guidelines](#pull-request--commit-guidelines)
-9.  [Review Process & What Reviewers Look For](#review-process--what-reviewers-look-for)
-10. [Tips for Navigating the Repo](#tips-for-navigating-the-repo)
-11. [Prerequisites](#prerequisites)
+2.  [ExecPlans](#execplans)
+3.  [Overview](#overview)
+4.  [Repo Structure & Important Files](#repo-structure--important-files)
+5.  [Testing & Automated Checks](#testing--automated-checks)
+6.  [Repo-Specific Utilities](#repo-specific-utilities)
+7.  [Style, Linting & Type Checking](#style-linting--type-checking)
+8.  [Prerequisites](#prerequisites)
+9.  [Development Workflow](#development-workflow)
+10. [Pull Request & Commit Guidelines](#pull-request--commit-guidelines)
+11. [Review Process & What Reviewers Look For](#review-process--what-reviewers-look-for)
+12. [Tips for Navigating the Repo](#tips-for-navigating-the-repo)
 
 ## Mandatory Skill Usage
 
@@ -39,6 +35,11 @@ You can skip `$code-change-verification` for docs-only or repo-meta changes (for
 ### `$openai-knowledge`
 
 When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
+
+## ExecPlans
+
+When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name.
+Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
 
 ## Overview
 
