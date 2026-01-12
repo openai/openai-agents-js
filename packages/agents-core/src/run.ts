@@ -356,6 +356,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       callModelInputFilter,
     };
     const resumingFromState = input instanceof RunState;
+    const preserveTurnPersistenceOnResume =
+      resumingFromState &&
+      (input as RunState<TContext, TAgent>)._currentTurnInProgress === true;
     const resumedConversationId = resumingFromState
       ? (input as RunState<TContext, TAgent>)._conversationId
       : undefined;
@@ -416,6 +419,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           effectiveOptions,
           ensureStreamInputPersisted,
           sessionPersistence?.recordTurnItems,
+          preserveTurnPersistenceOnResume,
         );
         return streamResult;
       }
@@ -424,6 +428,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         preparedInput,
         effectiveOptions,
         sessionPersistence?.recordTurnItems,
+        preserveTurnPersistenceOnResume,
       );
       // See note above: allow sessions to run for callbacks/state but skip writes when the server
       // is the source of truth for transcript history.
@@ -509,6 +514,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -611,6 +617,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 input: state._originalInput,
                 generatedItems: state._generatedItems,
                 isResumedState,
+                preserveTurnPersistenceOnResume,
                 continuingInterruptedTurn: wasContinuingInterruptedTurn,
                 serverConversationTracker,
                 inputGuardrailDefs: this.inputGuardrailDefs,
@@ -755,6 +762,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               // Interrupted. Don't run any guardrails.
               return new RunResult<TContext, TAgent>(state);
             case 'next_step_run_again':
+              state._currentTurnInProgress = false;
               logger.debug('Running next loop');
               break;
             default:
@@ -804,6 +812,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<void> {
     const resolvedConversationId =
       options.conversationId ?? result.state._conversationId;
@@ -922,6 +931,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             input: result.input,
             generatedItems: result.newItems,
             isResumedState,
+            preserveTurnPersistenceOnResume,
             continuingInterruptedTurn: wasContinuingInterruptedTurn,
             serverConversationTracker,
             inputGuardrailDefs: this.inputGuardrailDefs,
@@ -1154,6 +1164,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             };
             break;
           case 'next_step_run_again':
+            result.state._currentTurnInProgress = false;
             logger.debug('Running next loop');
             break;
           default:
@@ -1221,6 +1232,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1269,6 +1281,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState,
         ensureStreamInputPersisted,
         sessionInputUpdate,
+        preserveTurnPersistenceOnResume,
       ).then(
         () => {
           result._done();

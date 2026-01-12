@@ -37,6 +37,7 @@ type PrepareTurnOptions<
   input: string | AgentInputItem[];
   generatedItems: RunItem[];
   isResumedState: boolean;
+  preserveTurnPersistenceOnResume?: boolean;
   continuingInterruptedTurn: boolean;
   serverConversationTracker?: ServerConversationTracker;
   inputGuardrailDefs: InputGuardrailDefinition[];
@@ -59,6 +60,7 @@ export async function prepareTurn<
     input,
     generatedItems,
     isResumedState,
+    preserveTurnPersistenceOnResume,
     continuingInterruptedTurn,
     serverConversationTracker,
     inputGuardrailDefs,
@@ -69,6 +71,7 @@ export async function prepareTurn<
 
   const { isResumingFromInterruption } = beginTurn(state, {
     isResumedState,
+    preserveTurnPersistenceOnResume,
     continuingInterruptedTurn,
   });
 
@@ -151,6 +154,7 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   state: RunState<TContext, TAgent>,
   options: {
     isResumedState: boolean;
+    preserveTurnPersistenceOnResume?: boolean;
     continuingInterruptedTurn: boolean;
   },
 ): { isResumingFromInterruption: boolean } {
@@ -163,7 +167,9 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   // still part of the same logical turn.
   if (!isResumingFromInterruption && !resumingTurnInProgress) {
     state._currentTurn++;
-    state.resetTurnPersistence();
+    if (!options.isResumedState || !options.preserveTurnPersistenceOnResume) {
+      state.resetTurnPersistence();
+    }
   }
   state._currentTurnInProgress = true;
 
