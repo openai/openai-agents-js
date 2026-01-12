@@ -226,6 +226,7 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     // Only strip providerData.model from message-like items; keep IDs intact for tool linkage.
     const rest = { ...(item as Record<string, unknown>) };
     const providerData = (item as { providerData?: unknown }).providerData;
+    const itemType = (rest as { type?: unknown }).type;
 
     if (
       providerData &&
@@ -236,13 +237,16 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
         typeof (providerData as { type?: unknown }).type === 'string';
       if (hasProviderType) {
         (rest as Record<string, unknown>).providerData = providerData;
-      } else {
+      } else if (itemType === 'message') {
         const { model: _model, ...pdRest } = providerData as Record<
           string,
           unknown
         >;
         (rest as Record<string, unknown>).providerData =
           Object.keys(pdRest).length > 0 ? pdRest : undefined;
+      } else {
+        // Preserve providerData (including model) for non-message items to keep model-specific metadata.
+        (rest as Record<string, unknown>).providerData = providerData;
       }
     }
     return rest as AgentInputItem;
