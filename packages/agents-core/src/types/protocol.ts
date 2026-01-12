@@ -106,6 +106,7 @@ export const InputFile = SharedBase.extend({
 
   /**
    * The file input to the model. Could be raw data, a URL, or an OpenAI file ID.
+   * When passing a string, it is interpreted as inline data or a URL; use `{ id }` for file IDs.
    */
   file: z
     // 1. file data

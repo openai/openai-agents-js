@@ -359,6 +359,7 @@ function convertStructuredOutputToRequestItem(
     const result: ResponseFunctionCallOutputListItem = { type: 'input_file' };
 
     if (typeof item.file === 'string') {
+      // String file values are treated as inline data or URLs; use { id: "file_..." } for OpenAI file IDs.
       const value = item.file.trim();
       if (value.startsWith('data:')) {
         result.file_data = value;

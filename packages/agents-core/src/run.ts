@@ -960,6 +960,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (inputMarked || !serverConversationTracker) {
               return;
             }
+            // We only mark inputs as sent after receiving the first stream event,
+            // which is the earliest reliable confirmation that the server accepted
+            // the request. If the stream fails before any events, leave inputs
+            // unmarked so a retry can resend safely.
             // Record the exact input that was sent so the server tracker can advance safely.
             serverConversationTracker.markInputAsSent(
               preparedCall.sourceItems,
