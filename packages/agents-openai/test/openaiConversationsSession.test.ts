@@ -456,6 +456,7 @@ describe('OpenAIConversationsSession', () => {
     const createMock = vi.fn();
     const inputItems = [
       {
+        id: 'call-1',
         type: 'function_call',
         name: 'search',
         callId: 'call-1',
@@ -465,6 +466,7 @@ describe('OpenAIConversationsSession', () => {
     ];
     const converted = [
       {
+        id: 'call-1',
         type: 'function_call',
         name: 'search',
         call_id: 'call-1',

@@ -225,8 +225,19 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     // Conversations API rejects unknown top-level fields (e.g., model merged from providerData).
     // Drop transient IDs and only strip providerData.model for message-like items while keeping
     // providerData for hosted tool calls that rely on it.
-    const { id: _id, ...rest } = item as Record<string, unknown>;
+    const { id, ...rest } = item as Record<string, unknown>;
     const providerData = (item as { providerData?: unknown }).providerData;
+
+    const hasTypedProviderData =
+      providerData &&
+      typeof providerData === 'object' &&
+      !Array.isArray(providerData) &&
+      typeof (providerData as { type?: unknown }).type === 'string';
+    if (hasTypedProviderData) {
+      // Hosted tool calls rely on IDs; retain them when providerData.type is present.
+      (rest as Record<string, unknown>).id = id;
+    }
+
     if (
       providerData &&
       typeof providerData === 'object' &&
