@@ -38,9 +38,17 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  * The schema version of the serialized run state. This is used to ensure that the serialized
  * run state is compatible with the current version of the SDK.
  * If anything in this schema changes, the version will have to be incremented.
+ *
+ * Version history.
+ * - 1.0: Initial serialized RunState schema.
+ * - 1.1: Adds optional currentTurnInProgress, conversationId, and previousResponseId fields,
+ *   plus broader tool_call_output_item rawItem variants for non-function tools. Older 1.0
+ *   payloads remain readable but resumes may lack mid-turn or server-managed context precision.
  */
 export const CURRENT_SCHEMA_VERSION = '1.1' as const;
-const $schemaVersion = z.literal(CURRENT_SCHEMA_VERSION);
+const SUPPORTED_SCHEMA_VERSIONS = ['1.0', CURRENT_SCHEMA_VERSION] as const;
+type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
+const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 
 const serializedAgentSchema = z.object({
   name: z.string(),
@@ -676,9 +684,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     if (!currentSchemaVersion) {
       throw new UserError('Run state is missing schema version');
     }
-    if (currentSchemaVersion !== CURRENT_SCHEMA_VERSION) {
+    if (
+      !SUPPORTED_SCHEMA_VERSIONS.includes(
+        currentSchemaVersion as SupportedSchemaVersion,
+      )
+    ) {
       throw new UserError(
-        `Run state schema version ${currentSchemaVersion} is not supported. Please use version ${CURRENT_SCHEMA_VERSION}`,
+        `Run state schema version ${currentSchemaVersion} is not supported. Please use version ${CURRENT_SCHEMA_VERSION}.`,
       );
     }
 

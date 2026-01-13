@@ -482,6 +482,28 @@ describe('Runner.run', () => {
       expect(resumed.finalOutput).toBe(first.finalOutput);
     });
 
+    it('resumes from schema 1.0 RunState', async () => {
+      const agent = new Agent({
+        name: 'ResumeV1',
+        model: new FakeModel([
+          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        ]),
+      });
+      const first = await run(agent, 'hi');
+      const json = first.state.toJSON() as any;
+      delete json.currentAgentSpan;
+      delete json.currentTurnInProgress;
+      delete json.conversationId;
+      delete json.previousResponseId;
+      json.$schemaVersion = '1.0';
+      const restored = await RunState.fromString(agent, JSON.stringify(json));
+      expect(restored._currentTurnInProgress).toBe(false);
+      expect(restored._conversationId).toBeUndefined();
+      expect(restored._previousResponseId).toBeUndefined();
+      const resumed = await run(agent, restored);
+      expect(resumed.finalOutput).toBe(first.finalOutput);
+    });
+
     it('input guardrail executes only once', async () => {
       const firstResponse: ModelResponse = {
         output: [
