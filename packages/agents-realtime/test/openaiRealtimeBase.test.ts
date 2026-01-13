@@ -1,11 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RealtimeClientMessage } from '../src/clientMessages';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
+import logger from '../src/logger';
 
 class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'connected';
   events: RealtimeClientMessage[] = [];
+  afterAudioDoneCalled = 0;
   connect = vi.fn(async () => {});
   sendEvent(event: RealtimeClientMessage) {
     this.events.push(event);
@@ -15,6 +17,10 @@ class TestBase extends OpenAIRealtimeBase {
   interrupt = vi.fn();
   get muted() {
     return false;
+  }
+
+  protected _afterAudioDoneEvent(): void {
+    this.afterAudioDoneCalled += 1;
   }
 }
 
@@ -29,6 +35,16 @@ function createToolCall() {
 }
 
 describe('OpenAIRealtimeBase helpers', () => {
+  beforeEach(() => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('resolves api keys from options', async () => {
     const base = new TestBase({ apiKey: () => 'fromCtor' });
     const key1 = await (base as any)._getApiKey({});
@@ -231,5 +247,219 @@ describe('OpenAIRealtimeBase helpers', () => {
         content: [{ type: 'input_text', text: 'b' }],
       },
     });
+  });
+
+  it('routes response.done usage and turn events', () => {
+    const base = new TestBase();
+    const usages: any[] = [];
+    const turns: any[] = [];
+    base.on('usage_update', (u) => usages.push(u));
+    base.on('turn_done', (t) => turns.push(t));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'e1',
+        response: {
+          id: 'r1',
+          output: [{ type: 'output_text', text: 'hi' }],
+          usage: { input_tokens: 2, output_tokens: 3 },
+        },
+      }),
+    });
+
+    expect(usages[0]?.totalTokens).toBe(5);
+    expect(turns[0]?.response.id).toBe('r1');
+    expect(turns[0]?.response.output).toHaveLength(1);
+  });
+
+  it('handles audio done and fires afterAudioDoneEvent', () => {
+    const base = new TestBase();
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_audio.done',
+        event_id: 'e2',
+        item_id: 'it1',
+        content_index: 0,
+        output_index: 0,
+        response_id: 'r2',
+      }),
+    });
+    expect(base.afterAudioDoneCalled).toBe(1);
+    expect(base.events).toHaveLength(0);
+  });
+
+  it('requests item retrieval on transcription completion or truncation', () => {
+    const completedBase = new TestBase();
+    (completedBase as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.completed',
+        event_id: 'c_done',
+        item_id: 'x2',
+        content_index: 0,
+        transcript: 'done',
+      }),
+    });
+    expect(completedBase.events[0]).toEqual({
+      type: 'conversation.item.retrieve',
+      item_id: 'x2',
+    });
+
+    const truncatedBase = new TestBase();
+    (truncatedBase as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.truncated',
+        event_id: 'c_trunc',
+        item_id: 'x3',
+        audio_end_ms: 10,
+        content_index: 0,
+      }),
+    });
+    expect(truncatedBase.events[0]).toEqual({
+      type: 'conversation.item.retrieve',
+      item_id: 'x3',
+    });
+  });
+
+  it('emits message and mcp approval items on item updates', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const approvals: any[] = [];
+    base.on('mcp_approval_request', (req) => approvals.push(req));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'c1',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello' }],
+          status: 'in_progress',
+        },
+        previous_item_id: null,
+      }),
+    });
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'c2',
+        item: {
+          id: 'a1',
+          type: 'mcp_approval_request',
+          server_label: 's1',
+          name: 'tool',
+          arguments: '{"x":1}',
+          approved: null,
+        },
+      }),
+    });
+
+    expect(updates.some((u) => u.type === 'message')).toBe(true);
+    expect(approvals[0]?.serverLabel).toBe('s1');
+  });
+
+  it('emits function_call and mcp call updates on output items', () => {
+    const base = new TestBase();
+    const funcs: any[] = [];
+    base.on('function_call', (f) => funcs.push(f));
+    const updates: any[] = [];
+    base.on('item_update', (i) => updates.push(i));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'o1',
+        response_id: 'r3',
+        output_index: 0,
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          status: 'completed',
+          arguments: '{}',
+          name: 'calc',
+          call_id: 'c1',
+        },
+      }),
+    });
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.added',
+        event_id: 'o2',
+        response_id: 'r4',
+        output_index: 0,
+        item: {
+          id: 'mcp1',
+          type: 'mcp_call',
+          status: 'in_progress',
+          arguments: '{}',
+          name: 'list',
+          output: null,
+        },
+      }),
+    });
+
+    expect(funcs[0]?.name).toBe('calc');
+    expect(updates.find((u) => (u as any).itemId === 'mcp1')).toBeTruthy();
+  });
+
+  it('retrieves MCP tool call items on in-progress signals', () => {
+    const base = new TestBase();
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.mcp_call.in_progress',
+        event_id: 'm1',
+        response_id: 'r5',
+        output_index: 0,
+        item_id: 'm1',
+      }),
+    });
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'mcp_list_tools.in_progress',
+        item_id: 'tools1',
+      }),
+    });
+
+    expect(base.events).toEqual([
+      { type: 'conversation.item.retrieve', item_id: 'm1' },
+      { type: 'conversation.item.retrieve', item_id: 'tools1' },
+    ]);
+  });
+
+  it('enforces tracing config transitions', () => {
+    const base = new TestBase();
+    const sendSpy = vi.spyOn(base, 'sendEvent');
+
+    // turn on auto
+    (base as any)._updateTracingConfig('auto');
+    // set explicit config first time
+    (base as any)._updateTracingConfig({
+      group_id: 'g1',
+      workflow_name: 'wf',
+      metadata: { a: 1 },
+    });
+    (base as any)._tracingConfig = {
+      group_id: 'g1',
+      workflow_name: 'wf',
+      metadata: { a: 1 },
+    };
+    // attempt incompatible change should warn and not send
+    (base as any)._updateTracingConfig({
+      group_id: 'g2',
+      workflow_name: 'wf2',
+    });
+    expect(logger.warn).toHaveBeenCalled();
+
+    // disable tracing
+    (base as any)._updateTracingConfig(null);
+
+    const sentTypes = sendSpy.mock.calls.map((c) => c[0].type);
+    expect(sentTypes).toContain('session.update');
   });
 });

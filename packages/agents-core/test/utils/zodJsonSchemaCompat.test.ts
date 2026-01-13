@@ -100,4 +100,45 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
     expect(jsonSchema?.required).toEqual(['title', 'tags']);
   });
+
+  it('handles map, set, nullable, and enum fallbacks', () => {
+    enum Status {
+      Ready = 'ready',
+      Done = 'done',
+    }
+
+    const schema = z.object({
+      map: z.map(z.string(), z.number()),
+      set: z.set(z.string()),
+      nullable: z.string().nullable(),
+      nativeEnum: z.nativeEnum(Status),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.properties.map).toEqual({
+      type: 'array',
+      items: { type: 'number' },
+    });
+    expect(jsonSchema?.properties.set).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+      uniqueItems: true,
+    });
+    expect(jsonSchema?.properties.nullable).toEqual({
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    });
+    expect(jsonSchema?.properties.nativeEnum).toEqual({
+      enum: ['ready', 'done'],
+    });
+  });
+
+  it('returns undefined when schema shape cannot be introspected', () => {
+    const tricky = {
+      shape: () => {
+        throw new Error('boom');
+      },
+    } as unknown as z.ZodObject<any>;
+
+    expect(zodJsonSchemaCompat(tricky)).toBeUndefined();
+  });
 });
