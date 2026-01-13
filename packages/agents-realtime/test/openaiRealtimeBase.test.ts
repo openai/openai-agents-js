@@ -105,6 +105,71 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(session?.audio?.output?.voice).toBe('echo');
   });
 
+  it('whitelists function tools in session payload', () => {
+    const base = new TestBase();
+    const payload = (base as any)._getMergedSessionConfig({
+      instructions: 'hi',
+      model: 'gpt-realtime',
+      tools: [
+        {
+          type: 'function',
+          name: 'foo',
+          description: 'desc',
+          parameters: { type: 'object', properties: {}, required: [] },
+          inputGuardrails: [{ name: 'ig' }],
+          outputGuardrails: [{ name: 'og' }],
+          needsApproval: true,
+          handler: () => {},
+        },
+      ],
+    });
+
+    expect(payload.tools).toEqual([
+      {
+        type: 'function',
+        name: 'foo',
+        description: 'desc',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    ]);
+  });
+
+  it('whitelists mcp tools in session payload', () => {
+    const base = new TestBase();
+    const payload = (base as any)._getMergedSessionConfig({
+      instructions: 'hi',
+      model: 'gpt-realtime',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'deepwiki',
+          server_url: 'https://mcp.deepwiki.com/sse',
+          server_description: 'desc',
+          connector_id: 'connector_dropbox',
+          authorization: 'token',
+          headers: { Authorization: 'Bearer t' },
+          allowed_tools: ['a'],
+          require_approval: 'always',
+          inputGuardrails: [{ name: 'ig' }],
+        },
+      ],
+    });
+
+    expect(payload.tools).toEqual([
+      {
+        type: 'mcp',
+        server_label: 'deepwiki',
+        server_url: 'https://mcp.deepwiki.com/sse',
+        server_description: 'desc',
+        connector_id: 'connector_dropbox',
+        authorization: 'token',
+        headers: { Authorization: 'Bearer t' },
+        allowed_tools: ['a'],
+        require_approval: 'always',
+      },
+    ]);
+  });
+
   it('sendFunctionCallOutput emits item_update and response.create', () => {
     const base = new TestBase();
     const updates: any[] = [];

@@ -609,10 +609,37 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (newConfig.tools && newConfig.tools.length > 0) {
-      sessionData.tools = newConfig.tools.map((tool: any) => ({
-        ...tool,
-        strict: undefined,
-      }));
+      sessionData.tools = newConfig.tools.map((tool: any) => {
+        const pickDefined = (obj: Record<string, any>) =>
+          Object.fromEntries(
+            Object.entries(obj).filter(
+              ([, value]) => typeof value !== 'undefined',
+            ),
+          );
+
+        if (tool.type === 'mcp') {
+          // Realtime API MCP tool shape: session.update properties and MCP tool headers
+          return pickDefined({
+            type: 'mcp',
+            server_label: tool.server_label,
+            server_url: tool.server_url,
+            server_description: tool.server_description,
+            connector_id: tool.connector_id,
+            authorization: tool.authorization,
+            headers: tool.headers,
+            allowed_tools: tool.allowed_tools,
+            require_approval: tool.require_approval,
+          });
+        }
+
+        // Realtime API function tool shape: keep only documented fields for session.update.
+        return pickDefined({
+          type: tool.type,
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        });
+      });
     }
 
     return sessionData;
