@@ -16,6 +16,6 @@
     "start:code-interpreter": "tsx code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts",
     "start:shell": "tsx shell.ts",
-    "start:apply-patch": "tsx applyPatch.ts"
+    "start:apply-patch": "tsx apply-patch.ts"
   }
 }

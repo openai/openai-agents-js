@@ -2,8 +2,14 @@ import { z } from 'zod';
 import readline from 'node:readline/promises';
 import { Agent, run, tool } from '@openai/agents';
 
+const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
+
 // Prompt user for yes/no confirmation
 async function confirm(question: string): Promise<boolean> {
+  if (AUTO_APPROVE_HITL) {
+    console.log(`[auto-approve] ${question}`);
+    return true;
+  }
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,

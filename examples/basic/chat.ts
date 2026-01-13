@@ -3,7 +3,10 @@ import type { AgentInputItem } from '@openai/agents';
 import { createInterface } from 'node:readline/promises';
 import { z } from 'zod';
 
-async function ask(prompt: string) {
+const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
+
+async function ask(prompt: string, fallback: string) {
+  if (autoMode) return fallback;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const message = await rl.question(prompt);
   rl.close();
@@ -43,7 +46,7 @@ async function main() {
   console.log('Type exit() to leave');
   await withTrace('Chat Session', async () => {
     while (true) {
-      const message = await ask('> ');
+      const message = await ask('> ', 'What is the weather in Tokyo?');
       if (message === 'exit()') {
         return;
       }
@@ -56,6 +59,7 @@ async function main() {
         latestAgent = result.lastAgent;
       }
       history = result.history;
+      if (autoMode) return; // single turn in auto mode
     }
   });
 }

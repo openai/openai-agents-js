@@ -78,8 +78,15 @@ const triageAgent = new Agent<AppContext>({
   handoffs: [spanishHandoff, frenchHandoff, italianHandoff],
 });
 
+const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
+
 async function main() {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = async (prompt: string, fallback: string) => {
+    if (autoMode) return fallback;
+    return (await rl.question(prompt)).trim();
+  };
 
   try {
     console.log(introduction);
@@ -90,7 +97,7 @@ async function main() {
     );
     console.log('3. European languages (handoffs to all three agents)');
 
-    const choice = (await rl.question('\nSelect option (1-3): ')).trim();
+    const choice = await ask('\nSelect option (1-3): ', '2');
     const preferenceMap: Record<string, LanguagePreference> = {
       '1': 'spanish_only',
       '2': 'french_spanish',
@@ -111,8 +118,9 @@ async function main() {
         : 'Available handoffs: none.',
     );
 
-    const userRequest = await rl.question(
+    const userRequest = await ask(
       '\nAsk a question and see which specialist handles the conversation:\n',
+      'How do you say good night?',
     );
 
     if (!userRequest.trim()) {

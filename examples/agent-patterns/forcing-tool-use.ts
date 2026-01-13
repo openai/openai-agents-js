@@ -86,19 +86,23 @@ const flagIndex = args.findIndex(
   (arg) => arg === '-t' || arg === '--tool-use-behavior',
 );
 
-if (flagIndex !== -1 && args[flagIndex + 1]) {
+if (flagIndex !== -1) {
   const value = args[flagIndex + 1];
+  if (!value) {
+    console.error(
+      'Missing value for --tool-use-behavior. Use one of: default, first_tool, custom.',
+    );
+    process.exit(1);
+  }
   if (value === 'default' || value === 'first_tool' || value === 'custom') {
     toolUseBehavior = value;
   } else {
     console.error('Invalid tool use behavior:', value);
+    console.error(
+      'Valid options: default (send tool outputs back to the model), first_tool (use the first tool result as the final output), custom (run a custom tool use behavior).',
+    );
     process.exit(1);
   }
-} else {
-  console.log(
-    'Usage: pnpm run start:forcing-tool-use -t <default|first_tool|custom>',
-  );
-  process.exit(1);
 }
 
 main(toolUseBehavior).catch((error) => {
