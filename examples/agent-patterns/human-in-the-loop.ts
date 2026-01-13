@@ -52,7 +52,13 @@ const agent = new Agent({
   ],
 });
 
+const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
+
 async function confirm(question: string) {
+  if (AUTO_APPROVE_HITL) {
+    console.log(`[auto-approve] ${question}`);
+    return true;
+  }
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,

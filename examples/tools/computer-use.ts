@@ -138,7 +138,14 @@ class LocalPlaywrightComputer implements Computer {
       if (typeof this._page.isClosed === 'function' && this._page.isClosed()) {
         throw new Error('Page is already closed');
       }
-      await this._page.waitForLoadState('networkidle');
+      // Be more lenient: fall back to 'load' if networkidle stalls (e.g., long polling ads/widgets).
+      try {
+        await this._page.waitForLoadState('networkidle', { timeout: 15000 });
+      } catch (_err) {
+        console.warn('networkidle wait timed out; retrying with load state');
+        await this._page.waitForLoadState('load', { timeout: 15000 });
+      }
+      // One retry of the screenshot to reduce transient failures.
       const buf = await this._page.screenshot({ fullPage: false });
       return Buffer.from(buf).toString('base64');
     } catch (err) {

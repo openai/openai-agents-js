@@ -75,7 +75,13 @@ const orchestrator = new Agent<AppContext>({
 });
 
 async function main() {
+  const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = async (prompt: string, fallback: string) => {
+    if (autoMode) return fallback;
+    return (await rl.question(prompt)).trim();
+  };
 
   try {
     console.log(introduction);
@@ -84,7 +90,7 @@ async function main() {
     console.log('2. French and Spanish (2 tools)');
     console.log('3. European languages (3 tools)');
 
-    const choice = (await rl.question('\nSelect option (1-3): ')).trim();
+    const choice = await ask('\nSelect option (1-3): ', '2');
     const preferenceMap: Record<string, LanguagePreference> = {
       '1': 'spanish_only',
       '2': 'french_spanish',
@@ -103,8 +109,9 @@ async function main() {
         : 'Available tools: none.',
     );
 
-    const userRequest = await rl.question(
+    const userRequest = await ask(
       '\nAsk a question and see responses in the available languages:\n',
+      'How do you say good morning?',
     );
 
     if (!userRequest.trim()) {

@@ -11,6 +11,11 @@ import {
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools';
+import { runAutoTurn } from './auto-mode';
+
+const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
+const AUTO_MODE = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
+const AUTO_MESSAGE = 'Fetch profile for customer 101.';
 
 const customerDirectory: Record<string, string> = {
   '101':
@@ -50,17 +55,21 @@ async function promptYesNo(
   rl: ReadlineInterface,
   question: string,
 ): Promise<boolean> {
+  if (AUTO_APPROVE_HITL) {
+    console.log(`[auto-approve] ${question}`);
+    return true;
+  }
   const answer = await rl.question(`${question} (y/n): `);
   const normalized = answer.trim().toLowerCase();
   return normalized === 'y' || normalized === 'yes';
 }
 
-async function resolveInterruptions<TContext, TAgent extends Agent<any, any>>(
+async function resolveInterruptions(
   rl: ReadlineInterface,
-  agent: TAgent,
-  initialResult: RunResult<TContext, TAgent>,
+  agent: Agent<any, any>,
+  initialResult: RunResult<any, any>,
   session: MemorySession,
-): Promise<RunResult<TContext, TAgent>> {
+): Promise<RunResult<any, any>> {
   let result = initialResult;
   while (result.interruptions?.length) {
     for (const interruption of result.interruptions) {
@@ -96,6 +105,19 @@ async function main() {
     const session = new MemorySession();
     const sessionId = await session.getSessionId();
     const rl = readline.createInterface({ input, output });
+
+    if (AUTO_MODE) {
+      // Automated example run helper; safe to ignore in normal usage.
+      await runAutoTurn(
+        agent,
+        session,
+        resolveInterruptions,
+        AUTO_MESSAGE,
+        console.log,
+      );
+      rl.close();
+      return;
+    }
 
     console.log(`Session id: ${sessionId}`);
     console.log(
