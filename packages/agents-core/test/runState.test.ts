@@ -11,6 +11,7 @@ import { Agent } from '../src/agent';
 import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
+  RunToolCallOutputItem,
 } from '../src/items';
 import { applyPatchTool, computerTool, shellTool } from '../src/tool';
 import * as protocol from '../src/types/protocol';
@@ -126,6 +127,29 @@ describe('RunState', () => {
     expect(restoredWithoutKey._trace?.tracingApiKey).toBeUndefined();
 
     provider.setDisabled(true);
+  });
+
+  it('serializes tool_call_output_item for non-function tools', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'OutputAgent' });
+    const rawShellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call-shell',
+      output: [
+        { stdout: 'ok', stderr: '', outcome: { type: 'exit', exitCode: 0 } },
+      ],
+    };
+    const state = new RunState(context, 'input', agent, 1);
+    state._generatedItems.push(
+      new RunToolCallOutputItem(rawShellOutput, agent, rawShellOutput.output),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const restoredItem = restored._generatedItems[0];
+    expect(restoredItem).toBeInstanceOf(RunToolCallOutputItem);
+    expect((restoredItem as RunToolCallOutputItem).rawItem).toEqual(
+      rawShellOutput,
+    );
   });
 
   it('throws error if schema version is missing or invalid', async () => {

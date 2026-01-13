@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OpenAITracingExporter } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
 import { createCustomSpan } from '@openai/agents-core';
+import logger from '../src/logger';
 
 describe('OpenAITracingExporter', () => {
   const fakeSpan = createCustomSpan({
@@ -25,6 +26,7 @@ describe('OpenAITracingExporter', () => {
   });
 
   it('skips export when no apiKey', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const exporter = new OpenAITracingExporter({ apiKey: '' });
@@ -35,6 +37,10 @@ describe('OpenAITracingExporter', () => {
     });
     await exporter.export([item]);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'No API key provided for OpenAI tracing exporter. Exports will be skipped',
+    );
+    errorSpy.mockRestore();
   });
 
   it('exports payload via fetch when apiKey is provided', async () => {
@@ -67,6 +73,7 @@ describe('OpenAITracingExporter', () => {
   });
 
   it('retries on server errors', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const item = fakeSpan;
     const fetchMock = vi
       .fn()
@@ -87,9 +94,14 @@ describe('OpenAITracingExporter', () => {
     });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing: server error 500, retrying.',
+    );
+    warnSpy.mockRestore();
   });
 
   it('stops on client error', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const item = fakeSpan;
     const fetchMock = vi
       .fn()
@@ -102,6 +114,10 @@ describe('OpenAITracingExporter', () => {
     });
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing client error 400: bad',
+    );
+    errorSpy.mockRestore();
   });
 
   it('uses item-level API keys when exporting', async () => {

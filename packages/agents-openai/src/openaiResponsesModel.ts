@@ -359,6 +359,7 @@ function convertStructuredOutputToRequestItem(
     const result: ResponseFunctionCallOutputListItem = { type: 'input_file' };
 
     if (typeof item.file === 'string') {
+      // String file values are treated as inline data or URLs; use { id: "file_..." } for OpenAI file IDs.
       const value = item.file.trim();
       if (value.startsWith('data:')) {
         result.file_data = value;
@@ -1641,8 +1642,12 @@ export class OpenAIResponsesModel implements Model {
       input,
       include,
       ...(shouldSendTools ? { tools } : {}),
-      previous_response_id: request.previousResponseId,
+      // The Responses API treats `conversation` and `previous_response_id` as mutually exclusive,
+      // so we only send `previous_response_id` when no conversation is provided.
       conversation: request.conversationId,
+      ...(request.conversationId
+        ? {}
+        : { previous_response_id: request.previousResponseId }),
       prompt,
       temperature: request.modelSettings.temperature,
       top_p: request.modelSettings.topP,

@@ -1,103 +1,92 @@
 import { Agent, AgentOutputType } from './agent';
+import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
+import { ModelBehaviorError, UserError } from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
   InputGuardrail,
+  OutputGuardrail,
+} from './guardrail';
+import type {
   InputGuardrailDefinition,
   InputGuardrailResult,
-  OutputGuardrail,
   OutputGuardrailDefinition,
-  OutputGuardrailFunctionArgs,
   OutputGuardrailMetadata,
 } from './guardrail';
 import { Handoff, HandoffInputFilter } from './handoff';
-import {
-  Model,
-  ModelProvider,
-  ModelResponse,
-  ModelSettings,
-  ModelTracing,
-  Prompt,
-  SerializedHandoff,
-  SerializedTool,
-} from './model';
-import { getDefaultModelProvider } from './providers';
-import { RunContext } from './runContext';
-import { AgentInputItem } from './types';
-import { RunResult, StreamedRunResult } from './result';
 import { RunHooks } from './lifecycle';
 import logger from './logger';
-import { serializeTool, serializeHandoff } from './utils/serialize';
-import {
-  GuardrailExecutionError,
-  InputGuardrailTripwireTriggered,
-  MaxTurnsExceededError,
-  ModelBehaviorError,
-  OutputGuardrailTripwireTriggered,
-  UserError,
-} from './errors';
-import {
-  addStepToRunResult,
-  resolveInterruptedTurn,
-  resolveTurnAfterModelResponse,
-  maybeResetToolChoice,
-  ProcessedResponse,
-  processModelResponse,
-  streamStepItemsToRunResult,
-  saveStreamInputToSession,
-  saveStreamResultToSession,
-  saveToSession,
-  prepareInputItemsWithSession,
-} from './runImplementation';
+import { Model, ModelProvider, ModelResponse, ModelSettings } from './model';
+import { getDefaultModelProvider } from './providers';
+import { RunContext } from './runContext';
+import { RunResult, StreamedRunResult } from './result';
+import { RunState } from './runState';
 import { RunItem } from './items';
-import {
-  ComputerTool,
-  Tool,
-  resolveComputer,
-  disposeResolvedComputers,
-} from './tool';
+import { disposeResolvedComputers } from './tool';
 import {
   getOrCreateTrace,
-  addErrorToCurrentSpan,
   resetCurrentSpan,
   setCurrentSpan,
   withNewSpanContext,
   withTrace,
 } from './tracing/context';
-import { createAgentSpan, withGuardrailSpan } from './tracing';
 import type { TracingConfig } from './tracing';
 import { Usage } from './usage';
-import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { RunState } from './runState';
-import { StreamEventResponseCompleted } from './types/protocol';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
-import { gpt5ReasoningSettingsRequired, isGpt5Default } from './defaultModel';
+import { DEFAULT_MAX_TURNS } from './runner/constants';
+import { StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
-import { encodeUint8ArrayToBase64 } from './utils/base64';
+import type { AgentInputItem } from './types';
 import {
-  isArrayBufferView,
-  isNodeBuffer,
-  isSerializedBufferSnapshot,
-} from './utils/smartString';
+  ServerConversationTracker,
+  applyCallModelInputFilter,
+} from './runner/conversation';
+import {
+  createGuardrailTracker,
+  runOutputGuardrails,
+} from './runner/guardrails';
+import {
+  adjustModelSettingsForNonGPT5RunnerModel,
+  maybeResetToolChoice,
+  selectModel,
+} from './runner/modelSettings';
+import { processModelResponse } from './runner/modelOutputs';
+import {
+  addStepToRunResult,
+  streamStepItemsToRunResult,
+  isAbortError,
+} from './runner/streaming';
+import {
+  createSessionPersistenceTracker,
+  prepareInputItemsWithSession,
+  saveStreamInputToSession,
+  saveStreamResultToSession,
+  saveToSession,
+} from './runner/sessionPersistence';
+import { resolveTurnAfterModelResponse } from './runner/turnResolution';
+import { prepareTurn } from './runner/turnPreparation';
+import {
+  applyTurnResult,
+  handleInterruptedOutcome,
+  resumeInterruptedTurn,
+} from './runner/runLoop';
+import { getTracing } from './runner/tracing';
+import type {
+  AgentArtifacts,
+  CallModelInputFilter,
+  PreparedModelCall,
+} from './runner/types';
 
-const isAbortError = (error: unknown): boolean => {
-  if (!error) {
-    return false;
-  }
-  if (error instanceof Error && error.name === 'AbortError') {
-    return true;
-  }
-  const DomExceptionCtor =
-    typeof DOMException !== 'undefined' ? DOMException : undefined;
-  if (
-    DomExceptionCtor &&
-    error instanceof DomExceptionCtor &&
-    error.name === 'AbortError'
-  ) {
-    return true;
-  }
-  return false;
-};
+export type {
+  CallModelInputFilter,
+  CallModelInputFilterArgs,
+  ModelInputData,
+} from './runner/types';
+export { getTracing } from './runner/tracing';
+export { selectModel } from './runner/modelSettings';
+export { getTurnInput } from './runner/items';
+
+// Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
 // --------------------------------------------------------------
 //  Configuration
@@ -367,158 +356,31 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback,
       callModelInputFilter,
     };
+    const resumingFromState = input instanceof RunState;
+    const preserveTurnPersistenceOnResume =
+      resumingFromState &&
+      (input as RunState<TContext, TAgent>)._currentTurnInProgress === true;
+    const resumedConversationId = resumingFromState
+      ? (input as RunState<TContext, TAgent>)._conversationId
+      : undefined;
+    const resumedPreviousResponseId = resumingFromState
+      ? (input as RunState<TContext, TAgent>)._previousResponseId
+      : undefined;
     const serverManagesConversation =
-      Boolean(effectiveOptions.conversationId) ||
-      Boolean(effectiveOptions.previousResponseId);
+      Boolean(effectiveOptions.conversationId ?? resumedConversationId) ||
+      Boolean(effectiveOptions.previousResponseId ?? resumedPreviousResponseId);
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
-    const resumingFromState = input instanceof RunState;
-    let sessionInputOriginalSnapshot: AgentInputItem[] | undefined =
-      session && resumingFromState ? [] : undefined;
-    let sessionInputFilteredSnapshot: AgentInputItem[] | undefined = undefined;
-    // Tracks remaining persistence slots per AgentInputItem key so resumed sessions only write each original occurrence once.
-    let sessionInputPendingWriteCounts: Map<string, number> | undefined =
-      session && resumingFromState ? new Map() : undefined;
-    // Keeps track of which inputs should be written back to session memory. `sourceItems` reflects
-    // the original objects (so we can respect resume counts) while `filteredItems`, when present,
-    // contains the filtered/redacted clones that must be persisted for history.
-    // The helper reconciles the filtered copies produced by callModelInputFilter with their original
-    // counterparts so resume-from-state bookkeeping stays consistent and duplicate references only
-    // consume a single persistence slot.
-    const recordSessionItemsForPersistence = (
-      sourceItems: (AgentInputItem | undefined)[],
-      filteredItems?: AgentInputItem[],
-    ) => {
-      const pendingWriteCounts = sessionInputPendingWriteCounts;
-      if (filteredItems !== undefined) {
-        if (!pendingWriteCounts) {
-          sessionInputFilteredSnapshot = filteredItems.map((item) =>
-            structuredClone(item),
-          );
-          return;
-        }
-        const persistableItems: AgentInputItem[] = [];
-        const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
-        // Track how many times each original object appears so duplicate references only consume one persistence slot.
-        for (const source of sourceItems) {
-          if (!source || typeof source !== 'object') {
-            continue;
-          }
-          const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
-          sourceOccurrenceCounts.set(source, nextCount);
-        }
-        // Let filtered items without a one-to-one source match claim any remaining persistence count.
-        const consumeAnyPendingWriteSlot = () => {
-          for (const [key, remaining] of pendingWriteCounts) {
-            if (remaining > 0) {
-              pendingWriteCounts.set(key, remaining - 1);
-              return true;
-            }
-          }
-          return false;
-        };
-        for (let i = 0; i < filteredItems.length; i++) {
-          const filteredItem = filteredItems[i];
-          if (!filteredItem) {
-            continue;
-          }
-          let allocated = false;
-          const source = sourceItems[i];
-          if (source && typeof source === 'object') {
-            const pendingOccurrences =
-              (sourceOccurrenceCounts.get(source) ?? 0) - 1;
-            sourceOccurrenceCounts.set(source, pendingOccurrences);
-            if (pendingOccurrences > 0) {
-              continue;
-            }
-            const sourceKey = getAgentInputItemKey(source);
-            const remaining = pendingWriteCounts.get(sourceKey) ?? 0;
-            if (remaining > 0) {
-              pendingWriteCounts.set(sourceKey, remaining - 1);
-              persistableItems.push(structuredClone(filteredItem));
-              allocated = true;
-              continue;
-            }
-          }
-          const filteredKey = getAgentInputItemKey(filteredItem);
-          const filteredRemaining = pendingWriteCounts.get(filteredKey) ?? 0;
-          if (filteredRemaining > 0) {
-            pendingWriteCounts.set(filteredKey, filteredRemaining - 1);
-            persistableItems.push(structuredClone(filteredItem));
-            allocated = true;
-            continue;
-          }
-          if (!source && consumeAnyPendingWriteSlot()) {
-            persistableItems.push(structuredClone(filteredItem));
-            allocated = true;
-          }
-          if (
-            !allocated &&
-            !source &&
-            sessionInputFilteredSnapshot === undefined
-          ) {
-            // Preserve at least one copy so later persistence resolves even when no counters remain.
-            persistableItems.push(structuredClone(filteredItem));
-          }
-        }
-        if (
-          persistableItems.length > 0 ||
-          sessionInputFilteredSnapshot === undefined
-        ) {
-          sessionInputFilteredSnapshot = persistableItems;
-        }
-        return;
-      }
-      const filtered: AgentInputItem[] = [];
-      if (!pendingWriteCounts) {
-        for (const item of sourceItems) {
-          if (!item) {
-            continue;
-          }
-          filtered.push(structuredClone(item));
-        }
-      } else {
-        for (const item of sourceItems) {
-          if (!item) {
-            continue;
-          }
-          const key = getAgentInputItemKey(item);
-          const remaining = pendingWriteCounts.get(key) ?? 0;
-          if (remaining <= 0) {
-            continue;
-          }
-          pendingWriteCounts.set(key, remaining - 1);
-          filtered.push(structuredClone(item));
-        }
-      }
-      if (filtered.length > 0) {
-        sessionInputFilteredSnapshot = filtered;
-      } else if (sessionInputFilteredSnapshot === undefined) {
-        sessionInputFilteredSnapshot = [];
-      }
-    };
-
-    // Determine which items should be committed to session memory for this turn.
-    // Filters take precedence because they reflect the exact payload delivered to the model.
-    const resolveSessionItemsForPersistence = () => {
-      if (sessionInputFilteredSnapshot !== undefined) {
-        return sessionInputFilteredSnapshot;
-      }
-      if (hasCallModelInputFilter) {
-        return undefined;
-      }
-      return sessionInputOriginalSnapshot;
-    };
+    const sessionPersistence = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter,
+      persistInput: saveStreamInputToSession,
+      resumingFromState,
+    });
 
     let preparedInput: typeof input = input;
     if (!(preparedInput instanceof RunState)) {
-      if (session && Array.isArray(preparedInput) && !sessionInputCallback) {
-        throw new UserError(
-          'RunConfig.sessionInputCallback must be provided when using session history with list inputs.',
-        );
-      }
-
       const prepared = await prepareInputItemsWithSession(
         preparedInput,
         session,
@@ -542,44 +404,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       } else {
         preparedInput = prepared.preparedInput;
       }
-      if (session) {
-        const items = prepared.sessionItems ?? [];
-        // Clone the items that will be persisted so later mutations (filters, hooks) cannot desync history.
-        sessionInputOriginalSnapshot = items.map((item) =>
-          structuredClone(item),
-        );
-        // Reset pending counts so each prepared item reserves exactly one write slot until filters resolve matches.
-        sessionInputPendingWriteCounts = new Map();
-        for (const item of items) {
-          const key = getAgentInputItemKey(item);
-          sessionInputPendingWriteCounts.set(
-            key,
-            (sessionInputPendingWriteCounts.get(key) ?? 0) + 1,
-          );
-        }
-      }
+      sessionPersistence?.setPreparedItems(prepared.sessionItems);
     }
 
     // Streaming runs persist the input asynchronously, so track a one-shot helper
     // that can be awaited from multiple branches without double-writing.
-    let ensureStreamInputPersisted: (() => Promise<void>) | undefined;
-    // Sessions remain usable alongside server-managed conversations (e.g., OpenAIConversationsSession)
-    // so callers can reuse callbacks, resume-from-state logic, and other helpers without duplicating
-    // remote history, so persistence is gated on serverManagesConversation.
-    if (session && !serverManagesConversation) {
-      let persisted = false;
-      ensureStreamInputPersisted = async () => {
-        if (persisted) {
-          return;
-        }
-        const itemsToPersist = resolveSessionItemsForPersistence();
-        if (!itemsToPersist || itemsToPersist.length === 0) {
-          return;
-        }
-        persisted = true;
-        await saveStreamInputToSession(session, itemsToPersist);
-      };
-    }
+    const ensureStreamInputPersisted =
+      sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
     const executeRun = async () => {
       if (effectiveOptions.stream) {
@@ -588,7 +419,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preparedInput,
           effectiveOptions,
           ensureStreamInputPersisted,
-          recordSessionItemsForPersistence,
+          sessionPersistence?.recordTurnItems,
+          preserveTurnPersistenceOnResume,
         );
         return streamResult;
       }
@@ -596,14 +428,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
-        recordSessionItemsForPersistence,
+        sessionPersistence?.recordTurnItems,
+        preserveTurnPersistenceOnResume,
       );
       // See note above: allow sessions to run for callbacks/state but skip writes when the server
       // is the source of truth for transcript history.
-      if (session && !serverManagesConversation) {
+      if (sessionPersistence && !serverManagesConversation) {
         await saveToSession(
           session,
-          resolveSessionItemsForPersistence(),
+          sessionPersistence.getItemsForPersistence(),
           runResult,
         );
       }
@@ -639,51 +472,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     AgentOutputType<unknown>
   >[];
 
-  #getInputGuardrailDefinitions<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(state: RunState<TContext, TAgent>): InputGuardrailDefinition[] {
-    return this.inputGuardrailDefs.concat(
-      state._currentAgent.inputGuardrails.map(defineInputGuardrail),
-    );
-  }
-
-  #splitInputGuardrails<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(state: RunState<TContext, TAgent>) {
-    const guardrails = this.#getInputGuardrailDefinitions(state);
-    const blocking: InputGuardrailDefinition[] = [];
-    const parallel: InputGuardrailDefinition[] = [];
-
-    for (const guardrail of guardrails) {
-      if (guardrail.runInParallel === false) {
-        blocking.push(guardrail);
-      } else {
-        parallel.push(guardrail);
-      }
-    }
-
-    return { blocking, parallel };
-  }
-
   /**
    * @internal
    * Resolves the effective model once so both run loops obey the same precedence rules.
    */
   async #resolveModelForAgent<TContext>(
     agent: Agent<TContext, AgentOutputType>,
-  ): Promise<{ model: Model; explictlyModelSet: boolean }> {
+  ): Promise<{
+    model: Model;
+    explictlyModelSet: boolean;
+    resolvedModelName?: string;
+  }> {
     const explictlyModelSet =
       (agent.model !== undefined &&
         agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
       (this.config.model !== undefined &&
         this.config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER);
-    let resolvedModel = selectModel(agent.model, this.config.model);
-    if (typeof resolvedModel === 'string') {
-      resolvedModel = await this.config.modelProvider.getModel(resolvedModel);
-    }
-    return { model: resolvedModel, explictlyModelSet };
+    const selectedModel = selectModel(agent.model, this.config.model);
+    const resolvedModelName =
+      typeof selectedModel === 'string' ? selectedModel : undefined;
+    const resolvedModel =
+      typeof selectedModel === 'string'
+        ? await this.config.modelProvider.getModel(selectedModel)
+        : selectedModel;
+    return { model: resolvedModel, explictlyModelSet, resolvedModelName };
   }
 
   /**
@@ -703,6 +515,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -718,11 +531,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
 
+      const resolvedConversationId =
+        options.conversationId ??
+        (isResumedState ? state._conversationId : undefined);
+      const resolvedPreviousResponseId =
+        options.previousResponseId ??
+        (isResumedState ? state._previousResponseId : undefined);
+
+      if (!isResumedState) {
+        state.setConversationContext(
+          resolvedConversationId,
+          resolvedPreviousResponseId,
+        );
+      }
+
       const serverConversationTracker =
-        options.conversationId || options.previousResponseId
+        resolvedConversationId || resolvedPreviousResponseId
           ? new ServerConversationTracker({
-              conversationId: options.conversationId,
-              previousResponseId: options.previousResponseId,
+              conversationId: resolvedConversationId,
+              previousResponseId: resolvedPreviousResponseId,
             })
           : undefined;
 
@@ -732,8 +559,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           generatedItems: state._generatedItems,
           modelResponses: state._modelResponses,
         });
+        state.setConversationContext(
+          serverConversationTracker.conversationId,
+          serverConversationTracker.previousResponseId,
+        );
       }
 
+      // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
 
       try {
@@ -752,115 +584,65 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const turnResult = await resolveInterruptedTurn<TContext>(
-              state._currentAgent,
-              state._originalInput,
-              state._generatedItems,
-              state._lastTurnResponse,
-              state._lastProcessedResponse as ProcessedResponse<unknown>,
-              this,
+            const interruptedOutcome = await resumeInterruptedTurn({
               state,
-            );
+              runner: this,
+            });
 
-            state._toolUseTracker.addToolUse(
-              state._currentAgent,
-              state._lastProcessedResponse.toolsUsed,
-            );
-
-            state._originalInput = turnResult.originalInput;
-            state._generatedItems = turnResult.generatedItems;
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
             // The counter will be reset when _currentTurn is incremented (starting a new turn)
 
-            if (turnResult.nextStep.type === 'next_step_interruption') {
+            const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
+              state,
+              outcome: interruptedOutcome,
+              setContinuingInterruptedTurn: (value) => {
+                continuingInterruptedTurn = value;
+              },
+            });
+            if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
-              state._currentStep = turnResult.nextStep;
               return new RunResult<TContext, TAgent>(state);
             }
-
-            // If continuing from interruption with next_step_run_again, set step to undefined
-            // so the loop treats it as a new step without incrementing the turn.
-            // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              continuingInterruptedTurn = true;
-              state._currentStep = undefined;
+            if (shouldContinue) {
               continue;
             }
-
-            continuingInterruptedTurn = false;
-            state._currentStep = turnResult.nextStep;
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const artifacts = await prepareAgentArtifacts(state);
-
-            const isResumingFromInterruption =
-              isResumedState && continuingInterruptedTurn;
+            const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
-
-            // Do not advance the turn when resuming from an interruption; the next model call is
-            // still part of the same logical turn.
-            if (!isResumingFromInterruption) {
-              state._currentTurn++;
-              state._currentTurnPersistedItemCount = 0;
-            }
-
-            if (state._currentTurn > state._maxTurns) {
-              state._currentAgentSpan?.setError({
-                message: 'Max turns exceeded',
-                data: { max_turns: state._maxTurns },
-              });
-
-              throw new MaxTurnsExceededError(
-                `Max turns (${state._maxTurns}) exceeded`,
+            const guardrailTracker = createGuardrailTracker();
+            const previousTurn = state._currentTurn;
+            const previousPersistedCount = state._currentTurnPersistedItemCount;
+            const previousGeneratedCount = state._generatedItems.length;
+            const { artifacts, turnInput, parallelGuardrailPromise } =
+              await prepareTurn({
                 state,
-              );
+                input: state._originalInput,
+                generatedItems: state._generatedItems,
+                isResumedState,
+                preserveTurnPersistenceOnResume,
+                continuingInterruptedTurn: wasContinuingInterruptedTurn,
+                serverConversationTracker,
+                inputGuardrailDefs: this.inputGuardrailDefs,
+                guardrailHandlers: {
+                  onParallelStart: guardrailTracker.markPending,
+                  onParallelError: guardrailTracker.setError,
+                },
+                emitAgentStart: (context, agent, inputItems) => {
+                  this.emit('agent_start', context, agent, inputItems);
+                },
+              });
+            if (
+              preserveTurnPersistenceOnResume &&
+              state._currentTurn > previousTurn &&
+              previousPersistedCount <= previousGeneratedCount
+            ) {
+              // Preserve persisted offsets from a resumed run to avoid re-saving prior items.
+              state._currentTurnPersistedItemCount = previousPersistedCount;
             }
 
-            logger.debug(
-              `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
-            );
-
-            let parallelGuardrailPromise:
-              | Promise<InputGuardrailResult[]>
-              | undefined;
-            // Only run input guardrails on the first turn of a new run.
-            if (state._currentTurn === 1 && !isResumingFromInterruption) {
-              const guardrails = this.#splitInputGuardrails(state);
-              if (guardrails.blocking.length > 0) {
-                await this.#runInputGuardrails(state, guardrails.blocking);
-              }
-              if (guardrails.parallel.length > 0) {
-                parallelGuardrailPromise = this.#runInputGuardrails(
-                  state,
-                  guardrails.parallel,
-                );
-                parallelGuardrailPromise.catch(() => {});
-              }
-            }
-
-            const turnInput = serverConversationTracker
-              ? serverConversationTracker.prepareInput(
-                  state._originalInput,
-                  state._generatedItems,
-                )
-              : getTurnInput(state._originalInput, state._generatedItems);
-
-            if (state._noActiveAgentRun) {
-              state._currentAgent.emit(
-                'agent_start',
-                state._context,
-                state._currentAgent,
-                turnInput,
-              );
-              this.emit(
-                'agent_start',
-                state._context,
-                state._currentAgent,
-                turnInput,
-              );
-            }
-
+            guardrailTracker.setPromise(parallelGuardrailPromise);
             const preparedCall = await this.#prepareModelCall(
               state,
               options,
@@ -869,6 +651,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               serverConversationTracker,
               sessionInputUpdate,
             );
+
+            guardrailTracker.throwIfError();
 
             state._lastTurnResponse = await preparedCall.model.getResponse({
               systemInstructions: preparedCall.modelInput.instructions,
@@ -893,6 +677,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               signal: options.signal,
             });
+            if (serverConversationTracker) {
+              serverConversationTracker.markInputAsSent(
+                preparedCall.sourceItems,
+                {
+                  filterApplied: preparedCall.filterApplied,
+                  allTurnItems: preparedCall.turnInput,
+                },
+              );
+            }
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
@@ -902,6 +695,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             serverConversationTracker?.trackServerItems(
               state._lastTurnResponse,
             );
+            if (serverConversationTracker) {
+              state.setConversationContext(
+                serverConversationTracker.conversationId,
+                serverConversationTracker.previousResponseId,
+              );
+            }
 
             const processedResponse = processModelResponse(
               state._lastTurnResponse,
@@ -916,70 +715,74 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._originalInput,
               state._generatedItems,
               state._lastTurnResponse,
-              state._lastProcessedResponse,
+              state._lastProcessedResponse!,
               this,
               state,
             );
 
-            state._toolUseTracker.addToolUse(
-              state._currentAgent,
-              state._lastProcessedResponse.toolsUsed,
-            );
+            applyTurnResult({
+              state,
+              turnResult,
+              agent: state._currentAgent,
+              toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
+              resetTurnPersistence: !isResumedState,
+            });
 
-            state._originalInput = turnResult.originalInput;
-            state._generatedItems = turnResult.generatedItems;
-            if (turnResult.nextStep.type === 'next_step_run_again') {
-              state._currentTurnPersistedItemCount = 0;
-            }
-            state._currentStep = turnResult.nextStep;
-
-            if (parallelGuardrailPromise) {
-              await parallelGuardrailPromise;
-            }
+            await guardrailTracker.awaitCompletion();
           }
 
-          if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_final_output'
-          ) {
-            await this.#runOutputGuardrails(state, state._currentStep.output);
-            this.emit(
-              'agent_end',
-              state._context,
-              state._currentAgent,
-              state._currentStep.output,
-            );
-            state._currentAgent.emit(
-              'agent_end',
-              state._context,
-              state._currentStep.output,
-            );
-            return new RunResult<TContext, TAgent>(state);
-          } else if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_handoff'
-          ) {
-            state._currentAgent = state._currentStep.newAgent as TAgent;
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.end();
-              resetCurrentSpan();
-              state._currentAgentSpan = undefined;
-            }
-            state._noActiveAgentRun = true;
-
-            // we've processed the handoff, so we need to run the loop again
-            state._currentStep = { type: 'next_step_run_again' };
-          } else if (
-            state._currentStep &&
-            state._currentStep.type === 'next_step_interruption'
-          ) {
-            // interrupted. Don't run any guardrails
-            return new RunResult<TContext, TAgent>(state);
-          } else {
+          const currentStep = state._currentStep;
+          if (!currentStep) {
             logger.debug('Running next loop');
+            continue;
+          }
+
+          switch (currentStep.type) {
+            case 'next_step_final_output':
+              await runOutputGuardrails(
+                state,
+                this.outputGuardrailDefs,
+                currentStep.output,
+              );
+              state._currentTurnInProgress = false;
+              this.emit(
+                'agent_end',
+                state._context,
+                state._currentAgent,
+                currentStep.output,
+              );
+              state._currentAgent.emit(
+                'agent_end',
+                state._context,
+                currentStep.output,
+              );
+              return new RunResult<TContext, TAgent>(state);
+            case 'next_step_handoff':
+              state.setCurrentAgent(currentStep.newAgent as TAgent);
+              if (state._currentAgentSpan) {
+                state._currentAgentSpan.end();
+                resetCurrentSpan();
+                state.setCurrentAgentSpan(undefined);
+              }
+              state._noActiveAgentRun = true;
+              state._currentTurnInProgress = false;
+
+              // We've processed the handoff, so we need to run the loop again.
+              state._currentStep = { type: 'next_step_run_again' };
+              break;
+            case 'next_step_interruption':
+              // Interrupted. Don't run any guardrails.
+              return new RunResult<TContext, TAgent>(state);
+            case 'next_step_run_again':
+              state._currentTurnInProgress = false;
+              logger.debug('Running next loop');
+              break;
+            default:
+              logger.debug('Running next loop');
           }
         }
       } catch (err) {
+        state._currentTurnInProgress = false;
         if (state._currentAgentSpan) {
           state._currentAgentSpan.setError({
             message: 'Error in agent run',
@@ -1021,18 +824,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<void> {
+    const resolvedConversationId =
+      options.conversationId ?? result.state._conversationId;
+    const resolvedPreviousResponseId =
+      options.previousResponseId ?? result.state._previousResponseId;
     const serverManagesConversation =
-      Boolean(options.conversationId) || Boolean(options.previousResponseId);
+      Boolean(resolvedConversationId) || Boolean(resolvedPreviousResponseId);
     const serverConversationTracker = serverManagesConversation
       ? new ServerConversationTracker({
-          conversationId: options.conversationId,
-          previousResponseId: options.previousResponseId,
+          conversationId: resolvedConversationId,
+          previousResponseId: resolvedPreviousResponseId,
         })
       : undefined;
+    if (serverConversationTracker) {
+      result.state.setConversationContext(
+        serverConversationTracker.conversationId,
+        serverConversationTracker.previousResponseId,
+      );
+    }
 
-    let handedInputToModel = false;
+    let sentInputToModel = false;
     let streamInputPersisted = false;
+    let guardrailTracker = createGuardrailTracker();
     const persistStreamInputIfNeeded = async () => {
       if (streamInputPersisted || !ensureStreamInputPersisted) {
         return;
@@ -1041,6 +856,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       await ensureStreamInputPersisted();
       streamInputPersisted = true;
     };
+    let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
+    const awaitGuardrailsAndPersistInput = async () => {
+      await guardrailTracker.awaitCompletion();
+      if (guardrailTracker.failed) {
+        throw guardrailTracker.error;
+      }
+      if (
+        sentInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
+        await persistStreamInputIfNeeded();
+      }
+    };
 
     if (serverConversationTracker && isResumedState) {
       serverConversationTracker.primeFromState({
@@ -1048,8 +877,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         generatedItems: result.state._generatedItems,
         modelResponses: result.state._modelResponses,
       });
+      result.state.setConversationContext(
+        serverConversationTracker.conversationId,
+        serverConversationTracker.previousResponseId,
+      );
     }
 
+    // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
 
     try {
@@ -1072,121 +906,77 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
 
-          const turnResult = await resolveInterruptedTurn<TContext>(
-            result.state._currentAgent,
-            result.state._originalInput,
-            result.state._generatedItems,
-            result.state._lastTurnResponse,
-            result.state._lastProcessedResponse as ProcessedResponse<unknown>,
-            this,
-            result.state,
-          );
+          const interruptedOutcome = await resumeInterruptedTurn({
+            state: result.state,
+            runner: this,
+            onStepItems: (turnResult) => {
+              addStepToRunResult(result, turnResult);
+            },
+          });
 
-          addStepToRunResult(result, turnResult);
-
-          result.state._toolUseTracker.addToolUse(
-            result.state._currentAgent,
-            result.state._lastProcessedResponse.toolsUsed,
-          );
-
-          result.state._originalInput = turnResult.originalInput;
-          result.state._generatedItems = turnResult.generatedItems;
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
           // The counter will be reset when _currentTurn is incremented (starting a new turn)
 
-          if (turnResult.nextStep.type === 'next_step_interruption') {
+          const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
+            state: result.state,
+            outcome: interruptedOutcome,
+            setContinuingInterruptedTurn: (value) => {
+              continuingInterruptedTurn = value;
+            },
+          });
+          if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
-            result.state._currentStep = turnResult.nextStep;
             return;
           }
-
-          // If continuing from interruption with next_step_run_again, set step to undefined
-          // so the loop treats it as a new step without incrementing the turn.
-          // The counter has already been adjusted by resolveInterruptedTurn's rewind logic.
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            continuingInterruptedTurn = true;
-            result.state._currentStep = undefined;
+          if (shouldContinue) {
             continue;
           }
-
-          continuingInterruptedTurn = false;
-          result.state._currentStep = turnResult.nextStep;
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
-          const artifacts = await prepareAgentArtifacts(result.state);
-
-          const isResumingFromInterruption =
-            isResumedState && continuingInterruptedTurn;
+          parallelGuardrailPromise = undefined;
+          guardrailTracker = createGuardrailTracker();
+          const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
-
-          // Do not advance the turn when resuming from an interruption; the next model call is
-          // still part of the same logical turn.
-          if (!isResumingFromInterruption) {
-            result.state._currentTurn++;
-            result.state._currentTurnPersistedItemCount = 0;
+          const previousTurn = result.state._currentTurn;
+          const previousPersistedCount =
+            result.state._currentTurnPersistedItemCount;
+          const previousGeneratedCount = result.state._generatedItems.length;
+          const preparedTurn = await prepareTurn({
+            state: result.state,
+            input: result.input,
+            generatedItems: result.newItems,
+            isResumedState,
+            preserveTurnPersistenceOnResume,
+            continuingInterruptedTurn: wasContinuingInterruptedTurn,
+            serverConversationTracker,
+            inputGuardrailDefs: this.inputGuardrailDefs,
+            guardrailHandlers: {
+              onParallelStart: () => {
+                guardrailTracker.markPending();
+              },
+              onParallelError: (err) => {
+                guardrailTracker.setError(err);
+              },
+            },
+            emitAgentStart: (context, agent, inputItems) => {
+              this.emit('agent_start', context, agent, inputItems);
+            },
+          });
+          if (
+            preserveTurnPersistenceOnResume &&
+            result.state._currentTurn > previousTurn &&
+            previousPersistedCount <= previousGeneratedCount
+          ) {
+            // Preserve persisted offsets from a resumed run to avoid re-saving prior items.
+            result.state._currentTurnPersistedItemCount =
+              previousPersistedCount;
           }
-
-          if (result.state._currentTurn > result.state._maxTurns) {
-            result.state._currentAgentSpan?.setError({
-              message: 'Max turns exceeded',
-              data: { max_turns: result.state._maxTurns },
-            });
-            throw new MaxTurnsExceededError(
-              `Max turns (${result.state._maxTurns}) exceeded`,
-              result.state,
-            );
-          }
-
-          logger.debug(
-            `Running agent ${currentAgent.name} (turn ${result.state._currentTurn})`,
-          );
-
-          let guardrailError: unknown;
-          let parallelGuardrailPromise:
-            | Promise<InputGuardrailResult[]>
-            | undefined;
-          // Only run input guardrails on the first turn of a new run.
-          if (result.state._currentTurn === 1 && !isResumingFromInterruption) {
-            const guardrails = this.#splitInputGuardrails(result.state);
-            if (guardrails.blocking.length > 0) {
-              await this.#runInputGuardrails(result.state, guardrails.blocking);
-            }
-            if (guardrails.parallel.length > 0) {
-              const promise = this.#runInputGuardrails(
-                result.state,
-                guardrails.parallel,
-              );
-              parallelGuardrailPromise = promise.catch((err) => {
-                guardrailError = err;
-                return [];
-              });
-            }
-          }
-
-          const turnInput = serverConversationTracker
-            ? serverConversationTracker.prepareInput(
-                result.input,
-                result.newItems,
-              )
-            : getTurnInput(result.input, result.newItems);
-
-          if (result.state._noActiveAgentRun) {
-            currentAgent.emit(
-              'agent_start',
-              result.state._context,
-              currentAgent,
-              turnInput,
-            );
-            this.emit(
-              'agent_start',
-              result.state._context,
-              currentAgent,
-              turnInput,
-            );
-          }
-
-          let finalResponse: ModelResponse | undefined = undefined;
+          const { artifacts, turnInput } = preparedTurn;
+          parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
+          guardrailTracker.setPromise(parallelGuardrailPromise);
+          // If guardrails are still running, defer input persistence until they finish.
+          const delayStreamInputPersistence = guardrailTracker.pending;
 
           const preparedCall = await this.#prepareModelCall(
             result.state,
@@ -1197,12 +987,33 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionInputUpdate,
           );
 
-          if (guardrailError) {
-            throw guardrailError;
-          }
+          guardrailTracker.throwIfError();
 
-          handedInputToModel = true;
-          await persistStreamInputIfNeeded();
+          let finalResponse: ModelResponse | undefined = undefined;
+          let inputMarked = false;
+          const markInputOnce = () => {
+            if (inputMarked || !serverConversationTracker) {
+              return;
+            }
+            // We only mark inputs as sent after receiving the first stream event,
+            // which is the earliest reliable confirmation that the server accepted
+            // the request. If the stream fails before any events, leave inputs
+            // unmarked so a retry can resend safely.
+            // Record the exact input that was sent so the server tracker can advance safely.
+            serverConversationTracker.markInputAsSent(
+              preparedCall.sourceItems,
+              {
+                filterApplied: preparedCall.filterApplied,
+                allTurnItems: preparedCall.turnInput,
+              },
+            );
+            inputMarked = true;
+          };
+
+          sentInputToModel = true;
+          if (!delayStreamInputPersistence) {
+            await persistStreamInputIfNeeded();
+          }
 
           try {
             for await (const event of preparedCall.model.getStreamedResponse({
@@ -1228,9 +1039,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               signal: options.signal,
             })) {
-              if (guardrailError) {
-                throw guardrailError;
-              }
+              guardrailTracker.throwIfError();
+              markInputOnce();
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1243,22 +1053,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
+                await awaitGuardrailsAndPersistInput();
                 return;
               }
               result._addItem(new RunRawModelStreamEvent(event));
             }
           } catch (error) {
             if (isAbortError(error)) {
+              if (sentInputToModel) {
+                markInputOnce();
+              }
+              await awaitGuardrailsAndPersistInput();
               return;
             }
             throw error;
           }
 
-          if (parallelGuardrailPromise) {
-            await parallelGuardrailPromise;
-            if (guardrailError) {
-              throw guardrailError;
-            }
+          if (finalResponse) {
+            markInputOnce();
+          }
+
+          await awaitGuardrailsAndPersistInput();
+
+          if (result.cancelled) {
+            return;
           }
 
           result.state._noActiveAgentRun = false;
@@ -1273,6 +1091,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._lastTurnResponse = finalResponse;
           // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
+          if (serverConversationTracker) {
+            result.state.setConversationContext(
+              serverConversationTracker.conversationId,
+              serverConversationTracker.previousResponseId,
+            );
+          }
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
           const processedResponse = processModelResponse(
@@ -1286,7 +1110,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           // Record the items emitted directly from the model response so we do not
           // stream them again after tools and other side effects finish.
-          const preToolItems = new Set(processedResponse.newItems);
+          const preToolItems = new Set<RunItem>(processedResponse.newItems);
           if (preToolItems.size > 0) {
             streamStepItemsToRunResult(result, processedResponse.newItems);
           }
@@ -1296,82 +1120,92 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._originalInput,
             result.state._generatedItems,
             result.state._lastTurnResponse,
-            result.state._lastProcessedResponse,
+            result.state._lastProcessedResponse!,
             this,
             result.state,
           );
 
-          addStepToRunResult(result, turnResult, {
-            skipItems: preToolItems,
+          applyTurnResult({
+            state: result.state,
+            turnResult,
+            agent: currentAgent,
+            toolsUsed: processedResponse.toolsUsed,
+            resetTurnPersistence: !isResumedState,
+            onStepItems: (step) => {
+              addStepToRunResult(result, step, { skipItems: preToolItems });
+            },
           });
-
-          result.state._toolUseTracker.addToolUse(
-            currentAgent,
-            processedResponse.toolsUsed,
-          );
-
-          result.state._originalInput = turnResult.originalInput;
-          result.state._generatedItems = turnResult.generatedItems;
-          if (turnResult.nextStep.type === 'next_step_run_again') {
-            result.state._currentTurnPersistedItemCount = 0;
-          }
-          result.state._currentStep = turnResult.nextStep;
         }
 
-        if (result.state._currentStep.type === 'next_step_final_output') {
-          await this.#runOutputGuardrails(
-            result.state,
-            result.state._currentStep.output,
-          );
-          await persistStreamInputIfNeeded();
-          // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
-          if (!serverManagesConversation) {
-            await saveStreamResultToSession(options.session, result);
-          }
-          this.emit(
-            'agent_end',
-            result.state._context,
-            currentAgent,
-            result.state._currentStep.output,
-          );
-          currentAgent.emit(
-            'agent_end',
-            result.state._context,
-            result.state._currentStep.output,
-          );
-          return;
-        } else if (
-          result.state._currentStep.type === 'next_step_interruption'
-        ) {
-          // we are done for now. Don't run any output guardrails
-          await persistStreamInputIfNeeded();
-          if (!serverManagesConversation) {
-            await saveStreamResultToSession(options.session, result);
-          }
-          return;
-        } else if (result.state._currentStep.type === 'next_step_handoff') {
-          result.state._currentAgent = result.state._currentStep
-            ?.newAgent as TAgent;
-          if (result.state._currentAgentSpan) {
-            result.state._currentAgentSpan.end();
-            resetCurrentSpan();
-          }
-          result.state._currentAgentSpan = undefined;
-          result._addItem(
-            new RunAgentUpdatedStreamEvent(result.state._currentAgent),
-          );
-          result.state._noActiveAgentRun = true;
+        const currentStep = result.state._currentStep;
+        switch (currentStep.type) {
+          case 'next_step_final_output':
+            await runOutputGuardrails(
+              result.state,
+              this.outputGuardrailDefs,
+              currentStep.output,
+            );
+            result.state._currentTurnInProgress = false;
+            await persistStreamInputIfNeeded();
+            // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
+            if (!serverManagesConversation) {
+              await saveStreamResultToSession(options.session, result);
+            }
+            this.emit(
+              'agent_end',
+              result.state._context,
+              currentAgent,
+              currentStep.output,
+            );
+            currentAgent.emit(
+              'agent_end',
+              result.state._context,
+              currentStep.output,
+            );
+            return;
+          case 'next_step_interruption':
+            // We are done for now. Don't run any output guardrails.
+            await persistStreamInputIfNeeded();
+            if (!serverManagesConversation) {
+              await saveStreamResultToSession(options.session, result);
+            }
+            return;
+          case 'next_step_handoff':
+            result.state.setCurrentAgent(currentStep.newAgent as TAgent);
+            if (result.state._currentAgentSpan) {
+              result.state._currentAgentSpan.end();
+              resetCurrentSpan();
+            }
+            result.state.setCurrentAgentSpan(undefined);
+            result._addItem(
+              new RunAgentUpdatedStreamEvent(result.state._currentAgent),
+            );
+            result.state._noActiveAgentRun = true;
+            result.state._currentTurnInProgress = false;
 
-          // we've processed the handoff, so we need to run the loop again
-          result.state._currentStep = {
-            type: 'next_step_run_again',
-          };
-        } else {
-          logger.debug('Running next loop');
+            // We've processed the handoff, so we need to run the loop again.
+            result.state._currentStep = {
+              type: 'next_step_run_again',
+            };
+            break;
+          case 'next_step_run_again':
+            result.state._currentTurnInProgress = false;
+            logger.debug('Running next loop');
+            break;
+          default:
+            logger.debug('Running next loop');
         }
       }
     } catch (error) {
-      if (handedInputToModel && !streamInputPersisted) {
+      result.state._currentTurnInProgress = false;
+      if (guardrailTracker.pending) {
+        await guardrailTracker.awaitCompletion({ suppressErrors: true });
+      }
+      if (
+        sentInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
         await persistStreamInputIfNeeded();
       }
       if (result.state._currentAgentSpan) {
@@ -1382,6 +1216,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       throw error;
     } finally {
+      if (guardrailTracker.pending) {
+        await guardrailTracker.awaitCompletion({ suppressErrors: true });
+      }
+      if (
+        sentInputToModel &&
+        !streamInputPersisted &&
+        !guardrailTracker.failed
+      ) {
+        await persistStreamInputIfNeeded();
+      }
       if (result.state._currentStep?.type !== 'next_step_interruption') {
         try {
           await disposeResolvedComputers({ runContext: result.state._context });
@@ -1413,6 +1257,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    preserveTurnPersistenceOnResume?: boolean,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1428,6 +1273,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             agent,
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
+      const resolvedConversationId =
+        options.conversationId ??
+        (isResumedState ? state._conversationId : undefined);
+      const resolvedPreviousResponseId =
+        options.previousResponseId ??
+        (isResumedState ? state._previousResponseId : undefined);
+      if (!isResumedState) {
+        state.setConversationContext(
+          resolvedConversationId,
+          resolvedPreviousResponseId,
+        );
+      }
 
       // Initialize the streamed result with existing state
       const result = new StreamedRunResult<TContext, TAgent>({
@@ -1449,6 +1306,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState,
         ensureStreamInputPersisted,
         sessionInputUpdate,
+        preserveTurnPersistenceOnResume,
       ).then(
         () => {
           result._done();
@@ -1463,130 +1321,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       return result;
     });
-  }
-
-  async #runInputGuardrails<
-    TContext,
-    TAgent extends Agent<TContext, AgentOutputType>,
-  >(
-    state: RunState<TContext, TAgent>,
-    guardrailsOverride?: InputGuardrailDefinition[],
-  ): Promise<InputGuardrailResult[]> {
-    const guardrails =
-      guardrailsOverride ?? this.#getInputGuardrailDefinitions(state);
-    if (guardrails.length > 0) {
-      const guardrailArgs = {
-        agent: state._currentAgent,
-        input: state._originalInput,
-        context: state._context,
-      };
-      try {
-        const results = await Promise.all(
-          guardrails.map(async (guardrail) => {
-            return withGuardrailSpan(
-              async (span) => {
-                const result = await guardrail.run(guardrailArgs);
-                span.spanData.triggered = result.output.tripwireTriggered;
-                return result;
-              },
-              { data: { name: guardrail.name } },
-              state._currentAgentSpan,
-            );
-          }),
-        );
-        state._inputGuardrailResults.push(...results);
-        for (const result of results) {
-          if (result.output.tripwireTriggered) {
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.setError({
-                message: 'Guardrail tripwire triggered',
-                data: { guardrail: result.guardrail.name },
-              });
-            }
-            throw new InputGuardrailTripwireTriggered(
-              `Input guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-              result,
-              state,
-            );
-          }
-        }
-        return results;
-      } catch (e) {
-        if (e instanceof InputGuardrailTripwireTriggered) {
-          throw e;
-        }
-        // roll back the current turn to enable reruns
-        state._currentTurn--;
-        throw new GuardrailExecutionError(
-          `Input guardrail failed to complete: ${e}`,
-          e as Error,
-          state,
-        );
-      }
-    }
-    return [];
-  }
-
-  async #runOutputGuardrails<
-    TContext,
-    TOutput extends AgentOutputType,
-    TAgent extends Agent<TContext, TOutput>,
-  >(state: RunState<TContext, TAgent>, output: string) {
-    const guardrails = this.outputGuardrailDefs.concat(
-      state._currentAgent.outputGuardrails.map(defineOutputGuardrail),
-    );
-    if (guardrails.length > 0) {
-      const agentOutput = state._currentAgent.processFinalOutput(output);
-      const runOutput = getTurnInput([], state._generatedItems);
-      const guardrailArgs: OutputGuardrailFunctionArgs<unknown, TOutput> = {
-        agent: state._currentAgent,
-        agentOutput,
-        context: state._context,
-        details: {
-          modelResponse: state._lastTurnResponse,
-          output: runOutput,
-        },
-      };
-      try {
-        const results = await Promise.all(
-          guardrails.map(async (guardrail) => {
-            return withGuardrailSpan(
-              async (span) => {
-                const result = await guardrail.run(guardrailArgs);
-                span.spanData.triggered = result.output.tripwireTriggered;
-                return result;
-              },
-              { data: { name: guardrail.name } },
-              state._currentAgentSpan,
-            );
-          }),
-        );
-        for (const result of results) {
-          if (result.output.tripwireTriggered) {
-            if (state._currentAgentSpan) {
-              state._currentAgentSpan.setError({
-                message: 'Guardrail tripwire triggered',
-                data: { guardrail: result.guardrail.name },
-              });
-            }
-            throw new OutputGuardrailTripwireTriggered(
-              `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
-              result,
-              state,
-            );
-          }
-        }
-      } catch (e) {
-        if (e instanceof OutputGuardrailTripwireTriggered) {
-          throw e;
-        }
-        throw new GuardrailExecutionError(
-          `Output guardrail failed to complete: ${e}`,
-          e as Error,
-          state,
-        );
-      }
-    }
   }
 
   /**
@@ -1608,9 +1342,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<PreparedModelCall<TContext>> {
-    const { model, explictlyModelSet } = await this.#resolveModelForAgent(
-      state._currentAgent,
-    );
+    const { model, explictlyModelSet, resolvedModelName } =
+      await this.#resolveModelForAgent(state._currentAgent);
 
     let modelSettings = {
       ...this.config.modelSettings,
@@ -1621,6 +1354,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._currentAgent.modelSettings,
       model,
       modelSettings,
+      resolvedModelName,
     );
     modelSettings = maybeResetToolChoice(
       state._currentAgent,
@@ -1642,9 +1376,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         systemInstructions,
       );
 
-    // Inform the tracker which exact original objects made it to the provider so future turns
-    // only send the delta that has not yet been acknowledged by the server.
-    serverConversationTracker?.markInputAsSent(sourceItems);
     // Provide filtered clones whenever filters run so session history mirrors the model payload.
     // Returning an empty array is intentional: it tells the session layer to persist "nothing"
     // instead of falling back to the unfiltered originals when the filter redacts everything.
@@ -1668,661 +1399,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       prompt,
       previousResponseId,
       conversationId,
-    };
-  }
-}
-
-// --------------------------------------------------------------
-//  Other types and functions
-// --------------------------------------------------------------
-
-/**
- * Mutable view of the instructions + input items that the model will receive.
- * Filters always see a copy so they can edit without side effects.
- */
-export type ModelInputData = {
-  input: AgentInputItem[];
-  instructions?: string;
-};
-
-/**
- * Shape of the payload given to `callModelInputFilter`. Mirrored in the Python SDK so filters can
- * share the same implementation across languages.
- */
-export type CallModelInputFilterArgs<TContext = unknown> = {
-  modelData: ModelInputData;
-  agent: Agent<TContext, AgentOutputType>;
-  context: TContext | undefined;
-};
-
-/**
- * Hook invoked immediately before a model call is issued, allowing callers to adjust the
- * instructions or input array. Returning a new array enables redaction, truncation, or
- * augmentation of the payload that will be sent to the provider.
- */
-export type CallModelInputFilter<TContext = unknown> = (
-  args: CallModelInputFilterArgs<TContext>,
-) => ModelInputData | Promise<ModelInputData>;
-
-/**
- * Constructs the model input array for the current turn by combining the original turn input with
- * any new run items (excluding tool approval placeholders). This helps ensure that repeated calls
- * to the Responses API only send newly generated content.
- *
- * See: https://platform.openai.com/docs/guides/conversation-state?api-mode=responses.
- */
-export function getTurnInput(
-  originalInput: string | AgentInputItem[],
-  generatedItems: RunItem[],
-): AgentInputItem[] {
-  const rawItems = generatedItems
-    .filter((item) => item.type !== 'tool_approval_item') // don't include approval items to avoid double function calls
-    .map((item) => item.rawItem);
-  return [...toAgentInputList(originalInput), ...rawItems];
-}
-
-// --------------------------------------------------------------
-//  Internal helpers
-// --------------------------------------------------------------
-
-const DEFAULT_MAX_TURNS = 10;
-
-let _defaultRunner: Runner | undefined = undefined;
-
-function getDefaultRunner() {
-  if (_defaultRunner) {
-    return _defaultRunner;
-  }
-  _defaultRunner = new Runner();
-  return _defaultRunner;
-}
-
-/**
- * Resolves the effective model for the next turn by giving precedence to the agent-specific
- * configuration when present, otherwise falling back to the runner-level default.
- */
-export function selectModel(
-  agentModel: string | Model,
-  runConfigModel: string | Model | undefined,
-): string | Model {
-  // When initializing an agent without model name, the model property is set to an empty string. So,
-  // * agentModel === Agent.DEFAULT_MODEL_PLACEHOLDER & runConfigModel exists, runConfigModel will be used
-  // * agentModel is set, the agentModel will be used over runConfigModel
-  if (
-    (typeof agentModel === 'string' &&
-      agentModel !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
-    agentModel // any truthy value
-  ) {
-    return agentModel;
-  }
-  return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
-}
-
-/**
- * Normalizes tracing configuration into the format expected by model providers.
- * Returns `false` to disable tracing, `true` to include full payload data, or
- * `'enabled_without_data'` to omit sensitive content while still emitting spans.
- */
-export function getTracing(
-  tracingDisabled: boolean,
-  traceIncludeSensitiveData: boolean,
-): ModelTracing {
-  if (tracingDisabled) {
-    return false;
-  }
-
-  if (traceIncludeSensitiveData) {
-    return true;
-  }
-
-  return 'enabled_without_data';
-}
-
-/**
- * Result of applying a `callModelInputFilter`.
- * - `modelInput` is the payload that goes to the model.
- * - `sourceItems` maps each filtered item back to the original turn item (or `undefined` when none).
- *   This lets the conversation tracker know which originals reached the model.
- * - `persistedItems` are the filtered clones we should commit to session memory so the stored
- *   history reflects any redactions or truncation introduced by the filter.
- * - `filterApplied` signals whether a filter ran so callers can distinguish empty filtered results
- *   from the filter being skipped entirely.
- */
-type FilterApplicationResult = {
-  modelInput: ModelInputData;
-  sourceItems: (AgentInputItem | undefined)[];
-  persistedItems: AgentInputItem[];
-  filterApplied: boolean;
-};
-
-/**
- * @internal
- */
-async function applyCallModelInputFilter<TContext>(
-  agent: Agent<TContext, AgentOutputType>,
-  callModelInputFilter: CallModelInputFilter<any> | undefined,
-  context: RunContext<TContext>,
-  inputItems: AgentInputItem[],
-  systemInstructions: string | undefined,
-): Promise<FilterApplicationResult> {
-  const cloneInputItems = (
-    items: AgentInputItem[],
-    map?: WeakMap<object, AgentInputItem>,
-  ) =>
-    items.map((item) => {
-      const cloned = structuredClone(item) as AgentInputItem;
-      if (map && cloned && typeof cloned === 'object') {
-        map.set(cloned as object, item);
-      }
-      return cloned;
-    });
-
-  // Record the relationship between the cloned array passed to filters and the original inputs.
-  const cloneMap = new WeakMap<object, AgentInputItem>();
-  const originalPool = buildAgentInputPool(inputItems);
-  const fallbackOriginals: AgentInputItem[] = [];
-  // Track any original object inputs so filtered replacements can still mark them as delivered.
-  for (const item of inputItems) {
-    if (item && typeof item === 'object') {
-      fallbackOriginals.push(item);
-    }
-  }
-  const removeFromFallback = (candidate: AgentInputItem | undefined) => {
-    if (!candidate || typeof candidate !== 'object') {
-      return;
-    }
-    const index = fallbackOriginals.findIndex(
-      (original) => original === candidate,
-    );
-    if (index !== -1) {
-      fallbackOriginals.splice(index, 1);
-    }
-  };
-  const takeFallbackOriginal = (): AgentInputItem | undefined => {
-    const next = fallbackOriginals.shift();
-    if (next) {
-      removeAgentInputFromPool(originalPool, next);
-    }
-    return next;
-  };
-
-  // Always create a deep copy so downstream mutations inside filters cannot affect
-  // the cached turn state.
-  const clonedBaseInput = cloneInputItems(inputItems, cloneMap);
-  const base: ModelInputData = {
-    input: clonedBaseInput,
-    instructions: systemInstructions,
-  };
-  if (!callModelInputFilter) {
-    return {
-      modelInput: base,
-      sourceItems: [...inputItems],
-      persistedItems: [],
-      filterApplied: false,
-    };
-  }
-
-  try {
-    const result = await callModelInputFilter({
-      modelData: base,
-      agent,
-      context: context.context,
-    } as CallModelInputFilterArgs<any>);
-
-    if (!result || !Array.isArray(result.input)) {
-      throw new UserError(
-        'callModelInputFilter must return a ModelInputData object with an input array.',
-      );
-    }
-
-    // Preserve a pointer to the original object backing each filtered clone so downstream
-    // trackers can keep their bookkeeping consistent even after redaction.
-    const sourceItems = result.input.map((item) => {
-      if (!item || typeof item !== 'object') {
-        return undefined;
-      }
-      const original = cloneMap.get(item as object);
-      if (original) {
-        removeFromFallback(original);
-        removeAgentInputFromPool(originalPool, original);
-        return original;
-      }
-      const key = getAgentInputItemKey(item as AgentInputItem);
-      const matchedByContent = takeAgentInputFromPool(originalPool, key);
-      if (matchedByContent) {
-        removeFromFallback(matchedByContent);
-        return matchedByContent;
-      }
-      const fallback = takeFallbackOriginal();
-      if (fallback) {
-        return fallback;
-      }
-      return undefined;
-    });
-
-    const clonedFilteredInput = cloneInputItems(result.input);
-    return {
-      modelInput: {
-        input: clonedFilteredInput,
-        instructions:
-          typeof result.instructions === 'undefined'
-            ? systemInstructions
-            : result.instructions,
-      },
       sourceItems,
-      persistedItems: clonedFilteredInput.map((item) => structuredClone(item)),
-      filterApplied: true,
+      filterApplied,
+      turnInput,
     };
-  } catch (error) {
-    addErrorToCurrentSpan({
-      message: 'Error in callModelInputFilter',
-      data: { error: String(error) },
-    });
-    throw error;
   }
 }
 
-// Tracks which items have already been sent to or received from the Responses API when the caller
-// supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
-class ServerConversationTracker {
-  // Conversation ID:
-  // - https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#using-the-conversations-api
-  // - https://platform.openai.com/docs/api-reference/conversations/create
-  public conversationId?: string;
+// internal helpers and constants
 
-  // Previous Response ID:
-  // https://platform.openai.com/docs/guides/conversation-state?api-mode=responses#passing-context-from-the-previous-response
-  public previousResponseId?: string;
+let defaultRunner: Runner | undefined;
 
-  // Using this flag because WeakSet does not provide a way to check its size
-  private sentInitialInput = false;
-  // The items already sent to the model; using WeakSet for memory efficiency
-  private sentItems = new WeakSet<object>();
-  // The items received from the server; using WeakSet for memory efficiency
-  private serverItems = new WeakSet<object>();
-  // Track initial input items that have not yet been sent so they can be retried on later turns.
-  private remainingInitialInput: AgentInputItem[] | null = null;
-
-  constructor({
-    conversationId,
-    previousResponseId,
-  }: {
-    conversationId?: string;
-    previousResponseId?: string;
-  }) {
-    this.conversationId = conversationId ?? undefined;
-    this.previousResponseId = previousResponseId ?? undefined;
+const getDefaultRunner = (): Runner => {
+  if (!defaultRunner) {
+    defaultRunner = new Runner();
   }
-
-  /**
-   * Pre-populates tracker caches from an existing RunState when resuming server-managed runs.
-   */
-  primeFromState({
-    originalInput,
-    generatedItems,
-    modelResponses,
-  }: {
-    originalInput: string | AgentInputItem[];
-    generatedItems: RunItem[];
-    modelResponses: ModelResponse[];
-  }) {
-    if (this.sentInitialInput) {
-      return;
-    }
-
-    for (const item of toAgentInputList(originalInput)) {
-      if (item && typeof item === 'object') {
-        this.sentItems.add(item);
-      }
-    }
-
-    this.sentInitialInput = true;
-    this.remainingInitialInput = null;
-
-    const latestResponse = modelResponses[modelResponses.length - 1];
-    for (const response of modelResponses) {
-      for (const item of response.output) {
-        if (item && typeof item === 'object') {
-          this.serverItems.add(item);
-        }
-      }
-    }
-
-    if (!this.conversationId && latestResponse?.responseId) {
-      this.previousResponseId = latestResponse.responseId;
-    }
-
-    for (const item of generatedItems) {
-      const rawItem = item.rawItem;
-      if (!rawItem || typeof rawItem !== 'object') {
-        continue;
-      }
-      if (this.serverItems.has(rawItem)) {
-        this.sentItems.add(rawItem);
-      }
-    }
-  }
-
-  /**
-   * Records the raw items returned by the server so future delta calculations skip them.
-   * Also captures the latest response identifier to chain follow-up calls when possible.
-   */
-  trackServerItems(modelResponse: ModelResponse | undefined) {
-    if (!modelResponse) {
-      return;
-    }
-    for (const item of modelResponse.output) {
-      if (item && typeof item === 'object') {
-        this.serverItems.add(item);
-      }
-    }
-    if (!this.conversationId && modelResponse.responseId) {
-      this.previousResponseId = modelResponse.responseId;
-    }
-  }
-
-  /**
-   * Returns the minimum set of items that still need to be delivered to the server for the
-   * current turn. This includes the original turn inputs (until acknowledged) plus any
-   * newly generated items that have not yet been echoed back by the API.
-   */
-  prepareInput(
-    originalInput: string | AgentInputItem[],
-    generatedItems: RunItem[],
-  ): AgentInputItem[] {
-    const inputItems: AgentInputItem[] = [];
-
-    if (!this.sentInitialInput) {
-      const initialItems = toAgentInputList(originalInput);
-      // Preserve the full initial payload so a filter can drop items without losing their originals.
-      inputItems.push(...initialItems);
-      this.remainingInitialInput = initialItems.filter(
-        (item): item is AgentInputItem =>
-          Boolean(item) && typeof item === 'object',
-      );
-      this.sentInitialInput = true;
-    } else if (
-      this.remainingInitialInput &&
-      this.remainingInitialInput.length > 0
-    ) {
-      // Re-queue prior initial items until the tracker confirms they were delivered to the API.
-      inputItems.push(...this.remainingInitialInput);
-    }
-
-    for (const item of generatedItems) {
-      if (item.type === 'tool_approval_item') {
-        continue;
-      }
-      const rawItem = item.rawItem;
-      if (!rawItem || typeof rawItem !== 'object') {
-        continue;
-      }
-      if (this.sentItems.has(rawItem) || this.serverItems.has(rawItem)) {
-        continue;
-      }
-      inputItems.push(rawItem as AgentInputItem);
-    }
-
-    return inputItems;
-  }
-
-  /**
-   * Marks the provided originals as delivered so future turns do not resend them and any
-   * pending initial inputs can be dropped once the server acknowledges receipt.
-   */
-  markInputAsSent(items: (AgentInputItem | undefined)[]) {
-    if (!items.length) {
-      return;
-    }
-
-    const delivered = new Set<AgentInputItem>();
-    for (const item of items) {
-      if (!item || typeof item !== 'object' || delivered.has(item)) {
-        continue;
-      }
-      // Some inputs may be repeated in the filtered list; only mark unique originals once.
-      delivered.add(item);
-      this.sentItems.add(item);
-    }
-
-    if (
-      !this.remainingInitialInput ||
-      this.remainingInitialInput.length === 0
-    ) {
-      return;
-    }
-
-    this.remainingInitialInput = this.remainingInitialInput.filter(
-      (item) => !delivered.has(item),
-    );
-    if (this.remainingInitialInput.length === 0) {
-      this.remainingInitialInput = null;
-    }
-  }
-}
-
-/**
- * When the default model is a GPT-5 variant, agents may carry GPT-5-specific providerData
- * (e.g., reasoning effort, text verbosity). If a run resolves to a non-GPT-5 model and the
- * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
- * are incompatible and should be stripped to avoid runtime errors.
- */
-function adjustModelSettingsForNonGPT5RunnerModel(
-  explictlyModelSet: boolean,
-  agentModelSettings: ModelSettings,
-  runnerModel: string | Model,
-  modelSettings: ModelSettings,
-): ModelSettings {
-  if (
-    // gpt-5 is enabled for the default model for agents
-    isGpt5Default() &&
-    // explicitly set model for the agent
-    explictlyModelSet &&
-    // this runner uses a non-gpt-5 model
-    (typeof runnerModel !== 'string' ||
-      !gpt5ReasoningSettingsRequired(runnerModel)) &&
-    (agentModelSettings.providerData?.reasoning ||
-      agentModelSettings.providerData?.text?.verbosity ||
-      (agentModelSettings.providerData as any)?.reasoning_effort)
-  ) {
-    const copiedModelSettings = { ...modelSettings };
-    // the incompatible parameters should be removed to avoid runtime errors
-    delete copiedModelSettings.providerData?.reasoning;
-    delete (copiedModelSettings.providerData as any)?.text?.verbosity;
-    delete (copiedModelSettings.providerData as any)?.reasoning_effort;
-    if (copiedModelSettings.reasoning) {
-      delete copiedModelSettings.reasoning.effort;
-      delete copiedModelSettings.reasoning.summary;
-    }
-    if (copiedModelSettings.text) {
-      delete copiedModelSettings.text.verbosity;
-    }
-    return copiedModelSettings;
-  }
-  return modelSettings;
-}
-
-// Package turn metadata so both run loops share identical serialization.
-// Each field mirrors the information we ship to the model for the current agent turn.
-type AgentArtifacts<TContext = unknown> = {
-  handoffs: Handoff<any, any>[];
-  tools: Tool<TContext>[];
-  serializedHandoffs: SerializedHandoff[];
-  serializedTools: SerializedTool[];
-  toolsExplicitlyProvided: boolean;
+  return defaultRunner;
 };
-
-/**
- * @internal
- * Collects tools/handoffs early so we can annotate spans before model execution begins.
- */
-async function prepareAgentArtifacts<
-  TContext,
-  TAgent extends Agent<TContext, AgentOutputType>,
->(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
-  const handoffs = await state._currentAgent.getEnabledHandoffs(state._context);
-  const tools = await state._currentAgent.getAllTools(state._context);
-
-  const computerTools = tools.filter(
-    (tool) => tool.type === 'computer',
-  ) as ComputerTool<TContext, any>[];
-
-  if (computerTools.length > 0) {
-    await Promise.all(
-      computerTools.map(async (tool) => {
-        await resolveComputer({ tool, runContext: state._context });
-      }),
-    );
-  }
-
-  if (!state._currentAgentSpan) {
-    const handoffNames = handoffs.map((h) => h.agentName);
-    state._currentAgentSpan = createAgentSpan({
-      data: {
-        name: state._currentAgent.name,
-        handoffs: handoffNames,
-        tools: tools.map((t) => t.name),
-        output_type: state._currentAgent.outputSchemaName,
-      },
-    });
-    state._currentAgentSpan.start();
-    setCurrentSpan(state._currentAgentSpan);
-  } else {
-    state._currentAgentSpan.spanData.tools = tools.map((t) => t.name);
-  }
-
-  return {
-    handoffs,
-    tools,
-    serializedHandoffs: handoffs.map((handoff) => serializeHandoff(handoff)),
-    serializedTools: tools.map((tool) => serializeTool(tool)),
-    toolsExplicitlyProvided: state._currentAgent.hasExplicitToolConfig(),
-  };
-}
-
-// Captures everything required to call the model once so we avoid recomputing precedence or filters.
-// The values here are the "final say" for a turn; every loop simply consumes the structure rather
-// than attempting to rebuild model settings, filters, or metadata on its own.
-type PreparedModelCall<TContext = unknown> = AgentArtifacts<TContext> & {
-  model: Model;
-  explictlyModelSet: boolean;
-  modelSettings: ModelSettings;
-  modelInput: ModelInputData;
-  prompt?: Prompt;
-  previousResponseId?: string;
-  conversationId?: string;
-};
-
-type AgentInputItemPool = Map<string, AgentInputItem[]>;
-
-function getAgentInputItemKey(item: AgentInputItem): string {
-  // Deep serialization keeps binary inputs comparable after filters clone them.
-  return JSON.stringify(item, agentInputSerializationReplacer);
-}
-
-function buildAgentInputPool(items: AgentInputItem[]): AgentInputItemPool {
-  // Track every original object so filters can safely return cloned copies.
-  const pool: AgentInputItemPool = new Map();
-  for (const item of items) {
-    const key = getAgentInputItemKey(item);
-    const existing = pool.get(key);
-    if (existing) {
-      existing.push(item);
-    } else {
-      pool.set(key, [item]);
-    }
-  }
-  return pool;
-}
-
-function takeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  key: string,
-): AgentInputItem | undefined {
-  // Prefer reusing the earliest untouched original to keep ordering stable.
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return undefined;
-  }
-  const [first] = candidates;
-  candidates.shift();
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-  return first;
-}
-
-function removeAgentInputFromPool(
-  pool: AgentInputItemPool,
-  item: AgentInputItem,
-) {
-  // Remove exactly the matched instance so duplicate payloads remain available.
-  const key = getAgentInputItemKey(item);
-  const candidates = pool.get(key);
-  if (!candidates || candidates.length === 0) {
-    return;
-  }
-  const index = candidates.findIndex((candidate) => candidate === item);
-  if (index === -1) {
-    return;
-  }
-  candidates.splice(index, 1);
-  if (candidates.length === 0) {
-    pool.delete(key);
-  }
-}
-
-function agentInputSerializationReplacer(
-  _key: string,
-  value: unknown,
-): unknown {
-  // Mirror runImplementation serialization so buffer snapshots round-trip.
-  if (value instanceof ArrayBuffer) {
-    return {
-      __type: 'ArrayBuffer',
-      data: encodeUint8ArrayToBase64(new Uint8Array(value)),
-    };
-  }
-
-  if (isArrayBufferView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __type: view.constructor.name,
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isNodeBuffer(value)) {
-    const view = value as Uint8Array;
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(
-        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-      ),
-    };
-  }
-
-  if (isSerializedBufferSnapshot(value)) {
-    return {
-      __type: 'Buffer',
-      data: encodeUint8ArrayToBase64(Uint8Array.from(value.data)),
-    };
-  }
-
-  return value;
-}
-
-// Normalizes user-provided input into the structure the model expects. Strings become user messages,
-// arrays are kept as-is so downstream loops can treat both scenarios uniformly.
-function toAgentInputList(
-  originalInput: string | AgentInputItem[],
-): AgentInputItem[] {
-  // Allow callers to pass plain strings while preserving original item order.
-  if (typeof originalInput === 'string') {
-    return [{ type: 'message', role: 'user', content: originalInput }];
-  }
-
-  return [...originalInput];
-}

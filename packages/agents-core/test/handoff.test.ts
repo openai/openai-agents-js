@@ -3,6 +3,7 @@ import { Agent } from '../src/agent';
 import { handoff, getHandoff, Handoff } from '../src/handoff';
 import { ModelBehaviorError, UserError } from '../src/errors';
 import { z } from 'zod';
+import logger from '../src/logger';
 
 const agent = new Agent({ name: 'A' });
 
@@ -20,6 +21,7 @@ describe('handoff()', () => {
       onHandoff,
       inputType: z.object({ foo: z.string() }),
     });
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     await h.onInvokeHandoff({} as any, '{"foo":"bar"}');
     expect(onHandoff).toHaveBeenCalledWith({}, { foo: 'bar' });
     await expect(h.onInvokeHandoff({} as any, '')).rejects.toBeInstanceOf(
@@ -28,6 +30,14 @@ describe('handoff()', () => {
     await expect(h.onInvokeHandoff({} as any, 'bad')).rejects.toBeInstanceOf(
       ModelBehaviorError,
     );
+    if (logger.dontLogToolData) {
+      expect(errorSpy).not.toHaveBeenCalled();
+    } else {
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid JSON when parsing: bad. Error:'),
+      );
+    }
+    errorSpy.mockRestore();
   });
 
   it('applies overrides and inputFilter', () => {

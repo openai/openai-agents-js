@@ -29,6 +29,7 @@ import {
   assistant,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
+import { ServerConversationTracker } from '../src/runner/conversation';
 import { handoff } from '../src/handoff';
 import {
   RunMessageOutputItem as MessageOutputItem,
@@ -41,6 +42,7 @@ import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { tool, hostedMcpTool, computerTool } from '../src/tool';
+import logger from '../src/logger';
 import {
   FakeModel,
   fakeModelMessage,
@@ -318,6 +320,43 @@ describe('Runner.run', () => {
       expect(runnerEndEvents[0].output).toBe('Hello World');
     });
 
+    it('emits agent_end once when final output comes from tool results', async () => {
+      const model = new FakeModel([
+        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'ToolAgent',
+        model,
+        tools: [TEST_TOOL],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const agentEndEvents: Array<{ context: any; output: string }> = [];
+      const runnerEndEvents: Array<{
+        context: any;
+        agent: any;
+        output: string;
+      }> = [];
+
+      agent.on('agent_end', (context, output) => {
+        agentEndEvents.push({ context, output });
+      });
+
+      const runner = new Runner();
+      runner.on('agent_end', (context, endAgent, output) => {
+        runnerEndEvents.push({ context, agent: endAgent, output });
+      });
+
+      const result = await runner.run(agent, 'trigger tool');
+
+      expect(result.finalOutput).toBe('Hello World');
+      expect(agentEndEvents).toHaveLength(1);
+      expect(agentEndEvents[0].output).toBe('Hello World');
+      expect(runnerEndEvents).toHaveLength(1);
+      expect(runnerEndEvents[0].agent).toBe(agent);
+      expect(runnerEndEvents[0].output).toBe('Hello World');
+    });
+
     it('disposes computer lifecycle initializers after a completed run', async () => {
       const createdComputer = new FakeComputer();
       const create = vi.fn(async () => createdComputer);
@@ -443,6 +482,28 @@ describe('Runner.run', () => {
       expect(resumed.finalOutput).toBe(first.finalOutput);
     });
 
+    it('resumes from schema 1.0 RunState', async () => {
+      const agent = new Agent({
+        name: 'ResumeV1',
+        model: new FakeModel([
+          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        ]),
+      });
+      const first = await run(agent, 'hi');
+      const json = first.state.toJSON() as any;
+      delete json.currentAgentSpan;
+      delete json.currentTurnInProgress;
+      delete json.conversationId;
+      delete json.previousResponseId;
+      json.$schemaVersion = '1.0';
+      const restored = await RunState.fromString(agent, JSON.stringify(json));
+      expect(restored._currentTurnInProgress).toBe(false);
+      expect(restored._conversationId).toBeUndefined();
+      expect(restored._previousResponseId).toBeUndefined();
+      const resumed = await run(agent, restored);
+      expect(resumed.finalOutput).toBe(first.finalOutput);
+    });
+
     it('input guardrail executes only once', async () => {
       const firstResponse: ModelResponse = {
         output: [
@@ -538,6 +599,13 @@ describe('Runner.run', () => {
       const result = await runner.run(agent, 'input');
       expect(result.finalOutput).toBe('hi');
       expect(guardrailFn).toHaveBeenCalledTimes(1);
+      expect(result.outputGuardrailResults).toHaveLength(1);
+      expect(result.outputGuardrailResults[0].guardrail.name).toBe('og');
+      expect(result.outputGuardrailResults[0].output.tripwireTriggered).toBe(
+        false,
+      );
+      expect(result.outputGuardrailResults[0].agentOutput).toBe('hi');
+      expect(result.outputGuardrailResults[0].agent).toBe(agent);
     });
 
     it('output guardrail tripwire throws', async () => {
@@ -1128,16 +1196,33 @@ describe('Runner.run', () => {
         expect(firstPart?.providerData).toEqual({ annotations: [] });
       });
 
-      it('rejects list inputs when using session history', async () => {
+      it('allows list inputs with session history and no session input callback', async () => {
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('list response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'ListSession', model });
+        const historyItem = user('History stays');
+        const session = new MemorySession([historyItem]);
         const runner = new Runner();
-        const agent = new Agent({ name: 'ListSession' });
-        const session = new MemorySession();
 
-        await expect(
-          runner.run(agent, [user('Hello')], {
-            session,
-          }),
-        ).rejects.toThrow('RunConfig.sessionInputCallback');
+        await runner.run(agent, [user('Hello')], { session });
+
+        const recordedInput = model.lastRequest?.input as AgentInputItem[];
+        expect(Array.isArray(recordedInput)).toBe(true);
+        expect(recordedInput).toHaveLength(2);
+        expect(getFirstTextContent(recordedInput[0])).toBe('History stays');
+        expect(getFirstTextContent(recordedInput[1])).toBe('Hello');
+
+        expect(session.added).toHaveLength(1);
+        expect(getFirstTextContent(session.added[0][0])).toBe('Hello');
+        expect(
+          session.added[0][1] &&
+            typeof session.added[0][1] === 'object' &&
+            'type' in session.added[0][1],
+        ).toBe(true);
       });
 
       it('allows list inputs when session input callback is provided', async () => {
@@ -1605,6 +1690,117 @@ describe('Runner.run', () => {
         // The fix ensures only 1 function_call item is saved
         expect(functionCalls).toHaveLength(1);
       });
+
+      it('does not duplicate already persisted items when the resumed run continues into additional turns', async () => {
+        // Regression test for session persistence across resumed runs that execute additional turns.
+        //
+        // Scenario:
+        // 1. First run is interrupted for tool approval, persisting the initial function_call.
+        // 2. The run is resumed and continues into another tool call (additional turn).
+        //
+        // Expected behavior: Session history must not contain duplicate function_call items from the
+        // already-persisted portion of the run.
+
+        const getWeatherTool = tool({
+          name: 'get_weather',
+          description: 'Get weather for a city',
+          parameters: z.object({ city: z.string() }),
+          needsApproval: async () => true,
+          execute: async ({ city }) => `Sunny, 72°F in ${city}`,
+        });
+
+        const getTimeTool = tool({
+          name: 'get_time',
+          description: 'Get the current time for a city',
+          parameters: z.object({ city: z.string() }),
+          execute: async ({ city }) => `12:00PM in ${city}`,
+        });
+
+        const model = new FakeModel([
+          // First response: tool call that requires approval.
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_weather_1',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Second response: after approval, request another tool call without approval.
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_2',
+                callId: 'call_time_1',
+                name: 'get_time',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          // Third response: final answer after tool results are available.
+          {
+            output: [
+              fakeModelMessage('It is sunny in Oakland and it is noon.'),
+            ],
+            usage: new Usage(),
+          },
+        ]);
+
+        const agent = new Agent({
+          name: 'Assistant',
+          instructions:
+            'Use get_weather and get_time tools to answer questions about Oakland.',
+          model,
+          tools: [getWeatherTool, getTimeTool],
+          toolUseBehavior: 'run_llm_again',
+        });
+
+        const session = new MemorySession();
+
+        const sessionInputCallback = async (
+          historyItems: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => {
+          return [...historyItems, ...newItems];
+        };
+
+        // Step 1: Initial run creates an interruption for tool approval.
+        let result = await run(
+          agent,
+          [
+            {
+              role: 'user',
+              content: "What's the weather and time in Oakland?",
+            },
+          ],
+          { session, sessionInputCallback },
+        );
+
+        for (const interruption of result.interruptions || []) {
+          result.state.approve(interruption);
+        }
+
+        // Step 2: Resume the run; it continues into another turn due to a second tool call.
+        result = await run(agent, result.state, { session });
+
+        const allItems = await session.getItems();
+        const weatherCalls = allItems.filter(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' && item.callId === 'call_weather_1',
+        );
+
+        expect(weatherCalls).toHaveLength(1);
+      });
     });
   });
 
@@ -1917,6 +2113,201 @@ describe('Runner.run', () => {
       expect(userItems).toHaveLength(0);
     });
 
+    it('resets per-turn persistence when resuming from a prior run state', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'persist-reset-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const model = new FakeModel([
+        { output: [fakeModelMessage('first turn')], usage: new Usage() },
+        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({ name: 'PersistCounterAgent', model });
+      const session = new RecordingSession();
+      const runner = new Runner();
+
+      const firstRun = await runner.run(agent, 'hello', { session });
+
+      expect(firstRun.state._currentTurnPersistedItemCount).toBe(1);
+
+      const resumedState = firstRun.state;
+      resumedState._originalInput = 'follow-up';
+      resumedState._currentStep = { type: 'next_step_run_again' } as const;
+      resumedState._lastTurnResponse = undefined;
+      resumedState._lastProcessedResponse = undefined;
+      resumedState._noActiveAgentRun = true;
+      resumedState._currentTurnPersistedItemCount = 5;
+
+      const secondRun = await runner.run(agent, resumedState, { session });
+
+      expect(secondRun.finalOutput).toBe('second turn');
+      expect(session.added.length).toBeGreaterThanOrEqual(2);
+      const newlyPersisted = session.added[session.added.length - 1];
+      const texts = newlyPersisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(texts).toContain('second turn');
+    });
+
+    it('does not double-count turns when resuming an in-progress turn', async () => {
+      const model = new FakeModel([
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({ name: 'TurnResumeAgent', model });
+      const runner = new Runner();
+
+      const state = new RunState(new RunContext(), 'hi', agent, 1);
+      state._currentTurn = 1;
+      (state as any)._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+
+      const result = await runner.run(agent, state);
+
+      expect(result.state._currentTurn).toBe(1);
+      expect(result.finalOutput).toBe('done');
+    });
+
+    it('advances turns after resuming an in-progress turn that continues', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'resume-in-progress-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const model = new FakeModel([
+        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ResumeInProgressContinueAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+      const runner = new Runner();
+      const session = new RecordingSession();
+
+      const state = new RunState(new RunContext(), 'hi', agent, 2);
+      state._currentTurn = 1;
+      (state as any)._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+      state._noActiveAgentRun = true;
+
+      const result = await runner.run(agent, state, { session });
+
+      expect(result.finalOutput).toBe('second turn');
+      expect(result.state._currentTurn).toBe(2);
+      expect(session.added.length).toBeGreaterThan(0);
+      const newlyPersisted = session.added[session.added.length - 1];
+      const texts = newlyPersisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(texts).toContain('second turn');
+    });
+
+    it('clears stale per-turn persistence when a resumed run advances to a new turn', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'resume-in-progress-reset-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const model = new FakeModel([
+        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ResumeInProgressResetAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+      const runner = new Runner();
+      const session = new RecordingSession();
+
+      const state = new RunState(new RunContext(), 'hi', agent, 2);
+      state._currentTurn = 1;
+      (state as any)._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+      state._noActiveAgentRun = true;
+      // Simulate a stale persisted count from the resumed turn so new turns reset it.
+      state._currentTurnPersistedItemCount = 5;
+
+      const result = await runner.run(agent, state, { session });
+
+      expect(result.finalOutput).toBe('second turn');
+      expect(result.state._currentTurn).toBe(2);
+      const newlyPersisted = session.added[session.added.length - 1];
+      const texts = newlyPersisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(texts).toContain('second turn');
+    });
+
     it('keeps original inputs when filters prepend new items', async () => {
       class RecordingSession implements Session {
         #history: AgentInputItem[] = [];
@@ -2144,8 +2535,7 @@ describe('Runner.run', () => {
       const secondMessages = secondInput.filter(
         (item) => item.type === 'message',
       );
-      expect(secondMessages).toHaveLength(1);
-      expect(getFirstTextContent(secondMessages[0])).toBe('First input');
+      expect(secondMessages).toHaveLength(0);
 
       expect(
         secondInput.some(
@@ -2270,6 +2660,129 @@ describe('Runner.run', () => {
         .filter((text): text is string => typeof text === 'string');
       expect(secondTexts).not.toContain('[redacted]');
       expect(secondTexts).not.toContain('Sensitive payload');
+    });
+
+    it('does not requeue filtered tool outputs in server-managed conversations', async () => {
+      class ConversationTrackingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        constructor(private readonly responses: ModelResponse[]) {}
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          const cloned: ModelRequest = {
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          };
+          this.requests.push(cloned);
+          const response = this.responses.shift();
+          if (!response) {
+            throw new Error('No response configured');
+          }
+          return response;
+        }
+
+        getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ConversationTrackingModel([
+        {
+          output: [
+            {
+              id: 'call-1',
+              type: 'function_call',
+              name: 'filterTool',
+              callId: 'call-1',
+              status: 'completed',
+              arguments: JSON.stringify({ test: 'first' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+          responseId: 'resp-1',
+        },
+        {
+          output: [
+            {
+              id: 'call-2',
+              type: 'function_call',
+              name: 'filterTool',
+              callId: 'call-2',
+              status: 'completed',
+              arguments: JSON.stringify({ test: 'second' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+          responseId: 'resp-2',
+        },
+        {
+          output: [fakeModelMessage('all done')],
+          usage: new Usage(),
+          responseId: 'resp-3',
+        },
+      ]);
+
+      const filterTool = tool({
+        name: 'filterTool',
+        description: 'test tool',
+        parameters: z.object({ test: z.string() }),
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls += 1;
+          if (filterCalls === 2) {
+            return {
+              instructions: modelData.instructions,
+              input: modelData.input.filter(
+                (item) => item.type !== 'function_call_result',
+              ),
+            };
+          }
+          return modelData;
+        },
+      });
+
+      const agent = new Agent({
+        name: 'ToolOutputFilterAgent',
+        model,
+        tools: [filterTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await runner.run(agent, [user('Run it')], {
+        conversationId: 'conv-filter-tool-output',
+      });
+
+      expect(result.finalOutput).toBe('all done');
+      expect(filterCalls).toBe(3);
+      expect(model.requests).toHaveLength(3);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      expect(
+        secondInput.some(
+          (item) =>
+            item.type === 'function_call_result' &&
+            (item as protocol.FunctionCallResultItem).callId === 'call-1',
+        ),
+      ).toBe(false);
+
+      const thirdInput = model.requests[2].input as AgentInputItem[];
+      expect(Array.isArray(thirdInput)).toBe(true);
+      const toolResults = thirdInput.filter(
+        (item): item is protocol.FunctionCallResultItem =>
+          item.type === 'function_call_result',
+      );
+      const callIds = toolResults.map((item) => item.callId);
+      expect(callIds).toContain('call-2');
+      expect(callIds).not.toContain('call-1');
     });
 
     it('preserves providerData when saving streaming session items', async () => {
@@ -2576,6 +3089,79 @@ describe('Runner.run', () => {
       execute: async ({ test }) => `result:${test}`,
     });
 
+    it('marks server-managed inputs as sent only after a successful response', async () => {
+      /* eslint-disable require-yield */
+      class SingleResponseModel implements Model {
+        public readonly requests: ModelRequest[] = [];
+        constructor(private readonly response: ModelResponse) {}
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return this.response;
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('not used');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+
+      const model = new SingleResponseModel(TEST_MODEL_RESPONSE_BASIC);
+      const agent = new Agent({ name: 'MarkSuccess', model });
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'hi there', {
+        conversationId: 'conv-mark-success',
+      });
+
+      expect(result.finalOutput).toBe('Hello World');
+      expect(markSpy).toHaveBeenCalledTimes(1);
+      const [sourceItems, options] = markSpy.mock.calls[0];
+      expect(Array.isArray(sourceItems)).toBe(true);
+      expect(options?.filterApplied).toBe(false);
+      expect(model.requests[0]?.conversationId).toBe('conv-mark-success');
+
+      markSpy.mockRestore();
+    });
+
+    it('does not mark server inputs as sent when the model call fails before sending', async () => {
+      /* eslint-disable require-yield */
+      class ThrowingModel implements Model {
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('boom');
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          throw new Error('not used');
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({
+        name: 'MarkFailure',
+        model: new ThrowingModel(),
+      });
+      const runner = new Runner();
+
+      await expect(
+        runner.run(agent, 'please fail', {
+          conversationId: 'conv-mark-failure',
+        }),
+      ).rejects.toThrow('boom');
+
+      expect(markSpy).not.toHaveBeenCalled();
+      markSpy.mockRestore();
+    });
+
     it('skips persisting turns when the server manages conversation history via conversationId', async () => {
       const model = new TrackingModel([
         {
@@ -2648,11 +3234,16 @@ describe('Runner.run', () => {
       };
       const runner = new Runner();
 
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       await runner.run(agent, 'Latest user input', {
         session,
         conversationId: 'conv-history-only',
         sessionInputCallback: (historyItems) => historyItems,
       });
+      expect(warnSpy).toHaveBeenCalledWith(
+        'sessionInputCallback dropped all new inputs in a server-managed conversation; original turn inputs were restored to avoid losing the API delta. Keep at least one new item or omit conversationId if you intended to drop them.',
+      );
+      warnSpy.mockRestore();
 
       const firstInput = model.firstRequest?.input;
       expect(Array.isArray(firstInput)).toBe(true);
