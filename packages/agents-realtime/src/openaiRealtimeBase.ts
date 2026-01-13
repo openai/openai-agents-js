@@ -618,7 +618,7 @@ export abstract class OpenAIRealtimeBase
           );
 
         if (tool.type === 'mcp') {
-          // Realtime API MCP tool shape: keep only documented fields for session.update.
+          // Realtime API MCP tool shape: session.update properties and MCP tool headers
           return pickDefined({
             type: 'mcp',
             server_label: tool.server_label,
@@ -626,6 +626,7 @@ export abstract class OpenAIRealtimeBase
             server_description: tool.server_description,
             connector_id: tool.connector_id,
             authorization: tool.authorization,
+            headers: tool.headers,
             allowed_tools: tool.allowed_tools,
             require_approval: tool.require_approval,
           });
