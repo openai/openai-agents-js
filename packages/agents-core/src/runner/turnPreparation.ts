@@ -169,6 +169,11 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
     state._currentTurn++;
     if (!options.isResumedState || !options.preserveTurnPersistenceOnResume) {
       state.resetTurnPersistence();
+    } else if (
+      state._currentTurnPersistedItemCount > state._generatedItems.length
+    ) {
+      // Reset if a stale count would skip items in subsequent turns.
+      state.resetTurnPersistence();
     }
   }
   state._currentTurnInProgress = true;

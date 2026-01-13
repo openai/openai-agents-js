@@ -2249,6 +2249,65 @@ describe('Runner.run', () => {
       expect(texts).toContain('second turn');
     });
 
+    it('clears stale per-turn persistence when a resumed run advances to a new turn', async () => {
+      class RecordingSession implements Session {
+        #history: AgentInputItem[] = [];
+        added: AgentInputItem[][] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'resume-in-progress-reset-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.#history];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.added.push(items);
+          this.#history.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.#history.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.#history = [];
+        }
+      }
+
+      const model = new FakeModel([
+        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ResumeInProgressResetAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+      const runner = new Runner();
+      const session = new RecordingSession();
+
+      const state = new RunState(new RunContext(), 'hi', agent, 2);
+      state._currentTurn = 1;
+      (state as any)._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+      state._noActiveAgentRun = true;
+      // Simulate a stale persisted count from the resumed turn so new turns reset it.
+      state._currentTurnPersistedItemCount = 5;
+
+      const result = await runner.run(agent, state, { session });
+
+      expect(result.finalOutput).toBe('second turn');
+      expect(result.state._currentTurn).toBe(2);
+      const newlyPersisted = session.added[session.added.length - 1];
+      const texts = newlyPersisted
+        .map((item) => getFirstTextContent(item))
+        .filter((text): text is string => typeof text === 'string');
+      expect(texts).toContain('second turn');
+    });
+
     it('keeps original inputs when filters prepend new items', async () => {
       class RecordingSession implements Session {
         #history: AgentInputItem[] = [];
