@@ -612,6 +612,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
             const guardrailTracker = createGuardrailTracker();
+            const previousTurn = state._currentTurn;
+            const previousPersistedCount = state._currentTurnPersistedItemCount;
+            const previousGeneratedCount = state._generatedItems.length;
             const { artifacts, turnInput, parallelGuardrailPromise } =
               await prepareTurn({
                 state,
@@ -630,6 +633,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   this.emit('agent_start', context, agent, inputItems);
                 },
               });
+            if (
+              preserveTurnPersistenceOnResume &&
+              state._currentTurn > previousTurn &&
+              previousPersistedCount <= previousGeneratedCount
+            ) {
+              // Preserve persisted offsets from a resumed run to avoid re-saving prior items.
+              state._currentTurnPersistedItemCount = previousPersistedCount;
+            }
 
             guardrailTracker.setPromise(parallelGuardrailPromise);
             const preparedCall = await this.#prepareModelCall(
@@ -927,6 +938,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           guardrailTracker = createGuardrailTracker();
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
+          const previousTurn = result.state._currentTurn;
+          const previousPersistedCount =
+            result.state._currentTurnPersistedItemCount;
+          const previousGeneratedCount = result.state._generatedItems.length;
           const preparedTurn = await prepareTurn({
             state: result.state,
             input: result.input,
@@ -948,6 +963,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this.emit('agent_start', context, agent, inputItems);
             },
           });
+          if (
+            preserveTurnPersistenceOnResume &&
+            result.state._currentTurn > previousTurn &&
+            previousPersistedCount <= previousGeneratedCount
+          ) {
+            // Preserve persisted offsets from a resumed run to avoid re-saving prior items.
+            result.state._currentTurnPersistedItemCount =
+              previousPersistedCount;
+          }
           const { artifacts, turnInput } = preparedTurn;
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);

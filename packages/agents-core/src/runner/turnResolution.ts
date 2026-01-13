@@ -662,6 +662,18 @@ export async function resolveTurnAfterModelResponse<TContext>(
       state,
       functionResults,
       appendIfNew,
+      resolveApproval: (rawItem) => {
+        const providerData =
+          rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
+        const approvalRequestId = rawItem.id ?? providerData?.id;
+        if (!approvalRequestId) {
+          return undefined;
+        }
+        return state._context.isToolApproved({
+          toolName: rawItem.name,
+          callId: approvalRequestId,
+        });
+      },
     });
   }
 

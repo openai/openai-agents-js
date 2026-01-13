@@ -24,7 +24,13 @@ import type { ProcessedResponse } from '../../src/runner/types';
 import { RunContext } from '../../src/runContext';
 import { RunState } from '../../src/runState';
 import { Runner } from '../../src/run';
-import { computerTool, applyPatchTool, shellTool, tool } from '../../src/tool';
+import {
+  computerTool,
+  applyPatchTool,
+  shellTool,
+  tool,
+  hostedMcpTool,
+} from '../../src/tool';
 import { Usage } from '../../src/usage';
 import {
   FakeEditor,
@@ -84,6 +90,70 @@ describe('resolveTurnAfterModelResponse', () => {
     );
 
     expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('emits hosted MCP approval responses when already approved', async () => {
+    const agent = new Agent({ name: 'MCPAgent', outputType: 'text' });
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'approve_me',
+      id: 'mcpr_approved',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'approve_me',
+        id: 'mcpr_approved',
+        arguments: '{}',
+        input_schema: {},
+      },
+    };
+    const approvalItem = new ToolApprovalItem(approvalCall, agent);
+    const processedResponse: ProcessedResponse = {
+      newItems: [approvalItem],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [
+        {
+          requestItem: approvalItem,
+          mcpTool: hostedMcpTool({
+            serverLabel: 'server',
+            requireApproval: 'always',
+          }),
+        },
+      ],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+    const localState = new RunState(new RunContext(), 'hello', agent, 1);
+    localState._context.approveTool(approvalItem);
+
+    const result = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      localState,
+    );
+
+    expect(result.newStepItems).toContainEqual(
+      expect.objectContaining({
+        rawItem: expect.objectContaining({
+          name: 'mcp_approval_response',
+        }),
+      }),
+    );
   });
 
   it('does not finalize when tools are used in the same turn (structured output); runs again', async () => {
