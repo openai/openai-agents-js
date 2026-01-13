@@ -225,13 +225,65 @@ const envFlag = (name) => {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 };
 
+const INTERACTIVE_SOURCE_KEYWORDS = [
+  'interruptions',
+  'auto_approve_hitl',
+  'auto_approve_mcp',
+  'approve(',
+  'reject(',
+];
+
+const interactiveSourceCache = new Map();
+
+const resolveScriptPath = (start) => {
+  const tokens = start.command.split(/\s+/);
+  for (const rawToken of tokens) {
+    const token = rawToken.replace(/^['"]|['"]$/g, '');
+    if (token.startsWith('-')) {
+      continue;
+    }
+    if (/\.(mjs|cjs|js|mts|cts|ts|tsx)$/i.test(token)) {
+      return path.resolve(start.dir, token);
+    }
+  }
+  return null;
+};
+
+const isLikelyInteractiveFromSource = (start) => {
+  const scriptPath = resolveScriptPath(start);
+  if (!scriptPath) {
+    return false;
+  }
+
+  if (interactiveSourceCache.has(scriptPath)) {
+    return interactiveSourceCache.get(scriptPath);
+  }
+
+  try {
+    const source = readFileSync(scriptPath, 'utf-8').toLowerCase();
+    const hasSignal = INTERACTIVE_SOURCE_KEYWORDS.some((keyword) =>
+      source.includes(keyword),
+    );
+    interactiveSourceCache.set(scriptPath, hasSignal);
+    return hasSignal;
+  } catch (_error) {
+    interactiveSourceCache.set(scriptPath, false);
+    return false;
+  }
+};
+
 const isInteractiveStart = (start) => {
   const name = `${start.packageName}:${start.scriptName}`;
   const keyWithDir = `${path.basename(start.dir)}:${start.scriptName}`;
+  const nameLower = name.toLowerCase();
   const commandLower = start.command.toLowerCase();
   return (
-    name.toLowerCase().includes('hitl') ||
+    nameLower.includes('hitl') ||
+    nameLower.includes('human-in-the-loop') ||
+    nameLower.includes('human_in_the_loop') ||
+    commandLower.includes('human-in-the-loop') ||
     commandLower.includes('readline') ||
+    isLikelyInteractiveFromSource(start) ||
     DEFAULT_INTERACTIVE_INPUTS.has(name) ||
     DEFAULT_INTERACTIVE_INPUTS.has(keyWithDir)
   );
@@ -638,10 +690,7 @@ const runStarts = async (
               : baseTimeoutMs;
 
         const childEnv = { ...process.env };
-        if (
-          interactiveMode === 'auto' &&
-          (start.tags.has('interactive') || start.scriptName.includes('hitl'))
-        ) {
+        if (interactiveMode === 'auto' && start.tags.has('interactive')) {
           childEnv.AUTO_APPROVE_HITL =
             childEnv.AUTO_APPROVE_HITL ?? (autoInput ? '1' : '1');
         }
