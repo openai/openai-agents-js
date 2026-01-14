@@ -1,0 +1,159 @@
+name: Release PR Review
+
+on:
+  workflow_run:
+    workflows: ['Changesets Release']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Release PR number (changeset-release/*) to review'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.repository_owner == 'openai' && ( (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find open release PR
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          MANUAL_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+          script: |
+            const headBranch = context.payload.workflow_run?.head_branch;
+            const manualPr = process.env.MANUAL_PR_NUMBER;
+
+            if (context.eventName === 'workflow_dispatch') {
+              if (!manualPr) {
+                core.setFailed('workflow_dispatch requires pr_number input.');
+                return;
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(manualPr),
+              });
+              if (!pr.head.ref.startsWith('changeset-release/')) {
+                core.setFailed(`PR #${manualPr} is not a changeset-release/* PR.`);
+                return;
+              }
+              core.info(`Found PR #${pr.number} (${pr.head.ref}) via workflow_dispatch input.`);
+              core.setOutput('found', 'true');
+              core.setOutput('pr_number', pr.number);
+              core.setOutput('head_sha', pr.head.sha);
+              return;
+            }
+
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 50,
+            });
+
+            const candidates = prs
+              .filter((pr) => pr.head.ref.startsWith('changeset-release/'))
+              .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+            if (headBranch) {
+              const match = candidates.find((pr) => pr.head.ref === headBranch);
+              if (match) {
+                core.info(`Found PR #${match.number} (${match.head.ref})`);
+                core.setOutput('found', 'true');
+                core.setOutput('pr_number', match.number);
+                core.setOutput('head_sha', match.head.sha);
+                return;
+              }
+            }
+
+            const pr = candidates[0];
+            if (!pr) {
+              core.info('No open release PR found (changeset-release/*). Skipping.');
+              core.setOutput('found', 'false');
+              return;
+            }
+
+            core.info(`Found PR #${pr.number} (${pr.head.ref})`);
+            core.setOutput('found', 'true');
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('head_sha', pr.head.sha);
+
+      - name: Checkout release PR head
+        if: steps.pr.outputs.found == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Generate final-release-review report
+        if: steps.pr.outputs.found == 'true'
+        id: review
+        run: |
+          BASE_TAG="$(.codex/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
+          TARGET="${{ steps.pr.outputs.head_sha }}"
+
+          {
+            echo "<!-- final-release-review -->"
+            echo "## Final Release Review"
+            echo "- base tag: ${BASE_TAG}"
+            echo "- target: ${TARGET}"
+            echo "- generated at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "### Diff stat"
+            git diff --stat "${BASE_TAG}"..."${TARGET}" || true
+            echo
+            echo "### Hot paths (dirstat)"
+            git diff --dirstat=files,0 "${BASE_TAG}"..."${TARGET}" || true
+            echo
+            echo "### Commits since ${BASE_TAG}"
+            git log --oneline "${BASE_TAG}".."${TARGET}" || true
+          } > review.md
+
+      - name: Upsert PR comment
+        if: steps.pr.outputs.found == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review.md', 'utf8');
+            const marker = '<!-- final-release-review -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (c) => c.user?.login === 'github-actions[bot]' && c.body?.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated existing comment ${existing.id}`);
+            } else {
+              const { data: created } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(process.env.PR_NUMBER),
+                body,
+              });
+              core.info(`Created comment ${created.id}`);
+            }
