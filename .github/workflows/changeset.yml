@@ -40,6 +40,7 @@ jobs:
 
       - name: Run Codex changeset validation
         id: run_codex
+        if: ${{ !github.event.pull_request.head.repo.fork && secrets.PROD_OPENAI_API_KEY != '' }}
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
@@ -51,10 +52,11 @@ jobs:
           safety-strategy: drop-sudo
 
       - name: Validate Codex output
+        if: ${{ steps.run_codex.conclusion == 'success' }}
         run: pnpm changeset:validate-result -- .github/codex/outputs/changeset-validation.json
 
       - name: Assign milestone
-        if: success()
+        if: ${{ steps.run_codex.conclusion == 'success' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm changeset:assign-milestone -- .github/codex/outputs/changeset-validation.json
