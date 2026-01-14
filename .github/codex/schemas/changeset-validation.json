@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": ["ok", "errors", "warnings", "required_bump"],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_bump": {
+      "type": "string",
+      "enum": ["patch", "minor", "none"]
+    }
+  },
+  "additionalProperties": false
+}
