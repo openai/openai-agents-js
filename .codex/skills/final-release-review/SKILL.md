@@ -1,13 +1,13 @@
 ---
 name: final-release-review
-description: Perform a release-readiness review by locating the previous release tag from remote tags and auditing the diff (e.g., v1.2.3...main) for breaking changes, regressions, improvement opportunities, and risks before releasing openai-agents-js.
+description: Perform a release-readiness review by locating the previous release tag from remote tags and auditing the diff (e.g., v1.2.3...<commit>) for breaking changes, regressions, improvement opportunities, and risks before releasing openai-agents-js.
 ---
 
 # Final Release Review
 
 ## Purpose
 
-Use this skill when validating main for release. It guides you to fetch remote tags, pick the previous release tag, and thoroughly inspect the `BASE_TAG...TARGET` diff for breaking changes, introduced bugs/regressions, improvement opportunities, and release risks.
+Use this skill when validating the latest release candidate commit (default tip of `origin/main`) for release. It guides you to fetch remote tags, pick the previous release tag, and thoroughly inspect the `BASE_TAG...TARGET` diff for breaking changes, introduced bugs/regressions, improvement opportunities, and release risks.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ Use this skill when validating main for release. It guides you to fetch remote t
    ```bash
    BASE_TAG="$(.codex/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
    ```
-3. Choose target (default `main`, ensure fresh): `git fetch origin main --prune` then `TARGET="main"`.
+3. Choose target commit (default tip of `origin/main`, ensure fresh): `git fetch origin main --prune` then `TARGET="$(git rev-parse origin/main)"`.
 4. Snapshot scope:
    ```bash
    git diff --stat "${BASE_TAG}"..."${TARGET}"
@@ -34,7 +34,7 @@ Use this skill when validating main for release. It guides you to fetch remote t
   - If the user specifies a base tag, prefer it but still fetch remote tags first.
   - Keep the working tree clean to avoid diff noise.
 - **Assumptions**
-  - Assume `main` has already passed `$code-change-verification` in CI unless the user says otherwise.
+  - Assume the target commit (default `origin/main` tip) has already passed `$code-change-verification` in CI unless the user says otherwise.
   - Do not block a release solely because you did not run tests locally; focus on concrete behavioral or API risks.
 - **Map the diff**
   - Use `--stat`, `--dirstat`, and `--name-status` outputs to spot hot directories and file types.
@@ -63,7 +63,7 @@ This is a release readiness report done by `$final-release-review` skill.
 
 ### Diff
 
-https://github.com/openai/openai-agents-js/compare/<tag>...main
+https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 
 ### Release call:
 - <GREEN LIGHT TO SHIP | BLOCKED> <one-line rationale>
