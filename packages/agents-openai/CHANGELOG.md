@@ -1,5 +1,30 @@
 # @openai/agents-openai
 
+## 0.3.8
+
+### Patch Changes
+
+- 303e95e: feat: Add per-run tracing API key support
+- d18eb0b: Add regression tests covering agent scenarios
+- fa69dc7: fix: Skip response_format when "text" in Chat Completions calls
+- da82f9c: fix: sanitize conversation items for non-OpenAI models in HITL flow
+- 4f20c16: fix: Fix chat completions tool calls when content is present
+- 7c05117: fix: Add content: null when having tool calls for Chat Completions
+- ddccc9d: refactor: #275 simplify streaming state by removing unused index tracking
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes

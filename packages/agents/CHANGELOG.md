@@ -1,5 +1,33 @@
 # @openai/agents
 
+## 0.3.8
+
+### Patch Changes
+
+- a0fc1dc: feat: #794 Expose `ToolInputParameters` and `ToolOptions` from the top-level exports so wrappers can import the tool types
+- Updated dependencies [65880e8]
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [f2ccd93]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [fa69dc7]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [4f20c16]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [ba4a612]
+- Updated dependencies [7c05117]
+- Updated dependencies [41c1b89]
+- Updated dependencies [ddccc9d]
+- Updated dependencies [b233ea5]
+  - @openai/agents-realtime@0.3.8
+  - @openai/agents-core@0.3.8
+  - @openai/agents-openai@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes

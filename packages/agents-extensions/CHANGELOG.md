@@ -1,5 +1,28 @@
 # @openai/agents-extensions
 
+## 0.3.8
+
+### Patch Changes
+
+- c6f0211: Fix : correctly extract token counts when AI SDK providers return them as objects instead of numbers (e.g. @ai-sdk/google)
+- d18eb0b: Add regression tests covering agent scenarios
+- c8a9c1d: fix: #709 Share tracing context across runtimes to prevent Deno aisdk context loss
+- a752980: feat: Add ai-sdk v3 support and improve other provider compatibility
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+  - @openai/agents@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes

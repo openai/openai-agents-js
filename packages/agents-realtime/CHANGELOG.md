@@ -1,5 +1,28 @@
 # @openai/agents-realtime
 
+## 0.3.8
+
+### Patch Changes
+
+- 65880e8: fix(realtime): #820 null values for noise_reduction / transcription / turn_detection are ignored
+- d18eb0b: Add regression tests covering agent scenarios
+- f2ccd93: fix: whitelist realtime session tool payload to documented fields
+- 20cb95f: feat: Add tool input/output guardrails to TS SDK
+- ba4a612: fix: #816 preserve falsy turn detection config values
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+
 ## 0.3.7
 
 ### Patch Changes
