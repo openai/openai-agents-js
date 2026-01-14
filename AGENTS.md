@@ -32,6 +32,10 @@ Run it when you change:
 
 You can skip `$code-change-verification` for docs-only or repo-meta changes (for example, `docs/`, `.codex/`, `README.md`, `AGENTS.md`, `.github/`), unless a user explicitly asks to run the full verification stack.
 
+### `$changeset-validation`
+
+When you change anything under `packages/` or touch `.changeset/`, use `$changeset-validation` to create and validate the changeset before you treat the code as final. Codex must ensure an appropriate changeset exists that covers every changed package, and run this skill alongside `$code-change-verification` ahead of handoff.
+
 ### `$openai-knowledge`
 
 When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
@@ -133,6 +137,8 @@ See [this README](integration-tests/README.md) for details.
 ### Mandatory Local Run Order
 
 When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step or change the order.
+
+Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 
 ### Pre-commit Hooks
 
