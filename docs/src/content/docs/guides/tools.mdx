@@ -6,22 +6,24 @@ description: Provide your agents with capabilities via hosted tools or custom fu
 import { Code } from '@astrojs/starlight/components';
 import toolsFunctionExample from '../../../../../examples/docs/tools/functionTools.ts?raw';
 import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
+import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
-computer. The JavaScript/TypeScript SDK supports four categories:
+computer. The JavaScript/TypeScript SDK supports five categories:
 
-1. **Hosted tools** – run alongside the model on OpenAI servers. _(web search, file search, computer use, code interpreter, image generation)_
-2. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
-3. **Agents as tools** – expose an entire Agent as a callable tool.
-4. **Local MCP servers** – attach a Model Context Protocol server running on your machine.
+1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation)_
+2. **Local built-in tools** – run in your environment. _(computer use, shell, apply_patch)_
+3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
+4. **Agents as tools** – expose an entire Agent as a callable tool.
+5. **MCP servers** – attach a Model Context Protocol server (local or remote).
 
 ---
 
-## 1. Hosted tools
+## 1. Hosted tools (OpenAI Responses API)
 
 When you use the `OpenAIResponsesModel` you can add the following built‑in tools:
 
@@ -29,9 +31,6 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 | ----------------------- | -------------------- | ------------------------------------- |
 | Web search              | `'web_search'`       | Internet search.                      |
 | File / retrieval search | `'file_search'`      | Query vector stores hosted on OpenAI. |
-| Computer use            | `'computer'`         | Automate GUI interactions.            |
-| Shell                   | `'shell'`            | Run shell commands on the host.       |
-| Apply patch             | `'apply_patch'`      | Apply V4A diffs to local files.       |
 | Code Interpreter        | `'code_interpreter'` | Run code in a sandboxed environment.  |
 | Image generation        | `'image_generation'` | Generate images based on text.        |
 
@@ -42,7 +41,27 @@ for advanced options like `rankingOptions` or semantic filters.
 
 ---
 
-## 2. Function tools
+## 2. Local built-in tools
+
+Local built-in tools run in your own environment and require you to supply implementations:
+
+- **Computer use** – implement the `Computer` interface and pass it to `computerTool()`.
+- **Shell** – implement the `Shell` interface and pass it to `shellTool()`.
+- **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`.
+
+These tools execute locally and are **not** hosted by OpenAI. Use them when you need direct access
+to files, terminals, or GUI automation in your runtime. The tool calls are still requested by the
+OpenAI model’s responses, but your application is expected to execute them locally.
+
+<Code
+  lang="typescript"
+  code={localBuiltInToolsExample}
+  title="Local built-in tools"
+/>
+
+---
+
+## 3. Function tools
 
 You can turn **any** function into a tool with the `tool()` helper.
 
@@ -54,14 +73,18 @@ You can turn **any** function into a tool with the `tool()` helper.
 
 ### Options reference
 
-| Field           | Required | Description                                                                                                                                                                                                          |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`          | No       | Defaults to the function name (e.g., `get_weather`).                                                                                                                                                                 |
-| `description`   | Yes      | Clear, human-readable description shown to the LLM.                                                                                                                                                                  |
-| `parameters`    | Yes      | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode.                                                                                                                |
-| `strict`        | No       | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching.                                                                                             |
-| `execute`       | Yes      | `(args, context) => string                                                                                               \| Promise<string>`– your business logic. The optional second parameter is the`RunContext`. |
-| `errorFunction` | No       | Custom handler `(context, error) => string` for transforming internal errors into a user-visible string.                                                                                                             |
+| Field              | Required | Description                                                                                                                                                                       |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | No       | Defaults to the function name (e.g., `get_weather`).                                                                                                                              |
+| `description`      | Yes      | Clear, human-readable description shown to the LLM.                                                                                                                               |
+| `parameters`       | Yes      | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode.                                                                             |
+| `strict`           | No       | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching.                                                          |
+| `execute`          | Yes      | `(args, context) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. The optional second parameter is the `RunContext`. |
+| `errorFunction`    | No       | Custom handler `(context, error) => string` for transforming internal errors into a user-visible string.                                                                          |
+| `needsApproval`    | No       | Require human approval before execution. See the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop).                                                           |
+| `isEnabled`        | No       | Conditionally expose the tool per run; accepts a boolean or predicate.                                                                                                            |
+| `inputGuardrails`  | No       | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                         |
+| `outputGuardrails` | No       | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                          |
 
 ### Non‑strict JSON‑schema tools
 
@@ -76,7 +99,7 @@ raw JSON schema:
 
 ---
 
-## 3. Agents as tools
+## 4. Agents as tools
 
 Sometimes you want an Agent to _assist_ another Agent without fully handing off the conversation. Use `agent.asTool()`:
 
@@ -89,6 +112,8 @@ Under the hood the SDK:
 - Returns either the last message or the output extracted by `customOutputExtractor`.
 
 When you run an agent as a tool, Agents SDK creates a runner with the default settings and run the agent with it within the function execution. If you want to provide any properties of `runConfig` or `runOptions`, you can pass them to the `asTool()` method to customize the runner's behavior.
+
+You can also set `needsApproval` and `isEnabled` on the agent tool via `asTool()` options to integrate with human‑in‑the‑loop flows and conditional tool availability.
 
 ### Streaming events from agent tools
 
@@ -109,7 +134,7 @@ Agent tools can stream all nested run events back to your app. Choose the hook s
 
 ---
 
-## 4. MCP servers
+## 5. MCP servers
 
 You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent.
 For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:

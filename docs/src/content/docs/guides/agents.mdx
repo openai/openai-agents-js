@@ -34,13 +34,14 @@ The rest of this page walks through every Agent feature in more detail.
 The `Agent` constructor takes a single configuration object. The most commonly‑used
 properties are shown below.
 
-| Property        | Required | Description                                                                                                                                  |
-| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`          | yes      | A short human‑readable identifier.                                                                                                           |
-| `instructions`  | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).                                                  |
-| `model`         | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                      |
-| `modelSettings` | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`. |
-| `tools`         | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                          |
+| Property             | Required | Description                                                                                                                                  |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`               | yes      | A short human‑readable identifier.                                                                                                           |
+| `instructions`       | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).                                                  |
+| `handoffDescription` | no       | Short description used when this agent is offered as a handoff tool.                                                                         |
+| `model`              | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                      |
+| `modelSettings`      | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`. |
+| `tools`              | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                          |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -175,6 +176,8 @@ const agent = new Agent({
   toolUseBehavior: 'stop_on_first_tool',
 });
 ```
+
+Note: `toolUseBehavior` only applies to **function tools**. Hosted tools always return to the model for processing.
 
 ---
 

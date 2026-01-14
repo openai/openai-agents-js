@@ -23,6 +23,8 @@ There are three types of MCP servers this SDK supports:
 2. **Streamable HTTP MCP servers** – local or remote servers that implement the [Streamable HTTP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)
 3. **Stdio MCP servers** – servers accessed via standard input/output (the simplest option)
 
+> Note: The SDK also includes `MCPServerSSE` for legacy Server‑Sent Events transports, but SSE has been deprecated by the MCP project. Prefer Streamable HTTP or stdio for new integrations.
+
 Choose a server type based on your use‑case:
 
 | What you need                                                                    | Recommended option      |

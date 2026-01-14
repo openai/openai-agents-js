@@ -18,6 +18,8 @@ Handoffs are represented as tools to the LLM. If you hand off to an agent called
 
 Every agent accepts a `handoffs` option. It can contain other `Agent` instances or `Handoff` objects returned by the `handoff()` helper.
 
+If you pass plain `Agent` instances, their `handoffDescription` (if provided) is appended to the default tool description. Use it to clarify when the model should pick that handoff.
+
 ### Basic usage
 
 <Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
