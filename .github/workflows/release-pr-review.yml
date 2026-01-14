@@ -20,6 +20,7 @@ jobs:
   review:
     if: github.repository_owner == 'openai' && ( (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Find open release PR
         id: pr
@@ -112,10 +113,11 @@ jobs:
         run: |
           BASE_TAG="$(.codex/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
           TARGET="${{ steps.pr.outputs.head_sha }}"
+          export BASE_TAG TARGET
 
           mkdir -p .github/codex/prompts .github/codex/outputs
 
-          cat > .github/codex/prompts/final-release-review.generated.md <<'EOF'
+          cat > .github/codex/prompts/final-release-review.generated.md <<-EOF
           You are Codex running inside a GitHub Actions job for openai/openai-agents-js.
 
           Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .codex/skills/final-release-review/SKILL.md.
