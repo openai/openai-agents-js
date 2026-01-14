@@ -33,6 +33,9 @@ Use this skill when validating main for release. It guides you to fetch remote t
   - Run the quick-start tag command to ensure you use the latest remote tag. If the tag pattern differs, override the pattern argument (e.g., `'*.*.*'`).
   - If the user specifies a base tag, prefer it but still fetch remote tags first.
   - Keep the working tree clean to avoid diff noise.
+- **Assumptions**
+  - Assume `main` has already passed `$code-change-verification` in CI unless the user says otherwise.
+  - Do not block a release solely because you did not run tests locally; focus on concrete behavioral or API risks.
 - **Map the diff**
   - Use `--stat`, `--dirstat`, and `--name-status` outputs to spot hot directories and file types.
   - For suspicious files, prefer `git diff --word-diff BASE...TARGET -- <path>`.
@@ -46,6 +49,39 @@ Use this skill when validating main for release. It guides you to fetch remote t
   - Provide a concise diff summary (key directories/files and counts).
   - List: breaking-change candidates, probable regressions/bugs, improvement opportunities, missing release notes/migrations.
   - Recommend ship/block and the exact checks needed to unblock if blocking.
+
+## Output format (required)
+
+All output must be in English.
+
+Use the following report structure in every response produced by this skill. Be proactive and decisive: make a clear ship/block call near the top, and assign an explicit risk level (LOW/MODERATE/HIGH) to each finding with a short impact statement. Avoid overly cautious hedging when the risk is low and tests passed.
+
+```
+### Release readiness review (<tag> -> TARGET <ref>)
+
+This is a release readiness report done by `$final-release-review` skill.
+
+### Diff
+
+https://github.com/openai/openai-agents-js/compare/<tag>...main
+
+### Release call:
+- <GREEN LIGHT TO SHIP | BLOCKED> <one-line rationale>
+
+### Scope summary:
+- <N files changed (+A/-D); key areas touched: ...>
+
+### Risk assessment (ordered by impact):
+1) <Finding title>
+   - Risk: <LOW/MODERATE/HIGH>. <Impact statement in one sentence.>
+   - Files: <path(s)>
+2) ...
+
+### Notes:
+- <working tree status, tag/target assumptions, or re-run guidance>
+```
+
+If no risks are found, include a “No material risks identified” line under Risk assessment and still provide a ship call. If you did not run local verification, do not add a verification status section or use it as a release blocker; note any assumptions briefly in Notes.
 
 ## Resources
 
