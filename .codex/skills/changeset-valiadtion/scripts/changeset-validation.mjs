@@ -6,6 +6,9 @@ import { execSync, spawnSync } from 'child_process';
 
 const { console, process } = globalThis;
 
+const EXEC_MAX_BUFFER = Number(
+  process.env.CHANGESET_MAX_BUFFER_BYTES || 50 * 1024 * 1024,
+);
 const ALLOWED_PACKAGES = [
   '@openai/agents',
   '@openai/agents-core',
@@ -42,6 +45,7 @@ function run(cmd, options = {}) {
   return execSync(cmd, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: EXEC_MAX_BUFFER,
     ...options,
   }).trim();
 }
