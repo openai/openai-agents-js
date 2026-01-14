@@ -5,7 +5,7 @@ on:
     types: [opened, reopened, synchronize, edited]
 
 jobs:
-  validation:
+  changeset-validation:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
 
       - name: Run Codex changeset validation
         id: run_codex
-        if: ${{ !github.event.pull_request.head.repo.fork && secrets.PROD_OPENAI_API_KEY != '' }}
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
