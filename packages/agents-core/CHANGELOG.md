@@ -1,5 +1,22 @@
 # @openai/agents-core
 
+## 0.3.8
+
+### Patch Changes
+
+- 3b368cb: fix: #829 Ensure generated declarations are type-checked and expose PreparedInputWithSessionResult
+- 303e95e: feat: Add per-run tracing API key support
+- d18eb0b: Add regression tests covering agent scenarios
+- 5d9b751: fix: #799 Expose raw input and validation error in tool parsing failures
+- a0fc1dc: feat: #794 Expose `ToolInputParameters` and `ToolOptions` from the top-level exports so wrappers can import the tool types
+- da82f9c: fix: sanitize conversation items for non-OpenAI models in HITL flow
+- 20cb95f: feat: Add tool input/output guardrails to TS SDK
+- 762d98c: fix: Refactor run.ts/runImplementation.ts internals
+- c8a9c1d: fix: #709 Share tracing context across runtimes to prevent Deno aisdk context loss
+- e0ba932: fix: opt-in run state enhancement for #813
+- 41c1b89: fix: terminate streamable HTTP MCP sessions safely with typed guard
+- b233ea5: fix: Fix streaming cancellation to abort promptly and resolve completion on cancel
+
 ## 0.3.7
 
 ### Patch Changes
