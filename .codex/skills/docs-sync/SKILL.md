@@ -23,6 +23,8 @@ Identify doc coverage gaps and inaccuracies by comparing main branch features an
    - Focus on user-facing behavior: public exports, configuration options, environment variables, CLI commands, default values, and documented runtime behaviors.
    - Capture evidence for each item (file path + symbol/setting).
    - Use targeted search to find option types and feature flags (for example: `rg "Options"`, `rg "process.env"`, `rg "export"`).
+   - When the topic involves OpenAI platform features, invoke `$openai-knowledge` to pull current details from the OpenAI Developer Docs MCP server instead of guessing, while treating the SDK source code as the source of truth when discrepancies appear.
+   - For MCP SDK (`modelcontextprotocol/typescript-sdk`) or Vercel AI SDK (`@ai-sdk/*`) topics, optionally use Deepwiki MCP for quick lookups, and still treat the SDK source code as the source of truth.
 
 3. Doc-first pass: review existing pages
    - Walk each relevant page under `docs/src/content/docs` (excluding `docs/src/content/docs/openai`).
@@ -49,6 +51,8 @@ Identify doc coverage gaps and inaccuracies by comparing main branch features an
    - Exclude `docs/src/content/docs/openai` from review and updates.
    - Do **not** edit `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, or `docs/src/content/docs/zh`.
    - Keep changes aligned with the existing docs style and navigation.
+   - Place any code snippets under `examples/docs/<doc-filename>/` so the directory name matches the target doc file, mirroring existing patterns.
+   - Verify doc code snippets build successfully with `pnpm -F docs-code build-check` and fix issues before handoff.
 
 ## Output format
 
