@@ -102,29 +102,61 @@ jobs:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
 
-      - name: Generate final-release-review report
+      - name: Fetch tags
         if: steps.pr.outputs.found == 'true'
-        id: review
+        run: git fetch origin --tags --prune
+
+      - name: Generate final-release-review prompt
+        if: steps.pr.outputs.found == 'true'
+        id: prompt
         run: |
           BASE_TAG="$(.codex/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
           TARGET="${{ steps.pr.outputs.head_sha }}"
 
-          {
-            echo "<!-- final-release-review -->"
-            echo "## Final Release Review"
-            echo "- base tag: ${BASE_TAG}"
-            echo "- target: ${TARGET}"
-            echo "- generated at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            echo
-            echo "### Diff stat"
-            git diff --stat "${BASE_TAG}"..."${TARGET}" || true
-            echo
-            echo "### Hot paths (dirstat)"
-            git diff --dirstat=files,0 "${BASE_TAG}"..."${TARGET}" || true
-            echo
-            echo "### Commits since ${BASE_TAG}"
-            git log --oneline "${BASE_TAG}".."${TARGET}" || true
-          } > review.md
+          mkdir -p .github/codex/prompts .github/codex/outputs
+
+          cat > .github/codex/prompts/final-release-review.generated.md <<EOF
+          You are Codex running inside a GitHub Actions job for openai/openai-agents-js.
+
+          Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .codex/skills/final-release-review/SKILL.md.
+
+          Context you must use:
+          - BASE_TAG: ${BASE_TAG}
+          - TARGET: ${TARGET}
+          - Workspace: repository is already checked out at TARGET with full history and tags fetched.
+          - Output file path: review.md (write the final comment here).
+
+          Skill invocation:
+          \$final-release-review
+
+          Requirements:
+          1) Run the \$final-release-review skill end-to-end (follow the checklist and heuristics in the skill + references). Do NOT just print git diff stats; perform the heuristic review the skill expects (breaking-change candidates, regression risks, improvement opportunities, release gate recommendation).
+          2) Base your analysis on the diff ${BASE_TAG}...${TARGET}. You may run git commands as needed (read-only workspace is fine).
+          3) Output must be valid markdown, starting with the marker line: `<!-- final-release-review -->`
+          4) After the marker, include a concise report with:
+             - Summary header similar to the skill format (base tag, target, generated timestamp in UTC ISO8601).
+             - High-level diff insights (key directories/files, counts) and risk callouts per the checklist.
+             - Breaking change candidates, regression risks, improvement opportunities, and any missing release notes/migrations.
+             - A ship/block recommendation with any required follow-up checks.
+          5) Keep the comment self-contained and readable for a PR.
+
+          Produce only the markdown comment. Do not wrap in code fences. Save the entire comment to review.md.
+          EOF
+
+          echo "BASE_TAG=${BASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "TARGET=${TARGET}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex final-release-review
+        if: steps.pr.outputs.found == 'true'
+        id: review
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/final-release-review.generated.md
+          output-file: review.md
+          codex-args: '["--full-auto"]'
+          sandbox: read-only
+          safety-strategy: drop-sudo
 
       - name: Upsert PR comment
         if: steps.pr.outputs.found == 'true'

@@ -247,3 +247,4 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 - Examples in `examples/` are fully functional apps—run them to understand usage.
 - Docs in `docs/src/` use Astro and Starlight; authored content lives under `docs/src/content/docs/` and mirrors package APIs.
 - When editing GitHub Actions workflows, always web-search for the latest stable major versions of official actions (e.g., `actions/checkout`, `actions/setup-node`) before updating version pins.
+- Treat review feedback critically: reviewers can be wrong. Reproduce or verify each comment, cross-check with source docs, and only make changes when the feedback remains valid after your own validation.
