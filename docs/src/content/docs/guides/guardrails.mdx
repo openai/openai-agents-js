@@ -6,6 +6,7 @@ description: Validate or transform agent input and output
 import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
+import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
 
 Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
 
@@ -41,6 +42,21 @@ Output guardrails run in 3 steps:
 > **Note**
 > Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime voice interactions see [the voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
 
+## Tool guardrails
+
+Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. They are configured on the tool itself (via `tool()` options) and run for every tool invocation.
+
+- **Input tool guardrails** run before the tool executes and can reject the call with a message or throw a tripwire.
+- **Output tool guardrails** run after the tool executes and can replace the output with a rejection message or throw a tripwire.
+
+Tool guardrails return a `behavior`:
+
+- `allow` — continue to the next guardrail or tool execution.
+- `rejectContent` — short‑circuit with a message (tool call is skipped or output is replaced).
+- `throwException` — throw a tripwire error immediately.
+
+Tool guardrails apply to function tools created with `tool()`. Hosted tools and local built‑in tools (`computerTool`, `shellTool`, `applyPatchTool`) do not use this guardrail pipeline.
+
 ## Tripwires
 
 When a guardrail fails, it signals this via a tripwire. As soon as a tripwire is triggered, the runner throws the corresponding error and halts execution.
@@ -62,6 +78,10 @@ Output guardrails work the same way.
   code={outputGuardrailExample}
   title="Output guardrail example"
 />
+
+Tool input/output guardrails look like this:
+
+<Code lang="typescript" code={toolGuardrailsExample} title="Tool guardrails" />
 
 1. `guardrailAgent` is used inside the guardrail functions.
 2. The guardrail function receives the agent input or output and returns the result.

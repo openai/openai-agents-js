@@ -56,12 +56,18 @@ The input can either be a string (which is considered a user message), or a list
 
 The additional options are:
 
-| Option     | Default | Description                                                                                                                        |
-| ---------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`   | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model.                                   |
-| `context`  | –       | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context). |
-| `maxTurns` | `10`    | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached.  |
-| `signal`   | –       | `AbortSignal` for cancellation.                                                                                                    |
+| Option                 | Default | Description                                                                                                                                          |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`               | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model.                                                     |
+| `context`              | –       | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context).                   |
+| `maxTurns`             | `10`    | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached.                    |
+| `signal`               | –       | `AbortSignal` for cancellation.                                                                                                                      |
+| `session`              | –       | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions).                                                     |
+| `sessionInputCallback` | –       | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions).                 |
+| `callModelInputFilter` | –       | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter). |
+| `tracing`              | –       | Per-run tracing configuration overrides (for example, export API key).                                                                               |
+| `conversationId`       | –       | Reuse a server-side conversation (OpenAI Responses API + Conversations API only).                                                                    |
+| `previousResponseId`   | –       | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only).                                           |
 
 ## Streaming
 
@@ -71,19 +77,22 @@ Streaming allows you to additionally receive streaming events as the LLM runs. O
 
 If you are creating your own `Runner` instance, you can pass in a `RunConfig` object to configure the runner.
 
-| Field                       | Type                  | Purpose                                                                                          |
-| --------------------------- | --------------------- | ------------------------------------------------------------------------------------------------ |
-| `model`                     | `string \| Model`     | Force a specific model for **all** agents in the run.                                            |
-| `modelProvider`             | `ModelProvider`       | Resolves model names – defaults to the OpenAI provider.                                          |
-| `modelSettings`             | `ModelSettings`       | Global tuning parameters that override per‑agent settings.                                       |
-| `handoffInputFilter`        | `HandoffInputFilter`  | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one). |
-| `inputGuardrails`           | `InputGuardrail[]`    | Guardrails applied to the _initial_ user input.                                                  |
-| `outputGuardrails`          | `OutputGuardrail[]`   | Guardrails applied to the _final_ output.                                                        |
-| `tracingDisabled`           | `boolean`             | Disable OpenAI Tracing completely.                                                               |
-| `traceIncludeSensitiveData` | `boolean`             | Exclude LLM/tool inputs & outputs from traces while still emitting spans.                        |
-| `workflowName`              | `string`              | Appears in the Traces dashboard – helps group related runs.                                      |
-| `traceId` / `groupId`       | `string`              | Manually specify the trace or group ID instead of letting the SDK generate one.                  |
-| `traceMetadata`             | `Record<string, any>` | Arbitrary metadata to attach to every span.                                                      |
+| Field                       | Type                     | Purpose                                                                                          |
+| --------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `model`                     | `string \| Model`        | Force a specific model for **all** agents in the run.                                            |
+| `modelProvider`             | `ModelProvider`          | Resolves model names – defaults to the OpenAI provider.                                          |
+| `modelSettings`             | `ModelSettings`          | Global tuning parameters that override per‑agent settings.                                       |
+| `handoffInputFilter`        | `HandoffInputFilter`     | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one). |
+| `inputGuardrails`           | `InputGuardrail[]`       | Guardrails applied to the _initial_ user input.                                                  |
+| `outputGuardrails`          | `OutputGuardrail[]`      | Guardrails applied to the _final_ output.                                                        |
+| `tracingDisabled`           | `boolean`                | Disable OpenAI Tracing completely.                                                               |
+| `traceIncludeSensitiveData` | `boolean`                | Exclude LLM/tool inputs & outputs from traces while still emitting spans.                        |
+| `workflowName`              | `string`                 | Appears in the Traces dashboard – helps group related runs.                                      |
+| `traceId` / `groupId`       | `string`                 | Manually specify the trace or group ID instead of letting the SDK generate one.                  |
+| `traceMetadata`             | `Record<string, string>` | Arbitrary metadata to attach to every span.                                                      |
+| `tracing`                   | `TracingConfig`          | Per-run tracing overrides (for example, export API key).                                         |
+| `sessionInputCallback`      | `SessionInputCallback`   | Default history merge strategy for all runs on this runner.                                      |
+| `callModelInputFilter`      | `CallModelInputFilter`   | Global hook to edit model inputs before each model call.                                         |
 
 ## Conversations / chat threads
 
@@ -122,6 +131,12 @@ If you want to start only with Responses API anyway, you can chain each request 
   code={previousResponseIdExample}
   title="Chaining with previousResponseId"
 />
+
+## Call model input filter
+
+Use `callModelInputFilter` to edit the model input _right before_ the model is called. This hook receives the current agent, context, and the combined input items (including session history when present). Return the updated `input` array and optional `instructions` to redact sensitive data, drop old messages, or inject additional system guidance.
+
+Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in the `Runner` config (`callModelInputFilter` in `RunConfig`).
 
 ## Exceptions
 
