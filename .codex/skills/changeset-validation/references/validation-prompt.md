@@ -1,4 +1,4 @@
-Use $changeset-valiadtion.
+Use $changeset-validation.
 
 You are validating changesets for the openai-agents-js monorepo.
 

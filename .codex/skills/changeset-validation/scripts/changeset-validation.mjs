@@ -21,7 +21,7 @@ const MAX_DIFF_CHARS = Number(process.env.CHANGESET_MAX_DIFF_CHARS || 12000);
 const PROMPT_PATH = path.join(
   '.codex',
   'skills',
-  'changeset-valiadtion',
+  'changeset-validation',
   'references',
   'validation-prompt.md',
 );

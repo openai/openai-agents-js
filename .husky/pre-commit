@@ -6,14 +6,14 @@ git update-index --again
 pnpm eslint $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g') --fix
 git update-index --again
 
-# Run changeset-valiadtion fixtures when the skill changes.
+# Run changeset-validation fixtures when the skill changes.
 if command -v rg >/dev/null 2>&1; then
-  if git diff --cached --name-only --diff-filter=ACMR | rg -q '^\.codex/skills/changeset-valiadtion/'; then
-    bash .codex/skills/changeset-valiadtion/scripts/run-fixtures.sh
+  if git diff --cached --name-only --diff-filter=ACMR | rg -q '^\.codex/skills/changeset-validation/'; then
+    bash .codex/skills/changeset-validation/scripts/run-fixtures.sh
   fi
 else
-  if git diff --cached --name-only --diff-filter=ACMR | grep -q '^\.codex/skills/changeset-valiadtion/'; then
-    bash .codex/skills/changeset-valiadtion/scripts/run-fixtures.sh
+  if git diff --cached --name-only --diff-filter=ACMR | grep -q '^\.codex/skills/changeset-validation/'; then
+    bash .codex/skills/changeset-validation/scripts/run-fixtures.sh
   fi
 fi
 

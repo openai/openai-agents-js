@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
-SKILL_DIR="$ROOT_DIR/.codex/skills/changeset-valiadtion"
+SKILL_DIR="$ROOT_DIR/.codex/skills/changeset-validation"
 
 node "$SKILL_DIR/scripts/changeset-validation.mjs" --output "$SKILL_DIR/tmp/prompt.md" >/dev/null
 
@@ -54,4 +54,4 @@ run_expect 0 "milestone assignment handles fail case" node "$SKILL_DIR/scripts/c
 rm -rf "$TMP_DIR"
 rm -rf "$SKILL_DIR/tmp"
 
-echo "changeset-valiadtion fixture checks passed."
+echo "changeset-validation fixture checks passed."

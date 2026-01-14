@@ -1,5 +1,5 @@
 ---
-name: changeset-valiadtion
+name: changeset-validation
 description: Validate changesets in openai-agents-js using LLM judgment against git diffs (including uncommitted local changes). Use when packages/ or .changeset/ are modified, or when verifying PR changeset compliance and bump level.
 ---
 
