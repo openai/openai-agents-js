@@ -115,7 +115,7 @@ jobs:
 
           mkdir -p .github/codex/prompts .github/codex/outputs
 
-          cat > .github/codex/prompts/final-release-review.generated.md <<EOF
+          cat > .github/codex/prompts/final-release-review.generated.md <<'EOF'
           You are Codex running inside a GitHub Actions job for openai/openai-agents-js.
 
           Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .codex/skills/final-release-review/SKILL.md.
