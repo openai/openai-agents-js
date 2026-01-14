@@ -134,7 +134,7 @@ jobs:
           Requirements:
           1) Run the \$final-release-review skill end-to-end (follow the checklist and heuristics in the skill + references). Do NOT just print git diff stats; perform the heuristic review the skill expects (breaking-change candidates, regression risks, improvement opportunities, release gate recommendation).
           2) Base your analysis on the diff ${BASE_TAG}...${TARGET}. You may run git commands as needed (read-only workspace is fine).
-          3) Output must be valid markdown, starting with the marker line: `<!-- final-release-review -->`
+          3) Output must be valid markdown, starting with the marker line: \`<!-- final-release-review -->\`
           4) After the marker, include a concise report with:
              - Summary header similar to the skill format (base tag, target, generated timestamp in UTC ISO8601).
              - High-level diff insights (key directories/files, counts) and risk callouts per the checklist.
