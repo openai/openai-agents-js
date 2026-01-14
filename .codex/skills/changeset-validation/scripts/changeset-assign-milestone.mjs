@@ -83,8 +83,8 @@ async function assignMilestone(requiredBump) {
     .filter((entry) => entry.parsed)
     .sort((a, b) => {
       if (a.parsed.major !== b.parsed.major)
-        return a.parsed.major - b.parsed.major;
-      return a.parsed.minor - b.parsed.minor;
+        return b.parsed.major - a.parsed.major;
+      return b.parsed.minor - a.parsed.minor;
     });
 
   if (parsed.length === 0) {
@@ -94,7 +94,8 @@ async function assignMilestone(requiredBump) {
     return;
   }
 
-  const targetEntry = requiredBump === 'minor' ? parsed[1] : parsed[0];
+  const targetEntry =
+    requiredBump === 'minor' ? (parsed[1] ?? parsed[0]) : parsed[0];
   if (!targetEntry) {
     console.warn(
       'Milestone assignment skipped (not enough open milestones for selection).',
