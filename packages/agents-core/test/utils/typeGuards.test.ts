@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { isZodObject, isAgentToolInput } from '../../src/utils/typeGuards';
 import { z } from 'zod';
-import { z as z4 } from 'zod/v4';
 
 describe('type guards', () => {
   it('isZodObject detects zod objects', () => {
     expect(isZodObject(z.object({}))).toBe(true);
     expect(isZodObject({})).toBe(false);
-  });
-
-  it('isZodObject detects zod v4 objects', () => {
-    expect(isZodObject(z4.object({}))).toBe(true);
   });
 
   it('isAgentToolInput checks for string input property', () => {

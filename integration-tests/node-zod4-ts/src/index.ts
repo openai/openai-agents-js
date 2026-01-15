@@ -1,6 +1,4 @@
-// @ts-check
-
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 import {
   Agent,
@@ -29,5 +27,12 @@ const agent = new Agent({
   tools: [getWeatherTool],
 });
 
-const result = await run(agent, 'What is the weather in San Francisco?');
-console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+async function main() {
+  const result = await run(agent, 'What is the weather in San Francisco?');
+  console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

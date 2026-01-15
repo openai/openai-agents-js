@@ -18,6 +18,11 @@ describe('Deno', () => {
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
+  test('should be able to run with zod', { timeout: 60000 }, async () => {
+    const { stdout } = await execa`deno --allow-net --allow-env zod.ts`;
+    expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
+  });
+
   test(
     'aisdk runner should not lose tracing context',
     { timeout: 60000 },

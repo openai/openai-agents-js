@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { z as z4 } from 'zod/v4';
 import { zodJsonSchemaCompat } from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
@@ -61,7 +60,7 @@ describe('utils/zodJsonSchemaCompat', () => {
 
   it('converts nested record and array structures', () => {
     const schema = z.object({
-      record: z.record(z.number()),
+      record: z.record(z.string(), z.number()),
       list: z.array(z.object({ id: z.string() })),
     });
 
@@ -82,14 +81,14 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
   });
 
-  it('supports Zod v4 objects', () => {
-    const schema = z4.object({
-      title: z4.string(),
-      score: z4.number().optional(),
-      tags: z4.set(z4.string()),
+  it('supports Zod objects with sets', () => {
+    const schema = z.object({
+      title: z.string(),
+      score: z.number().optional(),
+      tags: z.set(z.string()),
     });
 
-    const jsonSchema = zodJsonSchemaCompat(schema as any);
+    const jsonSchema = zodJsonSchemaCompat(schema);
     expect(jsonSchema).toBeDefined();
     expect(jsonSchema?.properties.title).toEqual({ type: 'string' });
     expect(jsonSchema?.properties.score).toEqual({ type: 'number' });

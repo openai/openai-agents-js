@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "bun run index.ts",
-    "start:aisdk": "bun run aisdk.ts"
+    "start:aisdk": "bun run aisdk.ts",
+    "start:zod": "bun run zod.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@openai/agents": "latest",
-    "@openai/agents-extensions": "latest"
+    "@openai/agents-extensions": "latest",
+    "zod": "^4"
   }
 }

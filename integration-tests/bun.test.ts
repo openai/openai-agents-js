@@ -18,6 +18,11 @@ describe('Bun', () => {
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
+  test('should be able to run with zod', async () => {
+    const { stdout } = await execa`bun run zod.ts`;
+    expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
+  });
+
   test('aisdk runner should not lose tracing context', async () => {
     const { stdout } = await execa`bun run aisdk.ts`;
     expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
