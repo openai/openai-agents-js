@@ -157,6 +157,7 @@ jobs:
           prompt-file: .github/codex/prompts/final-release-review.generated.md
           output-file: review.md
           codex-args: '["--full-auto"]'
+          sandbox: danger-full-access
           safety-strategy: drop-sudo
 
       - name: Upsert PR comment
