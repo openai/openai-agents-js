@@ -1,4 +1,5 @@
 ---
+'@openai/agents': minor
 '@openai/agents-core': minor
 '@openai/agents-openai': minor
 '@openai/agents-realtime': minor
