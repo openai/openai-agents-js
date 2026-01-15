@@ -21,6 +21,7 @@ export abstract class AgentsError extends Error {
 
   constructor(message: string, state?: RunState<any, Agent<any, any>>) {
     super(message);
+    this.name = new.target.name;
     this.state = state;
   }
 }
