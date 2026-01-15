@@ -94,8 +94,9 @@ async function assignMilestone(requiredBump) {
     return;
   }
 
-  const targetEntry =
-    requiredBump === 'minor' ? (parsed[1] ?? parsed[0]) : parsed[0];
+  const patchTarget = parsed[parsed.length - 1];
+  const minorTarget = parsed[1] ?? parsed[0];
+  const targetEntry = requiredBump === 'minor' ? minorTarget : patchTarget;
   if (!targetEntry) {
     console.warn(
       'Milestone assignment skipped (not enough open milestones for selection).',
