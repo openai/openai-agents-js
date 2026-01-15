@@ -156,7 +156,6 @@ jobs:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
           prompt-file: .github/codex/prompts/final-release-review.generated.md
           output-file: review.md
-          codex-args: '["--ask-for-approval","never"]'
           sandbox: danger-full-access
           safety-strategy: drop-sudo
 
