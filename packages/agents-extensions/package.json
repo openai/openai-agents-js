@@ -15,7 +15,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^2.0.0",
     "@openai/agents-core": "workspace:*",
-    "@openai/codex-sdk": "^0.73.0",
+    "@openai/codex-sdk": "^0.77.0",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
   },
@@ -24,6 +24,11 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
+    },
+    "./codex": {
+      "types": "./dist/codex/index.d.ts",
+      "require": "./dist/codex/index.js",
+      "import": "./dist/codex/index.mjs"
     }
   },
   "peerDependencies": {

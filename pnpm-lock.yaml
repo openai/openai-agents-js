@@ -501,8 +501,8 @@ importers:
         specifier: workspace:*
         version: link:../agents-core
       '@openai/codex-sdk':
-        specifier: ^0.73.0
-        version: 0.73.0
+        specifier: ^0.77.0
+        version: 0.77.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1593,8 +1593,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@openai/codex-sdk@0.73.0':
-    resolution: {integrity: sha512-aqjsBSjBNYr5bZL4G+fBw8mRxOWcYWOQU5+0/UP8qSOtvn1y9r6Q0JNY8UJYiMJs5z6UYSJyfuc0XDNopDkGyw==}
+  '@openai/codex-sdk@0.77.0':
+    resolution: {integrity: sha512-bvJQ4dASnZ7jgfxmseViQwdRupHxs0TwHSZFeYB0gpdOAXnWwDWdGJRCMyphLSHwExRp27JNOk7EBFVmZRBanQ==}
     engines: {node: '>=18'}
 
   '@openrouter/ai-sdk-provider@1.4.1':
@@ -7331,7 +7331,7 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
 
-  '@openai/codex-sdk@0.73.0': {}
+  '@openai/codex-sdk@0.77.0': {}
 
   '@openrouter/ai-sdk-provider@1.4.1(ai@5.0.23(zod@3.25.76))(zod@3.25.76)':
     dependencies:
