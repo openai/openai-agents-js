@@ -3,7 +3,11 @@ name: Deploy Docs to GitHub Pages
 on:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
   pull_request:
+    paths:
+      - "docs/**"
   workflow_dispatch:
 
 # Allow this job to clone the repo and create a page deployment
