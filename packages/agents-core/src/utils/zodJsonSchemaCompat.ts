@@ -4,7 +4,7 @@ import { readZodDefinition, readZodType } from './zodCompat';
 
 /**
  * The JSON-schema helpers in openai/helpers/zod only emit complete schemas for
- * a subset of Zod constructs. In particular, Zod v4 (and several decorators in v3)
+ * a subset of Zod constructs. In particular, Zod v4 and several decorators can
  * omit `type`, `properties`, or `required` metadata, which breaks tool execution
  * when a user relies on automatic schema extraction.
  *
@@ -337,6 +337,9 @@ function buildEnum(
   }
   if (Array.isArray(def.values)) {
     return { enum: def.values as unknown[] };
+  }
+  if (def.entries && typeof def.entries === 'object') {
+    return { enum: Object.values(def.entries as Record<string, unknown>) };
   }
   if (Array.isArray(def.options)) {
     return { enum: def.options as unknown[] };

@@ -454,5 +454,12 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    // Starlight still targets Zod v3; alias to the bundled v3 compatibility
+    // build to keep its runtime schemas working after the repo-wide Zod v4 upgrade.
+    resolve: {
+      alias: {
+        zod: 'zod/v3',
+      },
+    },
   },
 });

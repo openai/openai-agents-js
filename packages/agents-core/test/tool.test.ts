@@ -337,7 +337,7 @@ describe('tool.invoke', () => {
       execute: async () => 'x',
       needsApproval: true,
     });
-    const approved = await t.needsApproval(new RunContext(), '', 'id');
+    const approved = await t.needsApproval(new RunContext(), {}, 'id');
     expect(approved).toBe(true);
   });
 

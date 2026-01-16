@@ -91,7 +91,7 @@ export const conversationItemSchema = z
           .object({
             name: z.string(),
             description: z.string(),
-            input_schema: z.record(z.any()).optional(),
+            input_schema: z.record(z.string(), z.any()).optional(),
           })
           .passthrough(),
       )

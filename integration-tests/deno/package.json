@@ -6,6 +6,7 @@
   },
   "dependencies": {
     "@openai/agents": "latest",
-    "@openai/agents-extensions": "latest"
+    "@openai/agents-extensions": "latest",
+    "zod": "^4"
   }
 }

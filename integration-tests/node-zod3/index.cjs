@@ -9,7 +9,7 @@ const {
   BatchTraceProcessor,
 } = require('@openai/agents');
 
-const { z } = require('zod');
+const { z } = require('zod/v3');
 
 setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
 

@@ -35,7 +35,7 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
     "ws": "^8.18.1",
-    "zod": "^3.25.40 || ^4.0"
+    "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@openai/codex-sdk": {
@@ -54,7 +54,7 @@
     "@openai/codex-sdk": "^0.86.0",
     "@types/debug": "^4.1.12",
     "ws": "^8.18.1",
-    "zod": "^3.25.40 || ^4.0"
+    "zod": "^4.0.0"
   },
   "files": [
     "dist"

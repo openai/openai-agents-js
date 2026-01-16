@@ -1,6 +1,6 @@
 // @ts-check
 
-import { z } from 'zod/v3';
+import { z } from 'zod';
 
 import {
   Agent,
@@ -23,7 +23,7 @@ const getWeatherTool = tool({
 });
 
 const agent = new Agent({
-  name: 'Test Agent',
+  name: 'Zod Test Agent',
   instructions:
     'You will always only respond with "Hello there!". Not more not less.',
   tools: [getWeatherTool],

@@ -1,5 +1,4 @@
-import type { ZodObject as ZodObjectV3, ZodTypeAny } from 'zod';
-import type { ZodObject as ZodObjectV4, ZodType as ZodTypeV4 } from 'zod/v4';
+import type { ZodObject, ZodType } from 'zod';
 
 type ZodDefinition = Record<string, unknown> | undefined;
 type ZodLike = {
@@ -9,15 +8,13 @@ type ZodLike = {
   shape?: Record<string, unknown> | (() => Record<string, unknown>);
 };
 
-type ZodTypeV4Any = ZodTypeV4<any, any, any>;
+type ZodTypeAny = ZodType<any, any, any>;
 
-export type ZodTypeLike = ZodTypeAny | ZodTypeV4Any;
-export type ZodObjectLike =
-  | ZodObjectV3<any, any, any, any, any>
-  | ZodObjectV4<any, any>;
+export type ZodTypeLike = ZodTypeAny;
+export type ZodObjectLike = ZodObject<any, any>;
 
-export function asZodType(schema: ZodTypeLike): ZodTypeAny {
-  return schema as unknown as ZodTypeAny;
+export function asZodType(schema: ZodTypeLike): ZodTypeLike {
+  return schema;
 }
 
 export function readZodDefinition(input: unknown): ZodDefinition {
