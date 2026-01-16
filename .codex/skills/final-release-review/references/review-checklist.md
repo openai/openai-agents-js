@@ -15,6 +15,7 @@
 - Dependencies/platform: major version bumps, Node/TypeScript target changes, polyfill removal, new peer dependencies.
 - Persistence/data: migration scripts missing, data model changes, stored file formats, cache keys altered without invalidation.
 - Docs/examples drift: examples still reflect old behavior or lack migration note.
+- Semver alignment: breaking changes should be paired with the expected version bump and clear migration notes; treat mismatches as blockers, not the breaking change alone. Project policy: routine releases are patch; use minor for breaking changes or major feature additions; reserve major until 1.0.
 
 ## Regression risk clues
 

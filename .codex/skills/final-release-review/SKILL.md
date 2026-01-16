@@ -36,6 +36,7 @@ Use this skill when validating the latest release candidate commit (default tip 
 - **Assumptions**
   - Assume the target commit (default `origin/main` tip) has already passed `$code-change-verification` in CI unless the user says otherwise.
   - Do not block a release solely because you did not run tests locally; focus on concrete behavioral or API risks.
+  - Release policy: routine releases use patch versions; use minor only for breaking changes or major feature additions. Major versions are reserved until the 1.0 release.
 - **Map the diff**
   - Use `--stat`, `--dirstat`, and `--name-status` outputs to spot hot directories and file types.
   - For suspicious files, prefer `git diff --word-diff BASE...TARGET -- <path>`.
@@ -44,11 +45,12 @@ Use this skill when validating the latest release candidate commit (default tip 
   - Walk through the categories in `references/review-checklist.md` (breaking changes, regression clues, improvement opportunities).
   - When you suspect a risk, cite the specific file/commit and explain the behavioral impact.
   - Suggest minimal, high-signal validation commands (targeted tests or linters) instead of generic reruns when time is tight.
+  - Breaking changes do not automatically require a BLOCKED release call when they are already covered by an appropriate version bump and migration/upgrade notes; only block when the bump is missing/mismatched (e.g., patch bump) or when the breaking change introduces unresolved risk.
 - **Form a recommendation**
   - State BASE_TAG and TARGET explicitly.
   - Provide a concise diff summary (key directories/files and counts).
   - List: breaking-change candidates, probable regressions/bugs, improvement opportunities, missing release notes/migrations.
-  - Recommend ship/block and the exact checks needed to unblock if blocking.
+  - Recommend ship/block and the exact checks needed to unblock if blocking. If a breaking change is properly versioned (minor/major), you may still recommend a GREEN LIGHT TO SHIP while calling out the change.
 
 ## Output format (required)
 
