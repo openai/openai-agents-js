@@ -24,12 +24,23 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
+    },
+    "./experimental/codex": {
+      "types": "./dist/experimental/codex/index.d.ts",
+      "require": "./dist/experimental/codex/index.js",
+      "import": "./dist/experimental/codex/index.mjs"
     }
   },
   "peerDependencies": {
     "@openai/agents": "workspace:>=0.0.0",
+    "@openai/codex-sdk": ">=0.86.0",
     "ws": "^8.18.1",
     "zod": "^3.25.40 || ^4.0"
+  },
+  "peerDependenciesMeta": {
+    "@openai/codex-sdk": {
+      "optional": true
+    }
   },
   "keywords": [
     "openai",
@@ -40,6 +51,7 @@
   "license": "MIT",
   "devDependencies": {
     "@openai/agents": "workspace:>=0.0.0",
+    "@openai/codex-sdk": "^0.86.0",
     "@types/debug": "^4.1.12",
     "ws": "^8.18.1",
     "zod": "^3.25.40 || ^4.0"

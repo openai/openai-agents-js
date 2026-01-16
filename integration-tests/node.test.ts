@@ -34,4 +34,13 @@ describe('Node.js', () => {
     const { stdout } = await execa`npm run start:aisdk:cjs`;
     expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
   });
+
+  test(
+    'codex runner should not lose tracing context',
+    { timeout: 120_000 },
+    async () => {
+      const { stdout } = await execa`npm run start:codex`;
+      expect(stdout).toContain('[CODEX_RESPONSE]');
+    },
+  );
 });

@@ -6,6 +6,10 @@ uplinks:
   npmjs:
     url: https://registry.npmjs.org/
 packages:
+  '@openai/codex-sdk':
+    access: $all
+    publish: $all
+    proxy: npmjs
   '@openai/*':
     access: $all
     publish: $all
