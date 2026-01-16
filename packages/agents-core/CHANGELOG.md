@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.3.9
+
+### Patch Changes
+
+- f0ad706: fix(agents-core): #670 set subclass error names
+
 ## 0.3.8
 
 ### Patch Changes

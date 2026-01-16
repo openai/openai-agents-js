@@ -1,5 +1,15 @@
 # @openai/agents-extensions
 
+## 0.3.9
+
+### Patch Changes
+
+- da85934: Improve Codex tool ergonomics: support onStream event hooks, handle additional Codex item types, and fix output schema/inputs validation.
+- da85934: feat: Add experimental codex tool module
+- Updated dependencies [f0ad706]
+  - @openai/agents-core@0.3.9
+  - @openai/agents@0.3.9
+
 ## 0.3.8
 
 ### Patch Changes
