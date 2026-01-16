@@ -62,7 +62,7 @@ async function onCodexStream(payload: CodexToolStreamEvent): Promise<void> {
     return;
   }
   if (item.type === 'command_execution') {
-    const outputPreview = item.aggregated_output.slice(-200);
+    const outputPreview = item.aggregated_output?.slice(-200) ?? '';
     log(
       `codex command ${eventType}: ${item.command} | status=${item.status} | output=${outputPreview}`,
     );
