@@ -13,7 +13,6 @@
   "scripts": {
     "build-check": "tsc --noEmit",
     "start:codex": "tsx codex.ts",
-    "start:codex-tool": "tsx codex-tool.ts",
     "start:computer-use": "tsx computer-use.ts",
     "start:file-search": "tsx file-search.ts",
     "start:web-search": "tsx web-search.ts",
