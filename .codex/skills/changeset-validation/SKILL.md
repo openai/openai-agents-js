@@ -8,6 +8,7 @@ description: Validate changesets in openai-agents-js using LLM judgment against 
 ## Overview
 
 This skill validates whether changesets correctly reflect package changes and follow the repository rules. It relies on the shared prompt in `references/validation-prompt.md` so local Codex reviews and GitHub Actions share the same logic.
+Experimental or preview-only feature additions that are explicitly labeled as such in the diff may remain a patch bump when they do not change existing behavior.
 
 ## Quick start
 

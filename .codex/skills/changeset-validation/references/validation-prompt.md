@@ -19,7 +19,7 @@ Rules to enforce:
 4. If no packages changed, changesets are optional; if present, they still must be consistent with the diff.
 5. Each changeset summary must be 1-2 non-empty lines.
 6. If the PR body contains GitHub issue references like #123 and a changeset exists, the changeset summary should include those references.
-7. Default bump is patch. Minor is allowed only when changes include breaking changes, dropped support, or a major feature addition.
+7. Default bump is patch. Minor is allowed only when changes include breaking changes, dropped support, or a major feature addition. Exception: if the new feature is explicitly labeled experimental/preview in the diff (e.g., module name, docs, comments, or exports) and does not change existing behavior, a patch bump is acceptable.
 8. required_bump must be "none" when there are no package changes.
 9. If unknown package directories are changed, treat it as an error.
 
