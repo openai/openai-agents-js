@@ -48,7 +48,7 @@ jobs:
           prompt-file: .github/codex/prompts/pnpm-upgrade.md
           sandbox: danger-full-access
           safety-strategy: drop-sudo
-          codex-args: --full-auto --max-steps 200
+          codex-args: --full-auto
 
       - name: Create pull request
         if: ${{ success() }}
