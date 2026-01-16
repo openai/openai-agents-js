@@ -4,11 +4,15 @@
   "scripts": {
     "start:cjs": "node --no-experimental-require-module index.cjs",
     "start:esm": "node --no-experimental-require-module index.mjs",
-    "start:aisdk:cjs": "node aisdk.cjs"
+    "start:aisdk:cjs": "node aisdk.cjs",
+    "start:codex": "node --no-experimental-require-module codex.mjs"
   },
   "dependencies": {
     "@openai/agents": "latest",
     "@openai/agents-extensions": "latest",
-    "typescript": "^5.9.3"
+    "@openai/codex-sdk": "^0.86.0",
+    "typescript": "^5.9.3",
+    "ws": "^8.18.1",
+    "zod": "^3.25.40"
   }
 }

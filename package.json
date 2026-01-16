@@ -37,6 +37,7 @@
     "examples:research-bot": "pnpm -F research-bot start",
     "examples:financial-research-agent": "pnpm -F financial-research-agent start",
     "examples:tools-computer-use": "pnpm -F tools start:computer-use",
+    "examples:tools-codex": "pnpm -F tools start:codex",
     "examples:tools-file-search": "pnpm -F tools start:file-search",
     "examples:tools-web-search": "pnpm -F tools start:web-search",
     "examples:tools-shell": "pnpm -F tools start:shell",

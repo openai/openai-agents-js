@@ -16,6 +16,12 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-file-search
   ```
 
+- `codex.ts` – Runs the Codex CLI via the codex tool wrapper with streaming event logs and skill usage. Requires `CODEX_API_KEY` or `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set). You can set `CODEX_PATH` to override the Codex CLI path.
+
+  ```bash
+  pnpm examples:tools-codex
+  ```
+
 - `web-search.ts` – Demonstrates `webSearchTool` for general web queries.
 
   ```bash

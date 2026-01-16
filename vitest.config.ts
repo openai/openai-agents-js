@@ -10,7 +10,7 @@ export default defineConfig({
     // noise from docs and examples.
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'json'],
+      reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
       all: true,
       // Only include source files from the published packages. This keeps the
       // metrics meaningful and prevents Vitest from trying to instrument node
