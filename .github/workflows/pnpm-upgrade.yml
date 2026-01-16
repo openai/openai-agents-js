@@ -1,0 +1,63 @@
+name: pnpm upgrade
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pnpm-upgrade
+  cancel-in-progress: false
+
+jobs:
+  pnpm-upgrade:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run pnpm-upgrade skill
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/pnpm-upgrade.md
+          sandbox: danger-full-access
+          safety-strategy: drop-sudo
+          codex-args: --skill pnpm-upgrade --full-auto --max-steps 200
+
+      - name: Create pull request
+        if: ${{ success() }}
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: upgrade pnpm toolchain"
+          branch: automation/pnpm-upgrade
+          title: "chore: upgrade pnpm toolchain"
+          body: |
+            Automated pnpm upgrade run.
+
+            - updates pnpm via pnpm self-update and aligns packageManager
+            - bumps pnpm/action-setup pins in workflows
+            - opened by scheduled Codex run if changes exist
+          labels: automation,pnpm
+          signoff: true
+          draft: false

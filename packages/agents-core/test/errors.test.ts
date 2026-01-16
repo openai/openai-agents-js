@@ -50,4 +50,29 @@ describe('errors', () => {
       throw toolCallError;
     }).toThrow('Test error');
   });
+
+  test('should set error names', () => {
+    expect(new MaxTurnsExceededError('Test error', {} as any).name).toBe(
+      'MaxTurnsExceededError',
+    );
+    expect(new ModelBehaviorError('Test error', {} as any).name).toBe(
+      'ModelBehaviorError',
+    );
+    expect(new UserError('Test error', {} as any).name).toBe('UserError');
+    expect(
+      new InputGuardrailTripwireTriggered('Test error', {} as any, {} as any)
+        .name,
+    ).toBe('InputGuardrailTripwireTriggered');
+    expect(
+      new OutputGuardrailTripwireTriggered('Test error', {} as any, {} as any)
+        .name,
+    ).toBe('OutputGuardrailTripwireTriggered');
+    expect(
+      new GuardrailExecutionError('Test error', new Error('cause'), {} as any)
+        .name,
+    ).toBe('GuardrailExecutionError');
+    expect(
+      new ToolCallError('Test error', new Error('cause'), {} as any).name,
+    ).toBe('ToolCallError');
+  });
 });

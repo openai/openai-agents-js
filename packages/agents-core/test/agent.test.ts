@@ -177,7 +177,7 @@ describe('Agent', () => {
 
     const result1 = await tool.invoke({} as any, 'hey how are you?');
     expect(result1).toBe(
-      'An error occurred while running the tool. Please try again. Error: Error: Invalid JSON input for tool',
+      'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
     );
     setDefaultModelProvider(new FakeModelProvider());
     const result2 = await tool.invoke(
