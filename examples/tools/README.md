@@ -22,12 +22,6 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-codex
   ```
 
-- `codex-tool.ts` – Wraps the Codex SDK as an agent tool and prints structured tracing output. Requires `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set).
-
-  ```bash
-  pnpm examples:tools-codex-tool
-  ```
-
 - `web-search.ts` – Demonstrates `webSearchTool` for general web queries.
 
   ```bash
