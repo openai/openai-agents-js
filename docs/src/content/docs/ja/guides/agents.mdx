@@ -15,46 +15,50 @@ import agentWithLifecycleHooks from '../../../../../../examples/docs/agents/agen
 import agentCloning from '../../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
 
-エージェント は OpenAI Agents SDK の主要な構成要素です。**Agent** は、次のように構成された Large Language Model ( LLM ) です。
+エージェントは OpenAI Agents SDK の主要な構成要素です。**Agent** は、次の設定を持つ大規模言語モデル（LLM）です。
 
-- **Instructions** – モデルに「自分は何者か」「どのように応答すべきか」を伝える system prompt
+- **Instructions** – モデルに対して「自分は誰か」「どのように応答すべきか」を伝える system prompt
 - **Model** – 呼び出す OpenAI モデルと、任意のモデル調整パラメーター
-- **Tools** – LLM がタスクを達成するために呼び出せる関数や API の一覧
+- **Tools** – LLM がタスクを達成するために呼び出せる関数または API の一覧
 
-<Code lang="typescript" code={simpleAgent} title="Basic Agent definition" />
+<Code lang="typescript" code={simpleAgent} title="基本的な Agent 定義" />
 
-このページでは、エージェント の各機能を詳しく説明します。
+このページでは、Agent の各機能を詳しく説明します。
 
 ---
 
 ## 基本設定
 
-`Agent` コンストラクターは 1 つの設定オブジェクトを受け取ります。よく使用されるプロパティは次のとおりです。
+`Agent` コンストラクターは単一の設定オブジェクトを受け取ります。よく使われるプロパティは次のとおりです。
 
 | Property             | Required | Description                                                                                                                        |
 | -------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `name`               | yes      | 短い人間が読める識別子                                                                                                             |
 | `instructions`       | yes      | System prompt（文字列 **または** 関数 – [Dynamic instructions](#dynamic-instructions) を参照）                                     |
-| `handoffDescription` | no       | このエージェントが ハンドオフ ツールとして提供されるときに使用される短い説明                                                       |
+| `handoffDescription` | no       | このエージェントがハンドオフツールとして提供される際に使われる短い説明                                                             |
 | `model`              | no       | モデル名 **または** カスタムの [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 実装                                   |
 | `modelSettings`      | no       | 調整パラメーター（temperature、top_p など）。必要なプロパティがトップレベルにない場合は、`providerData` 配下に含めることができます |
-| `tools`              | no       | モデルが呼び出せる [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) インスタンスの配列                                 |
+| `tools`              | no       | モデルが呼び出せる [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) の配列                                             |
 
-<Code lang="typescript" code={agentWithTools} title="Agent with tools" />
+<Code lang="typescript" code={agentWithTools} title="ツール付き Agent" />
 
 ---
 
 ## コンテキスト
 
-エージェント は **コンテキスト型に対してジェネリック**（例: `Agent<TContext, TOutput>`）です。コンテキスト はあなたが作成し `Runner.run()` に渡す依存性注入オブジェクトです。これはすべてのツール、ガードレール、ハンドオフ などに転送され、状態の保存や共有サービス（データベース接続、ユーザー メタデータ、機能フラグ、…）の提供に便利です。
+エージェントはコンテキスト型に対して **ジェネリック**（例: `Agent<TContext, TOutput>`）です。コンテキストは、あなたが作成して `Runner.run()` に渡す依存性注入オブジェクトです。すべてのツール、ガードレール、ハンドオフなどへ転送され、状態の保存や共有サービス（データベース接続、ユーザーメタデータ、機能フラグなど）を提供するのに役立ちます。
 
-<Code lang="typescript" code={agentWithContext} title="Agent with context" />
+<Code
+  lang="typescript"
+  code={agentWithContext}
+  title="コンテキスト付き Agent"
+/>
 
 ---
 
 ## 出力タイプ
 
-デフォルトでは、エージェント は **プレーンテキスト**（`string`）を返します。モデルに構造化オブジェクトを返させたい場合は、`outputType` プロパティを指定します。SDK は次を受け付けます。
+デフォルトでは、Agent は **プレーンテキスト**（`string`）を返します。モデルに構造化オブジェクトを返させたい場合は、`outputType` プロパティを指定できます。SDK は次を受け付けます。
 
 1. [Zod](https://github.com/colinhacks/zod) スキーマ（`z.object({...})`）
 2. JSON Schema 互換のオブジェクト
@@ -62,45 +66,49 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 <Code
   lang="typescript"
   code={agentWithAodOutputType}
-  title="Structured output with Zod"
+  title="Zod を使った構造化出力"
 />
 
-`outputType` が指定されると、SDK はプレーンテキストではなく自動的に
+`outputType` が指定されている場合、SDK はプレーンテキストの代わりに自動的に
 [structured outputs](https://platform.openai.com/docs/guides/structured-outputs) を使用します。
 
 ---
 
 ## マルチエージェントの設計パターン
 
-エージェント を組み合わせる方法は多数あります。本番アプリでよく見られる 2 つのパターンは次のとおりです。
+エージェントを組み合わせる方法は多数あります。本番アプリでよく見られるパターンは次の 2 つです。
 
-1. **マネージャー（エージェントをツールとして）** – 中央のエージェントが会話を所有し、ツールとして公開された専門エージェントを呼び出す
-2. **ハンドオフ** – 最初のエージェントが ユーザー のリクエストを特定したら、会話全体を専門家に委譲する
+1. **マネージャー（エージェントをツールとして）** – 中央のエージェントが会話を管理し、ツールとして公開された特化エージェントを呼び出します
+2. **ハンドオフ** – 最初のエージェントがユーザーのリクエストを特定したら、会話全体をスペシャリストに委譲します
 
-これらのアプローチは相補的です。マネージャーは ガードレール やレート制限を一元的に適用でき、ハンドオフ は各エージェントが会話の主導権を持たずに単一タスクに専念することを可能にします。
+これらのアプローチは補完的です。マネージャーはガードレールやレート制限を一元的に適用でき、ハンドオフは各エージェントが会話の制御を持たずに 1 つのタスクに集中することを可能にします。
 
 ### マネージャー（エージェントをツールとして）
 
-このパターンではマネージャーが制御を渡すことはありません。LLM はツールを使い、マネージャーが最終回答を要約します。詳細は[ツール](/openai-agents-js/ja/guides/tools#agents-as-tools)を参照してください。
+このパターンでは、マネージャーは制御を手放しません。LLM がツールを使用し、マネージャーが最終回答を要約します。詳しくは [ツール](/openai-agents-js/ja/guides/tools#agents-as-tools) を参照してください。
 
-<Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
+<Code
+  lang="typescript"
+  code={agentsAsTools}
+  title="エージェントをツールとして"
+/>
 
 ### ハンドオフ
 
-ハンドオフ ではトリアージ エージェントがリクエストをルーティングしますが、一度ハンドオフ が発生すると、専門エージェントが最終出力を生成するまで会話を所有します。これによりプロンプトが短くなり、各エージェントを独立に考察できます。詳しくは[ハンドオフ](/openai-agents-js/ja/guides/handoffs)をご覧ください。
+ハンドオフではトリアージエージェントがリクエストをルーティングしますが、いったんハンドオフが発生すると、スペシャリストエージェントが最終出力を生成するまで会話を管理します。これによりプロンプトが短くなり、各エージェントを個別に考えやすくなります。詳しくは [ハンドオフ](/openai-agents-js/ja/guides/handoffs) を参照してください。
 
-<Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
+<Code lang="typescript" code={agentWithHandoffs} title="ハンドオフ付き Agent" />
 
 ---
 
 ## Dynamic instructions
 
-`instructions` は文字列の代わりに **関数** にすることができます。関数は現在の `RunContext` と Agent インスタンスを受け取り、文字列 _または_ `Promise<string>` を返せます。
+`instructions` は文字列の代わりに **関数** にすることができます。この関数は現在の `RunContext` と Agent インスタンスを受け取り、文字列 _または_ `Promise<string>` を返せます。
 
 <Code
   lang="typescript"
   code={agentWithDynamicInstructions}
-  title="Agent with dynamic instructions"
+  title="動的 instructions を使う Agent"
 />
 
 同期関数と `async` 関数の両方がサポートされています。
@@ -109,49 +117,53 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 
 ## ライフサイクルフック
 
-高度なユースケースでは、イベントをリッスンして Agent のライフサイクルを観測できます。利用可能な項目については、[こちら](https://github.com/openai/openai-agents-js/blob/main/packages/agents-core/src/lifecycle.ts)に一覧されているエージェント フックのイベント名を参照してください。
+高度なユースケースでは、イベントを購読して Agent のライフサイクルを監視できます。利用可能な項目については、[こちら](https://github.com/openai/openai-agents-js/blob/main/packages/agents-core/src/lifecycle.ts) に記載のエージェントフックのイベント名を参照してください。
 
 <Code
   lang="typescript"
   code={agentWithLifecycleHooks}
-  title="Agent with lifecycle hooks"
+  title="ライフサイクルフック付き Agent"
 />
 
 ---
 
 ## ガードレール
 
-ガードレール により、ユーザー入力とエージェント出力を検証または変換できます。`inputGuardrails` と `outputGuardrails` 配列で設定します。詳細は[ガードレール](/openai-agents-js/ja/guides/guardrails)を参照してください。
+ガードレールは、ユーザー入力やエージェント出力を検証・変換するための機能です。`inputGuardrails` と `outputGuardrails` の配列で設定します。詳しくは [ガードレール](/openai-agents-js/ja/guides/guardrails) を参照してください。
 
 ---
 
 ## エージェントの複製 / コピー
 
-既存のエージェント を少しだけ変更したバージョンが必要ですか？`clone()` メソッドを使用すると、完全に新しい `Agent` インスタンスが返されます。
+既存のエージェントを少しだけ変更したい場合は、`clone()` メソッドを使用します。これにより、完全に新しい `Agent` インスタンスが返されます。
 
-<Code lang="typescript" code={agentCloning} title="Cloning Agents" />
+<Code
+  lang="typescript"
+  code={agentCloning}
+  title="エージェントのクローン作成"
+/>
 
 ---
 
 ## ツール使用の強制
 
-ツールを提供しても、LLM が必ずしも呼び出すとは限りません。`modelSettings.tool_choice` でツール使用を **強制** できます。
+ツールを提供しても、LLM が必ず呼び出すとは限りません。`modelSettings.tool_choice` を使ってツール使用を **強制** できます。
 
-1. `'auto'`（デフォルト）– ツールを使うかどうかを LLM が決定
-2. `'required'` – LLM はツールを呼び出す _必要がある_（どれを使うかは選べる）
+1. `'auto'`（デフォルト） – ツールを使うかどうかを LLM が判断
+2. `'required'` – LLM はツールを _必ず_ 呼び出す（どれを使うかは選択可）
 3. `'none'` – LLM はツールを呼び出しては **ならない**
-4. 特定のツール名（例: `'calculator'`）– LLM はその特定のツールを呼び出す必要がある
+4. 特定のツール名（例: `'calculator'`） – LLM はその特定のツールを呼び出す必要がある
 
-<Code lang="typescript" code={agentForcingToolUse} title="Forcing tool use" />
+<Code lang="typescript" code={agentForcingToolUse} title="ツール使用の強制" />
 
 ### 無限ループの防止
 
-ツール呼び出しの後、SDK は `tool_choice` を自動的に `'auto'` にリセットします。これにより、モデルがツールを繰り返し呼び出し続ける無限ループに入るのを防ぎます。この動作は `resetToolChoice` フラグ、または `toolUseBehavior` の設定でオーバーライドできます。
+ツール呼び出しの後、SDK は自動的に `tool_choice` を `'auto'` にリセットします。これにより、モデルがツール呼び出しを繰り返す無限ループに陥るのを防ぎます。この動作は `resetToolChoice` フラグ、または `toolUseBehavior` の設定で上書きできます。
 
-- `'run_llm_again'`（デフォルト）– ツール結果とともに LLM を再実行
+- `'run_llm_again'`（デフォルト） – ツール結果を使って LLM を再実行
 - `'stop_on_first_tool'` – 最初のツール結果を最終回答として扱う
-- `{ stopAtToolNames: ['my_tool'] }` – 指定ツールのいずれかが呼ばれたら停止
-- `(context, toolResults) => ...` – 実行を終了すべきかを返すカスタム関数
+- `{ stopAtToolNames: ['my_tool'] }` – 指定したいずれかのツールが呼ばれた時点で停止
+- `(context, toolResults) => ...` – 実行を終了すべきかどうかを返すカスタム関数
 
 ```typescript
 const agent = new Agent({
@@ -160,12 +172,12 @@ const agent = new Agent({
 });
 ```
 
-注意: `toolUseBehavior` は **関数ツール** にのみ適用されます。組み込みツール（Hosted） は常に処理のためにモデルへ戻ります。
+注: `toolUseBehavior` は **関数ツール** にのみ適用されます。Hosted tools は常に処理のためにモデルへ戻ります。
 
 ---
 
 ## 次のステップ
 
-- [エージェントの実行](/openai-agents-js/ja/guides/running-agents)の方法を学ぶ
-- [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models)を詳しく見る
-- サイドバーの **@openai/agents** 配下にある完全な TypeDoc リファレンスを参照する
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を学ぶ
+- [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models) を詳しく学ぶ
+- サイドバーの **@openai/agents** 配下にある TypeDoc リファレンスを参照する
