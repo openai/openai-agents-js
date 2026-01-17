@@ -13,16 +13,12 @@ import runnerWithModelExample from '../../../../../examples/docs/models/runnerWi
 import gpt5DefaultModelSettingsExample from '../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
-Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight
-interfaces:
+Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
-- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a
-  specific API.
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable
-  model **names** (e.g. `'gpt‑4o'`) to `Model` instances.
+- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a specific API.
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt‑5.2'`) to `Model` instances.
 
-In day‑to‑day work you normally only interact with model **names** and occasionally
-`ModelSettings`.
+In day‑to‑day work you normally only interact with model **names** and occasionally `ModelSettings`.
 
 <Code
   lang="typescript"
@@ -39,7 +35,7 @@ If you want to switch to other models like [`gpt-5.2`](https://platform.openai.c
 First, if you want to consistently use a specific model for all agents that do not set a custom model, set the `OPENAI_DEFAULT_MODEL` environment variable before running your agents.
 
 ```bash
-export OPENAI_DEFAULT_MODEL=gpt-5
+export OPENAI_DEFAULT_MODEL=gpt-5.2
 node my-awesome-agent.js
 ```
 
@@ -51,9 +47,9 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
   title="Set a default model for a Runner"
 />
 
-### GPT-5 models
+### GPT-5.x models
 
-When you use any of GPT-5's reasoning models ([`gpt-5`](https://platform.openai.com/docs/models/gpt-5), [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini), or [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano)) this way, the SDK applies sensible `modelSettings` by default. Specifically, it sets both `reasoning.effort` and `verbosity` to `"low"`. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
+When you use any GPT-5.x model such as [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
 <Code
   lang="typescript"
@@ -61,7 +57,7 @@ When you use any of GPT-5's reasoning models ([`gpt-5`](https://platform.openai.
   title="Customize GPT-5 default settings"
 />
 
-For lower latency, using either [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) or [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano) with `reasoning.effort="minimal"` will often return responses faster than the default settings. However, some built-in tools (such as file search and image generation) in Responses API do not support `"minimal"` reasoning effort, which is why this Agents SDK defaults to `"low"`.
+For lower latency, using `reasoning.effort: "none"` with `gpt-5.2` is recommended. The gpt-4.1 family (including mini and nano variants) also remains a solid choice for building interactive agent apps.
 
 ### Non-GPT-5 models
 
@@ -96,19 +92,19 @@ custom networking settings.
 
 `ModelSettings` mirrors the OpenAI parameters but is provider‑agnostic.
 
-| Field               | Type                                       | Notes                                                                     |
-| ------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
-| `temperature`       | `number`                                   | Creativity vs. determinism.                                               |
-| `topP`              | `number`                                   | Nucleus sampling.                                                         |
-| `frequencyPenalty`  | `number`                                   | Penalise repeated tokens.                                                 |
-| `presencePenalty`   | `number`                                   | Encourage new tokens.                                                     |
-| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string` | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
-| `parallelToolCalls` | `boolean`                                  | Allow parallel function calls where supported.                            |
-| `truncation`        | `'auto' \| 'disabled'`                     | Token truncation strategy.                                                |
-| `maxTokens`         | `number`                                   | Maximum tokens in the response.                                           |
-| `store`             | `boolean`                                  | Persist the response for retrieval / RAG workflows.                       |
-| `reasoning.effort`  | `'minimal' \| 'low' \| 'medium' \| 'high'` | Reasoning effort for gpt-5 etc.                                           |
-| `text.verbosity`    | `'low' \| 'medium' \| 'high'`              | Text verbosity for gpt-5 etc.                                             |
+| Field               | Type                                                            | Notes                                                                     |
+| ------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `temperature`       | `number`                                                        | Creativity vs. determinism.                                               |
+| `topP`              | `number`                                                        | Nucleus sampling.                                                         |
+| `frequencyPenalty`  | `number`                                                        | Penalise repeated tokens.                                                 |
+| `presencePenalty`   | `number`                                                        | Encourage new tokens.                                                     |
+| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string`                      | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
+| `parallelToolCalls` | `boolean`                                                       | Allow parallel function calls where supported.                            |
+| `truncation`        | `'auto' \| 'disabled'`                                          | Token truncation strategy.                                                |
+| `maxTokens`         | `number`                                                        | Maximum tokens in the response.                                           |
+| `store`             | `boolean`                                                       | Persist the response for retrieval / RAG workflows.                       |
+| `reasoning.effort`  | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models.                                      |
+| `text.verbosity`    | `'low' \| 'medium' \| 'high'`                                   | Text verbosity for gpt-5.x etc.                                           |
 
 Attach settings at either level:
 
@@ -148,6 +144,8 @@ pass the provider to the `Runner` constructor:
   code={modelCustomProviderExample}
   title="Minimal custom provider"
 />
+
+If you want a ready-made adapter for non-OpenAI models, see [Using any model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk).
 
 ---
 
