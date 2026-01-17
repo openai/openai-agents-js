@@ -45,8 +45,8 @@ jobs:
           before="${{ github.event.before }}"
           sha="${{ github.sha }}"
           changed_files=$(git diff --name-only --diff-filter=ACMR "$before" "$sha" || true)
-          guide_files=$(echo "$changed_files" | grep -E '^docs/src/content/docs/guides/' || true)
-          non_guide_files=$(echo "$changed_files" | grep -vE '^docs/src/content/docs/guides/' || true)
+          guide_files=$(echo "$changed_files" | grep -E '^docs/src/content/docs/(guides|extensions)/|^docs/src/content/docs/index\.mdx$' || true)
+          non_guide_files=$(echo "$changed_files" | grep -vE '^docs/src/content/docs/(guides|extensions)/|^docs/src/content/docs/index\.mdx$' || true)
           if [ -n "$guide_files" ] && [ -z "$non_guide_files" ]; then
             guide_list="$(mktemp "${RUNNER_TEMP}/guide-files-XXXXXX.txt")"
             while IFS= read -r file; do

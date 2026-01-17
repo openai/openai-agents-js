@@ -63,6 +63,8 @@ The SDK uses the [`debug`](https://www.npmjs.com/package/debug) package for debu
 export DEBUG=openai-agents*
 ```
 
+To log session persistence activity, set `OPENAI_AGENTS__DEBUG_SAVE_SESSION=1`.
+
 You can obtain a namespaced logger for your own modules using `getLogger(namespace)` from `@openai/agents`.
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
