@@ -11,15 +11,17 @@ import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSc
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
+import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
-computer. The JavaScript/TypeScript SDK supports five categories:
+computer. The JavaScript/TypeScript SDK supports six categories:
 
 1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation)_
 2. **Local built-in tools** – run in your environment. _(computer use, shell, apply_patch)_
 3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 4. **Agents as tools** – expose an entire Agent as a callable tool.
 5. **MCP servers** – attach a Model Context Protocol server (local or remote).
+6. **Experimental: Codex tool** – wrap the Codex SDK as a function tool to run workspace-aware tasks.
 
 ---
 
@@ -142,6 +144,30 @@ For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
 See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example. Also, if you're looking for a comprehensitve guide for MCP server tool integration, refer to [MCP guide](/openai-agents-js/guides/mcp) for details.
+
+---
+
+## 6. Experimental: Codex tool
+
+`@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This surface is experimental and may change.
+
+Quick start:
+
+<Code
+  lang="typescript"
+  code={codexToolExample}
+  title="Experimental Codex tool"
+/>
+
+What to know:
+
+- Auth: supply `CODEX_API_KEY` (preferred) or `OPENAI_API_KEY`, or pass `codexOptions.apiKey`.
+- Inputs: strict schema—`inputs` must contain at least one `{ type: 'text', text }` or `{ type: 'local_image', path }`.
+- Safety: pair `sandboxMode` with `workingDirectory`; set `skipGitRepoCheck` if the directory is not a Git repo.
+- Behavior: `persistSession: true` reuses a single Codex thread and returns its `threadId`; you can surface it for resumable work.
+- Streaming: `onStream` mirrors Codex events (reasoning, command execution, MCP tool calls, file changes, web search) so you can log or trace progress.
+- Outputs: tool result includes `response`, `usage`, and `threadId`, and Codex token usage is recorded in `RunContext`.
+- Structure: `outputSchema` enforces structured Codex responses per turn when you need typed outputs.
 
 ---
 
