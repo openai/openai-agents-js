@@ -115,9 +115,14 @@ jobs:
           TARGET="${{ steps.pr.outputs.head_sha }}"
           export BASE_TAG TARGET
 
-          mkdir -p .github/codex/prompts .github/codex/outputs
+          PROMPT_DIR=".tmp/codex/prompts"
+          OUTPUT_DIR=".tmp/codex/outputs"
+          PROMPT_FILE="${PROMPT_DIR}/final-release-review.generated.md"
+          OUTPUT_FILE="${OUTPUT_DIR}/review.md"
 
-          cat > .github/codex/prompts/final-release-review.generated.md <<-EOF
+          mkdir -p "$PROMPT_DIR" "$OUTPUT_DIR"
+
+          cat > "$PROMPT_FILE" <<-EOF
           You are Codex running inside a GitHub Actions job for openai/openai-agents-js.
 
           Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .codex/skills/final-release-review/SKILL.md.
@@ -145,6 +150,8 @@ jobs:
           Produce only the markdown comment. Do not wrap in code fences. Save the entire comment to review.md.
           EOF
 
+          echo "prompt_file=${PROMPT_FILE}" >> "$GITHUB_OUTPUT"
+          echo "output_file=${OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
           echo "BASE_TAG=${BASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "TARGET=${TARGET}" >> "$GITHUB_OUTPUT"
 
@@ -154,8 +161,8 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/final-release-review.generated.md
-          output-file: review.md
+          prompt-file: ${{ steps.prompt.outputs.prompt_file }}
+          output-file: ${{ steps.prompt.outputs.output_file }}
           sandbox: danger-full-access
           safety-strategy: drop-sudo
 
@@ -164,11 +171,12 @@ jobs:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          REVIEW_PATH: ${{ steps.prompt.outputs.output_file }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('review.md', 'utf8');
+            const body = fs.readFileSync(process.env.REVIEW_PATH, 'utf8');
             const marker = '<!-- final-release-review -->';
 
             const { data: comments } = await github.rest.issues.listComments({
