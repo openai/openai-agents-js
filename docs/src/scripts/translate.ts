@@ -14,6 +14,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
   Agent,
@@ -132,6 +133,7 @@ export async function extractSidebarTranslations(
 }
 
 const sourceDir = path.resolve(__dirname, '../../src/content/docs');
+const REPO_ROOT = path.resolve(__dirname, '../../..');
 const languages: Record<string, string> = {
   ja: 'Japanese',
   ko: 'Korean',
@@ -733,6 +735,62 @@ async function translateFile(
   await fs.writeFile(targetPath, translatedText, 'utf8');
 }
 
+function gitLastCommitTimestamp(filePath: string): number {
+  try {
+    const relativePath = path
+      .relative(REPO_ROOT, filePath)
+      .replaceAll('\\', '/');
+    const result = spawnSync(
+      'git',
+      ['-C', REPO_ROOT, 'log', '-1', '--format=%ct', '--', relativePath],
+      { encoding: 'utf8' },
+    );
+    if (result.status !== 0) {
+      return 0;
+    }
+    const output = (result.stdout || '').trim();
+    if (!output) {
+      return 0;
+    }
+    const timestamp = Number(output);
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function shouldTranslateBasedOnTranslation(filePath: string): boolean {
+  const relativePath = path.relative(sourceDir, filePath);
+  const jaPath = path.join(sourceDir, 'ja', relativePath);
+  const enTimestamp = gitLastCommitTimestamp(filePath);
+  if (enTimestamp === 0) {
+    return true;
+  }
+  const jaTimestamp = gitLastCommitTimestamp(jaPath);
+  if (jaTimestamp === 0) {
+    return true;
+  }
+  return jaTimestamp < enTimestamp;
+}
+
+function normalizeSourceFileArg(fileArg: string): string {
+  if (fileArg.startsWith(sourceDir)) {
+    return path.relative(sourceDir, fileArg);
+  }
+  const normalized = fileArg.replaceAll('\\', '/');
+  const posixPrefix = 'docs/src/content/docs/';
+  if (normalized.startsWith(posixPrefix)) {
+    return normalized.slice(posixPrefix.length);
+  }
+  if (normalized === 'docs/src/content/docs' || normalized === posixPrefix) {
+    return '';
+  }
+  if (path.isAbsolute(fileArg)) {
+    return path.relative(sourceDir, fileArg);
+  }
+  return fileArg;
+}
+
 function shouldSkipFile(filePath: string): boolean {
   const rel = path.relative(sourceDir, filePath);
   const isLocalizedDoc = Object.keys(languages).some((code) =>
@@ -747,8 +805,20 @@ function shouldSkipFile(filePath: string): boolean {
   return false;
 }
 
-async function translateSingleSourceFile(filePath: string): Promise<void> {
+async function translateSingleSourceFile(
+  filePath: string,
+  {
+    checkTranslationOutdated = true,
+  }: { checkTranslationOutdated?: boolean } = {},
+): Promise<void> {
   if (shouldSkipFile(filePath)) return;
+  if (
+    checkTranslationOutdated &&
+    !shouldTranslateBasedOnTranslation(filePath)
+  ) {
+    console.log(`Skipping ${filePath}: The translated one is up-to-date.`);
+    return;
+  }
   // Always compute rel as the path relative to docs/src/content/docs
   const rel = path.relative(sourceDir, filePath);
   for (const langCode of Object.keys(languages)) {
@@ -758,19 +828,99 @@ async function translateSingleSourceFile(filePath: string): Promise<void> {
   }
 }
 
+type TranslateMode = 'only-changes' | 'full';
+
+function parseModeValue(value: string): TranslateMode {
+  if (value === 'only-changes' || value === 'full') {
+    return value;
+  }
+  throw new Error(`Error: Invalid --mode value "${value}".`);
+}
+
+function parseArgs(argv: string[]): {
+  mode: TranslateMode;
+  fileArgs: string[];
+  fileListPath: string | null;
+} {
+  let mode: TranslateMode = 'only-changes';
+  const fileArgs: string[] = [];
+  let fileListPath: string | null = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--') {
+      continue;
+    }
+    if (arg === '--mode') {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error('Error: --mode requires a value.');
+      }
+      mode = parseModeValue(value);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--mode=')) {
+      mode = parseModeValue(arg.slice('--mode='.length));
+      continue;
+    }
+    if (arg === '--file') {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error('Error: --file requires a value.');
+      }
+      fileArgs.push(value);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--file=')) {
+      fileArgs.push(arg.slice('--file='.length));
+      continue;
+    }
+    if (arg === '--file-list') {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error('Error: --file-list requires a value.');
+      }
+      fileListPath = value;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--file-list=')) {
+      fileListPath = arg.slice('--file-list='.length);
+      continue;
+    }
+    fileArgs.push(arg);
+  }
+  return { mode, fileArgs, fileListPath };
+}
+
 async function main() {
   const concurrency = 6;
-  const args = process.argv.slice(2);
+  const { mode, fileArgs, fileListPath } = parseArgs(process.argv.slice(2));
   const filePaths: string[] = [];
-  if (args.length > 0) {
-    for (const arg of args) {
-      const fullPath = path.join(
-        sourceDir,
-        arg.replace('docs/src/content/docs/', ''),
-      );
-      const stat = await fs.stat(fullPath);
+  const requestedArgs: string[] = [...fileArgs];
+
+  if (fileListPath) {
+    const fileListContents = await fs.readFile(fileListPath, 'utf8');
+    for (const line of fileListContents.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        requestedArgs.push(trimmed);
+      }
+    }
+  }
+
+  if (requestedArgs.length > 0) {
+    for (const arg of requestedArgs) {
+      const normalizedArg = normalizeSourceFileArg(arg);
+      const fullPath = path.join(sourceDir, normalizedArg);
+      const stat = await fs.stat(fullPath).catch(() => null);
+      if (!stat) {
+        console.warn(`Warning: File ${fullPath} does not exist; skipping.`);
+        continue;
+      }
       if (stat.isDirectory()) {
-        // Recursively add markdown files in directory
+        // Recursively add markdown files in directory.
         async function addFilesFromDir(dir: string) {
           const entries = await fs.readdir(dir, { withFileTypes: true });
           for (const entry of entries) {
@@ -790,11 +940,15 @@ async function main() {
         filePaths.push(fullPath);
       }
     }
+    if (filePaths.length === 0) {
+      console.error('Error: No valid files found to translate.');
+      process.exit(1);
+    }
   } else {
     filePaths.push(path.join(sourceDir, 'index.mdx'));
-    // Translate all guides/*.md files
+    // Translate all guides/*.md files.
     async function collectFiles() {
-      // Add all guides/*.md
+      // Add all guides/*.md.
       for (const dir of ['guides', 'guides/voice-agents', 'extensions']) {
         const guidesDir = path.join(sourceDir, dir);
         const entries = await fs.readdir(guidesDir, { withFileTypes: true });
@@ -810,10 +964,17 @@ async function main() {
     }
     await collectFiles();
   }
+
+  const uniquePaths = Array.from(new Set(filePaths));
+  const checkTranslationOutdated = mode === 'only-changes';
   let idx = 0;
-  while (idx < filePaths.length) {
-    const batch = filePaths.slice(idx, idx + concurrency);
-    await Promise.all(batch.map((f) => translateSingleSourceFile(f)));
+  while (idx < uniquePaths.length) {
+    const batch = uniquePaths.slice(idx, idx + concurrency);
+    await Promise.all(
+      batch.map((f) =>
+        translateSingleSourceFile(f, { checkTranslationOutdated }),
+      ),
+    );
     idx += concurrency;
   }
   console.log('Translation completed.');
