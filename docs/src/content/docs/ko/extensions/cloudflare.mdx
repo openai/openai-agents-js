@@ -6,13 +6,14 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers 및 기타 workerd 런타임은 글로벌 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 실시간 에이전트를 더 쉽게 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
+Cloudflare Workers 및 기타 workerd 런타임에서는 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket 을 열 수 없습니다. 이러한 환경에서 Realtime Agents 연결을 간소화하기 위해, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
 
 <Aside type="caution">
-  이 어댑터는 아직 베타입니다. 엣지 케이스 이슈나 버그가 발생할 수 있습니다.
-  [GitHub issues](https://github.com/openai/openai-agents-js/issues)로 이슈를
-  보고해 주시면 신속히 수정하겠습니다. Workers에서 Node.js 스타일 API가
-  필요하다면 `nodejs_compat` 활성화를 고려하세요.
+  이 어댑터는 아직 베타입니다. 특수한 경우의 문제나 버그가 발생할 수 있습니다.
+  문제가 있다면 [GitHub
+  issues](https://github.com/openai/openai-agents-js/issues) 로 보고해 주세요.
+  신속히 수정하겠습니다. Workers 에서 Node.js 스타일 API 가 필요하다면
+  `nodejs_compat` 활성화를 고려하세요.
 </Aside>
 
 ## 설정
@@ -29,7 +30,7 @@ Cloudflare Workers 및 기타 workerd 런타임은 글로벌 `WebSocket` 생성�
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **`RealtimeSession`을 연결합니다.**
+3. **`RealtimeSession` 을(를) 연결합니다.**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -39,6 +40,6 @@ Cloudflare Workers 및 기타 workerd 런타임은 글로벌 `WebSocket` 생성�
 
 ## 참고 사항
 
-- Cloudflare 전송 방식은 내부적으로 `Upgrade: websocket` 헤더와 함께 `fetch()`를 사용하며, workerd API에 맞추어 소켓의 `open` 이벤트를 기다리지 않습니다
-- 이 전송 방식을 사용할 때도 모든 `RealtimeSession` 기능(도구, 가드레일 등)은 평소처럼 동작합니다
-- 개발 중 상세 로그 확인을 위해 `DEBUG=openai-agents*`를 사용하세요
+- Cloudflare 전송 방식은 내부적으로 `Upgrade: websocket` 과 함께 `fetch()` 를 사용하며, 소켓의 `open` 이벤트를 기다리지 않습니다. 이는 workerd API 와 동일한 동작입니다.
+- 이 전송 방식을 사용할 때도 모든 `RealtimeSession` 기능(도구, 가드레일 등)이 정상 동작합니다.
+- 개발 중 상세 로그를 확인하려면 `DEBUG=openai-agents*` 를 사용하세요.

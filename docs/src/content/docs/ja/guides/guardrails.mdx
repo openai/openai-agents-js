@@ -8,62 +8,62 @@ import inputGuardrailExample from '../../../../../../examples/docs/guardrails/gu
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
 
-ガードレールはエージェントと並行して実行したり、完了まで実行をブロックしたりでき、ユーザー入力やエージェント出力に対するチェックや検証を行えます。たとえば高価なモデルを呼び出す前に、軽量なモデルをガードレールとして実行できます。ガードレールが悪意ある使用を検知した場合、エラーを発生させて高価なモデルの実行を停止できます。
+ガードレールは、エージェントと並行して実行したり、完了まで実行をブロックしたりして、ユーザー入力やエージェント出力に対するチェックやバリデーションを行うことができます。たとえば、高コストなモデルを呼び出す前に軽量モデルをガードレールとして実行できます。ガードレールが悪意ある利用を検知した場合、エラーを発生させて高コストなモデルの実行を止められます。
 
-ガードレールには 2 種類あります:
+ガードレールには 2 種類あります。
 
-1. **入力ガードレール** は最初のユーザー入力に対して実行されます
+1. **入力ガードレール** は初回のユーザー入力に対して実行されます
 2. **出力ガードレール** は最終的なエージェント出力に対して実行されます
 
 ## 入力ガードレール
 
-入力ガードレールは 3 つのステップで実行されます:
+入力ガードレールは 3 つの手順で実行されます。
 
-1. ガードレールはエージェントに渡されたのと同じ入力を受け取ります
-2. ガードレール関数が実行され、[`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) にラップされた [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を返します
+1. ガードレールはエージェントに渡されたものと同じ入力を受け取ります
+2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) にラップして返します
 3. `tripwireTriggered` が `true` の場合、[`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) エラーがスローされます
 
 > **Note**
-> 入力ガードレールはユーザー入力を対象としているため、ワークフロー内でエージェントが最初のエージェントの場合にのみ実行されます。ガードレールはエージェント自体に設定します。エージェントごとに必要なガードレールが異なることが多いためです。
+> 入力ガードレールはユーザー入力を対象としているため、ワークフロー内でエージェントが _最初_ のエージェントである場合にのみ実行されます。ガードレールはエージェントごとに設定します。エージェントごとに必要なガードレールが異なることが多いためです。
 
 ### 実行モード
 
-- `runInParallel: true` (デフォルト) は、LLM/ツール呼び出しと並行してガードレールを開始します。レイテンシーを最小化できますが、後でガードレールが発火した場合でも、モデルは既にトークンを消費したりツールを実行している可能性があります
-- `runInParallel: false` は、モデル呼び出しの前にガードレールを実行し、ガードレールがリクエストをブロックする際にトークン消費やツール実行を防ぎます。レイテンシーより安全性とコストを優先する場合に使用します
+- `runInParallel: true`（デフォルト）は、ガードレールを LLM/ツール呼び出しと並行して開始します。レイテンシーは最小化されますが、後からガードレールがトリガーされた場合でも、モデルがすでにトークンを消費したりツールを実行している可能性があります
+- `runInParallel: false` はモデル呼び出しの **前に** ガードレールを実行し、ガードレールがリクエストをブロックする際のトークン消費やツール実行を防ぎます。レイテンシーより安全性とコストを優先する場合に使用します
 
 ## 出力ガードレール
 
-出力ガードレールは 3 つのステップで実行されます:
+出力ガードレールは 3 つの手順で実行されます。
 
-1. ガードレールはエージェントによって生成された出力を受け取ります
-2. ガードレール関数が実行され、[`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) にラップされた [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を返します
+1. ガードレールはエージェントが生成した出力を受け取ります
+2. ガードレール関数が実行され、[`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) にラップして返します
 3. `tripwireTriggered` が `true` の場合、[`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます
 
 > **Note**
-> 出力ガードレールは、ワークフロー内でエージェントが最後のエージェントの場合にのみ実行されます。リアルタイム音声での対話については[音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails)をご覧ください。
+> 出力ガードレールは、ワークフロー内でエージェントが _最後_ のエージェントである場合にのみ実行されます。リアルタイム音声インタラクションについては[音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails)を参照してください。
 
-## ツールのガードレール
+## ツールガードレール
 
-ツールのガードレールは **関数ツール** をラップし、実行の前後でツール呼び出しを検証・ブロックできます。ツール自体に（`tool()` のオプションで）設定し、ツールの呼び出しごとに実行されます。
+ツールガードレールは **関数ツール** をラップし、実行の前後でツール呼び出しを検証またはブロックできます。これはツール自体（`tool()` のオプション）で設定し、すべてのツール呼び出しに対して実行されます。
 
-- **入力ツールガードレール** はツール実行前に走り、メッセージ付きで呼び出しを拒否するか、トリップワイヤーを投げられます
-- **出力ツールガードレール** はツール実行後に走り、出力を拒否メッセージに置き換えるか、トリップワイヤーを投げられます
+- **入力ツールガードレール** はツール実行の前に走り、メッセージで呼び出しを拒否したりトリップワイヤーをスローできます
+- **出力ツールガードレール** はツール実行の後に走り、出力を拒否メッセージに置き換えたりトリップワイヤーをスローできます
 
-ツールのガードレールは `behavior` を返します:
+ツールガードレールは `behavior` を返します。
 
-- `allow` — 次のガードレールまたはツール実行へ進む
-- `rejectContent` — メッセージで短絡（ツール呼び出しはスキップ、または出力を置き換え）
-- `throwException` — 直ちにトリップワイヤーエラーを投げる
+- `allow` — 次のガードレールまたはツール実行に進む
+- `rejectContent` — メッセージでショートサーキットする（ツール呼び出しをスキップするか出力を置き換える）
+- `throwException` — 直ちにトリップワイヤーエラーをスローする
 
-ツールのガードレールは `tool()` で作成された関数ツールに適用されます。組み込みツール（Hosted）やローカルの組み込みツール（`computerTool`、`shellTool`、`applyPatchTool`）はこのガードレールパイプラインを使用しません。
+ツールガードレールは `tool()` で作成した関数ツールに適用されます。組み込みツール（Hosted）やローカルのビルトインツール（`computerTool`、`shellTool`、`applyPatchTool`）はこのガードレールパイプラインを使用しません。
 
 ## トリップワイヤー
 
-ガードレールが失敗すると、トリップワイヤーでそれを通知します。トリップワイヤーが発火した時点で、Runner は対応するエラーをスローし、実行を停止します。
+ガードレールが失敗すると、トリップワイヤーでそれを通知します。トリップワイヤーがトリガーされるとすぐに、ランナーは対応するエラーをスローして実行を停止します。
 
 ## ガードレールの実装
 
-ガードレールは `GuardrailFunctionOutput` を返す関数に過ぎません。以下は、内部で別のエージェントを実行して、ユーザーが数学の宿題の手伝いを求めているかどうかを確認する最小の例です。
+ガードレールは `GuardrailFunctionOutput` を返す単純な関数です。以下は、別のエージェントを内部で走らせて、ユーザーが数学の宿題の手伝いを求めているかどうかを確認する最小の例です。
 
 <Code
   lang="typescript"
@@ -79,15 +79,15 @@ import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/to
   title="出力ガードレールの例"
 />
 
-ツールの入力/出力ガードレールは次のようになります:
+ツールの入出力ガードレールは次のようになります。
 
 <Code
   lang="typescript"
   code={toolGuardrailsExample}
-  title="ツールのガードレール"
+  title="ツールガードレール"
 />
 
-1. `guardrailAgent` はガードレール関数内で使用されます
+1. `guardrailAgent` はガードレール関数の内部で使用されます
 2. ガードレール関数はエージェントの入力または出力を受け取り、結果を返します
 3. 追加情報をガードレール結果に含めることができます
 4. `agent` はガードレールが適用される実際のワークフローを定義します
