@@ -37,6 +37,30 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - name: Detect translation scope
+        id: translate-scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="${{ github.event.before }}"
+          sha="${{ github.sha }}"
+          changed_files=$(git diff --name-only --diff-filter=ACMR "$before" "$sha" || true)
+          guide_files=$(echo "$changed_files" | grep -E '^docs/src/content/docs/guides/' || true)
+          non_guide_files=$(echo "$changed_files" | grep -vE '^docs/src/content/docs/guides/' || true)
+          if [ -n "$guide_files" ] && [ -z "$non_guide_files" ]; then
+            guide_list="$(mktemp "${RUNNER_TEMP}/guide-files-XXXXXX.txt")"
+            while IFS= read -r file; do
+              if [ -f "$file" ]; then
+                echo "$file" >> "$guide_list"
+              fi
+            done <<< "$guide_files"
+            if [ -s "$guide_list" ]; then
+              echo "mode=partial" >> "$GITHUB_OUTPUT"
+              echo "guide_files=$guide_list" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "mode=full" >> "$GITHUB_OUTPUT"
       - name: Install pnpm
         uses: pnpm/action-setup@v4.2.0
         with:
@@ -57,8 +81,21 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
         run: |
-          pnpm docs:translate
+          if [ "${{ steps.translate-scope.outputs.mode }}" = "partial" ]; then
+            echo "Translating changed guides only."
+            xargs -a "${{ steps.translate-scope.outputs.guide_files }}" pnpm docs:translate --
+          else
+            echo "Translating full docs set."
+            pnpm docs:translate
+          fi
           pnpm docs:build  # to make sure if the generated docs are valid
+      - name: Cleanup temp guide list
+        if: steps.translate-scope.outputs.mode == 'partial'
+        run: |
+          guide_list="${{ steps.translate-scope.outputs.guide_files }}"
+          if [ -n "$guide_list" ] && [ -f "$guide_list" ]; then
+            rm -f "$guide_list"
+          fi
 
       - name: Commit changes
         id: commit
@@ -66,12 +103,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/
-          if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "Update all translated document pages"
-            echo "committed=true" >> "$GITHUB_OUTPUT"
-          else
+          if git diff --cached --quiet; then
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Update all translated document pages"
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create Pull Request
