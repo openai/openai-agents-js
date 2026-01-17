@@ -605,6 +605,24 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
+  test('normalizes OpenAI v3 builtin tool IDs', () => {
+    const v3Model = stubModel(
+      {},
+      { provider: 'openai.responses', specificationVersion: 'v3' },
+    );
+    const tool = {
+      type: 'hosted_tool',
+      name: 'file_search',
+      providerData: { args: { query: 'x' } },
+    } as any;
+    expect(toolToLanguageV2Tool(v3Model, tool)).toEqual({
+      type: 'provider',
+      id: 'openai.file_search',
+      name: 'file_search',
+      args: { query: 'x' },
+    });
+  });
+
   test('maps computer tools', () => {
     const tool = {
       type: 'computer',

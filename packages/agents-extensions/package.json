@@ -14,7 +14,6 @@
     "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^2.0.0",
     "@openai/agents-core": "workspace:*",
     "@types/ws": "^8.18.1",
     "debug": "^4.4.0"
@@ -32,12 +31,16 @@
     }
   },
   "peerDependencies": {
+    "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
+    "@ai-sdk/provider": {
+      "optional": true
+    },
     "@openai/codex-sdk": {
       "optional": true
     }
@@ -50,6 +53,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@ai-sdk/provider": "^3.0.0",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.86.0",
     "@types/debug": "^4.1.12",

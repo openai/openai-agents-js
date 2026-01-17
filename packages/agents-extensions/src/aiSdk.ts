@@ -1,11 +1,10 @@
 import type {
   JSONSchema7,
-  LanguageModelV2,
+  LanguageModelV2 as LanguageModelV2Base,
   LanguageModelV2CallOptions,
   LanguageModelV2FunctionTool,
   LanguageModelV2Message,
   LanguageModelV2Prompt,
-  LanguageModelV2ProviderDefinedTool,
   LanguageModelV2ReasoningPart,
   LanguageModelV2TextPart,
   LanguageModelV2ToolCallPart,
@@ -49,7 +48,52 @@ type LanguageModelV3Compatible = {
     | any;
 };
 
-type LanguageModelCompatible = LanguageModelV2 | LanguageModelV3Compatible;
+// Minimal provider tool shapes to avoid SDK type name drift across v2/v3.
+type LanguageModelV2ProviderDefinedTool = {
+  type: 'provider-defined';
+  id: string;
+  name: string;
+  args?: Record<string, any>;
+};
+
+type LanguageModelV2ProviderTool = {
+  type: 'provider';
+  id: string;
+  name: string;
+  args?: Record<string, any>;
+};
+
+type LanguageModelV2ProviderToolCompat =
+  | LanguageModelV2ProviderDefinedTool
+  | LanguageModelV2ProviderTool;
+
+type LanguageModelV2CallOptionsCompat = Omit<
+  LanguageModelV2CallOptions,
+  'tools'
+> & {
+  tools?: Array<
+    LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat
+  >;
+};
+
+type LanguageModelV2Compat = Omit<
+  LanguageModelV2Base,
+  'doGenerate' | 'doStream'
+> & {
+  doGenerate: (
+    options: LanguageModelV2CallOptionsCompat,
+  ) => PromiseLike<any> | any;
+  doStream: (
+    options: LanguageModelV2CallOptionsCompat,
+  ) =>
+    | PromiseLike<{ stream: AsyncIterable<any> }>
+    | { stream: AsyncIterable<any> }
+    | any;
+};
+
+type LanguageModelCompatible =
+  | LanguageModelV2Compat
+  | LanguageModelV3Compatible;
 
 function getSpecVersion(
   model: LanguageModelCompatible,
@@ -802,7 +846,7 @@ function formatInlineData(
 export function toolToLanguageV2Tool(
   model: LanguageModelCompatible,
   tool: SerializedTool,
-): LanguageModelV2FunctionTool | LanguageModelV2ProviderDefinedTool {
+): LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat {
   if (tool.type === 'function') {
     return {
       type: 'function',
@@ -812,10 +856,14 @@ export function toolToLanguageV2Tool(
     };
   }
 
+  const providerToolType =
+    getSpecVersion(model) === 'v3' ? 'provider' : 'provider-defined';
+  const providerToolPrefix = getProviderToolPrefix(model);
+
   if (tool.type === 'hosted_tool') {
     return {
-      type: 'provider-defined',
-      id: `${model.provider}.${tool.name}`,
+      type: providerToolType,
+      id: `${providerToolPrefix}.${tool.name}`,
       name: tool.name,
       args: tool.providerData?.args ?? {},
     };
@@ -823,8 +871,8 @@ export function toolToLanguageV2Tool(
 
   if (tool.type === 'computer') {
     return {
-      type: 'provider-defined',
-      id: `${model.provider}.${tool.name}`,
+      type: providerToolType,
+      id: `${providerToolPrefix}.${tool.name}`,
       name: tool.name,
       args: {
         environment: tool.environment,
@@ -835,6 +883,17 @@ export function toolToLanguageV2Tool(
   }
 
   throw new Error(`Unsupported tool type: ${JSON.stringify(tool)}`);
+}
+
+function getProviderToolPrefix(model: LanguageModelCompatible): string {
+  if (getSpecVersion(model) !== 'v3') {
+    return model.provider;
+  }
+  const providerLower = model.provider.toLowerCase();
+  if (providerLower.startsWith('openai.')) {
+    return 'openai';
+  }
+  return model.provider;
 }
 
 /**
@@ -925,13 +984,14 @@ export class AiSdkModel implements Model {
           ];
         }
 
-        const tools = request.tools.map((tool) =>
-          toolToLanguageV2Tool(this.#model, tool),
-        );
-
-        request.handoffs.forEach((handoff) => {
-          tools.push(handoffToLanguageV2Tool(this.#model, handoff));
-        });
+        const tools = [
+          ...request.tools.map((tool) =>
+            toolToLanguageV2Tool(this.#model, tool),
+          ),
+          ...request.handoffs.map((handoff) =>
+            handoffToLanguageV2Tool(this.#model, handoff),
+          ),
+        ];
 
         if (span && request.tracing === true) {
           span.spanData.input = input;
@@ -944,8 +1004,8 @@ export class AiSdkModel implements Model {
         const responseFormat: LanguageModelV2CallOptions['responseFormat'] =
           getResponseFormat(request.outputType);
 
-        const aiSdkRequest: LanguageModelV2CallOptions = {
-          tools,
+        const aiSdkRequest: LanguageModelV2CallOptionsCompat = {
+          ...(tools.length ? { tools } : {}),
           toolChoice: toolChoiceToLanguageV2Format(
             request.modelSettings.toolChoice,
           ),
@@ -1195,13 +1255,12 @@ export class AiSdkModel implements Model {
         ];
       }
 
-      const tools = request.tools.map((tool) =>
-        toolToLanguageV2Tool(this.#model, tool),
-      );
-
-      request.handoffs.forEach((handoff) => {
-        tools.push(handoffToLanguageV2Tool(this.#model, handoff));
-      });
+      const tools = [
+        ...request.tools.map((tool) => toolToLanguageV2Tool(this.#model, tool)),
+        ...request.handoffs.map((handoff) =>
+          handoffToLanguageV2Tool(this.#model, handoff),
+        ),
+      ];
 
       if (span && request.tracing === true) {
         span.spanData.input = input;
@@ -1210,8 +1269,8 @@ export class AiSdkModel implements Model {
       const responseFormat: LanguageModelV2CallOptions['responseFormat'] =
         getResponseFormat(request.outputType);
 
-      const aiSdkRequest: LanguageModelV2CallOptions = {
-        tools,
+      const aiSdkRequest: LanguageModelV2CallOptionsCompat = {
+        ...(tools.length ? { tools } : {}),
         toolChoice: toolChoiceToLanguageV2Format(
           request.modelSettings.toolChoice,
         ),

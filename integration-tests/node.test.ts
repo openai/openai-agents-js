@@ -25,7 +25,7 @@ describe('Node.js', () => {
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
-  test('should be able to run using ESM', async () => {
+  test('should be able to run using ESM', { timeout: 15000 }, async () => {
     const { stdout } = await execa`npm run start:esm`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });

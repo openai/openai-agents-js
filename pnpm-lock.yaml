@@ -509,9 +509,6 @@ importers:
 
   packages/agents-extensions:
     dependencies:
-      '@ai-sdk/provider':
-        specifier: ^2.0.0
-        version: 2.0.0
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
@@ -522,6 +519,9 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
     devDependencies:
+      '@ai-sdk/provider':
+        specifier: ^3.0.0
+        version: 3.0.2
       '@openai/agents':
         specifier: workspace:>=0.0.0
         version: link:../agents

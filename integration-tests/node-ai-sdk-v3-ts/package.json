@@ -1,0 +1,20 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.0",
+    "@ai-sdk/provider": "^3.0.0",
+    "@openai/agents": "latest",
+    "@openai/agents-extensions": "latest",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.6",
+    "typescript": "^5.9.3"
+  }
+}
