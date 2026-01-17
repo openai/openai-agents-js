@@ -159,6 +159,8 @@ const doNotTranslate = [
   'Playground',
   'Realtime API',
   'Sora',
+  'Agents as tools',
+  'Agents-as-tools',
 ];
 
 const engToNonEngMapping: Record<string, Record<string, string>> = {
