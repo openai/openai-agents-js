@@ -13,43 +13,43 @@ import agentsAsToolsStreamingExample from '../../../../../../examples/docs/tools
 import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts?raw';
 
-도구는 에이전트가 **행동을 수행**하도록 합니다 – 데이터 가져오기, 외부 API 호출, 코드 실행, 심지어 컴퓨터 사용까지. JavaScript/TypeScript SDK 는 여섯 가지 카테고리를 지원합니다:
+도구는 에이전트가 **행동을 수행**하도록 합니다. 데이터 가져오기, 외부 API 호출, 코드 실행, 심지어 컴퓨터 사용까지 가능합니다. JavaScript/TypeScript SDK 는 다음 여섯 가지 카테고리를 지원합니다:
 
-1. **OpenAI 호스트하는 도구** – OpenAI 서버에서 모델과 함께 실행됨 _(웹 검색, 파일 검색, Code Interpreter, 이미지 생성)_
-2. **로컬 내장 도구** – 사용자 환경에서 실행됨 _(컴퓨터 사용, shell, apply_patch)_
-3. **함수 도구** – 로컬 함수에 JSON 스키마를 씌워 LLM 이 호출할 수 있게 함
-4. **도구로서의 에이전트** – 전체 에이전트를 호출 가능한 도구로 노출
-5. **MCP 서버** – Model Context Protocol 서버(로컬 또는 원격) 연결
-6. **실험적: Codex 도구** – Codex SDK 를 함수 도구로 감싸 작업 공간 인지 작업을 실행
+1. **Hosted OpenAI tools** – OpenAI 서버에서 모델과 함께 실행됩니다. _(웹 검색, 파일 검색, Code Interpreter, 이미지 생성)_
+2. **Local built-in tools** – 사용자의 환경에서 실행됩니다. _(컴퓨터 사용, shell, apply_patch)_
+3. **Function tools** – 로컬 함수를 JSON 스키마로 감싸 LLM 이 호출할 수 있게 합니다.
+4. **Agents as tools** – 전체 에이전트를 호출 가능한 도구로 노출합니다.
+5. **MCP servers** – Model context protocol 서버(로컬 또는 원격)를 연결합니다.
+6. **Experimental: Codex tool** – Codex SDK 를 함수 도구로 감싸 워크스페이스 컨텍스트 작업을 실행합니다.
 
 ---
 
 ## 1. 호스티드 툴 (OpenAI Responses API)
 
-`OpenAIResponsesModel` 을 사용할 때 다음 내장 도구를 추가할 수 있습니다:
+`OpenAIResponsesModel`을 사용할 때 다음의 내장 도구를 추가할 수 있습니다:
 
-| Tool                    | Type string          | Purpose                                 |
-| ----------------------- | -------------------- | --------------------------------------- |
-| Web search              | `'web_search'`       | 인터넷 검색                             |
-| File / retrieval search | `'file_search'`      | OpenAI 에서 호스팅하는 벡터 스토어 질의 |
-| Code Interpreter        | `'code_interpreter'` | 샌드박스 환경에서 코드 실행             |
-| Image generation        | `'image_generation'` | 텍스트 기반 이미지 생성                 |
+| Tool                    | Type string          | Purpose                               |
+| ----------------------- | -------------------- | ------------------------------------- |
+| Web search              | `'web_search'`       | Internet search.                      |
+| File / retrieval search | `'file_search'`      | Query vector stores hosted on OpenAI. |
+| Code Interpreter        | `'code_interpreter'` | Run code in a sandboxed environment.  |
+| Image generation        | `'image_generation'` | Generate images based on text.        |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="호스티드 툴" />
 
-정확한 매개변수 세트는 OpenAI Responses API 와 일치합니다 – `rankingOptions` 나 의미 기반 필터 같은 고급 옵션은 공식 문서를 참고하세요
+정확한 매개변수 세트는 OpenAI Responses API 와 일치합니다. `rankingOptions`나 의미 기반 필터 같은 고급 옵션은 공식 문서를 참고하세요.
 
 ---
 
 ## 2. 로컬 내장 도구
 
-로컬 내장 도구는 사용자 환경에서 실행되며 구현을 제공해야 합니다:
+로컬 내장 도구는 사용자의 환경에서 실행되며 구현을 제공해야 합니다:
 
-- **컴퓨터 사용** – `Computer` 인터페이스를 구현하고 `computerTool()` 에 전달
-- **Shell** – `Shell` 인터페이스를 구현하고 `shellTool()` 에 전달
-- **패치 적용** – `Editor` 인터페이스를 구현하고 `applyPatchTool()` 에 전달
+- **컴퓨터 사용** – `Computer` 인터페이스를 구현하고 `computerTool()`에 전달
+- **Shell** – `Shell` 인터페이스를 구현하고 `shellTool()`에 전달
+- **Apply patch** – `Editor` 인터페이스를 구현하고 `applyPatchTool()`에 전달
 
-이 도구들은 로컬에서 실행되며 OpenAI 가 **호스팅하지 않습니다**. 런타임에서 파일, 터미널, GUI 자동화에 직접 접근해야 할 때 사용하세요. 도구 호출은 여전히 OpenAI 모델의 응답에 의해 요청되지만, 실제 실행은 애플리케이션이 로컬에서 수행해야 합니다
+이들 도구는 로컬에서 실행되며 OpenAI 가 **호스팅하지 않습니다**. 런타임에서 파일, 터미널, GUI 자동화에 직접 접근해야 할 때 사용하세요. 도구 호출은 여전히 OpenAI 모델의 응답에 의해 요청되지만, 실제 실행은 애플리케이션이 로컬에서 수행해야 합니다.
 
 <Code
   lang="typescript"
@@ -61,7 +61,7 @@ import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts
 
 ## 3. 함수 도구
 
-`tool()` 헬퍼로 **어떤** 함수든 도구로 바꿀 수 있습니다
+`tool()` 헬퍼로 **어떤** 함수든 도구로 바꿀 수 있습니다.
 
 <Code
   lang="typescript"
@@ -71,22 +71,22 @@ import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts
 
 ### 옵션 레퍼런스
 
-| Field              | Required | Description                                                                                                                                               |
-| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | No       | 함수 이름 기본값 사용 (예: `get_weather`)                                                                                                                 |
-| `description`      | Yes      | LLM 에 표시되는 명확하고 사람이 읽기 쉬운 설명                                                                                                            |
-| `parameters`       | Yes      | Zod 스키마 또는 원문 JSON 스키마 객체 중 하나. Zod 매개변수를 사용하면 자동으로 **strict** 모드가 활성화됨                                                |
-| `strict`           | No       | `true`(기본값) 이면 인수가 검증에 실패할 때 SDK 가 모델 오류를 반환. 모호한 매칭을 원하면 `false` 로 설정                                                 |
-| `execute`          | Yes      | `(args, context) => string \| unknown \| Promise<...>` – 비즈니스 로직. 문자열이 아닌 출력은 모델을 위해 직렬화됨. 선택적 두 번째 매개변수는 `RunContext` |
-| `errorFunction`    | No       | 내부 오류를 사용자에게 보이는 문자열로 변환하는 커스텀 핸들러 `(context, error) => string`                                                                |
-| `needsApproval`    | No       | 실행 전에 사람의 승인이 필요. [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 가이드를 참고                                       |
-| `isEnabled`        | No       | 실행별로 조건부로 도구를 노출. 불리언 또는 프레디케이트 허용                                                                                              |
-| `inputGuardrails`  | No       | 도구 실행 전에 실행되는 가드레일. 거부하거나 throw 가능. [가드레일](/openai-agents-js/ko/guides/guardrails#tool-guardrails) 참고                          |
-| `outputGuardrails` | No       | 도구 실행 후 실행되는 가드레일. 거부하거나 throw 가능. [가드레일](/openai-agents-js/ko/guides/guardrails#tool-guardrails) 참고                            |
+| Field              | Required | Description                                                                                                                                                      |
+| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | No       | 기본값은 함수 이름입니다(예: `get_weather`).                                                                                                                     |
+| `description`      | Yes      | LLM 에 표시되는 명확하고 사람이 읽을 수 있는 설명                                                                                                                |
+| `parameters`       | Yes      | Zod 스키마 또는 raw JSON 스키마 객체. Zod 매개변수를 사용하면 자동으로 **strict** 모드가 활성화됩니다.                                                           |
+| `strict`           | No       | `true`(기본)일 때 인자가 유효성 검사를 통과하지 않으면 SDK 가 모델 오류를 반환합니다. 퍼지 매칭이 필요하면 `false`로 설정하세요.                                 |
+| `execute`          | Yes      | `(args, context) => string \| unknown \| Promise<...>` – 비즈니스 로직. 문자열이 아닌 출력은 모델을 위해 직렬화됩니다. 두 번째 선택적 인자는 `RunContext`입니다. |
+| `errorFunction`    | No       | 내부 오류를 사용자에게 보이는 문자열로 변환하는 커스텀 핸들러 `(context, error) => string`                                                                       |
+| `needsApproval`    | No       | 실행 전에 사람의 승인이 필요합니다. [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 가이드를 참고하세요.                                 |
+| `isEnabled`        | No       | 실행마다 조건부로 도구를 노출합니다. 불리언 또는 프레디킷을 허용합니다.                                                                                          |
+| `inputGuardrails`  | No       | 도구 실행 전에 동작하는 가드레일. 거부하거나 예외를 던질 수 있습니다. [가드레일](/openai-agents-js/ko/guides/guardrails#tool-guardrails) 참고                    |
+| `outputGuardrails` | No       | 도구 실행 후 동작하는 가드레일. 거부하거나 예외를 던질 수 있습니다. [가드레일](/openai-agents-js/ko/guides/guardrails#tool-guardrails) 참고                      |
 
 ### 비엄격 JSON‑스키마 도구
 
-모델이 잘못되었거나 부분적인 입력을 추론하도록 하려면 원문 JSON 스키마 사용 시 strict 모드를 비활성화하세요:
+모델이 잘못되었거나 부분적인 입력을 _추론_ 하도록 해야 한다면 raw JSON 스키마에서 strict 모드를 비활성화할 수 있습니다:
 
 <Code
   lang="typescript"
@@ -96,93 +96,93 @@ import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts
 
 ---
 
-## 4. 도구로서의 에이전트
+## 4. Agents as tools
 
-대화를 완전히 핸드오프하지 않고 한 에이전트가 다른 에이전트를 _보조_ 하게 하고 싶을 때 `agent.asTool()` 을 사용하세요:
+대화를 완전히 핸드오프하지 않고 한 에이전트가 다른 에이전트를 _보조_ 하도록 하고 싶을 때 `agent.asTool()`을 사용하세요:
 
-<Code
-  lang="typescript"
-  code={agentsAsToolsExample}
-  title="도구로서의 에이전트"
-/>
+<Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
 
-SDK 는 내부적으로 다음을 수행합니다:
+내부적으로 SDK 는 다음을 수행합니다:
 
 - 단일 `input` 매개변수를 가진 함수 도구를 생성
 - 도구가 호출되면 해당 입력으로 서브 에이전트를 실행
-- 마지막 메시지 또는 `customOutputExtractor` 가 추출한 출력을 반환
+- 마지막 메시지 또는 `customOutputExtractor`가 추출한 출력을 반환
 
-에이전트를 도구로 실행하면, Agents SDK 는 기본 설정으로 러너를 만들고 함수 실행 내에서 그 러너로 에이전트를 실행합니다. `runConfig` 또는 `runOptions` 의 속성을 제공하려면 `asTool()` 메서드에 전달하여 러너 동작을 커스터마이즈할 수 있습니다
+에이전트를 도구로 실행하면, Agents SDK 는 기본 설정으로 러너를 생성하고 함수 실행 내에서 해당 에이전트를 실행합니다. `runConfig`나 `runOptions`의 속성을 제공하려면 `asTool()` 메서드에 전달하여 러너 동작을 커스터마이즈할 수 있습니다.
 
-또한 `asTool()` 옵션을 통해 에이전트 도구에 `needsApproval` 과 `isEnabled` 를 설정하여 휴먼‑인‑더‑루프 흐름과 조건부 도구 가용성에 통합할 수 있습니다
+또한 `asTool()` 옵션을 통해 에이전트 도구에 `needsApproval`과 `isEnabled`를 설정하여 휴먼‑인‑더‑루프 플로우 및 조건부 도구 가용성과 통합할 수 있습니다.
 
 ### 에이전트 도구의 스트리밍 이벤트
 
-에이전트 도구는 모든 중첩 실행 이벤트를 앱으로 스트리밍할 수 있습니다. 도구 구성 방식에 맞는 훅 스타일을 선택하세요:
+에이전트 도구는 모든 중첩 실행 이벤트를 앱으로 스트리밍할 수 있습니다. 도구를 구성하는 방식에 맞는 훅 스타일을 선택하세요:
 
 <Code
   lang="typescript"
   code={agentsAsToolsStreamingExample}
-  title="에이전트 도구 스트리밍"
+  title="스트리밍 에이전트 도구"
 />
 
-- 이벤트 타입은 `RunStreamEvent['type']` 와 일치: `raw_model_stream_event`, `run_item_stream_event`, `agent_updated_stream_event`
-- `onStream` 은 가장 간단한 범용 훅으로, 도구를 인라인으로 선언할 때 잘 동작함(`tools: [agent.asTool({ onStream })]`). 이벤트별 라우팅이 필요 없을 때 사용
-- `on(eventName, handler)` 는 선택적으로 구독할 수 있으며(또는 `'*'`) 더 세밀한 처리가 필요하거나 생성 후 리스너를 붙이고 싶을 때 적합
-- `onStream` 또는 어떤 `on(...)` 핸들러라도 제공하면 에이전트‑as‑tool 은 자동으로 스트리밍 모드로 실행됨. 그렇지 않으면 비스트리밍 경로 유지
-- 핸들러는 병렬로 호출되므로 느린 `onStream` 콜백이 `on(...)` 핸들러를 막지 않음(반대도 동일)
-- `toolCallId` 는 도구가 모델 도구 호출을 통해 호출되었을 때 제공됨. 직접 `invoke()` 호출이거나 공급자 특이점에 따라 생략될 수 있음
+- 이벤트 유형은 `RunStreamEvent['type']`과 일치: `raw_model_stream_event`, `run_item_stream_event`, `agent_updated_stream_event`
+- `onStream`은 가장 단순한 “포괄” 방식으로, 도구를 인라인으로 선언할 때 잘 작동합니다(`tools: [agent.asTool({ onStream })]`). 이벤트별 라우팅이 필요하지 않다면 이를 사용하세요
+- `on(eventName, handler)`는 선택적으로(또는 `'*'`로) 구독할 수 있게 하며, 더 세밀한 처리가 필요하거나 생성 후 리스너를 부착하고 싶을 때 적합합니다
+- `onStream` 또는 어떤 `on(...)` 핸들러든 제공하면 agent-as-tool 은 자동으로 스트리밍 모드로 실행됩니다. 그렇지 않으면 논‑스트리밍 경로로 유지됩니다
+- 핸들러는 병렬로 호출되므로 느린 `onStream` 콜백이 `on(...)` 핸들러를 차단하지 않습니다(그 반대도 동일)
+- `toolCallId`는 도구가 모델의 도구 호출을 통해 호출되었을 때 제공됩니다. 직접 `invoke()` 호출하거나 공급자 특성에 따라 생략될 수 있습니다
 
 ---
 
-## 5. MCP 서버
+## 5. MCP servers
 
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 서버를 통해 도구를 노출하고 에이전트에 연결할 수 있습니다.
-예를 들어 `MCPServerStdio` 를 사용해 stdio MCP 서버를 생성하고 연결할 수 있습니다:
+[Model context protocol (MCP)](https://modelcontextprotocol.io/) 서버를 통해 도구를 노출하고 에이전트에 연결할 수 있습니다.
+예를 들어, `MCPServerStdio`를 사용해 stdio MCP 서버를 생성하고 연결할 수 있습니다:
 
 <Code lang="typescript" code={mcpLocalServer} title="로컬 MCP 서버" />
 
-완전한 예시는 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) 를 참고하세요. 또한 MCP 서버 도구 통합에 대한 종합 가이드를 찾고 있다면, 자세한 내용은 [모델 컨텍스트 프로토콜 (MCP)](/openai-agents-js/ko/guides/mcp) 를 참고하세요
+완전한 예시는 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)를 참고하세요. 또한 MCP 서버 도구 통합에 대한 포괄적인 가이드를 찾고 계시다면 [모델 컨텍스트 프로토콜 (MCP)](/openai-agents-js/ko/guides/mcp) 가이드를 참조하세요.
 
 ---
 
-## 6. 실험적: Codex 도구
+## 6. Experimental: Codex tool
 
-`@openai/agents-extensions/experimental/codex` 는 `codexTool()` 을 제공합니다. 이 함수 도구는 모델 도구 호출을 Codex SDK 로 라우팅하여 에이전트가 작업 공간 범위의 작업(shell, 파일 편집, MCP 도구)을 자율적으로 실행할 수 있게 합니다. 이 표면은 실험적이며 변경될 수 있습니다
+`@openai/agents-extensions/experimental/codex`는 `codexTool()`을 제공합니다. 이 함수 도구는 모델의 도구 호출을 Codex SDK 로 라우팅하여 에이전트가 워크스페이스 범위 작업(shell, 파일 편집, MCP 도구)을 자율적으로 실행할 수 있게 합니다. 이 표면은 실험적이며 변경될 수 있습니다.
 
 빠른 시작:
 
-<Code lang="typescript" code={codexToolExample} title="실험적 Codex 도구" />
+<Code
+  lang="typescript"
+  code={codexToolExample}
+  title="Experimental Codex tool"
+/>
 
 알아둘 점:
 
-- 인증: `CODEX_API_KEY`(권장) 또는 `OPENAI_API_KEY` 를 제공하거나 `codexOptions.apiKey` 를 전달
-- 입력: 엄격한 스키마 — `inputs` 에 최소 하나의 `{ type: 'text', text }` 또는 `{ type: 'local_image', path }` 가 포함되어야 함
-- 안전: `sandboxMode` 를 `workingDirectory` 와 함께 사용. 디렉터리가 Git 저장소가 아니면 `skipGitRepoCheck` 설정
-- 동작: `persistSession: true` 는 단일 Codex 스레드를 재사용하고 해당 `threadId` 를 반환. 재개 가능한 작업을 위해 노출 가능
-- 스트리밍: `onStream` 은 Codex 이벤트(추론, 명령 실행, MCP 도구 호출, 파일 변경, 웹 검색)를 미러링하므로 진행 상황을 로깅하거나 트레이싱할 수 있음
-- 출력: 도구 결과에는 `response`, `usage`, `threadId` 가 포함되며 Codex 토큰 사용량은 `RunContext` 에 기록됨
-- 구조: 형식화된 출력이 필요할 때 `outputSchema` 가 턴마다 Codex 응답의 구조를 강제함
+- 인증: `CODEX_API_KEY`(권장) 또는 `OPENAI_API_KEY`를 제공하거나 `codexOptions.apiKey`를 전달
+- 입력: 엄격한 스키마 — `inputs`에는 최소한 하나의 `{ type: 'text', text }` 또는 `{ type: 'local_image', path }`가 포함되어야 함
+- 안전성: `sandboxMode`를 `workingDirectory`와 함께 사용; 디렉터리가 Git 저장소가 아니면 `skipGitRepoCheck` 설정
+- 동작: `persistSession: true`는 단일 Codex 스레드를 재사용하고 해당 `threadId`를 반환합니다. 이를 노출하여 재개 가능한 작업에 사용할 수 있습니다
+- 스트리밍: `onStream`은 Codex 이벤트(추론, 명령 실행, MCP 도구 호출, 파일 변경, 웹 검색)를 반영하므로 진행 상황을 로깅하거나 트레이싱할 수 있습니다
+- 출력: 도구 결과에는 `response`, `usage`, `threadId`가 포함되며 Codex 토큰 사용량은 `RunContext`에 기록됩니다
+- 구조: `outputSchema`는 타입이 있는 출력이 필요할 때 턴마다 구조화된 Codex 응답을 강제합니다
 
 ---
 
 ## 도구 사용 동작
 
-모델이 도구를 언제 어떻게 사용해야 하는지 제어하려면 (`tool_choice`, `toolUseBehavior` 등) [에이전트](/openai-agents-js/ko/guides/agents#forcing-tool-use) 가이드를 참고하세요
+모델이 언제 어떻게 도구를 사용해야 하는지 제어하려면 [에이전트](/openai-agents-js/ko/guides/agents#forcing-tool-use) 가이드를 참고하세요 (`tool_choice`, `toolUseBehavior` 등).
 
 ---
 
 ## 모범 사례
 
-- **짧고 명확한 설명** – 도구가 _무엇을_ 하는지와 _언제 사용하는지_ 설명
-- **입력 검증** – 가능한 경우 Zod 스키마로 엄격한 JSON 검증 수행
-- **에러 핸들러에서 부작용 회피** – `errorFunction` 은 유용한 문자열을 반환해야 하며 throw 하지 않아야 함
+- **짧고 명시적인 설명** – 도구가 _무엇을_ 하는지와 *언제 사용하는지*를 설명
+- **입력 검증** – 가능하면 Zod 스키마로 엄격한 JSON 검증 사용
+- **오류 핸들러에 부작용 금지** – `errorFunction`은 유용한 문자열을 반환해야 하며, 예외를 던지지 말 것
 - **도구당 하나의 책임** – 작고 조합 가능한 도구가 더 나은 모델 추론으로 이어짐
 
 ---
 
 ## 다음 단계
 
-- [도구 사용 강제](/openai-agents-js/ko/guides/agents#forcing-tool-use) 방법 알아보기
+- [강제 도구 사용](/openai-agents-js/ko/guides/agents#forcing-tool-use)에 대해 알아보기
 - 도구 입력 또는 출력을 검증하기 위해 [가드레일](/openai-agents-js/ko/guides/guardrails) 추가
-- [`tool()`](/openai-agents-js/openai/agents/functions/tool) 및 다양한 호스티드 툴 타입에 대한 TypeDoc 레퍼런스를 자세히 살펴보기
+- [`tool()`](/openai-agents-js/openai/agents/functions/tool) 및 다양한 호스티드 툴 타입에 대한 TypeDoc 레퍼런스를 살펴보기
