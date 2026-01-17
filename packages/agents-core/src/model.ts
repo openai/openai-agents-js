@@ -27,15 +27,16 @@ export type ModelSettingsToolChoice =
 
 /**
  * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
- * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+ * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
  * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
  */
 export type ModelSettingsReasoningEffort =
-  | 'none' // for gpt-5.1
+  | 'none' // for gpt-5.1 and newer
   | 'minimal' // for gpt-5
   | 'low'
   | 'medium'
   | 'high'
+  | 'xhigh'
   | null;
 
 /**
@@ -44,7 +45,7 @@ export type ModelSettingsReasoningEffort =
 export type ModelSettingsReasoning = {
   /**
    * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
-   * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+   * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
    * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
    */
   effort?: ModelSettingsReasoningEffort | null;

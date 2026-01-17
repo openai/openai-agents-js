@@ -18,6 +18,9 @@ beforeEach(() => {
 describe('gpt5ReasoningSettingsRequired', () => {
   test('detects GPT-5 models while ignoring chat latest', () => {
     expect(gpt5ReasoningSettingsRequired('gpt-5')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5.1')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5.2')).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-5.2-codex')).toBe(true);
     expect(gpt5ReasoningSettingsRequired('gpt-5-mini')).toBe(true);
     expect(gpt5ReasoningSettingsRequired('gpt-5-nano')).toBe(true);
     expect(gpt5ReasoningSettingsRequired('gpt-5-pro')).toBe(true);
@@ -52,7 +55,25 @@ describe('isGpt5Default', () => {
   });
 });
 describe('getDefaultModelSettings', () => {
-  test('returns reasoning defaults for GPT-5 models', () => {
+  test('returns reasoning defaults for GPT-5.2 models', () => {
+    expect(getDefaultModelSettings('gpt-5.2')).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
+  });
+  test('returns reasoning defaults for GPT-5.2 codex models', () => {
+    expect(getDefaultModelSettings('gpt-5.2-codex')).toEqual({
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    });
+  });
+  test('returns reasoning defaults for GPT-5.1 models', () => {
+    expect(getDefaultModelSettings('gpt-5.1')).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
+  });
+  test('returns reasoning defaults for other GPT-5 models', () => {
     expect(getDefaultModelSettings('gpt-5-mini')).toEqual({
       reasoning: { effort: 'low' },
       text: { verbosity: 'low' },

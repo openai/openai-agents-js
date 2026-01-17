@@ -15,6 +15,12 @@ export function gpt5ReasoningSettingsRequired(modelName: string): boolean {
   return modelName.startsWith('gpt-5');
 }
 
+const NONE_EFFORT_SUPPORTED_MODELS = new Set(['gpt-5.2', 'gpt-5.1']);
+
+function isNoneEffortSupportedModel(modelName: string): boolean {
+  return NONE_EFFORT_SUPPORTED_MODELS.has(modelName);
+}
+
 /**
  * Returns True if the default model is a GPT-5 model.
  * This is used to determine if the default model settings are compatible with GPT-5 models.
@@ -42,10 +48,15 @@ export function getDefaultModel(): string {
 export function getDefaultModelSettings(model?: string): ModelSettings {
   const _model = model ?? getDefaultModel();
   if (gpt5ReasoningSettingsRequired(_model)) {
+    if (isNoneEffortSupportedModel(_model)) {
+      return {
+        reasoning: { effort: 'none' },
+        text: { verbosity: 'low' },
+      };
+    }
     return {
-      // We chose "low" instead of "minimal" because some of the built-in tools
-      // (e.g., file search, image generation, etc.) do not support "minimal"
-      // If you want to use "minimal" reasoning effort, you can pass your own model settings
+      // We choose "low" instead of "minimal" because some built-in tools do not support "minimal".
+      // If you want to use "minimal" reasoning effort, pass your own model settings.
       reasoning: { effort: 'low' },
       text: { verbosity: 'low' },
     };
