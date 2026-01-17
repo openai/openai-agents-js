@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.4.0
+
+### Minor Changes
+
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+- 4feaaae: feat(agents-core): update gpt-5.1/5.2 defaults and reasoning effort types
+
 ## 0.3.9
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @openai/agents-extensions
 
+## 0.4.0
+
+### Minor Changes
+
+- e8935bf: chore: #868 make @ai-sdk/provider an optional peer dependency to support v2 and v3
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+
+### Patch Changes
+
+- Updated dependencies [2bce164]
+- Updated dependencies [4feaaae]
+  - @openai/agents@0.4.0
+  - @openai/agents-core@0.4.0
+
 ## 0.3.9
 
 ### Patch Changes
