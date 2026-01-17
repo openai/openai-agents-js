@@ -1,6 +1,6 @@
 import { Agent, run } from '@openai/agents';
 import { randomUUID } from '@openai/agents-core/_shims';
-import { logger, Logger } from '@openai/agents-core/dist/logger';
+import { getLogger } from '@openai/agents-core';
 import type { AgentInputItem, Session } from '@openai/agents-core';
 
 /**
@@ -8,7 +8,7 @@ import type { AgentInputItem, Session } from '@openai/agents-core';
  */
 export class CustomMemorySession implements Session {
   private readonly sessionId: string;
-  private readonly logger: Logger;
+  private readonly logger: ReturnType<typeof getLogger>;
 
   private items: AgentInputItem[];
 
@@ -16,14 +16,14 @@ export class CustomMemorySession implements Session {
     options: {
       sessionId?: string;
       initialItems?: AgentInputItem[];
-      logger?: Logger;
+      logger?: ReturnType<typeof getLogger>;
     } = {},
   ) {
     this.sessionId = options.sessionId ?? randomUUID();
     this.items = options.initialItems
       ? options.initialItems.map(cloneAgentItem)
       : [];
-    this.logger = options.logger ?? logger;
+    this.logger = options.logger ?? getLogger('openai-agents:memory-session');
   }
 
   async getSessionId(): Promise<string> {
