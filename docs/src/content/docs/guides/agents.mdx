@@ -42,6 +42,8 @@ properties are shown below.
 | `model`              | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                      |
 | `modelSettings`      | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`. |
 | `tools`              | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                          |
+| `mcpServers`         | no       | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp).                                              |
+| `resetToolChoice`    | no       | Reset `tool_choice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use). |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
