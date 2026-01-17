@@ -17,32 +17,33 @@ import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 
 ## 概述
 
-[OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js)
-让您以轻量、易用、抽象极少的方式构建具备智能体能力的 AI 应用。它是我们此前智能体实验
-[Swarm](https://github.com/openai/swarm/tree/main) 的可用于生产环境的升级版本，并且也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只包含一小组基本组件：
+[OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) 让你以轻量、易用、极少抽象的方式构建智能体应用。它是我们之前智能体实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的生产级升级版本，同时[也提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 仅包含一小组基础组件：
 
-- **智能体（Agents）**：配备了 instructions 和 tools 的 LLM
-- **交接（Handoffs）**：让智能体将特定任务委托给其他智能体
-- **护栏（Guardrails）**：对传入智能体的输入进行校验
+- **智能体（Agents）**：配备 instructions 和 tools 的 LLM
+- **智能体即工具 / 交接（Agents as tools / Handoffs）**：允许智能体将特定任务委托给其他智能体
+- **护栏（Guardrails）**：对智能体的输入进行验证
 
-结合 TypeScript，这些基本组件足以表达工具与智能体之间的复杂关系，让您无需陡峭的学习曲线即可构建真实世界的应用。此外，SDK 内置了**追踪（tracing）**，便于可视化与调试智能体流程，并支持评估，甚至为您的应用微调模型。
+结合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，让你无需陡峭学习曲线即可构建真实世界应用。此外，SDK 内置了**追踪（tracing）**，用于可视化和调试智能体流程，并支持评估，甚至为你的应用微调模型。
 
-## 为什么使用 Agents SDK
+## 使用 Agents SDK 的理由
 
-该 SDK 的两大设计原则：
+该 SDK 的两个核心设计原则：
 
-1. 功能足够有用，但原语足够少，便于快速上手。
-2. 开箱即用效果优秀，同时允许您精细定制具体行为。
+1. 功能足够实用，但基础组件足够少，便于快速上手。
+2. 开箱即用，同时可精细自定义执行过程。
 
 主要特性包括：
 
-- **智能体循环**：内置循环负责调用工具、将结果返回给 LLM，并循环直至 LLM 完成。
-- **TypeScript 优先**：使用语言内建特性编排与串联智能体，无需学习全新抽象。
-- **交接**：在多个智能体之间进行协调与委派的强大能力。
-- **护栏**：与智能体并行执行输入校验与检查，若检查失败可提前中断。
-- **函数工具**：将任意 TypeScript 函数变为 tool，自动生成 schema，并提供基于 Zod 的验证。
-- **追踪**：内置追踪用于可视化、调试与监控工作流，并可使用 OpenAI 的评估、微调与蒸馏工具。
-- **实时智能体（Realtime Agents）**：构建强大的语音智能体，支持自动打断检测、上下文管理、护栏等。
+- **智能体循环（agent loop）**：内置循环处理工具调用，将结果回传给 LLM，并持续迭代直到任务完成。
+- **TypeScript 优先**：使用原生 TypeScript 语言特性编排与串联智能体，无需学习新抽象。
+- **智能体即工具 / 交接（Agents as tools / Handoffs）**：在多智能体间协调与分工的强大机制。
+- **护栏（Guardrails）**：与智能体执行并行进行输入校验与安全检查，未通过时快速失败。
+- **函数工具（Function tools）**：将任意 TypeScript 函数变为工具，自动生成模式并通过 Zod 驱动的验证。
+- **MCP 服务器工具调用**：内置 MCP 服务器工具集成，使用方式与函数工具一致。
+- **Sessions**：在智能体循环内维护工作上下文的持久化记忆层。
+- **人工干预（Human in the loop）**：内置在多次运行中引入人类参与的机制。
+- **追踪（Tracing）**：内置工作流可视化、调试与监控，并支持 OpenAI 全套评估、微调与蒸馏工具。
+- **实时智能体（Realtime Agents）**：构建强大的语音智能体，具备自动打断检测、上下文管理、护栏等能力。
 
 ## 安装
 
@@ -54,7 +55,7 @@ npm install @openai/agents zod@3
 
 <Code lang="typescript" code={helloWorldExample} title="Hello World" />
 
-（运行前请确保设置了 `OPENAI_API_KEY` 环境变量）
+（_如果要运行此示例，请确保已设置 `OPENAI_API_KEY` 环境变量_）
 
 ```bash
 export OPENAI_API_KEY=sk-...

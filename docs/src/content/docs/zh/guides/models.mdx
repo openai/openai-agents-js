@@ -18,7 +18,7 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 知道如何针对特定 API 发起一次请求。
 - [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 将可读的模型**名称**（例如 `'gpt‑4o'`）解析为 `Model` 实例。
 
-日常使用中，通常只需要与模型**名称**交互，偶尔会使用到 `ModelSettings`。
+在日常使用中，您通常只会与模型**名称**交互，偶尔会用到 `ModelSettings`。
 
 <Code
   lang="typescript"
@@ -28,18 +28,18 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 
 ## 默认模型
 
-当初始化 `Agent` 时未指定模型，将使用默认模型。当前默认是为了兼容性和低延迟而选择的 [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1)。如果您有权限，建议为更高质量将智能体设置为 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2)，同时保留显式的 `modelSettings`。
+当初始化 `Agent` 时未指定模型，将使用默认模型。当前默认是 [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1)，兼顾兼容性与低延迟。如果您有权限，建议将智能体设置为 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) 以获得更高质量，同时保留显式的 `modelSettings`。
 
-如果您想切换到其他模型（如 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2)），有两种方式为智能体配置。
+如果您想切换到其他模型，如 [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2)，有两种方式配置智能体。
 
-首先，如果希望对所有未设置自定义模型的智能体统一使用某个特定模型，请在运行智能体前设置环境变量 `OPENAI_DEFAULT_MODEL`。
+首先，如果希望对所有未自定义模型的智能体始终使用某个特定模型，请在运行智能体前设置环境变量 `OPENAI_DEFAULT_MODEL`。
 
 ```bash
 export OPENAI_DEFAULT_MODEL=gpt-5
 node my-awesome-agent.js
 ```
 
-其次，您可以为某个 `Runner` 实例设置默认模型。如果未为某个智能体设置模型，将使用该 `Runner` 的默认模型。
+其次，您可以为某个 `Runner` 实例设置默认模型。如果没有为某个智能体设置模型，将使用该 `Runner` 的默认模型。
 
 <Code
   lang="typescript"
@@ -49,7 +49,7 @@ node my-awesome-agent.js
 
 ### GPT-5 模型
 
-当以这种方式使用任一 GPT-5 推理模型（[`gpt-5`](https://platform.openai.com/docs/models/gpt-5)、[`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) 或 [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano)）时，SDK 会默认应用合理的 `modelSettings`：将 `reasoning.effort` 和 `verbosity` 都设为 `"low"`。若要为默认模型调整推理强度，请传入自定义的 `modelSettings`：
+当您以这种方式使用任一 GPT-5 推理模型（[`gpt-5`](https://platform.openai.com/docs/models/gpt-5)、[`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) 或 [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano)）时，SDK 会默认应用合理的 `modelSettings`。具体而言，会将 `reasoning.effort` 与 `verbosity` 都设为 `"low"`。如需为默认模型调整推理强度，请传入自定义的 `modelSettings`：
 
 <Code
   lang="typescript"
@@ -57,92 +57,92 @@ node my-awesome-agent.js
   title="自定义 GPT-5 默认设置"
 />
 
-为了更低的延迟，使用 [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) 或 [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano) 并设置 `reasoning.effort="minimal"`，通常会比默认设置更快返回。不过，Responses API 中的一些内置工具（如文件搜索与图像生成）不支持 `"minimal"` 推理强度，因此本 Agents SDK 将默认值设为 `"low"`。
+为降低延迟，使用 [`gpt-5-mini`](https://platform.openai.com/docs/models/gpt-5-mini) 或 [`gpt-5-nano`](https://platform.openai.com/docs/models/gpt-5-nano) 并设置 `reasoning.effort="minimal"`，通常会比默认设置更快返回结果。但需注意，Responses API 中的一些内置工具（如文件搜索与图像生成）不支持 `"minimal"` 推理强度，这也是本 Agents SDK 默认采用 `"low"` 的原因。
 
 ### 非 GPT-5 模型
 
-如果传入非 GPT-5 的模型名称且未提供自定义 `modelSettings`，SDK 将回退到与任意模型兼容的通用 `modelSettings`。
+如果您传入非 GPT-5 的模型名称且未提供自定义 `modelSettings`，SDK 将回退到与任意模型兼容的通用 `modelSettings`。
 
 ---
 
 ## OpenAI 提供方
 
-默认的 `ModelProvider` 使用 OpenAI API 解析名称。它支持两个不同的端点：
+默认的 `ModelProvider` 使用 OpenAI API 来解析名称。它支持两个不同的端点：
 
-| API              | 用途                                         | 调用 `setOpenAIAPI()`                |
-| ---------------- | -------------------------------------------- | ------------------------------------ |
-| Chat Completions | 标准聊天与函数调用                           | `setOpenAIAPI('chat_completions')`   |
-| Responses        | 新的流式优先生成式 API（工具调用、灵活输出） | `setOpenAIAPI('responses')` _(默认)_ |
+| API              | 用途                                                 | 调用 `setOpenAIAPI()`                |
+| ---------------- | ---------------------------------------------------- | ------------------------------------ |
+| Chat Completions | 标准聊天与函数调用                                   | `setOpenAIAPI('chat_completions')`   |
+| Responses        | 新的以流式传输为先的生成式 API（工具调用、灵活输出） | `setOpenAIAPI('responses')` _(默认)_ |
 
 ### 认证
 
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="设置默认 OpenAI 密钥"
+  title="设置默认 OpenAI Key"
 />
 
-如果需要自定义网络设置，您也可以通过 `setDefaultOpenAIClient(client)` 注入自有的 `OpenAI` 客户端。
+如果需要自定义网络设置，您也可以通过 `setDefaultOpenAIClient(client)` 接入自有的 `OpenAI` 客户端。
 
 ---
 
 ## ModelSettings
 
-`ModelSettings` 与 OpenAI 的参数保持一致，但不依赖特定提供方。
+`ModelSettings` 与 OpenAI 的参数保持一致，但与具体提供方无关。
 
 | 字段                | 类型                                       | 说明                                                                      |
 | ------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
-| `temperature`       | `number`                                   | 创造性与确定性的权衡。                                                    |
+| `temperature`       | `number`                                   | 创造性与确定性。                                                          |
 | `topP`              | `number`                                   | 核采样。                                                                  |
 | `frequencyPenalty`  | `number`                                   | 惩罚重复的 token。                                                        |
-| `presencePenalty`   | `number`                                   | 鼓励新 token。                                                            |
+| `presencePenalty`   | `number`                                   | 鼓励生成新 token。                                                        |
 | `toolChoice`        | `'auto' \| 'required' \| 'none' \| string` | 参见[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。 |
-| `parallelToolCalls` | `boolean`                                  | 在支持的情况下允许并行函数调用。                                          |
-| `truncation`        | `'auto' \| 'disabled'`                     | token 截断策略。                                                          |
+| `parallelToolCalls` | `boolean`                                  | 在支持处允许并行函数调用。                                                |
+| `truncation`        | `'auto' \| 'disabled'`                     | Token 截断策略。                                                          |
 | `maxTokens`         | `number`                                   | 响应中的最大 token 数。                                                   |
-| `store`             | `boolean`                                  | 持久化响应以便检索 / RAG 工作流。                                         |
-| `reasoning.effort`  | `'minimal' \| 'low' \| 'medium' \| 'high'` | gpt-5 等模型的推理强度。                                                  |
-| `text.verbosity`    | `'low' \| 'medium' \| 'high'`              | gpt-5 等模型的文本冗长度。                                                |
+| `store`             | `boolean`                                  | 持久化响应以供检索/RAG 工作流使用。                                       |
+| `reasoning.effort`  | `'minimal' \| 'low' \| 'medium' \| 'high'` | 适用于 gpt-5 等的推理强度。                                               |
+| `text.verbosity`    | `'low' \| 'medium' \| 'high'`              | 适用于 gpt-5 等的文本详细程度。                                           |
 
-可在任一层级附加设置：
+在以下任一层级附加设置：
 
 <Code lang="typescript" code={modelSettingsExample} title="模型设置" />
 
-`Runner` 级别的设置会覆盖与每个智能体级别冲突的设置。
+`Runner` 层级的设置会覆盖与智能体层级冲突的设置。
 
 ---
 
-## Prompt
+## 提示词
 
-可以通过 `prompt` 参数为智能体进行配置，指向一个在服务器端存储的 prompt 配置，用于控制智能体行为。目前，此选项仅在使用 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses) 时受支持。
+智能体可以通过 `prompt` 参数进行配置，指向用于控制智能体行为的、存储在服务器上的提示词配置。目前，此选项仅在使用 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses) 时受支持。
 
-| 字段        | 类型     | 说明                                                                                  |
-| ----------- | -------- | ------------------------------------------------------------------------------------- |
-| `promptId`  | `string` | prompt 的唯一标识符。                                                                 |
-| `version`   | `string` | 你希望使用的 prompt 版本。                                                            |
-| `variables` | `object` | 要替换进 prompt 的键/值变量对。值可以是字符串，或诸如文本、图像、文件等内容输入类型。 |
+| 字段        | 类型     | 说明                                                                          |
+| ----------- | -------- | ----------------------------------------------------------------------------- |
+| `promptId`  | `string` | 提示词的唯一标识符。                                                          |
+| `version`   | `string` | 希望使用的提示词版本。                                                        |
+| `variables` | `object` | 要替换进提示词的键/值变量。取值可以是字符串或文本、图像、文件等内容输入类型。 |
 
-<Code lang="typescript" code={promptIdExample} title="使用 prompt 的智能体" />
+<Code lang="typescript" code={promptIdExample} title="带提示词的智能体" />
 
-任何额外的智能体配置（如 tools 或 instructions）都会覆盖您在已存储 prompt 中配置的值。
+任何其他智能体配置（比如 tools 或 instructions），都会覆盖您在存储提示词中配置的值。
 
 ---
 
 ## 自定义模型提供方
 
-实现自定义提供方很简单——实现 `ModelProvider` 和 `Model`，并将该提供方传入 `Runner` 构造函数：
+自定义提供方很简单——实现 `ModelProvider` 与 `Model`，并将该提供方传给 `Runner` 构造函数：
 
 <Code
   lang="typescript"
   code={modelCustomProviderExample}
-  title="最简自定义提供方"
+  title="最小化自定义提供方"
 />
 
 ---
 
 ## 追踪导出器
 
-使用 OpenAI 提供方时，可以通过提供 API 密钥选择性启用自动追踪导出：
+使用 OpenAI 提供方时，您可以通过提供 API key 选择加入自动追踪导出：
 
 <Code
   lang="typescript"
@@ -150,12 +150,12 @@ node my-awesome-agent.js
   title="追踪导出器"
 />
 
-这会将追踪发送到 [OpenAI 仪表盘](https://platform.openai.com/traces)，您可以在其中检查工作流的完整执行图。
+这会将追踪发送到 [OpenAI 仪表板](https://platform.openai.com/traces)，您可以在其中查看工作流的完整执行图。
 
 ---
 
 ## 后续步骤
 
 - 探索[运行智能体](/openai-agents-js/zh/guides/running-agents)。
-- 通过[工具](/openai-agents-js/zh/guides/tools)为模型增添能力。
-- 视需要添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)。
+- 使用[工具](/openai-agents-js/zh/guides/tools)为您的模型赋能。
+- 按需添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)。
