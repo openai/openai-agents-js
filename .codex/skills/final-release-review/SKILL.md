@@ -50,7 +50,7 @@ Use this skill when validating the latest release candidate commit (default tip 
   - State BASE_TAG and TARGET explicitly.
   - Provide a concise diff summary (key directories/files and counts).
   - List: breaking-change candidates, probable regressions/bugs, improvement opportunities, missing release notes/migrations.
-  - Recommend ship/block and the exact checks needed to unblock if blocking. If a breaking change is properly versioned (minor/major), you may still recommend a GREEN LIGHT TO SHIP while calling out the change.
+  - Recommend ship/block and the exact checks needed to unblock if blocking. If a breaking change is properly versioned (minor/major), you may still recommend a GREEN LIGHT TO SHIP while calling out the change. Use emoji and boldface in the release call to make the gate obvious.
 
 ## Output format (required)
 
@@ -68,7 +68,7 @@ This is a release readiness report done by `$final-release-review` skill.
 https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 
 ### Release call:
-- <GREEN LIGHT TO SHIP | BLOCKED> <one-line rationale>
+- **<🟢 GREEN LIGHT TO SHIP | 🔴 BLOCKED>** <one-line rationale>
 
 ### Scope summary:
 - <N files changed (+A/-D); key areas touched: ...>
