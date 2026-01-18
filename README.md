@@ -54,8 +54,10 @@ Experimental support:
 ### Installation
 
 ```bash
-npm install @openai/agents zod@3
+npm install @openai/agents zod
 ```
+
+The Agents SDK requires Zod v4; `npm install zod` pulls the latest v4.x by default.
 
 ## Hello world example
 
