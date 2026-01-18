@@ -14,7 +14,7 @@ The [ai-sdk-model.ts](./ai-sdk-model.ts) script:
 From the repository root, execute:
 
 ```bash
-pnpm -F ai-sdk start:sdk-model
+pnpm -F ai-sdk-v1 start
 ```
 
 The script prints the final output produced by the runner.
