@@ -9,6 +9,7 @@ description: Validate changesets in openai-agents-js using LLM judgment against 
 
 This skill validates whether changesets correctly reflect package changes and follow the repository rules. It relies on the shared prompt in `references/validation-prompt.md` so local Codex reviews and GitHub Actions share the same logic.
 Experimental or preview-only feature additions that are explicitly labeled as such in the diff may remain a patch bump when they do not change existing behavior.
+Major bumps are only allowed after the first major release; before that, do not use major bumps for feature-level changes.
 
 ## Quick start
 
@@ -33,7 +34,7 @@ CI (Codex Action):
 
 1. Generate the prompt context via `pnpm changeset:validate`.
 2. Apply the rules in `references/validation-prompt.md` to judge correctness.
-3. Provide a clear verdict and required bump (patch/minor/none).
+3. Provide a clear verdict and required bump (patch/minor/major/none).
 4. If the changeset needs edits, update it and re-run the validation.
 
 ## Shared source of truth

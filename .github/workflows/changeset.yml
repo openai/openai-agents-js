@@ -60,3 +60,85 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm changeset:assign-milestone -- .github/codex/outputs/changeset-validation.json
+
+      - name: Sync package labels
+        if: ${{ steps.run_codex.conclusion == 'success' }}
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            const baseSha = context.payload.pull_request.base.sha;
+            const headSha = context.payload.pull_request.head.sha;
+
+            const diff = execSync(
+              `git diff --name-only ${baseSha} ${headSha} -- .changeset`,
+              { encoding: 'utf8' },
+            ).trim();
+            const files = diff ? diff.split(/\r?\n/).filter(Boolean) : [];
+            const changesetFiles = files.filter(
+              (file) => file.endsWith('.md') && !file.endsWith('README.md'),
+            );
+
+            const packageToLabel = {
+              '@openai/agents-core': 'package:agents-core',
+              '@openai/agents-openai': 'package:agents-openai',
+              '@openai/agents-realtime': 'package:agents-realtime',
+              '@openai/agents-extensions': 'package:agents-extensions',
+            };
+
+            const desired = new Set();
+            for (const file of changesetFiles) {
+              if (!fs.existsSync(file)) {
+                continue;
+              }
+              const content = fs.readFileSync(file, 'utf8');
+              const parts = content.split('---');
+              if (parts.length < 3) {
+                continue;
+              }
+              const frontmatter = parts[1];
+              for (const line of frontmatter.split(/\r?\n/)) {
+                const match = line.match(/["']?([^"':]+)["']?\s*:/);
+                if (!match) continue;
+                const pkg = match[1].trim();
+                const label = packageToLabel[pkg];
+                if (label) desired.add(label);
+              }
+            }
+
+            const packageLabels = new Set(Object.values(packageToLabel));
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = issue.labels.map((label) =>
+              typeof label === 'string' ? label : label.name,
+            );
+            const preserved = existing.filter(
+              (label) => !packageLabels.has(label),
+            );
+            const finalLabels = Array.from(new Set([...preserved, ...desired]));
+
+            const normalize = (labels) => labels.slice().sort();
+            const same =
+              normalize(existing).join('\n') === normalize(finalLabels).join('\n');
+
+            if (same) {
+              console.log('Package labels already up to date.');
+              return;
+            }
+
+            await github.rest.issues.setLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: finalLabels,
+            });
+
+            console.log(
+              `Updated labels: ${finalLabels.join(', ') || '(none)'}`,
+            );
