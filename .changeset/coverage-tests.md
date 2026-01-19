@@ -4,4 +4,4 @@
 '@openai/agents-realtime': patch
 ---
 
-Add coverage-focused tests for MCP tooling, Zod schema compatibility, compaction guards, and realtime guardrails.
+fix: handle legacy fileId fallback and expand coverage
