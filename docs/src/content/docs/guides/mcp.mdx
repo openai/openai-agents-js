@@ -95,6 +95,23 @@ When your Agent talks directly to a Streamable HTTP MCP server—local or remote
   title="Run with Streamable HTTP MCP servers"
 />
 
+Constructor options:
+
+| Option                        | Type                                           | Notes                                       |
+| ----------------------------- | ---------------------------------------------- | ------------------------------------------- |
+| `url`                         | `string`                                       | Streamable HTTP server URL.                 |
+| `name`                        | `string`                                       | Optional label for the server.              |
+| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.         |
+| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.            |
+| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                     |
+| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).         |
+| `logger`                      | `Logger`                                       | Custom logger.                              |
+| `authProvider`                | `OAuthClientProvider`                          | OAuth provider from the MCP TypeScript SDK. |
+| `requestInit`                 | `RequestInit`                                  | Fetch init options for requests.            |
+| `fetch`                       | `FetchLike`                                    | Custom fetch implementation.                |
+| `reconnectionOptions`         | `StreamableHTTPReconnectionOptions`            | Reconnection tuning options.                |
+| `sessionId`                   | `string`                                       | Explicit session id for MCP connections.    |
+
 The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
 
 ## 3. Stdio MCP servers
@@ -106,6 +123,23 @@ For servers that expose only standard I/O, instantiate `MCPServerStdio` with a `
   code={stdioExample}
   title="Run with Stdio MCP servers"
 />
+
+Constructor options:
+
+| Option                        | Type                                           | Notes                                                  |
+| ----------------------------- | ---------------------------------------------- | ------------------------------------------------------ |
+| `command` / `args`            | `string` / `string[]`                          | Command + args for stdio servers.                      |
+| `fullCommand`                 | `string`                                       | Full command string alternative to `command` + `args`. |
+| `env`                         | `Record<string, string>`                       | Environment variables for the server process.          |
+| `cwd`                         | `string`                                       | Working directory for the server process.              |
+| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.                    |
+| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.                       |
+| `name`                        | `string`                                       | Optional label for the server.                         |
+| `encoding`                    | `string`                                       | Encoding for stdio streams.                            |
+| `encodingErrorHandler`        | `'strict' \| 'ignore' \| 'replace'`            | Encoding error strategy.                               |
+| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                                |
+| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).                    |
+| `logger`                      | `Logger`                                       | Custom logger.                                         |
 
 ## Other things to know
 
