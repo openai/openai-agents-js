@@ -58,6 +58,36 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
   });
 
+  it('supports intersections and enums', () => {
+    const schema = z.object({
+      combined: z.intersection(
+        z.object({ a: z.string() }),
+        z.object({ b: z.number() }),
+      ),
+      choice: z.enum(['one', 'two']),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema).toBeDefined();
+    expect(jsonSchema?.properties.combined).toMatchObject({
+      allOf: [
+        {
+          type: 'object',
+          properties: { a: { type: 'string' } },
+          required: ['a'],
+          additionalProperties: false,
+        },
+        {
+          type: 'object',
+          properties: { b: { type: 'number' } },
+          required: ['b'],
+          additionalProperties: false,
+        },
+      ],
+    });
+    expect(jsonSchema?.properties.choice).toEqual({ enum: ['one', 'two'] });
+  });
+
   it('converts nested record and array structures', () => {
     const schema = z.object({
       record: z.record(z.string(), z.number()),
@@ -139,5 +169,36 @@ describe('utils/zodJsonSchemaCompat', () => {
     } as unknown as z.ZodObject<any>;
 
     expect(zodJsonSchemaCompat(tricky)).toBeUndefined();
+  });
+
+  it('supports literal definitions from zod internals', () => {
+    const schema = {
+      _def: {
+        shape: {
+          status: { _def: { type: 'literal', value: 'ready' } },
+          empty: { _def: { type: 'literal', literal: null } },
+        },
+      },
+    } as unknown as z.ZodObject<any>;
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.properties.status).toEqual({
+      const: 'ready',
+      type: 'string',
+    });
+    expect(jsonSchema?.properties.empty).toEqual({ const: null, type: 'null' });
+  });
+
+  it('reads shapes from zod definitions when shape is not directly available', () => {
+    const schema = {
+      _def: {
+        shape: {
+          title: z.string(),
+        },
+      },
+    } as unknown as z.ZodObject<any>;
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.properties.title).toEqual({ type: 'string' });
   });
 });

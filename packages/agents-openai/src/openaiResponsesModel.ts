@@ -499,10 +499,11 @@ function normalizeLegacyFileFromOutput(value: Record<string, any>): {
       : undefined;
 
   const referencedId =
-    (typeof value.id === 'string' && value.id.length > 0 && value.id) ??
-    (typeof value.fileId === 'string' && value.fileId.length > 0
-      ? value.fileId
-      : undefined);
+    typeof value.id === 'string' && value.id.length > 0
+      ? value.id
+      : typeof value.fileId === 'string' && value.fileId.length > 0
+        ? value.fileId
+        : undefined;
   if (referencedId) {
     return { file: { id: referencedId }, filename };
   }
