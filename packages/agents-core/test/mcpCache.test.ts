@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getAllMcpTools } from '../src/mcp';
+import { UserError } from '../src/errors';
 import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
@@ -189,6 +190,69 @@ describe('MCP tools cache invalidation', () => {
       expect(updatedToolsAgentTwo.map((t: any) => t.name)).toEqual([
         'bar_updated',
       ]);
+    });
+  });
+});
+
+describe('MCP tools static filters', () => {
+  it('filters tools using allowed and blocked tool names', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'alpha',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'beta',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'gamma',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const server = new StubServer('server', tools);
+      server.toolFilter = {
+        allowedToolNames: ['alpha', 'beta'],
+        blockedToolNames: ['beta'],
+      };
+
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result.map((tool) => tool.name)).toEqual(['alpha']);
+    });
+  });
+});
+
+describe('MCP tools uniqueness', () => {
+  it('throws when duplicate tool names are found across servers', async () => {
+    await withTrace('test', async () => {
+      const tools = [
+        {
+          name: 'duplicate',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ];
+
+      const serverA = new StubServer('server-a', tools);
+      const serverB = new StubServer('server-b', tools);
+
+      await expect(
+        getAllMcpTools({
+          mcpServers: [serverA, serverB],
+          runContext: new RunContext({}),
+          agent: new Agent({ name: 'AgentOne' }),
+        }),
+      ).rejects.toBeInstanceOf(UserError);
     });
   });
 });

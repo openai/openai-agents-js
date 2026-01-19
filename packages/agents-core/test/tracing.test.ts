@@ -19,11 +19,14 @@ import {
 
 import {
   BatchTraceProcessor,
+  ConsoleSpanExporter,
   MultiTracingProcessor,
   TracingExporter,
   TracingProcessor,
   defaultProcessor,
 } from '../src/tracing/processor';
+
+import coreLogger from '../src/logger';
 
 import {
   withTrace,
@@ -37,7 +40,7 @@ import {
 
 import { withAgentSpan, createAgentSpan } from '../src/tracing/createSpans';
 
-import { TraceProvider } from '../src/tracing/provider';
+import { TraceProvider, getGlobalTraceProvider } from '../src/tracing/provider';
 
 import { Runner } from '../src/run';
 import { Agent } from '../src/agent';
@@ -263,11 +266,72 @@ describe('Runner tracing configuration', () => {
 });
 
 // -----------------------------------------------------------------------------------------
+// Tests for ConsoleSpanExporter.
+// -----------------------------------------------------------------------------------------
+
+describe('ConsoleSpanExporter', () => {
+  it('skips export when tracing is disabled', async () => {
+    const debugSpy = vi.spyOn(coreLogger, 'debug').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    setTracingDisabled(true);
+
+    const exporter = new ConsoleSpanExporter();
+    await exporter.export([new Trace({ name: 'disabled-trace' })]);
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      'Tracing is disabled. Skipping export',
+    );
+    expect(logSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    debugSpy.mockRestore();
+    setTracingDisabled(false);
+  });
+
+  it('logs traces and spans when tracing is enabled', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const originalEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+
+    const exporter = new ConsoleSpanExporter();
+    const trace = new Trace({ name: 'trace', groupId: 'group_123' });
+    trace.groupId = 'group_123';
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        data: { type: 'custom', name: 'span', data: {} },
+      },
+      new TestProcessor(),
+    );
+
+    await exporter.export([trace, span]);
+
+    const messages = logSpy.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some(
+        (msg) =>
+          msg.includes('Export trace') &&
+          msg.includes(trace.traceId) &&
+          msg.includes('groupId=group_123'),
+      ),
+    ).toBe(true);
+    expect(messages.some((msg) => msg.includes('Export span'))).toBe(true);
+
+    logSpy.mockRestore();
+    process.env.NODE_ENV = originalEnv;
+  });
+});
+
+// -----------------------------------------------------------------------------------------
 // Tests for BatchTraceProcessor (happy‑path).
 // -----------------------------------------------------------------------------------------
 
 describe('BatchTraceProcessor', () => {
   const exporter = new TestExporter();
+
+  beforeEach(() => {
+    exporter.exported.length = 0;
+  });
 
   it('buffers items and flushes them when forceFlush is called', async () => {
     const processor = new BatchTraceProcessor(exporter, {
@@ -292,6 +356,165 @@ describe('BatchTraceProcessor', () => {
     const batch = exporter.exported[0];
     expect(batch).toContain(t1);
     expect(batch).toContain(t2);
+
+    await processor.shutdown();
+  });
+
+  it('drops items when the buffer is full', async () => {
+    const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 2,
+      maxBatchSize: 5,
+      exportTriggerRatio: 1,
+      scheduleDelay: 10000,
+    });
+
+    await processor.onTraceStart(new Trace({ name: 'one' }));
+    await processor.onTraceStart(new Trace({ name: 'two' }));
+    await processor.onTraceStart(new Trace({ name: 'three' }));
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Dropping trace because buffer is full',
+    );
+
+    await processor.forceFlush();
+    expect(exporter.exported[0]).toHaveLength(2);
+
+    errorSpy.mockRestore();
+    await processor.shutdown();
+  });
+
+  it('exports batches when the trigger threshold is reached', async () => {
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 2,
+      exportTriggerRatio: 0.2,
+      scheduleDelay: 10000,
+    });
+
+    const t1 = new Trace({ name: 'first' });
+    const t2 = new Trace({ name: 'second' });
+    const t3 = new Trace({ name: 'third' });
+
+    await processor.onTraceStart(t1);
+    await processor.onTraceStart(t2);
+    await processor.onTraceStart(t3);
+
+    expect(exporter.exported.length).toBe(1);
+    expect(exporter.exported[0]).toEqual([t1, t2]);
+
+    await processor.forceFlush();
+    expect(exporter.exported.length).toBe(2);
+    expect(exporter.exported[1]).toEqual([t3]);
+
+    await processor.shutdown();
+  });
+
+  it('exports batches on the scheduled interval', async () => {
+    vi.useFakeTimers();
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 5,
+      scheduleDelay: 50,
+    });
+
+    await processor.onTraceStart(new Trace({ name: 'scheduled' }));
+    expect(exporter.exported.length).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(exporter.exported.length).toBe(1);
+
+    await processor.shutdown();
+    vi.useRealTimers();
+  });
+
+  it('waits while an export is in progress during shutdown', async () => {
+    let resolveExport: (() => void) | null = null;
+    let exportCalls = 0;
+    const exporterWithDelay: TracingExporter = {
+      export: async () => {
+        exportCalls += 1;
+        if (exportCalls === 1) {
+          return new Promise<void>((resolve) => {
+            resolveExport = resolve;
+          });
+        }
+      },
+    };
+    const processor = new BatchTraceProcessor(exporterWithDelay, {
+      maxQueueSize: 10,
+      maxBatchSize: 1,
+      exportTriggerRatio: 0.1,
+      scheduleDelay: 10000,
+    });
+
+    await processor.onTraceStart(new Trace({ name: 'first' }));
+    const pendingExport = processor.onTraceStart(new Trace({ name: 'second' }));
+
+    const shutdownPromise = processor.shutdown();
+    setTimeout(() => resolveExport?.(), 10);
+    await pendingExport;
+    await shutdownPromise;
+  });
+
+  it('logs when automatic export loops are unsupported', async () => {
+    const debugSpy = vi.fn();
+    vi.resetModules();
+    vi.doMock('@openai/agents-core/_shims', async () => {
+      const actual = await vi.importActual('@openai/agents-core/_shims');
+      return {
+        ...(actual as Record<string, unknown>),
+        isTracingLoopRunningByDefault: () => false,
+      };
+    });
+    vi.doMock('../src/logger', () => ({
+      default: { debug: debugSpy },
+    }));
+
+    const { BatchTraceProcessor: MockedProcessor } =
+      await import('../src/tracing/processor');
+    const tempExporter = new TestExporter();
+    new MockedProcessor(tempExporter, { scheduleDelay: 10000 });
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      'Automatic trace export loop is not supported in this environment. You need to manually call `getGlobalTraceProvider().forceFlush()` to export traces.',
+    );
+
+    vi.resetModules();
+    vi.unmock('@openai/agents-core/_shims');
+    vi.unmock('../src/logger');
+  });
+
+  it('logs a timeout flush during shutdown when the timeout elapses', async () => {
+    vi.useFakeTimers();
+    const debugSpy = vi.spyOn(coreLogger, 'debug').mockImplementation(() => {});
+    class DelayedExporter implements TracingExporter {
+      public exported: Array<(Trace | Span<any>)[]> = [];
+
+      async export(items: (Trace | Span<any>)[]): Promise<void> {
+        this.exported.push([...items]);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    const delayedExporter = new DelayedExporter();
+    const processor = new BatchTraceProcessor(delayedExporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 5,
+      scheduleDelay: 10000,
+    });
+
+    await processor.onTraceStart(new Trace({ name: 'slow-export' }));
+    const shutdownPromise = processor.shutdown(1);
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(50);
+    await shutdownPromise;
+
+    expect(debugSpy).toHaveBeenCalledWith('Timeout reached, force flushing');
+
+    debugSpy.mockRestore();
+    vi.useRealTimers();
   });
 });
 
@@ -526,6 +749,35 @@ describe('MultiTracingProcessor', () => {
     expect(processor1.shutdown).toHaveBeenCalledTimes(1);
     expect(processor2.shutdown).toHaveBeenCalledTimes(1);
   });
+
+  it('starts and flushes all processors', async () => {
+    const processor1 = new TestProcessor() as TestProcessor & {
+      start?: () => void;
+    };
+    const processor2 = new TestProcessor() as TestProcessor & {
+      start?: () => void;
+    };
+    const start1 = vi.fn();
+    const start2 = vi.fn();
+    const flush1 = vi.fn().mockResolvedValue(undefined);
+    const flush2 = vi.fn().mockResolvedValue(undefined);
+    processor1.start = start1;
+    processor2.start = start2;
+    processor1.forceFlush = flush1;
+    processor2.forceFlush = flush2;
+
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    multiProcessor.start();
+    expect(start1).toHaveBeenCalledTimes(1);
+    expect(start2).toHaveBeenCalledTimes(1);
+
+    await multiProcessor.forceFlush();
+    expect(flush1).toHaveBeenCalledTimes(1);
+    expect(flush2).toHaveBeenCalledTimes(1);
+  });
 });
 
 // -----------------------------------------------------------------------------------------
@@ -546,6 +798,71 @@ describe('TraceProvider disabled behavior', () => {
       },
       trace,
     );
+    expect(span).toBeInstanceOf(NoopSpan);
+  });
+});
+
+describe('TraceProvider span creation without parents', () => {
+  it('returns NoopSpan when no active trace is available', () => {
+    const loggerError = vi
+      .spyOn(coreLogger, 'error')
+      .mockImplementation(() => {});
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+
+    const span = provider.createSpan({
+      data: { type: 'custom', name: 'no-trace', data: {} },
+    });
+    expect(span).toBeInstanceOf(NoopSpan);
+    loggerError.mockRestore();
+  });
+
+  it('creates spans using the active trace when no parent is provided', async () => {
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+
+    await withTrace('active-trace', async () => {
+      const trace = getCurrentTrace();
+      expect(trace).not.toBeNull();
+      const span = provider.createSpan({
+        data: { type: 'custom', name: 'active', data: {} },
+      });
+      expect(span).toBeInstanceOf(Span);
+      expect(span.traceId).toBe(trace?.traceId);
+    });
+
+    provider.setDisabled(true);
+  });
+
+  it('returns NoopSpan when parent trace/span is noop', () => {
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+
+    const fromTrace = provider.createSpan(
+      { data: { type: 'custom', name: 'noop-trace', data: {} } },
+      new NoopTrace(),
+    );
+    expect(fromTrace).toBeInstanceOf(NoopSpan);
+
+    const noopSpan = new NoopSpan(
+      { type: 'custom', name: 'noop-span', data: {} },
+      new TestProcessor(),
+    );
+    const fromSpan = provider.createSpan(
+      { data: { type: 'custom', name: 'noop-parent', data: {} } },
+      noopSpan,
+    );
+    expect(fromSpan).toBeInstanceOf(NoopSpan);
+  });
+
+  it('returns NoopSpan when span options are disabled', () => {
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+
+    const span = provider.createSpan({
+      data: { type: 'custom', name: 'disabled-span', data: {} },
+      disabled: true,
+    });
     expect(span).toBeInstanceOf(NoopSpan);
   });
 });

@@ -4,6 +4,7 @@ import { MemorySession } from '@openai/agents-core';
 import { UserError } from '@openai/agents-core';
 
 import { OpenAIResponsesCompactionSession } from '../src';
+import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
 
 describe('OpenAIResponsesCompactionSession', () => {
   it('rejects non-OpenAI model names', () => {
@@ -13,6 +14,29 @@ describe('OpenAIResponsesCompactionSession', () => {
         model: 'yet-another-model',
       });
     }).toThrow(/Unsupported model/);
+  });
+
+  it('rejects whitespace-only model names', () => {
+    expect(() => {
+      new OpenAIResponsesCompactionSession({
+        client: {} as any,
+        model: '   ',
+      });
+    }).toThrow(/Unsupported model/);
+  });
+
+  it('rejects conversations-backed sessions', () => {
+    const underlyingSession = new MemorySession();
+    Object.defineProperty(underlyingSession, OPENAI_SESSION_API, {
+      value: 'conversations',
+    });
+
+    expect(() => {
+      new OpenAIResponsesCompactionSession({
+        client: {} as any,
+        underlyingSession,
+      });
+    }).toThrow(UserError);
   });
 
   it('allows unknown gpt-* model names', () => {

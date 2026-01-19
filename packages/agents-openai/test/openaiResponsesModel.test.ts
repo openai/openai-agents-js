@@ -6,6 +6,7 @@ import {
   setTracingDisabled,
   withTrace,
   type ResponseStreamEvent,
+  Span,
 } from '@openai/agents-core';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
@@ -162,6 +163,48 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('includes handoff tools in the request', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-handoff', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-handoff');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [
+          {
+            toolName: 'handoff_tool',
+            toolDescription: 'handoff description',
+            inputJsonSchema: { type: 'object', properties: {} },
+            strictJsonSchema: true,
+          },
+        ],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'handoff_tool',
+          description: 'handoff description',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+        },
+      ]);
+    });
+  });
+
   it('omits model when a prompt is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
@@ -189,6 +232,87 @@ describe('OpenAIResponsesModel', () => {
       const [args] = createMock.mock.calls[0];
       expect('model' in args).toBe(false);
       expect(args.prompt).toMatchObject({ id: 'pmpt_123' });
+    });
+  });
+
+  it('merges prompt variables using input content transforms', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-prompt-vars', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-vars');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: {
+          promptId: 'pmpt_vars',
+          variables: {
+            name: 'Ada',
+            avatar: { type: 'input_image', image: 'https://example.com/a.png' },
+            document: { type: 'input_file', file: { id: 'file_doc' } },
+          },
+        },
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt).toMatchObject({
+        id: 'pmpt_vars',
+        variables: {
+          name: 'Ada',
+          avatar: {
+            type: 'input_image',
+            detail: 'auto',
+            image_url: 'https://example.com/a.png',
+          },
+          document: {
+            type: 'input_file',
+            file_id: 'file_doc',
+          },
+        },
+      });
+    });
+  });
+
+  it('includes response format for non-text output types', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-format', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-format');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          text: { schema: { type: 'object' } },
+        },
+        tools: [],
+        outputType: 'json_object',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.text).toEqual({
+        schema: { type: 'object' },
+        format: 'json_object',
+      });
     });
   });
 
@@ -587,5 +711,51 @@ describe('OpenAIResponsesModel', () => {
         ],
       });
     });
+  });
+
+  it('getStreamedResponse records span errors and rethrows when streaming fails', async () => {
+    setTracingDisabled(false);
+    const createdEvent: OpenAIResponseStreamEvent = {
+      type: 'response.created',
+      response: { id: 'res-error-init' } as any,
+      sequence_number: 0,
+    };
+    async function* failingStream() {
+      yield createdEvent;
+      throw new Error('stream failed');
+    }
+    const createMock = vi.fn().mockResolvedValue(failingStream());
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'model-error');
+    const request = {
+      systemInstructions: undefined,
+      input: 'payload',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+      signal: undefined,
+    };
+
+    const setErrorSpy = vi.spyOn(Span.prototype, 'setError');
+    await withTrace('test', async () => {
+      const consume = async () => {
+        for await (const _event of model.getStreamedResponse(request as any)) {
+          /* consume */
+        }
+      };
+      await expect(consume()).rejects.toThrow('stream failed');
+    });
+    expect(setErrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Error streaming response',
+        data: { error: expect.stringContaining('stream failed') },
+      }),
+    );
+    setErrorSpy.mockRestore();
+    setTracingDisabled(true);
   });
 });
