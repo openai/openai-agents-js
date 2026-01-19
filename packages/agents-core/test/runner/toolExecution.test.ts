@@ -1297,7 +1297,6 @@ describe('executeShellActions', () => {
         execute: vi.fn(async () => 'success'),
       }) as unknown as FunctionTool;
 
-      // Malformed JSON from LLM (the exact case from the issue)
       const invalidToolCall = {
         ...toolCall,
         name: 'checkTagActivity',
@@ -1305,8 +1304,6 @@ describe('executeShellActions', () => {
           '{"{"tagIds":["65aafb7e-4293-4376-baf6-1f9d197e960a"],"since":"2025-09-04T13:26:13.991Z"}',
       };
 
-      // This should NOT throw and crash the agent
-      // Instead it should return a graceful error result
       const res = await withTrace('test', () =>
         executeFunctionToolCalls(
           state._currentAgent,
@@ -1316,14 +1313,11 @@ describe('executeShellActions', () => {
         ),
       );
 
-      // Should return a result (not throw)
       expect(res).toHaveLength(1);
       const firstResult = res[0];
 
-      // The result should be a function_output with an error message
       expect(firstResult.type).toBe('function_output');
       if (firstResult.type === 'function_output') {
-        // The output should indicate parsing failed with a user-friendly message
         expect(String(firstResult.output)).toContain(
           'An error occurred while parsing tool arguments',
         );

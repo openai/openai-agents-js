@@ -56,9 +56,6 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
 
-/**
- * Result type for parseToolArguments to handle both success and failure cases.
- */
 type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
@@ -144,10 +141,6 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   }
 }
 
-/**
- * Safely parses tool call arguments, handling invalid JSON gracefully.
- * Returns a result object indicating success or failure instead of throwing.
- */
 function parseToolArguments<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): ParseToolArgumentsResult {
@@ -180,10 +173,6 @@ function buildApprovalRequestResult<TContext>(
   };
 }
 
-/**
- * Builds an error result when tool arguments cannot be parsed.
- * This allows the agent to continue running instead of crashing.
- */
 function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
@@ -191,7 +180,7 @@ function buildParseErrorResult<TContext>(
 ): FunctionToolResult<TContext> {
   const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${error.message}`;
   return {
-    type: 'function_output' as const,
+    type: 'function_output',
     tool: toolRun.tool,
     output: errorMessage,
     runItem: new RunToolCallOutputItem(
