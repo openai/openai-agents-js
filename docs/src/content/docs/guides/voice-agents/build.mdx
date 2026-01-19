@@ -47,6 +47,20 @@ These transport layers allow you to pass any parameter that matches [session](ht
 
 For parameters that are new and don't have a matching parameter in the [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) you can use `providerData`. Anything passed in `providerData` will be passed directly as part of the `session` object.
 
+Additional `RealtimeSession` options you can set at construction time:
+
+| Option                                        | Type                              | Purpose                                                                          |
+| --------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
+| `context`                                     | `TContext`                        | Extra local context merged into the session context.                             |
+| `historyStoreAudio`                           | `boolean`                         | Store audio data in the local history snapshot (disabled by default).            |
+| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | Output guardrails for the session (see [Guardrails](#guardrails)).               |
+| `outputGuardrailSettings`                     | `RealtimeOutputGuardrailSettings` | Frequency and behavior for guardrail checks.                                     |
+| `tracingDisabled`                             | `boolean`                         | Disable tracing for the session.                                                 |
+| `groupId`                                     | `string`                          | Group traces across sessions or backend runs.                                    |
+| `traceMetadata`                               | `Record<string, any>`             | Custom metadata to attach to session traces.                                     |
+| `workflowName`                                | `string`                          | Friendly name for the trace workflow.                                            |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
+
 ## Handoffs
 
 Similarly to regular agents, you can use handoffs to break your agent into multiple agents and orchestrate between them to improve the performance of your agents and better scope the problem.
@@ -59,11 +73,13 @@ Additionally, this means that the `voice` or `model` cannot be changed as part o
 
 ## Tools
 
-Just like regular agents, Realtime Agents can call tools to perform actions. You can define a tool using the same `tool()` function that you would use for a regular agent.
+Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
 <Code lang="typescript" code={defineToolExample} />
 
-You can only use function tools with Realtime Agents and these tools will be executed in the same place as your Realtime Session. This means if you are running your Realtime Session in the browser, your tool will be executed in the browser. If you need to perform more sensitive actions, you can make an HTTP request within your tool to your backend server.
+Function tools run in the same environment as your `RealtimeSession`. This means if you are running your session in the browser, the tool executes in the browser. If you need to perform sensitive actions, make an HTTP request to your backend within the tool.
+
+Hosted MCP tools can be configured with `hostedMcpTool` and are executed remotely. When MCP tool availability changes the session emits `mcp_tools_changed`. To prevent the session from auto-triggering a model response after MCP tool calls complete, set `automaticallyTriggerResponseForMcpToolCalls: false`.
 
 While the tool is executing the agent will not be able to process new requests from the user. One way to improve the experience is by telling your agent to announce when it is about to execute a tool or say specific phrases to buy the agent some time to execute the tool.
 

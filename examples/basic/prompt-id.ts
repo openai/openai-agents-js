@@ -6,7 +6,7 @@ NOTE: This example will not work out of the box, because the default prompt ID w
 be available in your project.
 
 To use it, please:
-1. Go to https://platform.openai.com/playground/prompts
+1. Go to https://platform.openai.com/chat/edit
 2. Create a new prompt variable, `poem_style`.
 3. Create a system prompt with the content:
    Write a poem in {{poem_style}}
