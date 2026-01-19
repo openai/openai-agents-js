@@ -10,7 +10,7 @@ import {
   RunHandoffCallItem,
   RunHandoffOutputItem,
 } from './items';
-import type { ModelResponse } from './model';
+import type { ModelResponse, ModelSettings } from './model';
 import { RunContext } from './runContext';
 import { getTurnInput } from './runner/items';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
@@ -360,6 +360,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Latest response identifier returned by the server for server-managed conversations.
    */
   public _previousResponseId: string | undefined;
+  /**
+   * Effective model settings used for the most recent model call.
+   */
+  public _lastModelSettings: ModelSettings | undefined;
   /**
    * Active tracing span for the current agent if tracing is enabled.
    */

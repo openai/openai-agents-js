@@ -19,7 +19,7 @@
     },
     "required_bump": {
       "type": "string",
-      "enum": ["patch", "minor", "none"]
+      "enum": ["patch", "minor", "major", "none"]
     }
   },
   "additionalProperties": false

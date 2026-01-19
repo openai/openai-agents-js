@@ -577,9 +577,16 @@ async function runCompactionOnSession(
   if (!isOpenAIResponsesCompactionAwareSession(session)) {
     return;
   }
-  const compactionResult = await session.runCompaction(
-    typeof responseId === 'undefined' ? undefined : { responseId },
-  );
+  const store =
+    state._lastModelSettings?.store ?? state._currentAgent.modelSettings?.store;
+  const compactionArgs =
+    typeof responseId === 'undefined' && typeof store === 'undefined'
+      ? undefined
+      : {
+          ...(typeof responseId === 'undefined' ? {} : { responseId }),
+          ...(typeof store === 'undefined' ? {} : { store }),
+        };
+  const compactionResult = await session.runCompaction(compactionArgs);
   if (!compactionResult) {
     return;
   }
