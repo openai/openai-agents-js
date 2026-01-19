@@ -25,6 +25,7 @@ export {
 } from './memory/openaiConversationsSession';
 export {
   OpenAIResponsesCompactionSession,
+  type OpenAIResponsesCompactionMode,
   type OpenAIResponsesCompactionSessionOptions,
   type OpenAIResponsesCompactionDecisionContext,
 } from './memory/openaiResponsesCompactionSession';

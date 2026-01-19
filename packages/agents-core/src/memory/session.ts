@@ -56,6 +56,18 @@ export type OpenAIResponsesCompactionArgs = {
    */
   responseId?: string | undefined;
   /**
+   * How the compaction request should provide conversation history.
+   *
+   * When omitted, implementations use their configured default.
+   */
+  compactionMode?: 'previous_response_id' | 'input' | 'auto';
+  /**
+   * Whether the last model response was stored on the server.
+   *
+   * When set to false, compaction should avoid `previous_response_id` unless explicitly overridden.
+   */
+  store?: boolean;
+  /**
    * When true, compaction should run regardless of any internal thresholds or hooks.
    */
   force?: boolean;

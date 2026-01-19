@@ -13,6 +13,7 @@
     "start:oai": "tsx oai.ts",
     "start:oai-hitl": "tsx oai-hitl.ts",
     "start:oai-compact": "tsx oai-compact.ts",
+    "start:oai-compact-stateless": "tsx oai-compact-stateless.ts",
     "start:file": "tsx file.ts",
     "start:file-hitl": "tsx file-hitl.ts",
     "start:prisma": "pnpm prisma db push --schema ./prisma/schema.prisma && pnpm prisma generate --schema ./prisma/schema.prisma && tsx prisma.ts"
