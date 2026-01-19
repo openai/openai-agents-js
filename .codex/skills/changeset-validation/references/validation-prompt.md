@@ -7,7 +7,7 @@ Return JSON only. The output must be a JSON object with:
 - ok: boolean
 - errors: string[] (polite, actionable English sentences)
 - warnings: string[] (polite, actionable English sentences)
-- required_bump: "patch" | "minor" | "none"
+- required_bump: "patch" | "minor" | "major" | "none"
 
 Always use English in errors and warnings, regardless of the conversation language.
 
@@ -19,7 +19,7 @@ Rules to enforce:
 4. If no packages changed, changesets are optional; if present, they still must be consistent with the diff.
 5. Each changeset summary must be 1-2 non-empty lines.
 6. If the PR body contains GitHub issue references like #123 and a changeset exists, the changeset summary should include those references.
-7. Default bump is patch. Minor is allowed only when changes include breaking changes, dropped support, or a major feature addition. Exception: if the new feature is explicitly labeled experimental/preview in the diff (e.g., module name, docs, comments, or exports) and does not change existing behavior, a patch bump is acceptable.
+7. Default bump is patch. Minor is allowed only when changes include breaking changes, dropped support, or a major feature addition. Major is allowed only after the first major release and only for changes that warrant a major release (breaking changes, dropped support, or significant behavior shifts). Before the first major release, do not use major bumps for feature-level changes. Exception: if the new feature is explicitly labeled experimental/preview in the diff (e.g., module name, docs, comments, or exports) and does not change existing behavior, a patch bump is acceptable.
 8. required_bump must be "none" when there are no package changes.
 9. If unknown package directories are changed, treat it as an error.
 

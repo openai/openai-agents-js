@@ -17,8 +17,8 @@ function validateShape(data) {
   if (typeof data?.ok !== 'boolean') return 'Missing ok boolean.';
   if (!Array.isArray(data?.errors)) return 'Missing errors array.';
   if (!Array.isArray(data?.warnings)) return 'Missing warnings array.';
-  if (!['patch', 'minor', 'none'].includes(data?.required_bump)) {
-    return 'Missing required_bump with value patch/minor/none.';
+  if (!['patch', 'minor', 'major', 'none'].includes(data?.required_bump)) {
+    return 'Missing required_bump with value patch/minor/major/none.';
   }
   return null;
 }
