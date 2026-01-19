@@ -81,8 +81,8 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install
-      - name: Build packages for workspace exports
-        run: pnpm -r -F "@openai/*" build
+      - name: Build all packages
+        run: pnpm build
       - name: Run tests with coverage
         run: pnpm test:coverage
       - name: Enforce coverage thresholds
