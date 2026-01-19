@@ -86,6 +86,171 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
+  it('compacts using input mode without a response id', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'world' }],
+      },
+    ] as any);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request).toMatchObject({ model: 'gpt-4.1' });
+    expect(request.previous_response_id).toBeUndefined();
+    expect(request.input).toHaveLength(2);
+    expect(request.input[0]).toMatchObject({
+      role: 'user',
+      content: 'hello',
+    });
+    expect(request.input[1]).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+    });
+  });
+
+  it('defaults to auto compaction and uses input without a response id', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+    ] as any);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request.previous_response_id).toBeUndefined();
+    expect(request.input).toHaveLength(1);
+  });
+
+  it('auto mode uses input when store is false', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'auto',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'world' }],
+      },
+    ] as any);
+
+    await session.runCompaction({
+      responseId: 'resp_auto',
+      store: false,
+      force: true,
+    });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request).toMatchObject({ model: 'gpt-4.1' });
+    expect(request.previous_response_id).toBeUndefined();
+    expect(request.input).toHaveLength(2);
+  });
+
+  it('auto mode remembers store settings when store is omitted', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'compacted output' }],
+        },
+      ],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'auto',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'world' }],
+      },
+    ] as any);
+
+    await session.runCompaction({
+      responseId: 'resp_auto',
+      store: false,
+      force: true,
+    });
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(2);
+    const [firstRequest] = compact.mock.calls[0] ?? [];
+    const [secondRequest] = compact.mock.calls[1] ?? [];
+    expect(firstRequest.previous_response_id).toBeUndefined();
+    expect(secondRequest.previous_response_id).toBeUndefined();
+    expect(secondRequest.input).toHaveLength(1);
+  });
+
   it('allows custom compaction decisions using the stored history', async () => {
     const compact = vi.fn().mockResolvedValue({
       output: [
@@ -284,10 +449,11 @@ describe('OpenAIResponsesCompactionSession', () => {
     ]);
   });
 
-  it('throws when runCompaction is called without a responseId', async () => {
+  it('throws when runCompaction is called without a responseId in previous_response_id mode', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({
       client: { responses: { compact } } as any,
+      compactionMode: 'previous_response_id',
     });
 
     await expect(session.runCompaction({} as any)).rejects.toBeInstanceOf(

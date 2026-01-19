@@ -13,6 +13,7 @@ import type {
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
+import { getInputItems } from '../openaiResponsesModel';
 import {
   OPENAI_SESSION_API,
   type OpenAISessionApiTagged,
@@ -21,11 +22,21 @@ import {
 const DEFAULT_COMPACTION_THRESHOLD = 10;
 const logger = getLogger('openai-agents:openai:compaction');
 
+export type OpenAIResponsesCompactionMode =
+  | 'previous_response_id'
+  | 'input'
+  | 'auto';
+
 export type OpenAIResponsesCompactionDecisionContext = {
   /**
    * The `response.id` from a completed OpenAI Responses API turn, if available.
+   * When `compactionMode` is `input`, this may be undefined.
    */
   responseId: string | undefined;
+  /**
+   * Resolved compaction mode used for this request.
+   */
+  compactionMode: OpenAIResponsesCompactionMode;
   /**
    * Items considered compaction candidates (excludes user and compaction items).
    * The array must not be mutated.
@@ -52,8 +63,8 @@ export type OpenAIResponsesCompactionSessionOptions = {
    * The underlying session is the source of truth for persisted items. Compaction clears the
    * underlying session and writes the output items returned by `responses.compact`.
    *
-   * This must not be an `OpenAIConversationsSession`, because compaction relies on the Responses
-   * API `previous_response_id` flow.
+   * This must not be an `OpenAIConversationsSession`, because compaction relies on locally stored
+   * items and replaces the underlying session history after `responses.compact`.
    *
    * Defaults to an in-memory session for demos.
    */
@@ -65,6 +76,14 @@ export type OpenAIResponsesCompactionSessionOptions = {
    * `gpt-*`, `o*`, or a fine-tuned `ft:gpt-*` identifier), otherwise the constructor throws.
    */
   model?: OpenAI.ResponsesModel;
+  /**
+   * Controls how the compaction request is built.
+   *
+   * - `auto` (default): Uses `input` when the last response was not stored or no response id is available.
+   * - `previous_response_id`: Uses the server-managed response chain.
+   * - `input`: Sends the locally stored session items as input and does not require a response id.
+   */
+  compactionMode?: OpenAIResponsesCompactionMode;
   /**
    * Custom decision hook that determines whether to call `responses.compact`.
    *
@@ -98,7 +117,9 @@ export class OpenAIResponsesCompactionSession
   private readonly client: OpenAI;
   private readonly underlyingSession: Session;
   private readonly model: OpenAI.ResponsesModel;
+  private readonly compactionMode: OpenAIResponsesCompactionMode;
   private responseId?: string;
+  private lastStore?: boolean;
   private readonly shouldTriggerCompaction: (
     context: OpenAIResponsesCompactionDecisionContext,
   ) => boolean | Promise<boolean>;
@@ -118,20 +139,31 @@ export class OpenAIResponsesCompactionSession
     assertSupportedOpenAIResponsesCompactionModel(model);
     this.model = model;
 
+    this.compactionMode = options.compactionMode ?? 'auto';
     this.shouldTriggerCompaction =
       options.shouldTriggerCompaction ?? defaultShouldTriggerCompaction;
     this.compactionCandidateItems = undefined;
     this.sessionItems = undefined;
+    this.lastStore = undefined;
   }
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
   ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
+    if (args.store !== undefined) {
+      this.lastStore = args.store;
+    }
+    const requestedMode = args.compactionMode ?? this.compactionMode;
+    const resolvedMode = resolveCompactionMode({
+      requestedMode,
+      responseId: this.responseId,
+      store: args.store ?? this.lastStore,
+    });
 
-    if (!this.responseId) {
+    if (resolvedMode === 'previous_response_id' && !this.responseId) {
       throw new UserError(
-        'OpenAIResponsesCompactionSession.runCompaction requires a responseId from the last completed turn.',
+        'OpenAIResponsesCompactionSession.runCompaction requires a responseId from the last completed turn when using previous_response_id compaction.',
       );
     }
 
@@ -142,12 +174,14 @@ export class OpenAIResponsesCompactionSession
         ? true
         : await this.shouldTriggerCompaction({
             responseId: this.responseId,
+            compactionMode: resolvedMode,
             compactionCandidateItems,
             sessionItems,
           });
     if (!shouldTriggerCompaction) {
       logger.debug('skip: decision hook %o', {
         responseId: this.responseId,
+        compactionMode: resolvedMode,
       });
       return null;
     }
@@ -155,12 +189,19 @@ export class OpenAIResponsesCompactionSession
     logger.debug('compact: start %o', {
       responseId: this.responseId,
       model: this.model,
+      compactionMode: resolvedMode,
     });
 
-    const compacted = await this.client.responses.compact({
-      previous_response_id: this.responseId,
+    const compactRequest: OpenAI.Responses.ResponseCompactParams = {
       model: this.model,
-    });
+    };
+    if (resolvedMode === 'previous_response_id') {
+      compactRequest.previous_response_id = this.responseId!;
+    } else {
+      compactRequest.input = getInputItems(sessionItems);
+    }
+
+    const compacted = await this.client.responses.compact(compactRequest);
 
     await this.underlyingSession.clearSession();
     const outputItems = (compacted.output ?? []) as AgentInputItem[];
@@ -172,6 +213,7 @@ export class OpenAIResponsesCompactionSession
 
     logger.debug('compact: done %o', {
       responseId: this.responseId,
+      compactionMode: resolvedMode,
       outputItemCount: outputItems.length,
       candidateCount: this.compactionCandidateItems.length,
     });
@@ -271,6 +313,26 @@ export class OpenAIResponsesCompactionSession
       sessionItems: [...history],
     };
   }
+}
+
+type ResolvedCompactionMode = Exclude<OpenAIResponsesCompactionMode, 'auto'>;
+
+function resolveCompactionMode(options: {
+  requestedMode: OpenAIResponsesCompactionMode;
+  responseId: string | undefined;
+  store: boolean | undefined;
+}): ResolvedCompactionMode {
+  const { requestedMode, responseId, store } = options;
+  if (requestedMode !== 'auto') {
+    return requestedMode;
+  }
+  if (store === false) {
+    return 'input';
+  }
+  if (!responseId) {
+    return 'input';
+  }
+  return 'previous_response_id';
 }
 
 function resolveClient(

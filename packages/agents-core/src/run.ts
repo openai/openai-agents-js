@@ -1361,6 +1361,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._toolUseTracker,
       modelSettings,
     );
+    state._lastModelSettings = modelSettings;
 
     const systemInstructions = await state._currentAgent.getSystemPrompt(
       state._context,

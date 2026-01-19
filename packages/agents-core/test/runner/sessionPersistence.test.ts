@@ -27,6 +27,7 @@ import { RunState } from '../../src/runState';
 import { resolveInterruptedTurn } from '../../src/runner/turnResolution';
 import type { ProcessedResponse } from '../../src/runner/types';
 import type {
+  OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionResult,
   Session,
 } from '../../src/memory/session';
@@ -108,9 +109,9 @@ describe('saveStreamResultToSession', () => {
       this.items = [];
     }
 
-    async runCompaction(args?: {
-      responseId: string | undefined;
-    }): Promise<OpenAIResponsesCompactionResult | null> {
+    async runCompaction(
+      args?: OpenAIResponsesCompactionArgs,
+    ): Promise<OpenAIResponsesCompactionResult | null> {
       this.events.push(`runCompaction:${args?.responseId}`);
       return null;
     }
@@ -954,9 +955,9 @@ describe('saveToSession', () => {
         this.items = [];
       }
 
-      async runCompaction(args?: {
-        responseId: string | undefined;
-      }): Promise<OpenAIResponsesCompactionResult | null> {
+      async runCompaction(
+        args?: OpenAIResponsesCompactionArgs,
+      ): Promise<OpenAIResponsesCompactionResult | null> {
         this.events.push(`runCompaction:${args?.responseId}`);
         return null;
       }
@@ -1043,9 +1044,9 @@ describe('saveToSession', () => {
         this.items = [];
       }
 
-      async runCompaction(args?: {
-        responseId: string | undefined;
-      }): Promise<OpenAIResponsesCompactionResult | null> {
+      async runCompaction(
+        args?: OpenAIResponsesCompactionArgs,
+      ): Promise<OpenAIResponsesCompactionResult | null> {
         this.events.push(`runCompaction:${args?.responseId}`);
         return null;
       }
