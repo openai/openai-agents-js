@@ -56,6 +56,10 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
 
+type ParseToolArgumentsResult =
+  | { success: true; args: any }
+  | { success: false; error: Error };
+
 /**
  * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
@@ -109,11 +113,17 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   try {
     const results = await Promise.all(
       toolRuns.map(async (toolRun) => {
-        const parsedArgs = parseToolArguments(toolRun);
+        const parseResult = parseToolArguments(toolRun);
+
+        // Handle parse errors gracefully instead of crashing
+        if (!parseResult.success) {
+          return buildParseErrorResult(deps, toolRun, parseResult.error);
+        }
+
         const approvalOutcome = await handleFunctionApproval(
           deps,
           toolRun,
-          parsedArgs,
+          parseResult.args,
         );
         if (approvalOutcome !== 'approved') {
           return approvalOutcome;
@@ -131,16 +141,25 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   }
 }
 
-function parseToolArguments<TContext>(toolRun: ToolRunFunction<TContext>) {
-  let parsedArgs: any = toolRun.toolCall.arguments;
-  if (toolRun.tool.parameters) {
-    if (isZodObject(toolRun.tool.parameters)) {
-      parsedArgs = toolRun.tool.parameters.parse(parsedArgs);
-    } else {
-      parsedArgs = JSON.parse(parsedArgs);
+function parseToolArguments<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): ParseToolArgumentsResult {
+  try {
+    let parsedArgs: any = toolRun.toolCall.arguments;
+    if (toolRun.tool.parameters) {
+      if (isZodObject(toolRun.tool.parameters)) {
+        parsedArgs = toolRun.tool.parameters.parse(parsedArgs);
+      } else {
+        parsedArgs = JSON.parse(parsedArgs);
+      }
     }
+    return { success: true, args: parsedArgs };
+  } catch (error) {
+    logger.debug(
+      `Failed to parse tool arguments for ${toolRun.tool.name}: ${error}`,
+    );
+    return { success: false, error: error as Error };
   }
-  return parsedArgs;
 }
 
 function buildApprovalRequestResult<TContext>(
@@ -151,6 +170,24 @@ function buildApprovalRequestResult<TContext>(
     type: 'function_approval' as const,
     tool: toolRun.tool,
     runItem: new RunToolApprovalItem(toolRun.toolCall, deps.agent),
+  };
+}
+
+function buildParseErrorResult<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolRun: ToolRunFunction<TContext>,
+  error: Error,
+): FunctionToolResult<TContext> {
+  const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${error.message}`;
+  return {
+    type: 'function_output',
+    tool: toolRun.tool,
+    output: errorMessage,
+    runItem: new RunToolCallOutputItem(
+      getToolCallOutputItem(toolRun.toolCall, errorMessage),
+      deps.agent,
+      errorMessage,
+    ),
   };
 }
 

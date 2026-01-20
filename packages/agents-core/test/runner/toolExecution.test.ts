@@ -1284,6 +1284,46 @@ describe('executeShellActions', () => {
       expect(firstResult.agentRunResult).toBe(nestedRunResult);
       expect(firstResult.interruptions).toEqual([approval]);
     });
+
+    it('handles invalid JSON in tool call arguments gracefully instead of crashing', async () => {
+      // Reproduces issue #723: SyntaxError stops agent when LLM generates invalid JSON
+      const t = tool({
+        name: 'checkTagActivity',
+        description: 'Check tag activity',
+        parameters: z.object({
+          tagIds: z.array(z.string()),
+          since: z.string(),
+        }),
+        execute: vi.fn(async () => 'success'),
+      }) as unknown as FunctionTool;
+
+      const invalidToolCall = {
+        ...toolCall,
+        name: 'checkTagActivity',
+        arguments:
+          '{"{"tagIds":["65aafb7e-4293-4376-baf6-1f9d197e960a"],"since":"2025-09-04T13:26:13.991Z"}',
+      };
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: invalidToolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res).toHaveLength(1);
+      const firstResult = res[0];
+
+      expect(firstResult.type).toBe('function_output');
+      if (firstResult.type === 'function_output') {
+        expect(String(firstResult.output)).toContain(
+          'An error occurred while parsing tool arguments',
+        );
+        expect(String(firstResult.output)).toContain('valid JSON');
+      }
+    });
   });
 
   describe('executeComputerActions', () => {
