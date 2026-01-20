@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Find open release PR
         id: pr
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           MANUAL_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
         with:
@@ -168,7 +168,7 @@ jobs:
 
       - name: Upsert PR comment
         if: steps.pr.outputs.found == 'true'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           REVIEW_PATH: ${{ steps.prompt.outputs.output_file }}
