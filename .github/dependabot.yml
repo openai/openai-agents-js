@@ -4,7 +4,6 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-      day-of-month: 1
       time: "09:00"
       timezone: "UTC"
     groups:
