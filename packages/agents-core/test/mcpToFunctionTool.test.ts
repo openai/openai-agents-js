@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { mcpToFunctionTool, MCPServer } from '../src/mcp';
 import { RunContext } from '../src/runContext';
+import { withTrace } from '../src/tracing';
+import { withCustomSpan } from '../src/tracing/createSpans';
+import { getCurrentSpan } from '../src/tracing';
 
 describe('mcpToFunctionTool', () => {
   it('builds strict and non-strict tools based on schema settings', () => {
@@ -122,5 +125,81 @@ describe('mcpToFunctionTool', () => {
       { type: 'text', text: 'first' },
       { type: 'text', text: 'second' },
     ]);
+  });
+
+  it('forces strict schemas when convertSchemasToStrict is true', () => {
+    const server: MCPServer = {
+      name: 'strict-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [],
+      invalidateToolsCache: async () => {},
+    };
+
+    const strictTool = mcpToFunctionTool(
+      {
+        name: 'strict',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { foo: { type: 'string' } },
+          additionalProperties: true,
+        },
+      } as any,
+      server,
+      true,
+    );
+
+    expect(strictTool.strict).toBe(true);
+    expect(strictTool.parameters.additionalProperties).toBe(false);
+    expect(strictTool.parameters.required).toEqual([]);
+  });
+
+  it('annotates the current span when invoking the tool', async () => {
+    const server: MCPServer = {
+      name: 'annotated',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async (_toolName, args) => [
+        { type: 'text', text: JSON.stringify(args) },
+      ],
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'annotated',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { foo: { type: 'string' } },
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await withTrace('mcp-span', async () => {
+      await withCustomSpan(
+        async () => {
+          const runContext = new RunContext({});
+          const result = await tool.invoke(
+            runContext,
+            JSON.stringify({ foo: 'bar' }),
+          );
+          expect(result).toEqual({ type: 'text', text: '{"foo":"bar"}' });
+          expect(getCurrentSpan()?.spanData.mcp_data).toEqual({
+            server: 'annotated',
+          });
+        },
+        { data: { name: 'span' } },
+      );
+    });
   });
 });

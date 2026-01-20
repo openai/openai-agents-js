@@ -7,8 +7,13 @@ import {
   updateRealtimeHistory,
   hasWebRTCSupport,
   removeAudioFromContent,
+  realtimeApprovalItemToApprovalItem,
+  approvalItemToRealtimeApprovalItem,
 } from '../src/utils';
 import { RealtimeMessageItem } from '../src/items';
+import { RunToolApprovalItem } from '@openai/agents-core';
+import { RealtimeAgent } from '../src/realtimeAgent';
+import type { InputAudioTranscriptionCompletedEvent } from '../src/transportLayerEvents';
 
 describe('realtime utils', () => {
   it('converts ArrayBuffer to base64 and back', () => {
@@ -248,5 +253,158 @@ describe('realtime utils', () => {
     (global as any).window = { RTCPeerConnection: function () {} };
     expect(hasWebRTCSupport()).toBe(true);
     (global as any).window = originalWindow;
+  });
+
+  it('merges input audio transcripts into history items', () => {
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: 'u1',
+        type: 'message',
+        role: 'user',
+        status: 'in_progress',
+        content: [{ type: 'input_audio', audio: 'data', transcript: null }],
+      },
+    ];
+
+    const event: InputAudioTranscriptionCompletedEvent = {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'u1',
+      transcript: 'transcribed',
+    };
+
+    const updated = updateRealtimeHistory(history, event, true);
+    const updatedItem = updated[0] as RealtimeMessageItem;
+    expect((updatedItem.content[0] as any).transcript).toBe('transcribed');
+    if (updatedItem.role !== 'system') {
+      expect(updatedItem.status).toBe('completed');
+    } else {
+      throw new Error('Expected non-system message');
+    }
+  });
+
+  it('appends items when previousItemId is missing', () => {
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: '1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hi' }],
+      },
+    ];
+
+    const newItem: RealtimeMessageItem = {
+      itemId: '2',
+      previousItemId: 'missing',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'later' }],
+    };
+
+    const updated = updateRealtimeHistory(history, newItem, true);
+    expect(updated[1]?.itemId).toBe('2');
+  });
+
+  it('keeps audio data when shouldIncludeAudioData is true', () => {
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: '1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_audio', audio: 'keep', transcript: 'x' }],
+      },
+      {
+        itemId: '2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hi' }],
+      },
+    ];
+
+    const updatedItem: RealtimeMessageItem = {
+      itemId: '2',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'updated' }],
+    };
+
+    const updated = updateRealtimeHistory(history, updatedItem, true);
+    const audioEntry = (updated[0] as RealtimeMessageItem).content[0] as any;
+    expect(audioEntry.audio).toBe('keep');
+  });
+
+  it('converts approval requests to RunToolApprovalItem and back', () => {
+    const agent = new RealtimeAgent({ name: 'Agent', handoffs: [] });
+    const request = {
+      type: 'mcp_approval_request',
+      itemId: 'item-1',
+      serverLabel: 'server',
+      name: 'tool',
+      arguments: { foo: 'bar' },
+      approved: null,
+    } as const;
+
+    const approval = realtimeApprovalItemToApprovalItem(agent, request);
+    expect(approval).toBeInstanceOf(RunToolApprovalItem);
+    expect(approval.rawItem).toMatchObject({
+      type: 'hosted_tool_call',
+      name: 'tool',
+      arguments: JSON.stringify({ foo: 'bar' }),
+      status: 'in_progress',
+    });
+    expect((approval.rawItem as any).providerData).toMatchObject({
+      itemId: 'item-1',
+      serverLabel: 'server',
+      type: 'mcp_approval_request',
+    });
+
+    const roundTrip = approvalItemToRealtimeApprovalItem(approval);
+    expect(roundTrip).toMatchObject({
+      type: 'mcp_approval_request',
+      itemId: 'item-1',
+      serverLabel: 'server',
+      name: 'tool',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+  });
+
+  it('throws when approval items are missing required metadata', () => {
+    const agent = new RealtimeAgent({ name: 'Agent', handoffs: [] });
+    const approval = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'tool',
+        arguments: '{}',
+        status: 'in_progress',
+      } as any,
+      agent,
+    );
+
+    expect(() => approvalItemToRealtimeApprovalItem(approval)).toThrow(
+      'Invalid approval item',
+    );
+  });
+
+  it('rejects unsupported approval item types', () => {
+    const agent = new RealtimeAgent({ name: 'Agent', handoffs: [] });
+    const approval = new RunToolApprovalItem(
+      {
+        type: 'shell_call',
+        id: 's1',
+        callId: 'c1',
+        status: 'in_progress',
+        input: '',
+      } as any,
+      agent,
+    );
+
+    expect(() => approvalItemToRealtimeApprovalItem(approval)).toThrow(
+      'Invalid approval item type',
+    );
   });
 });

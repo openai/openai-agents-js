@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { getAllMcpTools } from '../src/mcp';
+import { getAllMcpTools, invalidateServerToolsCache } from '../src/mcp';
 import { UserError } from '../src/errors';
 import type { FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
-import type { CallToolResultContent } from '../src/mcp';
+import type { CallToolResultContent, MCPServer } from '../src/mcp';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 
@@ -192,6 +192,59 @@ describe('MCP tools cache invalidation', () => {
       ]);
     });
   });
+
+  it('invalidates cached tools via invalidateServerToolsCache', async () => {
+    await withTrace('test', async () => {
+      let tools = [
+        {
+          name: 'alpha',
+          description: '',
+          inputSchema: { type: 'object', properties: {}, required: [] },
+        },
+      ];
+
+      const server: MCPServer = {
+        name: 'invalidate-server',
+        cacheToolsList: true,
+        toolFilter: async () => true,
+        async connect() {},
+        async close() {},
+        async listTools() {
+          return tools as any;
+        },
+        async callTool() {
+          return [];
+        },
+        async invalidateToolsCache() {},
+      };
+
+      const agent = new Agent({ name: 'AgentOne' });
+      const runContext = new RunContext({});
+
+      const initial = await getAllMcpTools({
+        mcpServers: [server],
+        runContext,
+        agent,
+      });
+      expect(initial.map((tool) => tool.name)).toEqual(['alpha']);
+
+      tools = [
+        {
+          name: 'beta',
+          description: '',
+          inputSchema: { type: 'object', properties: {}, required: [] },
+        },
+      ];
+
+      await invalidateServerToolsCache('invalidate-server');
+      const refreshed = await getAllMcpTools({
+        mcpServers: [server],
+        runContext,
+        agent,
+      });
+      expect(refreshed.map((tool) => tool.name)).toEqual(['beta']);
+    });
+  });
 });
 
 describe('MCP tools static filters', () => {
@@ -377,5 +430,35 @@ describe('Custom generateMCPToolCacheKey can include runContext in key', () => {
       });
       expect(res3.map((t: any) => t.name)).toEqual(['foo']);
     });
+  });
+});
+
+describe('MCP tools without tracing', () => {
+  it('lists tools directly when no trace is active', async () => {
+    let listCalls = 0;
+    const server: MCPServer = {
+      name: 'no-trace-server',
+      cacheToolsList: false,
+      async connect() {},
+      async close() {},
+      async listTools() {
+        listCalls += 1;
+        return [
+          {
+            name: 'tool',
+            description: '',
+            inputSchema: { type: 'object', properties: {}, required: [] },
+          },
+        ] as any;
+      },
+      async callTool() {
+        return [];
+      },
+      async invalidateToolsCache() {},
+    };
+
+    const tools = await getAllMcpTools([server]);
+    expect(tools.map((tool) => tool.name)).toEqual(['tool']);
+    expect(listCalls).toBe(1);
   });
 });

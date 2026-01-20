@@ -69,4 +69,30 @@ describe('utils/binary', () => {
     );
     expect(toUint8ArrayFromBinary('nope')).toBeUndefined();
   });
+
+  it('supports node buffer paths when view detection is bypassed', () => {
+    const nodeBuffer = Buffer.from([9, 8, 7]);
+    const originalIsView = ArrayBuffer.isView;
+
+    ArrayBuffer.isView = ((value: any): value is ArrayBufferView =>
+      value === nodeBuffer
+        ? false
+        : originalIsView(value)) as typeof ArrayBuffer.isView;
+
+    try {
+      expect(serializeBinary(nodeBuffer)).toEqual({
+        __type: 'Buffer',
+        data: Buffer.from(nodeBuffer).toString('base64'),
+      });
+      expect(toUint8ArrayFromBinary(nodeBuffer)).toEqual(
+        new Uint8Array(
+          nodeBuffer.buffer,
+          nodeBuffer.byteOffset,
+          nodeBuffer.byteLength,
+        ),
+      );
+    } finally {
+      ArrayBuffer.isView = originalIsView;
+    }
+  });
 });
