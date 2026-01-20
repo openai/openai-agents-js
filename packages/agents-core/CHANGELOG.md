@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.4.1
+
+### Patch Changes
+
+- 60a48d7: Default compaction mode to auto and switch to input when store is false.
+- 648a461: fix: handle legacy fileId fallback and expand coverage
+- 6cc01be: fix: #723 handle invalid JSON in tool call arguments gracefully to prevent agent crashes
+
 ## 0.4.0
 
 ### Minor Changes
