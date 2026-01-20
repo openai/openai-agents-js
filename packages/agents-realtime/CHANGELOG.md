@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.4.1
+
+### Patch Changes
+
+- 648a461: fix: handle legacy fileId fallback and expand coverage
+- Updated dependencies [60a48d7]
+- Updated dependencies [648a461]
+- Updated dependencies [6cc01be]
+  - @openai/agents-core@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes
