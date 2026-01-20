@@ -70,7 +70,7 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { getTracing } from './runner/tracing';
+import { applyTraceOverrides, getTracing } from './runner/tracing';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
@@ -267,6 +267,13 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   public readonly config: RunConfig;
+  private readonly traceOverrides: {
+    traceId?: string;
+    workflowName?: string;
+    groupId?: string;
+    traceMetadata?: Record<string, string>;
+    tracingApiKey?: string;
+  };
 
   /**
    * Creates a runner with optional defaults that apply to every subsequent run invocation.
@@ -291,6 +298,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
+    };
+    this.traceOverrides = {
+      ...(config.traceId !== undefined ? { traceId: config.traceId } : {}),
+      ...(config.workflowName !== undefined
+        ? { workflowName: config.workflowName }
+        : {}),
+      ...(config.groupId !== undefined ? { groupId: config.groupId } : {}),
+      ...(config.traceMetadata !== undefined
+        ? { traceMetadata: config.traceMetadata }
+        : {}),
+      ...(config.tracing?.apiKey !== undefined
+        ? { tracingApiKey: config.tracing.apiKey }
+        : {}),
     };
     this.inputGuardrailDefs = (config.inputGuardrails ?? []).map(
       defineInputGuardrail,
@@ -351,6 +371,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
+    const traceOverrides = {
+      ...this.traceOverrides,
+      ...(resolvedOptions.tracing?.apiKey !== undefined
+        ? { tracingApiKey: resolvedOptions.tracing.apiKey }
+        : {}),
+    };
     const effectiveOptions = {
       ...resolvedOptions,
       sessionInputCallback,
@@ -444,6 +470,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     };
 
     if (preparedInput instanceof RunState && preparedInput._trace) {
+      const applied = applyTraceOverrides(
+        preparedInput._trace,
+        preparedInput._currentAgentSpan,
+        traceOverrides,
+      );
+      preparedInput._trace = applied.trace;
+      preparedInput._currentAgentSpan = applied.currentSpan;
       return withTrace(preparedInput._trace, async () => {
         if (preparedInput._currentAgentSpan) {
           setCurrentSpan(preparedInput._currentAgentSpan);

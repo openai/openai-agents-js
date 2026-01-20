@@ -4,6 +4,17 @@ import { ModelTracing } from '../model';
 import { Tool } from '../tool';
 import { setCurrentSpan } from '../tracing/context';
 import { createAgentSpan } from '../tracing';
+import { getGlobalTraceProvider } from '../tracing/provider';
+import { Span } from '../tracing/spans';
+import { Trace } from '../tracing/traces';
+
+export type TraceOverrideConfig = {
+  traceId?: string;
+  workflowName?: string;
+  groupId?: string;
+  traceMetadata?: Record<string, any>;
+  tracingApiKey?: string;
+};
 
 type EnsureAgentSpanParams<TContext> = {
   agent: Agent<TContext, any>;
@@ -30,6 +41,62 @@ export function getTracing(
   }
 
   return 'enabled_without_data';
+}
+
+function rebaseSpanChain(span: Span<any>, trace: Trace): Span<any> {
+  const previousSpan = span.previousSpan
+    ? rebaseSpanChain(span.previousSpan, trace)
+    : undefined;
+  const parent = previousSpan ?? trace;
+
+  const rebasedSpan = getGlobalTraceProvider().createSpan(
+    {
+      spanId: span.spanId,
+      parentId: span.parentId ?? undefined,
+      startedAt: span.startedAt ?? undefined,
+      endedAt: span.endedAt ?? undefined,
+      data: span.spanData as any,
+      error: span.error ?? undefined,
+      tracingApiKey: span.tracingApiKey,
+    },
+    parent,
+  );
+  rebasedSpan.previousSpan = previousSpan;
+  return rebasedSpan;
+}
+
+export function applyTraceOverrides(
+  trace: Trace,
+  currentSpan: Span<any> | undefined,
+  overrides: TraceOverrideConfig,
+): { trace: Trace; currentSpan: Span<any> | undefined } {
+  const traceIdOverride =
+    overrides.traceId !== undefined && overrides.traceId !== trace.traceId;
+  const tracingApiKeyOverride =
+    overrides.tracingApiKey !== undefined &&
+    overrides.tracingApiKey !== trace.tracingApiKey;
+
+  if (overrides.traceId !== undefined) {
+    trace.traceId = overrides.traceId;
+  }
+  if (overrides.workflowName !== undefined) {
+    trace.name = overrides.workflowName;
+  }
+  if (overrides.groupId !== undefined) {
+    trace.groupId = overrides.groupId ?? null;
+  }
+  if (overrides.traceMetadata !== undefined) {
+    trace.metadata = overrides.traceMetadata;
+  }
+  if (overrides.tracingApiKey !== undefined) {
+    trace.tracingApiKey = overrides.tracingApiKey;
+  }
+
+  if (currentSpan && (traceIdOverride || tracingApiKeyOverride)) {
+    return { trace, currentSpan: rebaseSpanChain(currentSpan, trace) };
+  }
+
+  return { trace, currentSpan };
 }
 
 /**
