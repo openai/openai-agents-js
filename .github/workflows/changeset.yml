@@ -83,6 +83,15 @@ jobs:
             const baseSha = context.payload.pull_request.base.sha;
             const headSha = context.payload.pull_request.head.sha;
 
+            const changedFilesDiff = execFileSync(
+              'git',
+              ['diff', '--name-only', baseSha, headSha],
+              { encoding: 'utf8' },
+            ).trim();
+            const changedFiles = changedFilesDiff
+              ? changedFilesDiff.split(/\r?\n/).filter(Boolean)
+              : [];
+
             // Read changeset paths from git directly to avoid shell interpolation.
             const diff = execFileSync(
               'git',
@@ -93,6 +102,76 @@ jobs:
             const changesetFiles = files.filter(
               (file) => file.endsWith('.md') && !file.endsWith('README.md'),
             );
+
+            function readJsonFromGit(ref, filePath) {
+              try {
+                return JSON.parse(
+                  execFileSync('git', ['show', `${ref}:${filePath}`], {
+                    encoding: 'utf8',
+                  }),
+                );
+              } catch (_error) {
+                return null;
+              }
+            }
+
+            function sortObject(value) {
+              if (Array.isArray(value)) {
+                return value.map(sortObject);
+              }
+              if (value && typeof value === 'object') {
+                return Object.keys(value)
+                  .sort()
+                  .reduce((acc, key) => {
+                    acc[key] = sortObject(value[key]);
+                    return acc;
+                  }, {});
+              }
+              return value;
+            }
+
+            function deepEqual(left, right) {
+              return (
+                JSON.stringify(sortObject(left)) ===
+                JSON.stringify(sortObject(right))
+              );
+            }
+
+            let devDependenciesOnly = false;
+            if (changedFiles.includes('package.json')) {
+              const basePackageJson = readJsonFromGit(baseSha, 'package.json');
+              const headPackageJson = readJsonFromGit(headSha, 'package.json');
+              if (basePackageJson && headPackageJson) {
+                const { devDependencies: _baseDev, ...baseRest } =
+                  basePackageJson;
+                const { devDependencies: _headDev, ...headRest } =
+                  headPackageJson;
+                devDependenciesOnly = deepEqual(baseRest, headRest);
+              }
+            }
+
+            const docsChanged = changedFiles.some((file) =>
+              file.startsWith('docs/'),
+            );
+            const projectConfigFiles = new Set([
+              'eslint.config.mjs',
+              'pnpm-workspace.yaml',
+              'tsc-multi.json',
+              'tsconfig.examples.json',
+              'tsconfig.json',
+              'tsconfig.test.json',
+              'vitest.config.ts',
+              'vitest.integration.config.ts',
+            ]);
+            const projectConfigPrefixes = ['.github/', '.codex/', 'scripts/'];
+            const projectChanged = changedFiles.some((file) => {
+              if (projectConfigFiles.has(file)) return true;
+              if (projectConfigPrefixes.some((prefix) => file.startsWith(prefix)))
+                return true;
+              if (file === 'package.json') return devDependenciesOnly;
+              if (file === 'pnpm-lock.yaml') return devDependenciesOnly;
+              return false;
+            });
 
             const packageToLabel = {
               '@openai/agents-core': 'package:agents-core',
@@ -125,7 +204,12 @@ jobs:
               }
             }
 
-            const packageLabels = new Set(Object.values(packageToLabel));
+            if (docsChanged) desired.add('documentation');
+            if (projectChanged) desired.add('project');
+
+            const managedLabels = new Set(Object.values(packageToLabel));
+            managedLabels.add('documentation');
+            managedLabels.add('project');
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -135,7 +219,7 @@ jobs:
               typeof label === 'string' ? label : label.name,
             );
             const preserved = existing.filter(
-              (label) => !packageLabels.has(label),
+              (label) => !managedLabels.has(label),
             );
             const finalLabels = Array.from(new Set([...preserved, ...desired]));
 
@@ -144,7 +228,7 @@ jobs:
               normalize(existing).join('\n') === normalize(finalLabels).join('\n');
 
             if (same) {
-              console.log('Package labels already up to date.');
+              console.log('Labels already up to date.');
               return;
             }
 
