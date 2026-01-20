@@ -87,16 +87,25 @@ jobs:
         with:
           node-version: 22
 
+      - name: Run lightweight changeset check (forks)
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.pr.outputs.is_fork == 'true' }}
+        run: |
+          pnpm changeset:validate-lite -- \
+            --base ${{ steps.pr.outputs.base_sha }} \
+            --head ${{ steps.pr.outputs.head_sha }}
+
       - name: Generate changeset prompt
         id: changeset_prompt
+        if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
         run: |
-          pnpm changeset:validate -- \
+          pnpm changeset:validate-prompt -- \
             --ci \
             --output .github/codex/prompts/changeset-validation.generated.md \
             --base ${{ steps.pr.outputs.base_sha }} \
             --head ${{ steps.pr.outputs.head_sha }}
 
       - name: Prepare Codex output dir
+        if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
         run: mkdir -p .github/codex/outputs
 
       - name: Run Codex changeset validation

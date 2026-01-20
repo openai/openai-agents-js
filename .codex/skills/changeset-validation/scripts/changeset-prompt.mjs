@@ -27,10 +27,10 @@ const PROMPT_PATH = path.join(
 );
 
 function printUsage() {
-  console.log(`changeset-validation
+  console.log(`changeset-prompt
 
 Usage:
-  pnpm changeset:validate -- [--base <ref>] [--head <ref>] [--ci] [--output <path>]
+  pnpm changeset:validate-prompt -- [--base <ref>] [--head <ref>] [--ci] [--output <path>]
 
 Options:
   --base <ref>           Base ref or SHA (default: origin/main if available, else main).
@@ -370,6 +370,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`changeset-validation failed: ${error.message}`);
+  console.error(`changeset-prompt failed: ${error.message}`);
   process.exit(1);
 });

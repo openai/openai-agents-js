@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(git rev-parse --show-toplevel)
 SKILL_DIR="$ROOT_DIR/.codex/skills/changeset-validation"
 
-node "$SKILL_DIR/scripts/changeset-validation.mjs" --output "$SKILL_DIR/tmp/prompt.md" >/dev/null
+node "$SKILL_DIR/scripts/changeset-prompt.mjs" --output "$SKILL_DIR/tmp/prompt.md" >/dev/null
 
 TMP_DIR=$(mktemp -d)
 PASS_JSON="$TMP_DIR/pass.json"
