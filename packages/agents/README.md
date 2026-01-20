@@ -48,7 +48,7 @@ Experimental support:
 ### Installation
 
 ```bash
-npm install @openai/agents zod@3
+npm install @openai/agents zod
 ```
 
 ## Hello world example
