@@ -42,6 +42,10 @@ Changed files:
 Changeset files:
 {{CHANGESET_FILES}}
 
+Notes:
+
+- The changeset file list includes only files present in the head commit; deleted or renamed source paths may be omitted.
+
 PR body (CI only; otherwise this may be "(not provided)"):
 {{PR_BODY}}
 

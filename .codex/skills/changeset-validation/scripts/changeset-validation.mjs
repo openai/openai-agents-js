@@ -144,6 +144,14 @@ function getDiffNoIndex(filePath) {
   return result.stdout.trim();
 }
 
+function readFileFromGit(ref, filePath) {
+  const result = spawnSync('git', ['show', `${ref}:${filePath}`], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) return null;
+  return result.stdout;
+}
+
 function readEventPayload() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return null;
@@ -280,11 +288,18 @@ async function main() {
   const changesetPaths = [...changes.keys()].filter((filePath) =>
     isChangesetFile(filePath),
   );
-  const changesetEntries = changesetPaths.map((filePath) => ({
-    path: filePath,
-    status: changes.get(filePath) || 'unknown',
-    content: readFileSafe(filePath),
-  }));
+  const changesetEntries = changesetPaths
+    .map((filePath) => {
+      const status = changes.get(filePath) || 'unknown';
+      const content =
+        readFileSafe(filePath) || readFileFromGit(headSha, filePath);
+      if (!content) {
+        if (status.startsWith('D')) return null;
+        if (status.startsWith('R') || status.startsWith('C')) return null;
+      }
+      return { path: filePath, status, content };
+    })
+    .filter(Boolean);
 
   const diffSections = [];
   const committedPackageDiff = runOptional(
