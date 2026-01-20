@@ -38,7 +38,11 @@ import {
   resetCurrentSpan,
 } from '../src/tracing';
 
-import { withAgentSpan, createAgentSpan } from '../src/tracing/createSpans';
+import {
+  withAgentSpan,
+  createAgentSpan,
+  withCustomSpan,
+} from '../src/tracing/createSpans';
 
 import { TraceProvider, getGlobalTraceProvider } from '../src/tracing/provider';
 
@@ -177,6 +181,37 @@ describe('Trace & Span lifecycle', () => {
     expect(json.span_data).toHaveProperty('type', 'custom');
   });
 
+  it('records errors in wrapped spans and clears current span', async () => {
+    let capturedSpan: Span<any> | undefined;
+    let caught: unknown;
+
+    await withTrace('failing-span', async () => {
+      try {
+        await withCustomSpan(
+          async (span) => {
+            capturedSpan = span;
+            const error = new Error('boom') as Error & {
+              data?: { reason: string };
+            };
+            error.data = { reason: 'oops' };
+            throw error;
+          },
+          { data: { name: 'Custom' } },
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(getCurrentSpan()).toBeNull();
+    });
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(capturedSpan?.error).toEqual({
+      message: 'boom',
+      data: { reason: 'oops' },
+    });
+  });
+
   it('propagates tracing api key from trace to spans', async () => {
     await withTrace(
       'workflow',
@@ -201,6 +236,69 @@ describe('Trace & Span lifecycle', () => {
 
     const withKey = trace.toJSON({ includeTracingApiKey: true }) as any;
     expect(withKey.tracing_api_key).toBe('secret-key');
+  });
+
+  it('returns the existing global trace provider when present', () => {
+    const symbol = Symbol.for('openai.agents.core.traceProvider');
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+    const original = globalHolder[symbol];
+    const provider = new TraceProvider();
+
+    globalHolder[symbol] = provider;
+
+    expect(getGlobalTraceProvider()).toBe(provider);
+
+    if (typeof original === 'undefined') {
+      delete globalHolder[symbol];
+    } else {
+      globalHolder[symbol] = original;
+    }
+  });
+
+  it('falls back to module provider when global registration fails', () => {
+    const symbol = Symbol.for('openai.agents.core.traceProvider');
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+    const original = globalHolder[symbol];
+    delete globalHolder[symbol];
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor;
+    const originalDefine = Object.defineProperty;
+    const descriptorSpy = vi
+      .spyOn(Object, 'getOwnPropertyDescriptor')
+      .mockImplementation((target, propertyKey) => {
+        if (target === globalHolder && propertyKey === symbol) {
+          return undefined;
+        }
+        return originalDescriptor(target, propertyKey);
+      });
+    const defineSpy = vi
+      .spyOn(Object, 'defineProperty')
+      .mockImplementation((target, propertyKey, attributes) => {
+        if (target === globalHolder && propertyKey === symbol) {
+          throw new Error('defineProperty blocked');
+        }
+        return originalDefine(target, propertyKey, attributes);
+      });
+
+    const provider = getGlobalTraceProvider();
+    expect(provider).toBeInstanceOf(TraceProvider);
+    expect(globalHolder[symbol]).toBeUndefined();
+    expect(getGlobalTraceProvider()).toBe(provider);
+
+    defineSpy.mockRestore();
+    descriptorSpy.mockRestore();
+
+    if (typeof original === 'undefined') {
+      delete globalHolder[symbol];
+    } else {
+      globalHolder[symbol] = original;
+    }
   });
 });
 
@@ -864,6 +962,43 @@ describe('TraceProvider span creation without parents', () => {
       disabled: true,
     });
     expect(span).toBeInstanceOf(NoopSpan);
+  });
+
+  it('returns NoopSpan when the current trace is a NoopTrace', async () => {
+    const provider = getGlobalTraceProvider();
+    setTracingDisabled(true);
+
+    await withTrace('noop-trace', async () => {
+      const span = provider.createSpan({
+        data: { type: 'custom', name: 'noop-trace-span', data: {} },
+      });
+      expect(span).toBeInstanceOf(NoopSpan);
+    });
+
+    setTracingDisabled(false);
+  });
+
+  it('returns NoopSpan when the current span is a NoopSpan', async () => {
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+
+    await withTrace('active-trace', async () => {
+      const noopSpan = new NoopSpan(
+        { type: 'custom', name: 'noop-current', data: {} },
+        new TestProcessor(),
+      );
+      setCurrentSpan(noopSpan);
+      try {
+        const span = provider.createSpan({
+          data: { type: 'custom', name: 'child', data: {} },
+        });
+        expect(span).toBeInstanceOf(NoopSpan);
+      } finally {
+        resetCurrentSpan();
+      }
+    });
+
+    provider.setDisabled(true);
   });
 });
 

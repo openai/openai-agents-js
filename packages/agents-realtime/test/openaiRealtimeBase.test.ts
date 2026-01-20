@@ -200,6 +200,21 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(updates.length).toBe(1);
   });
 
+  it('sendFunctionCallOutput logs errors when tool call parsing fails', () => {
+    const base = new TestBase();
+    const toolCall = {
+      type: 'function_call',
+      id: '1',
+      callId: 'c1',
+      name: 'tool',
+      arguments: 123,
+    } as any;
+
+    base.sendFunctionCallOutput(toolCall, 'output', false);
+
+    expect(logger.error).toHaveBeenCalled();
+  });
+
   it('sendAudio optionally commits', () => {
     const base = new TestBase();
     const buf = new TextEncoder().encode('a').buffer;
@@ -245,6 +260,52 @@ describe('OpenAIRealtimeBase helpers', () => {
         type: 'message',
         status: 'completed',
         content: [{ type: 'input_text', text: 'b' }],
+      },
+    });
+  });
+
+  it('resetHistory warns on function call additions', () => {
+    const base = new TestBase();
+    const newHist = [
+      {
+        itemId: 'f1',
+        type: 'function_call',
+        status: 'completed',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+    ];
+
+    base.resetHistory([], newHist as any);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Function calls cannot be manually added or updated at the moment. Ignoring.',
+    );
+    expect(base.events).toHaveLength(0);
+  });
+
+  it('sendMcpResponse emits approval response items', () => {
+    const base = new TestBase();
+    base.sendMcpResponse(
+      {
+        itemId: 'mcp1',
+        type: 'mcp_approval_request',
+        serverLabel: 'srv',
+        name: 'tool',
+        arguments: { foo: 'bar' },
+        approved: null,
+      },
+      true,
+    );
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      previous_item_id: 'mcp1',
+      item: {
+        type: 'mcp_approval_response',
+        approval_request_id: 'mcp1',
+        approve: true,
       },
     });
   });
@@ -430,6 +491,120 @@ describe('OpenAIRealtimeBase helpers', () => {
       { type: 'conversation.item.retrieve', item_id: 'm1' },
       { type: 'conversation.item.retrieve', item_id: 'tools1' },
     ]);
+  });
+
+  it('emits audio transcript delta events', () => {
+    const base = new TestBase();
+    const deltas: any[] = [];
+    base.on('audio_transcript_delta', (delta) => deltas.push(delta));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_audio_transcript.delta',
+        event_id: 'd1',
+        item_id: 'item1',
+        content_index: 0,
+        delta: 'hi',
+        output_index: 0,
+        response_id: 'r1',
+      }),
+    });
+
+    expect(deltas[0]).toMatchObject({
+      delta: 'hi',
+      itemId: 'item1',
+      responseId: 'r1',
+    });
+  });
+
+  it('emits mcp_tools_listed for completed list tools items', () => {
+    const base = new TestBase();
+    const listed: any[] = [];
+    base.on('mcp_tools_listed', (event) => listed.push(event));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'c3',
+        item: {
+          id: 'tools1',
+          type: 'mcp_list_tools',
+          server_label: 'srv',
+          tools: [{ name: 'tool', description: 'desc' }],
+        },
+      }),
+    });
+
+    expect(listed[0]).toMatchObject({
+      serverLabel: 'srv',
+      tools: [{ name: 'tool', description: 'desc' }],
+    });
+  });
+
+  it('emits error events when server reports errors', () => {
+    const base = new TestBase();
+    const errors: any[] = [];
+    base.on('error', (err) => errors.push(err));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'e1',
+        error: { message: 'nope' },
+      }),
+    });
+
+    expect(errors[0]?.error?.error?.message).toBe('nope');
+  });
+
+  it('maps input_image content and merges provider data', () => {
+    const base = new TestBase();
+    base.sendMessage(
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,abc',
+            providerData: { detail: 'high' },
+          },
+        ],
+      },
+      { extra: 'meta' },
+      { triggerResponse: false },
+    );
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,abc',
+            detail: 'high',
+          },
+        ],
+      },
+      extra: 'meta',
+    });
+    expect(base.events).toHaveLength(1);
+  });
+
+  it('emits connection events on open/close hooks', () => {
+    const base = new TestBase();
+    const connected: any[] = [];
+    const disconnected: any[] = [];
+    base.on('connected', () => connected.push(true));
+    base.on('disconnected', () => disconnected.push(true));
+
+    (base as any)._onOpen();
+    (base as any)._onClose();
+
+    expect(connected).toHaveLength(1);
+    expect(disconnected).toHaveLength(1);
   });
 
   it('enforces tracing config transitions', () => {
