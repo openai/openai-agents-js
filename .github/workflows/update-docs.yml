@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   update-docs:
-    if: "!contains(github.event.head_commit.message, 'Update all translated document pages')"
+    if: "!contains(github.event.head_commit.message, 'docs: update translated document pages')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -80,7 +80,7 @@ jobs:
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "Update all translated document pages"
+            git commit -m "docs: update translated document pages"
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -88,7 +88,7 @@ jobs:
         if: steps.commit.outputs.committed == 'true'
         uses: peter-evans/create-pull-request@98357b18bf14b5342f975ff684046ec3b2a07725
         with:
-          commit-message: "Update all translated document pages"
+          commit-message: "docs: update translated document pages"
           title: "docs: update translated document pages"
           body: |
             Automated update of translated documentation.
