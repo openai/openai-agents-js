@@ -89,7 +89,7 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "Update all translated document pages"
-          title: "Update translated document pages"
+          title: "docs: update translated document pages"
           body: |
             Automated update of translated documentation.
 
