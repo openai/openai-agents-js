@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Find open release PR
         id: pr
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         env:
           MANUAL_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
         with:
@@ -98,7 +98,7 @@ jobs:
 
       - name: Checkout release PR head
         if: steps.pr.outputs.found == 'true'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
@@ -158,7 +158,7 @@ jobs:
       - name: Run Codex final-release-review
         if: steps.pr.outputs.found == 'true'
         id: review
-        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189 # v1
+        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
           prompt-file: ${{ steps.prompt.outputs.prompt_file }}
@@ -168,7 +168,7 @@ jobs:
 
       - name: Upsert PR comment
         if: steps.pr.outputs.found == 'true'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         env:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           REVIEW_PATH: ${{ steps.prompt.outputs.output_file }}

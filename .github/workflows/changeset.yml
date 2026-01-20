@@ -28,7 +28,7 @@ jobs:
 
       - name: Resolve PR context
         id: pr
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number || '' }}
         with:
@@ -64,7 +64,7 @@ jobs:
             core.setOutput('is_fork', headRepo !== repoFullName);
 
       - name: Checkout base
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           fetch-depth: 0
           ref: ${{ steps.pr.outputs.base_sha }}
@@ -78,12 +78,12 @@ jobs:
             "https://github.com/${PR_HEAD_REPO}.git" \
             "${PR_HEAD_SHA}"
       - name: Install pnpm
-        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
           version: 10.28.0
           run_install: false
       - name: Setup Node
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
         with:
           node-version: 22
 
@@ -102,7 +102,7 @@ jobs:
       - name: Run Codex changeset validation
         id: run_codex
         if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
-        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189 # v1
+        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
           prompt-file: .github/codex/prompts/changeset-validation.generated.md
@@ -125,7 +125,7 @@ jobs:
 
       - name: Sync package labels
         if: ${{ steps.run_codex.conclusion == 'success' || github.actor == 'dependabot[bot]' || steps.pr.outputs.is_fork == 'true' }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
@@ -301,7 +301,7 @@ jobs:
 
       - name: Comment on manual run failure
         if: ${{ github.event_name == 'workflow_dispatch' && always() }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           JOB_STATUS: ${{ job.status }}
