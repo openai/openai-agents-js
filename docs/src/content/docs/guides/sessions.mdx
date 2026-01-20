@@ -9,6 +9,7 @@ import manageHistory from '../../../../../examples/docs/sessions/manageHistory.t
 import customSession from '../../../../../examples/docs/sessions/customSession.ts?raw';
 import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 import responsesCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
+import manualCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
 
 Sessions give the Agents SDK a **persistent memory layer**. Provide any object that implements the `Session` interface to `Runner.run`, and the SDK handles the rest. When a session is present, the runner automatically:
 
@@ -116,6 +117,16 @@ When you resume from a previous `RunState`, the new turn is appended to the same
   lang="typescript"
   code={responsesCompactionSession}
   title="Decorate a session with OpenAIResponsesCompactionSession"
+/>
+
+### Manual compaction for low-latency streaming
+
+Compaction clears and rewrites the underlying session, so the SDK waits for it before resolving a streaming run. If compaction is heavy, `result.completed` can stay pending for a few seconds after the last output token. For low-latency streaming or faster turn-taking, disable auto-compaction and call `runCompaction` yourself between turns (or during idle time).
+
+<Code
+  lang="typescript"
+  code={manualCompactionSession}
+  title="Disable auto-compaction and compact between turns"
 />
 
 You can call `runCompaction({ force: true })` at any time to shrink history before archiving or handoff. Enable debug logs with `DEBUG=openai-agents:openai:compaction` to trace compaction decisions.
