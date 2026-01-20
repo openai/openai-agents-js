@@ -32,7 +32,7 @@ jobs:
       - name: Run build
         run: pnpm build
       - name: Install, build, and upload your site
-        uses: withastro/action@56781b97402ce0487b7e61ce2cb960c0e2cc5289
+        uses: withastro/action@fc88a7002f0c62327f26fb1b15f2a1d581249278
         with:
           path: docs
           # with:
