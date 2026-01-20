@@ -3,9 +3,13 @@ name: Changeset
 on:
   pull_request:
     types: [opened, reopened, synchronize, edited]
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
 
 jobs:
+  # Internal PRs use pull_request to avoid exposing secrets to forked code.
   changeset-validation:
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,7 +44,7 @@ jobs:
 
       - name: Run Codex changeset validation
         id: run_codex
-        if: ${{ !github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]' }}
+        if: ${{ github.actor != 'dependabot[bot]' }}
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
@@ -67,14 +71,15 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const { execSync } = require('child_process');
+            const { execFileSync } = require('child_process');
 
             const baseSha = context.payload.pull_request.base.sha;
             const headSha = context.payload.pull_request.head.sha;
 
-            const diff = execSync(
-              `git diff --name-only ${baseSha} ${headSha} -- .changeset`,
+            // Read changeset paths from git directly to avoid shell interpolation.
+            const diff = execFileSync(
+              'git',
+              ['diff', '--name-only', baseSha, headSha, '--', '.changeset'],
               { encoding: 'utf8' },
             ).trim();
             const files = diff ? diff.split(/\r?\n/).filter(Boolean) : [];
@@ -91,10 +96,168 @@ jobs:
 
             const desired = new Set();
             for (const file of changesetFiles) {
-              if (!fs.existsSync(file)) {
+              let content;
+              try {
+                content = execFileSync('git', ['show', `${headSha}:${file}`], {
+                  encoding: 'utf8',
+                });
+              } catch (_error) {
                 continue;
               }
-              const content = fs.readFileSync(file, 'utf8');
+              const parts = content.split('---');
+              if (parts.length < 3) {
+                continue;
+              }
+              const frontmatter = parts[1];
+              for (const line of frontmatter.split(/\r?\n/)) {
+                const match = line.match(/["']?([^"':]+)["']?\s*:/);
+                if (!match) continue;
+                const pkg = match[1].trim();
+                const label = packageToLabel[pkg];
+                if (label) desired.add(label);
+              }
+            }
+
+            const packageLabels = new Set(Object.values(packageToLabel));
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = issue.labels.map((label) =>
+              typeof label === 'string' ? label : label.name,
+            );
+            const preserved = existing.filter(
+              (label) => !packageLabels.has(label),
+            );
+            const finalLabels = Array.from(new Set([...preserved, ...desired]));
+
+            const normalize = (labels) => labels.slice().sort();
+            const same =
+              normalize(existing).join('\n') === normalize(finalLabels).join('\n');
+
+            if (same) {
+              console.log('Package labels already up to date.');
+              return;
+            }
+
+            await github.rest.issues.setLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: finalLabels,
+            });
+
+            console.log(
+              `Updated labels: ${finalLabels.join(', ') || '(none)'}`,
+            );
+
+  changeset-validation-fork:
+    # Fork PRs use pull_request_target with base checkout to keep secrets safe.
+    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.fork }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Fetch PR head
+        env:
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fetch commit objects only; do not execute forked code.
+          git fetch --no-tags --prune --recurse-submodules=no \
+            "https://github.com/${PR_HEAD_REPO}.git" \
+            "${PR_HEAD_SHA}"
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4.2.0
+        with:
+          version: 10.28.0
+          run_install: false
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Generate changeset prompt
+        run: |
+          pnpm changeset:validate -- \
+            --ci \
+            --output .github/codex/prompts/changeset-validation.generated.md \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }}
+
+      - name: Prepare Codex output dir
+        run: mkdir -p .github/codex/outputs
+
+      - name: Run Codex changeset validation
+        id: run_codex
+        if: ${{ github.actor != 'dependabot[bot]' }}
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/changeset-validation.generated.md
+          output-file: .github/codex/outputs/changeset-validation.json
+          output-schema-file: .github/codex/schemas/changeset-validation.json
+          codex-args: '["--full-auto"]'
+          sandbox: read-only
+          safety-strategy: drop-sudo
+
+      - name: Validate Codex output
+        if: ${{ steps.run_codex.conclusion == 'success' }}
+        run: pnpm changeset:validate-result -- .github/codex/outputs/changeset-validation.json
+
+      - name: Assign milestone
+        if: ${{ steps.run_codex.conclusion == 'success' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm changeset:assign-milestone -- .github/codex/outputs/changeset-validation.json
+
+      - name: Sync package labels
+        if: ${{ steps.run_codex.conclusion == 'success' }}
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { execFileSync } = require('child_process');
+
+            const baseSha = context.payload.pull_request.base.sha;
+            const headSha = context.payload.pull_request.head.sha;
+
+            // Read changeset paths from git directly to avoid shell interpolation.
+            const diff = execFileSync(
+              'git',
+              ['diff', '--name-only', baseSha, headSha, '--', '.changeset'],
+              { encoding: 'utf8' },
+            ).trim();
+            const files = diff ? diff.split(/\r?\n/).filter(Boolean) : [];
+            const changesetFiles = files.filter(
+              (file) => file.endsWith('.md') && !file.endsWith('README.md'),
+            );
+
+            const packageToLabel = {
+              '@openai/agents-core': 'package:agents-core',
+              '@openai/agents-openai': 'package:agents-openai',
+              '@openai/agents-realtime': 'package:agents-realtime',
+              '@openai/agents-extensions': 'package:agents-extensions',
+            };
+
+            const desired = new Set();
+            for (const file of changesetFiles) {
+              let content;
+              try {
+                content = execFileSync('git', ['show', `${headSha}:${file}`], {
+                  encoding: 'utf8',
+                });
+              } catch (_error) {
+                continue;
+              }
               const parts = content.split('---');
               if (parts.length < 3) {
                 continue;
