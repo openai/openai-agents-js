@@ -43,6 +43,7 @@ import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { tool, hostedMcpTool, computerTool } from '../src/tool';
 import logger from '../src/logger';
+import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
   FakeModel,
   fakeModelMessage,
@@ -502,6 +503,52 @@ describe('Runner.run', () => {
       expect(restored._previousResponseId).toBeUndefined();
       const resumed = await run(agent, restored);
       expect(resumed.finalOutput).toBe(first.finalOutput);
+    });
+
+    it('prefers runner trace config over RunState trace when resuming', async () => {
+      setTracingDisabled(false);
+      const provider = getGlobalTraceProvider();
+      const agent = new Agent({
+        name: 'ResumeTraceOverrides',
+        model: new FakeModel([
+          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        ]),
+      });
+      const runner = new Runner({
+        traceId: 'override-trace-id',
+        workflowName: 'Override workflow',
+        groupId: 'override-group',
+        traceMetadata: { source: 'runner' },
+        tracing: { apiKey: 'override-key' },
+      });
+      const state = new RunState(new RunContext(), 'hi', agent, 1);
+      const trace = provider.createTrace({
+        traceId: 'original-trace-id',
+        name: 'Original workflow',
+        groupId: 'original-group',
+        metadata: { source: 'state' },
+        tracingApiKey: 'original-key',
+      });
+      const span = provider.createSpan(
+        { data: { type: 'agent', name: 'OriginalSpan' } },
+        trace,
+      );
+      state._trace = trace;
+      state._currentAgentSpan = span;
+
+      const resumed = await runner.run(agent, state);
+      expect(resumed.state._trace?.traceId).toBe('override-trace-id');
+      expect(resumed.state._trace?.name).toBe('Override workflow');
+      expect(resumed.state._trace?.groupId).toBe('override-group');
+      expect(resumed.state._trace?.metadata).toEqual({ source: 'runner' });
+      expect(resumed.state._trace?.tracingApiKey).toBe('override-key');
+      expect(resumed.state._currentAgentSpan?.traceId).toBe(
+        'override-trace-id',
+      );
+      expect(resumed.state._currentAgentSpan?.tracingApiKey).toBe(
+        'override-key',
+      );
+      setTracingDisabled(true);
     });
 
     it('input guardrail executes only once', async () => {
