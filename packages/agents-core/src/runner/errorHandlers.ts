@@ -148,6 +148,8 @@ export const tryHandleRunError = async <
     state._currentAgent,
     handlerResult.finalOutput,
   );
+  state._lastTurnResponse = undefined;
+  state._lastProcessedResponse = undefined;
   const item = createFinalOutputItem(state._currentAgent, outputText);
   if (includeInHistory) {
     state._generatedItems.push(item);
