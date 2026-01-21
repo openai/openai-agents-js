@@ -12,6 +12,7 @@ import {
   RunStreamEvent,
   RunAgentUpdatedStreamEvent,
   RunItemStreamEvent,
+  RunMessageOutputItem,
   StreamedRunResult,
   handoff,
   Model,
@@ -823,6 +824,40 @@ describe('Runner.run (streaming)', () => {
     await expect(result.completed).rejects.toBeInstanceOf(
       MaxTurnsExceededError,
     );
+  });
+
+  it('handles maxTurns errors with an error handler', async () => {
+    const agent = new Agent({
+      name: 'MaxTurnsHandlerStream',
+      model: new FakeModel([
+        { output: [fakeModelMessage('nope')], usage: new Usage() },
+      ]),
+    });
+    const result = await run(agent, 'x', {
+      stream: true,
+      maxTurns: 0,
+      errorHandlers: {
+        maxTurns: () => ({
+          finalOutput: 'summary',
+        }),
+      },
+    });
+    const events: RunStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      events.push(event);
+    }
+    await result.completed;
+    expect(result.finalOutput).toBe('summary');
+    const runItemEvents = events.filter(
+      (event): event is RunItemStreamEvent =>
+        event.type === 'run_item_stream_event',
+    );
+    expect(runItemEvents).toHaveLength(1);
+    expect(runItemEvents[0].name).toBe('message_output_created');
+    expect(runItemEvents[0].item).toBeInstanceOf(RunMessageOutputItem);
+    if (runItemEvents[0].item instanceof RunMessageOutputItem) {
+      expect(runItemEvents[0].item.content).toBe('summary');
+    }
   });
 
   it('does not advance the turn for streaming runs resuming an interruption without persisted items', async () => {

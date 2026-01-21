@@ -76,12 +76,22 @@ import type {
   CallModelInputFilter,
   PreparedModelCall,
 } from './runner/types';
+import { tryHandleRunError } from './runner/errorHandlers';
+import type { RunErrorHandlers } from './runner/errorHandlers';
 
 export type {
   CallModelInputFilter,
   CallModelInputFilterArgs,
   ModelInputData,
 } from './runner/types';
+export type {
+  RunData,
+  RunErrorHandler,
+  RunErrorHandlerInput,
+  RunErrorHandlerResult,
+  RunErrorHandlers,
+  RunErrorKind,
+} from './runner/errorHandlers';
 export { getTracing } from './runner/tracing';
 export { selectModel } from './runner/modelSettings';
 export { getTurnInput } from './runner/items';
@@ -185,7 +195,10 @@ export type RunConfig = {
 /**
  * Common run options shared between streaming and non-streaming execution pathways.
  */
-type SharedRunOptions<TContext = undefined> = {
+type SharedRunOptions<
+  TContext = undefined,
+  TAgent extends Agent<any, any> = Agent<any, any>,
+> = {
   context?: TContext | RunContext<TContext>;
   maxTurns?: number;
   signal?: AbortSignal;
@@ -195,36 +208,45 @@ type SharedRunOptions<TContext = undefined> = {
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
   tracing?: TracingConfig;
+  /**
+   * Error handlers keyed by error kind. Currently only maxTurns errors are supported.
+   */
+  errorHandlers?: RunErrorHandlers<TContext, TAgent>;
 };
 
 /**
  * Options for runs that stream incremental events as the model responds.
  */
-export type StreamRunOptions<TContext = undefined> =
-  SharedRunOptions<TContext> & {
-    /**
-     * Whether to stream the run. If true, the run will emit events as the model responds.
-     */
-    stream: true;
-  };
+export type StreamRunOptions<
+  TContext = undefined,
+  TAgent extends Agent<any, any> = Agent<any, any>,
+> = SharedRunOptions<TContext, TAgent> & {
+  /**
+   * Whether to stream the run. If true, the run will emit events as the model responds.
+   */
+  stream: true;
+};
 
 /**
  * Options for runs that collect the full model response before returning.
  */
-export type NonStreamRunOptions<TContext = undefined> =
-  SharedRunOptions<TContext> & {
-    /**
-     * Run to completion without streaming incremental events; leave undefined or set to `false`.
-     */
-    stream?: false;
-  };
+export type NonStreamRunOptions<
+  TContext = undefined,
+  TAgent extends Agent<any, any> = Agent<any, any>,
+> = SharedRunOptions<TContext, TAgent> & {
+  /**
+   * Run to completion without streaming incremental events; leave undefined or set to `false`.
+   */
+  stream?: false;
+};
 
 /**
  * Options polymorphic over streaming or non-streaming execution modes.
  */
-export type IndividualRunOptions<TContext = undefined> =
-  | StreamRunOptions<TContext>
-  | NonStreamRunOptions<TContext>;
+export type IndividualRunOptions<
+  TContext = undefined,
+  TAgent extends Agent<any, any> = Agent<any, any>,
+> = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
 
 // --------------------------------------------------------------
 //  Runner
@@ -241,17 +263,19 @@ export type IndividualRunOptions<TContext = undefined> =
 export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: NonStreamRunOptions<TContext>,
+  options?: NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent>>;
 export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: StreamRunOptions<TContext>,
+  options?: StreamRunOptions<TContext, TAgent>,
 ): Promise<StreamedRunResult<TContext, TAgent>>;
 export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-  options?: StreamRunOptions<TContext> | NonStreamRunOptions<TContext>,
+  options?:
+    | StreamRunOptions<TContext, TAgent>
+    | NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
   const runner = getDefaultRunner();
   if (options?.stream) {
@@ -330,7 +354,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
    * 4. Else, we run tool calls (if any), and re-run the loop.
    *
    * In two cases, the agent may raise an exception:
-   * 1. If the maxTurns is exceeded, a MaxTurnsExceeded exception is raised.
+   * 1. If the maxTurns is exceeded, a MaxTurnsExceeded exception is raised unless handled.
    * 2. If a guardrail tripwire is triggered, a GuardrailTripwireTriggered exception is raised.
    *
    * Note that only the first agent's input guardrails are run.
@@ -345,20 +369,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   run<TAgent extends Agent<any, any>, TContext = undefined>(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options?: NonStreamRunOptions<TContext>,
+    options?: NonStreamRunOptions<TContext, TAgent>,
   ): Promise<RunResult<TContext, TAgent>>;
   run<TAgent extends Agent<any, any>, TContext = undefined>(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options?: StreamRunOptions<TContext>,
+    options?: StreamRunOptions<TContext, TAgent>,
   ): Promise<StreamedRunResult<TContext, TAgent>>;
   async run<TAgent extends Agent<any, any>, TContext = undefined>(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options: IndividualRunOptions<TContext> = {
+    options: IndividualRunOptions<TContext, TAgent> = {
       stream: false,
       context: undefined,
-    } as IndividualRunOptions<TContext>,
+    } as IndividualRunOptions<TContext, TAgent>,
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
@@ -541,7 +565,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   >(
     startingAgent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options: NonStreamRunOptions<TContext>,
+    options: NonStreamRunOptions<TContext, TAgent>,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
     sessionInputUpdate?: (
@@ -816,6 +840,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       } catch (err) {
         state._currentTurnInProgress = false;
+        const handledResult = await tryHandleRunError({
+          error: err,
+          state,
+          errorHandlers: options.errorHandlers,
+          outputGuardrailDefs: this.outputGuardrailDefs,
+          emitAgentEnd: (context, agent, outputText) => {
+            this.emit('agent_end', context, agent, outputText);
+            agent.emit('agent_end', context, outputText);
+          },
+        });
+        if (handledResult) {
+          return handledResult;
+        }
         if (state._currentAgentSpan) {
           state._currentAgentSpan.setError({
             message: 'Error in agent run',
@@ -850,7 +887,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     TAgent extends Agent<TContext, AgentOutputType>,
   >(
     result: StreamedRunResult<TContext, TAgent>,
-    options: StreamRunOptions<TContext>,
+    options: StreamRunOptions<TContext, TAgent>,
     isResumedState: boolean,
     ensureStreamInputPersisted?: () => Promise<void>,
     sessionInputUpdate?: (
@@ -1241,6 +1278,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ) {
         await persistStreamInputIfNeeded();
       }
+      const handledResult = await tryHandleRunError({
+        error,
+        state: result.state,
+        errorHandlers: options.errorHandlers,
+        outputGuardrailDefs: this.outputGuardrailDefs,
+        emitAgentEnd: (context, agent, outputText) => {
+          this.emit('agent_end', context, agent, outputText);
+          agent.emit('agent_end', context, outputText);
+        },
+        streamResult: result,
+      });
+      if (handledResult) {
+        await persistStreamInputIfNeeded();
+        if (!serverManagesConversation) {
+          await saveStreamResultToSession(options.session, result);
+        }
+        return;
+      }
       if (result.state._currentAgentSpan) {
         result.state._currentAgentSpan.setError({
           message: 'Error in agent run',
@@ -1284,7 +1339,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   >(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
-    options?: StreamRunOptions<TContext>,
+    options?: StreamRunOptions<TContext, TAgent>,
     ensureStreamInputPersisted?: () => Promise<void>,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
@@ -1324,7 +1379,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         signal: options.signal,
         state,
       });
-      const streamOptions: StreamRunOptions<TContext> = {
+      const streamOptions: StreamRunOptions<TContext, TAgent> = {
         ...options,
         signal: result._getAbortSignal(),
       };
@@ -1366,7 +1421,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     TAgent extends Agent<TContext, AgentOutputType>,
   >(
     state: RunState<TContext, TAgent>,
-    options: SharedRunOptions<TContext>,
+    options: SharedRunOptions<TContext, TAgent>,
     artifacts: AgentArtifacts<TContext>,
     turnInput: AgentInputItem[],
     serverConversationTracker?: ServerConversationTracker,

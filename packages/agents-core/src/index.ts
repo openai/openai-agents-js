@@ -140,6 +140,12 @@ export type {
   ModelInputData,
   CallModelInputFilter,
   CallModelInputFilterArgs,
+  RunData,
+  RunErrorHandler,
+  RunErrorHandlerInput,
+  RunErrorHandlerResult,
+  RunErrorHandlers,
+  RunErrorKind,
 } from './run';
 export { RunContext } from './runContext';
 export { RunState } from './runState';

@@ -49,7 +49,10 @@ type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
 };
 
-type AgentToolRunOptions<TContext> = Omit<StreamRunOptions<TContext>, 'stream'>;
+type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
+  StreamRunOptions<TContext, TAgent>,
+  'stream'
+>;
 
 type AgentToolStreamEvent<TAgent extends Agent<any, any>> = {
   // Raw stream event emitted by the nested agent run.
@@ -554,7 +557,7 @@ export class Agent<
       /**
        * Additional run options for the agent (as tool) execution.
        */
-      runOptions?: AgentToolRunOptions<TContext>;
+      runOptions?: AgentToolRunOptions<TContext, TAgent>;
       /**
        * Determines whether this tool should be exposed to the model for the current run.
        */
