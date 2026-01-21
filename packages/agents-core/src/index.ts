@@ -140,7 +140,7 @@ export type {
   ModelInputData,
   CallModelInputFilter,
   CallModelInputFilterArgs,
-  RunData,
+  RunErrorData,
   RunErrorHandler,
   RunErrorHandlerInput,
   RunErrorHandlerResult,

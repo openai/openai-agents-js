@@ -27,7 +27,7 @@ export type RunErrorKind = 'maxTurns';
 /**
  * Snapshot of run data passed to error handlers.
  */
-export type RunData<TContext, TAgent extends Agent<any, any>> = {
+export type RunErrorData<TContext, TAgent extends Agent<any, any>> = {
   input: string | AgentInputItem[];
   newItems: RunItem[];
   history: AgentInputItem[];
@@ -40,7 +40,7 @@ export type RunData<TContext, TAgent extends Agent<any, any>> = {
 export type RunErrorHandlerInput<TContext, TAgent extends Agent<any, any>> = {
   error: MaxTurnsExceededError;
   context: RunContext<TContext>;
-  runData: RunData<TContext, TAgent>;
+  runData: RunErrorData<TContext, TAgent>;
 };
 
 export type RunErrorHandlerResult<TAgent extends Agent<any, any>> = {
@@ -89,7 +89,7 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
 
 const buildRunData = <TContext, TAgent extends Agent<any, any>>(
   state: RunState<TContext, TAgent>,
-): RunData<TContext, TAgent> => ({
+): RunErrorData<TContext, TAgent> => ({
   input: state._originalInput,
   newItems: state._generatedItems,
   history: getTurnInput(state._originalInput, state._generatedItems),

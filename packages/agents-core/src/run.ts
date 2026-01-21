@@ -85,7 +85,7 @@ export type {
   ModelInputData,
 } from './runner/types';
 export type {
-  RunData,
+  RunErrorData,
   RunErrorHandler,
   RunErrorHandlerInput,
   RunErrorHandlerResult,
