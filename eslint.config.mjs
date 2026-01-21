@@ -23,6 +23,7 @@ export default tseslint.config(
     'examples/realtime-next/**',
     'examples/realtime-demo/**',
     'examples/nextjs/**',
+    'examples/ai-sdk-ui/**',
     'integration-tests//**',
     'tsc-multi.json',
   ]),

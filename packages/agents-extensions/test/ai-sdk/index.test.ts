@@ -6,7 +6,7 @@ import {
   parseArguments,
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
-} from '../src/aiSdk';
+} from '../../src/ai-sdk/index';
 import { protocol, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import type { JSONSchema7, LanguageModelV2 } from '@ai-sdk/provider';

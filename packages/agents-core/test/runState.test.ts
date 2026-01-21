@@ -45,6 +45,14 @@ describe('RunState', () => {
     expect(state._toolOutputGuardrailResults).toEqual([]);
   });
 
+  it('exposes the current agent', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'CurrentAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+
+    expect(state.currentAgent).toBe(agent);
+  });
+
   it('returns history including original input and generated items', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'HistAgent' });

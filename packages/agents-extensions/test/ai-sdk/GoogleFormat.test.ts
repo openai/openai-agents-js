@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { AiSdkModel } from '../src/aiSdk';
+import { AiSdkModel } from '../../src/ai-sdk/index';
 import { withTrace } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import type { LanguageModelV2 } from '@ai-sdk/provider';

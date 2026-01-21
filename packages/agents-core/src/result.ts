@@ -208,6 +208,14 @@ class RunResultBase<
   }
 
   /**
+   * The agent that should handle the next turn.
+   * This is an alias for the last agent that completed a turn.
+   */
+  get activeAgent(): TAgent | undefined {
+    return this.lastAgent;
+  }
+
+  /**
    * Guardrail results for the input messages.
    */
   get inputGuardrailResults(): InputGuardrailResult[] {
