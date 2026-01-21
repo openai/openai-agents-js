@@ -148,12 +148,12 @@ export const tryHandleRunError = async <
     state._currentAgent,
     handlerResult.finalOutput,
   );
+  const item = createFinalOutputItem(state._currentAgent, outputText);
   if (includeInHistory) {
-    const item = createFinalOutputItem(state._currentAgent, outputText);
     state._generatedItems.push(item);
-    if (streamResult) {
-      streamStepItemsToRunResult(streamResult, [item]);
-    }
+  }
+  if (streamResult) {
+    streamStepItemsToRunResult(streamResult, [item]);
   }
   state._currentStep = {
     type: 'next_step_final_output',
