@@ -669,11 +669,17 @@ export class Agent<
         const outputText =
           typeof customOutputExtractor === 'function'
             ? await customOutputExtractor(completedResult)
-            : getOutputText(
-                completedResult.rawResponses[
-                  completedResult.rawResponses.length - 1
-                ],
-              );
+            : typeof completedResult.finalOutput !== 'undefined'
+              ? this.outputType === 'text'
+                ? String(completedResult.finalOutput)
+                : JSON.stringify(completedResult.finalOutput)
+              : completedResult.rawResponses.length > 0
+                ? getOutputText(
+                    completedResult.rawResponses[
+                      completedResult.rawResponses.length - 1
+                    ],
+                  )
+                : '';
 
         if (details?.toolCall) {
           saveAgentToolRunResult(
