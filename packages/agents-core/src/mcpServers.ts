@@ -42,6 +42,9 @@ class ServerWorker {
     action: ServerAction,
     timeoutMs: number | null,
   ): Promise<void> {
+    if (this.done) {
+      return Promise.reject(createClosedError(this.server));
+    }
     return new Promise((resolve, reject) => {
       this.queue.push({ action, timeoutMs, resolve, reject });
       void this.drain();
@@ -78,6 +81,13 @@ class ServerWorker {
         command.reject(toError(error));
       }
       if (shouldExit) {
+        const pendingError = createClosedError(this.server);
+        while (this.queue.length > 0) {
+          const pending = this.queue.shift();
+          if (pending) {
+            pending.reject(pendingError);
+          }
+        }
         this.done = true;
         break;
       }
@@ -439,6 +449,12 @@ function createTimeoutError(
     `MCP server ${action} timed out after ${timeoutMs}ms for '${server.name}'.`,
   );
   error.name = 'TimeoutError';
+  return error;
+}
+
+function createClosedError(server: MCPServer): Error {
+  const error = new Error(`MCP server '${server.name}' is closed.`);
+  error.name = 'ClosedError';
   return error;
 }
 

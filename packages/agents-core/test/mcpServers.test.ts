@@ -69,6 +69,58 @@ class AbortConnectServer extends BaseTestServer {
   }
 }
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>['resolve'];
+  let reject: Deferred<T>['reject'];
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve: resolve!, reject: reject! };
+}
+
+class SlowCloseServer extends BaseTestServer {
+  constructor(
+    name: string,
+    private readonly closeGate: Deferred<void>,
+  ) {
+    super(name);
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    await this.closeGate.promise;
+    this.cleaned = true;
+  }
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('timeout'));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 describe('MCPServers', () => {
   it('reconnects failed servers only by default', async () => {
     const server = new FlakyServer('flaky', 1);
@@ -191,6 +243,23 @@ describe('MCPServers', () => {
     ).rejects.toThrow('connect aborted');
 
     expect(aborting.cleaned).toBe(true);
+  });
+
+  it('rejects queued connect commands after close to avoid hangs', async () => {
+    const closeGate = createDeferred<void>();
+    const server = new SlowCloseServer('slow', closeGate);
+    const session = await connectMcpServers([server], {
+      connectInParallel: true,
+    });
+
+    const closePromise = session.close();
+    const reconnectPromise = session.reconnect({ failedOnly: false });
+    closeGate.resolve();
+
+    await closePromise;
+    await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
+    expect(session.failed).toEqual([server]);
+    expect(session.errors.get(server)?.name).toBe('ClosedError');
   });
 
   it('attaches async dispose when supported', async () => {
