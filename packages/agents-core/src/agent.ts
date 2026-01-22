@@ -259,8 +259,9 @@ export interface AgentConfiguration<
    * tools.
    *
    * NOTE: You are expected to manage the lifecycle of these servers. Specifically, you must call
-   * `server.connect()` before passing it to the agent, and `server.cleanup()` when the server is
-   * no longer needed.
+   * `server.connect()` before passing it to the agent, and `server.close()` when the server is
+   * no longer needed. Consider using `connectMcpServers` or `MCPServers` to keep open/close in
+   * the same place.
    */
   mcpServers: MCPServer[];
 

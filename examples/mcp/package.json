@@ -14,6 +14,7 @@
     "start:hosted-mcp-simple": "tsx hosted-mcp-simple.ts",
     "start:tool-filter": "tsx tool-filter-example.ts",
     "start:sse": "tsx sse-example.ts",
-    "start:get-all-tools": "tsx get-all-mcp-tools-example.ts"
+    "start:get-all-tools": "tsx get-all-mcp-tools-example.ts",
+    "start:mcp-servers": "tsx mcp-servers-example.ts"
   }
 }

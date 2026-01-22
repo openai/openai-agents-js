@@ -24,3 +24,9 @@ pnpm -F mcp start:tool-filter
 ```bash
 pnpm -F mcp start:get-all-tools
 ```
+
+`mcp-servers-example.ts` shows how to manage multiple servers with `MCPServers`:
+
+```bash
+pnpm -F mcp start:mcp-servers
+```

@@ -103,6 +103,12 @@ export {
   MCPToolCacheKeyGenerator,
 } from './mcp';
 export {
+  MCPServers,
+  MCPServersOptions,
+  MCPServersReconnectOptions,
+  connectMcpServers,
+} from './mcpServers';
+export {
   MCPToolFilterCallable,
   MCPToolFilterContext,
   MCPToolFilterStatic,
