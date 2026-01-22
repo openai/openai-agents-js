@@ -108,6 +108,7 @@ export class MCPServers {
   private failedServers: MCPServer[] = [];
   private failedServerSet = new Set<MCPServer>();
   private errorsByServer = new Map<MCPServer, Error>();
+  private suppressedAbortFailures = new Set<MCPServer>();
   private workers = new Map<MCPServer, ServerWorker>();
 
   private readonly connectTimeoutMs: number | null;
@@ -190,6 +191,7 @@ export class MCPServers {
       this.failedServers = [];
       this.failedServerSet = new Set();
       this.errorsByServer = new Map();
+      this.suppressedAbortFailures = new Set();
     }
 
     logger.debug(
@@ -215,6 +217,7 @@ export class MCPServers {
     this.failedServers = [];
     this.failedServerSet = new Set();
     this.errorsByServer = new Map();
+    this.suppressedAbortFailures = new Set();
 
     const serversToConnect = [...this.allServers];
     let connectedServers: MCPServer[] = [];
@@ -271,10 +274,13 @@ export class MCPServers {
       if (isAbortError(err)) {
         this.recordFailure(server, err, 'connect');
         if (!this.suppressAbortError) {
+          this.suppressedAbortFailures.delete(server);
           throw err;
         }
+        this.suppressedAbortFailures.add(server);
         return;
       }
+      this.suppressedAbortFailures.delete(server);
       this.recordFailure(server, err, 'connect');
       if (raiseOnError) {
         throw err;
@@ -373,12 +379,16 @@ export class MCPServers {
       throw rejection.reason;
     }
     if (this.strict && this.failedServers.length > 0) {
-      const firstFailure = this.failedServers[0];
-      const error = this.errorsByServer.get(firstFailure);
-      if (error) {
-        throw error;
+      const firstFailure = this.failedServers.find(
+        (server) => !this.suppressedAbortFailures.has(server),
+      );
+      if (firstFailure) {
+        const error = this.errorsByServer.get(firstFailure);
+        if (error) {
+          throw error;
+        }
+        throw new Error(`Failed to connect MCP server '${firstFailure.name}'.`);
       }
-      throw new Error(`Failed to connect MCP server '${firstFailure.name}'.`);
     }
   }
 
@@ -400,6 +410,7 @@ export class MCPServers {
     if (this.failedServerSet.has(server)) {
       this.failedServerSet.delete(server);
     }
+    this.suppressedAbortFailures.delete(server);
     this.failedServers = this.failedServers.filter(
       (failedServer) => failedServer !== server,
     );

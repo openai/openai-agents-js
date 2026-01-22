@@ -170,6 +170,19 @@ describe('MCPServers', () => {
     expect(aborting.cleaned).toBe(true);
   });
 
+  it('does not throw for suppressed aborts in parallel strict mode', async () => {
+    const aborting = new AbortConnectServer('aborting');
+    const session = await connectMcpServers([aborting], {
+      connectInParallel: true,
+      strict: true,
+      suppressAbortError: true,
+    });
+
+    expect(session.active).toEqual([]);
+    expect(session.failed).toEqual([aborting]);
+    expect(session.errors.get(aborting)?.name).toBe('AbortError');
+  });
+
   it('cleans up aborting servers in serial when suppressAbortError is false', async () => {
     const aborting = new AbortConnectServer('aborting');
 
