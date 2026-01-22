@@ -263,21 +263,20 @@ describe('MCPServers', () => {
     expect(aborting.cleaned).toBe(true);
   });
 
-  it('rejects queued connect commands after close to avoid hangs', async () => {
+  it('rejects commands while a timed-out close is still in flight', async () => {
     const closeGate = createDeferred<void>();
     const server = new SlowCloseServer('slow', closeGate);
     const session = await connectMcpServers([server], {
       connectInParallel: true,
+      closeTimeoutMs: 1,
     });
 
-    const closePromise = session.close();
+    await session.close();
     const reconnectPromise = session.reconnect({ failedOnly: false });
-    closeGate.resolve();
-
-    await closePromise;
     await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
     expect(session.failed).toEqual([server]);
-    expect(session.errors.get(server)?.name).toBe('ClosedError');
+    expect(session.errors.get(server)?.name).toBe('ClosingError');
+    closeGate.resolve();
   });
 
   it('allows retrying close after a failure in parallel workers', async () => {

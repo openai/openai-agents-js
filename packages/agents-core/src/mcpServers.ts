@@ -19,6 +19,8 @@ class ServerWorker {
   private queue: ServerCommand[] = [];
   private draining = false;
   private done = false;
+  private closing: Promise<void> | null = null;
+  private closeResult: Promise<void> | null = null;
 
   constructor(
     private readonly server: MCPServer,
@@ -45,10 +47,30 @@ class ServerWorker {
     if (this.done) {
       return Promise.reject(createClosedError(this.server));
     }
-    return new Promise((resolve, reject) => {
-      this.queue.push({ action, timeoutMs, resolve, reject });
-      void this.drain();
+    if (this.closeResult || this.closing) {
+      if (action === 'close' && this.closeResult) {
+        return this.closeResult;
+      }
+      return Promise.reject(createClosingError(this.server));
+    }
+    let resolveCommand: (() => void) | undefined;
+    let rejectCommand: ((error: Error) => void) | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveCommand = resolve;
+      rejectCommand = reject;
     });
+    const command = {
+      action,
+      timeoutMs,
+      resolve: resolveCommand!,
+      reject: rejectCommand!,
+    };
+    if (action === 'close') {
+      this.closeResult = promise;
+    }
+    this.queue.push(command);
+    void this.drain();
+    return promise;
   }
 
   private async drain(): Promise<void> {
@@ -71,8 +93,17 @@ class ServerWorker {
             createTimeoutError('connect', this.server, command.timeoutMs),
           );
         } else {
-          await runWithTimeout(
-            () => this.server.close(),
+          const closeTask = this.server.close();
+          this.closing = closeTask
+            .then(
+              () => undefined,
+              () => undefined,
+            )
+            .finally(() => {
+              this.closing = null;
+            });
+          await runWithTimeoutTask(
+            closeTask,
             command.timeoutMs,
             createTimeoutError('close', this.server, command.timeoutMs),
           );
@@ -93,6 +124,7 @@ class ServerWorker {
             pending.reject(pendingError);
           }
         }
+        this.closeResult = null;
         if (!closeError) {
           this.done = true;
         }
@@ -465,6 +497,12 @@ function createClosedError(server: MCPServer): Error {
   return error;
 }
 
+function createClosingError(server: MCPServer): Error {
+  const error = new Error(`MCP server '${server.name}' is closing.`);
+  error.name = 'ClosingError';
+  return error;
+}
+
 async function runWithTimeout(
   fn: () => Promise<void>,
   timeoutMs: number | null,
@@ -478,6 +516,38 @@ async function runWithTimeout(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const task = fn();
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    await Promise.race([task, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (timedOut) {
+      task.catch(() => undefined);
+    }
+  }
+}
+
+async function runWithTimeoutTask(
+  task: Promise<void>,
+  timeoutMs: number | null,
+  timeoutError: Error,
+): Promise<void> {
+  if (timeoutMs === null) {
+    await task;
+    return;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
