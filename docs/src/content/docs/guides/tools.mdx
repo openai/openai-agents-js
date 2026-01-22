@@ -144,6 +144,7 @@ For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
 See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example. Also, if you're looking for a comprehensitve guide for MCP server tool integration, refer to [MCP guide](/openai-agents-js/guides/mcp) for details.
+When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
 
 ---
 
