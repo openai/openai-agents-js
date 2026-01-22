@@ -4,8 +4,8 @@
   "dependencies": {
     "@ai-sdk/react": "^3.0.44",
     "@openai/agents": "workspace:*",
-    "@openai/agents-openai": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
+    "@openai/agents-openai": "workspace:*",
     "ai": "^6.0.42",
     "next": "16.1.4",
     "react": "^19.2.3",
@@ -25,6 +25,7 @@
     "start:script-ai-sdk": "tsx scripts/ai-sdk.ts"
   },
   "devDependencies": {
+    "@ai-sdk/openai": "^3.0.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
