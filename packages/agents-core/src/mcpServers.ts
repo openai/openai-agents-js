@@ -62,6 +62,7 @@ class ServerWorker {
         continue;
       }
       const shouldExit = command.action === 'close';
+      let closeError: Error | null = null;
       try {
         if (command.action === 'connect') {
           await runWithTimeout(
@@ -78,17 +79,23 @@ class ServerWorker {
         }
         command.resolve();
       } catch (error) {
-        command.reject(toError(error));
+        const err = toError(error);
+        command.reject(err);
+        if (shouldExit) {
+          closeError = err;
+        }
       }
       if (shouldExit) {
-        const pendingError = createClosedError(this.server);
+        const pendingError = closeError ?? createClosedError(this.server);
         while (this.queue.length > 0) {
           const pending = this.queue.shift();
           if (pending) {
             pending.reject(pendingError);
           }
         }
-        this.done = true;
+        if (!closeError) {
+          this.done = true;
+        }
         break;
       }
     }

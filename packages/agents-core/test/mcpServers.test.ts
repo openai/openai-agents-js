@@ -100,6 +100,24 @@ class SlowCloseServer extends BaseTestServer {
   }
 }
 
+class FlakyCloseServer extends BaseTestServer {
+  constructor(
+    name: string,
+    private failures: number,
+  ) {
+    super(name);
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error('close failed');
+    }
+    this.cleaned = true;
+  }
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -260,6 +278,21 @@ describe('MCPServers', () => {
     await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
     expect(session.failed).toEqual([server]);
     expect(session.errors.get(server)?.name).toBe('ClosedError');
+  });
+
+  it('allows retrying close after a failure in parallel workers', async () => {
+    const server = new FlakyCloseServer('flaky', 1);
+    const session = await connectMcpServers([server], {
+      connectInParallel: true,
+    });
+
+    await session.close();
+    expect(server.cleaned).toBe(false);
+    expect(server.closeCalls).toBe(1);
+
+    await session.close();
+    expect(server.cleaned).toBe(true);
+    expect(server.closeCalls).toBe(2);
   });
 
   it('attaches async dispose when supported', async () => {
