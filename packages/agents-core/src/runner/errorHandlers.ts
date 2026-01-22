@@ -161,6 +161,7 @@ export const tryHandleRunError = async <
     type: 'next_step_final_output',
     output: outputText,
   };
+  state._finalOutputSource = 'error_handler';
   await runOutputGuardrails(state, outputGuardrailDefs, outputText);
   state._currentTurnInProgress = false;
   emitAgentEnd(state._context, state._currentAgent, outputText);

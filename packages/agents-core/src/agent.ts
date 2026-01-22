@@ -666,20 +666,31 @@ export class Agent<
             `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
           );
         }
-        const outputText =
-          typeof customOutputExtractor === 'function'
-            ? await customOutputExtractor(completedResult)
-            : typeof completedResult.finalOutput !== 'undefined'
+        let outputText: string;
+        if (typeof customOutputExtractor === 'function') {
+          outputText = await customOutputExtractor(completedResult);
+        } else {
+          const finalOutputText =
+            typeof completedResult.finalOutput !== 'undefined'
               ? this.outputType === 'text'
                 ? String(completedResult.finalOutput)
                 : JSON.stringify(completedResult.finalOutput)
-              : completedResult.rawResponses.length > 0
-                ? getOutputText(
-                    completedResult.rawResponses[
-                      completedResult.rawResponses.length - 1
-                    ],
-                  )
-                : '';
+              : undefined;
+          const rawResponses = completedResult.rawResponses;
+          const rawOutputText =
+            rawResponses && rawResponses.length > 0
+              ? getOutputText(rawResponses[rawResponses.length - 1])
+              : undefined;
+          const normalizedRawOutputText =
+            typeof rawOutputText === 'string' && rawOutputText.trim() === ''
+              ? undefined
+              : rawOutputText;
+          const prefersFinalOutput =
+            completedResult.state?._finalOutputSource === 'error_handler';
+          outputText = prefersFinalOutput
+            ? (finalOutputText ?? normalizedRawOutputText ?? '')
+            : (normalizedRawOutputText ?? finalOutputText ?? '');
+        }
 
         if (details?.toolCall) {
           saveAgentToolRunResult(

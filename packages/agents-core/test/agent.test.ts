@@ -9,6 +9,7 @@ import {
   FakeModel,
   FakeModelProvider,
   TEST_MODEL_RESPONSE_BASIC,
+  TEST_MODEL_RESPONSE_WITH_FUNCTION,
 } from './stubs';
 import { Runner, RunConfig } from '../src/run';
 import logger from '../src/logger';
@@ -313,6 +314,57 @@ describe('Agent', () => {
     const output = await tool.invoke(new RunContext(), '{"input":"hi"}');
 
     expect(output).toBe('handled output');
+  });
+
+  it('prefers error handler output when maxTurns is exceeded after a model response', async () => {
+    const testTool = tool({
+      name: 'test',
+      description: 'desc',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'MaxTurnsToolAfterResponse',
+      instructions: 'Short runs.',
+      model: new FakeModel([
+        TEST_MODEL_RESPONSE_WITH_FUNCTION,
+        TEST_MODEL_RESPONSE_BASIC,
+      ]),
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+    const agentTool = agent.asTool({
+      toolDescription: 'desc',
+      runOptions: {
+        maxTurns: 1,
+        errorHandlers: {
+          maxTurns: () => ({ finalOutput: 'handled summary' }),
+        },
+      },
+    });
+
+    const output = await agentTool.invoke(new RunContext(), '{"input":"hi"}');
+
+    expect(output).toBe('handled summary');
+  });
+
+  it('falls back to final output when the last response has no output text', async () => {
+    const agent = new Agent({
+      name: 'FinalOutputFallback',
+      instructions: 'Fallback to tool output.',
+    });
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [{ output: [] }],
+      finalOutput: 'tool output',
+    } as any);
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    const output = await tool.invoke(new RunContext(), '{"input":"hi"}');
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledTimes(1);
   });
 
   it('streams nested agent events when onStream is provided and still returns final text', async () => {

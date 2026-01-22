@@ -323,6 +323,8 @@ export const SerializedRunState = z.object({
   trace: serializedTraceSchema.nullable(),
 });
 
+export type FinalOutputSource = 'error_handler' | 'turn_resolution';
+
 /**
  * Serializable snapshot of an agent's run, including context, usage and trace.
  * While this class has publicly writable properties (prefixed with `_`), they are not meant to be
@@ -430,6 +432,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Next step computed for the agent to take.
    */
   public _currentStep: NextStep | undefined = undefined;
+  /**
+   * Indicates how the final output was produced for the current run.
+   * This value is not serialized.
+   */
+  public _finalOutputSource: FinalOutputSource | undefined;
   /**
    * Parsed model response after applying guardrails and tools.
    */
