@@ -20,6 +20,8 @@ type ChatViewProps = {
   title: string;
   description: string;
   placeholder: string;
+  sessionId: string;
+  initialMessages?: UIMessage[];
   transport?: ChatTransport<UIMessage>;
 };
 
@@ -253,16 +255,14 @@ export default function ChatView({
   title,
   description,
   placeholder,
+  sessionId,
+  initialMessages,
   transport,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
-  const {
-    id: chatId,
-    messages,
-    sendMessage,
-    status,
-    error,
-  } = useChat({
+  const { messages, sendMessage, status, error } = useChat({
+    id: sessionId,
+    messages: initialMessages,
     transport,
   });
   const messageList = useMemo(() => messages ?? [], [messages]);
@@ -343,7 +343,7 @@ export default function ChatView({
           if (!input.trim()) {
             return;
           }
-          sendMessage({ text: input }, { body: { sessionId: chatId } });
+          sendMessage({ text: input }, { body: { sessionId } });
           setInput('');
         }}
         style={{

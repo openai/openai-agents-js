@@ -1,22 +1,53 @@
-'use client';
+import { redirect } from 'next/navigation';
+import { OpenAIConversationsSession } from '@openai/agents-openai';
+import { createSession, findSession } from '@/app/lib/session';
+import { toUiMessages } from '@/app/lib/messageConverters';
+import TextStreamChatClient from './TextStreamChatClient';
 
-import { useMemo } from 'react';
-import { TextStreamChatTransport } from 'ai';
+export const dynamic = 'force-dynamic';
 
-import ChatView from '../components/ChatView';
+const SESSION_QUERY_KEY = 'session';
 
-export default function TextStreamPage() {
-  const transport = useMemo(
-    () => new TextStreamChatTransport({ api: '/api/chat/text' }),
-    [],
-  );
+type PageProps = {
+  searchParams?:
+    | Record<string, string | string[] | undefined>
+    | Promise<Record<string, string | string[] | undefined>>;
+};
+
+function readSessionId(
+  searchParams: Record<string, string | string[] | undefined> | undefined,
+): string | undefined {
+  const value = searchParams?.[SESSION_QUERY_KEY];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+export default async function TextStreamPage({ searchParams }: PageProps) {
+  const resolvedSearchParams = await Promise.resolve(searchParams);
+  const sessionId = readSessionId(resolvedSearchParams);
+
+  if (!sessionId) {
+    const nextSessionId = crypto.randomUUID();
+    await createSession(nextSessionId);
+    redirect(`/text?${SESSION_QUERY_KEY}=${nextSessionId}`);
+  }
+
+  const entry = findSession(sessionId);
+  if (!entry) {
+    const fallbackSessionId = crypto.randomUUID();
+    await createSession(fallbackSessionId);
+    redirect(`/text?${SESSION_QUERY_KEY}=${fallbackSessionId}`);
+  }
+
+  const session = new OpenAIConversationsSession({
+    conversationId: entry.conversationId,
+  });
+  const historyItems = await session.getItems(10);
+  const initialMessages = toUiMessages(historyItems);
 
   return (
-    <ChatView
-      title="AI SDK UI Text Stream"
-      description="Text-only UI rendering using the Agents SDK text stream adapter."
-      placeholder="Ask about the night sky..."
-      transport={transport}
+    <TextStreamChatClient
+      sessionId={sessionId}
+      initialMessages={initialMessages}
     />
   );
 }

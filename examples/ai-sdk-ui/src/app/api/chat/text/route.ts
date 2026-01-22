@@ -2,13 +2,8 @@ import { Agent, run } from '@openai/agents';
 import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 import type { UIMessage } from 'ai';
 
-import { toAgentInput } from '../shared';
-
-type SessionEntry = {
-  previousResponseId?: string;
-};
-
-const sessionStore = new Map<string, SessionEntry>();
+import { toAgentInput } from '@/app/lib/messageConverters';
+import { findOrCreateSession } from '@/app/lib/session';
 
 const textAgent = new Agent({
   name: 'Sky Guide',
@@ -41,24 +36,10 @@ export async function POST(req: Request) {
     return new Response('Missing messages.', { status: 400 });
   }
 
-  let entry = sessionStore.get(sessionId);
-  if (!entry) {
-    entry = {};
-    sessionStore.set(sessionId, entry);
-  }
-
+  const entry = await findOrCreateSession(sessionId);
   const stream = await run(textAgent, input, {
     stream: true,
-    previousResponseId: entry.previousResponseId,
+    conversationId: entry.conversationId,
   });
-  void stream.completed
-    .then(() => {
-      const lastResponseId = stream.lastResponseId ?? entry.previousResponseId;
-      sessionStore.set(sessionId, {
-        ...entry,
-        previousResponseId: lastResponseId,
-      });
-    })
-    .catch(() => {});
   return createAiSdkTextStreamResponse(stream);
 }
