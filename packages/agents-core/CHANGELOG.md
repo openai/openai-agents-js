@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.4.2
+
+### Patch Changes
+
+- d76dcfd: fix: prefer error handler output for agent tools (ref #896)
+- 605670e: test(realtime,core,extensions): add coverage for approvals, tracing, MCP, and codex helpers
+- f1b6f7f: feat(agents-core): add maxTurns error handlers with runData snapshots
+- 7a1fc88: feat: add MCPServers lifecycle helper
+- 3a2bd9e: feat: add AI SDK data/text stream response adapters for streamed runs
+- 9d10652: fix(agents-core): prefer run tracing config when resuming run state
+
 ## 0.4.1
 
 ### Patch Changes

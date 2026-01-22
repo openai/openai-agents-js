@@ -1,5 +1,21 @@
 # @openai/agents
 
+## 0.4.2
+
+### Patch Changes
+
+- d76dcfd: fix: prefer error handler output for agent tools (ref #896)
+- f1b6f7f: feat(agents-core): add maxTurns error handlers with runData snapshots
+- Updated dependencies [d76dcfd]
+- Updated dependencies [605670e]
+- Updated dependencies [f1b6f7f]
+- Updated dependencies [7a1fc88]
+- Updated dependencies [3a2bd9e]
+- Updated dependencies [9d10652]
+  - @openai/agents-core@0.4.2
+  - @openai/agents-realtime@0.4.2
+  - @openai/agents-openai@0.4.2
+
 ## 0.4.1
 
 ### Patch Changes
