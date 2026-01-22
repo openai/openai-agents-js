@@ -198,20 +198,6 @@ The final output is the last thing the agent produces in the loop.
 - If the maximum number of turns is exceeded, a `MaxTurnsExceededError` is thrown unless it is handled.
 - If a guardrail is triggered, a `GuardrailTripwireTriggered` exception is raised.
 
-You can recover from a max turns error by providing an error handler:
-
-```ts
-const result = await run(agent, 'Summarize this thread', {
-  maxTurns: 3,
-  errorHandlers: {
-    maxTurns: ({ runData }) => ({
-      finalOutput: `Summary: ${runData.history.length} items processed.`,
-      includeInHistory: true,
-    }),
-  },
-});
-```
-
 ## Acknowledgements
 
 We'd like to acknowledge the excellent work of the open-source community, especially:
