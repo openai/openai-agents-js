@@ -488,6 +488,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   /**
+   * Returns the agent currently handling the run.
+   */
+  get currentAgent(): TAgent {
+    return this._currentAgent;
+  }
+
+  /**
    * Resets the counter that tracks how many items were persisted for the current turn.
    */
   public resetTurnPersistence(): void {

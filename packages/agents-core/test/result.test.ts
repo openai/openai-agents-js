@@ -28,6 +28,12 @@ describe('RunResult', () => {
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it('exposes the active agent', () => {
+    const state = createState();
+    const result = new RunResult(state);
+    expect(result.activeAgent).toBe(agent);
+  });
 });
 
 describe('StreamedRunResult', () => {
