@@ -50,6 +50,10 @@ export function applyTurnResult<
     state.resetTurnPersistence();
   }
   state._currentStep = turnResult.nextStep;
+  state._finalOutputSource =
+    turnResult.nextStep.type === 'next_step_final_output'
+      ? 'turn_resolution'
+      : undefined;
 }
 
 export async function resumeInterruptedTurn<

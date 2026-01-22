@@ -389,7 +389,10 @@ describe('ConsoleSpanExporter', () => {
   it('logs traces and spans when tracing is enabled', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const originalEnv = process.env.NODE_ENV;
+    const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
     process.env.NODE_ENV = 'production';
+    delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+    setTracingDisabled(false);
 
     const exporter = new ConsoleSpanExporter();
     const trace = new Trace({ name: 'trace', groupId: 'group_123' });
@@ -417,6 +420,12 @@ describe('ConsoleSpanExporter', () => {
 
     logSpy.mockRestore();
     process.env.NODE_ENV = originalEnv;
+    if (typeof originalDisableTracing === 'undefined') {
+      delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+    } else {
+      process.env.OPENAI_AGENTS_DISABLE_TRACING = originalDisableTracing;
+    }
+    setTracingDisabled(true);
   });
 });
 
