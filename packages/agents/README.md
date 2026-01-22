@@ -195,7 +195,7 @@ The final output is the last thing the agent produces in the loop.
 
 ### Error handling
 
-- If the maximum number of turns is exceeded, a `MaxTurnsExceededError` is thrown.
+- If the maximum number of turns is exceeded, a `MaxTurnsExceededError` is thrown unless it is handled.
 - If a guardrail is triggered, a `GuardrailTripwireTriggered` exception is raised.
 
 ## Acknowledgements

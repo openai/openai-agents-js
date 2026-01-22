@@ -5,7 +5,11 @@ import { Handoff, handoff } from '../src/handoff';
 import { tool } from '../src/tool';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
-import { FakeModelProvider } from './stubs';
+import {
+  FakeModel,
+  FakeModelProvider,
+  TEST_MODEL_RESPONSE_BASIC,
+} from './stubs';
 import { Runner, RunConfig } from '../src/run';
 import logger from '../src/logger';
 
@@ -288,6 +292,27 @@ describe('Agent', () => {
     expect(runnerInstance.config.modelSettings).toEqual(
       runConfig.modelSettings,
     );
+  });
+
+  it('uses handled final output when maxTurns error handler completes the tool run', async () => {
+    const agent = new Agent({
+      name: 'MaxTurnsTool',
+      instructions: 'Short runs.',
+      model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+    });
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+      runOptions: {
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({ finalOutput: 'handled output' }),
+        },
+      },
+    });
+
+    const output = await tool.invoke(new RunContext(), '{"input":"hi"}');
+
+    expect(output).toBe('handled output');
   });
 
   it('streams nested agent events when onStream is provided and still returns final text', async () => {

@@ -19,6 +19,7 @@ import {
   ModelInputData,
   type OutputGuardrailFunctionArgs,
   type AgentInputItem,
+  extractAllTextOutput,
   run,
   Runner,
   setDefaultModelProvider,
@@ -931,6 +932,45 @@ describe('Runner.run', () => {
       await expect(run(agent, 'x', { maxTurns: 0 })).rejects.toBeInstanceOf(
         MaxTurnsExceededError,
       );
+    });
+
+    it('max turn handler returns final output', async () => {
+      const agent = new Agent({
+        name: 'MaxSummary',
+        model: new FakeModel([
+          { output: [fakeModelMessage('nope')], usage: new Usage() },
+        ]),
+      });
+      const result = await run(agent, 'x', {
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: ({ runData }) => ({
+            finalOutput: `summary:${runData.history.length}`,
+          }),
+        },
+      });
+      expect(result.finalOutput).toBe('summary:1');
+      expect(extractAllTextOutput(result.newItems)).toBe('summary:1');
+    });
+
+    it('max turn handler can skip history updates', async () => {
+      const agent = new Agent({
+        name: 'MaxSummaryNoHistory',
+        model: new FakeModel([
+          { output: [fakeModelMessage('nope')], usage: new Usage() },
+        ]),
+      });
+      const result = await run(agent, 'x', {
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({
+            finalOutput: 'summary',
+            includeInHistory: false,
+          }),
+        },
+      });
+      expect(result.finalOutput).toBe('summary');
+      expect(result.newItems).toHaveLength(0);
     });
 
     it('enforces maxTurns across multiple model calls', async () => {
