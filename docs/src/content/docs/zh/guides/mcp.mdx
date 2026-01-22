@@ -12,87 +12,84 @@ import hostedConnectorExample from '../../../../../../examples/docs/mcp/hostedCo
 import streamableHttpExample from '../../../../../../examples/docs/mcp/streamableHttp.ts?raw';
 import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
+import mcpServersExample from '../../../../../../examples/docs/mcp/mcpServers.ts?raw';
 
-The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) 是一个开放协议，用于标准化应用如何向 LLM 提供工具与上下文。摘自 MCP 文档：
+[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) 是一种开放协议，用于标准化应用如何为 LLM 提供工具与上下文。来自 MCP 文档：
 
-> MCP 是一个开放协议，用于标准化应用如何向 LLM 提供上下文。可以把 MCP 想象成面向 AI 应用的 USB‑C 接口。正如 USB‑C 为设备连接各种外设与配件提供了标准化方式，MCP 也为将 AI 模型连接到不同数据源与工具提供了标准化方式。
+> MCP 是一种开放协议，用于标准化应用如何为 LLM 提供上下文。可以把 MCP 想象成面向 AI 应用的 USB‑C 接口。正如 USB‑C 为设备连接各种外设提供了标准化方式，MCP 为 AI 模型连接不同数据源与工具提供了标准化方式。
 
-本 SDK 支持三类 MCP 服务器：
+本 SDK 支持三种 MCP 服务器类型：
 
-1. **远程 MCP 服务器工具**——由 [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) 作为工具调用的远程 MCP 服务器
-2. **Streamable HTTP MCP 服务器**——实现了 [Streamable HTTP 传输](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http) 的本地或远程服务器
-3. **Stdio MCP 服务器**——通过标准输入/输出访问的服务器（最简单的选项）
+1. **托管 MCP 服务器工具** —— 由 [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) 作为工具调用的远程 MCP 服务器
+2. **Streamable HTTP MCP 服务器** —— 实现了 [Streamable HTTP 传输](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http) 的本地或远程服务器
+3. **Stdio MCP 服务器** —— 通过标准输入/输出访问的服务器（最简单的选项）
 
-> 注意：SDK 也包含用于传统 Server‑Sent Events 传输的 `MCPServerSSE`，但 SSE 已被 MCP 项目弃用。新的集成建议优先使用 Streamable HTTP 或 stdio。
+> 注意：SDK 也包含用于旧版 Server‑Sent Events 传输的 `MCPServerSSE`，但 SSE 已被 MCP 项目弃用。新的集成优先选择 Streamable HTTP 或 stdio。
 
-请根据使用场景选择服务器类型：
+请根据你的用例选择服务器类型：
 
-| 您的需求                                                    | 推荐选项                   |
-| ----------------------------------------------------------- | -------------------------- |
-| 使用默认 OpenAI responses 模型调用可公开访问的远程服务器    | **1. 远程 MCP 服务器工具** |
-| 使用可公开访问的远程服务器，但在本地触发工具调用            | **2. Streamable HTTP**     |
-| 使用本地运行的 Streamable HTTP 服务器                       | **2. Streamable HTTP**     |
-| 使用非 OpenAI‑Responses 模型调用任意 Streamable HTTP 服务器 | **2. Streamable HTTP**     |
-| 使用仅支持标准 I/O 协议的本地 MCP 服务器                    | **3. Stdio**               |
+| 你的需求                                                        | 推荐选项               |
+| --------------------------------------------------------------- | ---------------------- |
+| 使用默认的 OpenAI responses 模型调用可公开访问的远程服务器      | **1. 托管 MCP 工具**   |
+| 使用可公开访问的远程服务器，但由本地触发工具调用                | **2. Streamable HTTP** |
+| 使用本地运行的 Streamable HTTP 服务器                           | **2. Streamable HTTP** |
+| 使用任意 Streamable HTTP 服务器，且不使用 OpenAI Responses 模型 | **2. Streamable HTTP** |
+| 使用仅支持标准 I/O 协议的本地 MCP 服务器                        | **3. Stdio**           |
 
-## 1. 远程 MCP 服务器工具
+## 1. 托管 MCP 服务器工具
 
-托管工具将完整的往返交互推送到模型中。不是由您的代码调用 MCP 服务器，而是由 OpenAI Responses API 调用远程工具端点，并将结果流式传回模型。
+托管工具将整个往返流程交由模型处理。你的代码无需调用 MCP 服务器，OpenAI Responses API 会调用远程工具端点并将结果流回模型。
 
-以下是使用远程 MCP 服务器工具的最简单示例。您可以将远程 MCP 服务器的标签和 URL 传递给 `hostedMcpTool` 工具函数，以便创建远程 MCP 服务器工具。
+下面是使用托管 MCP 工具的最简单示例。你可以将远程 MCP 服务器的标签和 URL 传给 `hostedMcpTool` 实用函数，方便创建托管 MCP 服务器工具。
 
 <Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
 
-然后，您可以使用 `run` 函数（或您自定义的 `Runner` 实例的 `run` 方法）运行该 Agent：
+接着，你可以使用 `run` 函数（或你自定义的 `Runner` 实例的 `run` 方法）来运行该智能体：
 
-<Code
-  lang="typescript"
-  code={hostedExample}
-  title="Run with hosted MCP tools"
-/>
+<Code lang="typescript" code={hostedExample} title="使用托管 MCP 工具运行" />
 
 若要流式获取增量 MCP 结果，在运行 `Agent` 时传入 `stream: true`：
 
 <Code
   lang="typescript"
   code={hostedStreamExample}
-  title="Run with hosted MCP tools (streaming)"
+  title="使用托管 MCP 工具运行（流式传输）"
 />
 
-#### 可选审批流程
+#### 可选的审批流程
 
-对于敏感操作，您可以要求对每次工具调用进行人工审批。传入 `requireApproval: 'always'`，或传入一个更细粒度的对象，将工具名称映射到 `'never'`/`'always'`。
+对于敏感操作，你可以要求对单个工具调用进行人工审批。传入 `requireApproval: 'always'`，或传入一个将工具名映射到 `'never'`/`'always'` 的细粒度对象。
 
-如果您能以编程方式判断某次工具调用是否安全，可以使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)来批准或拒绝该调用。若需人工审批，您可以和本地函数工具一样，使用基于 `interruptions` 的相同[人机协作（HITL）方法](/openai-agents-js/zh/guides/human-in-the-loop/)。
+如果你可以通过程序判断工具调用是否安全，可使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)来批准或拒绝工具调用。若需要人工审批，你可以使用相同的[人机协作](/openai-agents-js/zh/guides/human-in-the-loop/)方法，通过 `interruptions` 来处理，就像本地函数工具一样。
 
 <Code
   lang="typescript"
   code={hostedHITLExample}
-  title="Human in the loop with hosted MCP tools"
+  title="托管 MCP 工具的人工干预"
 />
 
-### 基于 Connector 的托管服务器
+### 连接器支持的托管服务器
 
-托管 MCP 也支持 OpenAI connectors。无需提供 `serverUrl`，而是传入 connector 的 `connectorId` 和 `authorization` 令牌。Responses API 将处理认证，并通过托管 MCP 接口暴露该 connector 的工具。
+托管 MCP 也支持 OpenAI connectors。无需提供 `serverUrl`，改为传入连接器的 `connectorId` 和 `authorization` 令牌。Responses API 将处理身份验证，并通过托管 MCP 接口暴露该连接器的工具。
 
 <Code
   lang="typescript"
   code={hostedConnectorExample}
-  title="Connector-backed hosted MCP tool"
+  title="由连接器支持的托管 MCP 工具"
 />
 
-在此示例中，环境变量 `GOOGLE_CALENDAR_AUTHORIZATION` 保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权该基于 connector 的服务器调用 Calendar API。有关同时演示流式传输的可运行示例，请参阅[`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
+在此示例中，环境变量 `GOOGLE_CALENDAR_AUTHORIZATION` 保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权连接器支持的服务器调用 Calendar API。有关同时演示流式传输的可运行示例，请参见 [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
 
-完整可运行的示例（远程工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）见我们 GitHub 仓库中的 [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp)。
+完整可运行的示例（托管工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）位于我们 GitHub 仓库中的 [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp)。
 
 ## 2. Streamable HTTP MCP 服务器
 
-当您的 Agent 直接与本地或远程的 Streamable HTTP MCP 服务器通信时，请使用服务器的 `url`、`name` 以及可选设置来实例化 `MCPServerStreamableHttp`：
+当你的智能体直接与本地或远程的 Streamable HTTP MCP 服务器通信时，使用服务器的 `url`、`name` 和可选设置来实例化 `MCPServerStreamableHttp`：
 
 <Code
   lang="typescript"
   code={streamableHttpExample}
-  title="Run with Streamable HTTP MCP servers"
+  title="使用 Streamable HTTP MCP 服务器运行"
 />
 
 构造函数选项：
@@ -102,56 +99,86 @@ The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) 是一�
 | `url`                         | `string`                                       | Streamable HTTP 服务器 URL。              |
 | `name`                        | `string`                                       | 服务器的可选标签。                        |
 | `cacheToolsList`              | `boolean`                                      | 缓存工具列表以降低延迟。                  |
-| `clientSessionTimeoutSeconds` | `number`                                       | MCP 客户端会话超时。                      |
+| `clientSessionTimeoutSeconds` | `number`                                       | MCP 客户端会话的超时时间。                |
 | `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | 过滤可用工具。                            |
-| `timeout`                     | `number`                                       | 每次请求超时（毫秒）。                    |
+| `timeout`                     | `number`                                       | 每个请求的超时时间（毫秒）。              |
 | `logger`                      | `Logger`                                       | 自定义日志记录器。                        |
 | `authProvider`                | `OAuthClientProvider`                          | 来自 MCP TypeScript SDK 的 OAuth 提供方。 |
-| `requestInit`                 | `RequestInit`                                  | 请求的 fetch 初始化选项。                 |
+| `requestInit`                 | `RequestInit`                                  | 请求的 Fetch 初始化选项。                 |
 | `fetch`                       | `FetchLike`                                    | 自定义 fetch 实现。                       |
 | `reconnectionOptions`         | `StreamableHTTPReconnectionOptions`            | 重连调优选项。                            |
 | `sessionId`                   | `string`                                       | MCP 连接的显式会话 ID。                   |
 
-构造函数还接受其他 MCP TypeScript SDK 选项，如 `authProvider`、`requestInit`、`fetch`、`reconnectionOptions` 和 `sessionId`。详情参见 [MCP TypeScript SDK 仓库](https://github.com/modelcontextprotocol/typescript-sdk)及其文档。
+构造函数还接受 MCP TypeScript SDK 的其他选项，例如 `authProvider`、`requestInit`、`fetch`、`reconnectionOptions` 和 `sessionId`。详情参见 [MCP TypeScript SDK 仓库](https://github.com/modelcontextprotocol/typescript-sdk)及其文档。
 
 ## 3. Stdio MCP 服务器
 
-对于仅通过标准 I/O 暴露的服务器，使用 `fullCommand` 来实例化 `MCPServerStdio`：
+对于仅暴露标准 I/O 的服务器，使用 `fullCommand` 来实例化 `MCPServerStdio`：
 
-<Code
-  lang="typescript"
-  code={stdioExample}
-  title="Run with Stdio MCP servers"
-/>
+<Code lang="typescript" code={stdioExample} title="使用 Stdio MCP 服务器运行" />
 
 构造函数选项：
 
-| 选项                          | 类型                                           | 说明                                      |
-| ----------------------------- | ---------------------------------------------- | ----------------------------------------- |
-| `command` / `args`            | `string` / `string[]`                          | 面向 stdio 服务器的命令与参数。           |
-| `fullCommand`                 | `string`                                       | `command` + `args` 的完整命令字符串替代。 |
-| `env`                         | `Record<string, string>`                       | 服务器进程的环境变量。                    |
-| `cwd`                         | `string`                                       | 服务器进程的工作目录。                    |
-| `cacheToolsList`              | `boolean`                                      | 缓存工具列表以降低延迟。                  |
-| `clientSessionTimeoutSeconds` | `number`                                       | MCP 客户端会话超时。                      |
-| `name`                        | `string`                                       | 服务器的可选标签。                        |
-| `encoding`                    | `string`                                       | stdio 流的编码。                          |
-| `encodingErrorHandler`        | `'strict' \| 'ignore' \| 'replace'`            | 编码错误处理策略。                        |
-| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | 过滤可用工具。                            |
-| `timeout`                     | `number`                                       | 每次请求超时（毫秒）。                    |
-| `logger`                      | `Logger`                                       | 自定义日志记录器。                        |
+| 选项                          | 类型                                           | 说明                                          |
+| ----------------------------- | ---------------------------------------------- | --------------------------------------------- |
+| `command` / `args`            | `string` / `string[]`                          | 面向 stdio 服务器的命令与参数。               |
+| `fullCommand`                 | `string`                                       | `command` + `args` 的完整命令字符串替代方案。 |
+| `env`                         | `Record<string, string>`                       | 服务器进程的环境变量。                        |
+| `cwd`                         | `string`                                       | 服务器进程的工作目录。                        |
+| `cacheToolsList`              | `boolean`                                      | 缓存工具列表以降低延迟。                      |
+| `clientSessionTimeoutSeconds` | `number`                                       | MCP 客户端会话的超时时间。                    |
+| `name`                        | `string`                                       | 服务器的可选标签。                            |
+| `encoding`                    | `string`                                       | stdio 流的编码。                              |
+| `encodingErrorHandler`        | `'strict' \| 'ignore' \| 'replace'`            | 编码错误处理策略。                            |
+| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | 过滤可用工具。                                |
+| `timeout`                     | `number`                                       | 每个请求的超时时间（毫秒）。                  |
+| `logger`                      | `Logger`                                       | 自定义日志记录器。                            |
+
+## 管理 MCP 服务器生命周期
+
+当你使用多个 MCP 服务器时，可以使用 `connectMcpServers` 将它们连在一起、跟踪失败并在一个地方统一关闭。
+该助手会返回一个包含 `active`、`failed` 和 `errors` 集合的 `MCPServers` 实例，以便你只将健康的服务器传给智能体。
+
+<Code lang="typescript" code={mcpServersExample} title="管理多个 MCP 服务器" />
+
+使用场景：
+
+- **同时使用多个服务器**：并行连接所有服务器，并将 `mcpServers.active` 传给智能体。
+- **部分失败处理**：检查 `failed` 与 `errors`，决定继续还是重试。
+- **重试失败的服务器**：调用 `mcpServers.reconnect()`（默认仅重试失败的服务器）。
+
+如果你希望严格的“要么全部成功，要么全部失败”的连接，或需要不同的超时设置，请使用 `connectMcpServers(servers, options)` 并根据你的环境调整选项。
+
+### 异步释放（可选）
+
+如果你的运行时支持 `Symbol.asyncDispose`，`MCPServers` 也支持 `await using` 模式。
+在 TypeScript 中，在 `tsconfig.json` 中启用 `esnext.disposable`：
+
+```json
+{
+  "compilerOptions": {
+    "lib": ["ES2018", "DOM", "esnext.disposable"]
+  }
+}
+```
+
+然后你可以这样写：
+
+```ts
+await using mcpServers = await connectMcpServers(servers);
+```
 
 ## 其他须知
 
-对于 **Streamable HTTP** 和 **Stdio** 服务器，每次运行 `Agent` 时，可能会调用 `list_tools()` 来发现可用工具。由于该往返会增加延迟（对远程服务器尤其明显），您可以在内存中缓存结果：在 `MCPServerStdio` 或 `MCPServerStreamableHttp` 中传入 `cacheToolsList: true`。
+对于 **Streamable HTTP** 和 **Stdio** 服务器，每次 `Agent` 运行时可能会调用 `list_tools()` 来发现可用工具。由于该往返会带来延迟——尤其是对远程服务器——你可以通过向 `MCPServerStdio` 或 `MCPServerStreamableHttp` 传入 `cacheToolsList: true` 来将结果缓存在内存中。
 
-仅当您确信工具列表不会变化时再启用此选项。若要在之后使缓存失效，请在服务器实例上调用 `invalidateToolsCache()`。
+仅在你确信工具列表不会变化时启用该功能。若需稍后使缓存失效，请在服务器实例上调用 `invalidateToolsCache()`。
 
 ### 工具过滤
 
-您可以通过 `createMCPToolStaticFilter` 传入静态过滤器，或传入自定义函数来限制每个服务器暴露的工具。下面是一个组合示例，展示两种方式：
+你可以通过 `createMCPToolStaticFilter` 传入静态过滤器，或传入自定义函数，来限制每个服务器暴露的工具。下面是一个组合示例，展示了这两种方法：
 
-<Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
+<Code lang="typescript" code={toolFilterExample} title="工具过滤" />
 
 ## 延伸阅读
 
