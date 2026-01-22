@@ -6,7 +6,13 @@ export {
   setOpenAIAPI,
   setDefaultOpenAIKey,
   setTracingExportApiKey,
+  setOpenAIResponsesFallbackEnabled,
 } from './defaults';
+export {
+  sanitizeOpenAIResponsesInputItems,
+  type OpenAIResponsesFallbackMode,
+  type SanitizeOpenAIResponsesInputItemsOptions,
+} from './sanitizeOpenAIResponsesInputItems';
 export {
   setDefaultOpenAITracingExporter,
   OpenAITracingExporter,

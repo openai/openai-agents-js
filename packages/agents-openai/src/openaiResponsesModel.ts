@@ -1,5 +1,6 @@
 import {
   Model,
+  OPENAI_AGENTS_SESSION_REPLACEMENT_KEY,
   RequestUsage,
   Usage,
   withResponseSpan,
@@ -10,6 +11,7 @@ import {
   UserError,
 } from '@openai/agents-core';
 import type {
+  AgentInputItem,
   SerializedHandoff,
   SerializedTool,
   ModelRequest,
@@ -27,7 +29,7 @@ import {
   ToolChoiceTypes,
 } from 'openai/resources/responses/responses';
 import { z } from 'zod';
-import { HEADERS } from './defaults';
+import { HEADERS, isOpenAIResponsesFallbackEnabled } from './defaults';
 import {
   CodeInterpreterStatus,
   FileSearchStatus,
@@ -37,6 +39,10 @@ import {
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { ProviderData } from '@openai/agents-core/types';
 import { encodeUint8ArrayToBase64 } from '@openai/agents-core/utils';
+import {
+  sanitizeOpenAIResponsesInputItems,
+  type OpenAIResponsesFallbackMode,
+} from './sanitizeOpenAIResponsesInputItems';
 
 type ToolChoice =
   | ToolChoiceOptions
@@ -99,6 +105,18 @@ const HostedToolChoice = z.enum([
 ]);
 
 const DefaultToolChoice = z.enum(['auto', 'required', 'none']);
+
+// Captures sanitized input used during fallback retries so sessions can be repaired.
+type OpenAIResponsesFallbackInput = {
+  input: AgentInputItem[];
+  mode: OpenAIResponsesFallbackMode;
+};
+
+// Wraps an OpenAI response with optional fallback metadata for session repair.
+type FetchResponseResult<T> = {
+  response: T;
+  fallback?: OpenAIResponsesFallbackInput;
+};
 
 function getToolChoice(
   toolChoice?: ModelSettingsToolChoice,
@@ -1685,6 +1703,118 @@ export class OpenAIResponsesModel implements Model {
     return response;
   }
 
+  // Retry Responses API calls with sanitized input when fallback is enabled.
+  // Fallback is opt-in via setOpenAIResponsesFallbackEnabled or OPENAI_RESPONSES_FALLBACK.
+  // Returns the response plus the sanitized input so callers can repair sessions.
+  async #fetchResponseWithFallback(
+    request: ModelRequest,
+    stream: true,
+  ): Promise<FetchResponseResult<Stream<OpenAI.Responses.ResponseStreamEvent>>>;
+  async #fetchResponseWithFallback(
+    request: ModelRequest,
+    stream: false,
+  ): Promise<FetchResponseResult<OpenAI.Responses.Response>>;
+  async #fetchResponseWithFallback(
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<
+    | FetchResponseResult<Stream<OpenAI.Responses.ResponseStreamEvent>>
+    | FetchResponseResult<OpenAI.Responses.Response>
+  > {
+    if (stream) {
+      try {
+        return { response: await this.#fetchResponse(request, true) };
+      } catch (error) {
+        // default behavior: no fallback
+        if (!shouldAttemptFallback(error, request)) {
+          throw error;
+        }
+        if (!Array.isArray(request.input)) {
+          throw error;
+        }
+
+        // Fallback is opt-in via setOpenAIResponsesFallbackEnabled or OPENAI_RESPONSES_FALLBACK.
+        const store = request.modelSettings.store;
+        const repairedInput = sanitizeOpenAIResponsesInputItems(request.input, {
+          store,
+          mode: 'repair',
+        });
+        try {
+          return {
+            response: await this.#fetchResponse(
+              { ...request, input: repairedInput },
+              true,
+            ),
+            fallback: { input: repairedInput, mode: 'repair' },
+          };
+        } catch (retryError) {
+          if (!isFallbackRetryableError(retryError)) {
+            throw retryError;
+          }
+          const lastResortInput = sanitizeOpenAIResponsesInputItems(
+            request.input,
+            {
+              store,
+              mode: 'last_resort',
+            },
+          );
+          return {
+            response: await this.#fetchResponse(
+              { ...request, input: lastResortInput },
+              true,
+            ),
+            fallback: { input: lastResortInput, mode: 'last_resort' },
+          };
+        }
+      }
+    }
+    try {
+      return { response: await this.#fetchResponse(request, false) };
+    } catch (error) {
+      // default behavior: no fallback
+      if (!shouldAttemptFallback(error, request)) {
+        throw error;
+      }
+      if (!Array.isArray(request.input)) {
+        throw error;
+      }
+
+      // Fallback is opt-in via setOpenAIResponsesFallbackEnabled or OPENAI_RESPONSES_FALLBACK.
+      const store = request.modelSettings.store;
+      const repairedInput = sanitizeOpenAIResponsesInputItems(request.input, {
+        store,
+        mode: 'repair',
+      });
+      try {
+        return {
+          response: await this.#fetchResponse(
+            { ...request, input: repairedInput },
+            false,
+          ),
+          fallback: { input: repairedInput, mode: 'repair' },
+        };
+      } catch (retryError) {
+        if (!isFallbackRetryableError(retryError)) {
+          throw retryError;
+        }
+        const lastResortInput = sanitizeOpenAIResponsesInputItems(
+          request.input,
+          {
+            store,
+            mode: 'last_resort',
+          },
+        );
+        return {
+          response: await this.#fetchResponse(
+            { ...request, input: lastResortInput },
+            false,
+          ),
+          fallback: { input: lastResortInput, mode: 'last_resort' },
+        };
+      }
+    }
+  }
+
   /**
    * Get a response from the OpenAI model using the Responses API.
    * @param request - The request to send to the model.
@@ -1692,15 +1822,20 @@ export class OpenAIResponsesModel implements Model {
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
     const response = await withResponseSpan(async (span) => {
-      const response = await this.#fetchResponse(request, false);
-
+      const { response, fallback } = await this.#fetchResponseWithFallback(
+        request,
+        false,
+      );
+      const responseWithFallback = attachSessionReplacementIfExists(
+        response,
+        fallback,
+      );
       if (request.tracing) {
-        span.spanData.response_id = response.id;
+        span.spanData.response_id = responseWithFallback.id;
         span.spanData._input = request.input;
-        span.spanData._response = response;
+        span.spanData._response = responseWithFallback;
       }
-
-      return response;
+      return responseWithFallback;
     });
 
     const output: ModelResponse = {
@@ -1739,10 +1874,11 @@ export class OpenAIResponsesModel implements Model {
           span.spanData._input = request.input;
         }
       }
-      const response = await this.#fetchResponse(request, true);
+      const { response: stream, fallback } =
+        await this.#fetchResponseWithFallback(request, true);
 
       let finalResponse: OpenAI.Responses.Response | undefined;
-      for await (const event of response) {
+      for await (const event of stream) {
         if (event.type === 'response.created') {
           yield {
             type: 'response_started',
@@ -1751,9 +1887,14 @@ export class OpenAIResponsesModel implements Model {
             },
           };
         } else if (event.type === 'response.completed') {
-          finalResponse = event.response;
-          const { response, ...remainingEvent } = event;
-          const { output, usage, id, ...remainingResponse } = response;
+          const responseWithFallback = attachSessionReplacementIfExists(
+            event.response,
+            fallback,
+          );
+          finalResponse = responseWithFallback;
+          const { response: _response, ...remainingEvent } = event;
+          const { output, usage, id, ...remainingResponse } =
+            responseWithFallback;
           yield {
             type: 'response_done',
             response: {
@@ -1823,6 +1964,23 @@ export class OpenAIResponsesModel implements Model {
   }
 }
 
+// Annotate the raw response payload with sanitized fallback input so session replay can be repaired.
+function attachSessionReplacementIfExists<T extends OpenAI.Responses.Response>(
+  response: T,
+  fallback?: OpenAIResponsesFallbackInput,
+): T {
+  if (!fallback) {
+    return response;
+  }
+  return {
+    ...response,
+    [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+      input: fallback.input,
+      mode: fallback.mode,
+    },
+  } as T;
+}
+
 /**
  * Sending an empty string for instructions can override the prompt parameter.
  * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
@@ -1839,6 +1997,66 @@ function normalizeInstructions(
     return instructions;
   }
   return undefined;
+}
+
+function getErrorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: number })?.status;
+  if (typeof status === 'number') {
+    return status;
+  }
+  const responseStatus = (error as { response?: { status?: number } })?.response
+    ?.status;
+  return typeof responseStatus === 'number' ? responseStatus : undefined;
+}
+
+function isFallbackRetryableError(error: unknown): boolean {
+  const status = getErrorStatus(error);
+  return status === 400 || status === 404;
+}
+
+function hasItemIds(items: ModelRequest['input']): boolean {
+  if (!Array.isArray(items)) {
+    return false;
+  }
+  return items.some((item) => typeof (item as { id?: string }).id === 'string');
+}
+
+function hasReasoningItems(items: ModelRequest['input']): boolean {
+  if (!Array.isArray(items)) {
+    return false;
+  }
+  return items.some((item) => (item as { type?: string }).type === 'reasoning');
+}
+
+function isMissingItemError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('Item with id') ||
+    message.includes('Items are not persisted')
+  );
+}
+
+function shouldAttemptFallback(error: unknown, request: ModelRequest): boolean {
+  if (!isOpenAIResponsesFallbackEnabled()) {
+    return false;
+  }
+  if (!Array.isArray(request.input)) {
+    return false;
+  }
+  const status = getErrorStatus(error);
+  if (status === 400) {
+    return true;
+  }
+  if (status !== 404) {
+    return false;
+  }
+  if (!isMissingItemError(error)) {
+    return false;
+  }
+  if (request.modelSettings.store === false) {
+    return hasItemIds(request.input) || hasReasoningItems(request.input);
+  }
+  return hasItemIds(request.input);
 }
 
 function toRequestUsageEntry(

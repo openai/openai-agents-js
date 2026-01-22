@@ -4,6 +4,7 @@ import { UnknownContext } from './aliases';
 /**
  * OpenAI providerData type definition
  */
+
 export type HostedMCPTool<Context = UnknownContext> = {
   type: 'mcp';
   allowed_tools?: string[] | { tool_names: string[] };
@@ -71,3 +72,6 @@ export type HostedMCPApprovalResponse = {
   approval_request_id: string;
   reason?: string;
 };
+
+export const OPENAI_AGENTS_SESSION_REPLACEMENT_KEY =
+  '__openai_agents_session_replacement__';

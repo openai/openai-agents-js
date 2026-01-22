@@ -119,6 +119,7 @@ export {
   SerializedTool,
   SerializedOutputType,
 } from './model';
+export { OPENAI_AGENTS_SESSION_REPLACEMENT_KEY } from './types/providerData';
 export {
   OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME,
   gpt5ReasoningSettingsRequired,

@@ -22,6 +22,7 @@ import {
   tool,
   user,
   Session,
+  OPENAI_AGENTS_SESSION_REPLACEMENT_KEY,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
   RunState,
@@ -1542,6 +1543,275 @@ describe('Runner.run (streaming)', () => {
       content: redactedContent,
     });
     expect(JSON.stringify(persistedItems)).not.toContain(secretInput);
+  });
+
+  it('replaces session history when streaming response provides session replacement input', async () => {
+    class RecordingSession implements Session {
+      #history: AgentInputItem[] = [];
+      added: AgentInputItem[][] = [];
+      cleared = 0;
+
+      async getSessionId(): Promise<string> {
+        return 'replacement-session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.#history];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.added.push(items);
+        this.#history.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.#history.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.cleared += 1;
+        this.#history = [];
+      }
+    }
+
+    class FallbackStreamingModel implements Model {
+      constructor(private readonly response: ModelResponse) {}
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        return this.response;
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const usage = this.response.usage;
+        const output = this.response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        );
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r',
+            usage: {
+              requests: usage.requests,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+            },
+            output,
+            providerData: this.response.providerData,
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const fallbackInput = [user('repaired history')] as AgentInputItem[];
+    const model = new FallbackStreamingModel({
+      output: [fakeModelMessage('response')],
+      usage: new Usage(),
+      providerData: {
+        [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+          input: fallbackInput,
+        },
+      },
+    });
+    const agent = new Agent({ name: 'StreamFallback', model });
+    const session = new RecordingSession();
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'original input', {
+      stream: true,
+      session,
+    });
+
+    await result.completed;
+
+    const history = await session.getItems();
+    const historyTexts = history
+      .map((item) => getFirstTextContent(item))
+      .filter((text): text is string => typeof text === 'string');
+    expect(historyTexts).toContain('repaired history');
+    expect(historyTexts).not.toContain('original input');
+    expect(session.cleared).toBe(1);
+  });
+
+  it('replaces session history when replacement appears on an earlier streamed turn', async () => {
+    class RecordingSession implements Session {
+      #history: AgentInputItem[] = [];
+      cleared = 0;
+
+      async getSessionId(): Promise<string> {
+        return 'replacement-session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return [...this.#history];
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.#history.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.#history.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.cleared += 1;
+        this.#history = [];
+      }
+    }
+
+    class MultiTurnStreamingModel implements Model {
+      constructor(private readonly responses: ModelResponse[]) {}
+
+      async getResponse(): Promise<ModelResponse> {
+        const response = this.responses[0];
+        if (!response) {
+          throw new Error('No response found');
+        }
+        return response;
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        const usage = response.usage;
+        const output = response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        );
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r',
+            usage: {
+              requests: usage.requests,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+            },
+            output,
+            providerData: response.providerData,
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const testTool = tool({
+      name: 'test_tool',
+      description: 'A test tool',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const toolCall: protocol.FunctionCallItem = {
+      id: 'fc_1',
+      type: 'function_call',
+      name: 'test_tool',
+      callId: 'call_1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const fallbackInput = [user('repaired history')] as AgentInputItem[];
+    const model = new MultiTurnStreamingModel([
+      {
+        output: [toolCall],
+        usage: new Usage(),
+        providerData: {
+          [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+            input: fallbackInput,
+          },
+        },
+      },
+      {
+        output: [fakeModelMessage('final response')],
+        usage: new Usage(),
+      },
+    ]);
+    const agent = new Agent({
+      name: 'StreamFallbackMultiTurn',
+      model,
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+    const session = new RecordingSession();
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'original input', {
+      stream: true,
+      session,
+    });
+
+    for await (const _ of result.toStream()) {
+      // consume stream
+    }
+    await result.completed;
+
+    const history = await session.getItems();
+    const historyTexts = history
+      .map((item) => getFirstTextContent(item))
+      .filter((text): text is string => typeof text === 'string');
+    expect(historyTexts).toContain('repaired history');
+    expect(historyTexts).not.toContain('original input');
+    expect(session.cleared).toBe(1);
+  });
+
+  it('strips session replacement provider data when streaming without a session', async () => {
+    class FallbackStreamingModel implements Model {
+      constructor(private readonly response: ModelResponse) {}
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        return this.response;
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const usage = this.response.usage;
+        const output = this.response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        );
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r',
+            usage: {
+              requests: usage.requests,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+            },
+            output,
+            providerData: this.response.providerData,
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const fallbackInput = [user('repaired history')] as AgentInputItem[];
+    const model = new FallbackStreamingModel({
+      output: [fakeModelMessage('response')],
+      usage: new Usage(),
+      providerData: {
+        [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+          input: fallbackInput,
+        },
+      },
+    });
+    const agent = new Agent({ name: 'StreamNoSession', model });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'original input', {
+      stream: true,
+    });
+
+    await result.completed;
+
+    const providerData = result.state._lastTurnResponse?.providerData;
+    expect(
+      providerData?.[OPENAI_AGENTS_SESSION_REPLACEMENT_KEY],
+    ).toBeUndefined();
   });
 
   it('skips streaming session persistence when the server manages the conversation', async () => {

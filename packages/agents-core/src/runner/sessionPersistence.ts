@@ -11,6 +11,7 @@ import { AgentInputItem } from '../types';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
+import { OPENAI_AGENTS_SESSION_REPLACEMENT_KEY } from '../types/providerData';
 import {
   buildAgentInputPool,
   extractOutputItemsFromRunItems,
@@ -315,6 +316,65 @@ export async function saveStreamResultToSession(
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
   });
+}
+
+// Session replacement metadata is attached to providerData by model providers that repaired
+// a request. When present, we use the sanitized input as the new session history to prevent
+// repeated fallbacks on subsequent turns.
+export function extractSessionReplacementInput(
+  providerData: Record<string, unknown> | undefined,
+): AgentInputItem[] | undefined {
+  if (!providerData || typeof providerData !== 'object') {
+    return undefined;
+  }
+  const replacement = providerData[OPENAI_AGENTS_SESSION_REPLACEMENT_KEY];
+  if (
+    !replacement ||
+    typeof replacement !== 'object' ||
+    Array.isArray(replacement)
+  ) {
+    return undefined;
+  }
+  const payload = replacement as { input?: AgentInputItem[] };
+  return Array.isArray(payload.input) ? payload.input : undefined;
+}
+
+// Returns the most recent session replacement input from a sequence of responses.
+export function extractLatestSessionReplacementInput(
+  responses: Array<{ providerData?: Record<string, unknown> }> | undefined,
+): AgentInputItem[] | undefined {
+  if (!responses || responses.length === 0) {
+    return undefined;
+  }
+  let latest: AgentInputItem[] | undefined;
+  for (const response of responses) {
+    const replacement = extractSessionReplacementInput(response.providerData);
+    if (replacement) {
+      latest = replacement;
+    }
+  }
+  return latest;
+}
+
+// Strip session replacement metadata when there is no session consumer.
+export function removeSessionReplacementFromProviderData(
+  providerData: Record<string, unknown> | undefined,
+): void {
+  if (!providerData || typeof providerData !== 'object') {
+    return;
+  }
+  if (OPENAI_AGENTS_SESSION_REPLACEMENT_KEY in providerData) {
+    delete providerData[OPENAI_AGENTS_SESSION_REPLACEMENT_KEY];
+  }
+}
+
+// Replace the entire session history with sanitized fallback input, then append new outputs.
+export async function replaceSessionWithFallbackInput(
+  session: Session,
+  input: AgentInputItem[],
+): Promise<void> {
+  await session.clearSession();
+  await saveStreamInputToSession(session, input);
 }
 
 export async function prepareInputItemsWithSession(

@@ -24,6 +24,7 @@ import {
   setDefaultModelProvider,
   setTraceProcessors,
   setTracingDisabled,
+  OPENAI_AGENTS_SESSION_REPLACEMENT_KEY,
   BatchTraceProcessor,
   user,
   assistant,
@@ -1241,6 +1242,104 @@ describe('Runner.run', () => {
           ? (savedAssistant.content[0] as { providerData?: unknown })
           : undefined;
         expect(firstPart?.providerData).toEqual({ annotations: [] });
+      });
+
+      it('replaces session history when provider data requests session replacement', async () => {
+        const fallbackInput = [user('repaired history')] as AgentInputItem[];
+        const model = new RecordingModel([
+          {
+            output: [fakeModelMessage('response')],
+            usage: new Usage(),
+            providerData: {
+              [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+                input: fallbackInput,
+              },
+            },
+          },
+        ]);
+        const agent = new Agent({ name: 'SessionReplacement', model });
+        const session = new MemorySession([user('old history')]);
+        const runner = new Runner();
+
+        await runner.run(agent, 'new input', { session });
+
+        expect(session.added).toHaveLength(2);
+        const firstPersisted = session.added[0];
+        expect(getFirstTextContent(firstPersisted[0])).toBe('repaired history');
+        const finalHistory = await session.getItems();
+        const finalTexts = finalHistory
+          .map((item) => getFirstTextContent(item))
+          .filter((text): text is string => typeof text === 'string');
+        expect(finalTexts).toContain('repaired history');
+        expect(finalTexts).not.toContain('old history');
+      });
+
+      it('replaces session history when replacement appears on an earlier turn', async () => {
+        const fallbackInput = [user('repaired history')] as AgentInputItem[];
+        const toolCall: protocol.FunctionCallItem = {
+          id: 'fc_1',
+          type: 'function_call',
+          name: TEST_TOOL.name,
+          callId: 'call_1',
+          status: 'completed',
+          arguments: '{}',
+        };
+        const model = new RecordingModel([
+          {
+            output: [toolCall],
+            usage: new Usage(),
+            providerData: {
+              [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+                input: fallbackInput,
+              },
+            },
+          },
+          {
+            output: [fakeModelMessage('final response')],
+            usage: new Usage(),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'SessionReplacementMultiTurn',
+          model,
+          tools: [TEST_TOOL],
+          toolUseBehavior: 'run_llm_again',
+        });
+        const session = new MemorySession([user('old history')]);
+        const runner = new Runner();
+
+        await runner.run(agent, 'new input', { session });
+
+        const history = await session.getItems();
+        const historyTexts = history
+          .map((item) => getFirstTextContent(item))
+          .filter((text): text is string => typeof text === 'string');
+        expect(historyTexts).toContain('repaired history');
+        expect(historyTexts).not.toContain('old history');
+      });
+
+      it('strips session replacement provider data when no session is provided', async () => {
+        const fallbackInput = [user('repaired history')] as AgentInputItem[];
+        const model = new RecordingModel([
+          {
+            output: [fakeModelMessage('response')],
+            usage: new Usage(),
+            providerData: {
+              [OPENAI_AGENTS_SESSION_REPLACEMENT_KEY]: {
+                input: fallbackInput,
+              },
+            },
+          },
+        ]);
+        const agent = new Agent({ name: 'NoSessionReplacement', model });
+        const runner = new Runner();
+
+        const result = await runner.run(agent, 'new input');
+
+        const providerData = result.state._lastTurnResponse?.providerData;
+        expect(
+          providerData?.[OPENAI_AGENTS_SESSION_REPLACEMENT_KEY],
+        ).toBeUndefined();
       });
 
       it('allows list inputs with session history and no session input callback', async () => {

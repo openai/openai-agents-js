@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { OpenAIResponsesModel } from '../src/openaiResponsesModel';
-import { HEADERS } from '../src/defaults';
+import { HEADERS, setOpenAIResponsesFallbackEnabled } from '../src/defaults';
+import { sanitizeOpenAIResponsesInputItems } from '../src/sanitizeOpenAIResponsesInputItems';
 import type OpenAI from 'openai';
 import {
   setTracingDisabled,
+  OPENAI_AGENTS_SESSION_REPLACEMENT_KEY,
   withTrace,
   type ResponseStreamEvent,
   Span,
@@ -13,6 +15,10 @@ import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/re
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
     setTracingDisabled(true);
+  });
+
+  beforeAll(() => {
+    setOpenAIResponsesFallbackEnabled(false);
   });
   it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
     await withTrace('test', async () => {
@@ -104,6 +110,213 @@ describe('OpenAIResponsesModel', () => {
       expect(args.conversation).toBe('conv_123');
       expect(args.previous_response_id).toBeUndefined();
     });
+  });
+
+  it('retries with repaired input when fallback is enabled', async () => {
+    await withTrace('test', async () => {
+      setOpenAIResponsesFallbackEnabled(true);
+      const fakeResponse = {
+        id: 'res-fallback',
+        usage: {},
+        output: [],
+      };
+      const error = Object.assign(new Error('bad request'), { status: 400 });
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: [
+          { role: 'user', content: 'hello' },
+          {
+            type: 'reasoning',
+            id: 'rs_1',
+            content: [{ type: 'input_text', text: 'summary' }],
+            providerData: { encrypted_content: 'enc' },
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            name: 'tool',
+            callId: 'call_1',
+            arguments: '{}',
+            status: 'completed',
+          },
+          {
+            type: 'function_call_result',
+            id: 'fcr_1',
+            name: 'tool',
+            callId: 'call_1',
+            status: 'completed',
+            output: 'ok',
+          },
+        ],
+        modelSettings: { store: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const result = await model.getResponse(request as any);
+      expect(createMock).toHaveBeenCalledTimes(2);
+      const firstArgs = createMock.mock.calls[0][0];
+      const secondArgs = createMock.mock.calls[1][0];
+      const firstReasoning = firstArgs.input.find(
+        (item: { type?: string }) => item.type === 'reasoning',
+      );
+      const secondReasoning = secondArgs.input.find(
+        (item: { type?: string }) => item.type === 'reasoning',
+      );
+      expect(firstReasoning.summary.length).toBe(1);
+      expect(secondReasoning.summary.length).toBe(0);
+      const replacement = (
+        result.providerData as Record<string, any> | undefined
+      )?.[OPENAI_AGENTS_SESSION_REPLACEMENT_KEY];
+      const expectedInput = sanitizeOpenAIResponsesInputItems(
+        request.input as any,
+        { store: true, mode: 'repair' },
+      );
+      expect(replacement?.mode).toBe('repair');
+      expect(replacement?.input).toEqual(expectedInput);
+    });
+    setOpenAIResponsesFallbackEnabled(false);
+  });
+
+  it('retries with last resort input after a second 400', async () => {
+    await withTrace('test', async () => {
+      setOpenAIResponsesFallbackEnabled(true);
+      const fakeResponse = {
+        id: 'res-fallback-2',
+        usage: {},
+        output: [],
+      };
+      const error = Object.assign(new Error('bad request'), { status: 400 });
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: [
+          { role: 'user', content: 'hello' },
+          {
+            type: 'reasoning',
+            id: 'rs_1',
+            content: [{ type: 'input_text', text: 'summary' }],
+            providerData: { encrypted_content: 'enc' },
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            name: 'tool',
+            callId: 'call_1',
+            arguments: '{}',
+            status: 'completed',
+          },
+          {
+            type: 'function_call_result',
+            id: 'fcr_1',
+            name: 'tool',
+            callId: 'call_1',
+            status: 'completed',
+            output: 'ok',
+          },
+        ],
+        modelSettings: { store: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+      expect(createMock).toHaveBeenCalledTimes(3);
+      const lastArgs = createMock.mock.calls[2][0];
+      const hasToolCall = lastArgs.input.some(
+        (item: { type?: string }) => item.type === 'function_call',
+      );
+      const hasToolOutput = lastArgs.input.some(
+        (item: { type?: string }) => item.type === 'function_call_output',
+      );
+      expect(hasToolCall).toBe(false);
+      expect(hasToolOutput).toBe(false);
+      const fallbackMessage = lastArgs.input.find(
+        (item: { role?: string; content?: string }) =>
+          item.role === 'user' &&
+          typeof item.content === 'string' &&
+          item.content.includes('Tool outputs (fallback):'),
+      );
+      expect(fallbackMessage).toBeTruthy();
+    });
+    setOpenAIResponsesFallbackEnabled(false);
+  });
+
+  it('retries with repaired input on 404 missing item errors when fallback is enabled', async () => {
+    await withTrace('test', async () => {
+      setOpenAIResponsesFallbackEnabled(true);
+      const fakeResponse = {
+        id: 'res-fallback-404',
+        usage: {},
+        output: [],
+      };
+      const error = Object.assign(
+        new Error(
+          "404 Item with id 'rs_1' not found. Items are not persisted when `store` is set to false.",
+        ),
+        { status: 404 },
+      );
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: [
+          { role: 'user', content: 'hello', id: 'msg_1' },
+          {
+            type: 'reasoning',
+            id: 'rs_1',
+            content: [{ type: 'input_text', text: 'summary' }],
+            providerData: { encrypted_content: 'enc' },
+          },
+        ],
+        modelSettings: { store: false },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+      expect(createMock).toHaveBeenCalledTimes(2);
+      const secondArgs = createMock.mock.calls[1][0];
+      const hasReasoning = secondArgs.input.some(
+        (item: { type?: string }) => item.type === 'reasoning',
+      );
+      expect(hasReasoning).toBe(false);
+    });
+    setOpenAIResponsesFallbackEnabled(false);
   });
 
   it('sends prompt cache retention setting to the Responses API', async () => {

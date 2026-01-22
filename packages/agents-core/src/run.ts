@@ -58,10 +58,14 @@ import {
 } from './runner/streaming';
 import {
   createSessionPersistenceTracker,
+  extractLatestSessionReplacementInput,
+  extractSessionReplacementInput,
   prepareInputItemsWithSession,
+  replaceSessionWithFallbackInput,
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
+  removeSessionReplacementFromProviderData,
 } from './runner/sessionPersistence';
 import { resolveTurnAfterModelResponse } from './runner/turnResolution';
 import { prepareTurn } from './runner/turnPreparation';
@@ -457,14 +461,29 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         sessionPersistence?.recordTurnItems,
         preserveTurnPersistenceOnResume,
       );
+      const sessionReplacementInput = extractLatestSessionReplacementInput(
+        runResult.state._modelResponses,
+      );
       // See note above: allow sessions to run for callbacks/state but skip writes when the server
       // is the source of truth for transcript history.
       if (sessionPersistence && !serverManagesConversation) {
-        await saveToSession(
-          session,
-          sessionPersistence.getItemsForPersistence(),
-          runResult,
-        );
+        if (sessionReplacementInput && session) {
+          await replaceSessionWithFallbackInput(
+            session,
+            sessionReplacementInput,
+          );
+          await saveToSession(session, undefined, runResult);
+        } else {
+          await saveToSession(
+            session,
+            sessionPersistence.getItemsForPersistence(),
+            runResult,
+          );
+        }
+      } else if (!session) {
+        for (const response of runResult.state._modelResponses) {
+          removeSessionReplacementFromProviderData(response.providerData);
+        }
       }
       return runResult;
     };
@@ -918,6 +937,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
+    let latestSessionReplacementInput: AgentInputItem[] | undefined;
 
     try {
       while (true) {
@@ -1076,10 +1096,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               markInputOnce();
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
+                const replacement = extractSessionReplacementInput(
+                  parsed.response.providerData,
+                );
+                if (replacement) {
+                  latestSessionReplacementInput = replacement;
+                }
+                if (!options.session && replacement) {
+                  removeSessionReplacementFromProviderData(
+                    parsed.response.providerData,
+                  );
+                  const eventProviderData = event.response?.providerData;
+                  removeSessionReplacementFromProviderData(
+                    eventProviderData as Record<string, unknown> | undefined,
+                  );
+                }
                 finalResponse = {
                   usage: new Usage(parsed.response.usage),
                   output: parsed.response.output,
                   responseId: parsed.response.id,
+                  providerData: parsed.response.providerData,
                 };
                 result.state._context.usage.add(finalResponse.usage);
               }
@@ -1182,6 +1218,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
             if (!serverManagesConversation) {
+              if (latestSessionReplacementInput && options.session) {
+                await replaceSessionWithFallbackInput(
+                  options.session,
+                  latestSessionReplacementInput,
+                );
+                latestSessionReplacementInput = undefined;
+              } else if (!options.session) {
+                removeSessionReplacementFromProviderData(
+                  result.state._lastTurnResponse?.providerData,
+                );
+              }
               await saveStreamResultToSession(options.session, result);
             }
             this.emit(
@@ -1200,6 +1247,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // We are done for now. Don't run any output guardrails.
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
+              if (latestSessionReplacementInput && options.session) {
+                await replaceSessionWithFallbackInput(
+                  options.session,
+                  latestSessionReplacementInput,
+                );
+                latestSessionReplacementInput = undefined;
+              } else if (!options.session) {
+                removeSessionReplacementFromProviderData(
+                  result.state._lastTurnResponse?.providerData,
+                );
+              }
               await saveStreamResultToSession(options.session, result);
             }
             return;

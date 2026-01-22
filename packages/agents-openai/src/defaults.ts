@@ -9,6 +9,7 @@ let _defaultOpenAIAPI = DEFAULT_OPENAI_API;
 let _defaultOpenAIClient: OpenAI | undefined;
 let _defaultOpenAIKey: string | undefined = undefined;
 let _defaultTracingApiKey: string | undefined = undefined;
+let _openAIResponsesFallbackEnabled: boolean | undefined = undefined;
 
 export function setTracingExportApiKey(key: string) {
   _defaultTracingApiKey = key;
@@ -40,6 +41,19 @@ export function setDefaultOpenAIKey(key: string) {
 
 export function getDefaultOpenAIKey(): string | undefined {
   return _defaultOpenAIKey ?? loadEnv().OPENAI_API_KEY;
+}
+
+export function setOpenAIResponsesFallbackEnabled(enabled: boolean) {
+  _openAIResponsesFallbackEnabled = enabled;
+}
+
+export function isOpenAIResponsesFallbackEnabled(): boolean {
+  if (typeof _openAIResponsesFallbackEnabled === 'boolean') {
+    return _openAIResponsesFallbackEnabled;
+  }
+  const env = loadEnv();
+  const flag = env.OPENAI_RESPONSES_FALLBACK;
+  return flag === 'true' || flag === '1';
 }
 
 export const HEADERS = {
