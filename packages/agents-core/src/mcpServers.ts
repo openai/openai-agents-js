@@ -269,10 +269,10 @@ export class MCPServers {
     } catch (error) {
       const err = toError(error);
       if (isAbortError(err)) {
+        this.recordFailure(server, err, 'connect');
         if (!this.suppressAbortError) {
           throw err;
         }
-        this.recordFailure(server, err, 'connect');
         return;
       }
       this.recordFailure(server, err, 'connect');

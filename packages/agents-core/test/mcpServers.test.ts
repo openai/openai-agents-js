@@ -170,6 +170,16 @@ describe('MCPServers', () => {
     expect(aborting.cleaned).toBe(true);
   });
 
+  it('cleans up aborting servers in serial when suppressAbortError is false', async () => {
+    const aborting = new AbortConnectServer('aborting');
+
+    await expect(
+      connectMcpServers([aborting], { suppressAbortError: false }),
+    ).rejects.toThrow('connect aborted');
+
+    expect(aborting.cleaned).toBe(true);
+  });
+
   it('attaches async dispose when supported', async () => {
     const server = new BaseTestServer('server');
     const session = await connectMcpServers([server]);
