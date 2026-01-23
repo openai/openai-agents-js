@@ -1,0 +1,28 @@
+{
+  "private": true,
+  "name": "chatkit",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
+    "@openai/agents-openai": "workspace:*",
+    "@openai/chatkit-react": "^1.4.3",
+    "@openai/codex-sdk": "^0.89.0",
+    "next": "16.1.4",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "zod": "^4.0.0"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
+  }
+}

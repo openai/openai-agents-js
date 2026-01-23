@@ -34,6 +34,11 @@
       "require": "./dist/ai-sdk-ui/index.js",
       "import": "./dist/ai-sdk-ui/index.mjs"
     },
+    "./chatkit": {
+      "types": "./dist/chatkit/index.d.ts",
+      "require": "./dist/chatkit/index.js",
+      "import": "./dist/chatkit/index.mjs"
+    },
     "./experimental/codex": {
       "types": "./dist/experimental/codex/index.d.ts",
       "require": "./dist/experimental/codex/index.js",
@@ -44,7 +49,7 @@
     "ai": "^6.0.0",
     "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
     "@openai/agents": "workspace:>=0.0.0",
-    "@openai/codex-sdk": ">=0.86.0",
+    "@openai/codex-sdk": ">=0.89.0",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
   },
