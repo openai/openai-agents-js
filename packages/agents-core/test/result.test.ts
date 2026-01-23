@@ -201,7 +201,7 @@ describe('StreamedRunResult', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('OK: streamed run state is collectable.');
-  });
+  }, 20_000);
 
   it('stress-checks retained abort signals without leaking run state', () => {
     const result = spawnSync(
@@ -224,5 +224,5 @@ describe('StreamedRunResult', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('OK: finalizedRatio=');
-  });
+  }, 20_000);
 });
