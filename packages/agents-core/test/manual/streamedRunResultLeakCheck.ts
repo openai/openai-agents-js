@@ -20,6 +20,8 @@ import { getEventListeners } from 'node:events';
  * - LEAK_CHECK_DEBUG=1 prints extra diagnostics.
  * - LEAK_CHECK_ATTEMPTS=<n> increases GC cycles.
  * - LEAK_CHECK_PRESSURE_SIZE=<n> increases memory pressure per cycle.
+ * - LEAK_CHECK_FORCE_REMOVE_FAIL=1 forces removeEventListener to throw.
+ *   This stress mode is best-effort and may still fail due to GC nondeterminism.
  */
 
 type WeakRefLike<T extends object> = {
@@ -78,6 +80,27 @@ const retainSignals = process.env.LEAK_CHECK_RETAIN_SIGNAL !== '0';
 const debug = process.env.LEAK_CHECK_DEBUG === '1';
 const collectionAttempts = Number(process.env.LEAK_CHECK_ATTEMPTS ?? 120);
 const pressureSize = Number(process.env.LEAK_CHECK_PRESSURE_SIZE ?? 80_000);
+const forceRemoveFail = process.env.LEAK_CHECK_FORCE_REMOVE_FAIL === '1';
+
+function patchAbortSignalRemovalFailure(): (() => void) | undefined {
+  if (!forceRemoveFail) {
+    return undefined;
+  }
+  const proto = AbortSignal.prototype as {
+    removeEventListener?: typeof AbortSignal.prototype.removeEventListener;
+  };
+  const original = proto.removeEventListener;
+  if (typeof original !== 'function') {
+    return undefined;
+  }
+  // Simulate environments where listener detachment fails and the signal retains handlers.
+  proto.removeEventListener = (() => {
+    throw new Error('forced removeEventListener failure');
+  }) as typeof original;
+  return () => {
+    proto.removeEventListener = original;
+  };
+}
 
 const finalizedTokens = new Set<string>();
 // Use finalization tokens because WeakRef alone is not a stable assertion surface.
@@ -171,28 +194,33 @@ async function forceCollection(refs: ScenarioRefs): Promise<boolean> {
 }
 
 async function main() {
-  const doneRefs = await runScenario('done');
-  const errorRefs = await runScenario('error');
+  const restoreRemoveEventListener = patchAbortSignalRemovalFailure();
+  try {
+    const doneRefs = await runScenario('done');
+    const errorRefs = await runScenario('error');
 
-  const doneCollected = await forceCollection(doneRefs);
-  const errorCollected = await forceCollection(errorRefs);
+    const doneCollected = await forceCollection(doneRefs);
+    const errorCollected = await forceCollection(errorRefs);
 
-  if (!doneCollected || !errorCollected) {
-    if (debug) {
+    if (!doneCollected || !errorCollected) {
+      if (debug) {
+        console.error(
+          `done finalized: agent=${finalizedTokens.has(doneRefs.tokens.agent)} state=${finalizedTokens.has(doneRefs.tokens.state)} result=${finalizedTokens.has(doneRefs.tokens.result)}`,
+        );
+        console.error(
+          `error finalized: agent=${finalizedTokens.has(errorRefs.tokens.agent)} state=${finalizedTokens.has(errorRefs.tokens.state)} result=${finalizedTokens.has(errorRefs.tokens.result)}`,
+        );
+      }
       console.error(
-        `done finalized: agent=${finalizedTokens.has(doneRefs.tokens.agent)} state=${finalizedTokens.has(doneRefs.tokens.state)} result=${finalizedTokens.has(doneRefs.tokens.result)}`,
+        `collection failed: done=${doneCollected} error=${errorCollected}`,
       );
-      console.error(
-        `error finalized: agent=${finalizedTokens.has(errorRefs.tokens.agent)} state=${finalizedTokens.has(errorRefs.tokens.state)} result=${finalizedTokens.has(errorRefs.tokens.result)}`,
-      );
+      process.exit(1);
     }
-    console.error(
-      `collection failed: done=${doneCollected} error=${errorCollected}`,
-    );
-    process.exit(1);
-  }
 
-  console.log('OK: streamed run state is collectable.');
+    console.log('OK: streamed run state is collectable.');
+  } finally {
+    restoreRemoveEventListener?.();
+  }
 }
 
 main().catch((err) => {

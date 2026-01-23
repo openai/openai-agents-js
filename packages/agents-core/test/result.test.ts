@@ -13,6 +13,9 @@ const agent = new Agent({ name: 'A' });
 const leakCheckScript = fileURLToPath(
   new URL('./manual/streamedRunResultLeakCheck.ts', import.meta.url),
 );
+const leakStressScript = fileURLToPath(
+  new URL('./manual/streamedRunResultLeakStress.ts', import.meta.url),
+);
 
 function createState(): RunState<unknown, Agent<any, any>> {
   return new RunState(new RunContext(), '', agent, 1);
@@ -198,5 +201,28 @@ describe('StreamedRunResult', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('OK: streamed run state is collectable.');
+  });
+
+  it('stress-checks retained abort signals without leaking run state', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--expose-gc', '--import', 'tsx', leakStressScript],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NODE_ENV: 'test',
+          LEAK_STRESS_ITERATIONS: '250',
+          LEAK_STRESS_SNAPSHOT_EVERY: '250',
+          LEAK_STRESS_ABORT_AFTER_DONE: '0',
+          LEAK_STRESS_REMOVE_MODE: 'noop',
+          LEAK_STRESS_MIN_FINALIZED_RATIO: '0.9',
+          LEAK_STRESS_PRESSURE_SIZE: '120000',
+        },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('OK: finalizedRatio=');
   });
 });

@@ -26,6 +26,21 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 
+type AbortHandlerRef<T extends object> = {
+  current?: T;
+};
+
+function createAbortHandlerRef(): {
+  ref: AbortHandlerRef<() => void>;
+  handler: () => void;
+} {
+  const ref: AbortHandlerRef<() => void> = {};
+  const handler = () => {
+    ref.current?.();
+  };
+  return { ref, handler };
+}
+
 function combineAbortSignals(
   ...signals: (AbortSignal | undefined)[]
 ): AbortSignal | undefined {
@@ -321,6 +336,7 @@ export class StreamedRunResult<
   #cancelled: boolean = false;
   #streamLoopPromise: Promise<void> | undefined;
   #abortHandler: (() => void) | undefined;
+  #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
 
   constructor(
     result: {
@@ -354,10 +370,13 @@ export class StreamedRunResult<
     });
 
     if (this.#combinedSignal) {
-      const handleAbort = () => {
+      // Create the handler outside this scope so it cannot capture the run via lexical this.
+      const { ref: abortRef, handler: handleAbort } = createAbortHandlerRef();
+      abortRef.current = () => {
         this.#handleAbort();
       };
       this.#abortHandler = handleAbort;
+      this.#abortHandlerRef = abortRef;
 
       if (this.#combinedSignal.aborted) {
         handleAbort();
@@ -529,6 +548,10 @@ export class StreamedRunResult<
   }
 
   #detachAbortHandler() {
+    // Clear the indirection first so a retained signal cannot keep this run alive.
+    if (this.#abortHandlerRef) {
+      this.#abortHandlerRef.current = undefined;
+    }
     if (this.#combinedSignal && this.#abortHandler) {
       try {
         this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
@@ -537,5 +560,6 @@ export class StreamedRunResult<
       }
     }
     this.#abortHandler = undefined;
+    this.#abortHandlerRef = undefined;
   }
 }
