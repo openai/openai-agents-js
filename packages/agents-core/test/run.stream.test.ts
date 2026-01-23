@@ -33,6 +33,7 @@ import * as sessionPersistence from '../src/runner/sessionPersistence';
 import type { GuardrailFunctionOutput } from '../src/guardrail';
 import { ServerConversationTracker } from '../src/runner/conversation';
 import logger from '../src/logger';
+import { getEventListeners } from 'node:events';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -87,6 +88,29 @@ describe('Runner.run (streaming)', () => {
     await expect(result.completed).rejects.toThrow('Not implemented');
 
     expect((result.error as Error).message).toBe('Not implemented');
+  });
+
+  it('detaches abort listeners after streaming completion when signal is retained', async () => {
+    const agent = new Agent({
+      name: 'AbortDetach',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const result = await run(agent, 'hi', { stream: true });
+    const signal = result._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal.');
+    }
+    const retainedSignals = [signal];
+
+    await result.completed;
+
+    expect(getEventListeners(retainedSignals[0], 'abort').length).toBe(0);
   });
 
   it('emits agent_updated_stream_event with new agent on handoff', async () => {

@@ -5,9 +5,14 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { RunRawModelStreamEvent } from '../src/events';
 import logger from '../src/logger';
+import { spawnSync } from 'node:child_process';
 import { getEventListeners } from 'node:events';
+import { fileURLToPath } from 'node:url';
 
 const agent = new Agent({ name: 'A' });
+const leakCheckScript = fileURLToPath(
+  new URL('./manual/streamedRunResultLeakCheck.ts', import.meta.url),
+);
 
 function createState(): RunState<unknown, Agent<any, any>> {
   return new RunState(new RunContext(), '', agent, 1);
@@ -96,8 +101,10 @@ describe('StreamedRunResult', () => {
     controller.abort();
 
     const sr = new StreamedRunResult({ state, signal: controller.signal });
+    await Promise.resolve();
     const signal = sr._getAbortSignal();
 
+    expect(signal).toBeDefined();
     expect(signal?.aborted).toBe(true);
     expect(sr.cancelled).toBe(true);
     await expect(sr.completed).resolves.toBeUndefined();
@@ -177,5 +184,19 @@ describe('StreamedRunResult', () => {
     await expect(sr.completed).rejects.toBe(err);
 
     expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('does not retain state when the abort signal is retained', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--expose-gc', '--import', 'tsx', leakCheckScript],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, NODE_ENV: 'test' },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('OK: streamed run state is collectable.');
   });
 });
