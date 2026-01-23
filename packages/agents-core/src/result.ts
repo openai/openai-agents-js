@@ -311,6 +311,7 @@ export class StreamedRunResult<
 
   #error: unknown = null;
   #combinedSignal?: AbortSignal;
+  #abortSignalSnapshot?: AbortSignal;
   #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
@@ -334,6 +335,7 @@ export class StreamedRunResult<
       result.signal,
       this.#abortController.signal,
     );
+    this.#abortSignalSnapshot = this.#combinedSignal;
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
@@ -353,26 +355,7 @@ export class StreamedRunResult<
 
     if (this.#combinedSignal) {
       const handleAbort = () => {
-        if (this.#cancelled) {
-          this.#detachAbortHandler();
-          return;
-        }
-
-        this.#cancelled = true;
-
-        const controller = this.#readableController;
-        this.#readableController = undefined;
-
-        if (controller) {
-          try {
-            controller.close();
-          } catch (err) {
-            logger.debug(`Failed to close readable stream on abort: ${err}`);
-          }
-        }
-
-        this.#completedPromiseResolve?.();
-        this.#detachAbortHandler();
+        this.#handleAbort();
       };
       this.#abortHandler = handleAbort;
 
@@ -519,7 +502,30 @@ export class StreamedRunResult<
    * Returns the abort signal that should be used to cancel the streaming run.
    */
   _getAbortSignal(): AbortSignal | undefined {
-    return this.#combinedSignal;
+    return this.#abortSignalSnapshot ?? this.#combinedSignal;
+  }
+
+  #handleAbort() {
+    if (this.#cancelled) {
+      this.#detachAbortHandler();
+      return;
+    }
+
+    this.#cancelled = true;
+
+    const controller = this.#readableController;
+    this.#readableController = undefined;
+
+    if (controller) {
+      try {
+        controller.close();
+      } catch (err) {
+        logger.debug(`Failed to close readable stream on abort: ${err}`);
+      }
+    }
+
+    this.#completedPromiseResolve?.();
+    this.#detachAbortHandler();
   }
 
   #detachAbortHandler() {
