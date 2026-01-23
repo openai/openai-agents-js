@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.4.3
+
+### Patch Changes
+
+- e28d181: test: fail on unexpected stdout/stderr in Vitest
+- Updated dependencies [657cda6]
+- Updated dependencies [e28d181]
+- Updated dependencies [709fa6f]
+  - @openai/agents-core@0.4.3
+
 ## 0.4.2
 
 ### Patch Changes
