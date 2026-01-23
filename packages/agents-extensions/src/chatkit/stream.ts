@@ -366,10 +366,13 @@ export async function* streamChatKitEvents(
       if (!delta || !itemId || summaryIndex === null) {
         continue;
       }
-      if (
-        workflowItem.workflow.type === 'reasoning' &&
-        workflowItem.workflow.tasks.length === 0
-      ) {
+      const isActiveThought =
+        streamingThought &&
+        streamingThought.itemId === itemId &&
+        streamingThought.index === summaryIndex &&
+        workflowItem.workflow.tasks.includes(streamingThought.task);
+      const activeThought = streamingThought;
+      if (!isActiveThought || !activeThought) {
         streamingThought = {
           itemId,
           index: summaryIndex,
@@ -381,30 +384,23 @@ export async function* streamChatKitEvents(
           item_id: workflowItem.id,
           update: {
             type: 'workflow.task.added',
-            task_index: 0,
+            task_index: workflowItem.workflow.tasks.length - 1,
             task: streamingThought.task,
           },
         };
-      } else if (
-        streamingThought &&
-        streamingThought.itemId === itemId &&
-        streamingThought.index === summaryIndex &&
-        workflowItem.workflow.tasks.includes(streamingThought.task)
-      ) {
-        streamingThought.task.content += delta;
-        const taskIndex = workflowItem.workflow.tasks.indexOf(
-          streamingThought.task,
-        );
-        yield {
-          type: 'thread.item.updated',
-          item_id: workflowItem.id,
-          update: {
-            type: 'workflow.task.updated',
-            task_index: taskIndex,
-            task: streamingThought.task,
-          },
-        };
+        continue;
       }
+      activeThought.task.content += delta;
+      const taskIndex = workflowItem.workflow.tasks.indexOf(activeThought.task);
+      yield {
+        type: 'thread.item.updated',
+        item_id: workflowItem.id,
+        update: {
+          type: 'workflow.task.updated',
+          task_index: taskIndex,
+          task: activeThought.task,
+        },
+      };
       continue;
     }
 

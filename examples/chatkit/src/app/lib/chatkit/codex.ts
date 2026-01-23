@@ -69,6 +69,7 @@ async function* mergeWithPriority<T>(
   const secondaryQueue: T[] = [];
   let primaryDone = false;
   let secondaryDone = false;
+  let mergeError: unknown = null;
   const waiters: Array<() => void> = [];
 
   const notify = () => {
@@ -83,22 +84,38 @@ async function* mergeWithPriority<T>(
       waiters.push(resolve);
     });
 
+  const captureError = (error: unknown) => {
+    if (mergeError === null) {
+      mergeError = error;
+    }
+  };
+
   void (async () => {
-    for await (const value of primary) {
-      primaryQueue.push(value);
+    try {
+      for await (const value of primary) {
+        primaryQueue.push(value);
+        notify();
+      }
+    } catch (error) {
+      captureError(error);
+    } finally {
+      primaryDone = true;
       notify();
     }
-    primaryDone = true;
-    notify();
   })();
 
   void (async () => {
-    for await (const value of secondary) {
-      secondaryQueue.push(value);
+    try {
+      for await (const value of secondary) {
+        secondaryQueue.push(value);
+        notify();
+      }
+    } catch (error) {
+      captureError(error);
+    } finally {
+      secondaryDone = true;
       notify();
     }
-    secondaryDone = true;
-    notify();
   })();
 
   while (
@@ -107,6 +124,11 @@ async function* mergeWithPriority<T>(
     !primaryDone ||
     !secondaryDone
   ) {
+    if (mergeError !== null) {
+      throw mergeError instanceof Error
+        ? mergeError
+        : new Error(String(mergeError));
+    }
     if (primaryQueue.length > 0) {
       yield primaryQueue.shift() as T;
       continue;

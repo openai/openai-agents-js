@@ -349,6 +349,59 @@ describe('streamChatKitEvents', () => {
       expect(thirdUpdate.update.type).toBe('workflow.task.added');
     }
   });
+
+  test('streams reasoning deltas for summary indices beyond the first', async () => {
+    async function* source(): AsyncIterable<RunStreamEvent> {
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'resp_multi', summary: [] },
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'resp_multi',
+        summary_index: 0,
+        delta: 'First',
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'resp_multi',
+        summary_index: 0,
+        text: 'First done',
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'resp_multi',
+        summary_index: 1,
+        delta: 'Second',
+      });
+    }
+
+    const events = await collectEvents(
+      streamChatKitEvents(source(), {
+        threadId: 'thread_multi',
+        includeStreamOptions: false,
+      }),
+    );
+
+    const addedUpdates = events.filter(
+      (event) =>
+        event.type === 'thread.item.updated' &&
+        event.update.type === 'workflow.task.added',
+    );
+    expect(addedUpdates.length).toBeGreaterThanOrEqual(2);
+    const secondAdded = addedUpdates[1];
+    expect(secondAdded?.type).toBe('thread.item.updated');
+    if (secondAdded?.type === 'thread.item.updated') {
+      const update = secondAdded.update;
+      if (update.type === 'workflow.task.added') {
+        expect(update.task_index).toBe(1);
+        expect(update.task.type).toBe('thought');
+        if (update.task.type === 'thought') {
+          expect(update.task.content).toBe('Second');
+        }
+      }
+    }
+  });
 });
 
 describe('createChatKitSseResponse', () => {
