@@ -70,6 +70,34 @@ function appendAnnotation(
   itemMap.set(contentIndex, [annotation]);
 }
 
+function seedAnnotations(
+  state: AnnotationState,
+  counts: AnnotationIndexState,
+  itemId: string,
+  contentIndex: number,
+  annotations: ChatKitAnnotation[],
+): void {
+  if (annotations.length === 0) {
+    return;
+  }
+  let stateMap = state.get(itemId);
+  if (!stateMap) {
+    stateMap = new Map();
+    state.set(itemId, stateMap);
+  }
+  const existing = stateMap.get(contentIndex) ?? [];
+  const merged = [...existing, ...annotations];
+  stateMap.set(contentIndex, merged);
+
+  let countMap = counts.get(itemId);
+  if (!countMap) {
+    countMap = new Map();
+    counts.set(itemId, countMap);
+  }
+  const currentCount = countMap.get(contentIndex) ?? 0;
+  countMap.set(contentIndex, Math.max(currentCount, merged.length));
+}
+
 function readAnnotations(
   state: AnnotationState,
   itemId: string,
@@ -164,6 +192,15 @@ export async function* streamChatKitEvents(
       const content = await convertContentPart(part, converter);
       if (!content) {
         continue;
+      }
+      if (content.type === 'output_text') {
+        seedAnnotations(
+          annotationsByContent,
+          annotationCounts,
+          itemId,
+          contentIndex,
+          content.annotations,
+        );
       }
       yield {
         type: 'thread.item.updated',
@@ -489,5 +526,11 @@ export async function* streamChatKitEvents(
         generatedImageItems.delete(itemId);
       }
     }
+  }
+
+  if (workflowItem) {
+    yield endWorkflowItem(workflowItem);
+    workflowItem = null;
+    streamingThought = null;
   }
 }

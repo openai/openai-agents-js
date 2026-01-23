@@ -350,6 +350,40 @@ describe('streamChatKitEvents', () => {
     }
   });
 
+  test('finalizes workflow items when the stream ends without a message', async () => {
+    async function* source(): AsyncIterable<RunStreamEvent> {
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'resp_no_message', summary: [] },
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'resp_no_message',
+        summary_index: 0,
+        delta: 'Thinking',
+      });
+    }
+
+    const events = await collectEvents(
+      streamChatKitEvents(source(), {
+        threadId: 'thread_no_message',
+        includeStreamOptions: false,
+      }),
+    );
+
+    const doneEvent = events.find(
+      (event) =>
+        event.type === 'thread.item.done' && event.item.type === 'workflow',
+    );
+    expect(doneEvent?.type).toBe('thread.item.done');
+    if (doneEvent?.type === 'thread.item.done') {
+      expect(doneEvent.item.type).toBe('workflow');
+      if (doneEvent.item.type === 'workflow') {
+        expect(doneEvent.item.workflow.expanded).toBe(false);
+      }
+    }
+  });
+
   test('streams reasoning deltas for summary indices beyond the first', async () => {
     async function* source(): AsyncIterable<RunStreamEvent> {
       yield rawModelEvent({
