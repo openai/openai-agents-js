@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.4.3
+
+### Patch Changes
+
+- 657cda6: fix(agents-core): #905 detach abort listeners after streaming completion
+- e28d181: test: fail on unexpected stdout/stderr in Vitest
+- 709fa6f: test(agents-core): silence expected MCP server error logs in tests
+
 ## 0.4.2
 
 ### Patch Changes
