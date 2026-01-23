@@ -317,11 +317,6 @@ export async function* streamChatKitEvents(
       }
 
       if (item.type === 'message') {
-        if (workflowItem) {
-          yield endWorkflowItem(workflowItem);
-          workflowItem = null;
-          streamingThought = null;
-        }
         const messageId =
           typeof item.id === 'string' ? item.id : createId('message');
         const content = await convertContentArray(item.content, converter);

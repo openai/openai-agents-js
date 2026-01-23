@@ -205,6 +205,89 @@ describe('streamChatKitEvents', () => {
     }
   });
 
+  test('preserves content indices when unsupported parts are present', async () => {
+    async function* source(): AsyncIterable<RunStreamEvent> {
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: {
+          type: 'message',
+          id: 'msg_sparse',
+          content: [
+            { type: 'output_image', image_url: 'data:image/png;base64,AAAA' },
+            { type: 'output_text', text: '', annotations: [] },
+          ],
+        },
+      });
+      yield rawModelEvent({
+        type: 'response.content_part.added',
+        item_id: 'msg_sparse',
+        content_index: 1,
+        part: { type: 'output_text', text: '', annotations: [] },
+      });
+      yield rawModelEvent({
+        type: 'response.output_text.delta',
+        item_id: 'msg_sparse',
+        content_index: 1,
+        delta: 'Aligned',
+      });
+      yield rawModelEvent({
+        type: 'response.output_text.done',
+        item_id: 'msg_sparse',
+        content_index: 1,
+        text: 'Aligned text',
+      });
+      yield rawModelEvent({
+        type: 'response.output_item.done',
+        item: {
+          type: 'message',
+          id: 'msg_sparse',
+          content: [
+            { type: 'output_image', image_url: 'data:image/png;base64,AAAA' },
+            {
+              type: 'output_text',
+              text: 'Aligned text',
+              annotations: [],
+            },
+          ],
+        },
+      });
+    }
+
+    const events = await collectEvents(
+      streamChatKitEvents(source(), {
+        threadId: 'thread_sparse',
+        includeStreamOptions: false,
+      }),
+    );
+
+    const addedEvent = events.find(
+      (event) =>
+        event.type === 'thread.item.added' &&
+        event.item.type === 'assistant_message',
+    );
+    expect(addedEvent?.type).toBe('thread.item.added');
+    if (addedEvent?.type === 'thread.item.added') {
+      expect(addedEvent.item.type).toBe('assistant_message');
+      if (addedEvent.item.type === 'assistant_message') {
+        expect(addedEvent.item.content.length).toBe(2);
+        expect(addedEvent.item.content[0]?.text).toBe('');
+      }
+    }
+
+    const doneEvent = events.find(
+      (event) =>
+        event.type === 'thread.item.done' &&
+        event.item.type === 'assistant_message',
+    );
+    expect(doneEvent?.type).toBe('thread.item.done');
+    if (doneEvent?.type === 'thread.item.done') {
+      expect(doneEvent.item.type).toBe('assistant_message');
+      if (doneEvent.item.type === 'assistant_message') {
+        expect(doneEvent.item.content[1]?.text).toBe('Aligned text');
+      }
+    }
+  });
+
   test('respects createdAt option across message added and done events', async () => {
     const createdAt = '2024-01-02T03:04:05.000Z';
     async function* source(): AsyncIterable<RunStreamEvent> {
@@ -486,6 +569,74 @@ describe('streamChatKitEvents', () => {
         }
       }
     }
+  });
+
+  test('keeps reasoning workflow active when message items are added early', async () => {
+    async function* source(): AsyncIterable<RunStreamEvent> {
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'resp_reasoning', summary: [] },
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'resp_reasoning',
+        summary_index: 0,
+        delta: 'First',
+      });
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: { type: 'message', id: 'msg_early', content: [] },
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'resp_reasoning',
+        summary_index: 1,
+        delta: 'Later',
+      });
+      yield rawModelEvent({
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'resp_reasoning',
+        summary_index: 1,
+        text: 'Later done',
+      });
+      yield rawModelEvent({
+        type: 'response.output_item.done',
+        item: { type: 'message', id: 'msg_early', content: [] },
+      });
+    }
+
+    const rawEvents = await collectEvents(
+      streamChatKitEvents(source(), {
+        threadId: 'thread_reasoning',
+        includeStreamOptions: false,
+      }),
+    );
+    const events = JSON.parse(JSON.stringify(rawEvents)) as typeof rawEvents;
+
+    const addedUpdates = events.filter(
+      (event) =>
+        event.type === 'thread.item.updated' &&
+        event.update.type === 'workflow.task.added',
+    );
+    expect(addedUpdates.length).toBeGreaterThanOrEqual(2);
+
+    const messageAddedIndex = events.findIndex(
+      (event) =>
+        event.type === 'thread.item.added' &&
+        event.item.type === 'assistant_message' &&
+        event.item.id === 'msg_early',
+    );
+    expect(messageAddedIndex).toBeGreaterThanOrEqual(0);
+
+    const workflowUpdateAfterMessage = events
+      .slice(messageAddedIndex + 1)
+      .some(
+        (event) =>
+          event.type === 'thread.item.updated' &&
+          (event.update.type === 'workflow.task.added' ||
+            event.update.type === 'workflow.task.updated'),
+      );
+    expect(workflowUpdateAfterMessage).toBe(true);
   });
 });
 

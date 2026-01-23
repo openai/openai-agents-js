@@ -169,7 +169,10 @@ export async function convertContentArray(
     const converted = await convertContentPart(part, converter);
     if (converted) {
       output.push(converted);
+      continue;
     }
+    // Preserve positional indices so streaming content_index values stay aligned.
+    output.push({ type: 'output_text', text: '', annotations: [] });
   }
   return output;
 }
