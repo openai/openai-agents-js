@@ -5,6 +5,7 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { RunRawModelStreamEvent } from '../src/events';
 import logger from '../src/logger';
+import { getEventListeners } from 'node:events';
 
 const agent = new Agent({ name: 'A' });
 
@@ -87,5 +88,40 @@ describe('StreamedRunResult', () => {
     await expect(sr.completed).resolves.toBeUndefined();
     expect(sr.cancelled).toBe(true);
     expect(sr.error).toBe(null);
+  });
+
+  it('removes abort listeners after completion', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    sr._done();
+    await sr.completed;
+
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('removes abort listeners after errors', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    const err = new Error('boom');
+    sr._raiseError(err);
+    await expect(sr.completed).rejects.toBe(err);
+
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
   });
 });

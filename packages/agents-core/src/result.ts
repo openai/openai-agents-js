@@ -319,6 +319,7 @@ export class StreamedRunResult<
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
   #streamLoopPromise: Promise<void> | undefined;
+  #abortHandler: (() => void) | undefined;
 
   constructor(
     result: {
@@ -353,6 +354,7 @@ export class StreamedRunResult<
     if (this.#combinedSignal) {
       const handleAbort = () => {
         if (this.#cancelled) {
+          this.#detachAbortHandler();
           return;
         }
 
@@ -370,7 +372,9 @@ export class StreamedRunResult<
         }
 
         this.#completedPromiseResolve?.();
+        this.#detachAbortHandler();
       };
+      this.#abortHandler = handleAbort;
 
       if (this.#combinedSignal.aborted) {
         handleAbort();
@@ -402,6 +406,7 @@ export class StreamedRunResult<
       this.#readableController = undefined;
       this.#completedPromiseResolve?.();
     }
+    this.#detachAbortHandler();
   }
 
   /**
@@ -418,6 +423,7 @@ export class StreamedRunResult<
     this.#completedPromise.catch((e) => {
       logger.debug(`Resulted in an error: ${e}`);
     });
+    this.#detachAbortHandler();
   }
 
   /**
@@ -514,5 +520,17 @@ export class StreamedRunResult<
    */
   _getAbortSignal(): AbortSignal | undefined {
     return this.#combinedSignal;
+  }
+
+  #detachAbortHandler() {
+    if (this.#combinedSignal && this.#abortHandler) {
+      try {
+        this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
+      } catch (err) {
+        logger.debug(`Failed to remove abort listener: ${err}`);
+      }
+    }
+    this.#abortHandler = undefined;
+    this.#combinedSignal = undefined;
   }
 }
