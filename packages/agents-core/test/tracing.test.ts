@@ -27,6 +27,7 @@ import {
 } from '../src/tracing/processor';
 
 import coreLogger from '../src/logger';
+import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import {
   withTrace,
@@ -369,6 +370,7 @@ describe('Runner tracing configuration', () => {
 
 describe('ConsoleSpanExporter', () => {
   it('skips export when tracing is disabled', async () => {
+    allowConsole(['log']);
     const debugSpy = vi.spyOn(coreLogger, 'debug').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     setTracingDisabled(true);
@@ -387,6 +389,7 @@ describe('ConsoleSpanExporter', () => {
   });
 
   it('logs traces and spans when tracing is enabled', async () => {
+    allowConsole(['log']);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const originalEnv = process.env.NODE_ENV;
     const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
