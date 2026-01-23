@@ -90,6 +90,47 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(null);
   });
 
+  it('removes abort listeners when the stream is cancelled by the consumer', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    const reader = (sr.toStream() as any).getReader();
+    await reader.cancel();
+    await sr.completed;
+
+    expect(sr.cancelled).toBe(true);
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+  });
+
+  it('ignores external aborts after the run has already completed', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const signal = sr._getAbortSignal();
+
+    expect(signal).toBeDefined();
+    if (!signal) {
+      throw new Error('Expected an abort signal');
+    }
+    expect(getEventListeners(signal, 'abort').length).toBe(1);
+
+    sr._done();
+    await sr.completed;
+    expect(getEventListeners(signal, 'abort').length).toBe(0);
+
+    controller.abort();
+
+    expect(sr.cancelled).toBe(false);
+    expect(sr.error).toBe(null);
+  });
+
   it('removes abort listeners after completion', async () => {
     const state = createState();
     const sr = new StreamedRunResult({ state });
