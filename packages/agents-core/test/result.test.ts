@@ -90,6 +90,19 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(null);
   });
 
+  it('preserves an already-aborted signal for the run loop', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    controller.abort();
+
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const signal = sr._getAbortSignal();
+
+    expect(signal?.aborted).toBe(true);
+    expect(sr.cancelled).toBe(true);
+    await expect(sr.completed).resolves.toBeUndefined();
+  });
+
   it('removes abort listeners when the stream is cancelled by the consumer', async () => {
     const state = createState();
     const sr = new StreamedRunResult({ state });

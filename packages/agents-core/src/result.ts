@@ -531,6 +531,5 @@ export class StreamedRunResult<
       }
     }
     this.#abortHandler = undefined;
-    this.#combinedSignal = undefined;
   }
 }
