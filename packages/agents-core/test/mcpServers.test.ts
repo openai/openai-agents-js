@@ -1,6 +1,23 @@
-import { describe, it, expect } from 'vitest';
-import { connectMcpServers } from '../src/mcpServers';
+import { describe, expect, it, vi } from 'vitest';
 import type { CallToolResultContent, MCPServer, MCPTool } from '../src/mcp';
+
+vi.mock('../src/logger', async () => {
+  const actual =
+    await vi.importActual<typeof import('../src/logger')>('../src/logger');
+  return {
+    ...actual,
+    getLogger: (namespace?: string) => {
+      const base = actual.getLogger(namespace);
+      return {
+        ...base,
+        error: () => {},
+        warn: () => {},
+      };
+    },
+  };
+});
+
+import { connectMcpServers } from '../src/mcpServers';
 
 class BaseTestServer implements MCPServer {
   public cacheToolsList = false;

@@ -26,6 +26,21 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 
+type AbortHandlerRef<T extends object> = {
+  current?: T;
+};
+
+function createAbortHandlerRef(): {
+  ref: AbortHandlerRef<() => void>;
+  handler: () => void;
+} {
+  const ref: AbortHandlerRef<() => void> = {};
+  const handler = () => {
+    ref.current?.();
+  };
+  return { ref, handler };
+}
+
 function combineAbortSignals(
   ...signals: (AbortSignal | undefined)[]
 ): AbortSignal | undefined {
@@ -311,6 +326,7 @@ export class StreamedRunResult<
 
   #error: unknown = null;
   #combinedSignal?: AbortSignal;
+  #abortSignalSnapshot?: AbortSignal;
   #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
@@ -319,6 +335,8 @@ export class StreamedRunResult<
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
   #streamLoopPromise: Promise<void> | undefined;
+  #abortHandler: (() => void) | undefined;
+  #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
 
   constructor(
     result: {
@@ -333,6 +351,7 @@ export class StreamedRunResult<
       result.signal,
       this.#abortController.signal,
     );
+    this.#abortSignalSnapshot = this.#combinedSignal;
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
@@ -351,26 +370,13 @@ export class StreamedRunResult<
     });
 
     if (this.#combinedSignal) {
-      const handleAbort = () => {
-        if (this.#cancelled) {
-          return;
-        }
-
-        this.#cancelled = true;
-
-        const controller = this.#readableController;
-        this.#readableController = undefined;
-
-        if (controller) {
-          try {
-            controller.close();
-          } catch (err) {
-            logger.debug(`Failed to close readable stream on abort: ${err}`);
-          }
-        }
-
-        this.#completedPromiseResolve?.();
+      // Create the handler outside this scope so it cannot capture the run via lexical this.
+      const { ref: abortRef, handler: handleAbort } = createAbortHandlerRef();
+      abortRef.current = () => {
+        this.#handleAbort();
       };
+      this.#abortHandler = handleAbort;
+      this.#abortHandlerRef = abortRef;
 
       if (this.#combinedSignal.aborted) {
         handleAbort();
@@ -402,6 +408,7 @@ export class StreamedRunResult<
       this.#readableController = undefined;
       this.#completedPromiseResolve?.();
     }
+    this.#detachAbortHandler();
   }
 
   /**
@@ -418,6 +425,7 @@ export class StreamedRunResult<
     this.#completedPromise.catch((e) => {
       logger.debug(`Resulted in an error: ${e}`);
     });
+    this.#detachAbortHandler();
   }
 
   /**
@@ -513,6 +521,45 @@ export class StreamedRunResult<
    * Returns the abort signal that should be used to cancel the streaming run.
    */
   _getAbortSignal(): AbortSignal | undefined {
-    return this.#combinedSignal;
+    return this.#abortSignalSnapshot ?? this.#combinedSignal;
+  }
+
+  #handleAbort() {
+    if (this.#cancelled) {
+      this.#detachAbortHandler();
+      return;
+    }
+
+    this.#cancelled = true;
+
+    const controller = this.#readableController;
+    this.#readableController = undefined;
+
+    if (controller) {
+      try {
+        controller.close();
+      } catch (err) {
+        logger.debug(`Failed to close readable stream on abort: ${err}`);
+      }
+    }
+
+    this.#completedPromiseResolve?.();
+    this.#detachAbortHandler();
+  }
+
+  #detachAbortHandler() {
+    // Clear the indirection first so a retained signal cannot keep this run alive.
+    if (this.#abortHandlerRef) {
+      this.#abortHandlerRef.current = undefined;
+    }
+    if (this.#combinedSignal && this.#abortHandler) {
+      try {
+        this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
+      } catch (err) {
+        logger.debug(`Failed to remove abort listener: ${err}`);
+      }
+    }
+    this.#abortHandler = undefined;
+    this.#abortHandlerRef = undefined;
   }
 }

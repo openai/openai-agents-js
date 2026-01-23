@@ -60,8 +60,8 @@ export function getLogger(namespace: string = 'openai-agents'): Logger {
   return {
     namespace,
     debug: debug(namespace),
-    error: console.error,
-    warn: console.warn,
+    error: (...args: any[]) => console.error(...args),
+    warn: (...args: any[]) => console.warn(...args),
     dontLogModelData,
     dontLogToolData,
   };
