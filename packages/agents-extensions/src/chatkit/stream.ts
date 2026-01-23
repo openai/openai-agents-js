@@ -322,9 +322,22 @@ export async function* streamChatKitEvents(
           workflowItem = null;
           streamingThought = null;
         }
-        const content = await convertContentArray(item.content, converter);
         const messageId =
           typeof item.id === 'string' ? item.id : createId('message');
+        const content = await convertContentArray(item.content, converter);
+        for (let i = 0; i < content.length; i += 1) {
+          const part = content[i];
+          if (part?.type !== 'output_text') {
+            continue;
+          }
+          seedAnnotations(
+            annotationsByContent,
+            annotationCounts,
+            messageId,
+            i,
+            part.annotations,
+          );
+        }
         const createdAt = resolveCreatedAt(
           messageId,
           item.created_at ?? item.createdAt,

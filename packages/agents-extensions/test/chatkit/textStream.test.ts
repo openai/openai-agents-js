@@ -154,6 +154,57 @@ describe('streamChatKitEvents', () => {
     }
   });
 
+  test('seeds annotation indices from pre-populated message content', async () => {
+    async function* source(): AsyncIterable<RunStreamEvent> {
+      yield rawModelEvent({
+        type: 'response.output_item.added',
+        item: {
+          type: 'message',
+          id: 'msg_seeded',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Hello',
+              annotations: [
+                { type: 'file_citation', filename: 'seeded.txt', index: 1 },
+              ],
+            },
+          ],
+        },
+      });
+      yield rawModelEvent({
+        type: 'response.output_text.annotation.added',
+        item_id: 'msg_seeded',
+        content_index: 0,
+        annotation: {
+          type: 'file_citation',
+          filename: 'later.txt',
+          index: 2,
+        },
+      });
+    }
+
+    const events = await collectEvents(
+      streamChatKitEvents(source(), {
+        threadId: 'thread_seeded',
+        includeStreamOptions: false,
+      }),
+    );
+
+    const annotationEvent = events.find(
+      (event) =>
+        event.type === 'thread.item.updated' &&
+        event.update.type === 'assistant_message.content_part.annotation_added',
+    );
+    expect(annotationEvent?.type).toBe('thread.item.updated');
+    if (annotationEvent?.type === 'thread.item.updated') {
+      const update = annotationEvent.update;
+      if (update.type === 'assistant_message.content_part.annotation_added') {
+        expect(update.annotation_index).toBe(1);
+      }
+    }
+  });
+
   test('respects createdAt option across message added and done events', async () => {
     const createdAt = '2024-01-02T03:04:05.000Z';
     async function* source(): AsyncIterable<RunStreamEvent> {
