@@ -11,6 +11,7 @@ import { protocol, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import type { JSONSchema7, LanguageModelV2 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
+import { allowConsole } from '../../../../helpers/tests/console-guard';
 
 function stubModel(
   partial: Partial<Pick<LanguageModelV2, 'doGenerate' | 'doStream'>>,
@@ -939,6 +940,7 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('handles function call output', async () => {
+    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = new AiSdkModel(
       stubModel({
@@ -1058,6 +1060,7 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('falls back to result.providerMetadata when toolCall.providerMetadata is undefined', async () => {
+    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resultProviderMetadata = { fallback: true };
 

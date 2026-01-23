@@ -1,6 +1,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
+import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import type { MessageEvent as NodeMessageEvent } from 'ws';
 import type { MessageEvent } from 'undici-types';
@@ -64,6 +65,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('connect handles messages and events', async () => {
+    allowConsole(['error']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
@@ -175,6 +177,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('resets counters on new Twilio start and handles invalid marks', async () => {
+    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({

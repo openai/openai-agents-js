@@ -69,7 +69,7 @@ describe('RealtimeAgent handoffs', () => {
       parameters,
       execute: async ({ message }, runContext) => {
         // if you want to access history data, the type parameter must be RealtimeContextData<SessionContext>
-        console.log(runContext?.context?.history);
+        void runContext?.context?.history;
         return `${runContext?.context?.userId}: ${message}`;
       },
     });
