@@ -18,8 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      COREPACK_HOME: ${{ runner.temp }}/corepack
-      XDG_CACHE_HOME: ${{ runner.temp }}/.cache
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
@@ -35,6 +33,11 @@ jobs:
         with:
           node-version: 22
           cache: 'pnpm'
+
+      - name: Configure Corepack cache
+        run: |
+          echo "COREPACK_HOME=$RUNNER_TEMP/corepack" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/.cache" >> "$GITHUB_ENV"
 
       - name: Enable Corepack
         run: corepack enable
