@@ -18,9 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      COREPACK_HOME: ${{ github.workspace }}/.corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.cache
+      TMPDIR: ${{ github.workspace }}/.tmp
+      TEMP: ${{ github.workspace }}/.tmp
+      TMP: ${{ github.workspace }}/.tmp
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+
+      - name: Prepare Corepack cache dirs
+        run: |
+          mkdir -p "$COREPACK_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
 
       - name: Install pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
@@ -33,11 +42,6 @@ jobs:
         with:
           node-version: 22
           cache: 'pnpm'
-
-      - name: Configure Corepack cache
-        run: |
-          echo "COREPACK_HOME=$RUNNER_TEMP/corepack" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$RUNNER_TEMP/.cache" >> "$GITHUB_ENV"
 
       - name: Enable Corepack
         run: corepack enable
