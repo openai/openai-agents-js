@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      COREPACK_HOME: ${{ runner.temp }}/corepack
+      XDG_CACHE_HOME: ${{ runner.temp }}/.cache
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
