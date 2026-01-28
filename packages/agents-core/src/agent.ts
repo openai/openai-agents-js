@@ -9,7 +9,7 @@ import {
   gpt5ReasoningSettingsRequired,
   isGpt5Default,
 } from './defaultModel';
-import type { RunContext } from './runContext';
+import { RunContext } from './runContext';
 import {
   type FunctionTool,
   type FunctionToolResult,
@@ -19,6 +19,7 @@ import {
   type ToolEnabledFunction,
 } from './tool';
 import type {
+  AgentInputItem,
   ResolvedAgentOutput,
   JsonSchemaDefinition,
   HandoffsOutput,
@@ -27,6 +28,7 @@ import type {
 import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
+import { RunState } from './runState';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isAgentToolInput } from './utils/typeGuards';
@@ -53,6 +55,13 @@ type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
   StreamRunOptions<TContext, TAgent>,
   'stream'
 >;
+
+// Controls how nested tool resume reconciles context with serialized RunState.
+type AgentToolResumeContextStrategy = 'merge' | 'replace' | 'preferSerialized';
+
+type AgentToolResumeStateOptions = {
+  contextStrategy?: AgentToolResumeContextStrategy;
+};
 
 type AgentToolStreamEvent<TAgent extends Agent<any, any>> = {
   // Raw stream event emitted by the nested agent run.
@@ -560,6 +569,10 @@ export class Agent<
        */
       runOptions?: AgentToolRunOptions<TContext, TAgent>;
       /**
+       * Controls how context is applied when resuming from serialized run state.
+       */
+      resumeState?: AgentToolResumeStateOptions;
+      /**
        * Determines whether this tool should be exposed to the model for the current run.
        */
       isEnabled?:
@@ -581,6 +594,7 @@ export class Agent<
       needsApproval,
       runConfig,
       runOptions,
+      resumeState,
       isEnabled,
       onStream,
     } = options;
@@ -617,17 +631,53 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
+        const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
+        const resumeContext =
+          resumeContextStrategy === 'preferSerialized'
+            ? undefined
+            : runOptions?.context instanceof RunContext
+              ? runOptions.context
+              : typeof runOptions?.context !== 'undefined'
+                ? new RunContext(runOptions.context)
+                : context;
+        let runInput: string | AgentInputItem[] | RunState<TContext, TAgent> =
+          data.input;
+        if (details?.resumeState) {
+          if (resumeContextStrategy === 'preferSerialized' || !resumeContext) {
+            runInput = await RunState.fromString<TContext, TAgent>(
+              this,
+              details.resumeState,
+            );
+          } else {
+            if (
+              resumeContextStrategy === 'merge' &&
+              context &&
+              resumeContext !== context
+            ) {
+              resumeContext._mergeApprovals(context.toJSON().approvals);
+            }
+            runInput = await RunState.fromStringWithContext<TContext, TAgent>(
+              this,
+              details.resumeState,
+              resumeContext,
+              {
+                contextStrategy:
+                  resumeContextStrategy === 'replace' ? 'replace' : 'merge',
+              },
+            );
+          }
+        }
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
           typeof onStream === 'function' || eventHandlers.size > 0;
         const result = shouldStream
-          ? await runner.run(this, data.input, {
+          ? await runner.run(this, runInput, {
               context,
               ...(runOptions ?? {}),
               stream: true,
             })
-          : await runner.run(this, data.input, {
+          : await runner.run(this, runInput, {
               context,
               ...(runOptions ?? {}),
             });

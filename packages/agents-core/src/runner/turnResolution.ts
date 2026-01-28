@@ -382,10 +382,15 @@ export async function resolveInterruptedTurn<TContext>(
       }
     }
   }
-  // Run function tools that require approval after they get their approval results
+  // Run function tools that require approval or are resuming a nested agent tool run.
   const functionToolRuns = processedResponse.functions.filter((run) => {
     const callId = run.toolCall.callId;
-    if (!functionCallIds.includes(callId)) {
+    if (!callId) {
+      return false;
+    }
+    const isApprovedCall = functionCallIds.includes(callId);
+    const isPendingNested = state.hasPendingAgentToolRun(run.tool.name, callId);
+    if (!isApprovedCall && !isPendingNested) {
       return false;
     }
     return !completedFunctionCallIds.has(callId);
@@ -463,6 +468,13 @@ export async function resolveInterruptedTurn<TContext>(
     appendRunItemIfNew(item, newItems, appendContext);
 
   for (const result of functionResults) {
+    if (
+      result.type === 'function_output' &&
+      Array.isArray(result.interruptions) &&
+      result.interruptions.length > 0
+    ) {
+      continue;
+    }
     appendIfNew(result.runItem);
   }
 
@@ -638,6 +650,13 @@ export async function resolveTurnAfterModelResponse<TContext>(
     ]);
 
   for (const result of functionResults) {
+    if (
+      result.type === 'function_output' &&
+      Array.isArray(result.interruptions) &&
+      result.interruptions.length > 0
+    ) {
+      continue;
+    }
     appendIfNew(result.runItem);
   }
   for (const item of computerResults) {

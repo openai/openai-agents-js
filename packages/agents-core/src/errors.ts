@@ -51,7 +51,7 @@ export type ToolInvocationErrorContext = {
   /** The invalid tool input produced by the model. */
   input?: string;
   /** The details of the tool call made by the model. */
-  details?: { toolCall: protocol.FunctionCallItem };
+  details?: { toolCall: protocol.FunctionCallItem; resumeState?: string };
 };
 
 /**

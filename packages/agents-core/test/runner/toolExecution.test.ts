@@ -941,6 +941,23 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
     });
 
+    it('clears pending nested agent run when approval is rejected', async () => {
+      const t = makeTool(true);
+      state.setPendingAgentToolRun(t.name, toolCall.callId, 'pending-state');
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+
+      await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(state.hasPendingAgentToolRun(t.name, toolCall.callId)).toBe(false);
+    });
+
     it('runs tool and emits events on success', async () => {
       const t = makeTool(false);
       const start = vi.fn();

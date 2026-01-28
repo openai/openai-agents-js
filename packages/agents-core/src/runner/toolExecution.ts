@@ -250,6 +250,7 @@ async function handleFunctionApproval<TContext>(
   });
 
   if (approval === false) {
+    state.clearPendingAgentToolRun(toolRun.tool.name, toolRun.toolCall.callId);
     return await buildApprovalRejectionResult(deps, toolRun);
   }
 
@@ -294,10 +295,14 @@ async function runApprovedFunctionTool<TContext>(
         if (inputGuardrailResult.type === 'reject') {
           toolOutput = inputGuardrailResult.message;
         } else {
+          const resumeState = state.getPendingAgentToolRun(
+            toolRun.tool.name,
+            toolRun.toolCall.callId,
+          );
           toolOutput = await toolRun.tool.invoke(
             state._context,
             toolRun.toolCall.arguments,
-            { toolCall: toolRun.toolCall },
+            { toolCall: toolRun.toolCall, resumeState },
           );
           toolOutput = await runToolOutputGuardrails({
             guardrails: toolRun.tool.outputGuardrails,
@@ -344,6 +349,16 @@ async function runApprovedFunctionTool<TContext>(
           const nestedInterruptions = nestedRunResult.interruptions;
           if (nestedInterruptions.length > 0) {
             functionResult.interruptions = nestedInterruptions;
+            state.setPendingAgentToolRun(
+              toolRun.tool.name,
+              toolRun.toolCall.callId,
+              nestedRunResult.state.toString(),
+            );
+          } else {
+            state.clearPendingAgentToolRun(
+              toolRun.tool.name,
+              toolRun.toolCall.callId,
+            );
           }
         }
 

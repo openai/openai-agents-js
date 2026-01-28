@@ -12,8 +12,15 @@ const rawItem = {
   arguments: '{}',
 };
 
-function createApproval() {
-  return new ToolApprovalItem(rawItem as any, agent);
+function createApproval(callId = '123', toolName = 'toolX') {
+  return new ToolApprovalItem(
+    {
+      ...rawItem,
+      callId,
+      name: toolName,
+    } as any,
+    agent,
+  );
 }
 
 describe('RunContext', () => {
@@ -41,6 +48,20 @@ describe('RunContext', () => {
   it('rebuilds approvals map', () => {
     const ctx = new RunContext();
     ctx._rebuildApprovals({ other: { approved: true, rejected: [] } });
+    expect(ctx.isToolApproved({ toolName: 'other', callId: '1' })).toBe(true);
+  });
+
+  it('merges approvals without discarding existing entries', () => {
+    const ctx = new RunContext();
+    ctx.approveTool(createApproval('a'), {});
+    ctx._mergeApprovals({
+      toolX: { approved: ['b'], rejected: ['c'] },
+      other: { approved: true, rejected: [] },
+    });
+
+    expect(ctx.isToolApproved({ toolName: 'toolX', callId: 'a' })).toBe(true);
+    expect(ctx.isToolApproved({ toolName: 'toolX', callId: 'b' })).toBe(true);
+    expect(ctx.isToolApproved({ toolName: 'toolX', callId: 'c' })).toBe(false);
     expect(ctx.isToolApproved({ toolName: 'other', callId: '1' })).toBe(true);
   });
 });

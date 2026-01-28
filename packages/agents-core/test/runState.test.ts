@@ -79,6 +79,22 @@ describe('RunState', () => {
     expect(restored.history).toEqual(state.history);
   });
 
+  it('tracks pending agent tool runs using tool name and call id', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'PendingAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+
+    state.setPendingAgentToolRun('toolA', 'call-1', 'state-A');
+    state.setPendingAgentToolRun('toolB', 'call-1', 'state-B');
+
+    expect(state.getPendingAgentToolRun('toolA', 'call-1')).toBe('state-A');
+    expect(state.getPendingAgentToolRun('toolB', 'call-1')).toBe('state-B');
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored.getPendingAgentToolRun('toolA', 'call-1')).toBe('state-A');
+    expect(restored.getPendingAgentToolRun('toolB', 'call-1')).toBe('state-B');
+  });
+
   it('toJSON and toString produce valid JSON', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent1' });
