@@ -250,6 +250,7 @@ async function handleFunctionApproval<TContext>(
   });
 
   if (approval === false) {
+    state.clearPendingAgentToolRun(toolRun.tool.name, toolRun.toolCall.callId);
     return await buildApprovalRejectionResult(deps, toolRun);
   }
 
