@@ -796,7 +796,9 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   const context =
     contextOverride ??
     new RunContext<TContext>(stateJson.context.context as TContext);
-  if (!contextOverride) {
+  if (contextOverride) {
+    context._mergeApprovals(stateJson.context.approvals);
+  } else {
     context._rebuildApprovals(stateJson.context.approvals);
   }
 

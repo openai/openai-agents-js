@@ -9,7 +9,7 @@ import {
   gpt5ReasoningSettingsRequired,
   isGpt5Default,
 } from './defaultModel';
-import type { RunContext } from './runContext';
+import { RunContext } from './runContext';
 import {
   type FunctionTool,
   type FunctionToolResult,
@@ -618,17 +618,31 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
-        if (details?.resumeState && !context) {
-          throw new ModelBehaviorError(
-            'Agent tool resume requested without run context',
-          );
+        const resumeContext =
+          runOptions?.context instanceof RunContext
+            ? runOptions.context
+            : typeof runOptions?.context !== 'undefined'
+              ? new RunContext(runOptions.context)
+              : context;
+        if (
+          details?.resumeState &&
+          resumeContext &&
+          context &&
+          resumeContext !== context
+        ) {
+          resumeContext._mergeApprovals(context.toJSON().approvals);
         }
         const runInput = details?.resumeState
-          ? await RunState.fromStringWithContext(
-              this,
-              details.resumeState,
-              context!,
-            )
+          ? resumeContext
+            ? await RunState.fromStringWithContext<TContext, TAgent>(
+                this,
+                details.resumeState,
+                resumeContext,
+              )
+            : await RunState.fromString<TContext, TAgent>(
+                this,
+                details.resumeState,
+              )
           : data.input;
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.

@@ -44,6 +44,38 @@ export class RunContext<TContext = UnknownContext> {
   }
 
   /**
+   * Merge approvals from a serialized state without discarding existing entries.
+   * @internal
+   *
+   * @param approvals - The approvals map to merge.
+   */
+  _mergeApprovals(approvals: Record<string, ApprovalRecord>) {
+    const mergeApproval = (
+      current: ApprovalRecord['approved'],
+      incoming: ApprovalRecord['approved'],
+    ) => {
+      if (current === true || incoming === true) {
+        return true;
+      }
+      const currentList = Array.isArray(current) ? current : [];
+      const incomingList = Array.isArray(incoming) ? incoming : [];
+      return Array.from(new Set([...currentList, ...incomingList]));
+    };
+
+    for (const [toolName, incoming] of Object.entries(approvals)) {
+      const existing = this.#approvals.get(toolName);
+      if (!existing) {
+        this.#approvals.set(toolName, incoming);
+        continue;
+      }
+      this.#approvals.set(toolName, {
+        approved: mergeApproval(existing.approved, incoming.approved),
+        rejected: mergeApproval(existing.rejected, incoming.rejected),
+      });
+    }
+  }
+
+  /**
    * Check if a tool call has been approved.
    *
    * @param approval - Details about the tool call being evaluated.
