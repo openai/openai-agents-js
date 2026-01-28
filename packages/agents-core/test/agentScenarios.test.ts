@@ -762,6 +762,185 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     warnSpy.mockRestore();
   });
 
+  it('does not merge approvals when resume strategy is replace', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'nested-1',
+        ),
+      ],
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'two' }),
+          'nested-2',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedReplaceAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: { nested: true } },
+      resumeState: { contextStrategy: 'replace' },
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'start' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterReplaceAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.approve(approval, { alwaysApprove: true });
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      resumed.state.hasPendingAgentToolRun('nested_tool', 'outer-call'),
+    ).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('prefers serialized context when resuming nested tools', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const approvalTool = tool({
+      name: 'secure_tool',
+      description: 'Requires approval',
+      parameters: z.object({ text: z.string() }),
+      needsApproval: true,
+      execute: async ({ text }: { text: string }) => `approved:${text}`,
+    });
+
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'secure_tool',
+          JSON.stringify({ text: 'one' }),
+          'nested-1',
+        ),
+      ],
+      [textMessage('Nested done')],
+    ]);
+
+    const nestedAgent = new Agent({
+      name: 'NestedPreferSerializedAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const nestedContext = new RunContext({ snapshot: 'v1' });
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_tool',
+      toolDescription: 'Nested agent tool',
+      runOptions: { context: nestedContext },
+      resumeState: { contextStrategy: 'preferSerialized' },
+      customOutputExtractor: (result) =>
+        String(
+          (result.state._context.context as { snapshot?: string }).snapshot,
+        ),
+    });
+
+    const outerModel = new RecordingModel();
+    outerModel.addMultipleTurnOutputs([
+      [
+        functionToolCall(
+          'nested_tool',
+          JSON.stringify({ input: 'start' }),
+          'outer-call',
+        ),
+      ],
+      [textMessage('Outer done')],
+    ]);
+
+    const outerAgent = new Agent({
+      name: 'OuterPreferSerializedAgent',
+      model: outerModel,
+      tools: [nestedTool],
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const runner = new Runner();
+    const first = await runner.run(outerAgent, 'start');
+    expect(first.interruptions).toHaveLength(1);
+
+    nestedContext.context.snapshot = 'v2';
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const approval = restored.getInterruptions()[0];
+    if (!approval) {
+      throw new Error('Expected nested tool approval interruption');
+    }
+    restored.approve(approval);
+
+    const resumed = await runner.run(outerAgent, restored);
+    expect(resumed.interruptions ?? []).toHaveLength(1);
+
+    const pending = resumed.state.getPendingAgentToolRun(
+      'nested_tool',
+      'outer-call',
+    );
+    if (!pending) {
+      throw new Error('Expected pending nested run state');
+    }
+    const nestedState = await RunState.fromString(nestedAgent, pending);
+    expect(
+      (nestedState._context.context as { snapshot?: string }).snapshot,
+    ).toBe('v1');
+
+    warnSpy.mockRestore();
+  });
+
   it('resumes multiple nested agent tools independently', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const approvalTool = tool({

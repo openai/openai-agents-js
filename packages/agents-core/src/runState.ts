@@ -55,6 +55,13 @@ const SUPPORTED_SCHEMA_VERSIONS = [
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
 const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 
+type ContextOverrideStrategy = 'merge' | 'replace';
+
+type RunStateContextOverrideOptions<TContext> = {
+  contextOverride?: RunContext<TContext>;
+  contextStrategy?: ContextOverrideStrategy;
+};
+
 const serializedAgentSchema = z.object({
   name: z.string(),
 });
@@ -745,8 +752,12 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     initialAgent: TAgent,
     str: string,
     context: RunContext<TContext>,
+    options: { contextStrategy?: ContextOverrideStrategy } = {},
   ): Promise<RunState<TContext, TAgent>> {
-    return buildRunStateFromString(initialAgent, str, context);
+    return buildRunStateFromString(initialAgent, str, {
+      contextOverride: context,
+      contextStrategy: options.contextStrategy,
+    });
   }
 }
 
@@ -756,7 +767,7 @@ async function buildRunStateFromString<
 >(
   initialAgent: TAgent,
   str: string,
-  contextOverride?: RunContext<TContext>,
+  options: RunStateContextOverrideOptions<TContext> = {},
 ): Promise<RunState<TContext, TAgent>> {
   const [parsingError, jsonResult] = await safeExecute(() => JSON.parse(str));
   if (parsingError) {
@@ -780,15 +791,17 @@ async function buildRunStateFromString<
   }
 
   const stateJson = SerializedRunState.parse(JSON.parse(str));
-  return buildRunStateFromJson(initialAgent, stateJson, contextOverride);
+  return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
 async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   initialAgent: TAgent,
   stateJson: z.infer<typeof SerializedRunState>,
-  contextOverride?: RunContext<TContext>,
+  options: RunStateContextOverrideOptions<TContext> = {},
 ): Promise<RunState<TContext, TAgent>> {
   const agentMap = buildAgentMap(initialAgent);
+  const contextOverride = options.contextOverride;
+  const contextStrategy = options.contextStrategy ?? 'merge';
 
   //
   // Rebuild the context
@@ -797,7 +810,9 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     contextOverride ??
     new RunContext<TContext>(stateJson.context.context as TContext);
   if (contextOverride) {
-    context._mergeApprovals(stateJson.context.approvals);
+    if (contextStrategy === 'merge') {
+      context._mergeApprovals(stateJson.context.approvals);
+    }
   } else {
     context._rebuildApprovals(stateJson.context.approvals);
   }

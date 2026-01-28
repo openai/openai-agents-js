@@ -19,6 +19,7 @@ import {
   type ToolEnabledFunction,
 } from './tool';
 import type {
+  AgentInputItem,
   ResolvedAgentOutput,
   JsonSchemaDefinition,
   HandoffsOutput,
@@ -54,6 +55,13 @@ type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
   StreamRunOptions<TContext, TAgent>,
   'stream'
 >;
+
+// Controls how nested tool resume reconciles context with serialized RunState.
+type AgentToolResumeContextStrategy = 'merge' | 'replace' | 'preferSerialized';
+
+type AgentToolResumeStateOptions = {
+  contextStrategy?: AgentToolResumeContextStrategy;
+};
 
 type AgentToolStreamEvent<TAgent extends Agent<any, any>> = {
   // Raw stream event emitted by the nested agent run.
@@ -561,6 +569,10 @@ export class Agent<
        */
       runOptions?: AgentToolRunOptions<TContext, TAgent>;
       /**
+       * Controls how context is applied when resuming from serialized run state.
+       */
+      resumeState?: AgentToolResumeStateOptions;
+      /**
        * Determines whether this tool should be exposed to the model for the current run.
        */
       isEnabled?:
@@ -582,6 +594,7 @@ export class Agent<
       needsApproval,
       runConfig,
       runOptions,
+      resumeState,
       isEnabled,
       onStream,
     } = options;
@@ -618,32 +631,42 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
+        const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
         const resumeContext =
-          runOptions?.context instanceof RunContext
-            ? runOptions.context
-            : typeof runOptions?.context !== 'undefined'
-              ? new RunContext(runOptions.context)
-              : context;
-        if (
-          details?.resumeState &&
-          resumeContext &&
-          context &&
-          resumeContext !== context
-        ) {
-          resumeContext._mergeApprovals(context.toJSON().approvals);
+          resumeContextStrategy === 'preferSerialized'
+            ? undefined
+            : runOptions?.context instanceof RunContext
+              ? runOptions.context
+              : typeof runOptions?.context !== 'undefined'
+                ? new RunContext(runOptions.context)
+                : context;
+        let runInput: string | AgentInputItem[] | RunState<TContext, TAgent> =
+          data.input;
+        if (details?.resumeState) {
+          if (resumeContextStrategy === 'preferSerialized' || !resumeContext) {
+            runInput = await RunState.fromString<TContext, TAgent>(
+              this,
+              details.resumeState,
+            );
+          } else {
+            if (
+              resumeContextStrategy === 'merge' &&
+              context &&
+              resumeContext !== context
+            ) {
+              resumeContext._mergeApprovals(context.toJSON().approvals);
+            }
+            runInput = await RunState.fromStringWithContext<TContext, TAgent>(
+              this,
+              details.resumeState,
+              resumeContext,
+              {
+                contextStrategy:
+                  resumeContextStrategy === 'replace' ? 'replace' : 'merge',
+              },
+            );
+          }
         }
-        const runInput = details?.resumeState
-          ? resumeContext
-            ? await RunState.fromStringWithContext<TContext, TAgent>(
-                this,
-                details.resumeState,
-                resumeContext,
-              )
-            : await RunState.fromString<TContext, TAgent>(
-                this,
-                details.resumeState,
-              )
-          : data.input;
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
