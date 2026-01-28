@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.4.4
+
+### Patch Changes
+
+- 14315e3: fix: #680 resume nested agent tool approvals after interruptions
+
 ## 0.4.3
 
 ### Patch Changes
