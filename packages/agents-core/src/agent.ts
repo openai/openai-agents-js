@@ -27,6 +27,7 @@ import type {
 import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
+import { RunState } from './runState';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isAgentToolInput } from './utils/typeGuards';
@@ -617,17 +618,29 @@ export class Agent<
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
+        if (details?.resumeState && !context) {
+          throw new ModelBehaviorError(
+            'Agent tool resume requested without run context',
+          );
+        }
+        const runInput = details?.resumeState
+          ? await RunState.fromStringWithContext(
+              this,
+              details.resumeState,
+              context!,
+            )
+          : data.input;
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
           typeof onStream === 'function' || eventHandlers.size > 0;
         const result = shouldStream
-          ? await runner.run(this, data.input, {
+          ? await runner.run(this, runInput, {
               context,
               ...(runOptions ?? {}),
               stream: true,
             })
-          : await runner.run(this, data.input, {
+          : await runner.run(this, runInput, {
               context,
               ...(runOptions ?? {}),
             });
