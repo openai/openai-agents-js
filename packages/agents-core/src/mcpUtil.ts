@@ -13,6 +13,27 @@ export interface MCPToolFilterContext<TContext = UnknownContext> {
   serverName: string;
 }
 
+/** Context information available to MCP tool meta resolver functions. */
+export interface MCPToolMetaContext<TContext = UnknownContext> {
+  /** The current run context. */
+  runContext: RunContext<TContext>;
+  /** Name of the MCP server. */
+  serverName: string;
+  /** Name of the tool being invoked. */
+  toolName: string;
+  /** Parsed tool arguments. */
+  arguments: Record<string, unknown> | null;
+}
+
+/** A function that produces MCP request metadata (`_meta`) for tool calls. */
+export type MCPToolMetaResolver<TContext = UnknownContext> = (
+  context: MCPToolMetaContext<TContext>,
+) =>
+  | Promise<Record<string, unknown> | null | undefined>
+  | Record<string, unknown>
+  | null
+  | undefined;
+
 /** A function that determines whether a tool should be available. */
 export type MCPToolFilterCallable<TContext = UnknownContext> = (
   context: MCPToolFilterContext<TContext>,
