@@ -16,9 +16,11 @@ import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffOutputItem,
   RunItem,
+  RunMessageOutputItem,
   RunToolApprovalItem,
   RunToolCallOutputItem,
 } from '../items';
+import { assistant } from '../helpers/message';
 import logger, { Logger } from '../logger';
 import { ModelResponse } from '../model';
 import { FunctionToolResult, resolveComputer, Tool } from '../tool';
@@ -876,7 +878,18 @@ export async function executeComputerActions(
       },
     });
 
-    if (approvalDecision.status !== 'approved') {
+    if (approvalDecision.status === 'rejected') {
+      results.push(approvalDecision.item);
+      results.push(
+        new RunMessageOutputItem(
+          assistant(TOOL_APPROVAL_REJECTION_MESSAGE),
+          agent,
+        ),
+      );
+      continue;
+    }
+
+    if (approvalDecision.status === 'pending') {
       results.push(approvalDecision.item);
       continue;
     }

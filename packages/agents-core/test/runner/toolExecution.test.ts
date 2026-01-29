@@ -639,8 +639,9 @@ describe('executeComputerActions', () => {
       runContext,
     );
 
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(items[1]).toBeInstanceOf(MessageOutputItem);
     const rawItem = (items[0] as ToolCallOutputItem)
       .rawItem as protocol.ComputerCallResultItem;
     expect(rawItem.output.data).toMatch(/^data:image\/png;base64,/);
@@ -648,6 +649,9 @@ describe('executeComputerActions', () => {
       approvalStatus: 'rejected',
       message: 'Tool execution was not approved.',
     });
+    expect((items[1] as MessageOutputItem).content).toBe(
+      'Tool execution was not approved.',
+    );
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
