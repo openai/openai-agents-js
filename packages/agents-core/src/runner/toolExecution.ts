@@ -831,16 +831,26 @@ export async function executeComputerActions(
       agent,
       computerTool.name,
     );
+    const needsApprovalCandidate = (computerTool as { needsApproval?: unknown })
+      .needsApproval;
+    const needsApproval =
+      typeof needsApprovalCandidate === 'function'
+        ? await (
+            needsApprovalCandidate as (
+              runContext: RunContext,
+              action: protocol.ComputerAction,
+              callId?: string,
+            ) => Promise<boolean>
+          )(runContext, toolCall.action, toolCall.callId)
+        : typeof needsApprovalCandidate === 'boolean'
+          ? needsApprovalCandidate
+          : false;
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: computerTool.name,
       callId: toolCall.callId,
       approvalItem,
-      needsApproval: await computerTool.needsApproval(
-        runContext,
-        toolCall.action,
-        toolCall.callId,
-      ),
+      needsApproval,
       buildRejectionItem: () => {
         const rejectionOutput: protocol.ComputerToolOutput = {
           type: 'computer_screenshot',

@@ -492,6 +492,44 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
+  it('defaults missing needsApproval to false for computer tools', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = {
+      type: 'computer',
+      name: 'computer_use_preview',
+      computer: fakeComputer,
+    } as any;
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+  });
+
   it('passes RunContext to computer actions', async () => {
     const runContext = new RunContext({ run: 'ctx' });
     let clickContext: RunContext | undefined;

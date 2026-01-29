@@ -434,6 +434,31 @@ describe('Runner.run', () => {
       expect(computerInstance.initRun).toHaveBeenCalledTimes(1);
     });
 
+    it('reinitializes computer tools when reusing a RunContext across runs', async () => {
+      const computerInstance = new FakeComputer() as FakeComputer & {
+        initRun?: (ctx?: RunContext) => Promise<void>;
+      };
+      computerInstance.initRun = vi.fn(async () => {});
+      const computer = computerTool({
+        computer: computerInstance,
+      });
+      const model = new FakeModel([
+        { output: [fakeModelMessage('done once')], usage: new Usage() },
+        { output: [fakeModelMessage('done twice')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'ComputerAgent',
+        model,
+        tools: [computer],
+      });
+      const runContext = new RunContext();
+
+      await run(agent, 'hello', { context: runContext });
+      await run(agent, 'hello again', { context: runContext });
+
+      expect(computerInstance.initRun).toHaveBeenCalledTimes(2);
+    });
+
     it('initializes computer tools when they appear after a handoff', async () => {
       const computerA = new FakeComputer() as FakeComputer & {
         initRun?: (ctx?: RunContext) => Promise<void>;
