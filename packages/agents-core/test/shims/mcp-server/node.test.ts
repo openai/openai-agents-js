@@ -19,11 +19,13 @@ import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/p
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
 let lastCallToolOptions: any;
+let lastCallToolParams: any;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
   lastListToolsOptions = undefined;
   lastCallToolOptions = undefined;
+  lastCallToolParams = undefined;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -93,6 +95,26 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should pass _meta to tool calls', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'meta-test',
+      fullCommand: 'test',
+    });
+
+    await server.connect();
+    await server.callTool(
+      'mock-tool',
+      { foo: 'bar' },
+      {
+        request_id: 'req-123',
+      },
+    );
+
+    expect(lastCallToolParams?._meta).toEqual({ request_id: 'req-123' });
+
+    await server.close();
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
   });
@@ -154,6 +176,7 @@ class MockClient {
     });
   }
   callTool(_params: any, _resultSchema?: any, options?: any): Promise<any> {
+    lastCallToolParams = _params;
     lastCallToolOptions = options;
     return Promise.resolve({
       content: [{ type: 'text', text: 'ok' }],

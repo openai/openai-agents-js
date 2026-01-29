@@ -44,6 +44,7 @@ class BaseTestServer implements MCPServer {
   async callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     return [] as CallToolResultContent;
   }

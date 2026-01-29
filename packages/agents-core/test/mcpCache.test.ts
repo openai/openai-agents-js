@@ -28,6 +28,7 @@ class StubServer extends NodeMCPServerStdio {
   async callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     return [];
   }
@@ -212,7 +213,11 @@ describe('MCP tools cache invalidation', () => {
         async listTools() {
           return tools as any;
         },
-        async callTool() {
+        async callTool(
+          _toolName: string,
+          _args: Record<string, unknown> | null,
+          _meta?: Record<string, unknown> | null,
+        ) {
           return [];
         },
         async invalidateToolsCache() {},
@@ -451,7 +456,11 @@ describe('MCP tools without tracing', () => {
           },
         ] as any;
       },
-      async callTool() {
+      async callTool(
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) {
         return [];
       },
       async invalidateToolsCache() {},

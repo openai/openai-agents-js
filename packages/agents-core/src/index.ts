@@ -112,6 +112,8 @@ export {
   MCPToolFilterCallable,
   MCPToolFilterContext,
   MCPToolFilterStatic,
+  MCPToolMetaContext,
+  MCPToolMetaResolver,
   createMCPToolStaticFilter,
 } from './mcpUtil';
 export {

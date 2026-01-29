@@ -127,6 +127,65 @@ describe('mcpToFunctionTool', () => {
     ]);
   });
 
+  it('resolves and passes MCP tool metadata', async () => {
+    const callTool = vi.fn(
+      async (
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) => [{ type: 'text', text: 'ok' }],
+    );
+
+    const toolMetaResolver = vi.fn((context) => {
+      return {
+        request_id: (context.runContext as RunContext<{ requestId: string }>)
+          .context.requestId,
+        locale: 'ja',
+      };
+    });
+
+    const server: MCPServer = {
+      name: 'stub',
+      cacheToolsList: false,
+      toolMetaResolver,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'meta',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { foo: { type: 'string' } },
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    const runContext = new RunContext({ requestId: 'req-123' });
+    await tool.invoke(runContext, JSON.stringify({ foo: 'bar' }));
+
+    expect(callTool).toHaveBeenCalledWith(
+      'meta',
+      { foo: 'bar' },
+      { request_id: 'req-123', locale: 'ja' },
+    );
+    expect(toolMetaResolver).toHaveBeenCalledTimes(1);
+    const metaContext = toolMetaResolver.mock.calls[0][0];
+    expect(metaContext.runContext).toBe(runContext);
+    expect(metaContext.serverName).toBe('stub');
+    expect(metaContext.toolName).toBe('meta');
+    expect(metaContext.arguments).toEqual({ foo: 'bar' });
+  });
+
   it('forces strict schemas when convertSchemasToStrict is true', () => {
     const server: MCPServer = {
       name: 'strict-server',

@@ -57,7 +57,11 @@ class StubFilesystemServer extends NodeMCPServerStdio {
   async listTools() {
     return this.tools;
   }
-  async callTool(name: string, args: any) {
+  async callTool(
+    name: string,
+    args: any,
+    _meta?: Record<string, unknown> | null,
+  ) {
     const blocked = (this.toolFilter as any)?.blockedToolNames ?? [];
     if (blocked.includes(name)) {
       return [

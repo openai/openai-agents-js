@@ -28,6 +28,7 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
@@ -55,6 +56,7 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
@@ -84,6 +86,7 @@ export class MCPServerSSE extends BaseMCPServerSSE {
   callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
