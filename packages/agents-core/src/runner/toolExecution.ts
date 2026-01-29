@@ -400,28 +400,32 @@ async function runApprovedFunctionTool<TContext>(
 async function _runComputerActionAndScreenshot(
   computer: Computer,
   toolCall: protocol.ComputerUseCallItem,
+  runContext: RunContext,
 ): Promise<string> {
   const action = toolCall.action;
   let screenshot: string | undefined;
   // Dispatch based on action type string (assume action.type exists)
   switch (action.type) {
     case 'click':
-      await computer.click(action.x, action.y, action.button);
+      await computer.click(action.x, action.y, action.button, runContext);
       break;
     case 'double_click':
-      await computer.doubleClick(action.x, action.y);
+      await computer.doubleClick(action.x, action.y, runContext);
       break;
     case 'drag':
-      await computer.drag(action.path.map((p: any) => [p.x, p.y]));
+      await computer.drag(
+        action.path.map((p: any) => [p.x, p.y]),
+        runContext,
+      );
       break;
     case 'keypress':
-      await computer.keypress(action.keys);
+      await computer.keypress(action.keys, runContext);
       break;
     case 'move':
-      await computer.move(action.x, action.y);
+      await computer.move(action.x, action.y, runContext);
       break;
     case 'screenshot':
-      screenshot = await computer.screenshot();
+      screenshot = await computer.screenshot(runContext);
       break;
     case 'scroll':
       await computer.scroll(
@@ -429,13 +433,14 @@ async function _runComputerActionAndScreenshot(
         action.y,
         action.scroll_x,
         action.scroll_y,
+        runContext,
       );
       break;
     case 'type':
-      await computer.type(action.text);
+      await computer.type(action.text, runContext);
       break;
     case 'wait':
-      await computer.wait();
+      await computer.wait(runContext);
       break;
     default:
       action satisfies never; // ensures that we handle every action we know of
@@ -447,7 +452,7 @@ async function _runComputerActionAndScreenshot(
   }
   // Always return screenshot as base64 string
   if (typeof computer.screenshot === 'function') {
-    screenshot = await computer.screenshot();
+    screenshot = await computer.screenshot(runContext);
     if (typeof screenshot !== 'undefined') {
       return screenshot;
     }
@@ -820,25 +825,63 @@ export async function executeComputerActions(
   const results: RunItem[] = [];
   for (const action of actions) {
     const toolCall = action.toolCall;
+    const computerTool = action.computer;
+    const approvalItem = new RunToolApprovalItem(
+      toolCall,
+      agent,
+      computerTool.name,
+    );
+    const approvalDecision = await handleToolApprovalDecision({
+      runContext,
+      toolName: computerTool.name,
+      callId: toolCall.callId,
+      approvalItem,
+      needsApproval: await computerTool.needsApproval(
+        runContext,
+        toolCall.action,
+        toolCall.callId,
+      ),
+      buildRejectionItem: () => {
+        const rejectionOutput: protocol.ComputerToolOutput = {
+          type: 'computer_screenshot',
+          data: '',
+        };
+        const rawItem: protocol.ComputerCallResultItem = {
+          type: 'computer_call_result',
+          callId: toolCall.callId,
+          output: rejectionOutput,
+        };
+        return new RunToolCallOutputItem(rawItem, agent, '');
+      },
+    });
+
+    if (approvalDecision.status !== 'approved') {
+      results.push(approvalDecision.item);
+      continue;
+    }
 
     // Hooks: on_tool_start (global + agent)
-    emitToolStart(runner, runContext, agent, action.computer, toolCall);
+    emitToolStart(runner, runContext, agent, computerTool, toolCall);
 
     // Run the action and get screenshot
     let output: string;
     try {
       const computer = await resolveComputer({
-        tool: action.computer,
+        tool: computerTool,
         runContext,
       });
-      output = await _runComputerActionAndScreenshot(computer, toolCall);
+      output = await _runComputerActionAndScreenshot(
+        computer,
+        toolCall,
+        runContext,
+      );
     } catch (err) {
       _logger.error('Failed to execute computer action:', err);
       output = '';
     }
 
     // Hooks: on_tool_end (global + agent)
-    emitToolEnd(runner, runContext, agent, action.computer, output, toolCall);
+    emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
 
     // Return the screenshot as a data URL when available; fall back to an empty string on failures.
     const imageUrl = output ? `data:image/png;base64,${output}` : '';

@@ -147,6 +147,7 @@ export class RunToolApprovalItem extends RunItemBase {
     public rawItem:
       | protocol.FunctionCallItem
       | protocol.HostedToolCallItem
+      | protocol.ComputerUseCallItem
       | protocol.ShellCallItem
       | protocol.ApplyPatchCallItem,
     public agent: Agent<any, any>,

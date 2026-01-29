@@ -80,6 +80,12 @@ export type ApplyPatchOnApprovalFunction = (
   approvalItem: RunToolApprovalItem,
 ) => Promise<{ approve: boolean; reason?: string }>;
 
+export type ComputerApprovalFunction = (
+  runContext: RunContext,
+  action: protocol.ComputerAction,
+  callId?: string,
+) => Promise<boolean>;
+
 export type ToolEnabledFunction<Context = UnknownContext> = (
   runContext: RunContext<Context>,
   agent: Agent<any, any>,
@@ -250,6 +256,11 @@ export type ComputerTool<
    * The computer to use.
    */
   computer: ComputerConfig<Context, TComputer>;
+
+  /**
+   * Predicate determining whether this computer action requires approval.
+   */
+  needsApproval: ComputerApprovalFunction;
 };
 
 /**
@@ -264,6 +275,7 @@ export function computerTool<
 >(options: {
   name?: string;
   computer: ComputerConfig<Context, TComputer>;
+  needsApproval?: boolean | ComputerApprovalFunction;
 }): ComputerTool<Context, TComputer> {
   if (!options.computer) {
     throw new UserError(
@@ -271,10 +283,19 @@ export function computerTool<
     );
   }
 
+  const needsApproval: ComputerApprovalFunction =
+    typeof options.needsApproval === 'function'
+      ? options.needsApproval
+      : async () =>
+          typeof options.needsApproval === 'boolean'
+            ? options.needsApproval
+            : false;
+
   const tool: ComputerTool<Context, TComputer> = {
     type: 'computer',
     name: options.name ?? 'computer_use_preview',
     computer: options.computer,
+    needsApproval,
   };
 
   if (

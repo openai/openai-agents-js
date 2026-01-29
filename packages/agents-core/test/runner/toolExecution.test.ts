@@ -491,6 +491,119 @@ describe('executeComputerActions', () => {
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
+
+  it('passes RunContext to computer actions', async () => {
+    const runContext = new RunContext({ run: 'ctx' });
+    let clickContext: RunContext | undefined;
+    let screenshotContext: RunContext | undefined;
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockImplementation(async (ctx?: RunContext) => {
+        screenshotContext = ctx;
+        return 'img';
+      }),
+      click: vi
+        .fn()
+        .mockImplementation(
+          async (_x: number, _y: number, _button: string, ctx?: RunContext) => {
+            clickContext = ctx;
+          },
+        ),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c2',
+      status: 'completed',
+      action: { type: 'click', x: 1, y: 2, button: 'left' },
+    };
+
+    await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      runContext,
+    );
+    expect(clickContext).toBe(runContext);
+    expect(screenshotContext).toBe(runContext);
+  });
+
+  it('returns approval items when computer actions require approval', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c3',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+  });
+
+  it('executes computer actions after approval', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c4',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const agent = new Agent({ name: 'Comp' });
+    const runContext = new RunContext();
+    runContext.approveTool(new ToolApprovalItem(call, agent, tool.name));
+
+    const items = await executeComputerActions(
+      agent,
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      runContext,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('executeHandoffCalls', () => {

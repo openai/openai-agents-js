@@ -45,11 +45,13 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  *   plus broader tool_call_output_item rawItem variants for non-function tools. Older 1.0
  *   payloads remain readable but resumes may lack mid-turn or server-managed context precision.
  * - 1.2: Adds pendingAgentToolRuns for nested agent tool resumption.
+ * - 1.3: Adds computer tool approval items to serialized tool_approval_item unions.
  */
-export const CURRENT_SCHEMA_VERSION = '1.2' as const;
+export const CURRENT_SCHEMA_VERSION = '1.3' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
+  '1.2',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -156,6 +158,7 @@ const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_approval_item'),
     rawItem: protocol.FunctionCallItem.or(protocol.HostedToolCallItem)
+      .or(protocol.ComputerUseCallItem)
       .or(protocol.ShellCallItem)
       .or(protocol.ApplyPatchCallItem),
     agent: serializedAgentSchema,
