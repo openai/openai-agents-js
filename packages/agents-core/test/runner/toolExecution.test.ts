@@ -607,6 +607,50 @@ describe('executeComputerActions', () => {
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
+  it('returns rejection output when computer action is rejected', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c3b',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const agent = new Agent({ name: 'Comp' });
+    const runContext = new RunContext();
+    runContext.rejectTool(new ToolApprovalItem(call, agent, tool.name));
+
+    const items = await executeComputerActions(
+      agent,
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      runContext,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    const rawItem = (items[0] as ToolCallOutputItem)
+      .rawItem as protocol.ComputerCallResultItem;
+    expect(rawItem.output.data).toMatch(/^data:image\/png;base64,/);
+    expect(rawItem.output.providerData).toEqual({
+      approvalStatus: 'rejected',
+      message: 'Tool execution was not approved.',
+    });
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+  });
+
   it('executes computer actions after approval', async () => {
     const fakeComputer = {
       environment: 'mac',

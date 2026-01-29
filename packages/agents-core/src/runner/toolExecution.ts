@@ -55,6 +55,9 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
 };
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+// 1x1 transparent PNG data URL used for rejected computer actions.
+const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 type ParseToolArgumentsResult =
   | { success: true; args: any }
@@ -854,14 +857,22 @@ export async function executeComputerActions(
       buildRejectionItem: () => {
         const rejectionOutput: protocol.ComputerToolOutput = {
           type: 'computer_screenshot',
-          data: '',
+          data: TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+          providerData: {
+            approvalStatus: 'rejected',
+            message: TOOL_APPROVAL_REJECTION_MESSAGE,
+          },
         };
         const rawItem: protocol.ComputerCallResultItem = {
           type: 'computer_call_result',
           callId: toolCall.callId,
           output: rejectionOutput,
         };
-        return new RunToolCallOutputItem(rawItem, agent, '');
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+        );
       },
     });
 
