@@ -495,7 +495,11 @@ describe('deserialize helpers', () => {
       async listTools() {
         return [];
       },
-      async callTool() {
+      async callTool(
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) {
         return [];
       },
       async invalidateToolsCache() {},
@@ -558,7 +562,11 @@ describe('deserialize helpers', () => {
         listCalled = true;
         return [stubMcpTool];
       },
-      async callTool() {
+      async callTool(
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) {
         return [];
       },
       async invalidateToolsCache() {},

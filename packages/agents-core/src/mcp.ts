@@ -21,7 +21,12 @@ import {
   JsonObjectSchemaStrict,
   UnknownContext,
 } from './types';
-import type { MCPToolFilterCallable, MCPToolFilterStatic } from './mcpUtil';
+import type {
+  MCPToolFilterCallable,
+  MCPToolFilterStatic,
+  MCPToolMetaContext,
+  MCPToolMetaResolver,
+} from './mcpUtil';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
 
@@ -41,6 +46,7 @@ export const DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME =
 export interface MCPServer {
   cacheToolsList: boolean;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  toolMetaResolver?: MCPToolMetaResolver;
   connect(): Promise<void>;
   readonly name: string;
   close(): Promise<void>;
@@ -48,6 +54,7 @@ export interface MCPServer {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
   invalidateToolsCache(): Promise<void>;
 }
@@ -56,6 +63,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public toolMetaResolver?: MCPToolMetaResolver;
 
   protected logger: Logger;
   constructor(options: MCPServerStdioOptions) {
@@ -63,6 +71,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.toolMetaResolver = options.toolMetaResolver;
   }
 
   abstract get name(): string;
@@ -72,6 +81,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
   abstract invalidateToolsCache(): Promise<void>;
 
@@ -91,6 +101,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public toolMetaResolver?: MCPToolMetaResolver;
 
   protected logger: Logger;
   constructor(options: MCPServerStreamableHttpOptions) {
@@ -99,6 +110,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
       getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.toolMetaResolver = options.toolMetaResolver;
   }
 
   abstract get name(): string;
@@ -108,6 +120,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
   abstract invalidateToolsCache(): Promise<void>;
 
@@ -127,6 +140,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public toolMetaResolver?: MCPToolMetaResolver;
 
   protected logger: Logger;
   constructor(options: MCPServerSSEOptions) {
@@ -134,6 +148,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
       options.logger ?? getLogger(DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    this.toolMetaResolver = options.toolMetaResolver;
   }
 
   abstract get name(): string;
@@ -143,6 +158,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   abstract callTool(
     _toolName: string,
     _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
   abstract invalidateToolsCache(): Promise<void>;
 
@@ -207,8 +223,9 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args);
+    return this.underlying.callTool(toolName, args, meta);
   }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();
@@ -243,8 +260,9 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args);
+    return this.underlying.callTool(toolName, args, meta);
   }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();
@@ -279,8 +297,9 @@ export class MCPServerSSE extends BaseMCPServerSSE {
   callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args);
+    return this.underlying.callTool(toolName, args, meta);
   }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();
@@ -510,6 +529,36 @@ export async function getAllMcpTools<TContext = UnknownContext>(
   return allTools;
 }
 
+async function resolveMcpToolMeta<TContext>(
+  server: MCPServer,
+  runContext: RunContext<TContext>,
+  toolName: string,
+  args: Record<string, unknown> | null,
+): Promise<Record<string, unknown> | undefined> {
+  const resolver = server.toolMetaResolver;
+  if (!resolver) {
+    return undefined;
+  }
+
+  const context: MCPToolMetaContext<TContext> = {
+    runContext,
+    serverName: server.name,
+    toolName,
+    arguments: args,
+  };
+
+  const resolved = await resolver(context);
+  if (resolved == null) {
+    return undefined;
+  }
+  if (typeof resolved !== 'object' || Array.isArray(resolved)) {
+    throw new TypeError(
+      'MCP tool meta resolver must return an object or null.',
+    );
+  }
+  return resolved;
+}
+
 /**
  * Converts an MCP tool definition to a function tool for the Agents SDK.
  */
@@ -518,7 +567,7 @@ export function mcpToFunctionTool(
   server: MCPServer,
   convertSchemasToStrict: boolean,
 ) {
-  async function invoke(input: any, _context: UnknownContext) {
+  async function invoke(input: any, runContext?: RunContext<any>) {
     let args = {};
     if (typeof input === 'string' && input) {
       args = JSON.parse(input);
@@ -529,7 +578,13 @@ export function mcpToFunctionTool(
     if (currentSpan) {
       currentSpan.spanData['mcp_data'] = { server: server.name };
     }
-    const content = await server.callTool(mcpTool.name, args);
+    const meta = runContext
+      ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)
+      : undefined;
+    const content =
+      meta === undefined
+        ? await server.callTool(mcpTool.name, args)
+        : await server.callTool(mcpTool.name, args, meta);
     return content.length === 1 ? content[0] : content;
   }
 
@@ -599,15 +654,18 @@ export interface BaseMCPServerStdioOptions {
   encodingErrorHandler?: 'strict' | 'ignore' | 'replace';
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  /**
+   * Optional resolver for MCP request metadata (`_meta`) on tool calls.
+   * Invoked before calling `callTool`.
+   */
+  toolMetaResolver?: MCPToolMetaResolver;
   timeout?: number;
 }
-export interface DefaultMCPServerStdioOptions
-  extends BaseMCPServerStdioOptions {
+export interface DefaultMCPServerStdioOptions extends BaseMCPServerStdioOptions {
   command: string;
   args?: string[];
 }
-export interface FullCommandMCPServerStdioOptions
-  extends BaseMCPServerStdioOptions {
+export interface FullCommandMCPServerStdioOptions extends BaseMCPServerStdioOptions {
   fullCommand: string;
 }
 export type MCPServerStdioOptions =
@@ -621,6 +679,11 @@ export interface MCPServerStreamableHttpOptions {
   name?: string;
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  /**
+   * Optional resolver for MCP request metadata (`_meta`) on tool calls.
+   * Invoked before calling `callTool`.
+   */
+  toolMetaResolver?: MCPToolMetaResolver;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -645,6 +708,11 @@ export interface MCPServerSSEOptions {
   name?: string;
   logger?: Logger;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  /**
+   * Optional resolver for MCP request metadata (`_meta`) on tool calls.
+   * Invoked before calling `callTool`.
+   */
+  toolMetaResolver?: MCPToolMetaResolver;
   timeout?: number;
 
   // ----------------------------------------------------

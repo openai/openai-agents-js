@@ -161,6 +161,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
@@ -173,11 +174,13 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       this.clientSessionTimeoutSeconds,
       { timeout: this.timeout },
     );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
       requestOptions,
     );
@@ -302,6 +305,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
@@ -314,11 +318,13 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       this.clientSessionTimeoutSeconds,
       { timeout: this.timeout },
     );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
       requestOptions,
     );
@@ -452,6 +458,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
@@ -464,11 +471,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       this.clientSessionTimeoutSeconds,
       { timeout: this.timeout },
     );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
       requestOptions,
     );
