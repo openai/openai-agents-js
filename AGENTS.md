@@ -75,6 +75,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `packages/agents-core/src/run.ts` is the runtime entrypoint; keep it small and focused on orchestration.
 - Add new runtime logic under `packages/agents-core/src/runner/`, organized by responsibility, then import into `run.ts`.
 - When `run.ts` grows, refactor helpers into `runner/` modules and leave only wiring and composition in `run.ts`.
+- Keep `packages/agents-core/src/agent.ts` focused on the Agent class and its type definitions; move helper logic into dedicated modules (for example, `agentToolInput.ts`).
 - Keep streaming and non-streaming loops behaviorally aligned; changes to one loop should be mirrored in the other.
 - Input guardrails run only on the first turn; interruption resumes should not increment the turn counter.
 - When `conversationId`/`previousResponseId` is provided, only deltas are sent; `callModelInputFilter` must return an input array and keep session persistence in sync.
