@@ -186,6 +186,98 @@ describe('mcpToFunctionTool', () => {
     expect(metaContext.arguments).toEqual({ foo: 'bar' });
   });
 
+  it('uses server errorFunction for tool failures', async () => {
+    const errorFunction = vi.fn(
+      ({
+        context: _context,
+        error: _error,
+      }: {
+        context: RunContext;
+        error: Error | unknown;
+      }) => 'custom failure',
+    );
+    const callTool = vi.fn(async () => {
+      throw new Error('boom');
+    });
+
+    const server: MCPServer = {
+      name: 'error-server',
+      cacheToolsList: false,
+      errorFunction,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'explode',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { foo: { type: 'string' } },
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    const runContext = new RunContext({});
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({ foo: 'bar' }),
+    );
+
+    expect(result).toBe('custom failure');
+    expect(errorFunction).toHaveBeenCalledTimes(1);
+    const [errorArgs] = errorFunction.mock.calls[0];
+    expect(errorArgs.context).toBe(runContext);
+    expect(errorArgs.error).toBeInstanceOf(Error);
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows tool failures when server errorFunction is null', async () => {
+    const callTool = vi.fn(async () => {
+      throw new Error('boom');
+    });
+
+    const server: MCPServer = {
+      name: 'error-server-null',
+      cacheToolsList: false,
+      errorFunction: null,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'explode',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { foo: { type: 'string' } },
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    const runContext = new RunContext({});
+    await expect(
+      tool.invoke(runContext, JSON.stringify({ foo: 'bar' })),
+    ).rejects.toThrow('boom');
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
   it('forces strict schemas when convertSchemasToStrict is true', () => {
     const server: MCPServer = {
       name: 'strict-server',
