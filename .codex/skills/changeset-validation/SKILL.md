@@ -37,6 +37,12 @@ CI (Codex Action):
 3. Provide a clear verdict and required bump (patch/minor/major/none).
 4. If the changeset needs edits, update it and re-run the validation.
 
+## Branch-level changeset rule (do not skip)
+
+- If any `.changeset/*.md` file is already present in the current branch diff, treat it as the active changeset. **Do not add a new changeset file.**
+- Instead, **update the existing changeset file** by rewriting its summary to reflect the **primary change relative to `main`**. Do not try to capture every incremental update.
+- Keep the summary at **one line**; replace the line as needed rather than appending. If you must include multiple points, compress them into a single line.
+
 ## Shared source of truth
 
 - Keep the prompt file as the single source of validation rules.
