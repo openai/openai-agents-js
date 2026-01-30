@@ -1,6 +1,7 @@
 export type Environment = 'mac' | 'windows' | 'ubuntu' | 'browser';
 export type Button = 'left' | 'right' | 'wheel' | 'back' | 'forward';
 
+import type { RunContext } from './runContext';
 import { Expand, SnakeToCamelCase } from './types/helpers';
 import type { ComputerAction } from './types/protocol';
 
@@ -13,20 +14,28 @@ interface ComputerBase {
   environment: Environment;
   dimensions: [number, number];
 
-  screenshot(): Promisable<string>;
-  click(x: number, y: number, button: Button): Promisable<void>;
-  doubleClick(x: number, y: number): Promisable<void>;
+  initRun?(runContext?: RunContext): Promisable<void>;
+
+  screenshot(runContext?: RunContext): Promisable<string>;
+  click(
+    x: number,
+    y: number,
+    button: Button,
+    runContext?: RunContext,
+  ): Promisable<void>;
+  doubleClick(x: number, y: number, runContext?: RunContext): Promisable<void>;
   scroll(
     x: number,
     y: number,
     scrollX: number,
     scrollY: number,
+    runContext?: RunContext,
   ): Promisable<void>;
-  type(text: string): Promisable<void>;
-  wait(): Promisable<void>;
-  move(x: number, y: number): Promisable<void>;
-  keypress(keys: string[]): Promisable<void>;
-  drag(path: [number, number][]): Promisable<void>;
+  type(text: string, runContext?: RunContext): Promisable<void>;
+  wait(runContext?: RunContext): Promisable<void>;
+  move(x: number, y: number, runContext?: RunContext): Promisable<void>;
+  keypress(keys: string[], runContext?: RunContext): Promisable<void>;
+  drag(path: [number, number][], runContext?: RunContext): Promisable<void>;
 }
 
 // This turns every snake_case string in the ComputerAction['type'] into a camelCase string

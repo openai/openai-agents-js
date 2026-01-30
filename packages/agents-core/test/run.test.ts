@@ -386,6 +386,123 @@ describe('Runner.run', () => {
       });
     });
 
+    it('calls initRun once per run and skips reinitializing on resume', async () => {
+      const computerInstance = new FakeComputer() as FakeComputer & {
+        initRun?: (ctx?: RunContext) => Promise<void>;
+      };
+      computerInstance.initRun = vi.fn(async () => {});
+      const computer = computerTool({
+        computer: computerInstance,
+      });
+
+      const approvalTool = tool({
+        name: 'needsApproval',
+        description: 'requires approval',
+        parameters: z.object({}).strict(),
+        execute: async () => 'ok',
+        needsApproval: true,
+      });
+
+      const functionCall: protocol.FunctionCallItem = {
+        ...TEST_MODEL_FUNCTION_CALL,
+        name: 'needsApproval',
+        callId: 'call-1',
+        arguments: '{}',
+      };
+      const model = new FakeModel([
+        {
+          output: [functionCall, fakeModelMessage('pending')],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('all done')], usage: new Usage() },
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalAgent',
+        model,
+        tools: [computer, approvalTool],
+      });
+
+      const firstRun = await run(agent, 'hello');
+      expect(firstRun.interruptions).toHaveLength(1);
+      expect(computerInstance.initRun).toHaveBeenCalledTimes(1);
+
+      const approval = firstRun.interruptions?.[0];
+      firstRun.state._context.approveTool(approval);
+      await run(agent, firstRun.state);
+
+      expect(computerInstance.initRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('reinitializes computer tools when reusing a RunContext across runs', async () => {
+      const computerInstance = new FakeComputer() as FakeComputer & {
+        initRun?: (ctx?: RunContext) => Promise<void>;
+      };
+      computerInstance.initRun = vi.fn(async () => {});
+      const computer = computerTool({
+        computer: computerInstance,
+      });
+      const model = new FakeModel([
+        { output: [fakeModelMessage('done once')], usage: new Usage() },
+        { output: [fakeModelMessage('done twice')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'ComputerAgent',
+        model,
+        tools: [computer],
+      });
+      const runContext = new RunContext();
+
+      await run(agent, 'hello', { context: runContext });
+      await run(agent, 'hello again', { context: runContext });
+
+      expect(computerInstance.initRun).toHaveBeenCalledTimes(2);
+    });
+
+    it('initializes computer tools when they appear after a handoff', async () => {
+      const computerA = new FakeComputer() as FakeComputer & {
+        initRun?: (ctx?: RunContext) => Promise<void>;
+      };
+      computerA.initRun = vi.fn(async () => {});
+      const computerB = new FakeComputer() as FakeComputer & {
+        initRun?: (ctx?: RunContext) => Promise<void>;
+      };
+      computerB.initRun = vi.fn(async () => {});
+
+      const toolA = computerTool({ name: 'computer_a', computer: computerA });
+      const toolB = computerTool({ name: 'computer_b', computer: computerB });
+
+      const agentB = new Agent({
+        name: 'HandoffB',
+        model: new FakeModel([
+          { output: [fakeModelMessage('done B')], usage: new Usage() },
+        ]),
+        tools: [toolB],
+      });
+      const handoffToB = handoff(agentB);
+      const callItem: protocol.FunctionCallItem = {
+        id: 'handoff-1',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'call-1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'HandoffA',
+        model: new FakeModel([{ output: [callItem], usage: new Usage() }]),
+        handoffs: [handoffToB],
+        tools: [toolA],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agentA, 'hello');
+
+      expect(result.finalOutput).toBe('done B');
+      expect(computerA.initRun).toHaveBeenCalledTimes(1);
+      expect(computerB.initRun).toHaveBeenCalledTimes(1);
+    });
+
     it('defers disposal while a run is interrupted and cleans up after resuming', async () => {
       const createdComputer = new FakeComputer();
       const create = vi.fn(async () => createdComputer);

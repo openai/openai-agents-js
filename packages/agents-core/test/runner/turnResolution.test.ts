@@ -534,7 +534,12 @@ describe('resolveInterruptedTurn', () => {
         return undefined as any;
       });
 
-    const originalItems = [new ToolCallItem(computerCall, agent)];
+    const approvalItem = new ToolApprovalItem(
+      computerCall,
+      agent,
+      computer.name,
+    );
+    const originalItems = [new ToolCallItem(computerCall, agent), approvalItem];
     const resumedResponse: ModelResponse = {
       output: [],
       usage: new Usage(),

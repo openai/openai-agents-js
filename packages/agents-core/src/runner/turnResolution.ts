@@ -35,6 +35,7 @@ type ApprovalItemLike =
 
 const APPROVAL_ITEM_TYPES = [
   'function_call',
+  'computer_call',
   'hosted_tool_call',
   'shell_call',
   'apply_patch_call',
@@ -329,6 +330,10 @@ export async function resolveInterruptedTurn<TContext>(
     originalPreStepItems,
     'function_call_result',
   );
+  const completedComputerCallIds = collectCompletedCallIds(
+    originalPreStepItems,
+    'computer_call_result',
+  );
   const completedShellCallIds = collectCompletedCallIds(
     originalPreStepItems,
     'shell_call_output',
@@ -358,6 +363,13 @@ export async function resolveInterruptedTurn<TContext>(
       rawItem.type === 'function_call' &&
       rawItem.callId &&
       completedFunctionCallIds.has(rawItem.callId)
+    ) {
+      continue;
+    }
+    if (
+      rawItem.type === 'computer_call' &&
+      rawItem.callId &&
+      completedComputerCallIds.has(rawItem.callId)
     ) {
       continue;
     }
@@ -408,12 +420,13 @@ export async function resolveInterruptedTurn<TContext>(
   );
 
   const pendingComputerActions = filterPendingActions(
-    processedResponse.computerActions,
+    filterActionsByApproval(
+      originalPreStepItems,
+      processedResponse.computerActions,
+      'computer_call',
+    ),
     {
-      completedCallIds: collectCompletedCallIds(
-        originalPreStepItems,
-        'computer_call_result',
-      ),
+      completedCallIds: completedComputerCallIds,
     },
   );
 
@@ -435,8 +448,7 @@ export async function resolveInterruptedTurn<TContext>(
     state,
   );
 
-  // There is no built-in HITL approval surface for computer tools today, so every pending action
-  // is executed immediately when the turn resumes.
+  // Computer actions may require approval; only pending approved actions are executed on resume.
   const computerResults =
     pendingComputerActions.length > 0
       ? await executeComputerActions(
@@ -492,7 +504,7 @@ export async function resolveInterruptedTurn<TContext>(
 
   const additionalInterruptions = collectInterruptions(
     [],
-    [...shellResults, ...applyPatchResults],
+    [...computerResults, ...shellResults, ...applyPatchResults],
   );
 
   const hostedMcpApprovals = await handleHostedMcpApprovals({
@@ -671,7 +683,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
 
   const additionalInterruptions = collectInterruptions(
     [],
-    [...shellResults, ...applyPatchResults],
+    [...computerResults, ...shellResults, ...applyPatchResults],
   );
 
   if (processedResponse.mcpApprovalRequests.length > 0) {
