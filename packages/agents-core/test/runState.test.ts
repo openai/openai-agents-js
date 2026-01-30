@@ -79,6 +79,16 @@ describe('RunState', () => {
     expect(restored.history).toEqual(state.history);
   });
 
+  it('preserves toolInput after serialization', async () => {
+    const context = new RunContext({ foo: 'bar' });
+    context.toolInput = { text: 'hola', source: 'es', target: 'en' };
+    const agent = new Agent({ name: 'ToolInputAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._context.toolInput).toEqual(context.toolInput);
+  });
+
   it('tracks pending agent tool runs using tool name and call id', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'PendingAgent' });

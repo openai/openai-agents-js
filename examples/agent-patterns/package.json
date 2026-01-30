@@ -9,6 +9,7 @@
     "build-check": "tsc --noEmit",
     "start:agents-as-tools": "tsx agents-as-tools.ts",
     "start:agents-as-tools-conditional": "tsx agents-as-tools-conditional.ts",
+    "start:agents-as-tools-structured": "tsx agents-as-tools-structured.ts",
     "start:agents-as-tools-streaming": "tsx agents-as-tools-streaming.ts",
     "start:deterministic": "tsx deterministic.ts",
     "start:forcing-tool-use": "tsx forcing-tool-use.ts -t default",

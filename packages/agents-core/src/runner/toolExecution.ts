@@ -5,12 +5,8 @@ import type {
   ToolOutputImage,
   ToolOutputText,
 } from '../types/protocol';
-import {
-  Agent,
-  AgentOutputType,
-  ToolsToFinalOutputResult,
-  consumeAgentToolRunResult,
-} from '../agent';
+import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
+import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import { ToolCallError, UserError } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
