@@ -26,6 +26,7 @@ type LooseJsonObjectSchema = {
   required?: string[];
   additionalProperties?: boolean;
   $schema?: string;
+  description?: string;
 };
 
 type ShapeCandidate = {
@@ -96,6 +97,93 @@ export function zodJsonSchemaCompat(
   return schema as JsonObjectSchema<Record<string, JsonSchemaDefinitionEntry>>;
 }
 
+export function mergeJsonSchemaDescriptions(
+  target: JsonSchemaDefinitionEntry,
+  source: JsonSchemaDefinitionEntry | undefined,
+): void {
+  if (
+    typeof target !== 'object' ||
+    target === null ||
+    typeof source !== 'object' ||
+    source === null
+  ) {
+    return;
+  }
+
+  const targetRecord = target as Record<string, unknown>;
+  const sourceRecord = source as Record<string, unknown>;
+  if (
+    typeof sourceRecord.description === 'string' &&
+    sourceRecord.description.trim() &&
+    !('description' in targetRecord)
+  ) {
+    targetRecord.description = sourceRecord.description;
+  }
+
+  if (
+    targetRecord.type === 'object' &&
+    sourceRecord.type === 'object' &&
+    typeof targetRecord.properties === 'object' &&
+    targetRecord.properties !== null &&
+    typeof sourceRecord.properties === 'object' &&
+    sourceRecord.properties !== null
+  ) {
+    for (const [key, value] of Object.entries(
+      sourceRecord.properties as Record<string, JsonSchemaDefinitionEntry>,
+    )) {
+      const targetValue = (
+        targetRecord.properties as Record<string, JsonSchemaDefinitionEntry>
+      )[key];
+      if (targetValue) {
+        mergeJsonSchemaDescriptions(targetValue, value);
+      }
+    }
+  }
+
+  if (
+    targetRecord.type === 'array' &&
+    sourceRecord.type === 'array' &&
+    'items' in targetRecord &&
+    'items' in sourceRecord
+  ) {
+    const targetItems = targetRecord.items;
+    const sourceItems = sourceRecord.items;
+    if (Array.isArray(targetItems) && Array.isArray(sourceItems)) {
+      const limit = Math.min(targetItems.length, sourceItems.length);
+      for (let index = 0; index < limit; index += 1) {
+        mergeJsonSchemaDescriptions(
+          targetItems[index] as JsonSchemaDefinitionEntry,
+          sourceItems[index] as JsonSchemaDefinitionEntry,
+        );
+      }
+    } else if (
+      typeof targetItems === 'object' &&
+      targetItems !== null &&
+      typeof sourceItems === 'object' &&
+      sourceItems !== null
+    ) {
+      mergeJsonSchemaDescriptions(
+        targetItems as JsonSchemaDefinitionEntry,
+        sourceItems as JsonSchemaDefinitionEntry,
+      );
+    }
+  }
+
+  for (const keyword of ['anyOf', 'allOf', 'oneOf']) {
+    const targetArray = targetRecord[keyword];
+    const sourceArray = sourceRecord[keyword];
+    if (Array.isArray(targetArray) && Array.isArray(sourceArray)) {
+      const limit = Math.min(targetArray.length, sourceArray.length);
+      for (let index = 0; index < limit; index += 1) {
+        mergeJsonSchemaDescriptions(
+          targetArray[index] as JsonSchemaDefinitionEntry,
+          sourceArray[index] as JsonSchemaDefinitionEntry,
+        );
+      }
+    }
+  }
+}
+
 function buildObjectSchema(value: unknown): LooseJsonObjectSchema | undefined {
   const shape = readShape(value);
   if (!shape) {
@@ -111,13 +199,32 @@ function buildObjectSchema(value: unknown): LooseJsonObjectSchema | undefined {
       return undefined;
     }
 
+    const description = readZodDescription(field);
+    if (
+      description &&
+      typeof schema === 'object' &&
+      schema !== null &&
+      !('description' in schema)
+    ) {
+      (schema as JsonSchemaDefinitionEntry).description = description;
+    }
     properties[key] = schema;
     if (!optional) {
       required.push(key);
     }
   }
 
-  return { type: 'object', properties, required, additionalProperties: false };
+  const schema: LooseJsonObjectSchema = {
+    type: 'object',
+    properties,
+    required,
+    additionalProperties: false,
+  };
+  const description = readZodDescription(value);
+  if (description) {
+    schema.description = description;
+  }
+  return schema;
 }
 
 function convertProperty(value: unknown): {
@@ -157,7 +264,7 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
   }
 
   if (type in SIMPLE_TYPE_MAPPING) {
-    return SIMPLE_TYPE_MAPPING[type];
+    return { ...SIMPLE_TYPE_MAPPING[type] };
   }
 
   switch (type) {
@@ -284,6 +391,37 @@ function unwrapDecorators(value: unknown): unknown {
     current = next;
   }
   return current;
+}
+
+function readZodDescription(value: unknown): string | undefined {
+  if (typeof value === 'object' && value !== null) {
+    const direct = (value as { description?: unknown }).description;
+    if (typeof direct === 'string' && direct.trim()) {
+      return direct;
+    }
+  }
+
+  let current = value;
+  const visited = new Set<unknown>();
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    const def = readZodDefinition(current);
+    if (typeof def?.description === 'string' && def.description.trim()) {
+      return def.description;
+    }
+    const next =
+      def?.innerType ??
+      def?.schema ??
+      def?.base ??
+      def?.type ??
+      def?.wrapped ??
+      def?.underlying;
+    if (!next || next === current) {
+      break;
+    }
+    current = next;
+  }
+  return undefined;
 }
 
 function extractFirst(

@@ -47,6 +47,7 @@ export type JsonObjectSchemaStrict<
   properties: Properties;
   required: (keyof Properties)[];
   additionalProperties: false;
+  description?: string;
 };
 
 export type JsonObjectSchemaNonStrict<
@@ -56,6 +57,7 @@ export type JsonObjectSchemaNonStrict<
   properties: Properties;
   required: (keyof Properties)[];
   additionalProperties: true;
+  description?: string;
 };
 
 export type JsonObjectSchema<
