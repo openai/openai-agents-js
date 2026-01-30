@@ -23,7 +23,13 @@ import {
 import { assistant } from '../helpers/message';
 import logger, { Logger } from '../logger';
 import { ModelResponse } from '../model';
-import { FunctionToolResult, resolveComputer, Tool } from '../tool';
+import {
+  ComputerSafetyCheck,
+  ComputerSafetyCheckResult,
+  FunctionToolResult,
+  resolveComputer,
+  Tool,
+} from '../tool';
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
 import type { RunResult } from '../result';
@@ -831,6 +837,7 @@ export async function executeComputerActions(
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
+    const pendingSafetyChecks = getPendingSafetyChecks(toolCall);
     const approvalItem = new RunToolApprovalItem(
       toolCall,
       agent,
@@ -897,6 +904,16 @@ export async function executeComputerActions(
     // Hooks: on_tool_start (global + agent)
     emitToolStart(runner, runContext, agent, computerTool, toolCall);
 
+    const acknowledgedSafetyChecks =
+      pendingSafetyChecks && pendingSafetyChecks.length > 0
+        ? await resolveSafetyCheckAcknowledgements({
+            runContext,
+            toolCall,
+            pendingSafetyChecks,
+            onSafetyCheck: computerTool.onSafetyCheck,
+          })
+        : undefined;
+
     // Run the action and get screenshot
     let output: string;
     try {
@@ -924,6 +941,11 @@ export async function executeComputerActions(
       callId: toolCall.callId,
       output: { type: 'computer_screenshot', data: imageUrl },
     };
+    if (acknowledgedSafetyChecks && acknowledgedSafetyChecks.length > 0) {
+      rawItem.providerData = {
+        acknowledgedSafetyChecks,
+      };
+    }
     results.push(new RunToolCallOutputItem(rawItem, agent, imageUrl));
   }
   return results;
@@ -1545,6 +1567,97 @@ function normalizeLegacyFileValue(
   }
 
   return null;
+}
+
+function normalizeSafetyChecks(
+  checks: unknown,
+): ComputerSafetyCheck[] | undefined {
+  if (!Array.isArray(checks)) {
+    return undefined;
+  }
+  const normalized: ComputerSafetyCheck[] = [];
+  for (const entry of checks) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const id = entry.id;
+    const code = entry.code;
+    if (!isNonEmptyString(id) || !isNonEmptyString(code)) {
+      continue;
+    }
+    const message =
+      'message' in entry && isNonEmptyString(entry.message)
+        ? entry.message
+        : undefined;
+    const normalizedEntry: ComputerSafetyCheck = { ...entry, id, code };
+    if (message) {
+      normalizedEntry.message = message;
+    }
+    normalized.push(normalizedEntry);
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeSafetyCheckResult(
+  result: ComputerSafetyCheckResult,
+): ComputerSafetyCheck[] | undefined {
+  if (!result) {
+    return undefined;
+  }
+  if (!isRecord(result)) {
+    return undefined;
+  }
+  if ('acknowledgedSafetyChecks' in result) {
+    return normalizeSafetyChecks(result.acknowledgedSafetyChecks);
+  }
+  if ('acknowledged_safety_checks' in result) {
+    return normalizeSafetyChecks(result.acknowledged_safety_checks);
+  }
+  return undefined;
+}
+
+async function resolveSafetyCheckAcknowledgements(options: {
+  runContext: RunContext;
+  toolCall: protocol.ComputerUseCallItem;
+  pendingSafetyChecks: ComputerSafetyCheck[];
+  onSafetyCheck?: (args: {
+    runContext: RunContext;
+    pendingSafetyChecks: ComputerSafetyCheck[];
+    toolCall: protocol.ComputerUseCallItem;
+  }) => Promise<ComputerSafetyCheckResult>;
+}): Promise<ComputerSafetyCheck[] | undefined> {
+  const { runContext, toolCall, pendingSafetyChecks, onSafetyCheck } = options;
+  if (!onSafetyCheck) {
+    return undefined;
+  }
+  const result = await onSafetyCheck({
+    runContext,
+    pendingSafetyChecks,
+    toolCall,
+  });
+  if (result === true) {
+    return pendingSafetyChecks;
+  }
+  if (result === false) {
+    return undefined;
+  }
+  return normalizeSafetyCheckResult(result);
+}
+
+function getPendingSafetyChecks(
+  toolCall: protocol.ComputerUseCallItem,
+): ComputerSafetyCheck[] | undefined {
+  const providerData = toolCall.providerData;
+  if (!isRecord(providerData)) {
+    return undefined;
+  }
+  if ('pending_safety_checks' in providerData) {
+    return normalizeSafetyChecks(providerData.pending_safety_checks);
+  }
+  if ('pendingSafetyChecks' in providerData) {
+    return normalizeSafetyChecks(providerData.pendingSafetyChecks);
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

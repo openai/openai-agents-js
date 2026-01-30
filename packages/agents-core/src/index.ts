@@ -176,7 +176,13 @@ export {
   ToolEnabledFunction,
   ToolOptionsWithGuardrails,
 } from './tool';
-export type { ToolInputParameters, ToolOptions } from './tool';
+export type {
+  ComputerOnSafetyCheckFunction,
+  ComputerSafetyCheck,
+  ComputerSafetyCheckResult,
+  ToolInputParameters,
+  ToolOptions,
+} from './tool';
 export type {
   ToolOutputText,
   ToolOutputImage,

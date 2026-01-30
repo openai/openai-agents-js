@@ -110,6 +110,12 @@ async function computerPerRequest() {
             await computer.dispose();
           },
         },
+        onSafetyCheck: async ({ pendingSafetyChecks }) => {
+          console.log('Pending safety checks:', pendingSafetyChecks);
+          // acknowledge all pending safety checks
+          return { acknowledgedSafetyChecks: pendingSafetyChecks };
+          // or return true to acknowledge all pending safety checks
+        },
         needsApproval: async (_ctx, action) =>
           ['click', 'type', 'keypress'].includes(action.type),
       }),
