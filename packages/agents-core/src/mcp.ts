@@ -39,6 +39,11 @@ export const DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME =
 export const DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:sse-mcp-client';
 
+type MCPToolErrorFunction = (args: {
+  context: RunContext;
+  error: Error | unknown;
+}) => Promise<string> | string;
+
 /**
  * Interface for MCP server implementations.
  * Provides methods for connecting, listing tools, calling tools, and cleanup.
@@ -47,6 +52,11 @@ export interface MCPServer {
   cacheToolsList: boolean;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Optional function to convert MCP tool failures into model-visible messages.
+   * Set to null to rethrow errors instead of converting them.
+   */
+  errorFunction?: MCPToolErrorFunction | null;
   connect(): Promise<void>;
   readonly name: string;
   close(): Promise<void>;
@@ -64,6 +74,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
   constructor(options: MCPServerStdioOptions) {
@@ -72,6 +83,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.errorFunction = options.errorFunction;
   }
 
   abstract get name(): string;
@@ -102,6 +114,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
   constructor(options: MCPServerStreamableHttpOptions) {
@@ -111,6 +124,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.errorFunction = options.errorFunction;
   }
 
   abstract get name(): string;
@@ -141,6 +155,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
   constructor(options: MCPServerSSEOptions) {
@@ -149,6 +164,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.errorFunction = options.errorFunction;
   }
 
   abstract get name(): string;
@@ -567,6 +583,12 @@ export function mcpToFunctionTool(
   server: MCPServer,
   convertSchemasToStrict: boolean,
 ) {
+  const serverErrorFunction = server.errorFunction;
+  const errorFunction =
+    typeof serverErrorFunction === 'function'
+      ? (context: RunContext, error: Error | unknown) =>
+          serverErrorFunction({ context, error })
+      : serverErrorFunction;
   async function invoke(input: any, runContext?: RunContext<any>) {
     let args = {};
     if (typeof input === 'string' && input) {
@@ -605,6 +627,7 @@ export function mcpToFunctionTool(
         parameters: strictSchema,
         strict: true,
         execute: invoke,
+        errorFunction,
       });
     } catch (e) {
       globalLogger.warn(`Error converting MCP schema to strict mode: ${e}`);
@@ -621,6 +644,7 @@ export function mcpToFunctionTool(
     parameters: nonStrictSchema,
     strict: false,
     execute: invoke,
+    errorFunction,
   });
 }
 
@@ -659,6 +683,11 @@ export interface BaseMCPServerStdioOptions {
    * Invoked before calling `callTool`.
    */
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Optional function to convert MCP tool failures into model-visible messages.
+   * Set to null to rethrow errors instead of converting them.
+   */
+  errorFunction?: MCPToolErrorFunction | null;
   timeout?: number;
 }
 export interface DefaultMCPServerStdioOptions extends BaseMCPServerStdioOptions {
@@ -684,6 +713,11 @@ export interface MCPServerStreamableHttpOptions {
    * Invoked before calling `callTool`.
    */
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Optional function to convert MCP tool failures into model-visible messages.
+   * Set to null to rethrow errors instead of converting them.
+   */
+  errorFunction?: MCPToolErrorFunction | null;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -713,6 +747,11 @@ export interface MCPServerSSEOptions {
    * Invoked before calling `callTool`.
    */
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Optional function to convert MCP tool failures into model-visible messages.
+   * Set to null to rethrow errors instead of converting them.
+   */
+  errorFunction?: MCPToolErrorFunction | null;
   timeout?: number;
 
   // ----------------------------------------------------
