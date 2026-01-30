@@ -57,6 +57,7 @@ Use this skill when validating the latest release candidate commit (default tip 
 All output must be in English.
 
 Use the following report structure in every response produced by this skill. Be proactive and decisive: make a clear ship/block call near the top, and assign an explicit risk level (LOW/MODERATE/HIGH) to each finding with a short impact statement. Avoid overly cautious hedging when the risk is low and tests passed.
+Always use the fixed repository URL in the Diff section (`https://github.com/openai/openai-agents-js/compare/...`). Do not use `${GITHUB_REPOSITORY}` or any other template variable. Format risk levels as bold emoji labels: ** LOW**, ** MODERATE**, ** HIGH**.
 
 ```
 ### Release readiness review (<tag> -> TARGET <ref>)
@@ -74,8 +75,8 @@ https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 - <N files changed (+A/-D); key areas touched: ...>
 
 ### Risk assessment (ordered by impact):
-1) <Finding title>
-   - Risk: <LOW/MODERATE/HIGH>. <Impact statement in one sentence.>
+1) **<Finding title>**
+   - Risk: **< LOW | MODERATE | HIGH>**. <Impact statement in one sentence.>
    - Files: <path(s)>
 2) ...
 
