@@ -38,6 +38,23 @@ describe('utils/tools', () => {
     expect(res.parser('{"bar":2}')).toEqual({ bar: 2 });
   });
 
+  it('getSchemaAndParserFromInputType includes zod descriptions when available', () => {
+    const zodSchema = z
+      .object({
+        text: z.string().describe('Text to translate'),
+      })
+      .describe('Translation input');
+    const res = getSchemaAndParserFromInputType(zodSchema, 'tool');
+    expect(res.schema).toMatchObject({
+      description: 'Translation input',
+      properties: {
+        text: {
+          description: 'Text to translate',
+        },
+      },
+    });
+  });
+
   it('getSchemaAndParserFromInputType rejects invalid input', () => {
     expect(() => getSchemaAndParserFromInputType('bad' as any, 't')).toThrow(
       UserError,

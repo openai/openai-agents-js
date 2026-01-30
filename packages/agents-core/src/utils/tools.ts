@@ -7,6 +7,7 @@ import { AgentOutputType } from '../agent';
 import {
   zodJsonSchemaCompat,
   hasJsonSchemaObjectShape,
+  mergeJsonSchemaDescriptions,
 } from './zodJsonSchemaCompat';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
@@ -133,6 +134,13 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     }
 
     if (hasJsonSchemaObjectShape(formattedFunction.parameters)) {
+      const fallbackSchema = buildJsonSchemaFromZod(inputType);
+      if (fallbackSchema) {
+        mergeJsonSchemaDescriptions(
+          formattedFunction.parameters as JsonObjectSchema<any>,
+          fallbackSchema,
+        );
+      }
       return {
         schema: formattedFunction.parameters as JsonObjectSchema<any>,
         parser: formattedFunction.$parseRaw,

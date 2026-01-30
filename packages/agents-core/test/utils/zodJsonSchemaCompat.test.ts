@@ -201,4 +201,21 @@ describe('utils/zodJsonSchemaCompat', () => {
     const jsonSchema = zodJsonSchemaCompat(schema);
     expect(jsonSchema?.properties.title).toEqual({ type: 'string' });
   });
+
+  it('includes descriptions from zod schemas when available', () => {
+    const schema = z
+      .object({
+        text: z.string().describe('Text to translate'),
+        target: z.string(),
+      })
+      .describe('Translation input');
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.description).toBe('Translation input');
+    expect(jsonSchema?.properties.text).toEqual({
+      type: 'string',
+      description: 'Text to translate',
+    });
+    expect(jsonSchema?.properties.target).toEqual({ type: 'string' });
+  });
 });
