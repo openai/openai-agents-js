@@ -24,6 +24,11 @@ describe('agentToolInput', () => {
     expect(result).toBe(JSON.stringify({ foo: 'bar' }));
   });
 
+  it('resolveAgentToolInput stringifies bigint values without schema info', async () => {
+    const result = await resolveAgentToolInput({ params: { count: 10n } });
+    expect(result).toBe('{"count":"10"}');
+  });
+
   it('resolveAgentToolInput preserves structured fields alongside input', async () => {
     const result = await resolveAgentToolInput({
       params: { input: 'hello', target: 'world' },
@@ -39,6 +44,14 @@ describe('agentToolInput', () => {
     expect(typeof result).toBe('string');
     expect(result).toContain('Input Schema Summary:');
     expect(result).toContain('Summary');
+  });
+
+  it('defaultInputBuilder stringifies bigint values when schema info exists', async () => {
+    const result = await resolveAgentToolInput({
+      params: { count: 10n },
+      schemaInfo: { summary: 'Summary' },
+    });
+    expect(result).toContain('"count": "10"');
   });
 
   it('resolveAgentToolInput returns builder output for items', async () => {

@@ -42,6 +42,8 @@ const DECORATOR_WRAPPERS = new Set([
   'refinement',
   'transform',
 ]);
+const JSON_BIGINT_REPLACER = (_key: string, value: unknown): unknown =>
+  typeof value === 'bigint' ? value.toString() : value;
 
 // The parameter type for agent tool inputs created by Agent.asTool().
 export const AgentAsToolInputSchema = z.object({
@@ -88,7 +90,7 @@ export function defaultInputBuilder(
   // Input data.
   sections.push('## Structured Input Data:');
   sections.push('\n```');
-  const dataJson = JSON.stringify(options.params, null, 2);
+  const dataJson = safeJsonStringify(options.params, 2);
   sections.push(dataJson ?? 'null');
   sections.push('```\n');
 
@@ -96,7 +98,7 @@ export function defaultInputBuilder(
     // Input JSON schema.
     sections.push('## Input JSON Schema:');
     sections.push('\n```');
-    sections.push(JSON.stringify(options.jsonSchema, null, 2));
+    sections.push(safeJsonStringify(options.jsonSchema, 2) ?? 'null');
     sections.push('```\n');
     sections.push('\n');
   } else if (options.summary) {
@@ -127,12 +129,16 @@ export async function resolveAgentToolInput<TParams>(options: {
   if (isAgentToolInput(options.params) && hasOnlyInputField(options.params)) {
     return options.params.input;
   }
-  return JSON.stringify(options.params);
+  return safeJsonStringify(options.params) ?? 'null';
 }
 
 function hasOnlyInputField(value: { input: string }): boolean {
   const keys = Object.keys(value);
   return keys.length === 1 && keys[0] === 'input';
+}
+
+function safeJsonStringify(value: unknown, space?: number): string | undefined {
+  return JSON.stringify(value, JSON_BIGINT_REPLACER, space);
 }
 
 export function buildStructuredInputSchemaInfo(
