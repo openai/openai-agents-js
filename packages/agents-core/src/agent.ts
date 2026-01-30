@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
 import { getAllMcpTools, type MCPServer } from './mcp';
@@ -16,7 +14,10 @@ import {
   tool,
   type Tool,
   type ToolApprovalFunction,
+  type ToolCallDetails,
+  type ToolExecuteArgument,
   type ToolEnabledFunction,
+  type ToolInputParametersStrict,
 } from './tool';
 import type {
   AgentInputItem,
@@ -31,19 +32,22 @@ import { StreamRunOptions, RunConfig, Runner } from './run';
 import { RunState } from './runState';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
-import { isAgentToolInput } from './utils/typeGuards';
 import { isZodObject } from './utils/typeGuards';
 import { ModelBehaviorError, UserError } from './errors';
 import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import { UnknownContext, TextOutput } from './types';
 import type * as protocol from './types/protocol';
-import type { ZodObjectLike } from './utils/zodCompat';
 import type { RunStreamEvent } from './events';
+import {
+  AgentAsToolInputSchema,
+  buildStructuredInputSchemaInfo,
+  resolveAgentToolInput,
+  type StructuredToolInputBuilder,
+} from './agentToolInput';
+import type { ZodObjectLike } from './utils/zodCompat';
+import { saveAgentToolRunResult } from './agentToolRunResults';
 
-type AnyAgentRunResult =
-  | RunResult<any, Agent<any, any>>
-  | StreamedRunResult<any, Agent<any, any>>;
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   | RunResult<TContext, TAgent>
   | StreamedRunResult<TContext, TAgent>
@@ -55,6 +59,7 @@ type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
   StreamRunOptions<TContext, TAgent>,
   'stream'
 >;
+type AgentToolInputParameters = Exclude<ToolInputParametersStrict, undefined>;
 
 // Controls how nested tool resume reconciles context with serialized RunState.
 type AgentToolResumeContextStrategy = 'merge' | 'replace' | 'preferSerialized';
@@ -75,42 +80,96 @@ type AgentToolEventName = RunStreamEvent['type'] | '*';
 type AgentToolEventHandler<TAgent extends Agent<any, any>> = (
   event: AgentToolStreamEvent<TAgent>,
 ) => void | Promise<void>;
-type AgentTool<TContext, TAgent extends Agent<TContext, any>> = FunctionTool<
+type AgentToolInputBuilder<TParameters extends AgentToolInputParameters> =
+  StructuredToolInputBuilder<ToolExecuteArgument<TParameters>>;
+type AgentToolOptions<
   TContext,
-  typeof AgentAsToolNeedApprovalSchame
-> & {
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = {
+  /**
+   * The name of the tool. If not provided, the name of the agent will be used.
+   */
+  toolName?: string;
+  /**
+   * The description of the tool, which should indicate what the tool does and when to use it.
+   */
+  toolDescription?: string;
+  /**
+   * A function that extracts the output text from the agent. If not provided, the last message
+   * from the agent will be used.
+   */
+  customOutputExtractor?: (
+    output: CompletedRunResult<TContext, TAgent>,
+  ) => string | Promise<string>;
+  /**
+   * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
+   * When provided as a function it receives the tool arguments and can implement custom approval
+   * logic.
+   */
+  needsApproval?: boolean | ToolApprovalFunction<TParameters>;
+  /**
+   * The schema used to validate tool input. Defaults to `{ input: string }`.
+   */
+  parameters?: TParameters;
+  /**
+   * Builds the nested agent input from structured tool input data.
+   */
+  inputBuilder?: AgentToolInputBuilder<TParameters>;
+  /**
+   * Include the full JSON Schema for the structured tool input when invoking the agent.
+   */
+  includeInputSchema?: boolean;
+  /**
+   * Run configuration for initializing the internal agent runner.
+   */
+  runConfig?: Partial<RunConfig>;
+  /**
+   * Additional run options for the agent (as tool) execution.
+   */
+  runOptions?: AgentToolRunOptions<TContext, TAgent>;
+  /**
+   * Controls how context is applied when resuming from serialized run state.
+   */
+  resumeState?: AgentToolResumeStateOptions;
+  /**
+   * Determines whether this tool should be exposed to the model for the current run.
+   */
+  isEnabled?:
+    | boolean
+    | ((args: {
+        runContext: RunContext<TContext>;
+        agent: Agent<any, any>;
+      }) => boolean | Promise<boolean>);
+  /**
+   * Optional hook to receive streamed events from the nested agent run.
+   */
+  onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
+};
+type AgentToolOptionsWithDefault<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> = Omit<
+  AgentToolOptions<TContext, TAgent, typeof AgentAsToolInputSchema>,
+  'parameters'
+> & { parameters?: undefined };
+type AgentToolOptionsWithParameters<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = AgentToolOptions<TContext, TAgent, TParameters> & {
+  parameters: TParameters;
+};
+type AgentTool<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TParameters extends AgentToolInputParameters,
+> = FunctionTool<TContext, TParameters> & {
   on: (
     name: AgentToolEventName,
     handler: AgentToolEventHandler<TAgent>,
-  ) => AgentTool<TContext, TAgent>;
+  ) => AgentTool<TContext, TAgent, TParameters>;
 };
-
-// Per-process, ephemeral map linking a function tool call to its nested
-// Agent run result within the same run; entry is removed after consumption.
-const agentToolRunResults = new WeakMap<
-  protocol.FunctionCallItem,
-  AnyAgentRunResult
->();
-
-export function saveAgentToolRunResult(
-  toolCall: protocol.FunctionCallItem | undefined,
-  runResult: AnyAgentRunResult,
-): void {
-  if (toolCall) {
-    agentToolRunResults.set(toolCall, runResult);
-  }
-}
-
-export function consumeAgentToolRunResult(
-  toolCall: protocol.FunctionCallItem,
-): AnyAgentRunResult | undefined {
-  const runResult = agentToolRunResults.get(toolCall);
-  if (runResult) {
-    agentToolRunResults.delete(toolCall);
-  }
-
-  return runResult;
-}
 
 export type ToolUseBehaviorFlags = 'run_llm_again' | 'stop_on_first_tool';
 
@@ -360,9 +419,6 @@ export type AgentConfigWithHandoffs<
   >
 >;
 
-// The parameter type fo needApproval function for the tool created by Agent.asTool() method
-const AgentAsToolNeedApprovalSchame = z.object({ input: z.string() });
-
 /**
  * The class representing an AI agent configured with instructions, tools, guardrails, handoffs and more.
  *
@@ -536,62 +592,32 @@ export class Agent<
    */
   asTool<TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>>(
     this: TAgent,
-    options: {
-      /**
-       * The name of the tool. If not provided, the name of the agent will be used.
-       */
-      toolName?: string;
-      /**
-       * The description of the tool, which should indicate what the tool does and when to use it.
-       */
-      toolDescription?: string;
-      /**
-       * A function that extracts the output text from the agent. If not provided, the last message
-       * from the agent will be used.
-       */
-      customOutputExtractor?: (
-        output: CompletedRunResult<TContext, TAgent>,
-      ) => string | Promise<string>;
-      /**
-       * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
-       * When provided as a function it receives the tool arguments and can implement custom approval
-       * logic.
-       */
-      needsApproval?:
-        | boolean
-        | ToolApprovalFunction<typeof AgentAsToolNeedApprovalSchame>;
-      /**
-       * Run configuration for initializing the internal agent runner.
-       */
-      runConfig?: Partial<RunConfig>;
-      /**
-       * Additional run options for the agent (as tool) execution.
-       */
-      runOptions?: AgentToolRunOptions<TContext, TAgent>;
-      /**
-       * Controls how context is applied when resuming from serialized run state.
-       */
-      resumeState?: AgentToolResumeStateOptions;
-      /**
-       * Determines whether this tool should be exposed to the model for the current run.
-       */
-      isEnabled?:
-        | boolean
-        | ((args: {
-            runContext: RunContext<TContext>;
-            agent: Agent<TContext, TOutput>;
-          }) => boolean | Promise<boolean>);
-      /**
-       * Optional hook to receive streamed events from the nested agent run.
-       */
-      onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
-    },
-  ): AgentTool<TContext, TAgent> {
+    options: AgentToolOptionsWithDefault<TContext, TAgent>,
+  ): AgentTool<TContext, TAgent, typeof AgentAsToolInputSchema>;
+  asTool<
+    TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>,
+    TParameters extends AgentToolInputParameters =
+      typeof AgentAsToolInputSchema,
+  >(
+    this: TAgent,
+    options: AgentToolOptionsWithParameters<TContext, TAgent, TParameters>,
+  ): AgentTool<TContext, TAgent, TParameters>;
+  asTool<
+    TAgent extends Agent<TContext, TOutput> = Agent<TContext, TOutput>,
+    TParameters extends AgentToolInputParameters =
+      typeof AgentAsToolInputSchema,
+  >(
+    this: TAgent,
+    options: AgentToolOptions<TContext, TAgent, TParameters>,
+  ): AgentTool<TContext, TAgent, TParameters> {
     const {
       toolName,
       toolDescription,
       customOutputExtractor,
       needsApproval,
+      parameters,
+      inputBuilder,
+      includeInputSchema,
       runConfig,
       runOptions,
       resumeState,
@@ -619,29 +645,71 @@ export class Agent<
         ),
       );
     };
-    const baseTool = tool({
-      name: toolName ?? toFunctionToolName(this.name),
+    const resolvedToolName = toolName ?? toFunctionToolName(this.name);
+    const toolParameters = (parameters ??
+      AgentAsToolInputSchema) as ToolInputParametersStrict;
+    const hasCustomParameters = typeof parameters !== 'undefined';
+    const includeSchema = includeInputSchema === true && hasCustomParameters;
+    const shouldCaptureToolInput =
+      hasCustomParameters ||
+      includeSchema ||
+      typeof inputBuilder === 'function';
+    const schemaInfo = shouldCaptureToolInput
+      ? buildStructuredInputSchemaInfo(
+          toolParameters,
+          resolvedToolName,
+          includeSchema,
+        )
+      : undefined;
+    const baseTool = tool<ToolInputParametersStrict, TContext, string>({
+      name: resolvedToolName,
       description: toolDescription ?? '',
-      parameters: AgentAsToolNeedApprovalSchame,
+      parameters: toolParameters,
       strict: true,
-      needsApproval,
+      needsApproval: needsApproval as
+        | boolean
+        | ToolApprovalFunction<ToolInputParametersStrict>,
       isEnabled,
-      execute: async (data, context, details) => {
-        if (!isAgentToolInput(data)) {
+      execute: async (
+        params: ToolExecuteArgument<ToolInputParametersStrict>,
+        context?: RunContext<TContext>,
+        details?: ToolCallDetails,
+      ) => {
+        const typedParams = params as ToolExecuteArgument<TParameters>;
+        const runContextBase =
+          runOptions?.context instanceof RunContext
+            ? runOptions.context
+            : typeof runOptions?.context !== 'undefined'
+              ? new RunContext(runOptions.context)
+              : (context ?? new RunContext());
+        const shouldClearToolInput =
+          !shouldCaptureToolInput &&
+          typeof runContextBase.toolInput !== 'undefined';
+        const runContext =
+          shouldCaptureToolInput &&
+          typeof runContextBase._forkWithToolInput === 'function'
+            ? runContextBase._forkWithToolInput(typedParams)
+            : shouldClearToolInput &&
+                typeof runContextBase._forkWithoutToolInput === 'function'
+              ? runContextBase._forkWithoutToolInput()
+              : runContextBase;
+        const resolvedInput = await resolveAgentToolInput({
+          params: typedParams,
+          schemaInfo,
+          inputBuilder,
+        });
+        if (
+          typeof resolvedInput !== 'string' &&
+          !Array.isArray(resolvedInput)
+        ) {
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
         const runner = new Runner(runConfig ?? {});
         const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
         const resumeContext =
-          resumeContextStrategy === 'preferSerialized'
-            ? undefined
-            : runOptions?.context instanceof RunContext
-              ? runOptions.context
-              : typeof runOptions?.context !== 'undefined'
-                ? new RunContext(runOptions.context)
-                : context;
+          resumeContextStrategy === 'preferSerialized' ? undefined : runContext;
         let runInput: string | AgentInputItem[] | RunState<TContext, TAgent> =
-          data.input;
+          resolvedInput;
         if (details?.resumeState) {
           if (resumeContextStrategy === 'preferSerialized' || !resumeContext) {
             runInput = await RunState.fromString<TContext, TAgent>(
@@ -671,15 +739,17 @@ export class Agent<
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
           typeof onStream === 'function' || eventHandlers.size > 0;
+        const runOptionsWithContext = {
+          ...(runOptions ?? {}),
+          context: runContext,
+        };
         const result = shouldStream
           ? await runner.run(this, runInput, {
-              context,
-              ...(runOptions ?? {}),
+              ...runOptionsWithContext,
               stream: true,
             })
           : await runner.run(this, runInput, {
-              context,
-              ...(runOptions ?? {}),
+              ...runOptionsWithContext,
             });
         const streamPayload = {
           agent: this,
@@ -744,16 +814,13 @@ export class Agent<
         }
 
         if (details?.toolCall) {
-          saveAgentToolRunResult(
-            details.toolCall,
-            completedResult as AnyAgentRunResult,
-          );
+          saveAgentToolRunResult(details.toolCall, completedResult);
         }
         return outputText;
       },
     });
 
-    const agentTool: AgentTool<TContext, TAgent> = {
+    const agentTool: AgentTool<TContext, TAgent, TParameters> = {
       ...baseTool,
       on: (name, handler) => {
         const set =

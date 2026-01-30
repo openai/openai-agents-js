@@ -46,12 +46,14 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  *   payloads remain readable but resumes may lack mid-turn or server-managed context precision.
  * - 1.2: Adds pendingAgentToolRuns for nested agent tool resumption.
  * - 1.3: Adds computer tool approval items to serialized tool_approval_item unions.
+ * - 1.4: Adds optional toolInput to serialized run context.
  */
-export const CURRENT_SCHEMA_VERSION = '1.3' as const;
+export const CURRENT_SCHEMA_VERSION = '1.4' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
   '1.2',
+  '1.3',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -312,6 +314,7 @@ export const SerializedRunState = z.object({
       }),
     ),
     context: z.record(z.string(), z.any()),
+    toolInput: z.any().optional(),
   }),
   toolUseTracker: z.record(z.string(), z.array(z.string())),
   maxTurns: z.number(),
@@ -818,6 +821,15 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     }
   } else {
     context._rebuildApprovals(stateJson.context.approvals);
+  }
+  const shouldRestoreToolInput =
+    !contextOverride || contextStrategy === 'merge';
+  if (
+    shouldRestoreToolInput &&
+    typeof stateJson.context.toolInput !== 'undefined' &&
+    typeof context.toolInput === 'undefined'
+  ) {
+    context.toolInput = stateJson.context.toolInput;
   }
 
   //

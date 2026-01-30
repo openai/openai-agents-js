@@ -7,6 +7,10 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm examples:agents-as-tools
   ```
+- `agents-as-tools-structured.ts` – Use structured tool input with `Agent.asTool()`.
+  ```bash
+  pnpm examples:agents-as-tools-structured
+  ```
 - `agents-as-tools-conditional.ts` – Enable language tools based on user preference.
   ```bash
   pnpm examples:agents-as-tools-conditional

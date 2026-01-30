@@ -5,6 +5,7 @@ import { Handoff, handoff } from '../src/handoff';
 import { tool } from '../src/tool';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
+import type { AgentInputItem } from '../src/types';
 import {
   FakeModel,
   FakeModelProvider,
@@ -187,7 +188,7 @@ describe('Agent', () => {
     setDefaultModelProvider(new FakeModelProvider());
     const result2 = await tool.invoke(
       {} as any,
-      '{"input":"hey how are you?"}',
+      JSON.stringify({ input: 'hey how are you?' }),
     );
     expect(result2).toBe('Hello World');
   });
@@ -208,7 +209,7 @@ describe('Agent', () => {
       toolDescription: 'desc',
     });
 
-    await tool.invoke(new RunContext(), '{"input":"value"}');
+    await tool.invoke(new RunContext(), JSON.stringify({ input: 'value' }));
 
     expect(runSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
@@ -295,6 +296,244 @@ describe('Agent', () => {
     );
   });
 
+  it('supports structured input schemas for agent tools', async () => {
+    const agent = new Agent({
+      name: 'Structured Agent',
+      instructions: 'Handle structured input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      parameters: z.object({
+        text: z.string(),
+        source: z.string(),
+        target: z.string(),
+      }),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola', source: 'es', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    const calledOptions = call[2];
+    if (!calledOptions) {
+      throw new Error('Expected nested agent run options to be provided');
+    }
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(JSON.parse(calledInput)).toEqual(args);
+
+    const nestedContext = calledOptions.context as RunContext;
+    expect(nestedContext).not.toBe(runContext);
+    expect(nestedContext.context).toBe(runContext.context);
+    expect(nestedContext.usage).toBe(runContext.usage);
+    expect(nestedContext.toolInput).toEqual(args);
+    expect(runContext.toolInput).toBeUndefined();
+  });
+
+  it('clears stale toolInput for non-structured agent tools', async () => {
+    const agent = new Agent({
+      name: 'Plain Agent',
+      instructions: 'Handle plain input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Plain tool.',
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const staleToolInput = { text: 'bonjour', source: 'fr', target: 'en' };
+    runContext.toolInput = staleToolInput;
+    await tool.invoke(runContext, JSON.stringify({ input: 'hello' }));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledOptions = call[2];
+    if (!calledOptions) {
+      throw new Error('Expected nested agent run options to be provided');
+    }
+
+    const nestedContext = calledOptions.context as RunContext;
+    expect(nestedContext).not.toBe(runContext);
+    expect(nestedContext.context).toBe(runContext.context);
+    expect(nestedContext.usage).toBe(runContext.usage);
+    expect(nestedContext.toolInput).toBeUndefined();
+    expect(runContext.toolInput).toEqual(staleToolInput);
+  });
+
+  it('includes a schema summary when structured input has descriptions', async () => {
+    const agent = new Agent({
+      name: 'Schema Summary Agent',
+      instructions: 'Handle structured input with schema summary.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      parameters: z
+        .object({
+          text: z.string().describe('Text to translate'),
+          target: z.string().describe('Target language'),
+        })
+        .describe('Translation input'),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(calledInput).toContain('You are being called as a tool.');
+    expect(calledInput).toContain('Input Schema Summary:');
+    expect(calledInput).toContain('text (string, required)');
+    expect(calledInput).toContain('Text to translate');
+    expect(calledInput).toContain('target (string, required)');
+    expect(calledInput).toContain('Target language');
+    expect(calledInput).toContain('"text": "hola"');
+    expect(calledInput).toContain('"target": "en"');
+  });
+
+  it('supports custom structured tool input builders', async () => {
+    const agent = new Agent({
+      name: 'Schema Summary Agent',
+      instructions: 'Handle structured input with schema summary.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const inputItems = [
+      { role: 'user', content: 'custom input' },
+    ] satisfies AgentInputItem[];
+    const inputBuilder = vi.fn(() => inputItems);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      inputBuilder,
+      parameters: z.object({
+        text: z.string(),
+      }),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    expect(calledInput).toEqual(inputItems);
+    expect(inputBuilder).toHaveBeenCalledWith({
+      params: args,
+      summary: undefined,
+      jsonSchema: undefined,
+    });
+  });
+
+  it('rejects invalid structured tool input builder output', async () => {
+    const agent = new Agent({
+      name: 'Invalid Builder Agent',
+      instructions: 'Handle structured input.',
+    });
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      inputBuilder: () => 123 as any,
+    });
+
+    const result = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+    expect(result).toContain('Agent tool called with invalid input');
+  });
+
+  it('includes JSON Schema when includeInputSchema is true', async () => {
+    const agent = new Agent({
+      name: 'Schema Full Agent',
+      instructions: 'Handle structured input with JSON schema.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      includeInputSchema: true,
+      parameters: z.object({
+        text: z.string().describe('Text to translate'),
+        target: z.string().describe('Target language'),
+      }),
+    });
+
+    const runContext = new RunContext();
+    const args = { text: 'hola', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(calledInput).toContain('Input JSON Schema:');
+    expect(calledInput).toContain('"properties"');
+    expect(calledInput).toContain('"text"');
+    expect(calledInput).toContain('"target"');
+    expect(calledInput).toContain('"text": "hola"');
+    expect(calledInput).toContain('"target": "en"');
+  });
+
+  it('ignores includeInputSchema when parameters are omitted', async () => {
+    const agent = new Agent({
+      name: 'Default Schema Agent',
+      instructions: 'Handle default tool input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Default tool schema.',
+      includeInputSchema: true,
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    await tool.invoke(runContext, JSON.stringify({ input: 'hello' }));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    expect(calledInput).toBe('hello');
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      properties: expect.objectContaining({
+        input: expect.any(Object),
+      }),
+    });
+  });
+
   it('uses handled final output when maxTurns error handler completes the tool run', async () => {
     const agent = new Agent({
       name: 'MaxTurnsTool',
@@ -311,7 +550,10 @@ describe('Agent', () => {
       },
     });
 
-    const output = await tool.invoke(new RunContext(), '{"input":"hi"}');
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
 
     expect(output).toBe('handled output');
   });
@@ -343,7 +585,10 @@ describe('Agent', () => {
       },
     });
 
-    const output = await agentTool.invoke(new RunContext(), '{"input":"hi"}');
+    const output = await agentTool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
 
     expect(output).toBe('handled summary');
   });
@@ -361,7 +606,10 @@ describe('Agent', () => {
       toolDescription: 'desc',
     });
 
-    const output = await tool.invoke(new RunContext(), '{"input":"hi"}');
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
 
     expect(output).toBe('tool output');
     expect(runSpy).toHaveBeenCalledTimes(1);
@@ -411,7 +659,7 @@ describe('Agent', () => {
 
     const output = await tool.invoke(
       new RunContext(),
-      '{"input":"run streaming"}',
+      JSON.stringify({ input: 'run streaming' }),
     );
 
     expect(output).toBe('final text');
@@ -471,7 +719,7 @@ describe('Agent', () => {
 
     const output = await tool.invoke(
       new RunContext(),
-      '{"input":"run streaming"}',
+      JSON.stringify({ input: 'run streaming' }),
       { toolCall },
     );
 
@@ -538,7 +786,7 @@ describe('Agent', () => {
     const toolCall = { callId: 'call-abc' } as any;
     const output = await tool.invoke(
       new RunContext(),
-      '{"input":"run streaming"}',
+      JSON.stringify({ input: 'run streaming' }),
       { toolCall },
     );
 
@@ -601,7 +849,7 @@ describe('Agent', () => {
     const toolCall = { callId: 'call-xyz' } as any;
     const output = await tool.invoke(
       new RunContext(),
-      '{"input":"run streaming"}',
+      JSON.stringify({ input: 'run streaming' }),
       { toolCall },
     );
 

@@ -6,11 +6,8 @@ import {
   setTracingDisabled,
   withTrace,
 } from '../../src';
-import {
-  Agent,
-  AgentOutputType,
-  saveAgentToolRunResult,
-} from '../../src/agent';
+import { Agent, AgentOutputType } from '../../src/agent';
+import { saveAgentToolRunResult } from '../../src/agentToolRunResults';
 import {
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
