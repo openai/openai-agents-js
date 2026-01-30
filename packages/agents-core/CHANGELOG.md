@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.4.5
+
+### Patch Changes
+
+- 085eebb: feat: #663 add computer tool approvals and run context arg
+- bf9a5b4: fix: include zod descriptions in json schema output
+- 35ab4bd: feat: add MCP tool meta resolver support
+
 ## 0.4.4
 
 ### Patch Changes
