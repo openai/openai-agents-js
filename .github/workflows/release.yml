@@ -22,7 +22,7 @@ jobs:
       id-token: write  # required for trusted publishing
     steps:
       - name: Checkout code repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
@@ -50,7 +50,7 @@ jobs:
 
       - name: Create and publish versions
         id: changesets
-        uses: changesets/action@e0145edc7d9d8679003495b11f87bd8ef63c0cba
+        uses: changesets/action@c48e67d110a68bc90ccf1098e9646092baacaa87
         with:
           commit: 'chore: update versions'
           title: 'chore: update versions'
