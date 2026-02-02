@@ -76,7 +76,7 @@ https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 
 ### Risk assessment (ordered by impact):
 1) **<Finding title>**
-   - Risk: **< LOW | MODERATE | HIGH>**. <Impact statement in one sentence.>
+   - Risk: **<🟢 LOW | 🟡 MODERATE | 🔴 HIGH>**. <Impact statement in one sentence.>
    - Files: <path(s)>
 2) ...
 
