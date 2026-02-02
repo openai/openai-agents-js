@@ -86,6 +86,25 @@ export type ComputerApprovalFunction = (
   callId?: string,
 ) => Promise<boolean>;
 
+export type ComputerSafetyCheck = {
+  id: string;
+  code: string;
+  message?: string;
+  [key: string]: unknown;
+};
+
+export type ComputerSafetyCheckResult =
+  | void
+  | boolean
+  | { acknowledgedSafetyChecks: ComputerSafetyCheck[] }
+  | { acknowledged_safety_checks: ComputerSafetyCheck[] };
+
+export type ComputerOnSafetyCheckFunction = (args: {
+  runContext: RunContext;
+  pendingSafetyChecks: ComputerSafetyCheck[];
+  toolCall: protocol.ComputerUseCallItem;
+}) => Promise<ComputerSafetyCheckResult>;
+
 export type ToolEnabledFunction<Context = UnknownContext> = (
   runContext: RunContext<Context>,
   agent: Agent<any, any>,
@@ -261,6 +280,11 @@ export type ComputerTool<
    * Predicate determining whether this computer action requires approval.
    */
   needsApproval: ComputerApprovalFunction;
+
+  /**
+   * Optional handler to acknowledge pending safety checks.
+   */
+  onSafetyCheck?: ComputerOnSafetyCheckFunction;
 };
 
 /**
@@ -276,6 +300,7 @@ export function computerTool<
   name?: string;
   computer: ComputerConfig<Context, TComputer>;
   needsApproval?: boolean | ComputerApprovalFunction;
+  onSafetyCheck?: ComputerOnSafetyCheckFunction;
 }): ComputerTool<Context, TComputer> {
   if (!options.computer) {
     throw new UserError(
@@ -296,6 +321,7 @@ export function computerTool<
     name: options.name ?? 'computer_use_preview',
     computer: options.computer,
     needsApproval,
+    onSafetyCheck: options.onSafetyCheck,
   };
 
   if (

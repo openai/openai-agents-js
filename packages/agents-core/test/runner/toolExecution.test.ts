@@ -1638,6 +1638,130 @@ describe('executeShellActions', () => {
         expect.any(Error),
       );
     });
+
+    it('acknowledges pending safety checks via onSafetyCheck', async () => {
+      const comp = makeComputer();
+      const onSafetyCheck = vi.fn(async ({ pendingSafetyChecks }) => ({
+        acknowledgedSafetyChecks: pendingSafetyChecks,
+      }));
+      const tool = computerTool({ computer: comp, onSafetyCheck });
+      const call = {
+        toolCall: {
+          id: 'id1',
+          type: 'computer_call',
+          callId: 'id1',
+          status: 'completed',
+          action: { type: 'screenshot' },
+          providerData: {
+            pending_safety_checks: [
+              {
+                id: 'sc1',
+                code: 'malicious_instructions',
+                message: 'Review before proceeding.',
+              },
+            ],
+          },
+        } as protocol.ComputerUseCallItem,
+        computer: tool,
+      };
+
+      const [result] = await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'C' }),
+          [call],
+          new Runner(),
+          new RunContext(),
+        ),
+      );
+
+      const rawItem = result.rawItem as protocol.ComputerCallResultItem;
+      expect(onSafetyCheck).toHaveBeenCalledWith({
+        runContext: expect.any(RunContext),
+        pendingSafetyChecks: [
+          {
+            id: 'sc1',
+            code: 'malicious_instructions',
+            message: 'Review before proceeding.',
+          },
+        ],
+        toolCall: call.toolCall,
+      });
+      expect(rawItem.providerData?.acknowledgedSafetyChecks).toEqual([
+        {
+          id: 'sc1',
+          code: 'malicious_instructions',
+          message: 'Review before proceeding.',
+        },
+      ]);
+    });
+
+    it('accepts acknowledged_safety_checks from onSafetyCheck', async () => {
+      const comp = makeComputer();
+      const onSafetyCheck = vi.fn(async (_args) => ({
+        acknowledged_safety_checks: [{ id: 'sc2', code: 'irrelevant_domain' }],
+      }));
+      const tool = computerTool({ computer: comp, onSafetyCheck });
+      const call = {
+        toolCall: {
+          id: 'id2',
+          type: 'computer_call',
+          callId: 'id2',
+          status: 'completed',
+          action: { type: 'screenshot' },
+          providerData: {
+            pending_safety_checks: [{ id: 'sc2', code: 'irrelevant_domain' }],
+          },
+        } as protocol.ComputerUseCallItem,
+        computer: tool,
+      };
+
+      const [result] = await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'C' }),
+          [call],
+          new Runner(),
+          new RunContext(),
+        ),
+      );
+
+      const rawItem = result.rawItem as protocol.ComputerCallResultItem;
+      expect(rawItem.providerData?.acknowledgedSafetyChecks).toEqual([
+        { id: 'sc2', code: 'irrelevant_domain' },
+      ]);
+    });
+
+    it('accepts boolean true from onSafetyCheck', async () => {
+      const comp = makeComputer();
+      const onSafetyCheck = vi.fn(async (_args) => true);
+      const tool = computerTool({ computer: comp, onSafetyCheck });
+      const call = {
+        toolCall: {
+          id: 'id3',
+          type: 'computer_call',
+          callId: 'id3',
+          status: 'completed',
+          action: { type: 'screenshot' },
+          providerData: {
+            pending_safety_checks: [{ id: 'sc3', code: 'sensitive_domain' }],
+          },
+        } as protocol.ComputerUseCallItem,
+        computer: tool,
+      };
+
+      const [result] = await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'C' }),
+          [call],
+          new Runner(),
+          new RunContext(),
+        ),
+      );
+
+      const rawItem = result.rawItem as protocol.ComputerCallResultItem;
+      expect(rawItem.providerData?.acknowledgedSafetyChecks).toEqual([
+        { id: 'sc3', code: 'sensitive_domain' },
+      ]);
+    });
   });
 
   it('returns approval item when needsApproval is true and not yet approved', async () => {
