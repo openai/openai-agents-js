@@ -10,6 +10,7 @@ type StreamingState = {
   refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
   reasoning: string;
+  finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
 };
 
 export async function* convertChatCompletionsStreamToResponses(
@@ -23,6 +24,7 @@ export async function* convertChatCompletionsStreamToResponses(
     refusal_content: null,
     function_calls: {},
     reasoning: '',
+    finishReason: null,
   };
 
   for await (const chunk of stream) {
@@ -45,8 +47,13 @@ export async function* convertChatCompletionsStreamToResponses(
     // This is always set by the OpenAI API, but not by others e.g. LiteLLM
     usage = (chunk as any).usage || undefined;
 
-    if (!chunk.choices?.[0]?.delta) continue;
-    const delta = chunk.choices[0].delta;
+    const primaryChoice = chunk.choices?.[0];
+    if (!primaryChoice) continue;
+    if (primaryChoice.finish_reason) {
+      state.finishReason = primaryChoice.finish_reason;
+    }
+    if (!primaryChoice.delta) continue;
+    const delta = primaryChoice.delta;
 
     // Handle text
     if (delta.content) {
@@ -99,7 +106,9 @@ export async function* convertChatCompletionsStreamToResponses(
         state.function_calls[tc_delta.index].arguments +=
           tc_function?.arguments || '';
         state.function_calls[tc_delta.index].name += tc_function?.name || '';
-        state.function_calls[tc_delta.index].callId += tc_delta.id || '';
+        if (tc_delta.id && !state.function_calls[tc_delta.index].callId) {
+          state.function_calls[tc_delta.index].callId = tc_delta.id;
+        }
       }
     }
   }
@@ -142,6 +151,16 @@ export async function* convertChatCompletionsStreamToResponses(
     outputs.push(function_call);
   }
 
+  const traceChoice = buildTraceChoice(state);
+  response.choices = traceChoice ? [traceChoice] : [];
+  response.usage = {
+    prompt_tokens: usage?.prompt_tokens ?? 0,
+    completion_tokens: usage?.completion_tokens ?? 0,
+    total_tokens: usage?.total_tokens ?? 0,
+    prompt_tokens_details: usage?.prompt_tokens_details,
+    completion_tokens_details: usage?.completion_tokens_details,
+  };
+
   // Compose final response
   const finalEvent: protocol.StreamEventResponseCompleted = {
     type: 'response_done',
@@ -164,4 +183,39 @@ export async function* convertChatCompletionsStreamToResponses(
   };
 
   yield finalEvent;
+}
+
+function buildTraceChoice(
+  state: StreamingState,
+): ChatCompletion['choices'][number] | undefined {
+  const toolCalls = Object.entries(state.function_calls)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, functionCall]) => ({
+      id: functionCall.callId,
+      type: 'function' as const,
+      function: {
+        name: functionCall.name,
+        arguments: functionCall.arguments,
+      },
+    }));
+
+  const content = state.text_content?.text ?? null;
+  const refusal = state.refusal_content?.refusal ?? null;
+
+  if (content === null && refusal === null && toolCalls.length === 0) {
+    return undefined;
+  }
+
+  return {
+    index: 0,
+    logprobs: null,
+    finish_reason:
+      state.finishReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
+    message: {
+      role: 'assistant',
+      content,
+      refusal,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    },
+  };
 }
