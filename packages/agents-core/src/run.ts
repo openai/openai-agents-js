@@ -667,6 +667,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           serverConversationTracker.previousResponseId,
         );
       }
+      const toolErrorFormatter =
+        options.toolErrorFormatter ?? this.config.toolErrorFormatter;
 
       // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
@@ -690,7 +692,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
               runner: this,
-              toolErrorFormatter: options.toolErrorFormatter,
+              toolErrorFormatter,
             });
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -822,7 +824,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._lastProcessedResponse!,
               this,
               state,
-              options.toolErrorFormatter,
+              toolErrorFormatter,
             );
 
             applyTurnResult({
@@ -1000,6 +1002,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         serverConversationTracker.previousResponseId,
       );
     }
+    const toolErrorFormatter =
+      options.toolErrorFormatter ?? this.config.toolErrorFormatter;
 
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
@@ -1027,7 +1031,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
             runner: this,
-            toolErrorFormatter: options.toolErrorFormatter,
+            toolErrorFormatter,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -1242,7 +1246,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._lastProcessedResponse!,
             this,
             result.state,
-            options.toolErrorFormatter,
+            toolErrorFormatter,
           );
 
           applyTurnResult({
