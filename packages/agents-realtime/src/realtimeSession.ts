@@ -9,6 +9,7 @@ import {
   Usage,
   RunToolApprovalItem,
   type FunctionTool,
+  type ToolErrorFormatter,
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
@@ -135,6 +136,12 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * Whether to automatically trigger a response for MCP tool calls.
    */
   automaticallyTriggerResponseForMcpToolCalls?: boolean;
+
+  /**
+   * Formats tool error messages that are returned to the model.
+   * Returning `undefined` falls back to the SDK default message.
+   */
+  toolErrorFormatter?: ToolErrorFormatter<RealtimeContextData<TContext>>;
 };
 
 export type RealtimeSessionConnectOptions = {
@@ -164,6 +171,12 @@ function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
   return JSON.parse(
     JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
   ) as Partial<RealtimeSessionConfig>;
+}
+
+const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -510,6 +523,42 @@ export class RealtimeSession<
     return newAgent;
   }
 
+  async #resolveApprovalRejectionMessage(
+    toolName: string,
+    callId: string,
+  ): Promise<string> {
+    const { toolErrorFormatter } = this.options;
+    if (!toolErrorFormatter) {
+      return TOOL_APPROVAL_REJECTION_MESSAGE;
+    }
+
+    try {
+      const formattedMessage = await toolErrorFormatter({
+        kind: 'approval_rejected',
+        toolType: 'function',
+        toolName,
+        callId,
+        defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
+        runContext: this.#context,
+      });
+
+      if (typeof formattedMessage === 'string') {
+        return formattedMessage;
+      }
+      if (typeof formattedMessage !== 'undefined') {
+        logger.warn(
+          'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+      );
+    }
+
+    return TOOL_APPROVAL_REJECTION_MESSAGE;
+  }
+
   async #handleFunctionToolCall(
     toolCall: TransportToolCallEvent,
     tool: FunctionTool<RealtimeContextData<TBaseContext>, any, unknown>,
@@ -541,7 +590,10 @@ export class RealtimeSession<
           toolCall,
         });
 
-        const result = 'Tool execution was not approved.';
+        const result = await this.#resolveApprovalRejectionMessage(
+          tool.name,
+          toolCall.callId,
+        );
         this.#transport.sendFunctionCallOutput(toolCall, result, true);
         this.emit(
           'agent_tool_end',

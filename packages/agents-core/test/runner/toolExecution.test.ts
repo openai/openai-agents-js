@@ -72,6 +72,7 @@ import {
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { z } from 'zod';
+import logger from '../../src/logger';
 
 const createMockLogger = (): Logger => ({
   namespace: 'test',
@@ -81,6 +82,9 @@ const createMockLogger = (): Logger => ({
   dontLogModelData: true,
   dontLogToolData: true,
 });
+
+const CUSTOM_REJECTION_MESSAGE =
+  'Tool execution was dismissed. You may retry this tool later.';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -655,6 +659,55 @@ describe('executeComputerActions', () => {
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
+  it('uses toolErrorFormatter message when computer action is rejected', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c3c',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const agent = new Agent({ name: 'Comp' });
+    const runContext = new RunContext();
+    runContext.rejectTool(new ToolApprovalItem(call, agent, tool.name));
+    const runner = new Runner({
+      toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+    });
+
+    const items = await executeComputerActions(
+      agent,
+      [{ toolCall: call, computer: tool }],
+      runner,
+      runContext,
+      undefined,
+      runner.config.toolErrorFormatter,
+    );
+
+    expect(items).toHaveLength(2);
+    const rawItem = (items[0] as ToolCallOutputItem)
+      .rawItem as protocol.ComputerCallResultItem;
+    expect(rawItem.output.providerData).toEqual({
+      approvalStatus: 'rejected',
+      message: CUSTOM_REJECTION_MESSAGE,
+    });
+    expect((items[1] as MessageOutputItem).content).toBe(
+      CUSTOM_REJECTION_MESSAGE,
+    );
+  });
+
   it('executes computer actions after approval', async () => {
     const fakeComputer = {
       environment: 'mac',
@@ -1075,6 +1128,47 @@ describe('executeShellActions', () => {
       expect(rawItem.output).toBe('Tool execution was not approved.');
       expect(editor.operations).toHaveLength(0);
     });
+
+    it('uses toolErrorFormatter message for rejected apply_patch operations', async () => {
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({
+        editor,
+        needsApproval: async () => true,
+      });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+      });
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_custom',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+
+      runContext.rejectTool(
+        new ToolApprovalItem(toolCall, agent, applyPatch.name),
+      );
+
+      const results = await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+        undefined,
+        runner.config.toolErrorFormatter,
+      );
+
+      const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
+      expect(rawItem.status).toBe('failed');
+      expect(rawItem.output).toBe(CUSTOM_REJECTION_MESSAGE);
+      expect(editor.operations).toHaveLength(0);
+    });
   });
 
   describe('executeFunctionToolCalls', () => {
@@ -1138,6 +1232,69 @@ describe('executeShellActions', () => {
       expect(res[0].type).toBe('function_output');
       expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
       expect(invokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('uses toolErrorFormatter message when approval is false', async () => {
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+      });
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          customRunner,
+          state,
+          customRunner.config.toolErrorFormatter,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        expect(res[0].output).toBe(CUSTOM_REJECTION_MESSAGE);
+        const rawItem = res[0].runItem
+          .rawItem as protocol.FunctionCallResultItem;
+        expect(rawItem.output).toEqual({
+          type: 'text',
+          text: CUSTOM_REJECTION_MESSAGE,
+        });
+      }
+    });
+
+    it('falls back to default rejection message when toolErrorFormatter throws', async () => {
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: () => {
+          throw new Error('formatter failed');
+        },
+      });
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          customRunner,
+          state,
+          customRunner.config.toolErrorFormatter,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        expect(res[0].output).toBe('Tool execution was not approved.');
+      }
+      expect(warnSpy).toHaveBeenCalledWith(
+        'toolErrorFormatter threw while formatting approval rejection: formatter failed',
+      );
+      warnSpy.mockRestore();
     });
 
     it('clears pending nested agent run when approval is rejected', async () => {
@@ -1848,6 +2005,45 @@ describe('executeShellActions', () => {
       {
         stdout: '',
         stderr: 'Tool execution was not approved.',
+        outcome: { type: 'exit', exitCode: null },
+      },
+    ]);
+  });
+
+  it('uses toolErrorFormatter message when shell approval is rejected', async () => {
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({ shell, needsApproval: async () => true });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({
+      tracingDisabled: true,
+      toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+    });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_custom',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    runContext.rejectTool(
+      new ToolApprovalItem(toolCall, agent, shellToolDef.name),
+    );
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+      undefined,
+      runner.config.toolErrorFormatter,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(rawItem.output).toEqual([
+      {
+        stdout: '',
+        stderr: CUSTOM_REJECTION_MESSAGE,
         outcome: { type: 'exit', exitCode: null },
       },
     ]);

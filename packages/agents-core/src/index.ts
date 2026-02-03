@@ -148,6 +148,8 @@ export type {
   ModelInputData,
   CallModelInputFilter,
   CallModelInputFilterArgs,
+  ToolErrorFormatter,
+  ToolErrorFormatterArgs,
   RunErrorData,
   RunErrorHandler,
   RunErrorHandlerInput,

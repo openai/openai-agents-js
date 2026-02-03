@@ -42,7 +42,11 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
-import type { Runner } from '../run';
+import type {
+  Runner,
+  ToolErrorFormatter,
+  ToolErrorFormatterArgs,
+} from '../run';
 import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
@@ -60,6 +64,7 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
+  toolErrorFormatter?: ToolErrorFormatter;
 };
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
@@ -70,6 +75,54 @@ const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
 type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
+
+type ApprovalRejectedToolType = ToolErrorFormatterArgs['toolType'];
+
+type ApprovalRejectionMessageOptions = {
+  runContext: RunContext;
+  toolType: ApprovalRejectedToolType;
+  toolName: string;
+  callId: string;
+  toolErrorFormatter?: ToolErrorFormatter;
+};
+
+async function resolveApprovalRejectionMessage({
+  runContext,
+  toolType,
+  toolName,
+  callId,
+  toolErrorFormatter,
+}: ApprovalRejectionMessageOptions): Promise<string> {
+  if (!toolErrorFormatter) {
+    return TOOL_APPROVAL_REJECTION_MESSAGE;
+  }
+
+  try {
+    const formattedMessage = await toolErrorFormatter({
+      kind: 'approval_rejected',
+      toolType,
+      toolName,
+      callId,
+      defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
+      runContext,
+    });
+
+    if (typeof formattedMessage === 'string') {
+      return formattedMessage;
+    }
+    if (typeof formattedMessage !== 'undefined') {
+      logger.warn(
+        'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+    );
+  }
+
+  return TOOL_APPROVAL_REJECTION_MESSAGE;
+}
 
 /**
  * @internal
@@ -118,8 +171,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   toolRuns: ToolRunFunction<TContext>[],
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<FunctionToolResult<TContext>[]> {
-  const deps: FunctionToolCallDeps<TContext> = { agent, runner, state };
+  const deps: FunctionToolCallDeps<TContext> = {
+    agent,
+    runner,
+    state,
+    toolErrorFormatter,
+  };
 
   try {
     const results = await Promise.all(
@@ -206,10 +265,16 @@ async function buildApprovalRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent } = deps;
+  const { agent, state, toolErrorFormatter } = deps;
   return withFunctionSpan(
     async (span) => {
-      const response = 'Tool execution was not approved.';
+      const response = await resolveApprovalRejectionMessage({
+        runContext: state._context,
+        toolType: 'function',
+        toolName: toolRun.tool.name,
+        callId: toolRun.toolCall.callId,
+        toolErrorFormatter,
+      });
 
       span.setError({
         message: response,
@@ -549,7 +614,7 @@ async function handleToolApprovalDecision(options: {
         approvalItem: RunToolApprovalItem,
       ) => Promise<{ approve?: boolean }>)
     | undefined;
-  buildRejectionItem: () => RunItem;
+  buildRejectionItem: () => Promise<RunItem> | RunItem;
 }): Promise<ApprovalDecisionResult> {
   const {
     runContext,
@@ -571,7 +636,7 @@ async function handleToolApprovalDecision(options: {
   });
 
   if (approvalState === 'rejected') {
-    return { status: 'rejected', item: buildRejectionItem() };
+    return { status: 'rejected', item: await buildRejectionItem() };
   }
   if (approvalState === 'pending') {
     return { status: 'pending', item: approvalItem };
@@ -612,6 +677,7 @@ export async function executeShellActions(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -635,8 +701,14 @@ export async function executeShellActions(
         toolCall.callId,
       ),
       onApproval: shellTool.onApproval,
-      buildRejectionItem: () => {
-        const response = TOOL_APPROVAL_REJECTION_MESSAGE;
+      buildRejectionItem: async () => {
+        const response = await resolveApprovalRejectionMessage({
+          runContext,
+          toolType: 'shell',
+          toolName: shellTool.name,
+          callId: toolCall.callId,
+          toolErrorFormatter,
+        });
         const rejectionOutput: protocol.ShellCallOutputContent = {
           stdout: '',
           stderr: response,
@@ -725,6 +797,7 @@ export async function executeApplyPatchOperations(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -748,8 +821,14 @@ export async function executeApplyPatchOperations(
         toolCall.callId,
       ),
       onApproval: applyPatchTool.onApproval,
-      buildRejectionItem: () => {
-        const response = TOOL_APPROVAL_REJECTION_MESSAGE;
+      buildRejectionItem: async () => {
+        const response = await resolveApprovalRejectionMessage({
+          runContext,
+          toolType: 'apply_patch',
+          toolName: applyPatchTool.name,
+          callId: toolCall.callId,
+          toolErrorFormatter,
+        });
         return new RunToolCallOutputItem(
           {
             type: 'apply_patch_call_output',
@@ -831,12 +910,27 @@ export async function executeComputerActions(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
+    let cachedRejectionMessage: string | undefined;
+    const getRejectionMessage = async () => {
+      if (typeof cachedRejectionMessage === 'string') {
+        return cachedRejectionMessage;
+      }
+      cachedRejectionMessage = await resolveApprovalRejectionMessage({
+        runContext,
+        toolType: 'computer',
+        toolName: computerTool.name,
+        callId: toolCall.callId,
+        toolErrorFormatter,
+      });
+      return cachedRejectionMessage;
+    };
     const pendingSafetyChecks = getPendingSafetyChecks(toolCall);
     const approvalItem = new RunToolApprovalItem(
       toolCall,
@@ -863,13 +957,14 @@ export async function executeComputerActions(
       callId: toolCall.callId,
       approvalItem,
       needsApproval,
-      buildRejectionItem: () => {
+      buildRejectionItem: async () => {
+        const rejectionMessage = await getRejectionMessage();
         const rejectionOutput: protocol.ComputerToolOutput = {
           type: 'computer_screenshot',
           data: TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
           providerData: {
             approvalStatus: 'rejected',
-            message: TOOL_APPROVAL_REJECTION_MESSAGE,
+            message: rejectionMessage,
           },
         };
         const rawItem: protocol.ComputerCallResultItem = {
@@ -886,12 +981,10 @@ export async function executeComputerActions(
     });
 
     if (approvalDecision.status === 'rejected') {
+      const rejectionMessage = await getRejectionMessage();
       results.push(approvalDecision.item);
       results.push(
-        new RunMessageOutputItem(
-          assistant(TOOL_APPROVAL_REJECTION_MESSAGE),
-          agent,
-        ),
+        new RunMessageOutputItem(assistant(rejectionMessage), agent),
       );
       continue;
     }

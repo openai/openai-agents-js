@@ -102,6 +102,40 @@ export { getTurnInput } from './runner/items';
 //  Configuration
 // --------------------------------------------------------------
 
+export type ToolErrorFormatterArgs<
+  TContext = unknown,
+  TKind extends 'approval_rejected' = 'approval_rejected',
+> = {
+  /**
+   * The category of tool error being formatted.
+   */
+  kind: TKind;
+  /**
+   * The tool runtime that produced the error.
+   */
+  toolType: 'function' | 'computer' | 'shell' | 'apply_patch';
+  /**
+   * The name of the tool that produced the error.
+   */
+  toolName: string;
+  /**
+   * The unique tool call identifier.
+   */
+  callId: string;
+  /**
+   * The SDK's default message for this error kind.
+   */
+  defaultMessage: string;
+  /**
+   * The active run context for the current execution.
+   */
+  runContext: RunContext<TContext>;
+};
+
+export type ToolErrorFormatter<TContext = unknown> = (
+  args: ToolErrorFormatterArgs<TContext>,
+) => Promise<string | undefined> | string | undefined;
+
 /**
  * Configures settings for the entire agent run.
  */
@@ -190,6 +224,12 @@ export type RunConfig = {
    * system instructions or input items that will be sent to the model.
    */
   callModelInputFilter?: CallModelInputFilter;
+
+  /**
+   * Formats tool error messages that are returned to the model.
+   * Returning `undefined` falls back to the SDK default message.
+   */
+  toolErrorFormatter?: ToolErrorFormatter;
 };
 
 /**
@@ -207,6 +247,7 @@ type SharedRunOptions<
   session?: Session;
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
+  toolErrorFormatter?: ToolErrorFormatter;
   tracing?: TracingConfig;
   /**
    * Error handlers keyed by error kind. Currently only maxTurns errors are supported.
@@ -322,6 +363,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
+      toolErrorFormatter: config.toolErrorFormatter,
     };
     this.traceOverrides = {
       ...(config.traceId !== undefined ? { traceId: config.traceId } : {}),
@@ -393,6 +435,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Likewise allow callers to override callModelInputFilter on individual runs.
     const callModelInputFilter =
       resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
+    // Per-run callback can override runner-level tool error formatting defaults.
+    const toolErrorFormatter =
+      resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const traceOverrides = {
@@ -405,6 +450,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...resolvedOptions,
       sessionInputCallback,
       callModelInputFilter,
+      toolErrorFormatter,
     };
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
@@ -644,6 +690,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
               runner: this,
+              toolErrorFormatter: options.toolErrorFormatter,
             });
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -775,6 +822,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._lastProcessedResponse!,
               this,
               state,
+              options.toolErrorFormatter,
             );
 
             applyTurnResult({
@@ -979,6 +1027,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
             runner: this,
+            toolErrorFormatter: options.toolErrorFormatter,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -1193,6 +1242,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._lastProcessedResponse!,
             this,
             result.state,
+            options.toolErrorFormatter,
           );
 
           applyTurnResult({
