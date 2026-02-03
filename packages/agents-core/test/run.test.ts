@@ -84,6 +84,50 @@ describe('Runner.run', () => {
   });
 
   describe('basic', () => {
+    function buildRejectedToolRunState(agent: Agent<any, any>) {
+      const rawItem = {
+        name: 'toolZ',
+        callId: 'c1',
+        type: 'function_call',
+        arguments: '{}',
+      } as any;
+      const approvalItem = new ToolApprovalItem(rawItem, agent);
+      const state = new RunState(new RunContext(), '', agent, 1);
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [approvalItem] },
+      };
+      state.reject(approvalItem);
+      state._generatedItems.push(approvalItem);
+      state._lastTurnResponse = {
+        output: [],
+        usage: {
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        responseId: 'abc',
+      } as any;
+      state._lastProcessedResponse = {
+        newItems: [],
+        functions: [
+          {
+            toolCall: rawItem,
+            tool: {
+              name: 'toolZ',
+              invoke: async () => 'wrong path',
+              needsApproval: async () => true,
+            },
+          },
+        ],
+        handoffs: [],
+        mcpApprovalRequests: [],
+        computerActions: [],
+      } as any;
+      return { state };
+    }
+
     it('should run a basic agent', async () => {
       const agent = new Agent({
         name: 'Test',
@@ -197,54 +241,46 @@ describe('Runner.run', () => {
         name: 'RejectTest',
         toolUseBehavior: 'stop_on_first_tool',
       });
-
-      const rawItem = {
-        name: 'toolZ',
-        callId: 'c1',
-        type: 'function_call',
-        arguments: '{}',
-      } as any;
-      const approvalItem = new ToolApprovalItem(rawItem, agent);
-      const state = new RunState(new RunContext(), '', agent, 1);
-      state._currentStep = {
-        type: 'next_step_interruption',
-        data: { interruptions: [approvalItem] },
-      };
-      state.reject(approvalItem);
-
-      state._generatedItems.push(approvalItem);
-
-      state._lastTurnResponse = {
-        output: [],
-        usage: {
-          requests: 1,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-        },
-        responseId: 'abc',
-      } as any;
-
-      state._lastProcessedResponse = {
-        newItems: [],
-        functions: [
-          {
-            toolCall: rawItem,
-            tool: {
-              name: 'toolZ',
-              invoke: async () => 'wrong path',
-              needsApproval: async () => true,
-            },
-          },
-        ],
-        handoffs: [],
-        mcpApprovalRequests: [],
-        computerActions: [],
-      } as any;
+      const { state } = buildRejectedToolRunState(agent);
 
       const result = await run(agent, state);
 
       expect(result.finalOutput).toBe('Tool execution was not approved.');
+    });
+
+    it('uses toolErrorFormatter for static final output when tool execution is rejected', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(agent);
+      const runner = new Runner({
+        toolErrorFormatter: () =>
+          'Tool execution was dismissed. You may retry this tool later.',
+      });
+
+      const result = await runner.run(agent, state);
+
+      expect(result.finalOutput).toBe(
+        'Tool execution was dismissed. You may retry this tool later.',
+      );
+    });
+
+    it('prefers per-run toolErrorFormatter over runner config', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(agent);
+      const runner = new Runner({
+        toolErrorFormatter: () => 'runner default rejection',
+      });
+
+      const result = await runner.run(agent, state, {
+        toolErrorFormatter: () => 'per-run rejection',
+      });
+
+      expect(result.finalOutput).toBe('per-run rejection');
     });
 
     it('propagates model errors', async () => {

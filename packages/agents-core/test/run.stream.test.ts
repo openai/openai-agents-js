@@ -1434,6 +1434,52 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('uses runner-level toolErrorFormatter when resuming a rejected approval', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [buildToolCall('call-stream-reject', 'foo')],
+          'resp-stream-1',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamRejectFormatter',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const runner = new Runner({
+        toolErrorFormatter: () => 'stream runner rejection',
+      });
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        stream: true,
+      });
+
+      await drain(firstResult);
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.reject(firstResult.interruptions[0]);
+
+      const resumed = await runner.run(agent, firstResult.state, {
+        stream: true,
+      });
+
+      await drain(resumed);
+
+      expect(resumed.finalOutput).toBe('stream runner rejection');
+      expect(model.requests).toHaveLength(1);
+    });
+
     it('sends full history when no server-managed state is provided', async () => {
       const model = new TrackingStreamingModel([
         buildTurn(

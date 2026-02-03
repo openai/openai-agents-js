@@ -740,6 +740,106 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
+  it('uses toolErrorFormatter message when approval is denied', async () => {
+    const customMessage = 'Tool execution was dismissed. You may retry later.';
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => customMessage,
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-2b',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem);
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    t.emit('function_call', toolCall as any);
+
+    await vi.waitFor(() =>
+      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+    expect(t.sendFunctionCallOutputCalls[0][1]).toBe(customMessage);
+    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(true);
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to default rejection response when toolErrorFormatter throws', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => {
+        throw new Error('formatter failed');
+      },
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-2c',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem);
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    t.emit('function_call', toolCall as any);
+
+    await vi.waitFor(() =>
+      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+    expect(t.sendFunctionCallOutputCalls[0][1]).toBe(
+      'Tool execution was not approved.',
+    );
+    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(true);
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'toolErrorFormatter threw while formatting approval rejection: formatter failed',
+    );
+    warnSpy.mockRestore();
+  });
+
   it('uses background results without starting a new response', async () => {
     const backgroundTool = tool({
       name: 'background_tool',
