@@ -261,7 +261,7 @@ async function buildApprovalRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, state, toolErrorFormatter } = deps;
+  const { agent, runner, state, toolErrorFormatter } = deps;
   return withFunctionSpan(
     async (span) => {
       const response = await resolveApprovalRejectionMessage({
@@ -271,16 +271,21 @@ async function buildApprovalRejectionResult<TContext>(
         callId: toolRun.toolCall.callId,
         toolErrorFormatter,
       });
+      const traceErrorMessage = runner.config.traceIncludeSensitiveData
+        ? response
+        : TOOL_APPROVAL_REJECTION_MESSAGE;
 
       span.setError({
-        message: response,
+        message: traceErrorMessage,
         data: {
           tool_name: toolRun.tool.name,
           error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
         },
       });
 
-      span.spanData.output = response;
+      if (runner.config.traceIncludeSensitiveData) {
+        span.spanData.output = response;
+      }
       return {
         type: 'function_output' as const,
         tool: toolRun.tool,
