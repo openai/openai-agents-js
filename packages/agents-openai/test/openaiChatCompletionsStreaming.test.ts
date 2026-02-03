@@ -139,6 +139,31 @@ describe('convertChatCompletionsStreamToResponses', () => {
         ],
       },
     });
+
+    expect(response.choices).toEqual([
+      {
+        index: 0,
+        finish_reason: 'tool_calls',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: 'hello',
+          refusal: 'nope',
+          tool_calls: [
+            {
+              id: 'call1',
+              type: 'function',
+              function: { name: 'fn', arguments: '{}' },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(response.usage).toMatchObject({
+      prompt_tokens: 3,
+      completion_tokens: 4,
+      total_tokens: 7,
+    });
   });
 });
 
@@ -319,5 +344,79 @@ describe('convertChatCompletionsStreamToResponses', () => {
       (o: any) => o.type === 'function_call',
     );
     expect(functionCall.arguments).toBe('{}');
+  });
+
+  it('aggregates multiple function calls into a single trace choice', async () => {
+    const resp: ChatCompletion = {
+      id: 'r-multi',
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call1',
+            function: { name: 'lookup', arguments: '{"city":' },
+          },
+          {
+            index: 1,
+            id: 'call2',
+            function: { name: 'timezone', arguments: '{"zone":"JST"}' },
+          },
+        ],
+      });
+      yield {
+        ...makeChunk({
+          tool_calls: [{ index: 0, function: { arguments: '"Tokyo"}' } }],
+        }),
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '"Tokyo"}' } }],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      } as any;
+    }
+
+    for await (const _event of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      // Drain all events.
+    }
+
+    expect(resp.choices).toEqual([
+      {
+        index: 0,
+        finish_reason: 'tool_calls',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: null,
+          refusal: null,
+          tool_calls: [
+            {
+              id: 'call1',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"city":"Tokyo"}' },
+            },
+            {
+              id: 'call2',
+              type: 'function',
+              function: { name: 'timezone', arguments: '{"zone":"JST"}' },
+            },
+          ],
+        },
+      },
+    ]);
   });
 });

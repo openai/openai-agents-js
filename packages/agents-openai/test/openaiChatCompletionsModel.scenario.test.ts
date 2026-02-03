@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setTracingDisabled } from '@openai/agents-core';
+import { setTracingDisabled, withTrace } from '@openai/agents-core';
+import * as AgentsCore from '@openai/agents-core';
 import {
   OpenAIChatCompletionsModel,
   FAKE_ID,
@@ -23,7 +24,7 @@ function makeChunk(delta: ChunkDelta, usage?: any) {
     created: 0,
     model: 'gpt-stream',
     object: 'chat.completion.chunk',
-    choices: [{ index: 0, delta }],
+    choices: [{ index: 0, delta, finish_reason: null }],
     usage,
   } as any;
 }
@@ -143,5 +144,128 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
       inputTokensDetails: { cached_tokens: 4 },
       outputTokensDetails: { reasoning_tokens: 6 },
     });
+  });
+
+  it('stores a chat-completion shaped choice in generation spans for streaming traces', async () => {
+    setTracingDisabled(false);
+    const createGenerationSpanSpy = vi.spyOn(
+      AgentsCore,
+      'createGenerationSpan',
+    );
+
+    try {
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield makeChunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call-weather',
+                function: { name: 'weather', arguments: '{"city":' },
+              },
+              {
+                index: 1,
+                id: 'call-timezone',
+                function: { name: 'timezone', arguments: '{"city":"Tokyo"}' },
+              },
+            ],
+          });
+          yield {
+            ...makeChunk(
+              {
+                tool_calls: [{ index: 0, function: { arguments: '"Tokyo"}' } }],
+              },
+              {
+                prompt_tokens: 3,
+                completion_tokens: 6,
+                total_tokens: 9,
+              },
+            ),
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { arguments: '"Tokyo"}' } },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          } as any;
+        },
+      };
+
+      const create = vi.fn().mockResolvedValue(stream);
+      const client = {
+        chat: { completions: { create } },
+        baseURL: 'https://example',
+      };
+
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+      const request: any = {
+        input: 'find weather in Tokyo',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      };
+
+      await withTrace('stream-trace', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Drain.
+        }
+      });
+
+      const generationSpan = createGenerationSpanSpy.mock.results
+        .map((result) => result.value as { spanData?: Record<string, any> })
+        .find((span) => span?.spanData?.type === 'generation');
+      expect(generationSpan).toBeDefined();
+      if (!generationSpan?.spanData) {
+        throw new Error('Expected generation span data to exist');
+      }
+
+      const tracedOutput = generationSpan.spanData.output?.[0];
+      expect(tracedOutput.choices).toEqual([
+        {
+          index: 0,
+          finish_reason: 'tool_calls',
+          logprobs: null,
+          message: {
+            role: 'assistant',
+            content: null,
+            refusal: null,
+            tool_calls: [
+              {
+                id: 'call-weather',
+                type: 'function',
+                function: {
+                  name: 'weather',
+                  arguments: '{"city":"Tokyo"}',
+                },
+              },
+              {
+                id: 'call-timezone',
+                type: 'function',
+                function: {
+                  name: 'timezone',
+                  arguments: '{"city":"Tokyo"}',
+                },
+              },
+            ],
+          },
+        },
+      ]);
+      expect(tracedOutput.usage).toMatchObject({
+        prompt_tokens: 3,
+        completion_tokens: 6,
+        total_tokens: 9,
+      });
+    } finally {
+      createGenerationSpanSpy.mockRestore();
+      setTracingDisabled(true);
+    }
   });
 });
