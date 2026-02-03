@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths-ignore:
       - "docs/**"
-      - ".codex/**"
+      - ".agents/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE/**"
       - ".github/codex/**"
@@ -15,7 +15,7 @@ on:
   pull_request:
     paths-ignore:
       - "docs/**"
-      - ".codex/**"
+      - ".agents/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE/**"
       - ".github/codex/**"

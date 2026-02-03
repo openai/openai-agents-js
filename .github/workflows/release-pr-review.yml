@@ -111,7 +111,7 @@ jobs:
         if: steps.pr.outputs.found == 'true'
         id: prompt
         run: |
-          BASE_TAG="$(.codex/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
+          BASE_TAG="$(.agents/skills/final-release-review/scripts/find_latest_release_tag.sh origin 'v*')"
           TARGET="${{ steps.pr.outputs.head_sha }}"
           export BASE_TAG TARGET
 
@@ -125,7 +125,7 @@ jobs:
           cat > "$PROMPT_FILE" <<-EOF
           You are Codex running inside a GitHub Actions job for openai/openai-agents-js.
 
-          Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .codex/skills/final-release-review/SKILL.md.
+          Goal: Execute the \$final-release-review skill and emit the markdown comment to post on the release PR. Use the skill instructions at .agents/skills/final-release-review/SKILL.md.
 
           Context you must use:
           - BASE_TAG: ${BASE_TAG}

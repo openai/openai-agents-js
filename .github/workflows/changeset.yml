@@ -228,7 +228,11 @@ jobs:
               'vitest.config.ts',
               'vitest.integration.config.ts',
             ]);
-            const projectConfigPrefixes = ['.github/', '.codex/', 'scripts/'];
+            const projectConfigPrefixes = [
+              '.agents/',
+              '.github/',
+              'scripts/',
+            ];
             const projectChanged = changedFiles.some((file) => {
               if (projectConfigFiles.has(file)) return true;
               if (projectConfigPrefixes.some((prefix) => file.startsWith(prefix)))

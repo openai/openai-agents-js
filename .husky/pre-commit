@@ -7,13 +7,17 @@ pnpm eslint $(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g'
 git update-index --again
 
 # Run changeset-validation fixtures when the skill changes.
+run_changeset_fixtures_if_needed() {
+  bash .agents/skills/changeset-validation/scripts/run-fixtures.sh
+}
+
 if command -v rg >/dev/null 2>&1; then
-  if git diff --cached --name-only --diff-filter=ACMR | rg -q '^\.codex/skills/changeset-validation/'; then
-    bash .codex/skills/changeset-validation/scripts/run-fixtures.sh
+  if git diff --cached --name-only --diff-filter=ACMR | rg -q '^\.agents/skills/changeset-validation/'; then
+    run_changeset_fixtures_if_needed
   fi
 else
-  if git diff --cached --name-only --diff-filter=ACMR | grep -q '^\.codex/skills/changeset-validation/'; then
-    bash .codex/skills/changeset-validation/scripts/run-fixtures.sh
+  if git diff --cached --name-only --diff-filter=ACMR | grep -Eq '^\.agents/skills/changeset-validation/'; then
+    run_changeset_fixtures_if_needed
   fi
 fi
 
