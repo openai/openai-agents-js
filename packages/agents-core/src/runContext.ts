@@ -23,6 +23,11 @@ export class RunContext<TContext = UnknownContext> {
   usage: Usage;
 
   /**
+   * Structured input for the current agent tool run, when available.
+   */
+  toolInput?: unknown;
+
+  /**
    * A map of tool names to whether they have been approved.
    */
   #approvals: Map<string, ApprovalRecord>;
@@ -194,15 +199,48 @@ export class RunContext<TContext = UnknownContext> {
     this.#approvals.set(toolName, approvalEntry);
   }
 
+  /**
+   * Creates a child context that shares approvals and usage, with tool input set.
+   * @internal
+   */
+  _forkWithToolInput(toolInput: unknown): RunContext<TContext> {
+    const fork = new RunContext(this.context);
+    fork.usage = this.usage;
+    fork.#approvals = this.#approvals;
+    fork.toolInput = toolInput;
+    return fork;
+  }
+
+  /**
+   * Creates a child context that shares approvals and usage, without tool input.
+   * @internal
+   */
+  _forkWithoutToolInput(): RunContext<TContext> {
+    const fork = new RunContext(this.context);
+    fork.usage = this.usage;
+    fork.#approvals = this.#approvals;
+    return fork;
+  }
+
   toJSON(): {
     context: any;
     usage: Usage;
     approvals: Record<string, ApprovalRecord>;
+    toolInput?: unknown;
   } {
-    return {
+    const json: {
+      context: any;
+      usage: Usage;
+      approvals: Record<string, ApprovalRecord>;
+      toolInput?: unknown;
+    } = {
       context: this.context,
       usage: this.usage,
       approvals: Object.fromEntries(this.#approvals.entries()),
     };
+    if (typeof this.toolInput !== 'undefined') {
+      json.toolInput = this.toolInput;
+    }
+    return json;
   }
 }

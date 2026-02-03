@@ -8,7 +8,7 @@ describe('type guards', () => {
     expect(isZodObject({})).toBe(false);
   });
 
-  it('isAgentToolInput checks for string input property', () => {
+  it('isAgentToolInput checks for string input', () => {
     expect(isAgentToolInput({ input: 'x' })).toBe(true);
     expect(isAgentToolInput({ input: 42 })).toBe(false);
     expect(isAgentToolInput({ input: {} })).toBe(false);
