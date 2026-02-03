@@ -7,6 +7,30 @@
 - Generate overview: `git diff --stat BASE...TARGET`, `git diff --dirstat=files,0 BASE...TARGET`, `git log --oneline --reverse BASE..TARGET`.
 - Inspect risky files quickly: `git diff --name-status BASE...TARGET`, `git diff --word-diff BASE...TARGET -- <path>`.
 
+## Gate decision matrix
+
+- Choose `🟢 GREEN LIGHT TO SHIP` when no concrete blocking trigger is found.
+- Choose `🔴 BLOCKED` only when at least one blocking trigger has concrete evidence and a defined unblock action.
+- Blocking triggers:
+  - Confirmed regression/bug introduced in the diff.
+  - Confirmed breaking public API/protocol/config change with missing or mismatched versioning/migration path.
+  - Concrete data-loss/corruption/security-impacting issue with unresolved mitigation.
+  - Release-critical build/package/runtime break introduced by the diff.
+- Non-blocking by itself:
+  - Large refactor or high file count.
+  - Speculative risk without evidence.
+  - Not running tests locally.
+- If uncertain, keep gate green and provide focused follow-up checks.
+
+## Actionability contract
+
+- Every risk finding should include:
+  - `Evidence`: specific file/commit/diff/test signal.
+  - `Impact`: one-sentence user or runtime effect.
+  - `Action`: concrete command/task with pass criteria.
+- A `BLOCKED` report must contain an `Unblock checklist` with at least one executable item.
+- If no executable unblock item exists, do not block; downgrade to green with follow-up checks.
+
 ## Breaking change signals
 
 - Public API surface: removed/renamed exports, changed parameters/return types, default values changed, new required options, stricter validation.
@@ -37,5 +61,6 @@
 - BASE tag and TARGET ref used for the diff; confirm tags fetched.
 - High-level diff stats and key directories touched.
 - Concrete files/commits that indicate breaking changes or risk, with brief rationale.
-- Tests or commands suggested to validate suspected risks.
+- Tests or commands suggested to validate suspected risks (include pass criteria).
 - Explicit release gate call (ship/block) with conditions to unblock.
+- `Unblock checklist` section when (and only when) gate is `BLOCKED`.
