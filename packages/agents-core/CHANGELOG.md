@@ -1,5 +1,18 @@
 # @openai/agents-core
 
+## 0.4.5
+
+### Patch Changes
+
+- 239bc4f: feat: #763 add onSafetyCheck hook for computer safety checks
+- 085eebb: feat: #663 add computer tool approvals and run context arg
+- 752d36f: fix: #932 consider traceIncludeSensitiveData option
+- bf9a5b4: fix: include zod descriptions in json schema output
+- c1fbe95: feat: add MCP server errorFunction support
+- 35ab4bd: feat: add MCP tool meta resolver support
+- 3e20bbd: feat: #921 add structured input builders for agent tools
+- 75c92eb: feat: add toolErrorFormatter callback for approval rejection tool outputs
+
 ## 0.4.4
 
 ### Patch Changes

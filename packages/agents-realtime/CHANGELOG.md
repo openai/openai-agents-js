@@ -1,5 +1,20 @@
 # @openai/agents-realtime
 
+## 0.4.5
+
+### Patch Changes
+
+- 75c92eb: feat: add toolErrorFormatter callback for approval rejection tool outputs
+- Updated dependencies [239bc4f]
+- Updated dependencies [085eebb]
+- Updated dependencies [752d36f]
+- Updated dependencies [bf9a5b4]
+- Updated dependencies [c1fbe95]
+- Updated dependencies [35ab4bd]
+- Updated dependencies [3e20bbd]
+- Updated dependencies [75c92eb]
+  - @openai/agents-core@0.4.5
+
 ## 0.4.4
 
 ### Patch Changes
