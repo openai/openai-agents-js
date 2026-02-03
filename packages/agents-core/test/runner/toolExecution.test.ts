@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 
 import {
   setDefaultModelProvider,
+  setTraceProcessors,
   setTracingDisabled,
   withTrace,
 } from '../../src';
@@ -70,6 +71,12 @@ import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { z } from 'zod';
 import logger from '../../src/logger';
+import {
+  defaultProcessor,
+  TracingProcessor,
+} from '../../src/tracing/processor';
+import type { Span } from '../../src/tracing/spans';
+import type { Trace } from '../../src/tracing/traces';
 
 const createMockLogger = (): Logger => ({
   namespace: 'test',
@@ -82,6 +89,32 @@ const createMockLogger = (): Logger => ({
 
 const CUSTOM_REJECTION_MESSAGE =
   'Tool execution was dismissed. You may retry this tool later.';
+
+class RecordingProcessor implements TracingProcessor {
+  tracesStarted: Trace[] = [];
+  tracesEnded: Trace[] = [];
+  spansStarted: Span<any>[] = [];
+  spansEnded: Span<any>[] = [];
+
+  async onTraceStart(trace: Trace): Promise<void> {
+    this.tracesStarted.push(trace);
+  }
+  async onTraceEnd(trace: Trace): Promise<void> {
+    this.tracesEnded.push(trace);
+  }
+  async onSpanStart(span: Span<any>): Promise<void> {
+    this.spansStarted.push(span);
+  }
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {
+    /* noop */
+  }
+  async forceFlush(): Promise<void> {
+    /* noop */
+  }
+}
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -1259,6 +1292,55 @@ describe('executeShellActions', () => {
           type: 'text',
           text: CUSTOM_REJECTION_MESSAGE,
         });
+      }
+    });
+
+    it('does not trace formatted rejection text when sensitive data is disabled', async () => {
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+      const sensitiveMessage = 'sensitive secret from formatter';
+      const processor = new RecordingProcessor();
+
+      const customRunner = new Runner({
+        tracingDisabled: false,
+        traceIncludeSensitiveData: false,
+        toolErrorFormatter: () => sensitiveMessage,
+      });
+
+      setTracingDisabled(false);
+      setTraceProcessors([processor]);
+
+      try {
+        const res = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            customRunner,
+            state,
+            customRunner.config.toolErrorFormatter,
+          ),
+        );
+
+        expect(res[0].type).toBe('function_output');
+        if (res[0].type === 'function_output') {
+          expect(res[0].output).toBe(sensitiveMessage);
+        }
+
+        const functionSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'function' && span.spanData.name === t.name,
+        );
+        expect(functionSpan).toBeDefined();
+        expect(functionSpan?.spanData.output).toBe('');
+        expect(functionSpan?.error?.message).toBe(
+          'Tool execution was not approved.',
+        );
+        expect(JSON.stringify(functionSpan?.toJSON())).not.toContain(
+          sensitiveMessage,
+        );
+      } finally {
+        setTraceProcessors([defaultProcessor()]);
+        setTracingDisabled(true);
       }
     });
 
