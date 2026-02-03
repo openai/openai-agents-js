@@ -17,34 +17,34 @@ description: Run examples:start-all in auto mode with parallel execution, per-sc
 
 ```bash
 # Start (auto mode, concurrency=4 by default)
-.codex/skills/examples-auto-run/scripts/run.sh start [extra args to examples:start-all]
+.agents/skills/examples-auto-run/scripts/run.sh start [extra args to examples:start-all]
 # If you invoke the skill name alone ($examples-auto-run):
 #   - when `.tmp/examples-rerun.txt` exists and is non-empty, it will run `rerun` automatically
 #   - otherwise it runs the default `start` command.
 
 # Examples:
-.codex/skills/examples-auto-run/scripts/run.sh start --filter basic
-.codex/skills/examples-auto-run/scripts/run.sh start --include-server --include-audio
+.agents/skills/examples-auto-run/scripts/run.sh start --filter basic
+.agents/skills/examples-auto-run/scripts/run.sh start --include-server --include-audio
 
 # Check status
-.codex/skills/examples-auto-run/scripts/run.sh status
+.agents/skills/examples-auto-run/scripts/run.sh status
 
 # Stop running job (kills pid from .tmp/examples-auto-run.pid)
-.codex/skills/examples-auto-run/scripts/run.sh stop
+.agents/skills/examples-auto-run/scripts/run.sh stop
 
 # List logs (per start script)
-.codex/skills/examples-auto-run/scripts/run.sh logs
+.agents/skills/examples-auto-run/scripts/run.sh logs
 
 # Tail latest log
-.codex/skills/examples-auto-run/scripts/run.sh tail
-.codex/skills/examples-auto-run/scripts/run.sh tail basic__start_hello-world.log
+.agents/skills/examples-auto-run/scripts/run.sh tail
+.agents/skills/examples-auto-run/scripts/run.sh tail basic__start_hello-world.log
 
 # After a run, build a rerun list from the latest main log (auto-skip list is imported from `scripts/run-example-starts.mjs` and server/audio/external skips are honored)
-.codex/skills/examples-auto-run/scripts/run.sh collect
+.agents/skills/examples-auto-run/scripts/run.sh collect
 # Rerun only the entries in .tmp/examples-rerun.txt
-.codex/skills/examples-auto-run/scripts/run.sh rerun
+.agents/skills/examples-auto-run/scripts/run.sh rerun
 # Show the current auto-skip list (env or defaults)
-.codex/skills/examples-auto-run/scripts/run.sh start --print-auto-skip --dry-run
+.agents/skills/examples-auto-run/scripts/run.sh start --print-auto-skip --dry-run
 ```
 
 ## Defaults (overridable via env)

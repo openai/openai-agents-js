@@ -19,7 +19,7 @@ const ALLOWED_PACKAGES = [
 
 const MAX_DIFF_CHARS = Number(process.env.CHANGESET_MAX_DIFF_CHARS || 12000);
 const PROMPT_PATH = path.join(
-  '.codex',
+  '.agents',
   'skills',
   'changeset-validation',
   'references',

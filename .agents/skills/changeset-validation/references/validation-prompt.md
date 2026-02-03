@@ -1,4 +1,4 @@
-Use `$changeset-validation` skill. Use $changeset-validation. It should be located at `.codex/skills/changeset-validation` under the root directory of this repository.
+Use `$changeset-validation` skill. Use $changeset-validation. It should be located at `.agents/skills/changeset-validation` under the root directory of this repository.
 
 You are validating changesets for the openai-agents-js monorepo.
 
