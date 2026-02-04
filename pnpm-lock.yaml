@@ -217,10 +217,10 @@ importers:
         version: 1.1.3
       '@openai/agents':
         specifier: 0.3.9
-        version: 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
+        version: 0.3.9(ws@8.18.2)(zod@3.25.76)
       '@openai/agents-extensions':
         specifier: 0.3.9
-        version: 0.3.9(@openai/agents@0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
+        version: 0.3.9(@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.18.2)(zod@3.25.76)
       hono:
         specifier: ^4.11.7
         version: 4.11.7
@@ -295,8 +295,8 @@ importers:
   examples/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':
-        specifier: ^1.25.2
-        version: 1.25.2(hono@4.11.7)(zod@4.3.5)
+        specifier: ^1.26.0
+        version: 1.26.0(zod@4.3.5)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -569,8 +569,8 @@ importers:
         version: 4.3.5
     optionalDependencies:
       '@modelcontextprotocol/sdk':
-        specifier: ^1.25.2
-        version: 1.25.2(hono@4.11.7)(zod@4.3.5)
+        specifier: ^1.26.0
+        version: 1.26.0(zod@4.3.5)
 
   packages/agents-extensions:
     dependencies:
@@ -1444,8 +1444,8 @@ packages:
   '@gerrit0/mini-shiki@3.22.0':
     resolution: {integrity: sha512-jMpciqEVUBKE1QwU64S4saNMzpsSza6diNCk4MWAeCxO2+LFi2FIFmL2S0VDLzEJCxuvCbU783xi8Hp/gkM5CQ==}
 
-  '@hono/node-server@1.19.7':
-    resolution: {integrity: sha512-vUcD0uauS7EU2caukW8z5lJKtoGMokxNbJtBiwHgpqxEXokaHCBkQUmCHhjFB1VUTWdqj25QoMkMKzgjq+uhrw==}
+  '@hono/node-server@1.19.9':
+    resolution: {integrity: sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
@@ -1673,8 +1673,8 @@ packages:
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
 
-  '@modelcontextprotocol/sdk@1.25.2':
-    resolution: {integrity: sha512-LZFeo4F9M5qOhC/Uc1aQSrBHxMrvxett+9KLHt7OhcExtoiRN9DKgbZffMP/nxjutWDQpfMDfP3nkHI4X9ijww==}
+  '@modelcontextprotocol/sdk@1.26.0':
+    resolution: {integrity: sha512-Y5RmPncpiDtTXDbLKswIJzTqu2hyBKxTNsgKqKclDbhIgg1wgtf1fRuvxgTnRfcnxtvvgbIEcqUOzZrJ6iSReg==}
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
@@ -3304,6 +3304,10 @@ packages:
     resolution: {integrity: sha512-KIHbLJqu73RGr/hnbrO9uBeixNGuvSQjul/jdFvS/KFSIH1hWVd1ng7zOHx+YrEfInLG7q4n6GHQ9cDtxv/P6g==}
     engines: {node: '>= 0.10'}
 
+  cors@2.8.6:
+    resolution: {integrity: sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw==}
+    engines: {node: '>= 0.10'}
+
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
@@ -3715,10 +3719,6 @@ packages:
     resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
     engines: {node: '>=0.8.x'}
 
-  eventsource-parser@3.0.3:
-    resolution: {integrity: sha512-nVpZkTMM9rF6AQ9gPJpFsNAMt48wIzB5TQgiTLdHiuO8XEDhUgZEhqKlZWXbIzo9VmJ/HvysHqEaVeD5v9TPvA==}
-    engines: {node: '>=20.0.0'}
-
   eventsource-parser@3.0.6:
     resolution: {integrity: sha512-Vo1ab+QXPzZ4tCa8SwIHJFaSzy4R6SHf7BY79rFBDf0idraZWAkYrDjDj8uWaSm3S2TK+hJ7/t1CEmZ7jXw+pg==}
     engines: {node: '>=18.0.0'}
@@ -3738,8 +3738,8 @@ packages:
   express-rate-limit@5.5.1:
     resolution: {integrity: sha512-MTjE2eIbHv5DyfuFz4zLYWxpqVhEhkTiwFGuB74Q9CSou2WHO52nlE5y3Zlg6SIsiYUIPj6ifFxnkPz6O3sIUg==}
 
-  express-rate-limit@7.5.1:
-    resolution: {integrity: sha512-7iN8iPMDzOMHPUYllBEsQdWVB6fPDMPqwjBaFrgr4Jgr/+okjvzAy+UHlYYL/Vs0OsOrMkwS6PJDkFlJwoxUnw==}
+  express-rate-limit@8.2.1:
+    resolution: {integrity: sha512-PCZEIEIxqwhzw4KF0n7QF4QqruVTcF73O5kFKUnGOyjbCCgizBBiFaYpd/fnBLUMPw/BWw9OsiN7GgrNYr7j6g==}
     engines: {node: '>= 16'}
     peerDependencies:
       express: '>= 4.11'
@@ -3978,6 +3978,7 @@ packages:
 
   glob@10.5.0:
     resolution: {integrity: sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@13.0.0:
@@ -4166,10 +4167,6 @@ packages:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
 
-  iconv-lite@0.7.1:
-    resolution: {integrity: sha512-2Tth85cXwGFHfvRgZWszZSvdo+0Xsqmw8k8ZwxScfcBneNUraK+dxRxRm24nszx80Y0TVio8kKLt5sLE7ZCLlw==}
-    engines: {node: '>=0.10.0'}
-
   iconv-lite@0.7.2:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
@@ -4205,6 +4202,10 @@ packages:
 
   inline-style-parser@0.2.7:
     resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
+
+  ip-address@10.0.1:
+    resolution: {integrity: sha512-NWv9YLW4PoW2B7xtzaS3NCot75m6nK7Icdv0o3lfMceJVRfSoQwqD4wEH5rLwoKJwUiZ/rfpiVBhnaF0FK4HoA==}
+    engines: {node: '>= 12'}
 
   ipaddr.js@1.9.1:
     resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
@@ -5980,7 +5981,7 @@ packages:
   tar@7.4.3:
     resolution: {integrity: sha512-5S7Va8hKfV7W5U6g3aYxXmlPoZVAwUMy9AOKyF2fVuZa2UD3qZjg578OrLRt8PcNN1PleVaL/5/yYATNL0ICUw==}
     engines: {node: '>=18'}
-    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exhorbitant rates) by contacting i@izs.me
+    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   term-size@2.2.1:
     resolution: {integrity: sha512-wK0Ri4fOGjv/XPy8SBHZChl8CM7uMc5VML7SqiQ0zG7+J5Vr+RMQDoHa2CNT6KHUnTGIXH34UDMkPzAUyapBZg==}
@@ -6709,7 +6710,7 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 2.0.0
       '@standard-schema/spec': 1.0.0
-      eventsource-parser: 3.0.3
+      eventsource-parser: 3.0.6
       zod: 4.3.5
       zod-to-json-schema: 3.25.1(zod@4.3.5)
 
@@ -7423,7 +7424,7 @@ snapshots:
       '@shikijs/types': 3.22.0
       '@shikijs/vscode-textmate': 10.0.2
 
-  '@hono/node-server@1.19.7(hono@4.11.7)':
+  '@hono/node-server@1.19.9(hono@4.11.7)':
     dependencies:
       hono: 4.11.7
 
@@ -7627,18 +7628,19 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.25.2(hono@4.11.7)(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.26.0(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.7(hono@4.11.7)
+      '@hono/node-server': 1.19.9(hono@4.11.7)
       ajv: 8.17.1
       ajv-formats: 3.0.1(ajv@8.17.1)
       content-type: 1.0.5
-      cors: 2.8.5
+      cors: 2.8.6
       cross-spawn: 7.0.6
       eventsource: 3.0.7
       eventsource-parser: 3.0.6
       express: 5.2.1
-      express-rate-limit: 7.5.1(express@5.2.1)
+      express-rate-limit: 8.2.1(express@5.2.1)
+      hono: 4.11.7
       jose: 6.1.3
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -7646,22 +7648,22 @@ snapshots:
       zod: 3.25.76
       zod-to-json-schema: 3.25.1(zod@3.25.76)
     transitivePeerDependencies:
-      - hono
       - supports-color
     optional: true
 
-  '@modelcontextprotocol/sdk@1.25.2(hono@4.11.7)(zod@4.3.5)':
+  '@modelcontextprotocol/sdk@1.26.0(zod@4.3.5)':
     dependencies:
-      '@hono/node-server': 1.19.7(hono@4.11.7)
+      '@hono/node-server': 1.19.9(hono@4.11.7)
       ajv: 8.17.1
       ajv-formats: 3.0.1(ajv@8.17.1)
       content-type: 1.0.5
-      cors: 2.8.5
+      cors: 2.8.6
       cross-spawn: 7.0.6
       eventsource: 3.0.7
       eventsource-parser: 3.0.6
       express: 5.2.1
-      express-rate-limit: 7.5.1(express@5.2.1)
+      express-rate-limit: 8.2.1(express@5.2.1)
+      hono: 4.11.7
       jose: 6.1.3
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -7669,7 +7671,6 @@ snapshots:
       zod: 4.3.5
       zod-to-json-schema: 3.25.1(zod@4.3.5)
     transitivePeerDependencies:
-      - hono
       - supports-color
 
   '@next/env@16.1.5': {}
@@ -7710,24 +7711,23 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@openai/agents-core@0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents-core@0.3.9(ws@8.18.2)(zod@3.25.76)':
     dependencies:
       debug: 4.4.3
       openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.25.2(hono@4.11.7)(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
-      - hono
       - supports-color
       - ws
 
-  '@openai/agents-extensions@0.3.9(@openai/agents@0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents-extensions@0.3.9(@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.18.2)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
-      '@openai/agents': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-core': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
       '@types/ws': 8.18.1
       debug: 4.4.3
       ws: 8.18.2
@@ -7736,24 +7736,22 @@ snapshots:
       '@openai/codex-sdk': 0.86.0
     transitivePeerDependencies:
       - '@cfworker/json-schema'
-      - hono
       - supports-color
 
-  '@openai/agents-openai@0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents-openai@0.3.9(ws@8.18.2)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
       debug: 4.4.3
       openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
-      - hono
       - supports-color
       - ws
 
-  '@openai/agents-realtime@0.3.9(hono@4.11.7)(zod@3.25.76)':
+  '@openai/agents-realtime@0.3.9(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
       '@types/ws': 8.18.1
       debug: 4.4.3
       ws: 8.18.2
@@ -7761,22 +7759,20 @@ snapshots:
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - bufferutil
-      - hono
       - supports-color
       - utf-8-validate
 
-  '@openai/agents@0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-openai': 0.3.9(hono@4.11.7)(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-realtime': 0.3.9(hono@4.11.7)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-openai': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-realtime': 0.3.9(zod@3.25.76)
       debug: 4.4.3
       openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - bufferutil
-      - hono
       - supports-color
       - utf-8-validate
       - ws
@@ -9059,7 +9055,7 @@ snapshots:
       content-type: 1.0.5
       debug: 4.4.3
       http-errors: 2.0.1
-      iconv-lite: 0.7.1
+      iconv-lite: 0.7.2
       on-finished: 2.4.1
       qs: 6.14.1
       raw-body: 3.0.2
@@ -9306,6 +9302,11 @@ snapshots:
   core-util-is@1.0.3: {}
 
   cors@2.8.5:
+    dependencies:
+      object-assign: 4.1.1
+      vary: 1.1.2
+
+  cors@2.8.6:
     dependencies:
       object-assign: 4.1.1
       vary: 1.1.2
@@ -9780,8 +9781,6 @@ snapshots:
 
   events@3.3.0: {}
 
-  eventsource-parser@3.0.3: {}
-
   eventsource-parser@3.0.6: {}
 
   eventsource@3.0.7:
@@ -9807,9 +9806,10 @@ snapshots:
 
   express-rate-limit@5.5.1: {}
 
-  express-rate-limit@7.5.1(express@5.2.1):
+  express-rate-limit@8.2.1(express@5.2.1):
     dependencies:
       express: 5.2.1
+      ip-address: 10.0.1
 
   express@4.22.1:
     dependencies:
@@ -10508,10 +10508,6 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iconv-lite@0.7.1:
-    dependencies:
-      safer-buffer: 2.1.2
-
   iconv-lite@0.7.2:
     dependencies:
       safer-buffer: 2.1.2
@@ -10536,6 +10532,8 @@ snapshots:
   inherits@2.0.4: {}
 
   inline-style-parser@0.2.7: {}
+
+  ip-address@10.0.1: {}
 
   ipaddr.js@1.9.1: {}
 
@@ -11944,7 +11942,7 @@ snapshots:
     dependencies:
       bytes: 3.1.2
       http-errors: 2.0.1
-      iconv-lite: 0.7.1
+      iconv-lite: 0.7.2
       unpipe: 1.0.0
 
   rc9@2.1.2:
