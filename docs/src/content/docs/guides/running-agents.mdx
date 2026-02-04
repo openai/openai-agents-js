@@ -65,7 +65,9 @@ The additional options are:
 | `session`              | –       | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions).                                                     |
 | `sessionInputCallback` | –       | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions).                 |
 | `callModelInputFilter` | –       | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter). |
+| `toolErrorFormatter`   | –       | Hook to customize tool approval rejection messages returned to the model. See [Tool error formatter](#tool-error-formatter).                         |
 | `tracing`              | –       | Per-run tracing configuration overrides (for example, export API key).                                                                               |
+| `errorHandlers`        | –       | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers).                                                 |
 | `conversationId`       | –       | Reuse a server-side conversation (OpenAI Responses API + Conversations API only).                                                                    |
 | `previousResponseId`   | –       | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only).                                           |
 
@@ -93,6 +95,7 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `tracing`                   | `TracingConfig`          | Per-run tracing overrides (for example, export API key).                                         |
 | `sessionInputCallback`      | `SessionInputCallback`   | Default history merge strategy for all runs on this runner.                                      |
 | `callModelInputFilter`      | `CallModelInputFilter`   | Global hook to edit model inputs before each model call.                                         |
+| `toolErrorFormatter`        | `ToolErrorFormatter`     | Global hook to customize tool approval rejection messages returned to the model.                 |
 
 ## Conversations / chat threads
 
@@ -137,6 +140,20 @@ If you want to start only with Responses API anyway, you can chain each request 
 Use `callModelInputFilter` to edit the model input _right before_ the model is called. This hook receives the current agent, context, and the combined input items (including session history when present). Return the updated `input` array and optional `instructions` to redact sensitive data, drop old messages, or inject additional system guidance.
 
 Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in the `Runner` config (`callModelInputFilter` in `RunConfig`).
+
+## Tool error formatter
+
+Use `toolErrorFormatter` to customize approval-rejection messages that are sent back to the model when a tool call is rejected. This lets you return domain-specific wording (for example, compliance guidance) instead of the SDK default message.
+
+The formatter can be set per-run (`runner.run(..., { toolErrorFormatter })`) or globally in `RunConfig` (`toolErrorFormatter` in `new Runner(...)`).
+
+## Error handlers
+
+Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. Currently, only `maxTurns` is supported.
+
+- `errorHandlers.maxTurns` handles only max-turn errors.
+- `errorHandlers.default` is used as a fallback for supported kinds.
+- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`.
 
 ## Exceptions
 

@@ -117,6 +117,12 @@ When you run an agent as a tool, Agents SDK creates a runner with the default se
 
 You can also set `needsApproval` and `isEnabled` on the agent tool via `asTool()` options to integrate with human‑in‑the‑loop flows and conditional tool availability.
 
+Advanced structured-input options for `agent.asTool()`:
+
+- `inputBuilder`: maps structured tool args to the nested agent input payload.
+- `includeInputSchema`: includes the input JSON schema in the nested run for stronger schema-aware behavior.
+- `resumeState`: controls context reconciliation strategy when resuming nested serialized `RunState`.
+
 ### Streaming events from agent tools
 
 Agent tools can stream all nested run events back to your app. Choose the hook style that fits how you construct the tool:
@@ -175,7 +181,7 @@ What to know:
 ## Tool use behavior
 
 Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) for controlling when and how a model
-must use tools (`tool_choice`, `toolUseBehavior`, etc.).
+must use tools (`modelSettings.toolChoice`, `toolUseBehavior`, etc.).
 
 ---
 

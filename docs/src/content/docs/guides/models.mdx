@@ -92,19 +92,22 @@ custom networking settings.
 
 `ModelSettings` mirrors the OpenAI parameters but is provider‑agnostic.
 
-| Field               | Type                                                            | Notes                                                                     |
-| ------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `temperature`       | `number`                                                        | Creativity vs. determinism.                                               |
-| `topP`              | `number`                                                        | Nucleus sampling.                                                         |
-| `frequencyPenalty`  | `number`                                                        | Penalise repeated tokens.                                                 |
-| `presencePenalty`   | `number`                                                        | Encourage new tokens.                                                     |
-| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string`                      | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
-| `parallelToolCalls` | `boolean`                                                       | Allow parallel function calls where supported.                            |
-| `truncation`        | `'auto' \| 'disabled'`                                          | Token truncation strategy.                                                |
-| `maxTokens`         | `number`                                                        | Maximum tokens in the response.                                           |
-| `store`             | `boolean`                                                       | Persist the response for retrieval / RAG workflows.                       |
-| `reasoning.effort`  | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models.                                      |
-| `text.verbosity`    | `'low' \| 'medium' \| 'high'`                                   | Text verbosity for gpt-5.x etc.                                           |
+| Field                  | Type                                                            | Notes                                                                     |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `temperature`          | `number`                                                        | Creativity vs. determinism.                                               |
+| `topP`                 | `number`                                                        | Nucleus sampling.                                                         |
+| `frequencyPenalty`     | `number`                                                        | Penalise repeated tokens.                                                 |
+| `presencePenalty`      | `number`                                                        | Encourage new tokens.                                                     |
+| `toolChoice`           | `'auto' \| 'required' \| 'none' \| string`                      | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
+| `parallelToolCalls`    | `boolean`                                                       | Allow parallel function calls where supported.                            |
+| `truncation`           | `'auto' \| 'disabled'`                                          | Token truncation strategy.                                                |
+| `maxTokens`            | `number`                                                        | Maximum tokens in the response.                                           |
+| `store`                | `boolean`                                                       | Persist the response for retrieval / RAG workflows.                       |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null`                                  | Controls provider prompt-cache retention when supported.                  |
+| `reasoning.effort`     | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models.                                      |
+| `reasoning.summary`    | `'auto' \| 'concise' \| 'detailed'`                             | Controls how much reasoning summary the model returns.                    |
+| `text.verbosity`       | `'low' \| 'medium' \| 'high'`                                   | Text verbosity for gpt-5.x etc.                                           |
+| `providerData`         | `Record<string, any>`                                           | Provider-specific passthrough options forwarded to the underlying model.  |
 
 Attach settings at either level:
 

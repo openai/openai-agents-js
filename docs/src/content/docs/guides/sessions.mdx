@@ -35,6 +35,17 @@ Use `OpenAIConversationsSession` to sync memory with the [Conversations API](htt
 
 Reusing the same session instance ensures the agent receives the full conversation history before every turn and automatically persists new items. Switching to a different `Session` implementation requires no other code changes.
 
+`OpenAIConversationsSession` constructor options:
+
+| Option           | Type     | Notes                                                          |
+| ---------------- | -------- | -------------------------------------------------------------- |
+| `conversationId` | `string` | Reuse an existing conversation instead of creating one lazily. |
+| `client`         | `OpenAI` | Pass a preconfigured OpenAI client.                            |
+| `apiKey`         | `string` | API key used when creating an internal OpenAI client.          |
+| `baseURL`        | `string` | Base URL for OpenAI-compatible endpoints.                      |
+| `organization`   | `string` | OpenAI organization ID for requests.                           |
+| `project`        | `string` | OpenAI project ID for requests.                                |
+
 ---
 
 ## How the runner uses sessions
@@ -118,6 +129,25 @@ When you resume from a previous `RunState`, the new turn is appended to the same
   code={responsesCompactionSession}
   title="Decorate a session with OpenAIResponsesCompactionSession"
 />
+
+`OpenAIResponsesCompactionSession` constructor options:
+
+| Option                    | Type                                          | Notes                                                                                                    |
+| ------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `client`                  | `OpenAI`                                      | OpenAI client used for `responses.compact`.                                                              |
+| `underlyingSession`       | `Session`                                     | Backing session store to clear/rewrite with compacted items (must not be `OpenAIConversationsSession`).  |
+| `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests.                                                                      |
+| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                          |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items. |
+
+`runCompaction(args)` options:
+
+| Option           | Type                                          | Notes                                                             |
+| ---------------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| `responseId`     | `string`                                      | Latest Responses API response id for `previous_response_id` mode. |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Optional per-call override of the configured mode.                |
+| `store`          | `boolean`                                     | Indicates whether the last run stored server state.               |
+| `force`          | `boolean`                                     | Bypass `shouldTriggerCompaction` and compact immediately.         |
 
 ### Manual compaction for low-latency streaming
 

@@ -98,20 +98,22 @@ When your Agent talks directly to a Streamable HTTP MCP server—local or remote
 
 Constructor options:
 
-| Option                        | Type                                           | Notes                                       |
-| ----------------------------- | ---------------------------------------------- | ------------------------------------------- |
-| `url`                         | `string`                                       | Streamable HTTP server URL.                 |
-| `name`                        | `string`                                       | Optional label for the server.              |
-| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.         |
-| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.            |
-| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                     |
-| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).         |
-| `logger`                      | `Logger`                                       | Custom logger.                              |
-| `authProvider`                | `OAuthClientProvider`                          | OAuth provider from the MCP TypeScript SDK. |
-| `requestInit`                 | `RequestInit`                                  | Fetch init options for requests.            |
-| `fetch`                       | `FetchLike`                                    | Custom fetch implementation.                |
-| `reconnectionOptions`         | `StreamableHTTPReconnectionOptions`            | Reconnection tuning options.                |
-| `sessionId`                   | `string`                                       | Explicit session id for MCP connections.    |
+| Option                        | Type                                           | Notes                                        |
+| ----------------------------- | ---------------------------------------------- | -------------------------------------------- |
+| `url`                         | `string`                                       | Streamable HTTP server URL.                  |
+| `name`                        | `string`                                       | Optional label for the server.               |
+| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.          |
+| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.             |
+| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                      |
+| `toolMetaResolver`            | `MCPToolMetaResolver`                          | Inject per-call MCP `_meta` request fields.  |
+| `errorFunction`               | `MCPToolErrorFunction \| null`                 | Map MCP call failures to model-visible text. |
+| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).          |
+| `logger`                      | `Logger`                                       | Custom logger.                               |
+| `authProvider`                | `OAuthClientProvider`                          | OAuth provider from the MCP TypeScript SDK.  |
+| `requestInit`                 | `RequestInit`                                  | Fetch init options for requests.             |
+| `fetch`                       | `FetchLike`                                    | Custom fetch implementation.                 |
+| `reconnectionOptions`         | `StreamableHTTPReconnectionOptions`            | Reconnection tuning options.                 |
+| `sessionId`                   | `string`                                       | Explicit session id for MCP connections.     |
 
 The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
 
@@ -139,6 +141,8 @@ Constructor options:
 | `encoding`                    | `string`                                       | Encoding for stdio streams.                            |
 | `encodingErrorHandler`        | `'strict' \| 'ignore' \| 'replace'`            | Encoding error strategy.                               |
 | `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                                |
+| `toolMetaResolver`            | `MCPToolMetaResolver`                          | Inject per-call MCP `_meta` request fields.            |
+| `errorFunction`               | `MCPToolErrorFunction \| null`                 | Map MCP call failures to model-visible text.           |
 | `timeout`                     | `number`                                       | Per-request timeout (milliseconds).                    |
 | `logger`                      | `Logger`                                       | Custom logger.                                         |
 
@@ -160,6 +164,23 @@ Use cases:
 - **Retry failed servers**: call `mcpServers.reconnect()` (defaults to retrying failed servers only).
 
 If you want a strict “all or nothing” connection or different timeouts, use `connectMcpServers(servers, options)` and tune the options for your environment.
+
+`connectMcpServers` options:
+
+| Option               | Type             | Default | Notes                                                         |
+| -------------------- | ---------------- | ------- | ------------------------------------------------------------- |
+| `connectTimeoutMs`   | `number \| null` | `10000` | Timeout for each server `connect()`. Use `null` to disable.   |
+| `closeTimeoutMs`     | `number \| null` | `10000` | Timeout for each server `close()`. Use `null` to disable.     |
+| `dropFailed`         | `boolean`        | `true`  | Exclude failed servers from `active`.                         |
+| `strict`             | `boolean`        | `false` | Throw if any server fails to connect.                         |
+| `suppressAbortError` | `boolean`        | `true`  | Ignore abort-like errors while still tracking failed servers. |
+| `connectInParallel`  | `boolean`        | `false` | Connect all servers concurrently instead of sequentially.     |
+
+`mcpServers.reconnect(options)` supports:
+
+| Option       | Type      | Default | Notes                                                                  |
+| ------------ | --------- | ------- | ---------------------------------------------------------------------- |
+| `failedOnly` | `boolean` | `true`  | Retry only failed servers (`true`) or reconnect all servers (`false`). |
 
 ### Async disposal (optional)
 

@@ -85,3 +85,14 @@ providerMetadata: {
 ```
 
 when using the AI SDK integration.
+
+## AI SDK UI stream helpers
+
+`@openai/agents-extensions/ai-sdk-ui` provides response helpers for wiring Agents SDK streams into AI SDK UI routes:
+
+- `createAiSdkTextStreamResponse(source, options?)` for plain text streaming responses.
+- `createAiSdkUiMessageStreamResponse(source, options?)` for `UIMessageChunk` streaming responses.
+
+Both helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object and return a `Response` with streaming-friendly headers.
+
+For end-to-end usage, see the `examples/ai-sdk-ui` app in this repository.
