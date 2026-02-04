@@ -7,31 +7,31 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 
 <Aside type="caution">
-  이 어댑터는 아직 베타 단계입니다. 특히 소규모 모델 프로바이더에서 문제가
-  발생할 수 있습니다. 문제가 있으면 [GitHub
-  issues](https://github.com/openai/openai-agents-js/issues)로 보고해 주세요.
-  빠르게 수정하겠습니다.
+  이 어댑터는 아직 베타입니다. 특히 소규모 모델 제공자와 함께 사용할 때 문제가
+  발생할 수 있습니다. [GitHub
+  issues](https://github.com/openai/openai-agents-js/issues) 를 통해 문제를
+  보고해 주세요. 신속히 수정하겠습니다.
 </Aside>
 
-기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 작동합니다. 그러나 다른 모델을 사용하려면, [Vercel's AI SDK](https://sdk.vercel.ai/)가 제공하는 다양한 지원 모델을 이 어댑터를 통해 Agents SDK에 연결할 수 있습니다.
+기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 작동합니다. 그러나 다른 모델을 사용하려면, 이 어댑터를 통해 Agents SDK에 통합할 수 있는 다양한 지원 모델을 제공하는 [Vercel's AI SDK](https://sdk.vercel.ai/)를 사용할 수 있습니다.
 
 ## 설정
 
 <Steps>
 
-1. 확장 패키지를 설치하여 AI SDK 어댑터를 설치합니다:
+1. extensions 패키지를 설치하여 AI SDK 어댑터를 설치합니다:
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel's AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)에서 원하는 모델 패키지를 선택해 설치합니다:
+2. [Vercel's AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)에서 원하는 모델 패키지를 선택하여 설치합니다:
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. 어댑터와 모델을 가져와 에이전트에 연결합니다:
+3. 어댑터와 모델을 임포트하여 에이전트에 연결합니다:
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
@@ -47,19 +47,19 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  현재 ai-sdk의 모델 프로바이더 v2 모듈을 지원하며, 이는 Vercel AI SDK v5와
-  호환됩니다. v1 모델 프로바이더를 계속 사용해야 하는 특별한 이유가 있다면,
+  현재 Vercel AI SDK v5와 호환되는 ai-sdk의 model provider v2 모듈을 지원합니다.
+  특정 이유로 v1 model provider를 계속 사용해야 한다면,
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
-  모듈을 복사해 프로젝트에 포함할 수 있습니다.
+  에서 모듈을 복사하여 프로젝트에 포함할 수 있습니다.
 </Aside>
 
-## 예제
+## 예시
 
 <Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
 
 ## 프로바이더 메타데이터 전달
 
-메시지에 프로바이더별 옵션을 전송해야 하는 경우 `providerMetadata`를 통해 전달하세요. 값은 기본 AI SDK 모델로 그대로 전달됩니다. 예를 들어, Agents SDK에서 다음과 같은 `providerData`는
+메시지에 프로바이더별 옵션을 전송해야 하는 경우 `providerMetadata`를 통해 전달하세요. 값은 기본 AI SDK 모델로 직접 전달됩니다. 예를 들어, Agents SDK에서 다음과 같은 `providerData`
 
 ```ts
 providerData: {
@@ -71,7 +71,7 @@ providerData: {
 }
 ```
 
-AI SDK 통합을 사용할 때 다음과 같이 됩니다
+는 AI SDK 통합을 사용할 때
 
 ```ts
 providerMetadata: {
@@ -82,3 +82,16 @@ providerMetadata: {
   }
 }
 ```
+
+로 변환됩니다.
+
+## AI SDK UI 스트림 헬퍼
+
+`@openai/agents-extensions/ai-sdk-ui`는 Agents SDK 스트림을 AI SDK UI 라우트에 연결하기 위한 응답 헬퍼를 제공합니다:
+
+- 일반 텍스트 스트리밍 응답을 위한 `createAiSdkTextStreamResponse(source, options?)`
+- `UIMessageChunk` 스트리밍 응답을 위한 `createAiSdkUiMessageStreamResponse(source, options?)`
+
+두 헬퍼는 `StreamedRunResult`, 스트림과 유사한 소스, 또는 호환되는 래퍼 객체를 받아 스트리밍에 적합한 헤더가 포함된 `Response`를 반환합니다.
+
+엔드 투 엔드 사용 예시는 이 저장소의 `examples/ai-sdk-ui` 앱을 참고하세요.

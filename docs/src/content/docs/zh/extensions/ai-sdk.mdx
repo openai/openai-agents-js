@@ -8,11 +8,11 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 
 <Aside type="caution">
   此适配器仍处于测试阶段。您在使用某些模型提供方时可能会遇到问题，尤其是较小的提供方。请通过
-  [GitHub 问题](https://github.com/openai/openai-agents-js/issues)
-  报告任何问题，我们会尽快修复。
+  [GitHub issues](https://github.com/openai/openai-agents-js/issues)
+  报告问题，我们会尽快修复。
 </Aside>
 
-开箱即用，Agents SDK 可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。不过，如果您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了多种受支持的模型，可通过此适配器引入到 Agents SDK 中。
+开箱即用时，Agents SDK 可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。若您想使用其他模型，[Vercel 的 AI SDK](https://sdk.vercel.ai/) 提供了多种受支持的模型，可通过此适配器接入 Agents SDK。
 
 ## 设置
 
@@ -24,7 +24,7 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
    npm install @openai/agents-extensions
    ```
 
-2. 从 [Vercel 的 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 选择并安装所需的模型包：
+2. 从 [Vercel 的 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 选择所需的模型包并安装：
 
    ```bash
    npm install @ai-sdk/openai
@@ -37,7 +37,7 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
    import { aisdk } from '@openai/agents-extensions';
    ```
 
-4. 初始化一个模型实例供智能体使用：
+4. 初始化一个供智能体使用的模型实例：
 
    ```typescript
    const model = aisdk(openai('gpt-5-mini'));
@@ -46,19 +46,19 @@ import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk
 </Steps>
 
 <Aside type="caution">
-  我们目前支持 ai-sdk 的模型提供方 v2 模块，它们与 Vercel AI SDK v5
-  兼容。如果您有继续使用 v1 模型提供方的特定原因，可以从
+  我们目前支持与 Vercel AI SDK v5 兼容的 ai-sdk 的 v2
+  模型提供方模块。若您有明确原因需要继续使用 v1 模型提供方，可以从
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
-  复制该模块并将其包含在您的项目中。
+  复制该模块并将其包含到您的项目中。
 </Aside>
 
 ## 示例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 设置" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
 
 ## 传递提供方元数据
 
-如果需要随消息发送特定于提供方的选项，请通过 `providerMetadata` 传递。其值会直接转发给底层的 AI SDK 模型。例如，Agents SDK 中如下的 `providerData`
+如果您需要随消息发送提供方特定的选项，请通过 `providerMetadata` 传递。其值会直接转发给底层的 AI SDK 模型。例如，以下在 Agents SDK 中的 `providerData`
 
 ```ts
 providerData: {
@@ -82,4 +82,13 @@ providerMetadata: {
 }
 ```
 
-。
+## AI SDK UI 流式辅助函数
+
+`@openai/agents-extensions/ai-sdk-ui` 提供用于将 Agents SDK 流接入 AI SDK UI 路由的响应辅助函数：
+
+- `createAiSdkTextStreamResponse(source, options?)`：用于纯文本流式响应。
+- `createAiSdkUiMessageStreamResponse(source, options?)`：用于 `UIMessageChunk` 的流式响应。
+
+两个辅助函数都接受一个 `StreamedRunResult`、类流来源或兼容的包装对象，并返回带有适合流式传输的响应头的 `Response`。
+
+端到端用法请参见本仓库中的 `examples/ai-sdk-ui` 应用。

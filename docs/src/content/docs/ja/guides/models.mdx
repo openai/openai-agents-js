@@ -13,12 +13,12 @@ import runnerWithModelExample from '../../../../../../examples/docs/models/runne
 import gpt5DefaultModelSettingsExample from '../../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
-すべてのエージェントは最終的に LLM を呼び出します。SDK は 2 つの軽量インターフェースの背後にモデルを抽象化します:
+最終的にすべての エージェント は LLM を呼び出します。SDK はモデルを次の 2 つの軽量インターフェースの背後に抽象化します。
 
-- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 特定の API に対して _1 回_ のリクエストを送る方法を知っています
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人が読めるモデルの**名前**（例: `'gpt‑5.2'`）を `Model` インスタンスに解決します
+- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 特定の API に対する リクエストを 1 回 行う方法を知っています
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人が読めるモデルの **names**（例: `'gpt‑5.2'`）を `Model` インスタンスに解決します
 
-日々の作業では通常、モデルの**名前**と、ときどき `ModelSettings` のみを扱います。
+日常的には通常、モデルの **names** と、時折 `ModelSettings` のみを扱います。
 
 <Code
   lang="typescript"
@@ -26,52 +26,52 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
   title="エージェントごとのモデル指定"
 />
 
-## 既定モデル
+## デフォルトモデル
 
-`Agent` の初期化時にモデルを指定しない場合、既定のモデルが使用されます。現在の既定は互換性と低レイテンシのために [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) です。アクセス可能であれば、明示的な `modelSettings` を保ちながら高品質のためにエージェントを [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) に設定することをおすすめします。
+`Agent` の初期化時にモデルを指定しない場合、デフォルトモデルが使用されます。現在のデフォルトは互換性と低レイテンシのために [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) です。アクセス可能であれば、より高品質のために エージェント を [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) に設定し、明示的な `modelSettings` を維持することをおすすめします。
 
-[`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) など他のモデルへ切り替えるには、エージェントの設定方法が 2 つあります。
+[`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) のような他のモデルに切り替えるには、エージェント を設定する方法が 2 つあります。
 
-まず、カスタムモデルを設定していないすべてのエージェントで特定のモデルを一貫して使いたい場合は、エージェントを実行する前に `OPENAI_DEFAULT_MODEL` 環境変数を設定します。
+まず、カスタムモデルを設定していないすべての エージェント で特定のモデルを一貫して使用したい場合は、エージェント を実行する前に `OPENAI_DEFAULT_MODEL` 環境変数を設定します。
 
 ```bash
 export OPENAI_DEFAULT_MODEL=gpt-5.2
 node my-awesome-agent.js
 ```
 
-次に、`Runner` インスタンスに既定のモデルを設定できます。エージェントにモデルを設定しない場合は、この `Runner` の既定モデルが使用されます。
+次に、`Runner` インスタンスにデフォルトモデルを設定できます。エージェント にモデルを設定しない場合は、この `Runner` のデフォルトモデルが使用されます。
 
 <Code
   lang="typescript"
   code={runnerWithModelExample}
-  title="Runner の既定モデルを設定"
+  title="Runner のデフォルトモデルを設定"
 />
 
 ### GPT-5.x モデル
 
-この方法で [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) のような任意の GPT-5.x モデルを使用する場合、SDK は既定の `modelSettings` を適用します。多くのユースケースで最適に機能する設定が適用されます。既定モデルの推論負荷を調整するには、独自の `modelSettings` を渡してください:
+この方法で [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) などの GPT-5.x モデルを使用する場合、SDK はデフォルトの `modelSettings` を適用します。ほとんどのユースケースで最適に機能する設定が適用されます。デフォルトモデルの推論負荷を調整するには、独自の `modelSettings` を指定してください:
 
 <Code
   lang="typescript"
   code={gpt5DefaultModelSettingsExample}
-  title="GPT-5 の既定設定をカスタマイズ"
+  title="GPT-5 のデフォルト設定をカスタマイズ"
 />
 
-低遅延のためには、`gpt-5.2` で `reasoning.effort: "none"` を使うことを推奨します。gpt-4.1 ファミリー（mini および nano を含む）も、対話型エージェントアプリの構築に堅実な選択肢のままです。
+低レイテンシのためには、`gpt-5.2` で `reasoning.effort: "none"` の使用をおすすめします。gpt-4.1 ファミリー（mini や nano のバリアントを含む）も、インタラクティブな エージェント アプリの構築に引き続き堅実な選択肢です。
 
 ### 非 GPT-5 モデル
 
-カスタムの `modelSettings` なしに非 GPT-5 のモデル名を渡した場合、SDK はあらゆるモデルと互換性のある汎用的な `modelSettings` にフォールバックします。
+カスタムの `modelSettings` なしで 非 GPT-5 のモデル名を渡した場合、SDK はあらゆるモデルに互換性のある汎用の `modelSettings` にフォールバックします。
 
 ---
 
 ## OpenAI プロバイダー
 
-既定の `ModelProvider` は OpenAI APIs を使用して名前解決を行います。2 つの異なるエンドポイントをサポートします:
+デフォルトの `ModelProvider` は OpenAI の API を使って名前解決を行います。次の 2 つの別個のエンドポイントをサポートします:
 
-| API              | 用途                                                                     | `setOpenAIAPI()` を呼び出す             |
+| API              | 用途                                                                     | `setOpenAIAPI()` の呼び出し             |
 | ---------------- | ------------------------------------------------------------------------ | --------------------------------------- |
-| Chat Completions | 標準的なチャット & 関数呼び出し                                          | `setOpenAIAPI('chat_completions')`      |
+| Chat Completions | 標準的なチャットと関数呼び出し                                           | `setOpenAIAPI('chat_completions')`      |
 | Responses        | 新しい ストリーミング ファーストの生成 API（ツール呼び出し、柔軟な出力） | `setOpenAIAPI('responses')` _(default)_ |
 
 ### 認証
@@ -79,10 +79,10 @@ node my-awesome-agent.js
 <Code
   lang="typescript"
   code={setDefaultOpenAIKeyExample}
-  title="既定の OpenAI キーを設定"
+  title="OpenAI のデフォルトキーを設定"
 />
 
-カスタムのネットワーク設定が必要な場合は、`setDefaultOpenAIClient(client)` を通じて独自の `OpenAI` クライアントを差し込むこともできます。
+ネットワーク設定をカスタマイズする必要がある場合は、`setDefaultOpenAIClient(client)` を使って独自の `OpenAI` クライアントを差し込むこともできます。
 
 ---
 
@@ -90,66 +90,69 @@ node my-awesome-agent.js
 
 `ModelSettings` は OpenAI のパラメーターを反映しますが、プロバイダーに依存しません。
 
-| フィールド          | 型                                                              | 備考                                                                           |
-| ------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `temperature`       | `number`                                                        | 創造性と決定性のバランス                                                       |
-| `topP`              | `number`                                                        | Nucleus sampling                                                               |
-| `frequencyPenalty`  | `number`                                                        | 繰り返しトークンの抑制                                                         |
-| `presencePenalty`   | `number`                                                        | 新しいトークンの促進                                                           |
-| `toolChoice`        | `'auto' \| 'required' \| 'none' \| string`                      | [ツール使用の強制](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照 |
-| `parallelToolCalls` | `boolean`                                                       | 対応環境で関数呼び出しの並列実行を許可                                         |
-| `truncation`        | `'auto' \| 'disabled'`                                          | トークンの切り詰め戦略                                                         |
-| `maxTokens`         | `number`                                                        | 応答内の最大トークン数                                                         |
-| `store`             | `boolean`                                                       | 応答を保存して検索 / RAG ワークフローに利用                                    |
-| `reasoning.effort`  | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | gpt-5.x モデル向けの推論負荷                                                   |
-| `text.verbosity`    | `'low' \| 'medium' \| 'high'`                                   | gpt-5.x 等におけるテキストの詳細度                                             |
+| フィールド             | 型                                                              | 備考                                                                           |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `temperature`          | `number`                                                        | 創造性と決定性のバランス                                                       |
+| `topP`                 | `number`                                                        | Nucleus サンプリング                                                           |
+| `frequencyPenalty`     | `number`                                                        | 繰り返しトークンにペナルティ                                                   |
+| `presencePenalty`      | `number`                                                        | 新しいトークンの使用を促進                                                     |
+| `toolChoice`           | `'auto' \| 'required' \| 'none' \| string`                      | [ツール使用の強制](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照 |
+| `parallelToolCalls`    | `boolean`                                                       | サポートされる場合に関数呼び出しの並列化を許可                                 |
+| `truncation`           | `'auto' \| 'disabled'`                                          | トークンの切り詰め戦略                                                         |
+| `maxTokens`            | `number`                                                        | レスポンス内の最大トークン数                                                   |
+| `store`                | `boolean`                                                       | レスポンスを永続化して取得や RAG ワークフローに利用                            |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null`                                  | サポートされる場合のプロバイダーのプロンプトキャッシュ保持を制御               |
+| `reasoning.effort`     | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | gpt-5.x モデル向けの推論負荷                                                   |
+| `reasoning.summary`    | `'auto' \| 'concise' \| 'detailed'`                             | モデルが返す推論サマリーの量を制御                                             |
+| `text.verbosity`       | `'low' \| 'medium' \| 'high'`                                   | gpt-5.x など向けのテキスト冗長度                                               |
+| `providerData`         | `Record<string, any>`                                           | 基盤モデルに渡されるプロバイダー固有のパススルーオプション                     |
 
 設定はどちらのレベルにも付与できます:
 
 <Code lang="typescript" code={modelSettingsExample} title="モデル設定" />
 
-`Runner` レベルの設定は、競合するエージェント単位の設定を上書きします。
+`Runner` レベルの設定は、競合するエージェント個別設定よりも優先されます。
 
 ---
 
 ## プロンプト
 
-エージェントには `prompt` パラメーターを設定できます。これはサーバーに保存されたプロンプト設定を示し、エージェントの動作を制御するために使用されます。現在、このオプションは OpenAI の
+エージェント は `prompt` パラメーターで構成でき、エージェント の挙動を制御するために使用される サーバー保存 のプロンプト設定を指示します。現在、このオプションは OpenAI の
 [Responses API](https://platform.openai.com/docs/api-reference/responses) を使用する場合のみサポートされます。
 
-| フィールド  | 型       | 備考                                                                                                                |
-| ----------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
-| `promptId`  | `string` | プロンプトの一意な識別子                                                                                            |
-| `version`   | `string` | 使用したいプロンプトのバージョン                                                                                    |
-| `variables` | `object` | プロンプトに代入する変数のキー/値ペア。値は文字列、またはテキスト、画像、ファイルのようなコンテンツ入力型を指定可能 |
+| フィールド  | 型       | 備考                                                                                                                    |
+| ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `promptId`  | `string` | プロンプトの一意な識別子                                                                                                |
+| `version`   | `string` | 使用したいプロンプトのバージョン                                                                                        |
+| `variables` | `object` | プロンプトに代入する変数のキー/値ペア。値は文字列、またはテキスト・画像・ファイルのようなコンテンツ入力タイプにできます |
 
 <Code
   lang="typescript"
   code={promptIdExample}
-  title="プロンプト付きエージェント"
+  title="プロンプトを使うエージェント"
 />
 
-tools や instructions のような追加のエージェント設定は、保存済みプロンプトで設定している値を上書きします。
+tools や instructions のような追加の エージェント 設定は、保存済みプロンプトで設定している値を上書きします。
 
 ---
 
 ## カスタムモデルプロバイダー
 
-独自のプロバイダーの実装は簡単です。`ModelProvider` と `Model` を実装し、プロバイダーを `Runner` のコンストラクターに渡します:
+独自のプロバイダーの実装は簡単です。`ModelProvider` と `Model` を実装し、プロバイダーを `Runner` コンストラクターに渡します:
 
 <Code
   lang="typescript"
   code={modelCustomProviderExample}
-  title="最小のカスタムプロバイダー"
+  title="最小限のカスタムプロバイダー"
 />
 
-OpenAI 以外のモデル向けのすぐに使えるアダプターが必要な場合は、[AI SDK で任意モデルを指定](/openai-agents-js/ja/extensions/ai-sdk) を参照してください。
+OpenAI 以外のモデル向けの既製アダプターが必要な場合は、[Vercel の AI SDK で任意モデルを指定](/openai-agents-js/ja/extensions/ai-sdk) を参照してください。
 
 ---
 
 ## トレーシングエクスポーター
 
-OpenAI プロバイダーを使用する際、API キーを指定することで自動トレースエクスポートを有効化できます:
+OpenAI プロバイダーを使用する場合、API キーを指定することで自動トレースエクスポートにオプトインできます:
 
 <Code
   lang="typescript"
@@ -157,12 +160,12 @@ OpenAI プロバイダーを使用する際、API キーを指定することで
   title="トレーシングエクスポーター"
 />
 
-これはトレースを [OpenAI ダッシュボード](https://platform.openai.com/traces) に送信し、ワークフローの完全な実行グラフを確認できます。
+これによりトレースが [OpenAI ダッシュボード](https://platform.openai.com/traces) に送信され、ワークフローの完全な実行グラフを確認できます。
 
 ---
 
 ## 次のステップ
 
-- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を確認
-- [ツール](/openai-agents-js/ja/guides/tools) でモデルを強化
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) を探る
+- [ツール](/openai-agents-js/ja/guides/tools) でモデルに強力な機能を付与
 - 必要に応じて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加
