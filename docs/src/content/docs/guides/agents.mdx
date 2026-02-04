@@ -44,7 +44,7 @@ properties are shown below.
 | `modelSettings`                   | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`. |
 | `tools`                           | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                          |
 | `mcpServers`                      | no       | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp).                                              |
-| `resetToolChoice`                 | no       | Reset `tool_choice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use). |
+| `resetToolChoice`                 | no       | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use).  |
 | `handoffOutputTypeWarningEnabled` | no       | Emit a warning when handoff output types differ (default: `true`).                                                                           |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
@@ -153,7 +153,7 @@ an entirely new `Agent` instance.
 ## Forcing tool use
 
 Supplying tools doesn’t guarantee the LLM will call one. You can **force** tool use with
-`modelSettings.tool_choice`:
+`modelSettings.toolChoice`:
 
 1. `'auto'` (default) – the LLM decides whether to use a tool.
 2. `'required'` – the LLM _must_ call a tool (it can choose which one).
@@ -164,7 +164,7 @@ Supplying tools doesn’t guarantee the LLM will call one. You can **force** too
 
 ### Preventing infinite loops
 
-After a tool call the SDK automatically resets `tool_choice` back to `'auto'`. This prevents
+After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents
 the model from entering an infinite loop where it repeatedly tries to call the tool. You can
 override this behavior via the `resetToolChoice` flag or by configuring
 `toolUseBehavior`:

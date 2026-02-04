@@ -60,6 +60,7 @@ Additional `RealtimeSession` options you can set at construction time:
 | `traceMetadata`                               | `Record<string, any>`             | Custom metadata to attach to session traces.                                     |
 | `workflowName`                                | `string`                          | Friendly name for the trace workflow.                                            |
 | `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
+| `toolErrorFormatter`                          | `ToolErrorFormatter`              | Customize tool approval rejection messages returned to the model.                |
 
 ## Handoffs
 
