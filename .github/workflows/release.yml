@@ -13,7 +13,7 @@ env:
 
 jobs:
   version:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.repository_owner == 'openai' }}
+    if: ${{ github.repository == 'openai/openai-agents-js' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.sha == github.event.workflow_run.head_sha }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: Checkout code repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061

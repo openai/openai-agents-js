@@ -2,55 +2,27 @@ name: Changeset
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, reopened, synchronize, edited]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "PR number to validate."
-        required: true
-        type: number
 
 jobs:
   changeset-validation:
+    if: ${{ github.repository == 'openai/openai-agents-js' }}
     # Use pull_request_target so secrets are available for label/milestone updates.
     # Always checkout base and fetch head to avoid executing forked code and reduce skipped checks.
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
-      pull-requests: write
+      pull-requests: read
     steps:
-      - name: Ensure main workflow
-        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
-        run: |
-          echo "This workflow must be dispatched from main."
-          exit 1
-
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
-        env:
-          MANUAL_PR_NUMBER: ${{ inputs.pr_number || '' }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const isManual = context.eventName === 'workflow_dispatch';
-            let pr;
-            if (isManual) {
-              const prNumber = Number(process.env.MANUAL_PR_NUMBER);
-              if (!prNumber) {
-                core.setFailed('workflow_dispatch requires pr_number input.');
-                return;
-              }
-              const { data } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-              });
-              pr = data;
-            } else {
-              pr = context.payload.pull_request;
-            }
+            const pr = context.payload.pull_request;
             if (!pr) {
               core.setFailed('Missing pull request context.');
               return;
@@ -68,6 +40,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ steps.pr.outputs.base_sha }}
+          persist-credentials: false
+
       - name: Fetch PR head
         env:
           PR_HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
@@ -88,7 +62,7 @@ jobs:
           node-version: 22
 
       - name: Run lightweight changeset check (forks)
-        if: ${{ github.event_name != 'workflow_dispatch' && steps.pr.outputs.is_fork == 'true' }}
+        if: ${{ steps.pr.outputs.is_fork == 'true' }}
         run: |
           pnpm changeset:validate-lite -- \
             --base ${{ steps.pr.outputs.base_sha }} \
@@ -96,7 +70,7 @@ jobs:
 
       - name: Generate changeset prompt
         id: changeset_prompt
-        if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
+        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
         run: |
           pnpm changeset:validate-prompt -- \
             --ci \
@@ -105,12 +79,12 @@ jobs:
             --head ${{ steps.pr.outputs.head_sha }}
 
       - name: Prepare Codex output dir
-        if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
+        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
         run: mkdir -p .github/codex/outputs
 
       - name: Run Codex changeset validation
         id: run_codex
-        if: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_fork != 'true') }}
+        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
         uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
@@ -311,64 +285,3 @@ jobs:
             console.log(
               `Updated labels: ${finalLabels.join(', ') || '(none)'}`,
             );
-
-      - name: Comment on manual run failure
-        if: ${{ github.event_name == 'workflow_dispatch' && always() }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          JOB_STATUS: ${{ job.status }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CHANGESET_CONCLUSION: ${{ steps.changeset_prompt.conclusion }}
-          CODEX_CONCLUSION: ${{ steps.run_codex.conclusion }}
-          VALIDATE_CONCLUSION: ${{ steps.validate_codex.conclusion }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const marker = '<!-- changeset-validation-manual-run -->';
-            const jobStatus = process.env.JOB_STATUS;
-            if (jobStatus === 'success') {
-              return;
-            }
-            const prNumber = Number(process.env.PR_NUMBER);
-            if (!prNumber) {
-              core.setFailed('Missing PR number for manual run comment.');
-              return;
-            }
-            const body = [
-              marker,
-              'Manual changeset validation failed.',
-              `Job status: ${jobStatus}.`,
-              `Run: ${process.env.RUN_URL}.`,
-              `Generate changeset prompt: ${process.env.CHANGESET_CONCLUSION}.`,
-              `Codex validation: ${process.env.CODEX_CONCLUSION}.`,
-              `Codex output validation: ${process.env.VALIDATE_CONCLUSION}.`,
-            ].join('\n');
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100,
-            });
-            const existing = comments.find(
-              (comment) =>
-                comment.user?.login === 'github-actions[bot]' &&
-                comment.body?.includes(marker),
-            );
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-              core.info(`Updated existing comment ${existing.id}`);
-              return;
-            }
-            const { data: created } = await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body,
-            });
-            core.info(`Created comment ${created.id}`);

@@ -39,13 +39,20 @@ permissions:
 
 jobs:
   update-docs:
-    if: "!contains(github.event.head_commit.message, 'docs: update translated document pages')"
+    if: "github.repository == 'openai/openai-agents-js' && (github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'docs: update translated document pages'))"
     runs-on: ubuntu-latest
     steps:
+      - name: Ensure main workflow
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "This workflow must be dispatched from main."
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
@@ -88,6 +95,7 @@ jobs:
         if: steps.commit.outputs.committed == 'true'
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "docs: update translated document pages"
           title: "docs: update translated document pages"
           body: |

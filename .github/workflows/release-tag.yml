@@ -22,9 +22,13 @@ jobs:
       - name: Determine if latest commit is a version bump
         id: check
         run: |
+          event_actor="${{ github.actor }}"
           commit_message=$(git log -1 --pretty=%B)
+          commit_author=$(git log -1 --pretty=%an)
+          echo "Event actor: $event_actor"
           echo "Latest commit message: $commit_message"
-          if [[ "$commit_message" == "chore: update versions"* ]]; then
+          echo "Latest commit author: $commit_author"
+          if [[ "$commit_message" == "chore: update versions"* && "$commit_author" == "github-actions[bot]" ]]; then
             echo "is_version_bump=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_version_bump=false" >> "$GITHUB_OUTPUT"
@@ -45,4 +49,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag"
-          git push origin "$tag" 
+          git push origin "$tag"
