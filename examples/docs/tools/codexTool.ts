@@ -14,7 +14,6 @@ export const codexAgent = new Agent({
         networkAccessEnabled: true,
         webSearchEnabled: false,
       },
-      persistSession: true,
     }),
   ],
 });

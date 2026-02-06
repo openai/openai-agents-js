@@ -7,7 +7,7 @@ import {
   type CodexToolStreamEvent,
 } from '@openai/agents-extensions/experimental/codex';
 
-// When you don't set name to the codexTool, the default name is "codexThreadId"
+// Derived from codexTool({ name: 'codex_engineer' }) when runContextThreadIdKey is omitted.
 const THREAD_ID_KEY = 'codexThreadId_engineer';
 
 type ExampleContext = {
@@ -52,6 +52,7 @@ async function onCodexStream(payload: CodexToolStreamEvent): Promise<void> {
 }
 
 function resolveWorkingDirectory(): string {
+  // Walk up to the repository root so Codex can work against this workspace.
   let workingDirectory = path.dirname(fileURLToPath(import.meta.url));
   while (!fs.existsSync(path.join(workingDirectory, 'pnpm-workspace.yaml'))) {
     const parent = path.dirname(workingDirectory);
@@ -81,8 +82,8 @@ async function main(): Promise<void> {
         ].join(' '),
         tools: [
           codexTool({
-            // "name" property is optional:
-            // It is required only when you have multiple codex tools in the same agent
+            // `name` is optional for a single Codex tool.
+            // We set it so the run-context key is tool-specific and to avoid collisions when adding more Codex tools.
             name: 'codex_engineer',
             sandboxMode: 'workspace-write',
             defaultThreadOptions: {
@@ -94,12 +95,13 @@ async function main(): Promise<void> {
               workingDirectory,
             },
             onStream: onCodexStream,
-            // Setting this enables sharing thread ID among codex tool calls
+            // Reuse the same Codex thread across runs that share this context object.
             useRunContextThreadId: true,
           }),
         ],
       });
 
+      // The default key for useRunContextThreadId with name=codex_engineer is codexThreadId_engineer.
       const context: ExampleContext = {};
 
       log('Turn 1: ask for a Python Responses API example.');
