@@ -6,7 +6,11 @@ import {
   tool,
 } from '@openai/agents';
 import { loadEnv } from '@openai/agents-core/_shims';
-import { isZodObject, toSmartString } from '@openai/agents-core/utils';
+import {
+  isZodObject,
+  toFunctionToolName,
+  toSmartString,
+} from '@openai/agents-core/utils';
 import type {
   CustomSpanData,
   FunctionCallItem,
@@ -39,11 +43,15 @@ type CustomSpan = Span<CustomSpanData>;
 
 type CodexToolCallArguments = {
   inputs?: UserInput[];
+  threadId?: string;
 };
 
 const MAX_SPAN_TEXT_LENGTH = 2000;
 const MAX_SPAN_LIST_ITEMS = 200;
 const MAX_TODO_TEXT_LENGTH = 200;
+const DEFAULT_CODEX_TOOL_NAME = 'codex';
+const CODEX_TOOL_NAME_PREFIX = 'codex_';
+const DEFAULT_RUN_CONTEXT_THREAD_ID_KEY = 'codexThreadId';
 
 const CodexToolInputTextSchema = z
   .object({
@@ -177,11 +185,39 @@ const codexParametersSchema = z
       .describe(
         'Structured inputs appended to the Codex task. Provide at least one input item.',
       ),
+    threadId: z
+      .string()
+      .trim()
+      .min(1, 'When provided, "threadId" must be a non-empty string.')
+      .nullable()
+      .default(null)
+      .describe(
+        'Optional Codex thread ID to resume. If omitted, a new thread is started unless configured elsewhere.',
+      ),
   })
   .strict();
 
-type CodexToolParametersSchema = typeof codexParametersSchema;
-type CodexToolParameters = z.infer<CodexToolParametersSchema>;
+const codexRunContextParametersSchema = z
+  .object({
+    inputs: z
+      .array(CodexToolInputItemSchema)
+      .min(1, 'Codex tool requires at least one input item.')
+      .describe(
+        'Structured inputs appended to the Codex task. Provide at least one input item.',
+      ),
+  })
+  .strict();
+
+type CodexToolParametersSchema =
+  | typeof codexParametersSchema
+  | typeof codexRunContextParametersSchema;
+type CodexToolParameters = z.infer<typeof codexParametersSchema>;
+type CodexToolRunContextParameters = z.infer<
+  typeof codexRunContextParametersSchema
+>;
+type AnyCodexToolParameters =
+  | CodexToolParameters
+  | CodexToolRunContextParameters;
 type OutputSchemaDescriptor = z.infer<typeof OutputSchemaDescriptorSchema>;
 type OutputSchemaField = z.infer<typeof OutputSchemaFieldSchema>;
 
@@ -199,7 +235,10 @@ export type CodexToolOptions = {
   /**
    * Name of the tool as exposed to the agent model.
    *
-   * @defaultValue `'codex'`
+   * Names are normalized to the `codex` namespace.
+   * Passing `'engineer'` becomes `'codex_engineer'`.
+   *
+   * @defaultValue `'codex'`.
    */
   name?: string;
   /**
@@ -259,6 +298,20 @@ export type CodexToolOptions = {
    * Optional hook to receive streamed Codex events during execution.
    */
   onStream?: CodexToolStreamHandler;
+  /**
+   * Reuse Codex thread IDs stored in `runContext.context`.
+   *
+   * When enabled, the tool reads the prior thread ID from `runContext.context`,
+   * resumes that thread, and stores the latest thread ID after completion.
+   */
+  useRunContextThreadId?: boolean;
+  /**
+   * Context key used when `useRunContextThreadId` is enabled.
+   *
+   * Defaults to `codexThreadId` for the default tool name, or a name-derived
+   * key such as `codexThreadId_engineer` for `name: 'codex_engineer'`.
+   */
+  runContextThreadIdKey?: string;
 };
 
 function resolveDefaultCodexApiKey(options?: CodexOptions): string | undefined {
@@ -315,6 +368,7 @@ function createCodexResolver(
 }
 
 const defaultParameters = codexParametersSchema;
+const runContextParameters = codexRunContextParametersSchema;
 
 type CodexToolResult = {
   threadId: string | null;
@@ -331,11 +385,11 @@ type CodexToolResult = {
  */
 export function codexTool(
   options: CodexToolOptions = {},
-): FunctionTool<unknown, typeof codexParametersSchema, CodexToolResult> {
+): FunctionTool<unknown, CodexToolParametersSchema, CodexToolResult> {
   const {
-    name = 'codex',
+    name: configuredName = DEFAULT_CODEX_TOOL_NAME,
     description = 'Executes an agentic Codex task against the current workspace.',
-    parameters = defaultParameters,
+    parameters,
     codex: providedCodex,
     codexOptions,
     defaultThreadOptions,
@@ -347,7 +401,18 @@ export function codexTool(
     skipGitRepoCheck,
     persistSession = false,
     onStream,
+    useRunContextThreadId = false,
+    runContextThreadIdKey,
   } = options;
+  const name = resolveCodexToolName(configuredName);
+  const resolvedRunContextThreadIdKey = resolveRunContextThreadIdKey(
+    name,
+    runContextThreadIdKey,
+  );
+  const normalizedDefaultThreadId = normalizeThreadId(defaultThreadId);
+  const resolvedParameters =
+    parameters ??
+    (useRunContextThreadId ? runContextParameters : defaultParameters);
 
   const resolvedCodexOptions = resolveCodexOptions(codexOptions);
   const resolveCodex = createCodexResolver(providedCodex, resolvedCodexOptions);
@@ -369,23 +434,38 @@ export function codexTool(
       : undefined;
   let persistedThread: Thread | null = null;
 
-  return tool<typeof codexParametersSchema, unknown, CodexToolResult>({
+  return tool<CodexToolParametersSchema, unknown, CodexToolResult>({
     name,
     description,
-    parameters,
+    parameters: resolvedParameters,
     strict: true,
     execute: async (input, runContext = new RunContext(), details) => {
-      const args = normalizeParameters(input as CodexToolParameters);
+      const args = normalizeParameters(input as AnyCodexToolParameters);
+
+      if (useRunContextThreadId) {
+        validateRunContextThreadIdContext(
+          runContext,
+          resolvedRunContextThreadIdKey,
+        );
+      }
+
+      const callThreadId = resolveCallThreadId(
+        args,
+        runContext,
+        normalizedDefaultThreadId,
+        useRunContextThreadId,
+        resolvedRunContextThreadIdKey,
+      );
 
       const codex = await resolveCodex();
       const thread = persistSession
         ? getOrCreatePersistedThread(
             codex,
-            defaultThreadId,
+            callThreadId,
             resolvedThreadOptions,
             persistedThread,
           )
-        : getThread(codex, defaultThreadId, resolvedThreadOptions);
+        : getThread(codex, callThreadId, resolvedThreadOptions);
       if (persistSession && !persistedThread) {
         persistedThread = thread;
       }
@@ -423,6 +503,13 @@ export function codexTool(
           }),
         );
       }
+      if (useRunContextThreadId) {
+        storeThreadIdInRunContext(
+          runContext,
+          resolvedRunContextThreadIdKey,
+          resolvedThreadId,
+        );
+      }
 
       return {
         threadId: resolvedThreadId,
@@ -431,7 +518,10 @@ export function codexTool(
       };
     },
     needsApproval: false,
-    isEnabled: true,
+    isEnabled: async ({ agent }) => {
+      validateCodexToolNameCollisions(agent);
+      return true;
+    },
   });
 }
 
@@ -483,17 +573,95 @@ function buildTurnOptions(
 }
 
 function normalizeParameters(
-  params: CodexToolParameters,
+  params: AnyCodexToolParameters,
 ): CodexToolCallArguments {
   const inputs = params.inputs.map<UserInput>((item) =>
     item.type === 'text'
       ? { type: 'text', text: item.text.trim() }
       : { type: 'local_image', path: item.path.trim() },
   );
+  const threadId =
+    'threadId' in params ? normalizeThreadId(params.threadId) : undefined;
 
   return {
     inputs: inputs && inputs.length > 0 ? inputs : undefined,
+    threadId,
   };
+}
+
+function validateRunContextThreadIdKey(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new UserError('runContextThreadIdKey must be a string.');
+  }
+  const key = value.trim();
+  if (!key) {
+    throw new UserError('runContextThreadIdKey must be a non-empty string.');
+  }
+  return key;
+}
+
+function resolveCodexToolName(configuredName: string): string {
+  const normalized = configuredName.trim();
+  if (!normalized) {
+    throw new UserError('Codex tool name must be a non-empty string.');
+  }
+
+  const functionToolName = toFunctionToolName(normalized);
+  if (
+    functionToolName === DEFAULT_CODEX_TOOL_NAME ||
+    functionToolName.startsWith(CODEX_TOOL_NAME_PREFIX)
+  ) {
+    return functionToolName;
+  }
+
+  return `${CODEX_TOOL_NAME_PREFIX}${functionToolName}`;
+}
+
+function isCodexToolName(name: string): boolean {
+  return (
+    name === DEFAULT_CODEX_TOOL_NAME || name.startsWith(CODEX_TOOL_NAME_PREFIX)
+  );
+}
+
+function validateCodexToolNameCollisions(agent: {
+  tools?: Array<{ name?: unknown }>;
+}): void {
+  const tools = Array.isArray(agent.tools) ? agent.tools : [];
+  const nameCounts = new Map<string, number>();
+  for (const candidate of tools) {
+    if (typeof candidate.name !== 'string' || candidate.name.length === 0) {
+      continue;
+    }
+    nameCounts.set(candidate.name, (nameCounts.get(candidate.name) ?? 0) + 1);
+  }
+
+  const duplicateCodexNames = [...nameCounts.entries()]
+    .filter(([toolName, count]) => isCodexToolName(toolName) && count > 1)
+    .map(([toolName]) => toolName)
+    .sort();
+  if (duplicateCodexNames.length === 0) {
+    return;
+  }
+
+  throw new UserError(
+    `Duplicate Codex tool names found: ${duplicateCodexNames.join(', ')}. Provide a unique codexTool({ name: ... }) per tool instance.`,
+  );
+}
+
+function resolveRunContextThreadIdKey(
+  toolName: string,
+  configuredKey: string | undefined,
+): string {
+  if (configuredKey !== undefined) {
+    return validateRunContextThreadIdKey(configuredKey);
+  }
+
+  if (toolName === DEFAULT_CODEX_TOOL_NAME) {
+    return DEFAULT_RUN_CONTEXT_THREAD_ID_KEY;
+  }
+
+  const suffix = toolName.slice(CODEX_TOOL_NAME_PREFIX.length);
+  return `${DEFAULT_RUN_CONTEXT_THREAD_ID_KEY}_${suffix}`;
 }
 
 function buildCodexOutputSchema(
@@ -962,6 +1130,146 @@ function readShape(input: unknown): Record<string, unknown> | undefined {
   }
 
   return undefined;
+}
+
+function normalizeThreadId(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new UserError('Codex threadId must be a string when provided.');
+  }
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function resolveCallThreadId(
+  args: CodexToolCallArguments,
+  runContext: RunContext<unknown>,
+  configuredThreadId: string | undefined,
+  useRunContextThreadId: boolean,
+  runContextThreadIdKey: string,
+): string | undefined {
+  const explicitThreadId = normalizeThreadId(args.threadId);
+  if (explicitThreadId) {
+    return explicitThreadId;
+  }
+
+  if (useRunContextThreadId) {
+    const contextThreadId = readThreadIdFromRunContext(
+      runContext,
+      runContextThreadIdKey,
+    );
+    if (contextThreadId) {
+      return contextThreadId;
+    }
+  }
+
+  return configuredThreadId;
+}
+
+function readThreadIdFromRunContext(
+  runContext: RunContext<unknown>,
+  key: string,
+): string | undefined {
+  const context = runContext.context;
+  if (context === undefined || context === null) {
+    return undefined;
+  }
+
+  const value =
+    context instanceof Map
+      ? context.get(key)
+      : (context as Record<string, unknown>)[key];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new UserError(`Run context "${key}" must be a string when provided.`);
+  }
+
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function validateRunContextThreadIdContext(
+  runContext: RunContext<unknown>,
+  key: string,
+): void {
+  const context = runContext.context;
+  if (context === undefined || context === null) {
+    throw new UserError(
+      'useRunContextThreadId=true requires a mutable run context object. Pass context={} (or an object) to run().',
+    );
+  }
+
+  if (context instanceof Map) {
+    return;
+  }
+
+  if (typeof context !== 'object') {
+    throw new UserError(
+      'useRunContextThreadId=true requires a mutable run context object.',
+    );
+  }
+
+  if (Object.isFrozen(context)) {
+    throw new UserError(
+      'useRunContextThreadId=true requires a mutable run context object. Frozen run context objects are not supported.',
+    );
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(context, key);
+  if (descriptor) {
+    if ('set' in descriptor) {
+      if (typeof descriptor.set === 'function') {
+        return;
+      }
+      throw new UserError(
+        'useRunContextThreadId=true requires a mutable run context object.',
+      );
+    }
+    if (descriptor.writable) {
+      return;
+    }
+    throw new UserError(
+      'useRunContextThreadId=true requires a mutable run context object.',
+    );
+  }
+
+  if (!Object.isExtensible(context)) {
+    throw new UserError(
+      'useRunContextThreadId=true requires a mutable run context object.',
+    );
+  }
+}
+
+function storeThreadIdInRunContext(
+  runContext: RunContext<unknown>,
+  key: string,
+  threadId: string | null,
+): void {
+  if (!threadId) {
+    return;
+  }
+
+  validateRunContextThreadIdContext(runContext, key);
+  const context = runContext.context;
+  if (context === undefined || context === null) {
+    return;
+  }
+  if (context instanceof Map) {
+    context.set(key, threadId);
+    return;
+  }
+
+  try {
+    (context as Record<string, unknown>)[key] = threadId;
+  } catch (_error) {
+    throw new UserError(
+      `Unable to store Codex threadId in run context field "${key}". Use a mutable object context or set a writable property.`,
+    );
+  }
 }
 
 function getThread(

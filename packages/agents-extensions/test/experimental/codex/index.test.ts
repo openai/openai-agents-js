@@ -1,4 +1,5 @@
 import {
+  Agent,
   BatchTraceProcessor,
   ConsoleSpanExporter,
   RunContext,
@@ -6,6 +7,7 @@ import {
   TracingProcessor,
   setTraceProcessors,
   setTracingDisabled,
+  tool,
   withFunctionSpan,
   withTrace,
 } from '@openai/agents';
@@ -94,6 +96,7 @@ describe('codexTool', () => {
     codexMockState.threadId = 'thread-1';
     codexMockState.lastTurnOptions = undefined;
     codexConstructorState.options = undefined;
+    codexConstructorState.instance = undefined;
     originalOpenAIKey = process.env.OPENAI_API_KEY;
     originalCodexKey = process.env.CODEX_API_KEY;
   });
@@ -749,6 +752,392 @@ describe('codexTool', () => {
       undefined,
     );
     expect(instance?.startThread).not.toHaveBeenCalled();
+  });
+
+  test('accepts threadId from tool input', async () => {
+    codexMockState.threadId = 'thread-from-input';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-from-input' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool();
+    const runContext = new RunContext();
+
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Continue thread.',
+          },
+        ],
+        threadId: 'thread-xyz',
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-xyz',
+      undefined,
+    );
+    if (typeof result === 'string') {
+      throw new Error('Codex tool unexpectedly returned a string result.');
+    }
+    expect(result.threadId).toBe('thread-from-input');
+  });
+
+  test('uses run context thread id and persists latest thread id', async () => {
+    codexMockState.threadId = 'thread-next';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-next' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({
+      useRunContextThreadId: true,
+      runContextThreadIdKey: 'codexAgentThreadId',
+    });
+    const runContext = new RunContext({
+      codexAgentThreadId: 'thread-prev',
+    });
+
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Continue thread.',
+          },
+        ],
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-prev',
+      undefined,
+    );
+    expect(runContext.context).toMatchObject({
+      codexAgentThreadId: 'thread-next',
+    });
+    if (typeof result === 'string') {
+      throw new Error('Codex tool unexpectedly returned a string result.');
+    }
+    expect(result.threadId).toBe('thread-next');
+  });
+
+  test('tool input threadId overrides run context thread id', async () => {
+    codexMockState.threadId = 'thread-from-tool-input';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-from-tool-input' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({
+      useRunContextThreadId: true,
+      parameters: z
+        .object({
+          inputs: z.array(z.any()).min(1),
+          threadId: z.string().trim().min(1).nullable().default(null),
+        })
+        .strict() as any,
+    });
+    const runContext = new RunContext({
+      codexThreadId: 'thread-from-context',
+    });
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Continue thread.',
+          },
+        ],
+        threadId: 'thread-from-input',
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-from-input',
+      undefined,
+    );
+  });
+
+  test('uses default run context key derived from codex tool name', async () => {
+    codexMockState.threadId = 'thread-next';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-next' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({
+      name: 'codex_engineer',
+      useRunContextThreadId: true,
+    });
+    const runContext = new RunContext({
+      codexThreadId_engineer: 'thread-prev',
+    });
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Continue thread.',
+          },
+        ],
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-prev',
+      undefined,
+    );
+    expect(runContext.context).toMatchObject({
+      codexThreadId_engineer: 'thread-next',
+    });
+  });
+
+  test('derives default run context key from normalized tool name', async () => {
+    codexMockState.threadId = 'thread-next';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-next' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const codex = codexTool({
+      name: 'dev engineer',
+      useRunContextThreadId: true,
+    });
+    const runContext = new RunContext({
+      codexThreadId_dev_engineer: 'thread-prev',
+    });
+
+    await codex.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [{ type: 'text', text: 'Continue thread.' }],
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-prev',
+      undefined,
+    );
+    expect(runContext.context).toMatchObject({
+      codexThreadId_dev_engineer: 'thread-next',
+    });
+  });
+
+  test('hides threadId in the default parameters for run context mode', () => {
+    const codex = codexTool({ useRunContextThreadId: true });
+    const properties = (codex.parameters as { properties?: unknown })
+      .properties as Record<string, unknown> | undefined;
+    expect(properties?.threadId).toBeUndefined();
+  });
+
+  test('prefixes custom tool names into codex namespace', () => {
+    const codex = codexTool({ name: 'engineer' });
+    expect(codex.name).toBe('codex_engineer');
+  });
+
+  test('normalizes codex tool names with spaces like other function tools', () => {
+    const codex = codexTool({ name: 'dev engineer' });
+    expect(codex.name).toBe('codex_dev_engineer');
+  });
+
+  test('does not double-prefix names that normalize to codex_ prefix', () => {
+    const codex = codexTool({ name: 'codex-foo' });
+    expect(codex.name).toBe('codex_foo');
+  });
+
+  test('keeps codex prefix when spaces normalize to underscores', () => {
+    const codex = codexTool({ name: 'codex foo' });
+    expect(codex.name).toBe('codex_foo');
+  });
+
+  test('rejects empty runContextThreadIdKey', () => {
+    expect(() =>
+      codexTool({
+        useRunContextThreadId: true,
+        runContextThreadIdKey: '  ',
+      }),
+    ).toThrow('runContextThreadIdKey');
+  });
+
+  test('fails fast when duplicate Codex tool names are present', async () => {
+    const agent = new Agent({
+      name: 'test',
+      instructions: 'test',
+      tools: [codexTool(), codexTool()],
+    });
+
+    await expect(agent.getAllTools(new RunContext())).rejects.toThrow(
+      'Duplicate Codex tool names found',
+    );
+  });
+
+  test('fails fast when a non-codex tool collides with a codex tool name', async () => {
+    const otherTool = tool({
+      name: 'codex',
+      description: 'Other tool.',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'test',
+      instructions: 'test',
+      tools: [codexTool(), otherTool],
+    });
+
+    await expect(agent.getAllTools(new RunContext())).rejects.toThrow(
+      'Duplicate Codex tool names found',
+    );
+  });
+
+  test('requires mutable context when useRunContextThreadId is enabled', async () => {
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({ useRunContextThreadId: true });
+    const runContext = new RunContext<Record<string, unknown>>();
+    runContext.context = undefined as unknown as Record<string, unknown>;
+
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'No context.',
+          },
+        ],
+      }),
+    );
+
+    expect(result).toContain('useRunContextThreadId=true');
+    expect(codexConstructorState.instance).toBeUndefined();
+  });
+
+  test('rejects immutable object context when useRunContextThreadId is enabled', async () => {
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({ useRunContextThreadId: true });
+    const runContext = new RunContext(
+      Object.freeze({ codexThreadId: 'thread-prev' }),
+    );
+
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Immutable context.',
+          },
+        ],
+      }),
+    );
+
+    expect(result).toContain('useRunContextThreadId=true');
+    expect(codexConstructorState.instance).toBeUndefined();
+  });
+
+  test('rejects non-string run context thread IDs', async () => {
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool({ useRunContextThreadId: true });
+    const runContext = new RunContext({
+      codexThreadId: 123,
+    });
+
+    const result = await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Bad context thread ID.',
+          },
+        ],
+      }),
+    );
+
+    expect(result).toContain('must be a string');
+    expect(codexConstructorState.instance).toBeUndefined();
   });
 
   test('throws when persistSession is reused with a mismatched thread id', async () => {
