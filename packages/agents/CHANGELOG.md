@@ -1,5 +1,14 @@
 # @openai/agents
 
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [8a7b58a]
+  - @openai/agents-core@0.4.6
+  - @openai/agents-openai@0.4.6
+  - @openai/agents-realtime@0.4.6
+
 ## 0.4.5
 
 ### Patch Changes

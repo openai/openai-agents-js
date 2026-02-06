@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.4.6
+
+### Patch Changes
+
+- 8a7b58a: feat: add run-context Codex thread reuse with normalized codex tool naming
+- Updated dependencies [8a7b58a]
+  - @openai/agents-core@0.4.6
+  - @openai/agents@0.4.6
+
 ## 0.4.5
 
 ### Patch Changes
