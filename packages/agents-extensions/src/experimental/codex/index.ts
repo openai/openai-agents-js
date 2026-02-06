@@ -606,13 +606,15 @@ function resolveCodexToolName(configuredName: string): string {
     throw new UserError('Codex tool name must be a non-empty string.');
   }
 
-  if (normalized === DEFAULT_CODEX_TOOL_NAME) {
-    return normalized;
+  const functionToolName = toFunctionToolName(normalized);
+  if (
+    functionToolName === DEFAULT_CODEX_TOOL_NAME ||
+    functionToolName.startsWith(CODEX_TOOL_NAME_PREFIX)
+  ) {
+    return functionToolName;
   }
-  const prefixed = normalized.startsWith(CODEX_TOOL_NAME_PREFIX)
-    ? normalized
-    : `${CODEX_TOOL_NAME_PREFIX}${normalized}`;
-  return toFunctionToolName(prefixed);
+
+  return `${CODEX_TOOL_NAME_PREFIX}${functionToolName}`;
 }
 
 function isCodexToolName(name: string): boolean {

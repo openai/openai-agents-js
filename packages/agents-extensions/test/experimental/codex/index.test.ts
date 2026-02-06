@@ -990,6 +990,16 @@ describe('codexTool', () => {
     expect(codex.name).toBe('codex_dev_engineer');
   });
 
+  test('does not double-prefix names that normalize to codex_ prefix', () => {
+    const codex = codexTool({ name: 'codex-foo' });
+    expect(codex.name).toBe('codex_foo');
+  });
+
+  test('keeps codex prefix when spaces normalize to underscores', () => {
+    const codex = codexTool({ name: 'codex foo' });
+    expect(codex.name).toBe('codex_foo');
+  });
+
   test('rejects empty runContextThreadIdKey', () => {
     expect(() =>
       codexTool({
