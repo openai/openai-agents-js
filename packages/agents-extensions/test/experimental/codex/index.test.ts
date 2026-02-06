@@ -909,7 +909,7 @@ describe('codexTool', () => {
       useRunContextThreadId: true,
     });
     const runContext = new RunContext({
-      codexThreadIdEngineer: 'thread-prev',
+      codexThreadId_engineer: 'thread-prev',
     });
 
     await tool.invoke(
@@ -930,7 +930,46 @@ describe('codexTool', () => {
       undefined,
     );
     expect(runContext.context).toMatchObject({
-      codexThreadIdEngineer: 'thread-next',
+      codexThreadId_engineer: 'thread-next',
+    });
+  });
+
+  test('derives default run context key from normalized tool name', async () => {
+    codexMockState.threadId = 'thread-next';
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-next' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const codex = codexTool({
+      name: 'dev engineer',
+      useRunContextThreadId: true,
+    });
+    const runContext = new RunContext({
+      codexThreadId_dev_engineer: 'thread-prev',
+    });
+
+    await codex.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [{ type: 'text', text: 'Continue thread.' }],
+      }),
+    );
+
+    const instance = codexConstructorState.instance;
+    expect(instance?.resumeThread).toHaveBeenCalledWith(
+      'thread-prev',
+      undefined,
+    );
+    expect(runContext.context).toMatchObject({
+      codexThreadId_dev_engineer: 'thread-next',
     });
   });
 
@@ -941,10 +980,14 @@ describe('codexTool', () => {
     expect(properties?.threadId).toBeUndefined();
   });
 
-  test('rejects custom tool names without codex prefix', () => {
-    expect(() => codexTool({ name: 'engineer' })).toThrow(
-      'must be "codex" or start with "codex_"',
-    );
+  test('prefixes custom tool names into codex namespace', () => {
+    const codex = codexTool({ name: 'engineer' });
+    expect(codex.name).toBe('codex_engineer');
+  });
+
+  test('normalizes codex tool names with spaces like other function tools', () => {
+    const codex = codexTool({ name: 'dev engineer' });
+    expect(codex.name).toBe('codex_dev_engineer');
   });
 
   test('rejects empty runContextThreadIdKey', () => {

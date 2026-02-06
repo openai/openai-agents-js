@@ -6,7 +6,11 @@ import {
   tool,
 } from '@openai/agents';
 import { loadEnv } from '@openai/agents-core/_shims';
-import { isZodObject, toSmartString } from '@openai/agents-core/utils';
+import {
+  isZodObject,
+  toFunctionToolName,
+  toSmartString,
+} from '@openai/agents-core/utils';
 import type {
   CustomSpanData,
   FunctionCallItem,
@@ -231,7 +235,8 @@ export type CodexToolOptions = {
   /**
    * Name of the tool as exposed to the agent model.
    *
-   * Must be `'codex'` or begin with `'codex_'`.
+   * Names are normalized to the `codex` namespace.
+   * Passing `'engineer'` becomes `'codex_engineer'`.
    *
    * @defaultValue `'codex'`.
    */
@@ -304,7 +309,7 @@ export type CodexToolOptions = {
    * Context key used when `useRunContextThreadId` is enabled.
    *
    * Defaults to `codexThreadId` for the default tool name, or a name-derived
-   * key such as `codexThreadIdEngineer` for `name: 'codex_engineer'`.
+   * key such as `codexThreadId_engineer` for `name: 'codex_engineer'`.
    */
   runContextThreadIdKey?: string;
 };
@@ -600,15 +605,14 @@ function resolveCodexToolName(configuredName: string): string {
   if (!normalized) {
     throw new UserError('Codex tool name must be a non-empty string.');
   }
-  if (
-    normalized !== DEFAULT_CODEX_TOOL_NAME &&
-    !normalized.startsWith(CODEX_TOOL_NAME_PREFIX)
-  ) {
-    throw new UserError(
-      `Codex tool name must be "${DEFAULT_CODEX_TOOL_NAME}" or start with "${CODEX_TOOL_NAME_PREFIX}".`,
-    );
+
+  if (normalized === DEFAULT_CODEX_TOOL_NAME) {
+    return normalized;
   }
-  return normalized;
+  const prefixed = normalized.startsWith(CODEX_TOOL_NAME_PREFIX)
+    ? normalized
+    : `${CODEX_TOOL_NAME_PREFIX}${normalized}`;
+  return toFunctionToolName(prefixed);
 }
 
 function isCodexToolName(name: string): boolean {
@@ -654,27 +658,8 @@ function resolveRunContextThreadIdKey(
     return DEFAULT_RUN_CONTEXT_THREAD_ID_KEY;
   }
 
-  const suffix = normalizeNameForContextKey(
-    toolName.slice(CODEX_TOOL_NAME_PREFIX.length),
-  );
-  return `${DEFAULT_RUN_CONTEXT_THREAD_ID_KEY}${suffix}`;
-}
-
-function normalizeNameForContextKey(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^0-9a-z_]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  if (!normalized) {
-    return 'Tool';
-  }
-
-  return normalized
-    .split('_')
-    .filter(Boolean)
-    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
-    .join('');
+  const suffix = toolName.slice(CODEX_TOOL_NAME_PREFIX.length);
+  return `${DEFAULT_RUN_CONTEXT_THREAD_ID_KEY}_${suffix}`;
 }
 
 function buildCodexOutputSchema(

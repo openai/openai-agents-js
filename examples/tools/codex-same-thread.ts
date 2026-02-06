@@ -7,10 +7,11 @@ import {
   type CodexToolStreamEvent,
 } from '@openai/agents-extensions/experimental/codex';
 
-const THREAD_ID_KEY = 'codexThreadIdEngineer';
+// When you don't set name to the codexTool, the default name is "codexThreadId"
+const THREAD_ID_KEY = 'codexThreadId_engineer';
 
 type ExampleContext = {
-  codexThreadIdEngineer?: string;
+  codexThreadId_engineer?: string;
 };
 
 function timestamp(): string {
@@ -80,6 +81,8 @@ async function main(): Promise<void> {
         ].join(' '),
         tools: [
           codexTool({
+            // "name" property is optional:
+            // It is required only when you have multiple codex tools in the same agent
             name: 'codex_engineer',
             sandboxMode: 'workspace-write',
             defaultThreadOptions: {
@@ -91,6 +94,7 @@ async function main(): Promise<void> {
               workingDirectory,
             },
             onStream: onCodexStream,
+            // Setting this enables sharing thread ID among codex tool calls
             useRunContextThreadId: true,
           }),
         ],
