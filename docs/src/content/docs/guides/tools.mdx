@@ -12,6 +12,7 @@ import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsToo
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
+import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
 computer. The JavaScript/TypeScript SDK supports six categories:
@@ -158,6 +159,12 @@ When managing multiple servers (or partial failures), use `connectMcpServers` an
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This surface is experimental and may change.
 
+Install dependencies first:
+
+```bash
+npm install @openai/agents-extensions @openai/codex-sdk
+```
+
 Quick start:
 
 <Code
@@ -171,10 +178,22 @@ What to know:
 - Auth: supply `CODEX_API_KEY` (preferred) or `OPENAI_API_KEY`, or pass `codexOptions.apiKey`.
 - Inputs: strict schema—`inputs` must contain at least one `{ type: 'text', text }` or `{ type: 'local_image', path }`.
 - Safety: pair `sandboxMode` with `workingDirectory`; set `skipGitRepoCheck` if the directory is not a Git repo.
-- Behavior: `persistSession: true` reuses a single Codex thread and returns its `threadId`; you can surface it for resumable work.
+- Threading: `useRunContextThreadId: true` reads/stores the latest thread id in `runContext.context`, which is useful for cross-turn reuse in your app state.
+- Thread ID precedence: tool call `threadId` (if your schema includes it) takes priority, then run-context thread id, then `codexTool({ threadId })`.
+- Run context key: defaults to `codexThreadId` for `name: 'codex'`, or `codexThreadId_<suffix>` for names like `name: 'engineer'` (`codex_engineer` after normalization).
+- Mutable context requirement: when `useRunContextThreadId` is enabled, pass a mutable object or `Map` as `run(..., { context })`.
+- Naming: tool names are normalized into the `codex` namespace (`engineer` becomes `codex_engineer`), and duplicate Codex tool names in an agent are rejected.
 - Streaming: `onStream` mirrors Codex events (reasoning, command execution, MCP tool calls, file changes, web search) so you can log or trace progress.
 - Outputs: tool result includes `response`, `usage`, and `threadId`, and Codex token usage is recorded in `RunContext`.
-- Structure: `outputSchema` enforces structured Codex responses per turn when you need typed outputs.
+- Structure: `outputSchema` can be a descriptor, JSON schema object, or Zod object. For JSON object schemas, `additionalProperties` must be `false`.
+
+Run-context thread reuse example:
+
+<Code
+  lang="typescript"
+  code={codexRunContextThreadExample}
+  title="Codex run-context thread reuse"
+/>
 
 ---
 
