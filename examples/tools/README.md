@@ -22,6 +22,12 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-codex
   ```
 
+- `codex-same-thread.ts` – Reuses a Codex thread across multiple agent turns via `useRunContextThreadId`.
+
+  ```bash
+  pnpm examples:tools-codex-same-thread
+  ```
+
 - `web-search.ts` – Demonstrates `webSearchTool` for general web queries.
 
   ```bash
