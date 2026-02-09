@@ -1,6 +1,14 @@
 import { describe, test, expect } from 'vitest';
 import { AiSdkModel } from '../../src/ai-sdk/index';
-import { withTrace } from '@openai/agents';
+import {
+  BatchTraceProcessor,
+  ConsoleSpanExporter,
+  setTraceProcessors,
+  setTracingDisabled,
+  Span,
+  TracingProcessor,
+  withTrace,
+} from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import type { LanguageModelV2 } from '@ai-sdk/provider';
 
@@ -46,6 +54,24 @@ function partsStream(parts: any[]): ReadableStream<any> {
   );
 }
 
+class CollectingProcessor implements TracingProcessor {
+  public spans: Span<any>[] = [];
+
+  async onTraceStart(): Promise<void> {}
+
+  async onTraceEnd(): Promise<void> {}
+
+  async onSpanStart(): Promise<void> {}
+
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spans.push(span);
+  }
+
+  async shutdown(): Promise<void> {}
+
+  async forceFlush(): Promise<void> {}
+}
+
 describe('AiSdkModel issue #802', () => {
   test('handles object usage in doGenerate (Google AI SDK compatibility)', async () => {
     const model = new AiSdkModel(
@@ -84,10 +110,63 @@ describe('AiSdkModel issue #802', () => {
       inputTokens: 10,
       outputTokens: 20,
       totalTokens: 30,
-      inputTokensDetails: [],
+      inputTokensDetails: [{ cached_tokens: 0 }],
       outputTokensDetails: [],
       requestUsageEntries: undefined,
     });
+  });
+
+  test('maps cacheRead usage to cached_tokens in generation spans (#945)', async () => {
+    const processor = new CollectingProcessor();
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
+    try {
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            return {
+              content: [{ type: 'text', text: 'ok' }],
+              usage: {
+                inputTokens: { total: 10, noCache: 8, cacheRead: 2 } as any,
+                outputTokens: { total: 20 } as any,
+                totalTokens: { total: 30 } as any,
+              },
+              providerMetadata: {},
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        }),
+      );
+
+      const res = await withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: true,
+        } as any),
+      );
+
+      expect(res.usage.inputTokensDetails).toEqual([{ cached_tokens: 2 }]);
+
+      const generationSpan = processor.spans.find(
+        (span) => span.spanData.type === 'generation',
+      );
+
+      expect(generationSpan?.spanData?.usage).toEqual({
+        input_tokens: 10,
+        output_tokens: 20,
+        input_tokens_details: { cached_tokens: 2 },
+      });
+    } finally {
+      setTracingDisabled(true);
+      setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+    }
   });
 
   test('handles object usage in doStream (Google AI SDK compatibility)', async () => {
@@ -98,7 +177,7 @@ describe('AiSdkModel issue #802', () => {
         finishReason: 'stop',
         // Simulating Google AI SDK behavior where tokens are objects
         usage: {
-          inputTokens: { total: 5 } as any,
+          inputTokens: { total: 5, cacheRead: 1 } as any,
           outputTokens: { total: 8 } as any,
         },
       },
@@ -131,6 +210,7 @@ describe('AiSdkModel issue #802', () => {
       inputTokens: 5,
       outputTokens: 8,
       totalTokens: 13,
+      inputTokensDetails: { cached_tokens: 1 },
     });
   });
 
