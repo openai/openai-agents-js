@@ -1131,32 +1131,17 @@ export class AiSdkModel implements Model {
           span.spanData.output = output;
         }
 
+        const usage = extractUsage((result as any).usage);
+
         const response = {
           responseId: (result as any).response?.id ?? 'FAKE_ID',
-          usage: new Usage({
-            inputTokens: extractTokenCount(
-              (result as any).usage,
-              'inputTokens',
-            ),
-            outputTokens: extractTokenCount(
-              (result as any).usage,
-              'outputTokens',
-            ),
-            totalTokens:
-              extractTokenCount((result as any).usage, 'inputTokens') +
-                extractTokenCount((result as any).usage, 'outputTokens') || 0,
-          }),
+          usage: new Usage(usage),
           output,
           providerData: result,
         } as const;
 
         if (span && request.tracing === true) {
-          span.spanData.usage = {
-            // Note that tracing supports only input and output tokens for Chat Completions.
-            // So, we don't include other properties here.
-            input_tokens: response.usage.inputTokens,
-            output_tokens: response.usage.outputTokens,
-          };
+          span.spanData.usage = toTracingUsage(usage);
         }
 
         if (this.#logger.dontLogModelData) {
@@ -1301,6 +1286,7 @@ export class AiSdkModel implements Model {
       let responseId: string | undefined;
       let usagePromptTokens = 0;
       let usageCompletionTokens = 0;
+      let usageInputTokensDetails: Record<string, number> | undefined;
       const functionCalls: Record<string, protocol.FunctionCallItem> = {};
       let textOutput: protocol.OutputText | undefined;
 
@@ -1389,14 +1375,10 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'finish': {
-            usagePromptTokens = extractTokenCount(
-              (part as any).usage,
-              'inputTokens',
-            );
-            usageCompletionTokens = extractTokenCount(
-              (part as any).usage,
-              'outputTokens',
-            );
+            const usage = extractUsage((part as any).usage);
+            usagePromptTokens = usage.inputTokens;
+            usageCompletionTokens = usage.outputTokens;
+            usageInputTokensDetails = usage.inputTokensDetails;
             break;
           }
           case 'error': {
@@ -1461,6 +1443,11 @@ export class AiSdkModel implements Model {
             inputTokens: usagePromptTokens,
             outputTokens: usageCompletionTokens,
             totalTokens: usagePromptTokens + usageCompletionTokens,
+            ...(usageInputTokensDetails
+              ? {
+                  inputTokensDetails: usageInputTokensDetails,
+                }
+              : {}),
           },
           output: outputs,
         },
@@ -1468,12 +1455,15 @@ export class AiSdkModel implements Model {
 
       if (span && request.tracing === true) {
         span.spanData.output = outputs;
-        span.spanData.usage = {
-          // Note that tracing supports only input and output tokens for Chat Completions.
-          // So, we don't include other properties here.
-          input_tokens: finalEvent.response.usage.inputTokens,
-          output_tokens: finalEvent.response.usage.outputTokens,
-        };
+        span.spanData.usage = toTracingUsage({
+          inputTokens: usagePromptTokens,
+          outputTokens: usageCompletionTokens,
+          ...(usageInputTokensDetails
+            ? {
+                inputTokensDetails: usageInputTokensDetails,
+              }
+            : {}),
+        });
       }
 
       if (this.#logger.dontLogModelData) {
@@ -1578,6 +1568,58 @@ function extractTokenCount(usage: any, key: string): number {
     return val.total;
   }
   return 0;
+}
+
+function extractCachedInputTokens(usage: any): number | undefined {
+  const inputTokens = usage?.inputTokens;
+  if (
+    typeof inputTokens === 'object' &&
+    inputTokens !== null &&
+    typeof inputTokens.cacheRead === 'number'
+  ) {
+    return Number.isNaN(inputTokens.cacheRead) ? 0 : inputTokens.cacheRead;
+  }
+  return undefined;
+}
+
+function extractUsage(usage: any): {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputTokensDetails?: Record<string, number>;
+} {
+  const inputTokens = extractTokenCount(usage, 'inputTokens');
+  const outputTokens = extractTokenCount(usage, 'outputTokens');
+  const cachedInputTokens = extractCachedInputTokens(usage);
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    ...(typeof cachedInputTokens === 'number'
+      ? {
+          inputTokensDetails: {
+            cached_tokens: cachedInputTokens,
+          },
+        }
+      : {}),
+  };
+}
+
+function toTracingUsage(usage: {
+  inputTokens: number;
+  outputTokens: number;
+  inputTokensDetails?: Record<string, number>;
+}): Record<string, any> {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    ...(usage.inputTokensDetails
+      ? {
+          input_tokens_details: usage.inputTokensDetails,
+        }
+      : {}),
+  };
 }
 
 export function parseArguments(args: string | undefined | null): any {
