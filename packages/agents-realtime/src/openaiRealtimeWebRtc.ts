@@ -220,6 +220,8 @@ export class OpenAIRealtimeWebRTC
           let resolved = false;
           const finish = () => {
             if (resolved) return;
+            // Don't finalize if the transport was closed/errored while waiting.
+            if (this.#state.status !== 'connected') return;
             resolved = true;
             dataChannel.removeEventListener('message', onConfigAck);
             this.emit('connection_change', this.#state.status);
