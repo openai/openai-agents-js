@@ -6,6 +6,17 @@ class FakeRTCDataChannel extends EventTarget {
   readyState = 'open';
   send(data: string) {
     this.sent.push(data);
+    // Simulate server acking session.update with session.updated
+    const parsed = JSON.parse(data);
+    if (parsed.type === 'session.update') {
+      setTimeout(() => {
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: JSON.stringify({ type: 'session.updated', session: {} }),
+          }),
+        );
+      }, 0);
+    }
   }
   close() {
     this.readyState = 'closed';
