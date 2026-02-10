@@ -213,14 +213,36 @@ export class OpenAIRealtimeWebRTC
             dataChannel,
             callId,
           };
-          // Sending the session config again here once the channel is connected to ensure
-          // that the session config is sent to the server before the first response is received
-          // Setting it on connection should work but the config is not being validated on the
-          // server. This triggers a validation error if the config is not valid.
+
+          // Wait for session.updated acknowledgement before resolving connect().
+          // Without this, audio can flow to the server before config (instructions,
+          // tools, modalities) is applied, causing the server to use defaults.
+          let resolved = false;
+          const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            dataChannel.removeEventListener('message', onConfigAck);
+            this.emit('connection_change', this.#state.status);
+            this._onOpen();
+            resolve();
+          };
+          const onConfigAck = (ackEvent: MessageEvent) => {
+            const parsed = JSON.parse(ackEvent.data);
+            if (parsed.type === 'session.updated') {
+              finish();
+            }
+          };
+          dataChannel.addEventListener('message', onConfigAck);
           this.updateSessionConfig(userSessionConfig);
-          this.emit('connection_change', this.#state.status);
-          this._onOpen();
-          resolve();
+          // Hard timeout — if the server never acks, don't hang forever.
+          setTimeout(() => {
+            if (!resolved) {
+              logger.warn(
+                'Timed out waiting for session.updated ack — resolving connect() anyway',
+              );
+              finish();
+            }
+          }, 5000);
         });
 
         dataChannel.addEventListener('error', (event) => {
