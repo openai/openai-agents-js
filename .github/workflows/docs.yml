@@ -27,7 +27,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
-          version: 10.28.2
+          version: 10.29.2
           run_install: true
       - name: Run build
         run: pnpm build
