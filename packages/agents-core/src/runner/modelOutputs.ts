@@ -122,6 +122,9 @@ function parseShellCallStatus(status: unknown): ShellCallStatus | undefined {
 }
 
 function isShellCallPendingStatus(status: unknown): boolean {
+  if (typeof status === 'undefined') {
+    return true;
+  }
   return parseShellCallStatus(status) === 'in_progress';
 }
 

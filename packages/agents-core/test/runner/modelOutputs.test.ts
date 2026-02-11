@@ -160,6 +160,29 @@ describe('processModelResponse', () => {
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 
+  it('keeps hosted shell calls pending when status is omitted', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
   it('does not keep hosted shell calls pending when incomplete', () => {
     const shellCall: protocol.ShellCallItem = {
       type: 'shell_call',
