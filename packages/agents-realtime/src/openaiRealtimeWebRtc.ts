@@ -220,10 +220,18 @@ export class OpenAIRealtimeWebRTC
           let resolved = false;
           const finish = () => {
             if (resolved) return;
-            // Don't finalize if the transport was closed/errored while waiting.
-            if (this.#state.status !== 'connected') return;
             resolved = true;
             dataChannel.removeEventListener('message', onConfigAck);
+            // If the transport was closed/errored while waiting, reject
+            // so the connect() promise doesn't hang.
+            if (this.#state.status !== 'connected') {
+              reject(
+                new Error(
+                  'Connection closed before session config was acknowledged',
+                ),
+              );
+              return;
+            }
             this.emit('connection_change', this.#state.status);
             this._onOpen();
             resolve();
