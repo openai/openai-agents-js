@@ -152,6 +152,7 @@ describe('Tool', () => {
     const t = shellTool({ shell });
     expect(t.type).toBe('shell');
     expect(t.name).toBe('shell');
+    expect(t.environment.type).toBe('local');
     expect(t.environment).toEqual({ type: 'local' });
     expect(t.shell).toBe(shell);
   });

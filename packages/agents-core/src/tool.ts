@@ -598,6 +598,10 @@ type LocalShellTool = ShellToolBase & {
   shell: Shell;
 };
 
+type NormalizedLocalShellTool = Omit<LocalShellTool, 'environment'> & {
+  environment: ShellToolLocalEnvironment;
+};
+
 type HostedShellTool = ShellToolBase & {
   environment: ShellToolHostedEnvironment;
   /**
@@ -721,11 +725,13 @@ function normalizeShellToolEnvironment(
   };
 }
 
-export function shellTool(options: LocalShellToolOptions): ShellTool;
-export function shellTool(options: HostedShellToolOptions): ShellTool;
+export function shellTool(
+  options: LocalShellToolOptions,
+): NormalizedLocalShellTool;
+export function shellTool(options: HostedShellToolOptions): HostedShellTool;
 export function shellTool(
   options: LocalShellToolOptions | HostedShellToolOptions,
-): ShellTool {
+): NormalizedLocalShellTool | HostedShellTool {
   const environment = normalizeShellToolEnvironment(options.environment);
   const needsApproval: ShellApprovalFunction =
     typeof options.needsApproval === 'function'

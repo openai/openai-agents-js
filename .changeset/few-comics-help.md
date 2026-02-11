@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: preserve legacy ShellTool typing and keep hosted shell polling on missing status
+fix: preserve ShellTool compatibility while keeping factory environment and hosted polling
