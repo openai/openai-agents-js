@@ -1859,6 +1859,10 @@ export class OpenAIResponsesModel implements Model {
       tools.length > 0 ||
       request.toolsExplicitlyProvided === true ||
       !request.prompt;
+    const shouldOmitToolChoice =
+      Boolean(request.prompt) &&
+      !shouldSendTools &&
+      typeof toolChoice === 'object';
 
     const requestData = {
       ...(shouldSendModel ? { model: this.#model } : {}),
@@ -1877,7 +1881,9 @@ export class OpenAIResponsesModel implements Model {
       top_p: request.modelSettings.topP,
       truncation: request.modelSettings.truncation,
       max_output_tokens: request.modelSettings.maxTokens,
-      tool_choice: toolChoice as ToolChoiceOptions,
+      ...(!shouldOmitToolChoice
+        ? { tool_choice: toolChoice as ToolChoiceOptions }
+        : {}),
       parallel_tool_calls: parallelToolCalls,
       stream,
       text: responseFormat,

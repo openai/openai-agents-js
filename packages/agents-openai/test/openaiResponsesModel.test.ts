@@ -378,6 +378,80 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('omits named tool_choice when prompt should supply tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-omit',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_omit' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'web_search_preview' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect('tool_choice' in args).toBe(false);
+    });
+  });
+
+  it('keeps literal tool_choice when prompt should supply tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+      const toolChoices = ['none', 'required'] as const;
+
+      for (const toolChoice of toolChoices) {
+        const request = {
+          systemInstructions: undefined,
+          prompt: { promptId: 'pmpt_tool_choice_literal' },
+          input: 'hello',
+          modelSettings: { toolChoice },
+          tools: [],
+          toolsExplicitlyProvided: false,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+        await model.getResponse(request as any);
+      }
+
+      expect(createMock).toHaveBeenCalledTimes(toolChoices.length);
+      for (const [index, toolChoice] of toolChoices.entries()) {
+        const [args] = createMock.mock.calls[index];
+        expect('tools' in args).toBe(false);
+        expect(args.tool_choice).toBe(toolChoice);
+      }
+    });
+  });
+
   it('sends an explicit empty tools array when the agent intentionally disabled tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-empty-tools', usage: {}, output: [] };
