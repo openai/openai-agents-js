@@ -258,10 +258,8 @@ export class OpenAIRealtimeWebRTC
           const onClose = () => {
             finish();
           };
-          dataChannel.addEventListener('message', onConfigAck);
-          dataChannel.addEventListener('close', onClose);
-          this.updateSessionConfig(userSessionConfig);
-          // Hard timeout — if the server never acks, don't hang forever.
+          // Start the timeout before wiring callbacks so that timeoutId
+          // is initialized if a listener fires synchronously.
           const timeoutId = setTimeout(() => {
             if (!resolved) {
               logger.warn(
@@ -270,6 +268,9 @@ export class OpenAIRealtimeWebRTC
               finish();
             }
           }, 5000);
+          dataChannel.addEventListener('message', onConfigAck);
+          dataChannel.addEventListener('close', onClose);
+          this.updateSessionConfig(userSessionConfig);
         });
 
         dataChannel.addEventListener('error', (event) => {
