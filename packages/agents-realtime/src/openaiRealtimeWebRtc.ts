@@ -232,6 +232,12 @@ export class OpenAIRealtimeWebRTC
               this.#state.dataChannel !== dataChannel ||
               dataChannel.readyState !== 'open'
             ) {
+              // Transition to disconnected if this attempt is still the
+              // active one so that callers can retry connect() without
+              // needing to call close() first.
+              if (this.#state.dataChannel === dataChannel) {
+                this.close();
+              }
               reject(
                 new Error(
                   'Connection closed before session config was acknowledged',
