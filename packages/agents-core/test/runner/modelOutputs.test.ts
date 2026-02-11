@@ -8,6 +8,7 @@ import {
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
   RunToolCallItem as ToolCallItem,
+  RunToolCallOutputItem as ToolCallOutputItem,
 } from '../../src/items';
 import { ModelResponse } from '../../src/model';
 import { processModelResponse } from '../../src/runner/modelOutputs';
@@ -79,6 +80,241 @@ describe('processModelResponse', () => {
     expect(result.toolsUsed).toEqual(['shell']);
   });
 
+  it('treats shell tools without environment as local for backward compatibility', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const legacyShellTool = {
+      type: 'shell',
+      name: 'shell',
+      shell: new FakeShell(),
+      needsApproval: async () => false,
+    } as any;
+
+    const result = processModelResponse(
+      modelResponse,
+      TEST_AGENT,
+      [legacyShellTool],
+      [],
+    );
+
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.shellActions[0]?.toolCall).toEqual(shellCall);
+    expect(result.shellActions[0]?.shell).toBe(legacyShellTool);
+    expect(result.toolsUsed).toEqual(['shell']);
+  });
+
+  it('does not queue local shell execution for hosted container shell', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('keeps hosted shell calls pending while still in progress', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('keeps hosted shell calls pending when status is omitted', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('does not keep hosted shell calls pending when incomplete', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'incomplete',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('does not keep hosted shell calls pending on unknown status values', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'queued' as any,
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('preserves hosted shell output items in processed run items', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'ok',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('keeps hosted shell pending when shell_call_output status is in progress', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'in_progress',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('does not keep hosted shell pending on unknown shell_call_output status values', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'queued',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
   it('throws when shell action emitted without shell tool', () => {
     const shellCall: protocol.ShellCallItem = {
       type: 'shell_call',
@@ -94,6 +330,35 @@ describe('processModelResponse', () => {
     expect(() =>
       processModelResponse(modelResponse, TEST_AGENT, [TEST_TOOL], []),
     ).toThrow(ModelBehaviorError);
+  });
+
+  it('throws when local shell tool has no shell implementation', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const invalidLocalShellTool = {
+      type: 'shell',
+      name: 'shell',
+      environment: { type: 'local' },
+      needsApproval: async () => false,
+    } as any;
+
+    expect(() =>
+      processModelResponse(
+        modelResponse,
+        TEST_AGENT,
+        [invalidLocalShellTool],
+        [],
+      ),
+    ).toThrow(/without a local shell implementation/);
   });
 
   it('queues apply_patch actions when editor tool registered', () => {

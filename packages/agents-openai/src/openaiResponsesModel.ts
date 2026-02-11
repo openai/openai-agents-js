@@ -84,6 +84,25 @@ type ResponseShellCallOutputContent =
   OpenAI.Responses.ResponseFunctionShellCallOutputContent;
 type ResponseApplyPatchCallOutput =
   OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput;
+type SerializedShellTool = Extract<SerializedTool, { type: 'shell' }>;
+type SerializedShellEnvironment = NonNullable<
+  SerializedShellTool['environment']
+>;
+type OpenAIShellEnvironment = NonNullable<
+  OpenAI.Responses.FunctionShellTool['environment']
+>;
+type OpenAIShellNetworkPolicy =
+  | OpenAI.Responses.ContainerNetworkPolicyAllowlist
+  | OpenAI.Responses.ContainerNetworkPolicyDisabled;
+type SerializedShellContainerAutoEnvironment = Extract<
+  SerializedShellEnvironment,
+  { type: 'container_auto' }
+>;
+type SerializedShellContainerSkill = NonNullable<
+  SerializedShellContainerAutoEnvironment['skills']
+>[number];
+type SerializedShellContainerNetworkPolicy =
+  SerializedShellContainerAutoEnvironment['networkPolicy'];
 
 const HostedToolChoice = z.enum([
   'file_search',
@@ -533,6 +552,25 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
 }
 
+function getShellCallProviderDataForInput(
+  providerData: protocol.ShellCallItem['providerData'],
+): {
+  environment?: OpenAI.Responses.ResponseInputItem.ShellCall['environment'];
+} {
+  const normalized = camelOrSnakeToSnakeCase(providerData);
+  if (!isRecord(normalized)) {
+    return {};
+  }
+  const environment = normalized.environment;
+  if (!isRecord(environment)) {
+    return {};
+  }
+  return {
+    environment:
+      environment as OpenAI.Responses.ResponseInputItem.ShellCall['environment'],
+  };
+}
+
 function getImageInlineMediaType(
   source: Record<string, any>,
 ): string | undefined {
@@ -549,6 +587,174 @@ function formatInlineData(
   const base64 =
     typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
   return mediaType ? `data:${mediaType};base64,${base64}` : base64;
+}
+
+function toOpenAIShellSkill(
+  skill: SerializedShellContainerSkill,
+): OpenAI.Responses.SkillReference | OpenAI.Responses.InlineSkill {
+  if (skill.type === 'skill_reference') {
+    const skillId = skill.skillId;
+    if (typeof skillId !== 'string' || skillId.length === 0) {
+      throw new UserError('shell skill_reference requires skillId.');
+    }
+
+    return {
+      type: 'skill_reference',
+      skill_id: skillId,
+      version: skill.version,
+    };
+  }
+
+  if (skill.type === 'inline') {
+    if (!skill.source) {
+      throw new UserError('shell inline skill requires a source.');
+    }
+    const mediaType = skill.source.mediaType;
+    if (mediaType !== 'application/zip') {
+      throw new UserError(
+        'shell inline skill source.mediaType must be application/zip.',
+      );
+    }
+    if (
+      typeof skill.source.data !== 'string' ||
+      skill.source.data.length === 0
+    ) {
+      throw new UserError('shell inline skill source.data is required.');
+    }
+    if (typeof skill.name !== 'string' || skill.name.length === 0) {
+      throw new UserError('shell inline skill requires name.');
+    }
+    if (
+      typeof skill.description !== 'string' ||
+      skill.description.length === 0
+    ) {
+      throw new UserError('shell inline skill requires description.');
+    }
+
+    return {
+      type: 'inline',
+      name: skill.name,
+      description: skill.description,
+      source: {
+        type: 'base64',
+        media_type: 'application/zip',
+        data: skill.source.data,
+      },
+    };
+  }
+
+  throw new UserError(
+    `Unsupported shell skill type: ${String(
+      (skill as { type?: unknown }).type,
+    )}`,
+  );
+}
+
+function toOpenAIShellNetworkPolicy(
+  policy: SerializedShellContainerNetworkPolicy,
+): OpenAIShellNetworkPolicy | undefined {
+  if (!policy) {
+    return undefined;
+  }
+
+  if (policy.type === 'disabled') {
+    return { type: 'disabled' };
+  }
+
+  if (policy.type === 'allowlist') {
+    if (!Array.isArray(policy.allowedDomains)) {
+      throw new UserError(
+        'shell allowlist networkPolicy requires allowedDomains.',
+      );
+    }
+
+    const allowedDomains = policy.allowedDomains.filter(
+      (domain): domain is string =>
+        typeof domain === 'string' && domain.length > 0,
+    );
+
+    const domainSecrets = policy.domainSecrets?.map((secret) => ({
+      domain: secret.domain,
+      name: secret.name,
+      value: secret.value,
+    }));
+
+    return {
+      type: 'allowlist',
+      allowed_domains: allowedDomains,
+      domain_secrets: domainSecrets,
+    };
+  }
+
+  throw new UserError(
+    `Unsupported shell networkPolicy type: ${String(
+      (policy as { type?: unknown }).type,
+    )}`,
+  );
+}
+
+function toOpenAIShellEnvironment(
+  environment: SerializedShellEnvironment | undefined,
+): OpenAIShellEnvironment {
+  if (!environment) {
+    return { type: 'local' };
+  }
+
+  if (environment.type === 'local') {
+    const localSkills = environment.skills?.map((skill) => {
+      if (
+        typeof skill.name !== 'string' ||
+        typeof skill.description !== 'string' ||
+        typeof skill.path !== 'string'
+      ) {
+        throw new UserError(
+          'Local shell skill requires name, description, and path.',
+        );
+      }
+      return {
+        name: skill.name,
+        description: skill.description,
+        path: skill.path,
+      };
+    });
+
+    return {
+      type: 'local',
+      skills: localSkills,
+    };
+  }
+
+  if (environment.type === 'container_auto') {
+    const skills = environment.skills?.map(toOpenAIShellSkill);
+
+    return {
+      type: 'container_auto',
+      file_ids: environment.fileIds,
+      memory_limit: environment.memoryLimit,
+      network_policy: toOpenAIShellNetworkPolicy(environment.networkPolicy),
+      skills,
+    };
+  }
+
+  if (environment.type === 'container_reference') {
+    const containerId = environment.containerId;
+    if (typeof containerId !== 'string' || containerId.length === 0) {
+      throw new UserError(
+        'shell container_reference environment requires containerId.',
+      );
+    }
+
+    return {
+      type: 'container_reference',
+      container_id: containerId,
+    };
+  }
+
+  throw new UserError(
+    `Unsupported shell environment type: ${String(
+      (environment as Record<string, any>).type,
+    )}`,
+  );
 }
 
 function getTools<_TContext = unknown>(
@@ -607,6 +813,7 @@ function converTool<_TContext = unknown>(
     return {
       tool: {
         type: 'shell',
+        environment: toOpenAIShellEnvironment(tool.environment),
       } as OpenAI.Responses.FunctionShellTool,
       include: undefined,
     };
@@ -1029,6 +1236,9 @@ function getInputItems(
             ? item.action.maxOutputLength
             : null,
       };
+      const shellProviderData = getShellCallProviderDataForInput(
+        item.providerData,
+      );
 
       const entry: OpenAI.Responses.ResponseInputItem.ShellCall = {
         type: 'shell_call',
@@ -1036,6 +1246,7 @@ function getInputItems(
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         action,
+        ...shellProviderData,
       };
 
       return entry;
@@ -1104,12 +1315,24 @@ function getInputItems(
         item.providerData?.type === 'web_search_call' ||
         item.providerData?.type === 'web_search' // for backward compatibility
       ) {
-        const entry: OpenAI.Responses.ResponseFunctionWebSearch = {
-          ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
+        const providerData = camelOrSnakeToSnakeCase(item.providerData) ?? {};
+        const hasAction = providerData.action !== undefined;
+        const hasValidAction =
+          isRecord(providerData.action) &&
+          typeof providerData.action.type === 'string';
+        if (hasAction && !hasValidAction) {
+          throw new UserError('web_search_call invalid action');
+        }
+        const entry = {
+          ...providerData, // place here to prioritize the below fields
           type: 'web_search_call',
           id: item.id!,
           status: WebSearchStatus.parse(item.status ?? 'failed'),
-        };
+        } as OpenAI.Responses.ResponseInputItem;
+        if (hasValidAction) {
+          (entry as OpenAI.Responses.ResponseFunctionWebSearch).action =
+            providerData.action as OpenAI.Responses.ResponseFunctionWebSearch['action'];
+        }
 
         return entry;
       }
@@ -1636,6 +1859,10 @@ export class OpenAIResponsesModel implements Model {
       tools.length > 0 ||
       request.toolsExplicitlyProvided === true ||
       !request.prompt;
+    const shouldOmitToolChoice =
+      Boolean(request.prompt) &&
+      !shouldSendTools &&
+      typeof toolChoice === 'object';
 
     const requestData = {
       ...(shouldSendModel ? { model: this.#model } : {}),
@@ -1654,7 +1881,9 @@ export class OpenAIResponsesModel implements Model {
       top_p: request.modelSettings.topP,
       truncation: request.modelSettings.truncation,
       max_output_tokens: request.modelSettings.maxTokens,
-      tool_choice: toolChoice as ToolChoiceOptions,
+      ...(!shouldOmitToolChoice
+        ? { tool_choice: toolChoice as ToolChoiceOptions }
+        : {}),
       parallel_tool_calls: parallelToolCalls,
       stream,
       text: responseFormat,

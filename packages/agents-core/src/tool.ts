@@ -69,6 +69,81 @@ export type ShellOnApprovalFunction = (
   approvalItem: RunToolApprovalItem,
 ) => Promise<{ approve: boolean; reason?: string }>;
 
+export type ShellToolLocalSkill = {
+  description: string;
+  name: string;
+  path: string;
+};
+
+export type ShellToolSkillReference = {
+  type: 'skill_reference';
+  skillId: string;
+  version?: string;
+};
+
+export type ShellToolInlineSkillSource = {
+  data: string;
+  mediaType: 'application/zip';
+  type: 'base64';
+};
+
+export type ShellToolInlineSkill = {
+  description: string;
+  name: string;
+  source: ShellToolInlineSkillSource;
+  type: 'inline';
+};
+
+export type ShellToolContainerSkill =
+  | ShellToolSkillReference
+  | ShellToolInlineSkill;
+
+export type ShellToolContainerNetworkPolicyDomainSecret = {
+  domain: string;
+  name: string;
+  value: string;
+};
+
+export type ShellToolContainerNetworkPolicyAllowlist = {
+  allowedDomains: string[];
+  domainSecrets?: ShellToolContainerNetworkPolicyDomainSecret[];
+  type: 'allowlist';
+};
+
+export type ShellToolContainerNetworkPolicyDisabled = {
+  type: 'disabled';
+};
+
+export type ShellToolContainerNetworkPolicy =
+  | ShellToolContainerNetworkPolicyAllowlist
+  | ShellToolContainerNetworkPolicyDisabled;
+
+export type ShellToolLocalEnvironment = {
+  type: 'local';
+  skills?: ShellToolLocalSkill[];
+};
+
+export type ShellToolContainerAutoEnvironment = {
+  type: 'container_auto';
+  fileIds?: string[];
+  memoryLimit?: '1g' | '4g' | '16g' | '64g' | null;
+  networkPolicy?: ShellToolContainerNetworkPolicy;
+  skills?: ShellToolContainerSkill[];
+};
+
+export type ShellToolContainerReferenceEnvironment = {
+  type: 'container_reference';
+  containerId: string;
+};
+
+export type ShellToolHostedEnvironment =
+  | ShellToolContainerAutoEnvironment
+  | ShellToolContainerReferenceEnvironment;
+
+export type ShellToolEnvironment =
+  | ShellToolLocalEnvironment
+  | ShellToolHostedEnvironment;
+
 export type ApplyPatchApprovalFunction = (
   runContext: RunContext,
   operation: ApplyPatchOperation,
@@ -494,16 +569,12 @@ export async function disposeResolvedComputers<Context>({
   }
 }
 
-export type ShellTool = {
+type ShellToolBase = {
   type: 'shell';
   /**
    * Public name exposed to the model. Defaults to `shell`.
    */
   name: string;
-  /**
-   * The shell implementation to execute commands.
-   */
-  shell: Shell;
   /**
    * Predicate determining whether this shell action requires approval.
    */
@@ -515,13 +586,153 @@ export type ShellTool = {
   onApproval?: ShellOnApprovalFunction;
 };
 
+type LocalShellTool = ShellToolBase & {
+  /**
+   * Optional for backward compatibility with direct `ShellTool` literals.
+   * When omitted, local mode is assumed.
+   */
+  environment?: ShellToolLocalEnvironment;
+  /**
+   * The shell implementation to execute commands in local mode.
+   */
+  shell: Shell;
+};
+
+type NormalizedLocalShellTool = Omit<LocalShellTool, 'environment'> & {
+  environment: ShellToolLocalEnvironment;
+};
+
+type HostedShellTool = ShellToolBase & {
+  environment: ShellToolHostedEnvironment;
+  /**
+   * Hosted environments do not accept local shell implementations.
+   */
+  shell?: never;
+};
+
+export type ShellTool = LocalShellTool | HostedShellTool;
+
+type LocalShellToolOptions = {
+  name?: string;
+  environment?: ShellToolLocalEnvironment;
+  shell: Shell;
+  needsApproval?: boolean | ShellApprovalFunction;
+  onApproval?: ShellOnApprovalFunction;
+};
+
+type HostedShellToolOptions = {
+  name?: string;
+  environment: ShellToolHostedEnvironment;
+  shell?: never;
+  needsApproval?: never;
+  onApproval?: never;
+};
+
+function normalizeShellToolSkillReference(
+  skill: ShellToolSkillReference,
+): ShellToolSkillReference {
+  if (!skill.skillId) {
+    throw new UserError('shellTool skill_reference requires a skillId.');
+  }
+
+  return skill;
+}
+
+function normalizeShellToolInlineSkill(
+  skill: ShellToolInlineSkill,
+): ShellToolInlineSkill {
+  const sourceCandidate = (skill as { source?: unknown }).source;
+  if (!sourceCandidate || typeof sourceCandidate !== 'object') {
+    throw new UserError('shellTool inline skill source is required.');
+  }
+
+  const source = sourceCandidate as ShellToolInlineSkillSource;
+  if (source.mediaType !== 'application/zip') {
+    throw new UserError(
+      'shellTool inline skill source.mediaType must be application/zip.',
+    );
+  }
+
+  return {
+    type: 'inline',
+    name: skill.name,
+    description: skill.description,
+    source: {
+      type: 'base64',
+      data: source.data,
+      mediaType: source.mediaType,
+    },
+  };
+}
+
+function normalizeShellToolContainerSkill(
+  skill: ShellToolContainerSkill,
+): ShellToolContainerSkill {
+  if (skill.type === 'skill_reference') {
+    return normalizeShellToolSkillReference(skill);
+  }
+
+  return normalizeShellToolInlineSkill(skill);
+}
+
+function normalizeShellToolContainerNetworkPolicy(
+  policy: ShellToolContainerNetworkPolicy | undefined,
+): ShellToolContainerNetworkPolicy | undefined {
+  if (!policy) {
+    return undefined;
+  }
+
+  if (policy.type === 'disabled') {
+    return policy;
+  }
+
+  return {
+    type: 'allowlist',
+    allowedDomains: policy.allowedDomains,
+    domainSecrets: policy.domainSecrets,
+  };
+}
+
+function normalizeShellToolEnvironment(
+  environment: ShellToolEnvironment | undefined,
+): ShellToolEnvironment {
+  if (!environment || environment.type === 'local') {
+    return environment ?? { type: 'local' };
+  }
+
+  if (environment.type === 'container_auto') {
+    return {
+      type: 'container_auto',
+      fileIds: environment.fileIds,
+      memoryLimit: environment.memoryLimit,
+      networkPolicy: normalizeShellToolContainerNetworkPolicy(
+        environment.networkPolicy,
+      ),
+      skills: environment.skills?.map(normalizeShellToolContainerSkill),
+    };
+  }
+
+  const containerId = environment.containerId;
+  if (!containerId) {
+    throw new UserError(
+      'shellTool with container_reference environment requires a containerId.',
+    );
+  }
+
+  return {
+    type: 'container_reference',
+    containerId,
+  };
+}
+
 export function shellTool(
-  options: Partial<Omit<ShellTool, 'type' | 'shell' | 'needsApproval'>> & {
-    shell: Shell;
-    needsApproval?: boolean | ShellApprovalFunction;
-    onApproval?: ShellOnApprovalFunction;
-  },
-): ShellTool {
+  options: LocalShellToolOptions,
+): NormalizedLocalShellTool;
+export function shellTool(options: HostedShellToolOptions): HostedShellTool;
+export function shellTool(
+  options: LocalShellToolOptions | HostedShellToolOptions,
+): NormalizedLocalShellTool | HostedShellTool {
+  const environment = normalizeShellToolEnvironment(options.environment);
   const needsApproval: ShellApprovalFunction =
     typeof options.needsApproval === 'function'
       ? options.needsApproval
@@ -530,12 +741,45 @@ export function shellTool(
             ? options.needsApproval
             : false;
 
+  if (environment.type === 'local') {
+    const localShell = options.shell;
+    if (!localShell) {
+      throw new UserError(
+        'shellTool with local environment requires a shell implementation.',
+      );
+    }
+
+    return {
+      type: 'shell',
+      name: options.name ?? 'shell',
+      environment,
+      shell: localShell,
+      needsApproval,
+      onApproval: options.onApproval,
+    };
+  }
+
+  if (typeof (options as { shell?: unknown }).shell !== 'undefined') {
+    throw new UserError(
+      'shellTool with hosted environment does not accept a shell implementation.',
+    );
+  }
+
+  if (
+    typeof (options as { needsApproval?: unknown }).needsApproval !==
+      'undefined' ||
+    typeof (options as { onApproval?: unknown }).onApproval !== 'undefined'
+  ) {
+    throw new UserError(
+      'shellTool with hosted environment does not support needsApproval or onApproval.',
+    );
+  }
+
   return {
     type: 'shell',
     name: options.name ?? 'shell',
-    shell: options.shell,
+    environment,
     needsApproval,
-    onApproval: options.onApproval,
   };
 }
 

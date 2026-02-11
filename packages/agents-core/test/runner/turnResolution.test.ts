@@ -203,6 +203,206 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
+  it('does not finalize when hosted shell is in progress in the same turn', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const hostedShell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const response: ModelResponse = {
+      output: [shellCall, fakeModelMessage('working')],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      textAgent,
+      [hostedShell],
+      [],
+    );
+
+    expect(processedResponse.shellActions).toHaveLength(0);
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('does not finalize when shell output is still in progress', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const hostedShell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'in_progress',
+      },
+    };
+    const response: ModelResponse = {
+      output: [shellCall, shellOutput, fakeModelMessage('still running')],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      textAgent,
+      [hostedShell],
+      [],
+    );
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(true);
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('finalizes stop_on_first_tool from function output even while hosted shell is pending', async () => {
+    const textAgent = new Agent({
+      name: 'TextAgent',
+      outputType: 'text',
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const hostedShell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'call_fn',
+      callId: 'call_fn',
+    };
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const response: ModelResponse = {
+      output: [functionCall, shellCall, fakeModelMessage('working')],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      textAgent,
+      [TEST_TOOL, hostedShell],
+      [],
+    );
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('Hello World');
+    }
+  });
+
+  it('finalizes when hosted shell is completed in the same turn', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const hostedShell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const response: ModelResponse = {
+      output: [shellCall, shellOutput, fakeModelMessage('done')],
+      usage: new Usage(),
+    } as any;
+
+    const processedResponse = processModelResponse(
+      response,
+      textAgent,
+      [hostedShell],
+      [],
+    );
+
+    expect(processedResponse.shellActions).toHaveLength(0);
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('done');
+    }
+  });
+
   it('returns final output when text agent has no tools pending', async () => {
     const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
     const response: ModelResponse = {
