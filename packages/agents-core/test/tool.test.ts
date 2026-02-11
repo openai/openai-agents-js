@@ -151,7 +151,168 @@ describe('Tool', () => {
     const t = shellTool({ shell });
     expect(t.type).toBe('shell');
     expect(t.name).toBe('shell');
+    expect(t.environment).toEqual({ type: 'local' });
     expect(t.shell).toBe(shell);
+  });
+
+  it('shellTool supports hosted container environments without local shell', () => {
+    const t = shellTool({
+      environment: { type: 'container_reference', containerId: 'cont_123' },
+    });
+    expect(t.environment).toEqual({
+      type: 'container_reference',
+      containerId: 'cont_123',
+    });
+    expect(t.shell).toBeUndefined();
+  });
+
+  it('shellTool normalizes container_auto options with inline skills', () => {
+    const t = shellTool({
+      environment: {
+        type: 'container_auto',
+        fileIds: ['file_123'],
+        memoryLimit: '4g',
+        networkPolicy: {
+          type: 'allowlist',
+          allowedDomains: ['example.com'],
+          domainSecrets: [
+            {
+              domain: 'example.com',
+              name: 'API_TOKEN',
+              value: 'secret',
+            },
+          ],
+        },
+        skills: [
+          {
+            type: 'inline',
+            name: 'csv-workbench',
+            description: 'Analyze CSV files.',
+            source: {
+              type: 'base64',
+              mediaType: 'application/zip',
+              data: 'ZmFrZS16aXA=',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(t.environment).toEqual({
+      type: 'container_auto',
+      fileIds: ['file_123'],
+      memoryLimit: '4g',
+      networkPolicy: {
+        type: 'allowlist',
+        allowedDomains: ['example.com'],
+        domainSecrets: [
+          {
+            domain: 'example.com',
+            name: 'API_TOKEN',
+            value: 'secret',
+          },
+        ],
+      },
+      skills: [
+        {
+          type: 'inline',
+          name: 'csv-workbench',
+          description: 'Analyze CSV files.',
+          source: {
+            type: 'base64',
+            mediaType: 'application/zip',
+            data: 'ZmFrZS16aXA=',
+          },
+        },
+      ],
+    });
+  });
+
+  it('shellTool rejects local mode without a shell implementation', () => {
+    expect(() => shellTool({ environment: { type: 'local' } } as any)).toThrow(
+      /requires a shell implementation/,
+    );
+  });
+
+  it('shellTool rejects container_reference without containerId', () => {
+    expect(() =>
+      shellTool({ environment: { type: 'container_reference' } as any }),
+    ).toThrow(/requires a containerId/);
+  });
+
+  it('shellTool rejects skill_reference without skillId', () => {
+    expect(() =>
+      shellTool({
+        environment: {
+          type: 'container_auto',
+          skills: [{ type: 'skill_reference' } as any],
+        },
+      }),
+    ).toThrow(/requires a skillId/);
+  });
+
+  it('shellTool rejects inline skill source with unsupported media type', () => {
+    expect(() =>
+      shellTool({
+        environment: {
+          type: 'container_auto',
+          skills: [
+            {
+              type: 'inline',
+              name: 'bad-inline',
+              description: 'invalid skill',
+              source: {
+                type: 'base64',
+                mediaType: 'application/json' as any,
+                data: 'eyJmb28iOiJiYXIifQ==',
+              },
+            },
+          ],
+        },
+      }),
+    ).toThrow(/must be application\/zip/);
+  });
+
+  it('shellTool rejects inline skill without a source object', () => {
+    expect(() =>
+      shellTool({
+        environment: {
+          type: 'container_auto',
+          skills: [
+            {
+              type: 'inline',
+              name: 'bad-inline',
+              description: 'invalid skill',
+            } as any,
+          ],
+        },
+      }),
+    ).toThrow(/source is required/);
+  });
+
+  it('shellTool rejects shell implementations for hosted environments', () => {
+    expect(() =>
+      shellTool({
+        environment: { type: 'container_reference', containerId: 'cont_123' },
+        shell: new FakeShell(),
+      } as any),
+    ).toThrow(/does not accept a shell implementation/);
+  });
+
+  it('shellTool rejects approval hooks for hosted environments', () => {
+    expect(() =>
+      shellTool({
+        environment: { type: 'container_reference', containerId: 'cont_123' },
+        needsApproval: true,
+      } as any),
+    ).toThrow(/does not support needsApproval or onApproval/);
+
+    expect(() =>
+      shellTool({
+        environment: { type: 'container_reference', containerId: 'cont_123' },
+        onApproval: async () => ({ approve: true }),
+      } as any),
+    ).toThrow(/does not support needsApproval or onApproval/);
   });
 
   it('shellTool needsApproval boolean becomes function', async () => {

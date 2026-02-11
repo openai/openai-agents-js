@@ -56,10 +56,12 @@ describe('serialize utilities', () => {
     const t: any = {
       type: 'shell',
       name: 'custom-shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
     };
     expect(serializeTool(t)).toEqual({
       type: 'shell',
       name: 'custom-shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
     });
   });
 

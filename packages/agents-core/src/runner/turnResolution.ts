@@ -885,6 +885,7 @@ async function maybeCompleteTurnFromToolResults<TContext>({
   );
 
   if (toolOutcome.isFinalOutput) {
+    // Intentional: explicit toolUseBehavior finalization (for example stop_on_first_tool) takes precedence even when other provider-managed work is still pending.
     return new SingleStepResult(
       originalInput,
       newResponse,

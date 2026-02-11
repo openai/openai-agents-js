@@ -117,7 +117,7 @@ async function main() {
     ],
   });
 
-  await withTrace('shell-tool-example', async () => {
+  await withTrace('local-shell-tool-example', async () => {
     const result = await run(agent, 'Show the Node.js version.');
 
     console.log(`${chalk.bold('Agent:')} ${chalk.cyan(result.finalOutput)}`);

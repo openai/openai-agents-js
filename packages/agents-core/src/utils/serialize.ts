@@ -43,6 +43,7 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
     return {
       type: 'shell',
       name: tool.name,
+      environment: tool.environment,
     };
   }
   if (tool.type === 'apply_patch') {

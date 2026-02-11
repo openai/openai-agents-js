@@ -8,6 +8,7 @@ import {
   RunReasoningItem,
   RunToolApprovalItem,
   RunToolCallItem,
+  RunToolCallOutputItem,
 } from '../items';
 import { ModelResponse } from '../model';
 import {
@@ -107,6 +108,21 @@ function resolveFunctionOrHandoff(
   return { type: 'function', tool: functionTool };
 }
 
+function isShellCallPendingStatus(status: unknown): boolean {
+  return status !== 'completed' && status !== 'incomplete';
+}
+
+function hasPendingShellOutputStatus(
+  output: protocol.ShellCallResultItem,
+): boolean {
+  const outputStatus =
+    (output as { status?: unknown }).status ?? output.providerData?.status;
+  if (typeof outputStatus !== 'string') {
+    return false;
+  }
+  return isShellCallPendingStatus(outputStatus);
+}
+
 /**
  * Walks a raw model response and classifies each item so the runner can schedule follow-up work.
  * Returns both the serializable RunItems (for history/streaming) and the actionable tool metadata.
@@ -122,6 +138,7 @@ export function processModelResponse<TContext>(
   const runFunctions: ToolRunFunction<TContext>[] = [];
   const runComputerActions: ToolRunComputer[] = [];
   const runShellActions: ToolRunShell[] = [];
+  let hasHostedShellCall = false;
   const runApplyPatchActions: ToolRunApplyPatch[] = [];
   const runMCPApprovalRequests: ToolRunMCPApprovalRequest[] = [];
   const toolsUsed: string[] = [];
@@ -216,20 +233,43 @@ export function processModelResponse<TContext>(
         }),
       });
     } else if (output.type === 'shell_call') {
-      handleToolCallAction({
-        output,
-        tool: shellTool,
-        agent,
-        errorMessage: 'Model produced shell action without a shell tool.',
-        errorData: { agent_name: agent.name },
-        items,
-        toolsUsed,
-        actions: runShellActions,
-        buildAction: (resolvedTool) => ({
-          toolCall: output,
-          shell: resolvedTool,
-        }),
+      const resolvedShellTool = ensureToolAvailable(
+        shellTool,
+        'Model produced shell action without a shell tool.',
+        { agent_name: agent.name },
+      );
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push(resolvedShellTool.name);
+      const shellEnvironmentType =
+        resolvedShellTool.environment?.type ?? 'local';
+
+      // Hosted container shell is executed by the API provider, so no local action is queued.
+      if (shellEnvironmentType !== 'local') {
+        if (isShellCallPendingStatus(output.status)) {
+          hasHostedShellCall = true;
+        }
+        continue;
+      }
+
+      if (!resolvedShellTool.shell) {
+        const message =
+          'Model produced local shell action without a local shell implementation.';
+        addErrorToCurrentSpan({
+          message,
+          data: { agent_name: agent.name },
+        });
+        throw new ModelBehaviorError(message);
+      }
+
+      runShellActions.push({
+        toolCall: output,
+        shell: resolvedShellTool,
       });
+    } else if (output.type === 'shell_call_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      if (hasPendingShellOutputStatus(output)) {
+        hasHostedShellCall = true;
+      }
     } else if (output.type === 'apply_patch_call') {
       handleToolCallAction({
         output,
@@ -294,6 +334,7 @@ export function processModelResponse<TContext>(
         runMCPApprovalRequests.length > 0 ||
         runComputerActions.length > 0 ||
         runShellActions.length > 0 ||
+        hasHostedShellCall ||
         runApplyPatchActions.length > 0
       );
     },

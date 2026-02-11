@@ -76,7 +76,192 @@ describe('converTool', () => {
 
   it('converts shell tools', () => {
     const t = converTool({ type: 'shell', name: 'shell' } as any);
-    expect(t.tool).toEqual({ type: 'shell' });
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: { type: 'local' },
+    });
+  });
+
+  it('converts shell tools with custom environment', () => {
+    const t = converTool({
+      type: 'shell',
+      name: 'shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: { type: 'container_reference', container_id: 'cont_123' },
+    });
+  });
+
+  it('converts shell container auto environment with camelCase fields', () => {
+    const t = converTool({
+      type: 'shell',
+      name: 'shell',
+      environment: {
+        type: 'container_auto',
+        fileIds: ['file-123'],
+        memoryLimit: '4g',
+        networkPolicy: {
+          type: 'allowlist',
+          allowedDomains: ['example.com'],
+          domainSecrets: [
+            { domain: 'example.com', name: 'TOKEN', value: 'secret' },
+          ],
+        },
+        skills: [
+          {
+            type: 'skill_reference',
+            skillId: 'skill_123',
+            version: 'latest',
+          },
+        ],
+      },
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: {
+        type: 'container_auto',
+        file_ids: ['file-123'],
+        memory_limit: '4g',
+        network_policy: {
+          type: 'allowlist',
+          allowed_domains: ['example.com'],
+          domain_secrets: [
+            { domain: 'example.com', name: 'TOKEN', value: 'secret' },
+          ],
+        },
+        skills: [
+          {
+            type: 'skill_reference',
+            skill_id: 'skill_123',
+            version: 'latest',
+          },
+        ],
+      },
+    });
+  });
+
+  it('converts shell container auto environment with inline skill payloads', () => {
+    const t = converTool({
+      type: 'shell',
+      name: 'shell',
+      environment: {
+        type: 'container_auto',
+        fileIds: ['file-123'],
+        memoryLimit: '1g',
+        networkPolicy: { type: 'disabled' },
+        skills: [
+          {
+            type: 'inline',
+            name: 'csv-workbench',
+            description: 'Analyze CSV files.',
+            source: {
+              type: 'base64',
+              mediaType: 'application/zip',
+              data: 'ZmFrZS16aXA=',
+            },
+          },
+        ],
+      },
+    } as any);
+
+    expect(t.tool).toEqual({
+      type: 'shell',
+      environment: {
+        type: 'container_auto',
+        file_ids: ['file-123'],
+        memory_limit: '1g',
+        network_policy: { type: 'disabled' },
+        skills: [
+          {
+            type: 'inline',
+            name: 'csv-workbench',
+            description: 'Analyze CSV files.',
+            source: {
+              type: 'base64',
+              media_type: 'application/zip',
+              data: 'ZmFrZS16aXA=',
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('rejects shell environments with snake_case fields', () => {
+    expect(() =>
+      converTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_reference',
+          container_id: 'cont_legacy',
+        },
+      } as any),
+    ).toThrow(/requires containerId/);
+  });
+
+  it('throws for invalid local shell skill definitions', () => {
+    expect(() =>
+      converTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'local',
+          skills: [
+            { name: 'csv-workbench', description: 'Analyze CSV files.' },
+          ],
+        },
+      } as any),
+    ).toThrow(/requires name, description, and path/);
+  });
+
+  it('throws for container_reference without container id', () => {
+    expect(() =>
+      converTool({
+        type: 'shell',
+        name: 'shell',
+        environment: { type: 'container_reference' },
+      } as any),
+    ).toThrow(/requires containerId/);
+  });
+
+  it('throws for invalid inline shell skill payloads', () => {
+    expect(() =>
+      converTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_auto',
+          skills: [
+            {
+              type: 'inline',
+              name: 'bad-inline',
+              description: 'bad',
+              source: {
+                type: 'base64',
+                mediaType: 'application/json',
+                data: 'eyJmb28iOiJiYXIifQ==',
+              },
+            },
+          ],
+        },
+      } as any),
+    ).toThrow(/must be application\/zip/);
+  });
+
+  it('throws for skill_reference payloads that omit skillId', () => {
+    expect(() =>
+      converTool({
+        type: 'shell',
+        name: 'shell',
+        environment: {
+          type: 'container_auto',
+          skills: [{ type: 'skill_reference', skill_id: 'skill_legacy' }],
+        },
+      } as any),
+    ).toThrow(/requires skillId/);
   });
 
   it('converts apply_patch tools', () => {
@@ -245,6 +430,12 @@ describe('getInputItems', () => {
           timeoutMs: 10,
           maxOutputLength: 5,
         },
+        providerData: {
+          environment: {
+            type: 'container_reference',
+            container_id: 'cont_123',
+          },
+        },
       },
       {
         type: 'shell_call_output',
@@ -289,6 +480,10 @@ describe('getInputItems', () => {
       type: 'shell_call',
       call_id: 's1',
       action: { commands: ['echo hi'], timeout_ms: 10, max_output_length: 5 },
+      environment: {
+        type: 'container_reference',
+        container_id: 'cont_123',
+      },
     });
     const shellCallOutput = items.find(
       (entry) => entry.type === 'shell_call_output',
@@ -352,6 +547,46 @@ describe('getInputItems', () => {
         },
       ],
     });
+  });
+
+  it('keeps only supported shell_call fields when replaying input items', () => {
+    const items = getInputItems([
+      {
+        type: 'shell_call',
+        id: 'sh3',
+        callId: 's3',
+        status: 'completed',
+        action: {
+          commands: ['echo ok'],
+        },
+        providerData: {
+          environment: {
+            type: 'container_reference',
+            containerId: 'cont_789',
+          },
+          created_by: 'api',
+          unexpected: 'value',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'shell_call',
+      id: 'sh3',
+      call_id: 's3',
+      status: 'completed',
+      action: {
+        commands: ['echo ok'],
+        timeout_ms: null,
+        max_output_length: null,
+      },
+      environment: {
+        type: 'container_reference',
+        container_id: 'cont_789',
+      },
+    });
+    expect((items[0] as any).created_by).toBeUndefined();
+    expect((items[0] as any).unexpected).toBeUndefined();
   });
 
   it('handles string and fallback outputs for function_call_result', () => {
@@ -692,20 +927,36 @@ describe('getInputItems', () => {
         type: 'hosted_tool_call',
         id: 'w',
         status: 'completed',
-        providerData: { type: 'web_search' },
+        providerData: {
+          type: 'web_search',
+          action: {
+            type: 'search',
+            query: 'latest sdk',
+            queries: ['latest sdk'],
+          },
+        },
       },
     ] as any);
-    expect(web[0]).toMatchObject({ type: 'web_search_call' });
+    expect(web[0]).toMatchObject({
+      type: 'web_search_call',
+      action: { type: 'search', query: 'latest sdk', queries: ['latest sdk'] },
+    });
 
     const webCall = getInputItems([
       {
         type: 'hosted_tool_call',
         id: 'w',
         status: 'completed',
-        providerData: { type: 'web_search_call' },
+        providerData: {
+          type: 'web_search_call',
+          action: { type: 'open_page', url: 'https://example.com' },
+        },
       },
     ] as any);
-    expect(webCall[0]).toMatchObject({ type: 'web_search_call' });
+    expect(webCall[0]).toMatchObject({
+      type: 'web_search_call',
+      action: { type: 'open_page', url: 'https://example.com' },
+    });
 
     const file = getInputItems([
       {
@@ -1125,6 +1376,38 @@ describe('getInputItems', () => {
         },
       ] as any),
     ).toThrow(UserError);
+  });
+
+  it('accepts web search call without action for backward compatibility', () => {
+    const items = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'w-missing-action',
+        providerData: { type: 'web_search_call' },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'web_search_call',
+      id: 'w-missing-action',
+      status: 'failed',
+    });
+    expect(items[0]).not.toHaveProperty('action');
+  });
+
+  it('errors when web search call action is malformed', () => {
+    expect(() =>
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'w-invalid-action',
+          providerData: {
+            type: 'web_search_call',
+            action: { query: 'latest sdk' },
+          },
+        },
+      ] as any),
+    ).toThrow(/invalid action/);
   });
 
   it('errors on unsupported built-in tool', () => {
