@@ -8,6 +8,7 @@ import {
   resolveComputer,
   disposeResolvedComputers,
 } from '../src/tool';
+import type { ShellTool } from '../src/tool';
 import { z } from 'zod';
 import { Computer } from '../src';
 import { Agent } from '../src/agent';
@@ -153,6 +154,16 @@ describe('Tool', () => {
     expect(t.name).toBe('shell');
     expect(t.environment).toEqual({ type: 'local' });
     expect(t.shell).toBe(shell);
+  });
+
+  it('ShellTool keeps local environment optional for compatibility', () => {
+    const legacyTool: ShellTool = {
+      type: 'shell',
+      name: 'shell',
+      shell: new FakeShell(),
+      needsApproval: async () => false,
+    };
+    expect(legacyTool.environment).toBeUndefined();
   });
 
   it('shellTool supports hosted container environments without local shell', () => {

@@ -576,10 +576,6 @@ type ShellToolBase = {
    */
   name: string;
   /**
-   * The execution environment for the shell tool.
-   */
-  environment: ShellToolEnvironment;
-  /**
    * Predicate determining whether this shell action requires approval.
    */
   needsApproval: ShellApprovalFunction;
@@ -591,7 +587,11 @@ type ShellToolBase = {
 };
 
 type LocalShellTool = ShellToolBase & {
-  environment: ShellToolLocalEnvironment;
+  /**
+   * Optional for backward compatibility with direct `ShellTool` literals.
+   * When omitted, local mode is assumed.
+   */
+  environment?: ShellToolLocalEnvironment;
   /**
    * The shell implementation to execute commands in local mode.
    */
