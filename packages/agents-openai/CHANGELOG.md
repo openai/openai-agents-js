@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.4.7
+
+### Patch Changes
+
+- d3aa44f: feat: support shell tool environment selection for local and container runtimes
+- 59fa0a8: fix: omit named tool_choice when prompt-managed tools are used without local tools.
+- Updated dependencies [219a361]
+- Updated dependencies [d3aa44f]
+  - @openai/agents-core@0.4.7
+
 ## 0.4.6
 
 ### Patch Changes

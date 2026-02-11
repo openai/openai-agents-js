@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.4.7
+
+### Patch Changes
+
+- 219a361: fix: preserve ShellTool compatibility while keeping factory environment and hosted polling
+- d3aa44f: feat: support shell tool environment selection for local and container runtimes
+
 ## 0.4.6
 
 ### Patch Changes
