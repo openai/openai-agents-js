@@ -187,6 +187,7 @@ export type SerializedComputerTool = {
 export type SerializedShellTool = {
   type: ShellTool['type'];
   name: ShellTool['name'];
+  environment?: ShellTool['environment'];
 };
 
 export type SerializedApplyPatchTool = {

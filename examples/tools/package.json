@@ -21,7 +21,10 @@
     "start:web-search-filters": "tsx web-search-filters.ts",
     "start:code-interpreter": "tsx code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts",
-    "start:shell": "tsx shell.ts",
+    "start:shell": "tsx local-shell.ts",
+    "start:local-shell": "tsx local-shell.ts",
+    "start:container-shell": "tsx container-shell-skill-ref.ts",
+    "start:container-shell-inline": "tsx container-shell-inline-skill.ts",
     "start:apply-patch": "tsx apply-patch.ts"
   }
 }

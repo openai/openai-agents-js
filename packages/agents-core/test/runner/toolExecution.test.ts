@@ -954,6 +954,42 @@ describe('empty execution helpers', () => {
   });
 });
 describe('executeShellActions', () => {
+  it('skips malformed local shell actions without implementation', async () => {
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const mockLogger = createMockLogger();
+    const results = await executeShellActions(
+      agent,
+      [
+        {
+          toolCall,
+          shell: {
+            type: 'shell',
+            name: 'shell',
+            environment: { type: 'local' },
+            needsApproval: async () => false,
+          },
+        } as any,
+      ],
+      runner,
+      runContext,
+      mockLogger,
+    );
+
+    expect(results).toEqual([]);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'Skipping shell action for tool "shell" because no local shell implementation is configured.',
+    );
+  });
+
   it('runs shell commands and truncates output when maxOutputLength provided', async () => {
     const shell = new FakeShell();
     shell.result = {

@@ -43,6 +43,8 @@
     "examples:tools-file-search": "pnpm -F tools start:file-search",
     "examples:tools-web-search": "pnpm -F tools start:web-search",
     "examples:tools-shell": "pnpm -F tools start:shell",
+    "examples:tools-container-shell": "pnpm -F tools start:container-shell",
+    "examples:tools-container-shell-inline": "pnpm -F tools start:container-shell-inline",
     "examples:tools-apply-patch": "pnpm -F tools start:apply-patch",
     "examples:start-all": "node scripts/run-example-starts.mjs",
     "examples:tool-filter": "tsx examples/mcp/tool-filter-example.ts",

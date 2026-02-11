@@ -686,6 +686,12 @@ export async function executeShellActions(
   for (const action of actions) {
     const shellTool = action.shell;
     const toolCall = action.toolCall;
+    if (!shellTool.shell) {
+      _logger.warn(
+        `Skipping shell action for tool "${shellTool.name}" because no local shell implementation is configured.`,
+      );
+      continue;
+    }
     const approvalItem = new RunToolApprovalItem(
       toolCall,
       agent,
