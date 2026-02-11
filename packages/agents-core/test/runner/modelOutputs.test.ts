@@ -160,11 +160,58 @@ describe('processModelResponse', () => {
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 
+  it('keeps hosted shell calls pending when status is omitted', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
   it('does not keep hosted shell calls pending when incomplete', () => {
     const shellCall: protocol.ShellCallItem = {
       type: 'shell_call',
       callId: 'call_shell',
       status: 'incomplete',
+      action: { commands: ['echo hi'] },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellCall],
+      usage: new Usage(),
+    };
+
+    const shell = shellTool({
+      environment: { type: 'container_auto' },
+    });
+    const result = processModelResponse(modelResponse, TEST_AGENT, [shell], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.shellActions).toHaveLength(0);
+    expect(result.toolsUsed).toEqual(['shell']);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('does not keep hosted shell calls pending on unknown status values', () => {
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'queued' as any,
       action: { commands: ['echo hi'] },
     };
     const modelResponse: ModelResponse = {
@@ -237,6 +284,35 @@ describe('processModelResponse', () => {
     expect(result.newItems[0].rawItem).toEqual(shellOutput);
     expect(result.toolsUsed).toEqual([]);
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('does not keep hosted shell pending on unknown shell_call_output status values', () => {
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'call_shell',
+      output: [
+        {
+          stdout: 'partial',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+      providerData: {
+        status: 'queued',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [shellOutput],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.newItems[0].rawItem).toEqual(shellOutput);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
   });
 
   it('throws when shell action emitted without shell tool', () => {

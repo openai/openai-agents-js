@@ -108,8 +108,24 @@ function resolveFunctionOrHandoff(
   return { type: 'function', tool: functionTool };
 }
 
+type ShellCallStatus = 'in_progress' | 'completed' | 'incomplete';
+
+function parseShellCallStatus(status: unknown): ShellCallStatus | undefined {
+  if (
+    status === 'in_progress' ||
+    status === 'completed' ||
+    status === 'incomplete'
+  ) {
+    return status;
+  }
+  return undefined;
+}
+
 function isShellCallPendingStatus(status: unknown): boolean {
-  return status !== 'completed' && status !== 'incomplete';
+  if (typeof status === 'undefined') {
+    return true;
+  }
+  return parseShellCallStatus(status) === 'in_progress';
 }
 
 function hasPendingShellOutputStatus(

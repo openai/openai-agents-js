@@ -576,10 +576,6 @@ type ShellToolBase = {
    */
   name: string;
   /**
-   * The execution environment for the shell tool.
-   */
-  environment: ShellToolEnvironment;
-  /**
    * Predicate determining whether this shell action requires approval.
    */
   needsApproval: ShellApprovalFunction;
@@ -591,11 +587,19 @@ type ShellToolBase = {
 };
 
 type LocalShellTool = ShellToolBase & {
-  environment: ShellToolLocalEnvironment;
+  /**
+   * Optional for backward compatibility with direct `ShellTool` literals.
+   * When omitted, local mode is assumed.
+   */
+  environment?: ShellToolLocalEnvironment;
   /**
    * The shell implementation to execute commands in local mode.
    */
   shell: Shell;
+};
+
+type NormalizedLocalShellTool = Omit<LocalShellTool, 'environment'> & {
+  environment: ShellToolLocalEnvironment;
 };
 
 type HostedShellTool = ShellToolBase & {
@@ -721,11 +725,13 @@ function normalizeShellToolEnvironment(
   };
 }
 
-export function shellTool(options: LocalShellToolOptions): ShellTool;
-export function shellTool(options: HostedShellToolOptions): ShellTool;
+export function shellTool(
+  options: LocalShellToolOptions,
+): NormalizedLocalShellTool;
+export function shellTool(options: HostedShellToolOptions): HostedShellTool;
 export function shellTool(
   options: LocalShellToolOptions | HostedShellToolOptions,
-): ShellTool {
+): NormalizedLocalShellTool | HostedShellTool {
   const environment = normalizeShellToolEnvironment(options.environment);
   const needsApproval: ShellApprovalFunction =
     typeof options.needsApproval === 'function'
