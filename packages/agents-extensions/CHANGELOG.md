@@ -1,5 +1,15 @@
 # @openai/agents-extensions
 
+## 0.4.7
+
+### Patch Changes
+
+- 6d202c3: fix(agents-extensions): #945 map AI SDK cacheRead usage to cached_tokens
+- Updated dependencies [219a361]
+- Updated dependencies [d3aa44f]
+  - @openai/agents-core@0.4.7
+  - @openai/agents@0.4.7
+
 ## 0.4.6
 
 ### Patch Changes
