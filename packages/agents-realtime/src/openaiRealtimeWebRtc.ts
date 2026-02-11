@@ -221,10 +221,17 @@ export class OpenAIRealtimeWebRTC
           const finish = () => {
             if (resolved) return;
             resolved = true;
+            clearTimeout(timeoutId);
             dataChannel.removeEventListener('message', onConfigAck);
-            // If the transport was closed/errored while waiting, reject
-            // so the connect() promise doesn't hang.
-            if (this.#state.status !== 'connected') {
+            dataChannel.removeEventListener('close', onClose);
+            // Reject if the transport was closed/errored while waiting,
+            // the dataChannel is no longer open, or a different connection
+            // attempt is now active (stale timeout from an earlier connect).
+            if (
+              this.#state.status !== 'connected' ||
+              this.#state.dataChannel !== dataChannel ||
+              dataChannel.readyState !== 'open'
+            ) {
               reject(
                 new Error(
                   'Connection closed before session config was acknowledged',
@@ -242,10 +249,14 @@ export class OpenAIRealtimeWebRTC
               finish();
             }
           };
+          const onClose = () => {
+            finish();
+          };
           dataChannel.addEventListener('message', onConfigAck);
+          dataChannel.addEventListener('close', onClose);
           this.updateSessionConfig(userSessionConfig);
           // Hard timeout — if the server never acks, don't hang forever.
-          setTimeout(() => {
+          const timeoutId = setTimeout(() => {
             if (!resolved) {
               logger.warn(
                 'Timed out waiting for session.updated ack — resolving connect() anyway',

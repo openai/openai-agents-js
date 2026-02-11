@@ -21,6 +21,7 @@ class FakeRTCDataChannel extends EventTarget {
   }
   close() {
     this.readyState = 'closed';
+    this.dispatchEvent(new Event('close'));
   }
 }
 
@@ -519,6 +520,7 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     }
     close() {
       this.readyState = 'closed';
+      this.dispatchEvent(new Event('close'));
     }
   }
 
@@ -666,11 +668,12 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     // Flush microtasks so the data channel 'open' fires
     await vi.advanceTimersByTimeAsync(0);
 
-    // close() while waiting for session.updated ack
+    // close() while waiting for session.updated ack — the dataChannel 'close'
+    // event triggers immediate rejection instead of waiting for the 5s timeout
     rtc.close();
 
-    // Advance past the timeout so finish() fires
-    await vi.advanceTimersByTimeAsync(5000);
+    // Flush microtasks
+    await vi.advanceTimersByTimeAsync(0);
 
     await rejection;
     expect(rtc.status).toBe('disconnected');
