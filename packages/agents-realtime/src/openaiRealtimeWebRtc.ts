@@ -96,6 +96,7 @@ export class OpenAIRealtimeWebRTC
   #useInsecureApiKey: boolean;
   #ongoingResponse: boolean = false;
   #muted = false;
+  #connectPromise: Promise<void> | undefined;
 
   constructor(private readonly options: OpenAIRealtimeWebRTCOptions = {}) {
     if (typeof RTCPeerConnection === 'undefined') {
@@ -150,9 +151,13 @@ export class OpenAIRealtimeWebRTC
     }
 
     if (this.#state.status === 'connecting') {
+      if (this.#connectPromise) {
+        return this.#connectPromise;
+      }
       logger.warn(
-        'Realtime connection already in progress. Please await original promise',
+        'Realtime connection already in progress but no promise found',
       );
+      return;
     }
 
     const model = options.model ?? this.currentModel;
@@ -168,7 +173,7 @@ export class OpenAIRealtimeWebRTC
     }
 
     // eslint-disable-next-line no-async-promise-executor
-    return new Promise<void>(async (resolve, reject) => {
+    this.#connectPromise = new Promise<void>(async (resolve, reject) => {
       try {
         const userSessionConfig: Partial<RealtimeSessionConfig> = {
           ...(options.initialSessionConfig || {}),
@@ -208,7 +213,7 @@ export class OpenAIRealtimeWebRTC
 
         dataChannel.addEventListener('open', () => {
           this.#state = {
-            status: 'connected',
+            status: 'connecting',
             peerConnection,
             dataChannel,
             callId,
@@ -228,7 +233,7 @@ export class OpenAIRealtimeWebRTC
             // the dataChannel is no longer open, or a different connection
             // attempt is now active (stale timeout from an earlier connect).
             if (
-              this.#state.status !== 'connected' ||
+              this.#state.status !== 'connecting' ||
               this.#state.dataChannel !== dataChannel ||
               dataChannel.readyState !== 'open'
             ) {
@@ -245,6 +250,12 @@ export class OpenAIRealtimeWebRTC
               );
               return;
             }
+            this.#state = {
+              status: 'connected',
+              peerConnection,
+              dataChannel,
+              callId,
+            };
             this.emit('connection_change', this.#state.status);
             this._onOpen();
             resolve();
@@ -361,7 +372,10 @@ export class OpenAIRealtimeWebRTC
         this._onError(error);
         reject(error);
       }
+    }).finally(() => {
+      this.#connectPromise = undefined;
     });
+    return this.#connectPromise;
   }
 
   /**
