@@ -283,6 +283,34 @@ export class OpenAIRealtimeWebRTC
           }, 5000);
           dataChannel.addEventListener('message', onConfigAck);
           dataChannel.addEventListener('close', onClose);
+
+          // Register the general message handler AFTER onConfigAck so that
+          // finish() resolves connect() before _onMessage emits the
+          // session.updated event to external listeners.
+          dataChannel.addEventListener('message', (event) => {
+            this._onMessage(event);
+            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
+            if (!parsed || isGeneric) {
+              return;
+            }
+
+            if (parsed.type === 'response.created') {
+              this.#ongoingResponse = true;
+            } else if (parsed.type === 'response.done') {
+              this.#ongoingResponse = false;
+            }
+
+            if (parsed.type === 'session.created') {
+              this._tracingConfig = parsed.session.tracing;
+              // Trying to turn on tracing after the session is created
+              const tracingConfig =
+                typeof userSessionConfig.tracing === 'undefined'
+                  ? 'auto'
+                  : userSessionConfig.tracing;
+              this._updateTracingConfig(tracingConfig);
+            }
+          });
+
           this.updateSessionConfig(userSessionConfig);
         });
 
@@ -290,30 +318,6 @@ export class OpenAIRealtimeWebRTC
           this.close();
           this._onError(event);
           reject(event);
-        });
-
-        dataChannel.addEventListener('message', (event) => {
-          this._onMessage(event);
-          const { data: parsed, isGeneric } = parseRealtimeEvent(event);
-          if (!parsed || isGeneric) {
-            return;
-          }
-
-          if (parsed.type === 'response.created') {
-            this.#ongoingResponse = true;
-          } else if (parsed.type === 'response.done') {
-            this.#ongoingResponse = false;
-          }
-
-          if (parsed.type === 'session.created') {
-            this._tracingConfig = parsed.session.tracing;
-            // Trying to turn on tracing after the session is created
-            const tracingConfig =
-              typeof userSessionConfig.tracing === 'undefined'
-                ? 'auto'
-                : userSessionConfig.tracing;
-            this._updateTracingConfig(tracingConfig);
-          }
         });
 
         // set up audio playback
