@@ -127,6 +127,7 @@ export type SpanOptions<TData extends SpanData> = {
   spanId?: string;
   parentId?: string;
   data: TData;
+  traceMetadata?: Record<string, any>;
   startedAt?: string;
   endedAt?: string;
   error?: SpanError;
@@ -145,6 +146,7 @@ export class Span<TData extends SpanData> {
   #traceId: string;
   #spanId: string;
   #parentId: string | null;
+  #traceMetadata: Record<string, any> | undefined;
   #processor: TracingProcessor;
   #startedAt: string | null;
   #endedAt: string | null;
@@ -159,6 +161,7 @@ export class Span<TData extends SpanData> {
     this.#data = options.data;
     this.#processor = processor;
     this.#parentId = options.parentId ?? null;
+    this.#traceMetadata = options.traceMetadata;
     this.#error = options.error ?? null;
     this.#startedAt = options.startedAt ?? null;
     this.#endedAt = options.endedAt ?? null;
@@ -171,6 +174,10 @@ export class Span<TData extends SpanData> {
 
   get spanData() {
     return this.#data;
+  }
+
+  get traceMetadata() {
+    return this.#traceMetadata;
   }
 
   get spanId() {
@@ -236,6 +243,7 @@ export class Span<TData extends SpanData> {
         spanId: this.spanId,
         parentId: this.parentId ?? undefined,
         data: this.spanData,
+        traceMetadata: this.traceMetadata,
         startedAt: this.#startedAt ?? undefined,
         endedAt: this.#endedAt ?? undefined,
         error: this.#error ?? undefined,

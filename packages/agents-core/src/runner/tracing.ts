@@ -75,6 +75,9 @@ export function applyTraceOverrides(
   const tracingApiKeyOverride =
     overrides.tracingApiKey !== undefined &&
     overrides.tracingApiKey !== trace.tracingApiKey;
+  const traceMetadataOverride =
+    overrides.traceMetadata !== undefined &&
+    overrides.traceMetadata !== trace.metadata;
 
   if (overrides.traceId !== undefined) {
     trace.traceId = overrides.traceId;
@@ -92,7 +95,10 @@ export function applyTraceOverrides(
     trace.tracingApiKey = overrides.tracingApiKey;
   }
 
-  if (currentSpan && (traceIdOverride || tracingApiKeyOverride)) {
+  if (
+    currentSpan &&
+    (traceIdOverride || tracingApiKeyOverride || traceMetadataOverride)
+  ) {
     return { trace, currentSpan: rebaseSpanChain(currentSpan, trace) };
   }
 

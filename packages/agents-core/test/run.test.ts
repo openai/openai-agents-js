@@ -699,6 +699,9 @@ describe('Runner.run', () => {
       expect(resumed.state._currentAgentSpan?.traceId).toBe(
         'override-trace-id',
       );
+      expect(resumed.state._currentAgentSpan?.traceMetadata).toEqual({
+        source: 'runner',
+      });
       expect(resumed.state._currentAgentSpan?.tracingApiKey).toBe(
         'override-key',
       );
