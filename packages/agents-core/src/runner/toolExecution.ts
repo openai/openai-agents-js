@@ -7,7 +7,7 @@ import type {
 } from '../types/protocol';
 import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
-import { ToolCallError, UserError } from '../errors';
+import { ToolCallError, ToolTimeoutError, UserError } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffOutputItem,
@@ -23,6 +23,7 @@ import {
   ComputerSafetyCheck,
   ComputerSafetyCheckResult,
   FunctionToolResult,
+  invokeFunctionTool,
   resolveComputer,
   Tool,
 } from '../tool';
@@ -199,6 +200,11 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     );
     return results;
   } catch (e: unknown) {
+    if (e instanceof ToolTimeoutError) {
+      e.state ??= state;
+      throw e;
+    }
+
     throw new ToolCallError(
       `Failed to run function tools: ${e}`,
       e as Error,
@@ -376,11 +382,12 @@ async function runApprovedFunctionTool<TContext>(
             toolRun.tool.name,
             toolRun.toolCall.callId,
           );
-          toolOutput = await toolRun.tool.invoke(
-            state._context,
-            toolRun.toolCall.arguments,
-            { toolCall: toolRun.toolCall, resumeState },
-          );
+          toolOutput = await invokeFunctionTool({
+            tool: toolRun.tool,
+            runContext: state._context,
+            input: toolRun.toolCall.arguments,
+            details: { toolCall: toolRun.toolCall, resumeState },
+          });
           toolOutput = await runToolOutputGuardrails({
             guardrails: toolRun.tool.outputGuardrails,
             context: state._context,

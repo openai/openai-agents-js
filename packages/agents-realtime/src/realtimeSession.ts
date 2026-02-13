@@ -8,6 +8,7 @@ import {
   RunContext,
   Usage,
   RunToolApprovalItem,
+  invokeFunctionTool,
   type FunctionTool,
   type ToolErrorFormatter,
 } from '@openai/agents-core';
@@ -640,8 +641,13 @@ export class RealtimeSession<
     const result =
       inputGuardrailResult.type === 'reject'
         ? inputGuardrailResult.message
-        : await tool.invoke(this.#context, toolCall.arguments, {
-            toolCall,
+        : await invokeFunctionTool({
+            tool,
+            runContext: this.#context,
+            input: toolCall.arguments,
+            details: {
+              toolCall,
+            },
           });
     const guardedResult =
       inputGuardrailResult.type === 'reject'

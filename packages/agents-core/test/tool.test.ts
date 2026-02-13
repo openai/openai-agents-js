@@ -3,6 +3,7 @@ import {
   applyPatchTool,
   computerTool,
   hostedMcpTool,
+  invokeFunctionTool,
   shellTool,
   tool,
   resolveComputer,
@@ -14,6 +15,7 @@ import { Computer } from '../src';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { FakeEditor, FakeShell } from './stubs';
+import { ToolTimeoutError } from '../src/errors';
 
 interface Bar {
   bar: string;
@@ -556,5 +558,361 @@ describe('tool.invoke', () => {
 
     expect(enabled).toBe(true);
     expect(disabled).toBe(false);
+  });
+
+  it('returns a default timeout message when timeoutMs is exceeded', async () => {
+    const t = tool({
+      name: 'slow',
+      description: 'slow',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+    });
+
+    expect(result).toBe("Tool 'slow' timed out after 5ms.");
+  });
+
+  it('enforces timeout when invoking FunctionTool directly', async () => {
+    const t = tool({
+      name: 'direct_slow',
+      description: 'slow direct invoke',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+
+    const result = await t.invoke(new RunContext(), '{}');
+
+    expect(result).toBe("Tool 'direct_slow' timed out after 5ms.");
+  });
+
+  it('uses timeoutErrorFunction when timeoutBehavior is error_as_result', async () => {
+    const timeoutErrorFunction = vi.fn((_ctx, error: ToolTimeoutError) => {
+      return `timeout:${error.toolName}:${error.timeoutMs}`;
+    });
+    const t = tool({
+      name: 'slow',
+      description: 'slow',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutErrorFunction,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+    });
+
+    expect(result).toBe('timeout:slow:5');
+    expect(timeoutErrorFunction).toHaveBeenCalledTimes(1);
+  });
+
+  it('raises ToolTimeoutError when timeoutBehavior is raise_exception', async () => {
+    const t = tool({
+      name: 'slow',
+      description: 'slow',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutBehavior: 'raise_exception',
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+
+    await expect(
+      invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+      }),
+    ).rejects.toBeInstanceOf(ToolTimeoutError);
+  });
+
+  it('raises ToolTimeoutError when invoking FunctionTool directly with raise_exception', async () => {
+    const t = tool({
+      name: 'direct_raise',
+      description: 'direct invoke with raise_exception',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutBehavior: 'raise_exception',
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+
+    await expect(t.invoke(new RunContext(), '{}')).rejects.toBeInstanceOf(
+      ToolTimeoutError,
+    );
+  });
+
+  it('aborts the invocation signal when timeoutMs is exceeded', async () => {
+    let abortReason: unknown;
+    const t = tool({
+      name: 'abortable_slow_tool',
+      description: 'slow and abortable',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async (_args, _context, details) => {
+        details?.signal?.addEventListener(
+          'abort',
+          () => {
+            abortReason = details.signal?.reason;
+          },
+          { once: true },
+        );
+
+        await new Promise<void>(() => {
+          // Intentionally keep pending to assert timeout-driven cancellation.
+        });
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+      details: {
+        toolCall: {
+          type: 'function_call',
+          name: 'abortable_slow_tool',
+          callId: 'call-timeout',
+          status: 'completed',
+          arguments: '{}',
+        },
+      },
+    });
+
+    expect(result).toBe("Tool 'abortable_slow_tool' timed out after 5ms.");
+    expect(abortReason).toBeInstanceOf(ToolTimeoutError);
+  });
+
+  it('passes timeout abort signals even when details are omitted', async () => {
+    let abortReason: unknown;
+    let receivedSignal = false;
+    let callIdFromDetails: string | undefined;
+    const t = tool({
+      name: 'abortable_without_details',
+      description: 'slow and abortable without invocation details',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async (_args, _context, details) => {
+        callIdFromDetails = details?.toolCall?.callId;
+
+        if (details?.signal) {
+          receivedSignal = true;
+          details.signal.addEventListener(
+            'abort',
+            () => {
+              abortReason = details.signal?.reason;
+            },
+            { once: true },
+          );
+        }
+
+        await new Promise<void>(() => {
+          // Intentionally keep pending to assert timeout-driven cancellation.
+        });
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+    });
+
+    expect(result).toBe(
+      "Tool 'abortable_without_details' timed out after 5ms.",
+    );
+    expect(receivedSignal).toBe(true);
+    expect(callIdFromDetails).toBeUndefined();
+    expect(abortReason).toBeInstanceOf(ToolTimeoutError);
+  });
+
+  it('keeps timeout behavior when tools resolve synchronously on abort', async () => {
+    const t = tool({
+      name: 'abort_resolving_tool',
+      description: 'tool that resolves immediately when aborted',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async (_args, _context, details) => {
+        await new Promise<string>((resolve) => {
+          details?.signal?.addEventListener(
+            'abort',
+            () => {
+              resolve('resolved-on-abort');
+            },
+            { once: true },
+          );
+        });
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+      details: {
+        toolCall: {
+          type: 'function_call',
+          name: 'abort_resolving_tool',
+          callId: 'call-timeout-abort-resolve',
+          status: 'completed',
+          arguments: '{}',
+        },
+      },
+    });
+
+    expect(result).toBe("Tool 'abort_resolving_tool' timed out after 5ms.");
+  });
+
+  it('treats timeout-triggered abort rejections as timeout outcomes', async () => {
+    const timeoutErrorFunction = vi.fn(() => 'timed-out');
+    const t = tool({
+      name: 'abort_rejecting_tool',
+      description: 'tool that rejects on abort',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutErrorFunction,
+      execute: async (_args, _context, details) => {
+        await new Promise<never>((_, reject) => {
+          details?.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(new Error('tool aborted'));
+            },
+            { once: true },
+          );
+        });
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+      details: {
+        toolCall: {
+          type: 'function_call',
+          name: 'abort_rejecting_tool',
+          callId: 'call-timeout-reject',
+          status: 'completed',
+          arguments: '{}',
+        },
+      },
+    });
+
+    expect(result).toBe('timed-out');
+    expect(timeoutErrorFunction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not run errorFunction after timeout handling has already won', async () => {
+    const timeoutErrorFunction = vi.fn(() => 'timed-out');
+    const errorFunction = vi.fn(() => 'tool-error-result');
+    const t = tool({
+      name: 'abort_rejecting_tool_without_error_side_effects',
+      description: 'tool that rejects on abort after timeout resolves',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutErrorFunction,
+      errorFunction,
+      execute: async (_args, _context, details) => {
+        await new Promise<never>((_, reject) => {
+          details?.signal?.addEventListener(
+            'abort',
+            () => {
+              setTimeout(() => reject(new Error('tool aborted')), 0);
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+      details: {
+        toolCall: {
+          type: 'function_call',
+          name: 'abort_rejecting_tool_without_error_side_effects',
+          callId: 'call-timeout-reject-side-effects',
+          status: 'completed',
+          arguments: '{}',
+        },
+      },
+    });
+
+    expect(result).toBe('timed-out');
+    expect(timeoutErrorFunction).toHaveBeenCalledTimes(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(errorFunction).not.toHaveBeenCalled();
+  });
+
+  it('validates timeoutMs and timeoutErrorFunction options', () => {
+    expect(() =>
+      tool({
+        name: 'bad-timeout',
+        description: 'bad-timeout',
+        parameters: z.object({}),
+        timeoutMs: 0,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/timeoutMs must be greater than 0/);
+
+    expect(() =>
+      tool({
+        name: 'bad-timeout-max',
+        description: 'bad-timeout-max',
+        parameters: z.object({}),
+        timeoutMs: 2_147_483_648,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/timeoutMs must be less than or equal to 2147483647/);
+
+    expect(() =>
+      tool({
+        name: 'bad-timeout-fn',
+        description: 'bad-timeout-fn',
+        parameters: z.object({}),
+        timeoutErrorFunction: 'not-a-function' as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/timeoutErrorFunction must be a function/);
+
+    expect(() =>
+      tool({
+        name: 'bad-timeout-behavior',
+        description: 'bad-timeout-behavior',
+        parameters: z.object({}),
+        timeoutBehavior: 'unsupported' as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/timeoutBehavior must be one of/);
   });
 });

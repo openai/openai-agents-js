@@ -171,6 +171,57 @@ type AgentTool<
   ) => AgentTool<TContext, TAgent, TParameters>;
 };
 
+function combineAbortSignals(...signals: (AbortSignal | undefined)[]): {
+  signal?: AbortSignal;
+  cleanup: () => void;
+} {
+  const activeSignals = signals.filter(Boolean) as AbortSignal[];
+  if (activeSignals.length === 0) {
+    return {
+      cleanup: () => {},
+    };
+  }
+
+  const anyFn = (AbortSignal as any).any;
+  if (typeof anyFn === 'function') {
+    try {
+      return {
+        signal: anyFn(activeSignals),
+        cleanup: () => {},
+      };
+    } catch {
+      // Fall back to manual signal composition for runtimes without AbortSignal.any support.
+    }
+  }
+
+  const controller = new AbortController();
+  const listeners: Array<{ signal: AbortSignal; handler: () => void }> = [];
+  const abortCombined = (reason: unknown) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+    }
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abortCombined(signal.reason);
+      break;
+    }
+    const handler = () => abortCombined(signal.reason);
+    signal.addEventListener('abort', handler, { once: true });
+    listeners.push({ signal, handler });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const listener of listeners) {
+        listener.signal.removeEventListener('abort', listener.handler);
+      }
+    },
+  };
+}
+
 export type ToolUseBehaviorFlags = 'run_llm_again' | 'stop_on_first_tool';
 
 export type ToolsToFinalOutputResult =
@@ -739,84 +790,101 @@ export class Agent<
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
           typeof onStream === 'function' || eventHandlers.size > 0;
+        const configuredSignal = runOptions?.signal;
+        const toolCallSignal = details?.signal;
+        const { signal: combinedSignal, cleanup: cleanupSignalListeners } =
+          configuredSignal && toolCallSignal
+            ? combineAbortSignals(configuredSignal, toolCallSignal)
+            : {
+                signal: toolCallSignal ?? configuredSignal,
+                cleanup: () => {},
+              };
         const runOptionsWithContext = {
           ...(runOptions ?? {}),
           context: runContext,
+          ...(combinedSignal ? { signal: combinedSignal } : {}),
         };
-        const result = shouldStream
-          ? await runner.run(this, runInput, {
-              ...runOptionsWithContext,
-              stream: true,
-            })
-          : await runner.run(this, runInput, {
-              ...runOptionsWithContext,
-            });
-        const streamPayload = {
-          agent: this,
-          toolCall: details?.toolCall,
-        };
+        try {
+          const result = shouldStream
+            ? await runner.run(this, runInput, {
+                ...runOptionsWithContext,
+                stream: true,
+              })
+            : await runner.run(this, runInput, {
+                ...runOptionsWithContext,
+              });
+          const streamPayload = {
+            agent: this,
+            toolCall: details?.toolCall,
+          };
 
-        if (shouldStream) {
-          // Cast through unknown: the async iterator shape matches and we want to drain the stream for side effects while keeping the public API stable.
-          const streamResult = result as unknown as StreamedRunResult<
-            TContext,
-            Agent<TContext, AgentOutputType>
-          >;
-          // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
-          for await (const event of streamResult) {
-            await emitEvent({
-              event,
-              ...streamPayload,
-            });
+          if (shouldStream) {
+            // Cast through unknown: the async iterator shape matches and we want to drain the stream for side effects while keeping the public API stable.
+            const streamResult = result as unknown as StreamedRunResult<
+              TContext,
+              Agent<TContext, AgentOutputType>
+            >;
+            // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
+            for await (const event of streamResult) {
+              await emitEvent({
+                event,
+                ...streamPayload,
+              });
+            }
+            await streamResult.completed;
           }
-          await streamResult.completed;
-        }
 
-        const completedResult = result as CompletedRunResult<TContext, TAgent>;
+          const completedResult = result as CompletedRunResult<
+            TContext,
+            TAgent
+          >;
 
-        const usesStopAtToolNames =
-          typeof this.toolUseBehavior === 'object' &&
-          this.toolUseBehavior !== null &&
-          'stopAtToolNames' in this.toolUseBehavior;
+          const usesStopAtToolNames =
+            typeof this.toolUseBehavior === 'object' &&
+            this.toolUseBehavior !== null &&
+            'stopAtToolNames' in this.toolUseBehavior;
 
-        if (
-          typeof customOutputExtractor !== 'function' &&
-          usesStopAtToolNames
-        ) {
-          logger.debug(
-            `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
-          );
-        }
-        let outputText: string;
-        if (typeof customOutputExtractor === 'function') {
-          outputText = await customOutputExtractor(completedResult);
-        } else {
-          const finalOutputText =
-            typeof completedResult.finalOutput !== 'undefined'
-              ? this.outputType === 'text'
-                ? String(completedResult.finalOutput)
-                : JSON.stringify(completedResult.finalOutput)
-              : undefined;
-          const rawResponses = completedResult.rawResponses;
-          const rawOutputText =
-            rawResponses && rawResponses.length > 0
-              ? getOutputText(rawResponses[rawResponses.length - 1])
-              : undefined;
-          const normalizedRawOutputText =
-            typeof rawOutputText === 'string' && rawOutputText.trim() === ''
-              ? undefined
-              : rawOutputText;
-          const prefersFinalOutput =
-            completedResult.state?._finalOutputSource === 'error_handler';
-          outputText = prefersFinalOutput
-            ? (finalOutputText ?? normalizedRawOutputText ?? '')
-            : (normalizedRawOutputText ?? finalOutputText ?? '');
-        }
+          if (
+            typeof customOutputExtractor !== 'function' &&
+            usesStopAtToolNames
+          ) {
+            logger.debug(
+              `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
+            );
+          }
+          let outputText: string;
+          if (typeof customOutputExtractor === 'function') {
+            outputText = await customOutputExtractor(completedResult);
+          } else {
+            const finalOutputText =
+              typeof completedResult.finalOutput !== 'undefined'
+                ? this.outputType === 'text'
+                  ? String(completedResult.finalOutput)
+                  : JSON.stringify(completedResult.finalOutput)
+                : undefined;
+            const rawResponses = completedResult.rawResponses;
+            const rawOutputText =
+              rawResponses && rawResponses.length > 0
+                ? getOutputText(rawResponses[rawResponses.length - 1])
+                : undefined;
+            const normalizedRawOutputText =
+              typeof rawOutputText === 'string' && rawOutputText.trim() === ''
+                ? undefined
+                : rawOutputText;
+            const prefersFinalOutput =
+              completedResult.state?._finalOutputSource === 'error_handler';
+            outputText = prefersFinalOutput
+              ? (finalOutputText ?? normalizedRawOutputText ?? '')
+              : (normalizedRawOutputText ?? finalOutputText ?? '');
+          }
 
-        if (details?.toolCall) {
-          saveAgentToolRunResult(details.toolCall, completedResult);
+          if (details?.toolCall) {
+            saveAgentToolRunResult(details.toolCall, completedResult);
+          }
+          return outputText;
+        } finally {
+          cleanupSignalListeners();
         }
-        return outputText;
       },
     });
 
