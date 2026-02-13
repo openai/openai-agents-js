@@ -4,4 +4,4 @@
 '@openai/agents-openai': patch
 ---
 
-fix(tracing): preserve generation usage metadata via usage.details
+fix(tracing): #955 preserve generation usage metadata via usage.details
