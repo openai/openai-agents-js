@@ -49,18 +49,27 @@ for advanced options like `rankingOptions` or semantic filters.
 Local built-in tools run in your own environment and require you to supply implementations:
 
 - **Computer use** – implement the `Computer` interface and pass it to `computerTool()`.
-- **Shell** – implement the `Shell` interface and pass it to `shellTool()`.
+- **Shell** – either provide a local `Shell` implementation, or configure a hosted container environment.
 - **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`.
 
-These tools execute locally and are **not** hosted by OpenAI. Use them when you need direct access
-to files, terminals, or GUI automation in your runtime. The tool calls are still requested by the
-OpenAI model’s responses, but your application is expected to execute them locally.
+Computer and apply-patch tools execute locally and are **not** hosted by OpenAI. Shell tools can run
+locally or in hosted container environments, depending on `shellTool()` configuration.
+The tool calls are still requested by the model’s responses, but your application controls how those
+calls are executed.
 
 <Code
   lang="typescript"
   code={localBuiltInToolsExample}
   title="Local built-in tools"
 />
+
+For hosted shell environments, configure `shellTool({ environment })` with either:
+
+- `type: 'container_auto'` to create a managed container for the run (supports network policy, memory limit, and skills).
+- `type: 'container_reference'` to reuse an existing container by `containerId`.
+
+See `examples/tools/container-shell-skill-ref.ts` and `examples/tools/container-shell-inline-skill.ts`
+for end-to-end usage.
 
 ---
 

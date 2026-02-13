@@ -46,6 +46,9 @@ Reusing the same session instance ensures the agent receives the full conversati
 | `organization`   | `string` | OpenAI organization ID for requests.                           |
 | `project`        | `string` | OpenAI project ID for requests.                                |
 
+If you need to pre-create a conversation ID before constructing the session, use
+`startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
+
 ---
 
 ## How the runner uses sessions

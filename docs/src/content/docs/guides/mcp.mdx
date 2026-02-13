@@ -206,6 +206,9 @@ await using mcpServers = await connectMcpServers(servers);
 For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may call `list_tools()` to discover available tools. Because that round‑trip can add latency—especially to remote servers—you can cache the results in memory by passing `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
 
 Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance.
+If you are using shared MCP tool caching via `getAllMcpTools(...)`, you can also invalidate by server name with `invalidateServerToolsCache(serverName)`.
+
+For advanced cases, `getAllMcpTools({ generateMCPToolCacheKey })` lets you customize cache partitioning (for example, by server + agent + run context).
 
 ### Tool filtering
 
