@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { allowConsole } from '../../../helpers/tests/console-guard';
 import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
 
 class FakeRTCDataChannel extends EventTarget {
@@ -6,9 +7,21 @@ class FakeRTCDataChannel extends EventTarget {
   readyState = 'open';
   send(data: string) {
     this.sent.push(data);
+    // Simulate server acking session.update with session.updated
+    const parsed = JSON.parse(data);
+    if (parsed.type === 'session.update') {
+      setTimeout(() => {
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: JSON.stringify({ type: 'session.updated', session: {} }),
+          }),
+        );
+      }, 0);
+    }
   }
   close() {
     this.readyState = 'closed';
+    this.dispatchEvent(new Event('close'));
   }
 }
 
@@ -492,5 +505,177 @@ describe('OpenAIRealtimeWebRTC.callId', () => {
 
     rtc.close();
     expect((state.peerConnection as any).closed).toBe(true);
+  });
+});
+
+describe('OpenAIRealtimeWebRTC session.updated ack', () => {
+  const originals: Record<string, any> = {};
+
+  // A data channel that does NOT auto-ack session.update
+  class NoAckRTCDataChannel extends EventTarget {
+    sent: string[] = [];
+    readyState = 'open';
+    send(data: string) {
+      this.sent.push(data);
+    }
+    close() {
+      this.readyState = 'closed';
+      this.dispatchEvent(new Event('close'));
+    }
+  }
+
+  let noAckChannel: NoAckRTCDataChannel | null = null;
+
+  class NoAckPeerConnection {
+    ontrack: ((ev: any) => void) | null = null;
+    onconnectionstatechange: (() => void) | null = null;
+    connectionState = 'new';
+
+    createDataChannel(_name: string) {
+      noAckChannel = new NoAckRTCDataChannel();
+      setTimeout(() => {
+        this._simulateStateChange('connected');
+        noAckChannel?.dispatchEvent(new Event('open'));
+      }, 0);
+      return noAckChannel as unknown as RTCDataChannel;
+    }
+    addTrack() {}
+    async createOffer() {
+      this._simulateStateChange('connecting');
+      return { sdp: 'offer', type: 'offer' };
+    }
+    async setLocalDescription(_desc: any) {}
+    async setRemoteDescription(_desc: any) {}
+    close() {
+      this._simulateStateChange('closed');
+    }
+    getSenders() {
+      return [] as any;
+    }
+
+    _simulateStateChange(
+      state:
+        | 'new'
+        | 'connecting'
+        | 'connected'
+        | 'disconnected'
+        | 'failed'
+        | 'closed',
+    ) {
+      if (this.connectionState === state) return;
+      this.connectionState = state;
+      setTimeout(() => {
+        if (this.onconnectionstatechange) {
+          this.onconnectionstatechange();
+        }
+      }, 0);
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    originals.RTCPeerConnection = (global as any).RTCPeerConnection;
+    originals.navigator = (global as any).navigator;
+    originals.document = (global as any).document;
+    originals.fetch = (global as any).fetch;
+
+    (global as any).RTCPeerConnection = NoAckPeerConnection as any;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        mediaDevices: {
+          getUserMedia: async () => ({
+            getAudioTracks: () => [{ enabled: true }],
+          }),
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: { createElement: () => ({ autoplay: true }) },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      value: async () => ({
+        text: async () => 'answer',
+        headers: {
+          get: (headerKey: string) => {
+            if (headerKey === 'Location') {
+              return 'https://api.openai.com/v1/calls/rtc_u1_1234567890';
+            }
+            return null;
+          },
+        },
+      }),
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    (global as any).RTCPeerConnection = originals.RTCPeerConnection;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: originals.navigator,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: originals.document,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      value: originals.fetch,
+      configurable: true,
+      writable: true,
+    });
+    noAckChannel = null;
+  });
+
+  it('resolves connect() after timeout when server never sends session.updated', async () => {
+    allowConsole(['warn']);
+    const rtc = new OpenAIRealtimeWebRTC();
+    const connectPromise = rtc.connect({ apiKey: 'ek_test' });
+
+    // Flush microtasks so the data channel 'open' fires and session.update is sent
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Verify session.update was sent but no ack arrived
+    expect(noAckChannel!.sent.length).toBe(1);
+    expect(JSON.parse(noAckChannel!.sent[0]).type).toBe('session.update');
+
+    // Advance past the 5s timeout
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // connect() should have resolved via the timeout path
+    await connectPromise;
+    expect(rtc.status).toBe('connected');
+  });
+
+  it('rejects connect() when close() is called during ack wait', async () => {
+    allowConsole(['warn', 'error']);
+    const rtc = new OpenAIRealtimeWebRTC();
+    rtc.on('error', () => {});
+    const connectPromise = rtc.connect({ apiKey: 'ek_test' });
+
+    // Attach rejection handler before advancing timers to avoid unhandled rejection
+    const rejection = expect(connectPromise).rejects.toThrow(
+      'Connection closed before session config was acknowledged',
+    );
+
+    // Flush microtasks so the data channel 'open' fires
+    await vi.advanceTimersByTimeAsync(0);
+
+    // close() while waiting for session.updated ack — the dataChannel 'close'
+    // event triggers immediate rejection instead of waiting for the 5s timeout
+    rtc.close();
+
+    // Flush microtasks
+    await vi.advanceTimersByTimeAsync(0);
+
+    await rejection;
+    expect(rtc.status).toBe('disconnected');
   });
 });
