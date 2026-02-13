@@ -22,6 +22,7 @@ export type {
   SpanData,
   AgentSpanData,
   FunctionSpanData,
+  GenerationUsageData,
   GenerationSpanData,
   ResponseSpanData,
   HandoffSpanData,
