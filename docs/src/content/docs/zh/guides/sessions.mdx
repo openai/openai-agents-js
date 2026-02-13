@@ -11,19 +11,19 @@ import sessionInputCallback from '../../../../../../examples/docs/sessions/sessi
 import responsesCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
 import manualCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
 
-会话为 Agents SDK 提供了一个**持久化内存层**。将任何实现了 `Session` 接口的对象传给 `Runner.run`，其余交给 SDK 处理。当会话存在时，运行器会自动：
+会话为 Agents SDK 提供了一个**持久内存层**。将任何实现了 `Session` 接口的对象传入 `Runner.run`，其余由 SDK 处理。当会话存在时，运行器会自动：
 
-1. 获取此前存储的对话项，并在下一轮次前置这些内容。
-2. 在每次运行完成后持久化新的用户输入与助手输出。
-3. 保持会话可用于后续轮次，无论是用新的用户文本调用运行器，还是从中断的 `RunState` 恢复。
+1. 获取先前存储的对话项并将其前置到下一轮对话。
+2. 在每次运行完成后持久化新的用户输入和助手输出。
+3. 使会话可用于后续轮次，无论是用新的用户文本调用运行器，还是从中断的 `RunState` 恢复。
 
-这消除了手动调用 `toInputList()` 或在轮次之间拼接历史的需求。TypeScript SDK 自带两种实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及用于本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以插入自定义存储后端。若想获得除 Conversations API 之外的灵感，可探索 `examples/memory/` 下的示例会话后端（Prisma、文件后端等）。当使用 OpenAI Responses 模型时，用 `OpenAIResponsesCompactionSession` 包裹任意会话以通过 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) 自动缩短已存储的对话记录。
+这消除了手动调用 `toInputList()` 或在轮次之间拼接历史的需要。TypeScript SDK 自带两个实现：用于 Conversations API 的 `OpenAIConversationsSession`，以及面向本地开发的 `MemorySession`。由于它们共享 `Session` 接口，您可以接入自定义存储后端。若需超出 Conversations API 的灵感，可查看 `examples/memory/` 下的示例会话后端（Prisma、文件存储等）。当您使用 OpenAI Responses 模型时，用 `OpenAIResponsesCompactionSession` 包装任意会话，通过 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) 自动缩短已存储的对话记录。
 
-> 提示：要运行本页中的 `OpenAIConversationsSession` 示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 能调用 Conversations API。
+> 提示：要运行本页中的 `OpenAIConversationsSession` 示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 调用 Conversations API。
 
 ---
 
-## 快速开始
+## 快速上手
 
 使用 `OpenAIConversationsSession` 将内存与 [Conversations API](https://platform.openai.com/docs/api-reference/conversations) 同步，或替换为任意其他 `Session` 实现。
 
@@ -33,53 +33,56 @@ import manualCompactionSession from '../../../../../../examples/docs/sessions/re
   title="使用 Conversations API 作为会话内存"
 />
 
-复用同一个会话实例可确保在每一轮之前，智能体都能收到完整的对话历史，并自动持久化新条目。切换到不同的 `Session` 实现无需改动其他代码。
+复用同一个会话实例可确保智能体在每一轮之前收到完整的对话历史，并自动持久化新的条目。切换到不同的 `Session` 实现无需其他代码更改。
 
 `OpenAIConversationsSession` 构造函数选项：
 
-| 选项             | 类型     | 说明                                       |
-| ---------------- | -------- | ------------------------------------------ |
-| `conversationId` | `string` | 复用已有会话，而不是按需创建。             |
-| `client`         | `OpenAI` | 传入已预配置的 OpenAI 客户端。             |
-| `apiKey`         | `string` | 在内部创建 OpenAI 客户端时使用的 API key。 |
-| `baseURL`        | `string` | OpenAI 兼容端点的基础 URL。                |
-| `organization`   | `string` | 请求所用的 OpenAI 组织 ID。                |
-| `project`        | `string` | 请求所用的 OpenAI 项目 ID。                |
+| 选项             | 类型     | 说明                                      |
+| ---------------- | -------- | ----------------------------------------- |
+| `conversationId` | `string` | 复用现有会话，而不是延迟创建一个。        |
+| `client`         | `OpenAI` | 传入一个预配置的 OpenAI 客户端。          |
+| `apiKey`         | `string` | 创建内部 OpenAI 客户端时使用的 API 密钥。 |
+| `baseURL`        | `string` | OpenAI 兼容端点的基础 URL。               |
+| `organization`   | `string` | 请求使用的 OpenAI 组织 ID。               |
+| `project`        | `string` | 请求使用的 OpenAI 项目 ID。               |
+
+如果需要在构造会话之前预先创建会话 ID，请使用
+`startOpenAIConversationsSession(client?)`，并将返回的 ID 作为 `conversationId` 传入。
 
 ---
 
 ## 运行器如何使用会话
 
-- 在每次运行之前，它会检索会话历史，与新一轮输入合并，并将合并后的列表传给智能体。
-- 在非流式运行之后，通过一次 `session.addItems()` 调用即可持久化最新一轮中的原始用户输入和模型输出。
-- 对于流式传输运行，它会先写入用户输入，并在该轮完成后追加流式输出。
-- 当从 `RunResult.state` 恢复（审批或其他中断）时，继续传入同一个 `session`。恢复的轮次会被加入内存，无需重新准备输入。
+- **每次运行之前** 会检索会话历史，将其与新一轮输入合并，并将合并后的列表传给您的智能体。
+- **非流式运行之后** 通过一次 `session.addItems()` 调用持久化最新一轮中的原始用户输入与模型输出。
+- **流式运行时** 先写入用户输入，并在该轮完成后追加流式输出。
+- **从 `RunResult.state` 恢复时**（用于审批或其他中断）继续传入相同的 `session`。恢复的这一轮会被加入内存，无需重新准备输入。
 
 ---
 
 ## 检查与编辑历史
 
-会话提供简单的 CRUD 帮助器，便于构建“撤销”“清空聊天”或审计等功能。
+会话提供简单的 CRUD 辅助方法，便于构建“撤销”“清空对话”或审计等功能。
 
-<Code lang="typescript" code={manageHistory} title="读取与编辑存储的条目" />
+<Code lang="typescript" code={manageHistory} title="读取与编辑已存储条目" />
 
-`session.getItems()` 会返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一个条目——在重新运行智能体前用于用户更正很有用。
+`session.getItems()` 返回已存储的 `AgentInputItem[]`。调用 `popItem()` 可移除最后一条——在您重跑智能体之前用于用户纠正很有用。
 
 ---
 
-## 自带存储
+## 自定义存储
 
-实现 `Session` 接口，以 Redis、DynamoDB、SQLite 或其他数据存储来支撑内存。只需要五个异步方法。
+实现 `Session` 接口，以使用 Redis、DynamoDB、SQLite 或其他数据存储作为内存后端。仅需实现五个异步方法。
 
 <Code lang="typescript" code={customSession} title="自定义内存会话实现" />
 
-自定义会话可用于实施保留策略、添加加密，或在持久化前为每次对话轮次附加元数据。
+自定义会话可让您强制执行保留策略、添加加密，或在持久化之前为每轮对话附加元数据。
 
 ---
 
 ## 控制历史与新项的合并方式
 
-当您将 `AgentInputItem` 数组作为运行输入时，提供一个 `sessionInputCallback`，以确定性地将其与存储的历史合并。运行器会加载现有历史，在模型调用之前调用您的回调，并将返回的数组作为该轮的完整输入传给模型。此钩子非常适合裁剪旧条目、对工具结果去重，或仅突出您希望模型看到的上下文。
+当您将 `AgentInputItem` 数组作为运行输入传入时，可提供 `sessionInputCallback`，以确定性地将其与已存储历史合并。运行器会加载现有历史，在**模型调用之前**调用您的回调，并将返回的数组作为该轮完整输入交给模型。此钩子非常适合裁剪旧条目、去重工具结果，或仅突出您希望模型看到的上下文。
 
 <Code
   lang="typescript"
@@ -87,13 +90,13 @@ import manualCompactionSession from '../../../../../../examples/docs/sessions/re
   title="使用 sessionInputCallback 截断历史"
 />
 
-对于字符串输入，运行器会自动合并历史，因此该回调是可选的。
+对于字符串输入，运行器会自动合并历史，因此该回调为可选。
 
 ---
 
-## 处理审批与可恢复运行
+## 审批与可恢复运行的处理
 
-Human-in-the-loop 流程通常会暂停运行以等待审批：
+人机协作流程常会暂停一次运行以等待审批：
 
 ```typescript
 const result = await runner.run(agent, 'Search the itinerary', {
@@ -108,13 +111,13 @@ if (result.requiresApproval) {
 }
 ```
 
-当您从先前的 `RunState` 恢复时，新一轮会追加到同一条内存记录中，从而保留单一的对话历史。人工干预（HITL）流程完全兼容——审批检查点仍通过 `RunState` 往返，而会话保持完整的对话记录。
+当您从先前的 `RunState` 恢复时，新一轮会被追加到相同的内存记录中，以保留单一的对话历史。Human-in-the-loop（HITL，人工干预）流程保持完全兼容——审批检查点仍通过 `RunState` 往返，同时会话保持完整的对话记录。
 
 ---
 
 ## 自动压缩 OpenAI Responses 历史
 
-`OpenAIResponsesCompactionSession` 会装饰任意 `Session`，并依赖 OpenAI Responses API 来保持对话记录简短。在每次持久化轮次后，运行器会将最新的 `responseId` 传入 `runCompaction`，当您的决策钩子返回 true 时，它会调用 `responses.compact`。默认触发条件是在累计至少 10 个非用户条目后压缩；通过重写 `shouldTriggerCompaction`，您可以基于 token 数或自定义启发式来决策。该装饰器会清空并用压缩后的输出重写底层会话，因此请避免将其与 `OpenAIConversationsSession` 搭配使用，后者使用不同的服务器管理历史流程。
+`OpenAIResponsesCompactionSession` 装饰任意 `Session`，并依赖 OpenAI Responses API 来保持对话记录精简。每次持久化一轮后，运行器会将最新的 `responseId` 传入 `runCompaction`，当您的决策钩子返回 true 时，它会调用 `responses.compact`。默认触发条件是在累积至少 10 个非用户条目后压缩；重写 `shouldTriggerCompaction`，可基于 token 计数或自定义启发式进行决策。该装饰器会清空并用压缩后的输出重写底层会话，因此避免与 `OpenAIConversationsSession` 搭配使用，后者采用不同的服务器管理历史流程。
 
 <Code
   lang="typescript"
@@ -124,31 +127,31 @@ if (result.requiresApproval) {
 
 `OpenAIResponsesCompactionSession` 构造函数选项：
 
-| 选项                      | 类型                                          | 说明                                                                           |
-| ------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
-| `client`                  | `OpenAI`                                      | 用于 `responses.compact` 的 OpenAI 客户端。                                    |
-| `underlyingSession`       | `Session`                                     | 用于清空/重写为压缩条目的底层会话存储（不能为 `OpenAIConversationsSession`）。 |
-| `model`                   | `OpenAI.ResponsesModel`                       | 用于压缩请求的模型。                                                           |
-| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | 控制压缩使用服务器响应链式模式还是本地输入条目。                               |
-| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | 基于 `responseId`、`compactionMode`、候选条目与当前会话条目的自定义触发钩子。  |
+| 选项                      | 类型                                          | 说明                                                                             |
+| ------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| `client`                  | `OpenAI`                                      | 用于 `responses.compact` 的 OpenAI 客户端。                                      |
+| `underlyingSession`       | `Session`                                     | 使用压缩后的条目清空/重写的底层会话存储（不得为 `OpenAIConversationsSession`）。 |
+| `model`                   | `OpenAI.ResponsesModel`                       | 用于压缩请求的模型。                                                             |
+| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | 控制压缩是使用服务器响应链式模式还是本地输入条目。                               |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | 基于 `responseId`、`compactionMode`、候选条目与当前会话条目的自定义触发钩子。    |
 
 `runCompaction(args)` 选项：
 
-| 选项             | 类型                                          | 说明                                                           |
-| ---------------- | --------------------------------------------- | -------------------------------------------------------------- |
-| `responseId`     | `string`                                      | 用于 `previous_response_id` 模式的最新 Responses API 响应 ID。 |
-| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | 可选：按调用覆盖已配置的模式。                                 |
-| `store`          | `boolean`                                     | 指示上一次运行是否存储了服务器状态。                           |
-| `force`          | `boolean`                                     | 跳过 `shouldTriggerCompaction`，立即执行压缩。                 |
+| 选项             | 类型                                          | 说明                                                        |
+| ---------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| `responseId`     | `string`                                      | `previous_response_id` 模式下最新的 Responses API 响应 ID。 |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | 可选的按次覆盖已配置模式。                                  |
+| `store`          | `boolean`                                     | 指示上次运行是否存储了服务器状态。                          |
+| `force`          | `boolean`                                     | 跳过 `shouldTriggerCompaction`，立即执行压缩。              |
 
-### 面向低延迟流式传输的手动压缩
+### 低延迟流式传输的手动压缩
 
-压缩会清空并重写底层会话，因此 SDK 会在完成压缩后才解析流式运行。如果压缩较重，则在最后一个输出 token 后，`result.completed` 可能会再等待几秒。对于低延迟流式传输或更快的轮次交替，禁用自动压缩，并在轮次之间（或空闲时）自行调用 `runCompaction`。
+压缩会清空并重写底层会话，因此 SDK 会在流式运行解析前等待其完成。若压缩较重，`result.completed` 可能在最后一个输出 token 之后仍会等待数秒。对于低延迟流式传输或更快的轮次切换，禁用自动压缩，并在轮次之间（或空闲时）手动调用 `runCompaction`。
 
 <Code
   lang="typescript"
   code={manualCompactionSession}
-  title="禁用自动压缩并在轮次之间压缩"
+  title="禁用自动压缩并在轮次之间执行压缩"
 />
 
-您可以随时调用 `runCompaction({ force: true })` 在归档或交接前缩短历史。使用 `DEBUG=openai-agents:openai:compaction` 启用调试日志以追踪压缩决策。
+您可以随时调用 `runCompaction({ force: true })` 在归档或交接之前缩短历史。启用调试日志 `DEBUG=openai-agents:openai:compaction` 以追踪压缩决策。
