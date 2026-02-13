@@ -116,7 +116,7 @@ describe('AiSdkModel issue #802', () => {
     });
   });
 
-  test('maps cacheRead usage to cached_tokens in generation spans (#945)', async () => {
+  test('maps cacheRead/cacheWrite usage in generation spans (#945, #955)', async () => {
     const processor = new CollectingProcessor();
     setTracingDisabled(false);
     setTraceProcessors([processor]);
@@ -128,7 +128,12 @@ describe('AiSdkModel issue #802', () => {
             return {
               content: [{ type: 'text', text: 'ok' }],
               usage: {
-                inputTokens: { total: 10, noCache: 8, cacheRead: 2 } as any,
+                inputTokens: {
+                  total: 10,
+                  noCache: 5,
+                  cacheRead: 2,
+                  cacheWrite: 3,
+                } as any,
                 outputTokens: { total: 20 } as any,
                 totalTokens: { total: 30 } as any,
               },
@@ -152,7 +157,9 @@ describe('AiSdkModel issue #802', () => {
         } as any),
       );
 
-      expect(res.usage.inputTokensDetails).toEqual([{ cached_tokens: 2 }]);
+      expect(res.usage.inputTokensDetails).toEqual([
+        { cached_tokens: 2, cache_write_tokens: 3 },
+      ]);
 
       const generationSpan = processor.spans.find(
         (span) => span.spanData.type === 'generation',
@@ -161,7 +168,7 @@ describe('AiSdkModel issue #802', () => {
       expect(generationSpan?.spanData?.usage).toEqual({
         input_tokens: 10,
         output_tokens: 20,
-        input_tokens_details: { cached_tokens: 2 },
+        input_tokens_details: { cached_tokens: 2, cache_write_tokens: 3 },
       });
     } finally {
       setTracingDisabled(true);
@@ -177,7 +184,7 @@ describe('AiSdkModel issue #802', () => {
         finishReason: 'stop',
         // Simulating Google AI SDK behavior where tokens are objects
         usage: {
-          inputTokens: { total: 5, cacheRead: 1 } as any,
+          inputTokens: { total: 5, cacheRead: 1, cacheWrite: 2 } as any,
           outputTokens: { total: 8 } as any,
         },
       },
@@ -210,7 +217,7 @@ describe('AiSdkModel issue #802', () => {
       inputTokens: 5,
       outputTokens: 8,
       totalTokens: 13,
-      inputTokensDetails: { cached_tokens: 1 },
+      inputTokensDetails: { cached_tokens: 1, cache_write_tokens: 2 },
     });
   });
 

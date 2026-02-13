@@ -3,7 +3,11 @@ import {
   BatchTraceProcessor,
   setTraceProcessors,
 } from '@openai/agents-core';
-import type { Span } from '@openai/agents-core/dist/tracing/spans';
+import type {
+  Span,
+  GenerationSpanData,
+  GenerationUsageData,
+} from '@openai/agents-core/dist/tracing/spans';
 import type { Trace } from '@openai/agents-core/dist/tracing/traces';
 import { getTracingExportApiKey, HEADERS } from './defaults';
 import logger from './logger';
@@ -20,6 +24,99 @@ export type OpenAITracingExporterOptions = {
   baseDelay: number;
   maxDelay: number;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isGenerationSpanData(
+  spanData: Record<string, unknown>,
+): spanData is GenerationSpanData {
+  return spanData.type === 'generation';
+}
+
+function isGenerationUsageData(usage: unknown): usage is GenerationUsageData {
+  return isRecord(usage);
+}
+
+function sanitizeGenerationUsageForTracesIngest(
+  usage: GenerationUsageData,
+): GenerationUsageData | undefined {
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+
+  if (
+    typeof inputTokens !== 'number' ||
+    Number.isNaN(inputTokens) ||
+    typeof outputTokens !== 'number' ||
+    Number.isNaN(outputTokens)
+  ) {
+    return undefined;
+  }
+
+  const details: Record<string, unknown> = {};
+  if (isRecord(usage.details)) {
+    Object.assign(details, usage.details);
+  }
+  for (const [key, value] of Object.entries(usage)) {
+    if (
+      key === 'input_tokens' ||
+      key === 'output_tokens' ||
+      key === 'details' ||
+      value === undefined
+    ) {
+      continue;
+    }
+    details[key] = value;
+  }
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    ...(Object.keys(details).length > 0 ? { details } : {}),
+  };
+}
+
+/**
+ * OpenAI traces ingest currently accepts only input/output token counts at the top-level
+ * generation usage object. Keep those fields and move other usage data under `usage.details`
+ * to avoid non-fatal 400 client errors.
+ */
+function sanitizeSpanDataForTracesIngest(
+  spanData: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    !isGenerationSpanData(spanData) ||
+    !isGenerationUsageData(spanData.usage)
+  ) {
+    return spanData;
+  }
+
+  const sanitizedUsage = sanitizeGenerationUsageForTracesIngest(spanData.usage);
+  if (!sanitizedUsage) {
+    const { usage, ...rest } = spanData;
+    void usage;
+    return rest;
+  }
+
+  return {
+    ...spanData,
+    usage: sanitizedUsage,
+  };
+}
+
+function sanitizePayloadItemForTracesIngest(
+  payloadItem: Record<string, unknown>,
+): Record<string, unknown> {
+  if (payloadItem.object !== 'trace.span' || !isRecord(payloadItem.span_data)) {
+    return payloadItem;
+  }
+
+  return {
+    ...payloadItem,
+    span_data: sanitizeSpanDataForTracesIngest(payloadItem.span_data),
+  };
+}
 
 /**
  * A tracing exporter that exports traces to OpenAI's tracing API.
@@ -65,7 +162,10 @@ export class OpenAITracingExporter implements TracingExporter {
 
       const payloadItems = groupedItems
         .map((entry) => entry.toJSON())
-        .filter((item) => !!item);
+        .filter((item) => !!item)
+        .map((item) =>
+          isRecord(item) ? sanitizePayloadItemForTracesIngest(item) : item,
+        );
       const payload = { data: payloadItems };
 
       let attempts = 0;

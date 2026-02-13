@@ -205,6 +205,12 @@ export const withHandoffSpan = _withSpanFactory<
  * This span captures the details of a model generation, including input/output message
  * sequences, model information, and usage data. If you only need to capture a model response
  * identifier, consider using `createResponseSpan()` instead.
+ *
+ * agents-core keeps generation usage payloads as provided. Backend-specific schema constraints
+ * are enforced by each exporter. For example, the OpenAI tracing exporter in
+ * `@openai/agents-openai` keeps top-level usage to `input_tokens` and
+ * `output_tokens` for OpenAI traces ingest, and maps additional usage fields
+ * under `usage.details`. Third-party exporters can apply their own mapping.
  */
 export function createGenerationSpan(
   options?: CreateArgs<GenerationSpanData>,
