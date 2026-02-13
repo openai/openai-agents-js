@@ -2,13 +2,10 @@ import {
   TracingExporter,
   BatchTraceProcessor,
   setTraceProcessors,
+  type Span,
+  type GenerationSpanData,
+  type Trace,
 } from '@openai/agents-core';
-import type {
-  Span,
-  GenerationSpanData,
-  GenerationUsageData,
-} from '@openai/agents-core/dist/tracing/spans';
-import type { Trace } from '@openai/agents-core/dist/tracing/traces';
 import { getTracingExportApiKey, HEADERS } from './defaults';
 import logger from './logger';
 
@@ -24,6 +21,8 @@ export type OpenAITracingExporterOptions = {
   baseDelay: number;
   maxDelay: number;
 };
+
+type GenerationUsageData = NonNullable<GenerationSpanData['usage']>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
