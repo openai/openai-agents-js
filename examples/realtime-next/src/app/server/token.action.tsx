@@ -22,13 +22,13 @@ export async function getToken() {
             {
               type: 'mcp',
               server_label: 'deepwiki',
-              server_url: 'https://mcp.deepwiki.com/sse',
+              server_url: 'https://mcp.deepwiki.com/mcp',
               require_approval: 'always',
             },
             {
               type: 'mcp',
               server_label: 'dnd',
-              server_url: 'https://dmcp-server.deno.dev/sse',
+              server_url: 'https://dmcp-server.deno.dev/mcp',
               require_approval: 'always',
             },
           ],

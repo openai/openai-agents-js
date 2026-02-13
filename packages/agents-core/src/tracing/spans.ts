@@ -22,13 +22,30 @@ export type FunctionSpanData = SpanDataBase & {
   mcp_data?: string;
 };
 
+export type GenerationUsageData = {
+  input_tokens?: number;
+  output_tokens?: number;
+  details?: Record<string, unknown> | null;
+  [key: string]: unknown;
+};
+
 export type GenerationSpanData = SpanDataBase & {
   type: 'generation';
   input?: Array<Record<string, any>>;
   output?: Array<Record<string, any>>;
   model?: string;
   model_config?: Record<string, any>;
-  usage?: Record<string, any>;
+  /**
+   * Usage fields are intentionally flexible in agents-core tracing.
+   *
+   * Exporters are responsible for backend-specific mapping and validation.
+   * For example, the OpenAI tracing exporter in `@openai/agents-openai` keeps
+   * top-level generation usage to `input_tokens` and `output_tokens` for OpenAI
+   * traces ingest, and maps additional usage fields under `usage.details`.
+   * Third-party exporters can choose their own usage schema and transformation
+   * strategy.
+   */
+  usage?: GenerationUsageData;
 };
 
 export type ResponseSpanData = SpanDataBase & {

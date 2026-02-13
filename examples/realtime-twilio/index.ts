@@ -64,7 +64,7 @@ const agent = new RealtimeAgent({
   tools: [
     hostedMcpTool({
       serverLabel: 'deepwiki',
-      serverUrl: 'https://mcp.deepwiki.com/sse',
+      serverUrl: 'https://mcp.deepwiki.com/mcp',
     }),
     secretTool,
     weatherTool,

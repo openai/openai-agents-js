@@ -72,6 +72,136 @@ describe('OpenAITracingExporter', () => {
     expect(JSON.parse(opts.body as string)).toEqual({ data: [item.toJSON()] });
   });
 
+  it('moves unsupported generation usage fields into details', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            total_tokens: 46,
+            input_tokens_details: { cached_tokens: 2 },
+            output_tokens_details: { reasoning_tokens: 3 },
+            details: { provider: 'ai-sdk' },
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        provider: 'ai-sdk',
+        total_tokens: 46,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 3 },
+      },
+    });
+  });
+
+  it('drops non-object generation usage.details', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1a',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            details: 'invalid',
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+    });
+  });
+
+  it('drops invalid generation usage when required usage fields are missing', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-2',
+        trace_id: 'trace-2',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 34,
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data).toEqual({
+      type: 'generation',
+    });
+  });
+
   it('retries on server errors', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const item = fakeSpan;

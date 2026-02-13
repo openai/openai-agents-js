@@ -30,6 +30,7 @@ import {
   getLogger,
   ModelSettingsToolChoice,
 } from '@openai/agents';
+import type { GenerationUsageData } from '@openai/agents';
 import { isZodObject } from '@openai/agents/utils';
 import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 
@@ -1570,16 +1571,41 @@ function extractTokenCount(usage: any, key: string): number {
   return 0;
 }
 
-function extractCachedInputTokens(usage: any): number | undefined {
-  const inputTokens = usage?.inputTokens;
-  if (
-    typeof inputTokens === 'object' &&
-    inputTokens !== null &&
-    typeof inputTokens.cacheRead === 'number'
-  ) {
-    return Number.isNaN(inputTokens.cacheRead) ? 0 : inputTokens.cacheRead;
+function toUsageDetailTokenCount(value: unknown): number | undefined {
+  if (typeof value !== 'number') {
+    return undefined;
   }
-  return undefined;
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function extractInputTokenDetails(
+  usage: any,
+): Record<string, number> | undefined {
+  const inputTokens = usage?.inputTokens;
+  if (typeof inputTokens !== 'object' || inputTokens === null) {
+    return undefined;
+  }
+
+  const cachedTokens = toUsageDetailTokenCount((inputTokens as any).cacheRead);
+  const cacheWriteTokens = toUsageDetailTokenCount(
+    (inputTokens as any).cacheWrite,
+  );
+
+  if (
+    typeof cachedTokens !== 'number' &&
+    typeof cacheWriteTokens !== 'number'
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(typeof cachedTokens === 'number'
+      ? { cached_tokens: cachedTokens }
+      : {}),
+    ...(typeof cacheWriteTokens === 'number'
+      ? { cache_write_tokens: cacheWriteTokens }
+      : {}),
+  };
 }
 
 function extractUsage(usage: any): {
@@ -1590,17 +1616,15 @@ function extractUsage(usage: any): {
 } {
   const inputTokens = extractTokenCount(usage, 'inputTokens');
   const outputTokens = extractTokenCount(usage, 'outputTokens');
-  const cachedInputTokens = extractCachedInputTokens(usage);
+  const inputTokensDetails = extractInputTokenDetails(usage);
 
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
-    ...(typeof cachedInputTokens === 'number'
+    ...(inputTokensDetails
       ? {
-          inputTokensDetails: {
-            cached_tokens: cachedInputTokens,
-          },
+          inputTokensDetails,
         }
       : {}),
   };
@@ -1610,7 +1634,7 @@ function toTracingUsage(usage: {
   inputTokens: number;
   outputTokens: number;
   inputTokensDetails?: Record<string, number>;
-}): Record<string, any> {
+}): GenerationUsageData {
   return {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
