@@ -35,7 +35,7 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
 
    ```typescript
    import { openai } from '@ai-sdk/openai';
-   import { aisdk } from '@openai/agents-extensions';
+   import { aisdk } from '@openai/agents-extensions/ai-sdk';
    ```
 
 4. Initialize an instance of the model to be used by the agent:
@@ -47,9 +47,9 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
 </Steps>
 
 <Aside type="caution">
-  We currently support ai-sdk's model provider v2 modules, which are compatible
-  with Vercel AI SDK v5. If you have a specific reason to continue using the v1
-  model providers, you can copy the module from
+  We support AI SDK providers that expose `specificationVersion` `v2` or `v3`.
+  If you have a specific reason to continue using the older v1 provider style,
+  you can copy the module from
   [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   and include it in your project.
 </Aside>

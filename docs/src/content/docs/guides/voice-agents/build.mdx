@@ -84,6 +84,9 @@ Hosted MCP tools can be configured with `hostedMcpTool` and are executed remotel
 
 While the tool is executing the agent will not be able to process new requests from the user. One way to improve the experience is by telling your agent to announce when it is about to execute a tool or say specific phrases to buy the agent some time to execute the tool.
 
+If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`.
+This sends the tool output back to the session while leaving response triggering under your control.
+
 ### Accessing the conversation history
 
 Additionally to the arguments that the agent called a particular tool with, you can also access a snapshot of the current conversation history that is tracked by the Realtime Session. This can be useful if you need to perform a more complex action based on the current state of the conversation or are planning to use [tools for delegation](#delegation-through-tools).
