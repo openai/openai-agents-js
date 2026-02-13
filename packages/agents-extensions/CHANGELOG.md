@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.4.8
+
+### Patch Changes
+
+- 4bb2dde: fix(tracing): #955 preserve generation usage metadata via usage.details
+- Updated dependencies [4bb2dde]
+  - @openai/agents-core@0.4.8
+  - @openai/agents@0.4.8
+
 ## 0.4.7
 
 ### Patch Changes
