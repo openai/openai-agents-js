@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.4.9
+
+### Patch Changes
+
+- 0b1ebea: fix(tracing): avoid internal dist type imports in OpenAI tracing exporter
+- Updated dependencies [0ca2612]
+  - @openai/agents-core@0.4.9
+
 ## 0.4.8
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.4.9
+
+### Patch Changes
+
+- 0ca2612: fix(tracing): expose trace metadata on spans for processors
+
 ## 0.4.8
 
 ### Patch Changes
