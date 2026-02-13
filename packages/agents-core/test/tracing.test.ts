@@ -152,7 +152,14 @@ describe('Trace & Span lifecycle', () => {
       name: 'span',
       data: { x: 1 },
     };
-    const span = new Span({ traceId: 'trace_123', data }, processor);
+    const span = new Span(
+      {
+        traceId: 'trace_123',
+        data,
+        traceMetadata: { source: 'trace' },
+      },
+      processor,
+    );
 
     // start
     span.start();
@@ -173,6 +180,7 @@ describe('Trace & Span lifecycle', () => {
     expect(clone).not.toBe(span);
     expect(clone.spanId).toBe(span.spanId);
     expect(clone.traceId).toBe(span.traceId);
+    expect(clone.traceMetadata).toEqual(span.traceMetadata);
 
     // JSON output contains expected shape
     const json = span.toJSON() as any;
@@ -224,6 +232,68 @@ describe('Trace & Span lifecycle', () => {
       },
       { tracingApiKey: 'run-key' },
     );
+  });
+
+  it('propagates trace metadata from trace to spans', async () => {
+    await withTrace(
+      'workflow',
+      async () => {
+        const trace = getCurrentTrace();
+        expect(trace?.metadata).toEqual({ source: 'run' });
+        const span = createAgentSpan({ data: { name: 'span' } });
+        expect(span.traceMetadata).toEqual({ source: 'run' });
+      },
+      { metadata: { source: 'run' } },
+    );
+  });
+
+  it('supports processor metadata lookup by span.traceId', async () => {
+    class MetadataPropagatingProcessor implements TracingProcessor {
+      public traceMetadata = new Map<string, Record<string, any>>();
+      public lookedUpMetadata: Record<string, any> | undefined;
+      public spanTraceMetadata: Record<string, any> | undefined;
+
+      async onTraceStart(trace: Trace): Promise<void> {
+        if (trace.metadata) {
+          this.traceMetadata.set(trace.traceId, { ...trace.metadata });
+        }
+      }
+
+      async onTraceEnd(): Promise<void> {}
+
+      async onSpanStart(): Promise<void> {}
+
+      async onSpanEnd(span: Span<any>): Promise<void> {
+        if (span.spanData.type !== 'agent') {
+          return;
+        }
+
+        this.lookedUpMetadata = this.traceMetadata.get(span.traceId);
+        this.spanTraceMetadata = span.traceMetadata;
+      }
+
+      async shutdown(): Promise<void> {}
+
+      async forceFlush(): Promise<void> {}
+    }
+
+    const metadata = {
+      userId: 'u_123',
+      chatType: 'support',
+    };
+    const processor = new MetadataPropagatingProcessor();
+    setTraceProcessors([processor]);
+
+    await withTrace(
+      'workflow',
+      async () => {
+        await withAgentSpan(async () => {}, { data: { name: 'agent' } });
+      },
+      { metadata },
+    );
+
+    expect(processor.lookedUpMetadata).toEqual(metadata);
+    expect(processor.spanTraceMetadata).toEqual(metadata);
   });
 
   it('only serializes tracing api key when explicitly requested', () => {
@@ -303,23 +373,30 @@ describe('Trace & Span lifecycle', () => {
   });
 });
 
-describe('Span creation inherits tracing api key from parents', () => {
+describe('Span creation inherits tracing fields from parents', () => {
   const provider = new TraceProvider();
   beforeEach(() => {
     provider.setDisabled(false);
   });
 
   it('inherits from parent trace', () => {
-    const trace = provider.createTrace({ tracingApiKey: 'trace-key' });
+    const trace = provider.createTrace({
+      tracingApiKey: 'trace-key',
+      metadata: { source: 'trace' },
+    });
     const span = provider.createSpan(
       { data: { type: 'custom', name: 's', data: {} } },
       trace,
     );
     expect(span.tracingApiKey).toBe('trace-key');
+    expect(span.traceMetadata).toEqual({ source: 'trace' });
   });
 
   it('inherits from parent span', () => {
-    const trace = provider.createTrace({ tracingApiKey: 'trace-key' });
+    const trace = provider.createTrace({
+      tracingApiKey: 'trace-key',
+      metadata: { source: 'trace' },
+    });
     const parent = provider.createSpan(
       { data: { type: 'custom', name: 'p', data: {} } },
       trace,
@@ -329,6 +406,7 @@ describe('Span creation inherits tracing api key from parents', () => {
       parent,
     );
     expect(child.tracingApiKey).toBe('trace-key');
+    expect(child.traceMetadata).toEqual({ source: 'trace' });
   });
 });
 

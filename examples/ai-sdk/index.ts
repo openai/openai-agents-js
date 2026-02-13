@@ -1,4 +1,4 @@
-import { Agent, ModelSettings, run, tool } from '@openai/agents';
+import { Agent, ModelSettings, Runner, tool } from '@openai/agents';
 import { aisdk, AiSdkModel } from '@openai/agents-extensions';
 import { z } from 'zod';
 
@@ -38,7 +38,13 @@ export async function runAgents(
     modelSettings,
   });
 
-  const result = await run(
+  const runner = new Runner({
+    traceMetadata: {
+      userId: 'u_123',
+      chatType: 'support',
+    },
+  });
+  const result = await runner.run(
     agent,
     'Hello what is the weather in San Francisco and oakland?',
   );
