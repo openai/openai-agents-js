@@ -745,61 +745,80 @@ export async function executeShellActions(
       continue;
     }
 
-    emitToolStart(runner, runContext, agent, shellTool, toolCall);
+    const item = await withFunctionSpan(
+      async (span) => {
+        if (runner.config.traceIncludeSensitiveData) {
+          span.spanData.input = JSON.stringify(toolCall.action);
+        }
 
-    let shellOutputs: ShellResult['output'] | undefined;
-    const providerMeta: Record<string, unknown> = {};
-    let maxOutputLength: number | undefined;
+        emitToolStart(runner, runContext, agent, shellTool, toolCall);
 
-    try {
-      const shellResult = await shellTool.shell.run(toolCall.action);
-      shellOutputs = shellResult.output ?? [];
+        let shellOutputs: ShellResult['output'] | undefined;
+        const providerMeta: Record<string, unknown> = {};
+        let maxOutputLength: number | undefined;
 
-      if (shellResult.providerData) {
-        Object.assign(providerMeta, shellResult.providerData);
-      }
+        try {
+          const shellResult = await shellTool.shell.run(toolCall.action);
+          shellOutputs = shellResult.output ?? [];
 
-      if (typeof shellResult.maxOutputLength === 'number') {
-        maxOutputLength = shellResult.maxOutputLength;
-      }
-    } catch (err) {
-      const errorText = toErrorMessage(err);
-      shellOutputs = [
-        {
-          stdout: '',
-          stderr: errorText,
-          outcome: { type: 'exit', exitCode: null },
+          if (shellResult.providerData) {
+            Object.assign(providerMeta, shellResult.providerData);
+          }
+
+          if (typeof shellResult.maxOutputLength === 'number') {
+            maxOutputLength = shellResult.maxOutputLength;
+          }
+        } catch (err) {
+          const errorText = toErrorMessage(err);
+          shellOutputs = [
+            {
+              stdout: '',
+              stderr: errorText,
+              outcome: { type: 'exit', exitCode: null },
+            },
+          ];
+          span.setError({
+            message: 'Error running shell tool',
+            data: {
+              tool_name: shellTool.name,
+              error: errorText,
+            },
+          });
+          _logger.error('Failed to execute shell action:', err);
+        }
+
+        shellOutputs = shellOutputs ?? [];
+
+        const outputStr = JSON.stringify(shellOutputs);
+        emitToolEnd(runner, runContext, agent, shellTool, outputStr, toolCall);
+
+        if (runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = outputStr;
+        }
+
+        const rawItem: protocol.ShellCallResultItem = {
+          type: 'shell_call_output',
+          callId: toolCall.callId,
+          output: shellOutputs ?? [],
+        };
+
+        if (typeof maxOutputLength === 'number') {
+          rawItem.maxOutputLength = maxOutputLength;
+        }
+
+        if (Object.keys(providerMeta).length > 0) {
+          rawItem.providerData = providerMeta;
+        }
+
+        return new RunToolCallOutputItem(rawItem, agent, rawItem.output);
+      },
+      {
+        data: {
+          name: shellTool.name,
         },
-      ];
-      _logger.error('Failed to execute shell action:', err);
-    }
-
-    shellOutputs = shellOutputs ?? [];
-
-    emitToolEnd(
-      runner,
-      runContext,
-      agent,
-      shellTool,
-      JSON.stringify(shellOutputs),
-      toolCall,
+      },
     );
-
-    const rawItem: protocol.ShellCallResultItem = {
-      type: 'shell_call_output',
-      callId: toolCall.callId,
-      output: shellOutputs ?? [],
-    };
-
-    if (typeof maxOutputLength === 'number') {
-      rawItem.maxOutputLength = maxOutputLength;
-    }
-
-    if (Object.keys(providerMeta).length > 0) {
-      rawItem.providerData = providerMeta;
-    }
-
-    results.push(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
+    results.push(item);
   }
 
   return results;
