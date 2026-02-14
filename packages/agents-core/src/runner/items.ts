@@ -85,12 +85,20 @@ export function agentInputSerializationReplacer(
 }
 
 // Extracts model-ready output items from run items, excluding approval placeholders.
+// Trailing reasoning items are stripped because persisting a reasoning item
+// without a following assistant output violates the API invariant and causes 400 errors.
 export function extractOutputItemsFromRunItems(
   items: RunItem[],
 ): AgentInputItem[] {
-  return items
-    .filter((item) => item.type !== 'tool_approval_item')
-    .map((item) => item.rawItem as AgentInputItem);
+  const filtered = items.filter((item) => item.type !== 'tool_approval_item');
+
+  // Strip trailing reasoning items that have no subsequent non-reasoning output.
+  let end = filtered.length;
+  while (end > 0 && filtered[end - 1].type === 'reasoning_item') {
+    end--;
+  }
+
+  return filtered.slice(0, end).map((item) => item.rawItem as AgentInputItem);
 }
 
 /**
