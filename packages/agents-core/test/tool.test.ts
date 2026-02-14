@@ -664,6 +664,45 @@ describe('tool.invoke', () => {
     );
   });
 
+  it('preserves receiver context for custom FunctionTool implementations', async () => {
+    const invoke = vi.fn(function (
+      this: { marker: string },
+      _runContext: RunContext<unknown>,
+      _input: string,
+      _details?: any,
+    ) {
+      return this.marker;
+    });
+
+    const customTool = {
+      type: 'function' as const,
+      name: 'custom_receiver_tool',
+      description: 'custom tool that relies on receiver context',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      strict: true,
+      invoke,
+      needsApproval: async () => false,
+      timeoutMs: 100,
+      timeoutBehavior: 'error_as_result' as const,
+      isEnabled: async () => true,
+      marker: 'receiver-ok',
+    };
+
+    const result = await invokeFunctionTool({
+      tool: customTool as any,
+      runContext: new RunContext(),
+      input: '{}',
+    });
+
+    expect(result).toBe('receiver-ok');
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('aborts the invocation signal when timeoutMs is exceeded', async () => {
     let abortReason: unknown;
     const t = tool({
