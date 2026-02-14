@@ -8,6 +8,7 @@ import {
   Usage,
   ModelBehaviorError,
   RunToolApprovalItem,
+  ToolTimeoutError,
   defineToolInputGuardrail,
   defineToolOutputGuardrail,
   ToolGuardrailFunctionOutputFactory,
@@ -434,6 +435,86 @@ describe('RealtimeSession', () => {
       'Error handling function call',
       expect.any(Error),
     );
+    errorSpy.mockRestore();
+  });
+
+  it('returns a timeout message when a function tool exceeds timeoutMs', async () => {
+    const localTransport = new FakeTransport();
+    const timedTool = tool({
+      name: 'timed_tool',
+      description: 'timed tool',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [timedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'timed_tool',
+      callId: 'c-timeout',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() =>
+      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
+    );
+    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe(
+      "Tool 'timed_tool' timed out after 5ms.",
+    );
+    expect(localTransport.sendFunctionCallOutputCalls[0]?.[2]).toBe(true);
+  });
+
+  it('emits an error when timeoutBehavior is raise_exception', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const localTransport = new FakeTransport();
+    const timedTool = tool({
+      name: 'timed_tool',
+      description: 'timed tool',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutBehavior: 'raise_exception',
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'done';
+      },
+    });
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [timedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const errors: any[] = [];
+    localSession.on('error', (e) => errors.push(e));
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'timed_tool',
+      callId: 'c-timeout-raise',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() => expect(errors.length).toBe(1));
+    expect(errors[0]?.error).toBeInstanceOf(ToolTimeoutError);
+    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
     errorSpy.mockRestore();
   });
 

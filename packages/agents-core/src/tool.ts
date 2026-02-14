@@ -12,9 +12,10 @@ import { safeExecute } from './utils/safeExecute';
 import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
+import { combineAbortSignals } from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunResult } from './result';
-import { InvalidToolInputError, UserError } from './errors';
+import { InvalidToolInputError, ToolTimeoutError, UserError } from './errors';
 import logger from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -54,9 +55,17 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
 ) => Promise<boolean>;
 
 export type ToolCallDetails = {
-  toolCall: protocol.FunctionCallItem;
+  toolCall?: protocol.FunctionCallItem;
   resumeState?: string;
+  signal?: AbortSignal;
 };
+
+export type FunctionToolTimeoutBehavior = 'error_as_result' | 'raise_exception';
+
+export type ToolTimeoutErrorFunction<Context = UnknownContext> = (
+  context: RunContext<Context>,
+  error: ToolTimeoutError,
+) => Promise<string> | string;
 
 export type ShellApprovalFunction = (
   runContext: RunContext,
@@ -237,6 +246,24 @@ export type FunctionTool<
    * program has to resolve by approving or rejecting the tool call.
    */
   needsApproval: ToolApprovalFunction<TParameters>;
+
+  /**
+   * Optional timeout in milliseconds for each tool invocation.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Defines how timeout errors are handled.
+   *
+   * - `error_as_result`: return a model-visible timeout message.
+   * - `raise_exception`: raise `ToolTimeoutError` and fail the run.
+   */
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+
+  /**
+   * Optional formatter for timeout errors when timeoutBehavior is `error_as_result`.
+   */
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
 
   /**
    * Determines whether the tool should be made available to the model for the current run.
@@ -1158,6 +1185,14 @@ type ToolErrorFunction = (
   error: Error | unknown,
 ) => Promise<string> | string;
 
+const FUNCTION_TOOL_TIMEOUT_BEHAVIORS = [
+  'error_as_result',
+  'raise_exception',
+] as const satisfies ReadonlyArray<FunctionToolTimeoutBehavior>;
+const FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED = Symbol(
+  'functionToolTimeoutAlreadyEnforced',
+);
+
 type ToolGuardrailOptions<Context = UnknownContext> = {
   /**
    * Guardrails that validate or block tool invocation before it runs.
@@ -1191,6 +1226,15 @@ function defaultToolErrorFunction(context: RunContext, error: Error | unknown) {
   const details = error instanceof Error ? error.toString() : String(error);
   return `An error occurred while running the tool. Please try again. Error: ${details}`;
 }
+
+function defaultFunctionToolTimeoutErrorMessage(args: {
+  toolName: string;
+  timeoutMs: number;
+}): string {
+  return `Tool '${args.toolName}' timed out after ${args.timeoutMs}ms.`;
+}
+
+const MAX_FUNCTION_TOOL_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * The options for a tool that has strict mode enabled.
@@ -1244,6 +1288,22 @@ type StrictToolOptions<
    * Determines whether the tool should be exposed to the model for the current run.
    */
   isEnabled?: ToolEnabledOption<Context>;
+
+  /**
+   * Optional timeout in milliseconds for each tool call.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Timeout handling mode. `error_as_result` returns a model-visible message and
+   * `raise_exception` throws `ToolTimeoutError`.
+   */
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+
+  /**
+   * Optional formatter used for timeout messages when timeoutBehavior is `error_as_result`.
+   */
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
 };
 
 /**
@@ -1296,6 +1356,22 @@ type NonStrictToolOptions<
    * Determines whether the tool should be exposed to the model for the current run.
    */
   isEnabled?: ToolEnabledOption<Context>;
+
+  /**
+   * Optional timeout in milliseconds for each tool call.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Timeout handling mode. `error_as_result` returns a model-visible message and
+   * `raise_exception` throws `ToolTimeoutError`.
+   */
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+
+  /**
+   * Optional formatter used for timeout messages when timeoutBehavior is `error_as_result`.
+   */
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
 };
 
 /**
@@ -1318,6 +1394,210 @@ export type ToolOptionsWithGuardrails<
   TParameters extends ToolInputParameters,
   Context = UnknownContext,
 > = ToolOptions<TParameters, Context>;
+
+type FunctionToolInvocationArgs<
+  Context = UnknownContext,
+  TParameters extends ToolInputParameters = ToolInputParameters,
+  Result = unknown,
+> = {
+  tool: FunctionTool<Context, TParameters, Result>;
+  runContext: RunContext<Context>;
+  input: string;
+  details?: ToolCallDetails;
+};
+
+type FunctionToolInvokeFunction<Context = UnknownContext, Result = unknown> = (
+  runContext: RunContext<Context>,
+  input: string,
+  details?: ToolCallDetails,
+) => Promise<string | Result>;
+type ToolCallDetailsWithTimeoutFlag = ToolCallDetails & {
+  [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]?: true;
+};
+
+function normalizeFunctionToolTimeoutConfig<Context = UnknownContext>(args: {
+  toolName: string;
+  timeoutMs?: number;
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+}): {
+  timeoutMs?: number;
+  timeoutBehavior: FunctionToolTimeoutBehavior;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+} {
+  const { toolName, timeoutMs, timeoutBehavior, timeoutErrorFunction } = args;
+
+  if (typeof timeoutMs !== 'undefined') {
+    if (typeof timeoutMs !== 'number' || Number.isNaN(timeoutMs)) {
+      throw new UserError(
+        `Function tool '${toolName}' timeoutMs must be a finite number in milliseconds.`,
+      );
+    }
+    if (!Number.isFinite(timeoutMs)) {
+      throw new UserError(
+        `Function tool '${toolName}' timeoutMs must be finite.`,
+      );
+    }
+    if (timeoutMs <= 0) {
+      throw new UserError(
+        `Function tool '${toolName}' timeoutMs must be greater than 0.`,
+      );
+    }
+    if (timeoutMs > MAX_FUNCTION_TOOL_TIMEOUT_MS) {
+      throw new UserError(
+        `Function tool '${toolName}' timeoutMs must be less than or equal to ${MAX_FUNCTION_TOOL_TIMEOUT_MS}.`,
+      );
+    }
+  }
+
+  const resolvedBehavior = timeoutBehavior ?? 'error_as_result';
+  if (!FUNCTION_TOOL_TIMEOUT_BEHAVIORS.includes(resolvedBehavior)) {
+    throw new UserError(
+      `Function tool '${toolName}' timeoutBehavior must be one of: ${FUNCTION_TOOL_TIMEOUT_BEHAVIORS.join(', ')}.`,
+    );
+  }
+
+  if (
+    typeof timeoutErrorFunction !== 'undefined' &&
+    typeof timeoutErrorFunction !== 'function'
+  ) {
+    throw new UserError(
+      `Function tool '${toolName}' timeoutErrorFunction must be a function when provided.`,
+    );
+  }
+
+  return {
+    timeoutMs,
+    timeoutBehavior: resolvedBehavior,
+    timeoutErrorFunction,
+  };
+}
+
+async function invokeFunctionToolWithTimeout<
+  Context = UnknownContext,
+  Result = unknown,
+>(args: {
+  toolName: string;
+  invoke: FunctionToolInvokeFunction<Context, Result>;
+  runContext: RunContext<Context>;
+  input: string;
+  details?: ToolCallDetails;
+  timeoutMs?: number;
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+}): Promise<string | Result> {
+  const {
+    toolName,
+    invoke,
+    runContext,
+    input,
+    details,
+    timeoutMs: configuredTimeoutMs,
+    timeoutBehavior: configuredTimeoutBehavior,
+    timeoutErrorFunction: configuredTimeoutErrorFunction,
+  } = args;
+  const { timeoutMs, timeoutBehavior, timeoutErrorFunction } =
+    normalizeFunctionToolTimeoutConfig({
+      toolName,
+      timeoutMs: configuredTimeoutMs,
+      timeoutBehavior: configuredTimeoutBehavior,
+      timeoutErrorFunction: configuredTimeoutErrorFunction,
+    });
+
+  if (typeof timeoutMs === 'undefined') {
+    return invoke(runContext, input, details);
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timeoutTriggered = false;
+  const timeoutController = new AbortController();
+  const { signal: invocationSignal, cleanup: cleanupAbortSignals } =
+    combineAbortSignals(details?.signal, timeoutController.signal);
+  const invokeDetails: ToolCallDetails | undefined = invocationSignal
+    ? { ...(details ?? {}), signal: invocationSignal }
+    : details;
+  const timeoutError = new ToolTimeoutError({
+    toolName,
+    timeoutMs,
+  });
+
+  try {
+    return await Promise.race([
+      invoke(runContext, input, invokeDetails),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          timeoutTriggered = true;
+          reject(timeoutError);
+          timeoutController.abort(timeoutError);
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    const isTimeoutError =
+      error === timeoutError ||
+      (timeoutTriggered && timeoutController.signal.reason === timeoutError);
+    if (!isTimeoutError) {
+      throw error;
+    }
+
+    if (timeoutBehavior === 'raise_exception') {
+      throw timeoutError;
+    }
+
+    if (timeoutErrorFunction) {
+      return timeoutErrorFunction(runContext, timeoutError);
+    }
+
+    return defaultFunctionToolTimeoutErrorMessage({
+      toolName,
+      timeoutMs,
+    });
+  } finally {
+    if (typeof timeoutId !== 'undefined') {
+      clearTimeout(timeoutId);
+    }
+    cleanupAbortSignals();
+  }
+}
+
+/**
+ * Invoke a function tool while enforcing optional per-tool timeout settings.
+ */
+export async function invokeFunctionTool<
+  Context = UnknownContext,
+  TParameters extends ToolInputParameters = ToolInputParameters,
+  Result = unknown,
+>(
+  args: FunctionToolInvocationArgs<Context, TParameters, Result>,
+): Promise<string | Result> {
+  const { tool, runContext, input, details } = args;
+  const invokeWithTimeoutFlag: FunctionToolInvokeFunction<Context, Result> = (
+    invocationRunContext,
+    invocationInput,
+    invocationDetails,
+  ) => {
+    const detailsWithFlag: ToolCallDetailsWithTimeoutFlag | undefined =
+      typeof invocationDetails === 'undefined'
+        ? undefined
+        : {
+            ...invocationDetails,
+            [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]: true,
+          };
+
+    return tool.invoke(invocationRunContext, invocationInput, detailsWithFlag);
+  };
+
+  return invokeFunctionToolWithTimeout<Context, Result>({
+    toolName: tool.name,
+    invoke: invokeWithTimeoutFlag,
+    runContext,
+    input,
+    details,
+    timeoutMs: tool.timeoutMs,
+    timeoutBehavior: tool.timeoutBehavior,
+    timeoutErrorFunction: tool.timeoutErrorFunction,
+  });
+}
 
 /**
  * Exposes a function to the agent as a tool to be called
@@ -1350,6 +1630,13 @@ export function tool<
   if (!strictMode && isZodObject(options.parameters)) {
     throw new UserError('Strict mode is required for Zod parameters');
   }
+  const { timeoutMs, timeoutBehavior, timeoutErrorFunction } =
+    normalizeFunctionToolTimeoutConfig({
+      toolName: name,
+      timeoutMs: options.timeoutMs,
+      timeoutBehavior: options.timeoutBehavior,
+      timeoutErrorFunction: options.timeoutErrorFunction,
+    });
 
   const { parser, schema: parameters } = getSchemaAndParserFromInputType(
     options.parameters,
@@ -1397,12 +1684,19 @@ export function tool<
     return result as Result;
   }
 
-  async function invoke(
+  async function invokeWithoutTimeout(
     runContext: RunContext<Context>,
     input: string,
     details?: ToolCallDetails,
   ): Promise<string | Result> {
     return _invoke(runContext, input, details).catch<string>((error) => {
+      if (
+        details?.signal?.aborted &&
+        details.signal.reason instanceof ToolTimeoutError
+      ) {
+        throw error;
+      }
+
       if (toolErrorFunction) {
         const currentSpan = getCurrentSpan();
         currentSpan?.setError({
@@ -1416,6 +1710,30 @@ export function tool<
       }
 
       throw error;
+    });
+  }
+
+  async function invoke(
+    runContext: RunContext<Context>,
+    input: string,
+    details?: ToolCallDetails,
+  ): Promise<string | Result> {
+    const detailsWithFlag = details as
+      | ToolCallDetailsWithTimeoutFlag
+      | undefined;
+    if (detailsWithFlag?.[FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]) {
+      return invokeWithoutTimeout(runContext, input, details);
+    }
+
+    return invokeFunctionToolWithTimeout<Context, Result>({
+      toolName: name,
+      invoke: invokeWithoutTimeout,
+      runContext,
+      input,
+      details,
+      timeoutMs,
+      timeoutBehavior,
+      timeoutErrorFunction,
     });
   }
 
@@ -1445,6 +1763,9 @@ export function tool<
     strict: strictMode,
     invoke,
     needsApproval,
+    timeoutMs,
+    timeoutBehavior,
+    timeoutErrorFunction,
     isEnabled,
     inputGuardrails: resolveToolInputGuardrails(options.inputGuardrails),
     outputGuardrails: resolveToolOutputGuardrails(options.outputGuardrails),

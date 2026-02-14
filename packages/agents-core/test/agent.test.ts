@@ -296,6 +296,83 @@ describe('Agent', () => {
     );
   });
 
+  it('passes tool-call abort signal to nested runner when used as a tool', async () => {
+    const agent = new Agent({
+      name: 'Signal Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const abortController = new AbortController();
+    await tool.invoke(runContext, JSON.stringify(inputPayload), {
+      toolCall: {
+        type: 'function_call',
+        name: tool.name,
+        callId: 'call-signal',
+        status: 'completed',
+        arguments: JSON.stringify(inputPayload),
+      },
+      signal: abortController.signal,
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const calledOptions = runSpy.mock.calls[0]?.[2];
+    expect(calledOptions?.signal).toBe(abortController.signal);
+  });
+
+  it('combines runOptions and tool-call abort signals for nested runner', async () => {
+    const agent = new Agent({
+      name: 'Combined Signal Agent',
+      instructions: 'You do tests.',
+    });
+    let passedSignal: AbortSignal | undefined;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async (_agent, _input, options) => {
+        passedSignal = options?.signal;
+        return { rawResponses: [] } as any;
+      });
+    const runOptionsController = new AbortController();
+    runOptionsController.abort(new Error('run-options-abort'));
+
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runOptions: {
+        signal: runOptionsController.signal,
+      },
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const detailsController = new AbortController();
+    await tool.invoke(runContext, JSON.stringify(inputPayload), {
+      toolCall: {
+        type: 'function_call',
+        name: tool.name,
+        callId: 'call-combined-signal',
+        status: 'completed',
+        arguments: JSON.stringify(inputPayload),
+      },
+      signal: detailsController.signal,
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(passedSignal).toBeDefined();
+    expect(passedSignal).not.toBe(runOptionsController.signal);
+    expect(passedSignal).not.toBe(detailsController.signal);
+    expect(passedSignal?.aborted).toBe(true);
+    expect(passedSignal?.reason).toBe(runOptionsController.signal.reason);
+  });
+
   it('supports structured input schemas for agent tools', async () => {
     const agent = new Agent({
       name: 'Structured Agent',

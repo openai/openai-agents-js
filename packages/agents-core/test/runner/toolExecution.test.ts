@@ -41,6 +41,7 @@ import {
   ToolCallError,
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
+  ToolTimeoutError,
   UserError,
 } from '../../src/errors';
 import { Computer } from '../../src/computer';
@@ -1464,6 +1465,60 @@ describe('executeShellActions', () => {
       );
       expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
       expect(invokeSpy).toHaveBeenCalled();
+    });
+
+    it('returns a timeout message when timeoutBehavior is error_as_result', async () => {
+      const t = tool({
+        name: 'slow_tool',
+        description: 'slow tool',
+        parameters: z.object({}),
+        timeoutMs: 5,
+        execute: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'late';
+        }),
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res).toHaveLength(1);
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        expect(res[0].output).toBe("Tool 'slow_tool' timed out after 5ms.");
+      }
+    });
+
+    it('throws ToolTimeoutError with run state when timeoutBehavior is raise_exception', async () => {
+      const t = tool({
+        name: 'slow_tool',
+        description: 'slow tool',
+        parameters: z.object({}),
+        timeoutMs: 5,
+        timeoutBehavior: 'raise_exception',
+        execute: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'late';
+        }),
+      }) as unknown as FunctionTool;
+
+      const timeoutError = (await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      ).catch((error) => error)) as ToolTimeoutError;
+
+      expect(timeoutError).toBeInstanceOf(ToolTimeoutError);
+      expect(timeoutError.state).toBe(state);
     });
 
     it('emits agent_tool_end even when function tool throws error', async () => {

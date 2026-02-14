@@ -51,7 +51,11 @@ export type ToolInvocationErrorContext = {
   /** The invalid tool input produced by the model. */
   input?: string;
   /** The details of the tool call made by the model. */
-  details?: { toolCall: protocol.FunctionCallItem; resumeState?: string };
+  details?: {
+    toolCall?: protocol.FunctionCallItem;
+    resumeState?: string;
+    signal?: AbortSignal;
+  };
 };
 
 /**
@@ -108,6 +112,27 @@ export class ToolCallError extends AgentsError {
   ) {
     super(message, state);
     this.error = error;
+  }
+}
+
+/**
+ * Error thrown when a function tool invocation exceeds its timeout.
+ */
+export class ToolTimeoutError extends AgentsError {
+  toolName: string;
+  timeoutMs: number;
+  constructor({
+    toolName,
+    timeoutMs,
+    state,
+  }: {
+    toolName: string;
+    timeoutMs: number;
+    state?: RunState<any, Agent<any, any>>;
+  }) {
+    super(`Tool '${toolName}' timed out after ${timeoutMs}ms.`, state);
+    this.toolName = toolName;
+    this.timeoutMs = timeoutMs;
   }
 }
 
