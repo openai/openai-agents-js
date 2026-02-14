@@ -87,6 +87,8 @@ While the tool is executing the agent will not be able to process new requests f
 If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`.
 This sends the tool output back to the session while leaving response triggering under your control.
 
+Function tool timeout options (`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`) work the same way in Realtime sessions. With the default `error_as_result`, the timeout message is sent as tool output. With `raise_exception`, the session emits an `error` event with [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) and does not send tool output for that call.
+
 ### Accessing the conversation history
 
 Additionally to the arguments that the agent called a particular tool with, you can also access a snapshot of the current conversation history that is tracked by the Realtime Session. This can be useful if you need to perform a more complex action based on the current state of the conversation or are planning to use [tools for delegation](#delegation-through-tools).
