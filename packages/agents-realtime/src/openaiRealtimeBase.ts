@@ -683,6 +683,8 @@ export abstract class OpenAIRealtimeBase
       threshold,
       idleTimeoutMs,
       idle_timeout_ms,
+      modelVersion,
+      model_version,
       ...rest
     } = c;
 
@@ -694,6 +696,7 @@ export abstract class OpenAIRealtimeBase
       prefix_padding_ms: prefixPaddingMs ?? prefix_padding_ms,
       silence_duration_ms: silenceDurationMs ?? silence_duration_ms,
       idle_timeout_ms: idleTimeoutMs ?? idle_timeout_ms,
+      model_version: modelVersion ?? model_version,
       threshold,
       ...rest,
     };

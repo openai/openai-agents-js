@@ -97,6 +97,7 @@ describe('OpenAIRealtimeBase helpers', () => {
             silenceDurationMs: 0,
             idleTimeoutMs: 0,
             threshold: 0,
+            modelVersion: 'default',
           },
         },
       },
@@ -110,6 +111,7 @@ describe('OpenAIRealtimeBase helpers', () => {
       silence_duration_ms: 0,
       idle_timeout_ms: 0,
       threshold: 0,
+      model_version: 'default',
     });
   });
 
