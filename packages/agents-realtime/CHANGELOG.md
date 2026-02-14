@@ -1,5 +1,13 @@
 # @openai/agents-realtime
 
+## 0.4.10
+
+### Patch Changes
+
+- de6a5f3: feat(core,realtime): add function tool timeouts and trace metadata propagation
+- Updated dependencies [de6a5f3]
+  - @openai/agents-core@0.4.10
+
 ## 0.4.9
 
 ### Patch Changes
