@@ -3,31 +3,91 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - ".agents/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE/**"
-      - ".github/codex/**"
-      - ".husky/**"
-      - "integration-tests/**"
-      - "*.md"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - ".agents/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE/**"
-      - ".github/codex/**"
-      - ".husky/**"
-      - "integration-tests/**"
-      - "*.md"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_ci: ${{ steps.filter.outputs.run_ci }}
+    steps:
+      - name: Determine whether CI should run
+        id: filter
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            const IGNORED_PREFIXES = [
+              'docs/',
+              '.agents/',
+              '.github/ISSUE_TEMPLATE/',
+              '.github/PULL_REQUEST_TEMPLATE/',
+              '.github/codex/',
+              '.husky/',
+              'integration-tests/',
+            ];
+
+            const isIgnoredPath = (path) => {
+              if (IGNORED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+                return true;
+              }
+              // Keep parity with "*.md" from the previous paths-ignore list.
+              if (!path.includes('/') && path.endsWith('.md')) {
+                return true;
+              }
+              return false;
+            };
+
+            let changedFiles = [];
+
+            if (context.eventName === 'pull_request') {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              });
+              changedFiles = files.map((file) => file.filename);
+            } else if (context.eventName === 'push') {
+              const before = context.payload.before;
+              const after = context.payload.after;
+
+              if (!before || /^0+$/.test(before)) {
+                core.info('No comparable base commit found. Running CI by default.');
+                core.setOutput('run_ci', 'true');
+                return;
+              }
+
+              const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead: `${before}...${after}`,
+              });
+              changedFiles = (comparison.data.files ?? []).map((file) => file.filename);
+            } else {
+              core.info(`Unsupported event "${context.eventName}". Running CI by default.`);
+              core.setOutput('run_ci', 'true');
+              return;
+            }
+
+            if (changedFiles.length === 0) {
+              core.info('No changed files detected. Running CI by default.');
+              core.setOutput('run_ci', 'true');
+              return;
+            }
+
+            const relevantFiles = changedFiles.filter((path) => !isIgnoredPath(path));
+            const runCi = relevantFiles.length > 0;
+
+            core.info(`Changed files: ${changedFiles.join(', ')}`);
+            core.info(runCi ? `CI will run because relevant files changed: ${relevantFiles.join(', ')}` : 'Only docs/meta files changed. CI will be skipped.');
+            core.setOutput('run_ci', runCi ? 'true' : 'false');
+
   test:
+    needs: changes
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: "--max_old_space_size=6144"
@@ -37,61 +97,85 @@ jobs:
         # Using 24.3.x due to https://github.com/pnpm/pnpm/issues/9743
         node-version: ['20', '22', '24.3.x']
     steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking test checks as successful without running CI."
       - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
           version: 10.29.2
           run_install: false
       - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
       - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm install
       - name: Build all packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build
       - name: Check generated declarations
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm -r -F "@openai/*" dist:check
       - name: Run linter
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm lint
       - name: Type-check docs scripts
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm docs:scripts:check
       - name: Compile examples
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm -r build-check
       - name: Run tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test
 
   coverage:
+    needs: changes
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: "--max_old_space_size=6144"
     steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking coverage check as successful without running CI."
       - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
           version: 10.29.2
           run_install: false
       - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
         with:
           node-version: 22
           cache: 'pnpm'
       - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm install
       - name: Build all packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build
       - name: Run tests with coverage
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test:coverage
       - name: Enforce coverage thresholds
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
