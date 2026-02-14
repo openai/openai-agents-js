@@ -30,157 +30,163 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 ## 오디오 처리
 
-기본 `OpenAIRealtimeWebRTC` 같은 일부 전송 계층은 오디오 입력/출력을 자동으로 처리합니다. `OpenAIRealtimeWebSocket` 같은 다른 전송 방식에서는 세션 오디오를 직접 처리해야 합니다:
+기본 `OpenAIRealtimeWebRTC` 같은 일부 전송 계층은 오디오 입력과 출력을 자동으로 처리합니다. `OpenAIRealtimeWebSocket` 같은 다른 전송 방식에서는 세션 오디오를 직접 처리해야 합니다:
 
 <Code lang="typescript" code={handleAudioExample} />
 
 ## 세션 구성
 
-생성 시 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)에 추가 옵션을 전달하거나 `connect(...)` 호출 시 세션을 구성할 수 있습니다.
+생성 시 [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) 에 추가 옵션을 전달하거나 `connect(...)` 호출 시 세션을 구성할 수 있습니다.
 
 <Code lang="typescript" code={configureSessionExample} />
 
-이 전송 계층에서는 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update)과 일치하는 모든 매개변수를 전달할 수 있습니다.
+이 전송 계층들은 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) 과 일치하는 모든 매개변수를 전달할 수 있습니다.
 
-[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 아직 매칭되는 매개변수가 없는 새로운 매개변수의 경우 `providerData`를 사용할 수 있습니다. `providerData`에 전달된 항목은 `session` 객체의 일부로 그대로 전달됩니다.
+[RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) 에 아직 일치하는 매개변수가 없는 새로운 매개변수의 경우 `providerData` 를 사용할 수 있습니다. `providerData` 에 전달한 모든 내용은 `session` 객체의 일부로 그대로 전달됩니다.
 
 생성 시 설정할 수 있는 추가 `RealtimeSession` 옵션:
 
-| Option                                        | Type                              | Purpose                                                        |
-| --------------------------------------------- | --------------------------------- | -------------------------------------------------------------- |
-| `context`                                     | `TContext`                        | 세션 컨텍스트에 병합되는 추가 로컬 컨텍스트                    |
-| `historyStoreAudio`                           | `boolean`                         | 로컬 히스토리 스냅샷에 오디오 데이터를 저장 (기본값: 비활성화) |
-| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | 세션의 출력 가드레일 (참조: [가드레일](#guardrails))           |
-| `outputGuardrailSettings`                     | `RealtimeOutputGuardrailSettings` | 가드레일 검사의 빈도 및 동작                                   |
-| `tracingDisabled`                             | `boolean`                         | 세션에 대한 트레이싱 비활성화                                  |
-| `groupId`                                     | `string`                          | 세션 또는 백엔드 실행 간 트레이스 그룹화                       |
-| `traceMetadata`                               | `Record<string, any>`             | 세션 트레이스에 부착할 사용자 지정 메타데이터                  |
-| `workflowName`                                | `string`                          | 트레이스 워크플로의 표시 이름                                  |
-| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | MCP 도구 호출 완료 시 모델 응답 자동 트리거 (기본값: `true`)   |
-| `toolErrorFormatter`                          | `ToolErrorFormatter`              | 모델에 반환되는 도구 승인 거부 메시지 커스터마이즈             |
+| Option                                        | Type                              | Purpose                                                         |
+| --------------------------------------------- | --------------------------------- | --------------------------------------------------------------- |
+| `context`                                     | `TContext`                        | 세션 컨텍스트에 병합할 추가 로컬 컨텍스트                       |
+| `historyStoreAudio`                           | `boolean`                         | 로컬 히스토리 스냅샷에 오디오 데이터를 저장함(기본값: 비활성화) |
+| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | 세션에 대한 출력 가드레일(참고: [가드레일](#guardrails))        |
+| `outputGuardrailSettings`                     | `RealtimeOutputGuardrailSettings` | 가드레일 검사 빈도와 동작                                       |
+| `tracingDisabled`                             | `boolean`                         | 세션에 대해 트레이싱 비활성화                                   |
+| `groupId`                                     | `string`                          | 세션 또는 백엔드 실행 간 트레이스 그룹화                        |
+| `traceMetadata`                               | `Record<string, any>`             | 세션 트레이스에 첨부할 커스텀 메타데이터                        |
+| `workflowName`                                | `string`                          | 트레이스 워크플로의 친숙한 이름                                 |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | MCP 도구 호출 완료 시 모델 응답 자동 트리거(기본값: `true`)     |
+| `toolErrorFormatter`                          | `ToolErrorFormatter`              | 모델에 반환되는 도구 승인 거부 메시지 커스터마이즈              |
 
 ## 핸드오프
 
-일반 에이전트와 마찬가지로, 핸드오프를 사용해 에이전트를 여러 개로 분할하고 이들 사이를 오케스트레이션하여 성능을 개선하고 문제 범위를 더 잘 한정할 수 있습니다.
+일반 에이전트와 마찬가지로, 핸드오프를 사용해 에이전트를 여러 에이전트로 분리하고 그 사이를 오케스트레이션하여 성능을 개선하고 문제 범위를 더 잘 한정할 수 있습니다.
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-일반 에이전트와 달리, Realtime Agents에서는 핸드오프 동작이 약간 다릅니다. 핸드오프가 수행되면 진행 중인 세션이 새로운 에이전트 구성으로 업데이트됩니다. 이 때문에 에이전트는 진행 중인 대화 히스토리에 자동으로 접근할 수 있으며 입력 필터는 현재 적용되지 않습니다.
+일반 에이전트와 달리, 실시간 에이전트에서는 핸드오프의 동작이 약간 다릅니다. 핸드오프가 수행되면 진행 중인 세션이 새로운 에이전트 구성으로 업데이트됩니다. 이로 인해 에이전트는 진행 중인 대화 이력에 자동으로 접근할 수 있으며, 입력 필터는 현재 적용되지 않습니다.
 
-또한, 이로 인해 핸드오프 과정에서 `voice` 또는 `model`을 변경할 수 없습니다. 또한 다른 Realtime Agents에만 연결할 수 있습니다. 예를 들어 `gpt-5-mini` 같은 추론 모델 등 다른 모델을 사용해야 하는 경우 [도구를 통한 위임](#delegation-through-tools)을 사용할 수 있습니다.
+또한, 이 의미는 핸드오프의 일부로 `voice` 또는 `model` 을 변경할 수 없음을 의미합니다. 다른 실시간 에이전트에만 연결할 수 있습니다. 다른 모델, 예를 들어 `gpt-5-mini` 같은 추론 모델이 필요하다면 [도구를 통한 위임](#delegation-through-tools) 을 사용할 수 있습니다.
 
 ## 도구
 
-일반 에이전트와 마찬가지로, Realtime Agents도 작업을 수행하기 위해 도구를 호출할 수 있습니다. Realtime은 **함수 도구**(로컬 실행)와 **hosted MCP tools**(Realtime API가 원격으로 실행)를 지원합니다. 일반 에이전트에서 사용하던 것과 동일한 `tool()` 헬퍼로 함수 도구를 정의할 수 있습니다.
+일반 에이전트와 마찬가지로, 실시간 에이전트는 작업 수행을 위해 도구를 호출할 수 있습니다. Realtime 은 **함수 도구**(로컬에서 실행)와 **호스티드 MCP 도구**(Realtime API 가 원격으로 실행)를 지원합니다. 일반 에이전트에서 사용하는 것과 동일한 `tool()` 헬퍼를 사용해 함수 도구를 정의할 수 있습니다.
 
 <Code lang="typescript" code={defineToolExample} />
 
-함수 도구는 `RealtimeSession`과 동일한 환경에서 실행됩니다. 즉, 세션이 브라우저에서 실행 중이라면 도구도 브라우저에서 실행됩니다. 민감한 작업을 수행해야 하는 경우, 도구 내부에서 백엔드로 HTTP 요청을 수행하세요.
+함수 도구는 `RealtimeSession` 과 동일한 환경에서 실행됩니다. 즉, 세션을 브라우저에서 실행 중이라면 도구도 브라우저에서 실행됩니다. 민감한 작업을 수행해야 하는 경우 도구 내에서 백엔드로 HTTP 요청을 수행하세요.
 
-Hosted MCP tools는 `hostedMcpTool`로 구성하며 원격으로 실행됩니다. MCP 도구 가용성이 변경되면 세션이 `mcp_tools_changed`를 발생시킵니다. MCP 도구 호출 완료 후 세션이 모델 응답을 자동 트리거하지 않게 하려면 `automaticallyTriggerResponseForMcpToolCalls: false`로 설정하세요.
+호스티드 MCP 도구는 `hostedMcpTool` 로 구성하며 원격으로 실행됩니다. MCP 도구 사용 가능 상태가 변경되면 세션은 `mcp_tools_changed` 를 발생시킵니다. MCP 도구 호출 완료 후 세션이 모델 응답을 자동 트리거하지 않게 하려면 `automaticallyTriggerResponseForMcpToolCalls: false` 로 설정하세요.
 
-도구가 실행되는 동안 에이전트는 사용자의 새로운 요청을 처리할 수 없습니다. 경험을 개선하는 한 가지 방법은 에이전트에게 도구를 실행하려 한다고 알리거나, 도구 실행 시간을 벌기 위해 특정 문구를 말하도록 지시하는 것입니다.
+도구가 실행되는 동안 에이전트는 사용자의 새 요청을 처리할 수 없습니다. 경험을 개선하는 한 가지 방법은 도구를 실행하려고 할 때 이를 알리거나, 도구 실행 시간을 벌기 위한 특정 문구를 말하도록 에이전트에 지시하는 것입니다.
 
-함수 도구가 즉시 다른 모델 응답을 트리거하지 않고 종료되어야 한다면, `@openai/agents/realtime`의 `backgroundResult(output)`을 반환하세요.
-이렇게 하면 도구 출력을 세션으로 보내되 응답 트리거링은 직접 제어할 수 있습니다.
+함수 도구가 즉시 다른 모델 응답을 트리거하지 않고 종료되어야 한다면, `@openai/agents/realtime` 의 `backgroundResult(output)` 를 반환하세요.
+이렇게 하면 응답 트리거를 사용자가 제어할 수 있도록 유지하면서 도구 출력을 세션으로 다시 보냅니다.
 
-### 대화 기록 접근
+함수 도구의 타임아웃 옵션(`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`) 은 실시간 세션에서도 동일하게 동작합니다. 기본값 `error_as_result` 에서는 타임아웃 메시지가 도구 출력으로 전송됩니다. `raise_exception` 의 경우 세션이 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) 와 함께 `error` 이벤트를 발생시키며 해당 호출에 대한 도구 출력을 보내지 않습니다.
 
-에이전트가 특정 도구를 호출할 때 전달된 인수 외에도, Realtime Session이 추적하는 현재 대화 기록의 스냅샷에 접근할 수 있습니다. 이는 현재 대화 상태에 기반해 더 복잡한 동작을 수행해야 하거나 [도구를 통한 위임](#delegation-through-tools)을 사용할 계획일 때 유용합니다.
+### 대화 이력 접근
+
+에이전트가 특정 도구를 호출할 때 전달한 인수 외에도, Realtime 세션이 추적하는 현재 대화 이력의 스냅샷에 접근할 수 있습니다. 이는 현재 대화 상태에 기반해 더 복잡한 작업을 수행해야 하거나 [도구를 통한 위임](#delegation-through-tools) 을 사용할 계획인 경우 유용합니다.
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
-  전달되는 히스토리는 도구 호출 시점의 히스토리 스냅샷입니다. 사용자가
-  마지막으로 말한 내용의 전사본은 아직 제공되지 않았을 수 있습니다.
+  전달되는 history 는 도구 호출 시점의 히스토리 스냅샷입니다. 사용자가
+  마지막으로 말한 내용의 변환본이 아직 제공되지 않았을 수 있습니다.
 </Aside>
 
 ### 도구 실행 전 승인
 
-도구를 `needsApproval: true`로 정의하면, 에이전트는 도구를 실행하기 전에 `tool_approval_requested` 이벤트를 발생시킵니다.
+도구를 `needsApproval: true` 로 정의하면, 도구를 실행하기 전에 에이전트가 `tool_approval_requested` 이벤트를 발생시킵니다.
 
-이 이벤트를 수신하여 사용자에게 도구 호출 승인 또는 거부 UI를 표시할 수 있습니다.
+이 이벤트를 수신하여 사용자에게 도구 호출을 승인 또는 거부하는 UI 를 표시할 수 있습니다.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  보이스 에이전트가 도구 호출 승인을 기다리는 동안에는, 에이전트가 사용자의 새
+  음성 에이전트가 도구 호출 승인을 기다리는 동안, 에이전트는 사용자의 새로운
   요청을 처리할 수 없습니다.
 </Aside>
 
 ## 가드레일
 
-가드레일은 에이전트가 한 말이 특정 규칙을 위반했는지 모니터링하고 즉시 응답을 차단하는 방법을 제공합니다. 이러한 가드레일 검사는 에이전트 응답의 전사본에 기반해 수행되므로 모델의 텍스트 출력이 활성화되어 있어야 합니다(기본값으로 활성화됨).
+가드레일은 에이전트의 발화가 설정된 규칙을 위반했는지 모니터링하고 즉시 응답을 차단할 수 있는 방법을 제공합니다. 이러한 가드레일 검사는 에이전트 응답의 전사본(Transcript)을 기반으로 수행되므로, 모델의 텍스트 출력이 활성화되어 있어야 합니다(기본적으로 활성화).
 
-제공한 가드레일은 모델 응답이 반환되는 동안 비동기적으로 실행되어, 예를 들어 "특정 금지 단어를 언급" 같은 사전 정의된 분류 트리거에 따라 응답을 차단할 수 있습니다.
+제공한 가드레일은 모델 응답이 반환되는 동안 비동기로 실행되어, 예를 들어 "특정 금지어를 언급" 같은 사전 정의된 분류 트리거를 기반으로 응답을 차단할 수 있습니다.
 
-가드레일이 작동하면 세션이 `guardrail_tripped` 이벤트를 발생시킵니다. 이벤트에는 가드레일을 트리거한 `itemId`를 포함하는 `details` 객체도 제공됩니다.
+가드레일이 작동하면 세션이 `guardrail_tripped` 이벤트를 발생시킵니다. 이벤트에는 가드레일을 트리거한 `itemId` 를 포함하는 `details` 객체도 제공됩니다.
 
 <Code lang="typescript" code={guardrailsExample} />
 
 기본적으로 가드레일은 100자마다 또는 응답 텍스트 생성이 끝날 때 실행됩니다.
-음성 출력은 보통 더 오래 걸리므로, 대부분의 경우 사용자에게 들리기 전에 가드레일이 위반을 잡아낼 수 있습니다.
+텍스트 발화는 보통 시간이 더 오래 걸리므로, 대부분의 경우 가드레일이
+사용자가 듣기 전에 위반을 포착하게 됩니다.
 
-이 동작을 수정하려면 세션에 `outputGuardrailSettings` 객체를 전달하세요.
+이 동작을 수정하려면 세션에 `outputGuardrailSettings` 객체를 전달할 수 있습니다.
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
 ## 턴 감지 / 음성 활동 감지
 
-Realtime Session은 내장된 [Realtime API의 음성 활동 감지 모드](https://platform.openai.com/docs/guides/realtime-vad)를 사용해 사용자가 말하기 시작했을 때를 자동으로 감지하고 새로운 턴을 트리거합니다.
+Realtime 세션은 사용자가 말하기 시작했는지를 자동으로 감지하고, Realtime API 의 기본 제공 [음성 활동 감지 모드](https://platform.openai.com/docs/guides/realtime-vad) 를 사용해 새 턴을 트리거합니다.
 
 세션에 `turnDetection` 객체를 전달하여 음성 활동 감지 모드를 변경할 수 있습니다.
 
 <Code lang="typescript" code={turnDetectionExample} />
 
-턴 감지 설정을 조정하면 원치 않는 인터럽션과 침묵 처리에 도움이 됩니다. 다양한 설정에 대한 자세한 내용은 [Realtime API 문서](https://platform.openai.com/docs/guides/realtime-vad)를 참조하세요
+턴 감지 설정을 수정하면 원치 않는 인터럽션(중단 처리)과 침묵 처리 보정을 도울 수 있습니다. 다양한 설정에 대한 자세한 내용은 [Realtime API 문서](https://platform.openai.com/docs/guides/realtime-vad) 를 확인하세요
 
 ## 인터럽션(중단 처리)
 
-내장 음성 활동 감지를 사용할 때, 사용자가 에이전트 말 위로 말하면 에이전트가 자동으로 이를 감지하고 말한 내용에 기반해 컨텍스트를 업데이트합니다. 또한 `audio_interrupted` 이벤트를 발생시킵니다. 이는 모든 오디오 재생을 즉시 중지하는 데 사용할 수 있습니다(WebSocket 연결에만 적용).
+기본 제공 음성 활동 감지를 사용할 때, 에이전트가 말하는 중에 사용자가 말을 시작하면
+에이전트가 이를 감지하고 발화 내용에 기반해 컨텍스트를 업데이트합니다. 또한
+`audio_interrupted` 이벤트를 발생시킵니다. 이는 모든 오디오 재생을 즉시 중지하는 데 사용할 수 있습니다(웹소켓 연결에만 적용).
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-UI에 "중지" 버튼을 제공하는 등 수동 인터럽션을 수행하려면, `interrupt()`를 수동으로 호출할 수 있습니다:
+수동 인터럽션을 수행하려면, 예를 들어 UI 에 "중지" 버튼을 제공하려는 경우
+`interrupt()` 를 직접 호출할 수 있습니다:
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
-어느 방식이든, Realtime Session은 에이전트의 생성 중단, 사용자에게 말한 내용의 절단, 히스토리 업데이트를 모두 처리합니다.
+어느 쪽이든, Realtime 세션은 에이전트의 생성 중단, 사용자에게 말했던 내용의 절단, 이력 업데이트를 모두 처리합니다.
 
-에이전트에 WebRTC로 연결하는 경우 오디오 출력도 지워집니다. WebSocket을 사용하는 경우, 재생 대기열에 있는 오디오 재생을 직접 중지해 처리해야 합니다.
+에이전트에 WebRTC 로 연결하는 경우 오디오 출력도 지웁니다. WebSocket 을 사용하는 경우, 재생 대기열에 있는 오디오 재생을 직접 중지해야 합니다.
 
 ## 텍스트 입력
 
-에이전트에 텍스트 입력을 보내려면 `RealtimeSession`의 `sendMessage` 메서드를 사용할 수 있습니다.
+에이전트에 텍스트 입력을 보내려면 `RealtimeSession` 의 `sendMessage` 메서드를 사용할 수 있습니다.
 
-이는 사용자가 에이전트와 두 가지 모달리티 모두로 상호작용하도록 하거나, 대화에 추가 컨텍스트를 제공하려는 경우에 유용합니다.
+이는 사용자가 에이전트와 두 가지 모달리티로 상호작용하도록 하거나, 대화에 추가 컨텍스트를 제공하려는 경우 유용합니다.
 
 <Code lang="typescript" code={sendMessageExample} />
 
-## 대화 기록 관리
+## 대화 이력 관리
 
-`RealtimeSession`은 `history` 속성에서 대화 기록을 자동으로 관리합니다:
+`RealtimeSession` 은 `history` 속성에서 대화 이력을 자동으로 관리합니다:
 
-이를 사용하여 고객에게 히스토리를 렌더링하거나 추가 작업을 수행할 수 있습니다. 대화 진행 중 이 히스토리는 지속적으로 변경되므로 `history_updated` 이벤트를 수신할 수 있습니다.
+이를 사용해 고객에게 이력을 렌더링하거나 추가 작업을 수행할 수 있습니다. 이 이력은 대화 진행 중 지속적으로 변경되므로 `history_updated` 이벤트를 수신할 수 있습니다.
 
-히스토리를 수정하려면, 예를 들어 메시지를 완전히 제거하거나 전사를 업데이트하려면 `updateHistory` 메서드를 사용할 수 있습니다.
+이력을 수정하고 싶다면, 예를 들어 메시지를 완전히 제거하거나 전사본을 업데이트하려면 `updateHistory` 메서드를 사용할 수 있습니다.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 ### 제한 사항
 
-1. 현재로서는 함수 도구 호출을 사후에 업데이트/변경할 수 없습니다
-2. 히스토리의 텍스트 출력에는 전사와 텍스트 모달리티 활성화가 필요합니다
-3. 인터럽션으로 잘린 응답에는 전사본이 없습니다
+1. 현재는 함수 도구 호출을 사후에 업데이트/변경할 수 없습니다
+2. 이력의 텍스트 출력에는 전사본과 텍스트 모달리티 활성화가 필요합니다
+3. 인터럽션 때문에 잘린 응답은 전사본이 없습니다
 
 ## 도구를 통한 위임
 
 ![Delegation through tools](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-대화 기록과 도구 호출을 결합해, 더 복잡한 작업을 수행하기 위해 다른 백엔드 에이전트에 대화를 위임한 뒤 그 결과를 사용자에게 다시 전달할 수 있습니다.
+대화 이력과 도구 호출을 결합하면, 더 복잡한 작업 수행을 위해 대화를 다른 백엔드 에이전트에 위임하고 그 결과를 사용자에게 다시 전달할 수 있습니다.
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-아래 코드는 서버에서 실행됩니다. 이 예시에서는 Next.js의 서버 액션을 사용합니다.
+아래 코드는 서버에서 실행됩니다. 이 예제에서는 Next.js 의 서버 액션을 통해 실행됩니다.
 
 <Code lang="typescript" code={serverAgentExample} />

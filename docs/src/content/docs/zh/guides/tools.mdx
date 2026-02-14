@@ -14,151 +14,169 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
 
-工具让智能体能够**采取行动**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持六种类别：
+工具让一个智能体能够**执行操作**——获取数据、调用外部 API、执行代码，甚至进行计算机操作。JavaScript/TypeScript SDK 支持六大类别：
 
-1. **OpenAI 托管工具**——与模型在 OpenAI 服务器上并行运行。（Web 搜索、文件搜索、Code Interpreter、图像生成）
-2. **本地内置工具**——在你的环境中运行。（计算机操作、Shell、apply_patch）
-3. **函数工具**——用 JSON schema 封装任意本地函数，以便 LLM 调用。
-4. **Agents as tools**——将整个智能体暴露为可调用工具。
-5. **MCP servers**——附加一个 Model Context Protocol 服务器（本地或远程）。
-6. **实验性：Codex 工具**——将 Codex SDK 封装为函数工具来运行感知工作区的任务。
+1. **OpenAI 托管工具**——在 OpenAI 服务器上与模型并行运行。（Web 搜索、文件搜索、Code Interpreter、图像生成）
+2. **本地内置工具**——在您的环境中运行。（计算机操作、shell、apply_patch）
+3. **函数工具**——用 JSON schema 包装任意本地函数，以便 LLM 可调用。
+4. **Agents as tools**——将整个智能体暴露为可调用的工具。
+5. **MCP 服务器**——附加一个 Model Context Protocol 服务器（本地或远程）。
+6. **实验性：Codex 工具**——将 Codex SDK 包装为函数工具以运行与工作区相关的任务。
 
 ---
 
 ## 1. 托管工具（OpenAI Responses API）
 
-当你使用 `OpenAIResponsesModel` 时，可以添加以下内置工具：
+使用 `OpenAIResponsesModel` 时，可以添加以下内置工具：
 
-| 工具                    | 类型字符串           | 目的                             |
-| ----------------------- | -------------------- | -------------------------------- |
-| Web search              | `'web_search'`       | 互联网搜索。                     |
-| File / retrieval search | `'file_search'`      | 查询托管在 OpenAI 上的向量存储。 |
-| Code Interpreter        | `'code_interpreter'` | 在沙箱环境中运行代码。           |
-| Image generation        | `'image_generation'` | 基于文本生成图像。               |
+| 工具             | 类型字符串           | 目的                             |
+| ---------------- | -------------------- | -------------------------------- |
+| Web 搜索         | `'web_search'`       | 互联网搜索。                     |
+| 文件/检索搜索    | `'file_search'`      | 查询托管在 OpenAI 上的向量存储。 |
+| Code Interpreter | `'code_interpreter'` | 在沙箱环境中运行代码。           |
+| 图像生成         | `'image_generation'` | 基于文本生成图像。               |
 
-<Code lang="typescript" code={toolsHostedToolsExample} title="托管工具" />
+<Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
-具体参数集与 OpenAI Responses API 完全一致——高级选项如 `rankingOptions` 或语义过滤请参阅官方文档。
+确切的参数集合与 OpenAI Responses API 一致——高级选项如 `rankingOptions` 或语义过滤请参考官方文档。
 
 ---
 
 ## 2. 本地内置工具
 
-本地内置工具在你的环境中运行，需要你提供实现：
+本地内置工具在您自己的环境中运行，需要您提供实现：
 
 - **计算机操作**——实现 `Computer` 接口并传递给 `computerTool()`。
-- **Shell**——提供本地 `Shell` 实现，或配置托管容器环境。
-- **应用补丁**——实现 `Editor` 接口并传递给 `applyPatchTool()`。
+- **Shell**——提供本地 `Shell` 实现，或配置托管的容器环境。
+- **Apply patch**——实现 `Editor` 接口并传递给 `applyPatchTool()`。
 
-计算机操作和应用补丁工具在本地执行，**不**由 OpenAI 托管。Shell 工具可本地运行，也可在托管容器环境中运行，取决于 `shellTool()` 的配置。
-工具调用仍由模型响应请求，但你的应用决定这些调用如何执行。
+计算机操作与 apply-patch 工具在本地执行，**不**由 OpenAI 托管。Shell 工具可根据 `shellTool()` 的配置在本地或托管容器环境中运行。
+工具调用仍由模型的响应发起，但您的应用程序控制这些调用如何执行。
 
-<Code lang="typescript" code={localBuiltInToolsExample} title="本地内置工具" />
+<Code
+  lang="typescript"
+  code={localBuiltInToolsExample}
+  title="Local built-in tools"
+/>
 
-对于托管的 Shell 环境，用以下方式配置 `shellTool({ environment })`：
+对于托管的 shell 环境，用以下任一方式配置 `shellTool({ environment })`：
 
-- `type: 'container_auto'` 为此次运行创建托管容器（支持网络策略、内存限制和技能）。
-- `type: 'container_reference'` 通过 `containerId` 复用已存在的容器。
+- `type: 'container_auto'` 为一次运行创建托管容器（支持网络策略、内存限制和技能）。
+- `type: 'container_reference'` 通过 `containerId` 复用现有容器。
 
-参见 `examples/tools/container-shell-skill-ref.ts` 和 `examples/tools/container-shell-inline-skill.ts` 了解端到端用法。
+参见 `examples/tools/container-shell-skill-ref.ts` 和 `examples/tools/container-shell-inline-skill.ts` 获取端到端用法。
 
 ---
 
 ## 3. 函数工具
 
-你可以使用 `tool()` 工具函数将**任意**函数变成工具。
+使用 `tool()` 辅助函数，可将**任意**函数变为工具。
 
 <Code
   lang="typescript"
   code={toolsFunctionExample}
-  title="使用 Zod 参数的函数工具"
+  title="Function tool with Zod parameters"
 />
 
 ### 选项参考
 
-| 字段               | 必需 | 描述                                                                                                                                |
-| ------------------ | ---- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `name`             | 否   | 默认为函数名（如 `get_weather`）。                                                                                                  |
-| `description`      | 是   | 向 LLM 展示的清晰、可读的人类描述。                                                                                                 |
-| `parameters`       | 是   | 可为 Zod schema 或原始 JSON schema 对象。使用 Zod 参数会自动启用**严格**模式。                                                      |
-| `strict`           | 否   | 当为 `true`（默认）时，如果参数校验失败，SDK 会返回模型错误。设为 `false` 以启用模糊匹配。                                          |
-| `execute`          | 是   | `(args, context) => string \| unknown \| Promise<...>`——你的业务逻辑。非字符串输出会为模型序列化。可选的第二个参数是 `RunContext`。 |
-| `errorFunction`    | 否   | 自定义处理器 `(context, error) => string`，将内部错误转换为用户可见字符串。                                                         |
-| `needsApproval`    | 否   | 在执行前需要人工批准。参见[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)。                                               |
-| `isEnabled`        | 否   | 按运行条件性地暴露工具；接受布尔值或谓词。                                                                                          |
-| `inputGuardrails`  | 否   | 工具执行前运行的护栏；可拒绝或抛出。参见[护栏](/openai-agents-js/zh/guides/guardrails#tool-guardrails)。                            |
-| `outputGuardrails` | 否   | 工具执行后运行的护栏；可拒绝或抛出。参见[护栏](/openai-agents-js/zh/guides/guardrails#tool-guardrails)。                            |
+| 字段                   | 必填 | 说明                                                                                                                              |
+| ---------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                 | 否   | 默认为函数名（例如 `get_weather`）。                                                                                              |
+| `description`          | 是   | 展示给 LLM 的清晰、可读的人类描述。                                                                                               |
+| `parameters`           | 是   | Zod schema 或原始 JSON schema 对象。使用 Zod parameters 会自动启用**严格**模式。                                                  |
+| `strict`               | 否   | 当为 `true`（默认）时，若参数校验失败，SDK 返回模型错误。设为 `false` 可进行模糊匹配。                                            |
+| `execute`              | 是   | `(args, context) => string \| unknown \| Promise<...>`——您的业务逻辑。非字符串输出会序列化给模型。可选第二个参数为 `RunContext`。 |
+| `errorFunction`        | 否   | 自定义处理器 `(context, error) => string`，将内部错误转换为用户可见的字符串。                                                     |
+| `timeoutMs`            | 否   | 每次调用的超时时间（毫秒）。必须大于 0 且小于等于 `2147483647`。                                                                  |
+| `timeoutBehavior`      | 否   | 超时模式：`error_as_result`（默认）向模型返回可见的超时消息；`raise_exception` 抛出 `ToolTimeoutError`。                          |
+| `timeoutErrorFunction` | 否   | 当 `timeoutBehavior` 为 `error_as_result` 时，用于自定义超时输出的处理器 `(context, timeoutError) => string`。                    |
+| `needsApproval`        | 否   | 在执行前需要人工批准。参见[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)。                                             |
+| `isEnabled`            | 否   | 按运行条件性暴露该工具；接受布尔值或谓词。                                                                                        |
+| `inputGuardrails`      | 否   | 在工具执行前运行的护栏；可拒绝或抛出。参见[护栏](/openai-agents-js/zh/guides/guardrails#tool-guardrails)。                        |
+| `outputGuardrails`     | 否   | 在工具执行后运行的护栏；可拒绝或抛出。参见[护栏](/openai-agents-js/zh/guides/guardrails#tool-guardrails)。                        |
+
+### 函数工具超时
+
+使用 `timeoutMs` 限制每次函数工具调用。
+
+- `timeoutBehavior: 'error_as_result'`（默认）向模型返回 `Tool '<name>' timed out after <timeoutMs>ms.`。
+- `timeoutBehavior: 'raise_exception'` 抛出 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror)，可作为[运行异常](/openai-agents-js/zh/guides/running-agents#exceptions)的一部分捕获。
+- `timeoutErrorFunction` 允许在 `error_as_result` 模式下自定义超时文本。
+- 超时会中止 `details.signal`，因此长时间运行的工具在监听取消时可及时停止。
+
+如果直接调用函数工具，请使用 [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) 来强制与常规智能体运行相同的超时行为。
 
 ### 非严格 JSON schema 工具
 
-如果你需要模型在输入无效或不完整时进行“猜测”，可以在使用原始 JSON schema 时禁用严格模式：
+如果需要模型在输入无效或不完整时进行“猜测”，可在使用原始 JSON schema 时禁用严格模式：
 
 <Code
   lang="typescript"
   code={nonStrictSchemaTools}
-  title="非严格 JSON schema 工具"
+  title="Non-strict JSON schema tools"
 />
 
 ---
 
 ## 4. Agents as tools
 
-有时你希望一个智能体在不完全交接会话的情况下去“协助”另一个智能体。使用 `agent.asTool()`：
+有时，您希望一个智能体在不完全交接对话的情况下“协助”另一个智能体。使用 `agent.asTool()`：
 
 <Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
 
 在内部，SDK 会：
 
-- 创建一个仅含 `input` 参数的函数工具。
-- 当工具被调用时，使用该输入运行子智能体。
-- 返回最后一条消息或由 `customOutputExtractor` 提取的输出。
+- 创建一个仅包含 `input` 参数的函数工具。
+- 当调用该工具时，以该输入运行子智能体。
+- 返回最后一条消息，或由 `customOutputExtractor` 提取的输出。
 
-当你将智能体作为工具运行时，Agents SDK 会以默认设置创建一个 runner，并在函数执行中用它来运行该智能体。如果你想提供任意 `runConfig` 或 `runOptions` 的属性，可以将它们传给 `asTool()` 以自定义 runner 行为。
+当您将智能体作为工具运行时，Agents SDK 会用默认设置创建一个 runner，并在函数执行内用它来运行该智能体。如果需要提供任何 `runConfig` 或 `runOptions` 的属性，可以将它们传给 `asTool()` 以自定义 runner 的行为。
 
-你也可以通过 `asTool()` 选项在智能体工具上设置 `needsApproval` 和 `isEnabled`，以集成人机协作流程和条件性工具可用性。
+您也可以通过 `asTool()` 选项在智能体工具上设置 `needsApproval` 和 `isEnabled`，以集成人机协作流程和条件性工具可用性。
 
 `agent.asTool()` 的高级结构化输入选项：
 
-- `inputBuilder`：将结构化工具参数映射到嵌套智能体的输入负载。
-- `includeInputSchema`：在嵌套运行中包含输入 JSON schema，以获得更强的 schema 感知行为。
+- `inputBuilder`：将结构化工具参数映射到嵌套智能体的输入载荷。
+- `includeInputSchema`：在嵌套运行中包含输入 JSON schema，以增强基于 schema 的行为。
 - `resumeState`：在恢复嵌套的序列化 `RunState` 时控制上下文对齐策略。
 
-### 来自智能体工具的流式事件
+### 智能体工具的流式传输事件
 
-智能体工具可以将所有嵌套运行事件回传到你的应用。根据你构建工具的方式选择合适的钩子样式：
+智能体工具可以将所有嵌套运行事件流回您的应用。选择与您构建工具方式相匹配的钩子风格：
 
 <Code
   lang="typescript"
   code={agentsAsToolsStreamingExample}
-  title="流式传输的智能体工具"
+  title="Streaming agent tools"
 />
 
-- 事件类型与 `RunStreamEvent['type']` 一致：`raw_model_stream_event`、`run_item_stream_event`、`agent_updated_stream_event`。
-- `onStream` 是最简单的“全捕获”，在内联声明工具时（`tools: [agent.asTool({ onStream })]`）非常合适。如果不需要按事件路由，请使用它。
-- `on(eventName, handler)` 允许选择性订阅（或使用 `'*'`），当你需要更细粒度的处理或想在创建后附加监听器时最佳。
-- 如果提供了 `onStream` 或任一 `on(...)` 处理器，agent-as-tool 将自动以流式模式运行；否则保持非流式路径。
-- 处理器并行调用，因此较慢的 `onStream` 回调不会阻塞 `on(...)` 处理器（反之亦然）。
-- 当工具由模型工具调用触发时会提供 `toolCallId`；直接 `invoke()` 调用或提供方差异可能省略该值。
+- 事件类型匹配 `RunStreamEvent['type']`：`raw_model_stream_event`、`run_item_stream_event`、`agent_updated_stream_event`。
+- `onStream` 是最简单的“全捕获”，适合内联声明工具时使用（`tools: [agent.asTool({ onStream })]`）。如果不需要逐事件路由，请使用它。
+- `on(eventName, handler)` 允许选择性订阅（或使用 `'*'`），当需要更精细的处理或在创建后附加监听器时最合适。
+- 若提供 `onStream` 或任意 `on(...)` 处理器，agent-as-tool 将自动以流式模式运行；否则保持非流式路径。
+- 处理器并行调用，因此缓慢的 `onStream` 回调不会阻塞 `on(...)` 处理器（反之亦然）。
+- 当通过模型工具调用调用该工具时会提供 `toolCallId`；直接 `invoke()` 调用或供应商差异可能会省略它。
 
 ---
 
-## 5. MCP servers
+## 5. MCP 服务器
 
-你可以通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务器暴露工具，并将其附加到智能体。
-例如，你可以使用 `MCPServerStdio` 启动并连接到 stdio MCP 服务器：
+您可以通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务器暴露工具，并将其附加到一个智能体。
+例如，您可以使用 `MCPServerStdio` 启动并连接到 stdio MCP 服务器：
 
-<Code lang="typescript" code={mcpLocalServer} title="本地 MCP 服务器" />
+<Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
-完整示例参见[`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果你需要一份关于 MCP 服务器工具集成的综合指南，请参阅[MCP 集成](/openai-agents-js/zh/guides/mcp)获取详细信息。
-在管理多个服务器（或部分故障）时，使用 `connectMcpServers`，并遵循 [MCP 集成](/openai-agents-js/zh/guides/mcp#managing-mcp-server-lifecycle)中的生命周期指引。
+完整示例参见 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。此外，如果您在寻找关于 MCP 服务器工具集成的完整指南，请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp) 获取详细信息。
+在管理多个服务器（或部分故障）时，使用 `connectMcpServers` 并参考 [MCP 集成](/openai-agents-js/zh/guides/mcp#managing-mcp-server-lifecycle) 中的生命周期指南。
 
 ---
 
 ## 6. 实验性：Codex 工具
 
-`@openai/agents-extensions/experimental/codex` 提供 `codexTool()`，这是一种函数工具，可将模型的工具调用路由到 Codex SDK，从而使智能体能够自主运行工作区范围的任务（Shell、文件编辑、MCP 工具）。该接口为实验性，可能会变更。
+`@openai/agents-extensions/experimental/codex` 提供 `codexTool()`，这是一个函数工具，可将模型的工具调用路由到 Codex SDK，从而让智能体可自主运行与工作区相关的任务（shell、文件编辑、MCP 工具）。该接口为实验性，可能会变更。
 
-首先安装依赖：
+先安装依赖：
 
 ```bash
 npm install @openai/agents-extensions @openai/codex-sdk
@@ -166,49 +184,53 @@ npm install @openai/agents-extensions @openai/codex-sdk
 
 快速开始：
 
-<Code lang="typescript" code={codexToolExample} title="实验性 Codex 工具" />
+<Code
+  lang="typescript"
+  code={codexToolExample}
+  title="Experimental Codex tool"
+/>
 
-需要了解：
+须知要点：
 
 - 认证：提供 `CODEX_API_KEY`（首选）或 `OPENAI_API_KEY`，或传入 `codexOptions.apiKey`。
-- 输入：严格的 schema——`inputs` 必须至少包含一个 `{ type: 'text', text }` 或 `{ type: 'local_image', path }`。
-- 安全：将 `sandboxMode` 与 `workingDirectory` 搭配使用；如果目录不是 Git 仓库，请设置 `skipGitRepoCheck`。
-- 线程：`useRunContextThreadId: true` 会在 `runContext.context` 中读取/存储最新的线程 ID，这有助于在应用状态中跨轮次复用。
-- 线程 ID 优先级：工具调用的 `threadId`（如果你的 schema 包含它）优先，其次是运行上下文中的线程 ID，再次是 `codexTool({ threadId })`。
-- 运行上下文键：对于 `name: 'codex'`，默认为 `codexThreadId`；对于如 `name: 'engineer'` 的名称，则为 `codexThreadId_<suffix>`（规范化后为 `codex_engineer`）。
-- 可变上下文要求：当启用 `useRunContextThreadId` 时，请在 `run(..., { context })` 里传入可变对象或 `Map`。
+- 输入：严格 schema——`inputs` 至少包含一个 `{ type: 'text', text }` 或 `{ type: 'local_image', path }`。
+- 安全：将 `sandboxMode` 与 `workingDirectory` 配合使用；如果目录不是 Git 仓库，请设置 `skipGitRepoCheck`。
+- 线程：`useRunContextThreadId: true` 会在 `runContext.context` 中读取/存储最新的线程 ID，便于在应用状态中跨轮次复用。
+- 线程 ID 优先级：工具调用的 `threadId`（如果您的 schema 包含它）优先，其次是运行上下文的线程 ID，然后是 `codexTool({ threadId })`。
+- 运行上下文键：对 `name: 'codex'` 默认为 `codexThreadId`，对于如 `name: 'engineer'` 的名称则为 `codexThreadId_<suffix>`（规范化后为 `codex_engineer`）。
+- 可变上下文要求：启用 `useRunContextThreadId` 时，在 `run(..., { context })` 中传入可变对象或 `Map`。
 - 命名：工具名会规范化到 `codex` 命名空间（`engineer` 变为 `codex_engineer`），同一智能体中重复的 Codex 工具名会被拒绝。
-- 流式传输：`onStream` 映射 Codex 事件（推理、命令执行、MCP 工具调用、文件变更、Web 搜索），便于日志或追踪进度。
-- 输出：工具结果包含 `response`、`usage` 和 `threadId`，Codex 的 token 使用量会记录到 `RunContext`。
-- 结构：`outputSchema` 可为描述符、JSON schema 对象或 Zod 对象。对于 JSON 对象 schema，`additionalProperties` 必须为 `false`。
+- 流式传输：`onStream` 会镜像 Codex 事件（推理、命令执行、MCP 工具调用、文件变更、Web 搜索），便于记录或追踪进度。
+- 输出：工具结果包含 `response`、`usage` 和 `threadId`，并且 Codex 的 token 用量会记录在 `RunContext` 中。
+- 结构：`outputSchema` 可以是描述符、JSON schema 对象或 Zod 对象。对于 JSON 对象 schema，`additionalProperties` 必须为 `false`。
 
 运行上下文线程复用示例：
 
 <Code
   lang="typescript"
   code={codexRunContextThreadExample}
-  title="Codex 运行上下文线程复用"
+  title="Codex run-context thread reuse"
 />
 
 ---
 
 ## 工具使用行为
 
-参见[智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use)以控制模型何时以及如何必须使用工具（`modelSettings.toolChoice`、`toolUseBehavior` 等）。
+关于如何控制模型何时以及如何必须使用工具（`modelSettings.toolChoice`、`toolUseBehavior` 等），请参阅[智能体](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
 
 ---
 
 ## 最佳实践
 
-- **简短且明确的描述**——说明工具做了什么，以及何时使用它。
-- **校验输入**——尽可能使用 Zod schema 进行严格的 JSON 校验。
-- **避免在错误处理器中产生副作用**——`errorFunction` 应返回有帮助的字符串，而非抛出异常。
-- **单一职责**——小而可组合的工具能提升模型推理效果。
+- **简短、明确的描述**——描述工具做了什么以及何时使用它。
+- **校验输入**——尽可能使用 Zod schemas 进行严格的 JSON 校验。
+- **避免在错误处理器中产生副作用**——`errorFunction` 应返回有帮助的字符串，而不是抛出异常。
+- **单一职责的工具**——小而可组合的工具有助于更好的模型推理。
 
 ---
 
 ## 后续步骤
 
 - 了解[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。
-- 添加[护栏](/openai-agents-js/zh/guides/guardrails)以校验工具的输入或输出。
-- 查阅 [`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各类托管工具类型的 TypeDoc 参考。
+- 添加[护栏](/openai-agents-js/zh/guides/guardrails)以校验工具输入或输出。
+- 查阅 TypeDoc 参考文档，了解 [`tool()`](/openai-agents-js/openai/agents/functions/tool) 以及各种托管工具类型。
