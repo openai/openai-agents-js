@@ -25,6 +25,7 @@ import type {
   ToolInputGuardrailResult,
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
+import { combineAbortSignalsWithOptions } from './utils/abortSignals';
 
 type AbortHandlerRef<T extends object> = {
   current?: T;
@@ -39,43 +40,6 @@ function createAbortHandlerRef(): {
     ref.current?.();
   };
   return { ref, handler };
-}
-
-function combineAbortSignals(
-  ...signals: (AbortSignal | undefined)[]
-): AbortSignal | undefined {
-  const active = signals.filter(Boolean) as AbortSignal[];
-  if (active.length === 0) {
-    return undefined;
-  }
-
-  const anyFn = (AbortSignal as any).any;
-  if (typeof anyFn === 'function') {
-    try {
-      return anyFn(active);
-    } catch (error) {
-      logger.debug(`AbortSignal.any failed, falling back: ${error}`);
-    }
-  }
-
-  const controller = new AbortController();
-  const abortCombined = (reason: unknown) => {
-    if (!controller.signal.aborted) {
-      controller.abort(reason);
-    }
-  };
-
-  for (const signal of active) {
-    if (signal.aborted) {
-      abortCombined(signal.reason);
-      break;
-    }
-    signal.addEventListener('abort', () => abortCombined(signal.reason), {
-      once: true,
-    });
-  }
-
-  return controller.signal;
 }
 
 /**
@@ -337,6 +301,7 @@ export class StreamedRunResult<
   #streamLoopPromise: Promise<void> | undefined;
   #abortHandler: (() => void) | undefined;
   #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
+  #combinedSignalCleanup: () => void = () => {};
 
   constructor(
     result: {
@@ -347,11 +312,18 @@ export class StreamedRunResult<
     super(result.state);
 
     this.#abortController = new AbortController();
-    this.#combinedSignal = combineAbortSignals(
-      result.signal,
-      this.#abortController.signal,
-    );
-    this.#abortSignalSnapshot = this.#combinedSignal;
+    const { signal: combinedSignal, cleanup: cleanupCombinedSignal } =
+      combineAbortSignalsWithOptions(
+        [result.signal, this.#abortController.signal],
+        {
+          onAbortSignalAnyError: (error) => {
+            logger.debug(`AbortSignal.any failed, falling back: ${error}`);
+          },
+        },
+      );
+    this.#combinedSignal = combinedSignal;
+    this.#combinedSignalCleanup = cleanupCombinedSignal;
+    this.#abortSignalSnapshot = combinedSignal;
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
@@ -559,6 +531,12 @@ export class StreamedRunResult<
         logger.debug(`Failed to remove abort listener: ${err}`);
       }
     }
+    try {
+      this.#combinedSignalCleanup();
+    } catch (err) {
+      logger.debug(`Failed to clean up combined abort listeners: ${err}`);
+    }
+    this.#combinedSignalCleanup = () => {};
     this.#abortHandler = undefined;
     this.#abortHandlerRef = undefined;
   }

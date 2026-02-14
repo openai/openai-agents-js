@@ -12,6 +12,7 @@ import { safeExecute } from './utils/safeExecute';
 import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
+import { combineAbortSignals } from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunResult } from './result';
 import { InvalidToolInputError, ToolTimeoutError, UserError } from './errors';
@@ -1191,57 +1192,6 @@ const FUNCTION_TOOL_TIMEOUT_BEHAVIORS = [
 const FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED = Symbol(
   'functionToolTimeoutAlreadyEnforced',
 );
-
-function combineAbortSignals(...signals: (AbortSignal | undefined)[]): {
-  signal?: AbortSignal;
-  cleanup: () => void;
-} {
-  const active = signals.filter(Boolean) as AbortSignal[];
-  if (active.length === 0) {
-    return {
-      cleanup: () => {},
-    };
-  }
-
-  const anyFn = (AbortSignal as any).any;
-  if (typeof anyFn === 'function') {
-    try {
-      return {
-        signal: anyFn(active),
-        cleanup: () => {},
-      };
-    } catch {
-      // Fall back to manual signal composition for runtimes without AbortSignal.any support.
-    }
-  }
-
-  const controller = new AbortController();
-  const listeners: Array<{ signal: AbortSignal; handler: () => void }> = [];
-  const abortCombined = (reason: unknown) => {
-    if (!controller.signal.aborted) {
-      controller.abort(reason);
-    }
-  };
-
-  for (const signal of active) {
-    if (signal.aborted) {
-      abortCombined(signal.reason);
-      break;
-    }
-    const handler = () => abortCombined(signal.reason);
-    signal.addEventListener('abort', handler, { once: true });
-    listeners.push({ signal, handler });
-  }
-
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      for (const entry of listeners) {
-        entry.signal.removeEventListener('abort', entry.handler);
-      }
-    },
-  };
-}
 
 type ToolGuardrailOptions<Context = UnknownContext> = {
   /**
