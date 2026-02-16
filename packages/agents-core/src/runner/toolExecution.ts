@@ -34,6 +34,8 @@ import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toSmartString } from '../utils/smartString';
 import { isZodObject } from '../utils';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
+import { getCurrentTrace } from '../tracing/context';
+import type { FunctionSpanData, Span } from '../tracing/spans';
 import * as protocol from '../types/protocol';
 import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
@@ -65,6 +67,8 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
 };
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+const REDACTED_TOOL_ERROR_MESSAGE =
+  'Tool execution failed. Error details are redacted.';
 // 1x1 transparent PNG data URL used for rejected computer actions.
 const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
@@ -555,6 +559,29 @@ function toErrorMessage(error: unknown): string {
   }
 }
 
+function getTraceToolError(
+  traceIncludeSensitiveData: boolean,
+  errorMessage: string,
+): string {
+  return traceIncludeSensitiveData ? errorMessage : REDACTED_TOOL_ERROR_MESSAGE;
+}
+
+async function withToolFunctionSpan<T>(
+  runner: Runner,
+  toolName: string,
+  fn: (span?: Span<FunctionSpanData>) => Promise<T>,
+): Promise<T> {
+  if (runner.config.tracingDisabled || !getCurrentTrace()) {
+    return fn();
+  }
+
+  return withFunctionSpan(async (span) => fn(span), {
+    data: {
+      name: toolName,
+    },
+  });
+}
+
 type ApprovalResolution = 'approved' | 'rejected' | 'pending';
 
 async function resolveToolApproval(options: {
@@ -745,61 +772,81 @@ export async function executeShellActions(
       continue;
     }
 
-    emitToolStart(runner, runContext, agent, shellTool, toolCall);
-
-    let shellOutputs: ShellResult['output'] | undefined;
-    const providerMeta: Record<string, unknown> = {};
-    let maxOutputLength: number | undefined;
-
-    try {
-      const shellResult = await shellTool.shell.run(toolCall.action);
-      shellOutputs = shellResult.output ?? [];
-
-      if (shellResult.providerData) {
-        Object.assign(providerMeta, shellResult.providerData);
-      }
-
-      if (typeof shellResult.maxOutputLength === 'number') {
-        maxOutputLength = shellResult.maxOutputLength;
-      }
-    } catch (err) {
-      const errorText = toErrorMessage(err);
-      shellOutputs = [
-        {
-          stdout: '',
-          stderr: errorText,
-          outcome: { type: 'exit', exitCode: null },
-        },
-      ];
-      _logger.error('Failed to execute shell action:', err);
-    }
-
-    shellOutputs = shellOutputs ?? [];
-
-    emitToolEnd(
+    const shellItem = await withToolFunctionSpan(
       runner,
-      runContext,
-      agent,
-      shellTool,
-      JSON.stringify(shellOutputs),
-      toolCall,
+      shellTool.name,
+      async (span) => {
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.input = JSON.stringify(toolCall.action);
+        }
+
+        emitToolStart(runner, runContext, agent, shellTool, toolCall);
+
+        let shellOutputs: ShellResult['output'] | undefined;
+        const providerMeta: Record<string, unknown> = {};
+        let maxOutputLength: number | undefined;
+
+        try {
+          const shellResult = await shellTool.shell.run(toolCall.action);
+          shellOutputs = shellResult.output ?? [];
+
+          if (shellResult.providerData) {
+            Object.assign(providerMeta, shellResult.providerData);
+          }
+
+          if (typeof shellResult.maxOutputLength === 'number') {
+            maxOutputLength = shellResult.maxOutputLength;
+          }
+        } catch (err) {
+          const errorText = toErrorMessage(err);
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            errorText,
+          );
+          shellOutputs = [
+            {
+              stdout: '',
+              stderr: errorText,
+              outcome: { type: 'exit', exitCode: null },
+            },
+          ];
+          span?.setError({
+            message: 'Error running tool',
+            data: {
+              tool_name: shellTool.name,
+              error: traceError,
+            },
+          });
+          _logger.error('Failed to execute shell action:', err);
+        }
+
+        shellOutputs = shellOutputs ?? [];
+        const output = JSON.stringify(shellOutputs);
+        emitToolEnd(runner, runContext, agent, shellTool, output, toolCall);
+
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = output;
+        }
+
+        const rawItem: protocol.ShellCallResultItem = {
+          type: 'shell_call_output',
+          callId: toolCall.callId,
+          output: shellOutputs ?? [],
+        };
+
+        if (typeof maxOutputLength === 'number') {
+          rawItem.maxOutputLength = maxOutputLength;
+        }
+
+        if (Object.keys(providerMeta).length > 0) {
+          rawItem.providerData = providerMeta;
+        }
+
+        return new RunToolCallOutputItem(rawItem, agent, rawItem.output);
+      },
     );
 
-    const rawItem: protocol.ShellCallResultItem = {
-      type: 'shell_call_output',
-      callId: toolCall.callId,
-      output: shellOutputs ?? [],
-    };
-
-    if (typeof maxOutputLength === 'number') {
-      rawItem.maxOutputLength = maxOutputLength;
-    }
-
-    if (Object.keys(providerMeta).length > 0) {
-      rawItem.providerData = providerMeta;
-    }
-
-    results.push(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
+    results.push(shellItem);
   }
 
   return results;
@@ -861,53 +908,93 @@ export async function executeApplyPatchOperations(
       continue;
     }
 
-    emitToolStart(runner, runContext, agent, applyPatchTool, toolCall);
+    const applyPatchItem = await withToolFunctionSpan(
+      runner,
+      applyPatchTool.name,
+      async (span) => {
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.input = JSON.stringify(toolCall.operation);
+        }
 
-    let status: 'completed' | 'failed' = 'completed';
-    let output = '';
+        emitToolStart(runner, runContext, agent, applyPatchTool, toolCall);
 
-    try {
-      let result: ApplyPatchResult | void;
-      switch (toolCall.operation.type) {
-        case 'create_file':
-          result = await applyPatchTool.editor.createFile(toolCall.operation);
-          break;
-        case 'update_file':
-          result = await applyPatchTool.editor.updateFile(toolCall.operation);
-          break;
-        case 'delete_file':
-          result = await applyPatchTool.editor.deleteFile(toolCall.operation);
-          break;
-        default:
-          throw new Error('Unsupported apply_patch operation');
-      }
+        let status: 'completed' | 'failed' = 'completed';
+        let output = '';
 
-      if (result && typeof result.status === 'string') {
-        status = result.status;
-      }
+        try {
+          let result: ApplyPatchResult | void;
+          switch (toolCall.operation.type) {
+            case 'create_file':
+              result = await applyPatchTool.editor.createFile(
+                toolCall.operation,
+              );
+              break;
+            case 'update_file':
+              result = await applyPatchTool.editor.updateFile(
+                toolCall.operation,
+              );
+              break;
+            case 'delete_file':
+              result = await applyPatchTool.editor.deleteFile(
+                toolCall.operation,
+              );
+              break;
+            default:
+              throw new Error('Unsupported apply_patch operation');
+          }
 
-      if (result && typeof result.output === 'string') {
-        output = result.output;
-      }
-    } catch (err) {
-      status = 'failed';
-      output = toErrorMessage(err);
-      _logger.error('Failed to execute apply_patch operation:', err);
-    }
+          if (result && typeof result.status === 'string') {
+            status = result.status;
+          }
 
-    emitToolEnd(runner, runContext, agent, applyPatchTool, output, toolCall);
+          if (result && typeof result.output === 'string') {
+            output = result.output;
+          }
+        } catch (err) {
+          status = 'failed';
+          output = toErrorMessage(err);
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            output,
+          );
+          span?.setError({
+            message: 'Error running tool',
+            data: {
+              tool_name: applyPatchTool.name,
+              error: traceError,
+            },
+          });
+          _logger.error('Failed to execute apply_patch operation:', err);
+        }
 
-    const rawItem: protocol.ApplyPatchCallResultItem = {
-      type: 'apply_patch_call_output',
-      callId: toolCall.callId,
-      status,
-    };
+        emitToolEnd(
+          runner,
+          runContext,
+          agent,
+          applyPatchTool,
+          output,
+          toolCall,
+        );
 
-    if (output) {
-      rawItem.output = output;
-    }
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = output;
+        }
 
-    results.push(new RunToolCallOutputItem(rawItem, agent, output));
+        const rawItem: protocol.ApplyPatchCallResultItem = {
+          type: 'apply_patch_call_output',
+          callId: toolCall.callId,
+          status,
+        };
+
+        if (output) {
+          rawItem.output = output;
+        }
+
+        return new RunToolCallOutputItem(rawItem, agent, output);
+      },
+    );
+
+    results.push(applyPatchItem);
   }
 
   return results;
@@ -1008,52 +1095,79 @@ export async function executeComputerActions(
       continue;
     }
 
-    // Hooks: on_tool_start (global + agent)
-    emitToolStart(runner, runContext, agent, computerTool, toolCall);
+    const computerItem = await withToolFunctionSpan(
+      runner,
+      computerTool.name,
+      async (span) => {
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.input = JSON.stringify(toolCall.action);
+        }
 
-    const acknowledgedSafetyChecks =
-      pendingSafetyChecks && pendingSafetyChecks.length > 0
-        ? await resolveSafetyCheckAcknowledgements({
+        // Hooks: on_tool_start (global + agent)
+        emitToolStart(runner, runContext, agent, computerTool, toolCall);
+
+        const acknowledgedSafetyChecks =
+          pendingSafetyChecks && pendingSafetyChecks.length > 0
+            ? await resolveSafetyCheckAcknowledgements({
+                runContext,
+                toolCall,
+                pendingSafetyChecks,
+                onSafetyCheck: computerTool.onSafetyCheck,
+              })
+            : undefined;
+
+        // Run the action and get screenshot.
+        let output: string;
+        try {
+          const computer = await resolveComputer({
+            tool: computerTool,
             runContext,
+          });
+          output = await _runComputerActionAndScreenshot(
+            computer,
             toolCall,
-            pendingSafetyChecks,
-            onSafetyCheck: computerTool.onSafetyCheck,
-          })
-        : undefined;
+            runContext,
+          );
+        } catch (err) {
+          _logger.error('Failed to execute computer action:', err);
+          output = '';
+          const errorText = toErrorMessage(err);
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            errorText,
+          );
+          span?.setError({
+            message: 'Error running tool',
+            data: {
+              tool_name: computerTool.name,
+              error: traceError,
+            },
+          });
+        }
 
-    // Run the action and get screenshot
-    let output: string;
-    try {
-      const computer = await resolveComputer({
-        tool: computerTool,
-        runContext,
-      });
-      output = await _runComputerActionAndScreenshot(
-        computer,
-        toolCall,
-        runContext,
-      );
-    } catch (err) {
-      _logger.error('Failed to execute computer action:', err);
-      output = '';
-    }
+        // Hooks: on_tool_end (global + agent)
+        emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
 
-    // Hooks: on_tool_end (global + agent)
-    emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
+        // Return the screenshot as a data URL when available; fall back to an empty string on failures.
+        const imageUrl = output ? `data:image/png;base64,${output}` : '';
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = imageUrl;
+        }
+        const rawItem: protocol.ComputerCallResultItem = {
+          type: 'computer_call_result',
+          callId: toolCall.callId,
+          output: { type: 'computer_screenshot', data: imageUrl },
+        };
+        if (acknowledgedSafetyChecks && acknowledgedSafetyChecks.length > 0) {
+          rawItem.providerData = {
+            acknowledgedSafetyChecks,
+          };
+        }
+        return new RunToolCallOutputItem(rawItem, agent, imageUrl);
+      },
+    );
 
-    // Return the screenshot as a data URL when available; fall back to an empty string on failures.
-    const imageUrl = output ? `data:image/png;base64,${output}` : '';
-    const rawItem: protocol.ComputerCallResultItem = {
-      type: 'computer_call_result',
-      callId: toolCall.callId,
-      output: { type: 'computer_screenshot', data: imageUrl },
-    };
-    if (acknowledgedSafetyChecks && acknowledgedSafetyChecks.length > 0) {
-      rawItem.providerData = {
-        acknowledgedSafetyChecks,
-      };
-    }
-    results.push(new RunToolCallOutputItem(rawItem, agent, imageUrl));
+    results.push(computerItem);
   }
   return results;
 }
