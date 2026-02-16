@@ -1116,7 +1116,7 @@ export async function executeComputerActions(
               })
             : undefined;
 
-        // Run the action and get screenshot
+        // Run the action and get screenshot.
         let output: string;
         try {
           const computer = await resolveComputer({
@@ -1131,9 +1131,10 @@ export async function executeComputerActions(
         } catch (err) {
           _logger.error('Failed to execute computer action:', err);
           output = '';
+          const errorText = toErrorMessage(err);
           const traceError = getTraceToolError(
             runner.config.traceIncludeSensitiveData,
-            toErrorMessage(err),
+            errorText,
           );
           span?.setError({
             message: 'Error running tool',

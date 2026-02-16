@@ -689,6 +689,58 @@ describe('executeComputerActions', () => {
     });
   });
 
+  it('propagates onSafetyCheck callback errors', async () => {
+    const sensitiveError = 'safety check leaked data';
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const onSafetyCheck = vi.fn().mockRejectedValue(new Error(sensitiveError));
+    const computer = computerTool({ computer: fakeComputer, onSafetyCheck });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_safety_check_error_redacted',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+      providerData: {
+        pending_safety_checks: [
+          {
+            id: 'sc1',
+            code: 'malicious_instructions',
+            message: 'Review before proceeding.',
+          },
+        ],
+      },
+    };
+    const mockLogger = createMockLogger();
+
+    await expect(
+      withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({
+            tracingDisabled: true,
+            traceIncludeSensitiveData: false,
+          }),
+          new RunContext(),
+          mockLogger,
+        ),
+      ),
+    ).rejects.toThrow(sensitiveError);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
   it('does not trace computer action input/output when sensitive data is disabled', async () => {
     const secretInput = 'super-secret-input';
     const secretOutput = 'super-secret-output';
