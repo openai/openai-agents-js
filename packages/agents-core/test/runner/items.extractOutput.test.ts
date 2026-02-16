@@ -23,7 +23,9 @@ describe('extractOutputItemsFromRunItems', () => {
       ),
       new RunMessageOutputItem(
         {
-          type: 'assistant_message',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
           content: [{ type: 'output_text', text: 'hello' }],
         },
         agent,
@@ -37,7 +39,9 @@ describe('extractOutputItemsFromRunItems', () => {
       content: [{ type: 'input_text', text: 'thinking...' }],
     });
     expect(result[1]).toEqual({
-      type: 'assistant_message',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
       content: [{ type: 'output_text', text: 'hello' }],
     });
   });
@@ -46,7 +50,9 @@ describe('extractOutputItemsFromRunItems', () => {
     const items = [
       new RunMessageOutputItem(
         {
-          type: 'assistant_message',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
           content: [{ type: 'output_text', text: 'hi' }],
         },
         agent,
@@ -63,7 +69,9 @@ describe('extractOutputItemsFromRunItems', () => {
     const result = extractOutputItemsFromRunItems(items);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
-      type: 'assistant_message',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
       content: [{ type: 'output_text', text: 'hi' }],
     });
   });
@@ -72,7 +80,9 @@ describe('extractOutputItemsFromRunItems', () => {
     const items = [
       new RunMessageOutputItem(
         {
-          type: 'assistant_message',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
           content: [{ type: 'output_text', text: 'msg' }],
         },
         agent,
@@ -96,7 +106,9 @@ describe('extractOutputItemsFromRunItems', () => {
     const result = extractOutputItemsFromRunItems(items);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
-      type: 'assistant_message',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
       content: [{ type: 'output_text', text: 'msg' }],
     });
   });
@@ -129,7 +141,9 @@ describe('extractOutputItemsFromRunItems', () => {
       ),
       new RunMessageOutputItem(
         {
-          type: 'assistant_message',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
           content: [{ type: 'output_text', text: 'ok' }],
         },
         agent,
@@ -139,7 +153,9 @@ describe('extractOutputItemsFromRunItems', () => {
     const result = extractOutputItemsFromRunItems(items);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
-      type: 'assistant_message',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
       content: [{ type: 'output_text', text: 'ok' }],
     });
   });
@@ -165,7 +181,9 @@ describe('extractOutputItemsFromRunItems', () => {
       new RunToolCallOutputItem(
         {
           type: 'function_call_result',
+          name: 'search',
           callId: 'call-1',
+          status: 'completed',
           output: 'result',
         },
         agent,
@@ -191,7 +209,9 @@ describe('extractOutputItemsFromRunItems', () => {
       new RunToolCallOutputItem(
         {
           type: 'function_call_result',
+          name: 'search',
           callId: 'call-1',
+          status: 'completed',
           output: 'done',
         },
         agent,
