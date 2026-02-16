@@ -67,6 +67,8 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
 };
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+const REDACTED_TOOL_ERROR_MESSAGE =
+  'Tool execution failed. Error details are redacted.';
 // 1x1 transparent PNG data URL used for rejected computer actions.
 const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
@@ -557,6 +559,13 @@ function toErrorMessage(error: unknown): string {
   }
 }
 
+function getTraceToolError(
+  traceIncludeSensitiveData: boolean,
+  errorMessage: string,
+): string {
+  return traceIncludeSensitiveData ? errorMessage : REDACTED_TOOL_ERROR_MESSAGE;
+}
+
 async function withToolFunctionSpan<T>(
   runner: Runner,
   toolName: string,
@@ -790,6 +799,10 @@ export async function executeShellActions(
           }
         } catch (err) {
           const errorText = toErrorMessage(err);
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            errorText,
+          );
           shellOutputs = [
             {
               stdout: '',
@@ -801,7 +814,7 @@ export async function executeShellActions(
             message: 'Error running tool',
             data: {
               tool_name: shellTool.name,
-              error: errorText,
+              error: traceError,
             },
           });
           _logger.error('Failed to execute shell action:', err);
@@ -940,11 +953,15 @@ export async function executeApplyPatchOperations(
         } catch (err) {
           status = 'failed';
           output = toErrorMessage(err);
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            output,
+          );
           span?.setError({
             message: 'Error running tool',
             data: {
               tool_name: applyPatchTool.name,
-              error: output,
+              error: traceError,
             },
           });
           _logger.error('Failed to execute apply_patch operation:', err);
@@ -1114,11 +1131,15 @@ export async function executeComputerActions(
         } catch (err) {
           _logger.error('Failed to execute computer action:', err);
           output = '';
+          const traceError = getTraceToolError(
+            runner.config.traceIncludeSensitiveData,
+            toErrorMessage(err),
+          );
           span?.setError({
             message: 'Error running tool',
             data: {
               tool_name: computerTool.name,
-              error: toErrorMessage(err),
+              error: traceError,
             },
           });
         }

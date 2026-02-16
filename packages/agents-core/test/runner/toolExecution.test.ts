@@ -90,6 +90,8 @@ const createMockLogger = (): Logger => ({
 
 const CUSTOM_REJECTION_MESSAGE =
   'Tool execution was dismissed. You may retry this tool later.';
+const REDACTED_TOOL_ERROR_MESSAGE =
+  'Tool execution failed. Error details are redacted.';
 
 class RecordingProcessor implements TracingProcessor {
   tracesStarted: Trace[] = [];
@@ -632,6 +634,58 @@ describe('executeComputerActions', () => {
           error: 'computer boom',
         },
       });
+    });
+  });
+
+  it('redacts computer action errors when sensitive tracing data is disabled', async () => {
+    const sensitiveError = 'computer secret output';
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockRejectedValue(new Error(sensitiveError)),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_error_redacted',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          new RunContext(),
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: computer.name,
+          error: REDACTED_TOOL_ERROR_MESSAGE,
+        },
+      });
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+        sensitiveError,
+      );
     });
   });
 
@@ -1243,6 +1297,49 @@ describe('executeShellActions', () => {
     });
   });
 
+  it('redacts shell action errors when sensitive tracing data is disabled', async () => {
+    const sensitiveError = 'shell secret output';
+    const shell = new FakeShell();
+    shell.error = new Error(sensitiveError);
+    const shellDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_trace_error_redacted',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeShellActions(
+          agent,
+          [{ toolCall, shell: shellDef } as any],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          runContext,
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, shellDef.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: shellDef.name,
+          error: REDACTED_TOOL_ERROR_MESSAGE,
+        },
+      });
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+        sensitiveError,
+      );
+    });
+  });
+
   it('does not trace shell input/output when sensitive data is disabled', async () => {
     const secretInput = 'super-secret-shell-input';
     const secretOutput = 'super-secret-shell-output';
@@ -1420,6 +1517,52 @@ describe('executeShellActions', () => {
             error: 'patch boom',
           },
         });
+      });
+    });
+
+    it('redacts apply_patch errors when sensitive tracing data is disabled', async () => {
+      const sensitiveError = 'patch secret output';
+      const editor = new FakeEditor();
+      editor.errors.delete_file = new Error(sensitiveError);
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_trace_error_redacted',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+      const mockLogger = createMockLogger();
+
+      await withRecordingTrace(async (processor) => {
+        await withTrace('test', () =>
+          executeApplyPatchOperations(
+            agent,
+            [{ toolCall, applyPatch } as any],
+            new Runner({
+              tracingDisabled: false,
+              traceIncludeSensitiveData: false,
+            }),
+            runContext,
+            mockLogger,
+          ),
+        );
+
+        const functionSpan = getEndedFunctionSpan(processor, applyPatch.name);
+        expect(functionSpan.error).toEqual({
+          message: 'Error running tool',
+          data: {
+            tool_name: applyPatch.name,
+            error: REDACTED_TOOL_ERROR_MESSAGE,
+          },
+        });
+        expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+          sensitiveError,
+        );
       });
     });
 
