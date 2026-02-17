@@ -14,10 +14,12 @@ workflows during development and in production.
 
 <Aside type="note">
 
-Tracing is enabled by default. There are two ways to disable tracing:
+Tracing is enabled by default in server runtimes (Node.js, Deno, Bun). It is disabled by default in browsers and when `NODE_ENV=test`.
+
+There are two ways to disable tracing in server environments:
 
 1. You can globally disable tracing by setting the env var `OPENAI_AGENTS_DISABLE_TRACING=1`
-2. You can disable tracing for a single run by setting [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) to `true`
+2. You can disable tracing on a runner by setting [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) to `true` in `new Runner(...)`
 
 **_For organizations operating under a Zero Data Retention (ZDR) policy using OpenAI's APIs, tracing is unavailable._**
 
