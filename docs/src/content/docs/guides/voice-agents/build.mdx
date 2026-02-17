@@ -62,6 +62,15 @@ Additional `RealtimeSession` options you can set at construction time:
 | `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
 | `toolErrorFormatter`                          | `ToolErrorFormatter`              | Customize tool approval rejection messages returned to the model.                |
 
+`connect(...)` options:
+
+| Option   | Type                                          | Purpose                                               |
+| -------- | --------------------------------------------- | ----------------------------------------------------- |
+| `apiKey` | `string \| (() => string \| Promise<string>)` | API key (or lazy loader) used for this connection.    |
+| `model`  | `OpenAIRealtimeModels \| string`              | Optional model override for the transport connection. |
+| `url`    | `string`                                      | Optional custom Realtime endpoint URL.                |
+| `callId` | `string`                                      | Attach to an existing SIP-initiated call/session.     |
+
 ## Handoffs
 
 Similarly to regular agents, you can use handoffs to break your agent into multiple agents and orchestrate between them to improve the performance of your agents and better scope the problem.

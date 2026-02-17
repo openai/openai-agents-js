@@ -11,106 +11,110 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 import conversationIdExample from '../../../../../../examples/docs/running-agents/conversationId.ts?raw';
 import previousResponseIdExample from '../../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 
-エージェントはそれ自体では何もしません。`Runner` クラスまたは `run()` ユーティリティでそれらを **run** します。
+エージェントはそれ自体では何もしません。`Runner` クラスまたは `run()` ユーティリティで実行します。
 
-<Code lang="typescript" code={helloWorldExample} title="Simple run" />
+<Code lang="typescript" code={helloWorldExample} title="シンプルな実行" />
 
-カスタム runner が不要な場合は、シングルトンのデフォルト `Runner` インスタンスを実行する `run()` ユーティリティも使えます。
+カスタム runner が不要な場合は、シングルトンのデフォルト `Runner` インスタンスで動作する `run()` ユーティリティも使えます。
 
-あるいは、独自の runner インスタンスを作成できます。
+あるいは、自分で runner インスタンスを作成できます。
 
-<Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
+<Code
+  lang="typescript"
+  code={helloWorldWithRunnerExample}
+  title="シンプルな実行"
+/>
 
-エージェントの実行後、最終出力と実行の完全な履歴を含む [エージェントの実行結果](/openai-agents-js/ja/guides/results) オブジェクトを受け取ります。
+エージェントを実行すると、最終出力と実行の完全な履歴を含む [エージェントの実行結果](/openai-agents-js/ja/guides/results) オブジェクトを受け取ります。
 
 ## エージェントループ
 
-Runner の run メソッドを使うときは、開始エージェントと入力を渡します。入力は文字列（ユーザーからのメッセージとみなされます）か、OpenAI Responses API の項目である入力アイテムのリストのいずれかです。
+Runner の run メソッドを使うときは、開始エージェントと入力を渡します。入力は文字列（ユーザー メッセージと見なされます）か、OpenAI Responses API のアイテムである入力アイテムのリストのいずれかです。
 
 runner は次のループを実行します。
 
 1. 現在の入力で現在のエージェントのモデルを呼び出す
-2. LLM の応答を検査する
+2. LLM のレスポンスを検査する
    - **Final output** → 返す
-   - **Handoff** → 新しいエージェントに切り替え、会話履歴を保持し、1 に戻る
-   - **Tool calls** → ツールを実行し、その結果を会話に追加して 1 に戻る
-3. `maxTurns` に達したら [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) を投げる
+   - **Handoff** → 新しいエージェントに切り替え、蓄積された会話履歴を保持し、1 に戻る
+   - **Tool calls** → ツールを実行し、その結果を会話に追加して、1 に戻る
+3. `maxTurns` に到達したら [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスローする
 
 <Aside type="note">
-  LLM の出力を「final
-  output」と見なすルールは、望ましい型のテキスト出力を生成し、ツール呼び出しが存在しないことです。
+  LLM の出力が「final
+  output」と見なされる条件は、望ましい型のテキスト出力を生成し、かつツール呼び出しがないことです。
 </Aside>
 
 ### Runner のライフサイクル
 
-アプリ起動時に `Runner` を作成し、リクエスト間で再利用します。このインスタンスはモデルプロバイダーやトレーシングオプションなどのグローバル設定を保持します。まったく別のセットアップが必要な場合のみ、別の `Runner` を作成してください。シンプルなスクリプトでは、内部でデフォルト runner を使う `run()` を呼び出すこともできます。
+アプリ起動時に `Runner` を作成し、リクエスト間で再利用します。このインスタンスはモデルプロバイダーやトレーシング オプションなどのグローバル設定を保持します。完全に異なる構成が必要な場合のみ別の `Runner` を作成してください。簡単なスクリプトでは、内部でデフォルト runner を使う `run()` を呼び出すこともできます。
 
-## Run の引数
+## 実行引数
 
-`run()` メソッドへの入力は、実行を開始する初期エージェント、実行用の入力、および一連のオプションです。
+`run()` メソッドへの入力は、実行を開始する初期エージェント、実行の入力、および一連のオプションです。
 
-入力は、文字列（ユーザーからのメッセージとみなされます）、[input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop (人間の介入)](/openai-agents-js/ja/guides/human-in-the-loop) エージェントを構築している場合は [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) オブジェクトのいずれかです。
+入力は、文字列（ユーザー メッセージと見なされます）、[input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) のリスト、または [Human in the loop (人間の介入)](/openai-agents-js/ja/guides/human-in-the-loop) エージェントを構築する場合の [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) オブジェクトのいずれかです。
 
 追加のオプションは次のとおりです。
 
-| Option                 | Default | Description                                                                                                                                         |
-| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`               | `false` | `true` の場合、呼び出しは `StreamedRunResult` を返し、モデルから到着したイベントを順次発行します                                                    |
-| `context`              | –       | すべてのツール / ガードレール / ハンドオフに転送されるコンテキストオブジェクト。詳細は[コンテキスト管理](/openai-agents-js/ja/guides/context)を参照 |
-| `maxTurns`             | `10`    | セーフティリミット。到達時に [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) を投げます               |
-| `signal`               | –       | 取り消し用の `AbortSignal`                                                                                                                          |
-| `session`              | –       | セッション永続化の実装。詳しくは[セッション](/openai-agents-js/ja/guides/sessions)を参照                                                            |
-| `sessionInputCallback` | –       | セッション履歴と新規入力のカスタムマージロジック。モデル呼び出し前に実行。詳細は[セッション](/openai-agents-js/ja/guides/sessions)を参照            |
-| `callModelInputFilter` | –       | モデル呼び出し直前にモデル入力（items + 任意の instructions）を編集するフック。詳しくは[Call model input filter](#call-model-input-filter)          |
-| `toolErrorFormatter`   | –       | モデルに返されるツール承認拒否メッセージをカスタマイズするフック。詳しくは[Tool error formatter](#tool-error-formatter)                             |
-| `tracing`              | –       | 実行ごとのトレーシング設定の上書き（例: export API key）                                                                                            |
-| `errorHandlers`        | –       | サポートされるランタイムエラーのハンドラー（現在は `maxTurns`）。詳しくは[Error handlers](#error-handlers)                                          |
-| `conversationId`       | –       | サーバー側の会話を再利用（OpenAI Responses API + Conversations API のみ）                                                                           |
-| `previousResponseId`   | –       | 会話を作成せずに前回の Responses API 呼び出しから継続（OpenAI Responses API のみ）                                                                  |
+| Option                 | Default | Description                                                                                                                                                      |
+| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`               | `false` | `true` の場合、呼び出しは `StreamedRunResult` を返し、モデルから到着したイベントを逐次発行します                                                                 |
+| `context`              | –       | すべての tool / ガードレール / ハンドオフに転送されるコンテキストオブジェクト。詳細は [コンテキスト管理](/openai-agents-js/ja/guides/context) を参照してください |
+| `maxTurns`             | `10`    | 安全上の上限。到達時に [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) をスローします                              |
+| `signal`               | –       | 取り消し用の `AbortSignal`                                                                                                                                       |
+| `session`              | –       | セッション永続化の実装。詳しくは [セッション](/openai-agents-js/ja/guides/sessions) を参照してください                                                           |
+| `sessionInputCallback` | –       | セッション履歴と新規入力のカスタムマージロジック。モデル呼び出し前に実行。詳しくは [セッション](/openai-agents-js/ja/guides/sessions) を参照                     |
+| `callModelInputFilter` | –       | モデル呼び出し直前にモデル入力（items + 任意の instructions）を編集するフック。詳しくは [Call model input filter](#call-model-input-filter) を参照               |
+| `toolErrorFormatter`   | –       | モデルに返すツール承認拒否メッセージをカスタマイズするフック。詳しくは [Tool error formatter](#tool-error-formatter) を参照                                      |
+| `tracing`              | –       | 実行単位のトレーシング設定の上書き（例: エクスポート用 API キー）                                                                                                |
+| `errorHandlers`        | –       | サポートされるランタイムエラー（現在は `maxTurns`）用のハンドラー。詳しくは [Error handlers](#error-handlers) を参照                                             |
+| `conversationId`       | –       | サーバー側の会話を再利用（OpenAI Responses API + Conversations API のみ）                                                                                        |
+| `previousResponseId`   | –       | 会話を作成せずに直前の Responses API 呼び出しから継続（OpenAI Responses API のみ）                                                                               |
 
 ## ストリーミング
 
-ストリーミングを使うと、LLM の実行中にストリーミングイベントも受け取れます。ストリームが開始されると、`StreamedRunResult` には新しく生成されたすべての出力を含む、実行に関する完全な情報が含まれます。`for await` ループでストリーミングイベントを反復処理できます。詳しくは[ストリーミング](/openai-agents-js/ja/guides/streaming)ガイドを参照してください。
+ストリーミングにより、LLM 実行中のストリーミングイベントも受け取れます。ストリームが開始されると、`StreamedRunResult` には実行に関する完全な情報（新しい出力をすべて含む）が含まれます。`for await` ループでストリーミングイベントを反復できます。詳しくは [ストリーミング](/openai-agents-js/ja/guides/streaming) を参照してください。
 
 ## Run の設定
 
-独自の `Runner` インスタンスを作成する場合、runner を構成するために `RunConfig` オブジェクトを渡せます。
+独自の `Runner` インスタンスを作成する場合は、runner を構成するために `RunConfig` オブジェクトを渡せます。
 
-| Field                       | Type                     | Purpose                                                                   |
-| --------------------------- | ------------------------ | ------------------------------------------------------------------------- |
-| `model`                     | `string \| Model`        | 実行中の **すべて** のエージェントに特定のモデルを強制します              |
-| `modelProvider`             | `ModelProvider`          | モデル名を解決します。デフォルトは OpenAI プロバイダーです                |
-| `modelSettings`             | `ModelSettings`          | エージェントごとの設定を上書きするグローバルなチューニングパラメーター    |
-| `handoffInputFilter`        | `HandoffInputFilter`     | ハンドオフを行う際に入力アイテムを変更（ハンドオフ自体で未定義の場合）    |
-| `inputGuardrails`           | `InputGuardrail[]`       | 最初のユーザー入力に適用されるガードレール                                |
-| `outputGuardrails`          | `OutputGuardrail[]`      | 最終出力に適用されるガードレール                                          |
-| `tracingDisabled`           | `boolean`                | OpenAI Tracing を完全に無効化                                             |
-| `traceIncludeSensitiveData` | `boolean`                | スパンは発行しつつ、トレースから LLM/ツールの入出力を除外                 |
-| `workflowName`              | `string`                 | Traces ダッシュボードに表示。関連する実行をグルーピングするのに役立ちます |
-| `traceId` / `groupId`       | `string`                 | SDK に生成させる代わりに、トレースまたはグループ ID を手動指定            |
-| `traceMetadata`             | `Record<string, string>` | すべてのスパンに付与する任意のメタデータ                                  |
-| `tracing`                   | `TracingConfig`          | 実行ごとのトレーシング上書き（例: export API key）                        |
-| `sessionInputCallback`      | `SessionInputCallback`   | この runner 上のすべての実行に対する既定の履歴マージ戦略                  |
-| `callModelInputFilter`      | `CallModelInputFilter`   | 各モデル呼び出し前にモデル入力を編集するグローバルフック                  |
-| `toolErrorFormatter`        | `ToolErrorFormatter`     | モデルに返すツール承認拒否メッセージをカスタマイズするグローバルフック    |
+| Field                       | Type                     | Purpose                                                                |
+| --------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `model`                     | `string \| Model`        | 実行内の **すべて** のエージェントに特定のモデルを強制します           |
+| `modelProvider`             | `ModelProvider`          | モデル名を解決します。デフォルトは OpenAI プロバイダーです             |
+| `modelSettings`             | `ModelSettings`          | エージェント単位の設定を上書きするグローバルなチューニングパラメーター |
+| `handoffInputFilter`        | `HandoffInputFilter`     | ハンドオフ時に入力アイテムを変換します（ハンドオフ自体で未定義の場合） |
+| `inputGuardrails`           | `InputGuardrail[]`       | 最初のユーザー入力に適用されるガードレール                             |
+| `outputGuardrails`          | `OutputGuardrail[]`      | 最終出力に適用されるガードレール                                       |
+| `tracingDisabled`           | `boolean`                | OpenAI トレーシングを完全に無効化                                      |
+| `traceIncludeSensitiveData` | `boolean`                | スパンは出力しつつ、トレースから LLM/ツールの入出力を除外              |
+| `workflowName`              | `string`                 | Traces ダッシュボードに表示。関連実行のグルーピングに役立ちます        |
+| `traceId` / `groupId`       | `string`                 | SDK に生成させず、手動で trace または group ID を指定                  |
+| `traceMetadata`             | `Record<string, string>` | すべてのスパンに付与する任意のメタデータ                               |
+| `tracing`                   | `TracingConfig`          | 実行単位のトレーシング上書き（例: エクスポート用 API キー）            |
+| `sessionInputCallback`      | `SessionInputCallback`   | この runner 上のすべての実行に対するデフォルトの履歴マージ戦略         |
+| `callModelInputFilter`      | `CallModelInputFilter`   | 各モデル呼び出し前にモデル入力を編集するグローバルフック               |
+| `toolErrorFormatter`        | `ToolErrorFormatter`     | モデルに返すツール承認拒否メッセージをカスタマイズするグローバルフック |
 
 ## 会話 / チャットスレッド
 
-`runner.run()`（または `run()` ユーティリティ）への各呼び出しは、アプリケーションレベルの会話における 1 回の **ターン** を表します。エンドユーザーにどれだけの `RunResult` を見せるかは選べます。`finalOutput` のみの場合もあれば、生成されたすべてのアイテムを表示する場合もあります。
+`runner.run()`（または `run()` ユーティリティ）への各呼び出しは、アプリケーションレベルの会話における 1 回の **ターン** を表します。エンドユーザーに `RunResult` のどこまでを表示するかは任意です。`finalOutput` のみの場合もあれば、生成されたすべてのアイテムを見せる場合もあります。
 
 <Code lang="typescript" code={chatLoopExample} title="会話履歴を引き継ぐ例" />
 
-インタラクティブ版は[チャットの code examples](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)を参照してください。
+インタラクティブ版は [チャットの code examples](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) を参照してください。
 
 ### サーバー管理の会話
 
-OpenAI Responses API に会話履歴を保持させることで、各ターンでローカルの全文書きを送信しなくても済みます。長い会話や複数サービスの調整に便利です。詳しくは[Conversation state ガイド](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)を参照してください。
+OpenAI Responses API に会話履歴を保持させることで、毎ターンごとにローカルの全文書を送信しなくて済みます。長い会話や複数サービスを調整する場合に便利です。詳細は [Conversation state ガイド](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses) を参照してください。
 
-OpenAI はサーバー側の状態を再利用する 2 つの方法を提供します。
+OpenAI はサーバー側の状態を再利用する 2 つの方法を提供しています。
 
 #### 1. 会話全体に対する `conversationId`
 
-[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) を使って一度会話を作成し、その ID を各ターンで再利用できます。SDK は新しく生成されたアイテムのみを自動的に含めます。
+[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) を使って一度会話を作成し、その ID を各ターンで再利用できます。SDK は自動的に新規に生成されたアイテムのみを含めます。
 
 <Code
   lang="typescript"
@@ -118,9 +122,9 @@ OpenAI はサーバー側の状態を再利用する 2 つの方法を提供し�
   title="サーバー側の会話を再利用"
 />
 
-#### 2. 直前のターンから継続する `previousResponseId`
+#### 2. 直前のターンから継続するための `previousResponseId`
 
-いずれにせよ Responses API だけで開始したい場合、前回のレスポンスで返された ID を使って各リクエストを連結できます。これにより、会話リソースを作成せずにターンをまたいでコンテキストを維持できます。
+どのみち Responses API だけで始めたい場合、前のレスポンスで返された ID を用いて各リクエストを連結できます。これにより、完全な会話リソースを作成せずに、ターン間でコンテキストを維持できます。
 
 <Code
   lang="typescript"
@@ -130,50 +134,51 @@ OpenAI はサーバー側の状態を再利用する 2 つの方法を提供し�
 
 ## Call model input filter
 
-`callModelInputFilter` を使って、モデル呼び出しの直前にモデル入力を編集します。このフックは現在のエージェント、context、（セッション履歴がある場合はそれも含む）結合済みの入力アイテムを受け取ります。機微情報の編集、古いメッセージの削除、追加の system prompt の挿入などのために、更新した `input` 配列と任意の `instructions` を返します。
+`callModelInputFilter` を使うと、モデルが呼び出される直前にモデル入力を編集できます。このフックは現在のエージェント、context、（セッション履歴がある場合はそれも含む）結合済みの入力アイテムを受け取ります。機微情報のマスキング、古いメッセージの削除、追加の system 指示の注入などのために、更新した `input` 配列と任意の `instructions` を返してください。
 
-`runner.run(..., { callModelInputFilter })` で実行ごとに設定するか、`Runner` の設定（`RunConfig` の `callModelInputFilter`）で既定値として設定します。
+`runner.run(..., { callModelInputFilter })` で実行単位に設定するか、`Runner` の設定（`RunConfig` の `callModelInputFilter`）としてデフォルトを設定できます。
 
 ## Tool error formatter
 
-ツール呼び出しが拒否されたときにモデルへ返す承認拒否メッセージをカスタマイズするには、`toolErrorFormatter` を使用します。これにより、SDK 既定メッセージの代わりに、（たとえばコンプライアンス指針などの）ドメイン特化の文言を返せます。
+`toolErrorFormatter` を使って、ツール呼び出しが拒否された際にモデルへ返す承認拒否メッセージをカスタマイズできます。これにより、SDK のデフォルトメッセージではなく、ドメイン固有の文言（例: コンプライアンスに関する指針）を返せます。
 
-フォーマッターは、実行ごと（`runner.run(..., { toolErrorFormatter })`）または `RunConfig`（`new Runner(...)` の `toolErrorFormatter`）でグローバルに設定できます。
+フォーマッターは実行単位（`runner.run(..., { toolErrorFormatter })`）でも、`RunConfig`（`new Runner(...)` の `toolErrorFormatter`）でもグローバルに設定できます。
 
-## Error handlers
+## エラーハンドラー
 
-サポートされるランタイムエラーをスローせずに最終出力へ変換するには、`errorHandlers` を使用します。現在は `maxTurns` のみサポートされています。
+`errorHandlers` を使うと、サポートされているランタイムエラーをスローせずに最終出力へ変換できます。現在は `maxTurns` のみサポートされています。
 
-- `errorHandlers.maxTurns` は最大ターンのエラーのみを処理
-- `errorHandlers.default` はサポートされる種類に対するフォールバックとして使用
+- `errorHandlers.maxTurns` は最大ターンのエラーのみを処理します
+- `errorHandlers.default` はサポートされている種類のフォールバックとして使われます
 - ハンドラーは `{ error, context, runData }` を受け取り、`{ finalOutput, includeInHistory? }` を返せます
 
 ## 例外
 
-SDK は捕捉可能な少数のエラーを投げます。
+SDK は捕捉可能な少数のエラーをスローします。
 
 - [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns` に到達
 - [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – モデルが無効な出力を生成（例: 不正な JSON、未知のツール）
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – ガードレール違反
-- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – ガードレールの実行失敗
-- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – 関数ツールが `timeoutMs` を超過し、`timeoutBehavior: 'raise_exception'` が設定されていた
-- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – タイムアウト以外の理由による関数ツールの実行失敗
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 設定やユーザー入力に基づいて投げられる任意のエラー
+- [`ToolInputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/toolinputguardrailtripwiretriggered) / [`ToolOutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/tooloutputguardrailtripwiretriggered) – ツールのガードレール違反
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – ガードレールの実行が完了しなかった
+- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – 関数ツールが `timeoutMs` を超過し、`timeoutBehavior: 'raise_exception'` が使われた
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – タイムアウト以外の理由で関数ツールの実行が失敗
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 設定またはユーザー入力に基づいてスローされた任意のエラー
 
-すべては基底の `AgentsError` クラスを継承しており、現在の実行状態にアクセスするための `state` プロパティを提供することがあります。
+いずれも基本の `AgentsError` クラスを継承しており、現在の実行状態にアクセスするための `state` プロパティを提供する場合があります。
 
-以下は `GuardrailExecutionError` を処理するサンプルコードです。入力ガードレールは最初のユーザー入力に対してのみ実行されるため、この例では元の入力と context で実行を再開します。また、保存された state を再利用して、モデルを再度呼び出さずに出力ガードレールをリトライする方法も示します。
+以下は `GuardrailExecutionError` を処理するコード例です。入力ガードレールは最初のユーザー入力にのみ実行されるため、この例では元の入力と context で実行を再開します。また、保存済みの state を再利用して、モデルを再度呼び出すことなく出力ガードレールを再試行する方法も示しています。
 
 <Code
   lang="typescript"
   code={runningAgentsExceptionExample}
-  title="Guardrail execution error"
+  title="ガードレール実行エラー"
 />
 
 入力と出力のリトライの違い:
 
-- 入力ガードレールは実行の最初のユーザー入力に対してのみ実行されるため、同じ入力/context で新しい実行を開始してリトライする必要があります。保存した `state` を渡しても入力ガードレールは再トリガーされません
-- 出力ガードレールはモデル応答の後に実行されるため、`GuardrailExecutionError` の保存済み `state` を再利用して、別のモデル呼び出しなしに出力ガードレールを再実行できます
+- 入力ガードレールは実行の最初のユーザー入力にのみ実行されるため、同じ入力/context で新しい実行を開始して再試行する必要があります。保存した `state` を渡しても入力ガードレールは再トリガーされません
+- 出力ガードレールはモデルのレスポンス後に実行されるため、`GuardrailExecutionError` から保存した `state` を再利用して、別のモデル呼び出しなしで出力ガードレールを再実行できます
 
 上記の例を実行すると、次の出力が表示されます。
 
@@ -188,6 +193,6 @@ Output guardrail tripped after retry with saved state
 
 ## 次のステップ
 
-- [モデルの構成](/openai-agents-js/ja/guides/models)を学ぶ
-- エージェントに[ツール](/openai-agents-js/ja/guides/tools)を提供する
-- 本番運用に向けて[ガードレール](/openai-agents-js/ja/guides/guardrails)や[トレーシング](/openai-agents-js/ja/guides/tracing)を追加する
+- [モデル](/openai-agents-js/ja/guides/models) の設定方法を学ぶ
+- エージェントに [ツール](/openai-agents-js/ja/guides/tools) を提供する
+- 本番運用に向けて [ガードレール](/openai-agents-js/ja/guides/guardrails) や [トレーシング](/openai-agents-js/ja/guides/tracing) を追加する

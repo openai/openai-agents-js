@@ -90,6 +90,8 @@ const createMockLogger = (): Logger => ({
 
 const CUSTOM_REJECTION_MESSAGE =
   'Tool execution was dismissed. You may retry this tool later.';
+const REDACTED_TOOL_ERROR_MESSAGE =
+  'Tool execution failed. Error details are redacted.';
 
 class RecordingProcessor implements TracingProcessor {
   tracesStarted: Trace[] = [];
@@ -115,6 +117,33 @@ class RecordingProcessor implements TracingProcessor {
   async forceFlush(): Promise<void> {
     /* noop */
   }
+}
+
+async function withRecordingTrace<T>(
+  fn: (processor: RecordingProcessor) => Promise<T>,
+): Promise<T> {
+  const processor = new RecordingProcessor();
+  setTracingDisabled(false);
+  setTraceProcessors([processor]);
+
+  try {
+    return await fn(processor);
+  } finally {
+    setTraceProcessors([defaultProcessor()]);
+    setTracingDisabled(true);
+  }
+}
+
+function getEndedFunctionSpan(
+  processor: RecordingProcessor,
+  toolName: string,
+): Span<any> {
+  const functionSpan = processor.spansEnded.find(
+    (span) =>
+      span.spanData.type === 'function' && span.spanData.name === toolName,
+  );
+  expect(functionSpan).toBeDefined();
+  return functionSpan as Span<any>;
 }
 
 beforeAll(() => {
@@ -525,6 +554,236 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+  });
+
+  it('emits a function span for computer actions', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({ tracingDisabled: false }),
+          new RunContext(),
+        ),
+      );
+
+      getEndedFunctionSpan(processor, computer.name);
+    });
+  });
+
+  it('records span errors for failed computer actions', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockRejectedValue(new Error('computer boom')),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_error',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({ tracingDisabled: false }),
+          new RunContext(),
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: computer.name,
+          error: 'computer boom',
+        },
+      });
+    });
+  });
+
+  it('redacts computer action errors when sensitive tracing data is disabled', async () => {
+    const sensitiveError = 'computer secret output';
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockRejectedValue(new Error(sensitiveError)),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_error_redacted',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          new RunContext(),
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: computer.name,
+          error: REDACTED_TOOL_ERROR_MESSAGE,
+        },
+      });
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+        sensitiveError,
+      );
+    });
+  });
+
+  it('propagates onSafetyCheck callback errors', async () => {
+    const sensitiveError = 'safety check leaked data';
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const onSafetyCheck = vi.fn().mockRejectedValue(new Error(sensitiveError));
+    const computer = computerTool({ computer: fakeComputer, onSafetyCheck });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_safety_check_error_redacted',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+      providerData: {
+        pending_safety_checks: [
+          {
+            id: 'sc1',
+            code: 'malicious_instructions',
+            message: 'Review before proceeding.',
+          },
+        ],
+      },
+    };
+    const mockLogger = createMockLogger();
+
+    await expect(
+      withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({
+            tracingDisabled: true,
+            traceIncludeSensitiveData: false,
+          }),
+          new RunContext(),
+          mockLogger,
+        ),
+      ),
+    ).rejects.toThrow(sensitiveError);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('does not trace computer action input/output when sensitive data is disabled', async () => {
+    const secretInput = 'super-secret-input';
+    const secretOutput = 'super-secret-output';
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue(secretOutput),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_trace_sensitive',
+      status: 'completed',
+      action: { type: 'type', text: secretInput } as any,
+    };
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeComputerActions(
+          new Agent({ name: 'Comp' }),
+          [{ toolCall: call, computer }],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          new RunContext(),
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      expect(functionSpan.spanData.input).toBe('');
+      expect(functionSpan.spanData.output).toBe('');
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretInput);
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretOutput);
+    });
   });
 
   it('defaults missing needsApproval to false for computer tools', async () => {
@@ -1028,6 +1287,155 @@ describe('executeShellActions', () => {
     expect(shell.calls).toHaveLength(1);
   });
 
+  it('emits a function span for shell actions', async () => {
+    const shell = new FakeShell();
+    const shellDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_trace',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeShellActions(
+          agent,
+          [{ toolCall, shell: shellDef } as any],
+          new Runner({ tracingDisabled: false }),
+          runContext,
+        ),
+      );
+
+      getEndedFunctionSpan(processor, shellDef.name);
+    });
+  });
+
+  it('records span errors for failed shell actions', async () => {
+    const shell = new FakeShell();
+    shell.error = new Error('shell boom');
+    const shellDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_trace_error',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeShellActions(
+          agent,
+          [{ toolCall, shell: shellDef } as any],
+          new Runner({ tracingDisabled: false }),
+          runContext,
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, shellDef.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: shellDef.name,
+          error: 'shell boom',
+        },
+      });
+    });
+  });
+
+  it('redacts shell action errors when sensitive tracing data is disabled', async () => {
+    const sensitiveError = 'shell secret output';
+    const shell = new FakeShell();
+    shell.error = new Error(sensitiveError);
+    const shellDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_trace_error_redacted',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const mockLogger = createMockLogger();
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeShellActions(
+          agent,
+          [{ toolCall, shell: shellDef } as any],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          runContext,
+          mockLogger,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, shellDef.name);
+      expect(functionSpan.error).toEqual({
+        message: 'Error running tool',
+        data: {
+          tool_name: shellDef.name,
+          error: REDACTED_TOOL_ERROR_MESSAGE,
+        },
+      });
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+        sensitiveError,
+      );
+    });
+  });
+
+  it('does not trace shell input/output when sensitive data is disabled', async () => {
+    const secretInput = 'super-secret-shell-input';
+    const secretOutput = 'super-secret-shell-output';
+    const shell = new FakeShell();
+    shell.result = {
+      output: [
+        {
+          stdout: secretOutput,
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const shellDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_trace_sensitive',
+      status: 'completed',
+      action: { commands: [secretInput] },
+    };
+
+    await withRecordingTrace(async (processor) => {
+      await withTrace('test', () =>
+        executeShellActions(
+          agent,
+          [{ toolCall, shell: shellDef } as any],
+          new Runner({
+            tracingDisabled: false,
+            traceIncludeSensitiveData: false,
+          }),
+          runContext,
+        ),
+      );
+
+      const functionSpan = getEndedFunctionSpan(processor, shellDef.name);
+      expect(functionSpan.spanData.input).toBe('');
+      expect(functionSpan.spanData.output).toBe('');
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretInput);
+      expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretOutput);
+    });
+  });
+
   it('returns failed status when shell throws', async () => {
     const shell = new FakeShell();
     shell.error = new Error('boom');
@@ -1093,6 +1501,168 @@ describe('executeShellActions', () => {
       expect(rawItem.status).toBe('completed');
       expect(rawItem.output).toBeUndefined();
       expect(editor.operations).toHaveLength(1);
+    });
+
+    it('emits a function span for apply_patch operations', async () => {
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_trace',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'README.md',
+          diff: 'diff --git',
+        },
+      };
+
+      await withRecordingTrace(async (processor) => {
+        await withTrace('test', () =>
+          executeApplyPatchOperations(
+            agent,
+            [{ toolCall, applyPatch } as any],
+            new Runner({ tracingDisabled: false }),
+            runContext,
+          ),
+        );
+
+        getEndedFunctionSpan(processor, applyPatch.name);
+      });
+    });
+
+    it('records span errors for failed apply_patch operations', async () => {
+      const editor = new FakeEditor();
+      editor.errors.delete_file = new Error('patch boom');
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_trace_error',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+      const mockLogger = createMockLogger();
+
+      await withRecordingTrace(async (processor) => {
+        await withTrace('test', () =>
+          executeApplyPatchOperations(
+            agent,
+            [{ toolCall, applyPatch } as any],
+            new Runner({ tracingDisabled: false }),
+            runContext,
+            mockLogger,
+          ),
+        );
+
+        const functionSpan = getEndedFunctionSpan(processor, applyPatch.name);
+        expect(functionSpan.error).toEqual({
+          message: 'Error running tool',
+          data: {
+            tool_name: applyPatch.name,
+            error: 'patch boom',
+          },
+        });
+      });
+    });
+
+    it('redacts apply_patch errors when sensitive tracing data is disabled', async () => {
+      const sensitiveError = 'patch secret output';
+      const editor = new FakeEditor();
+      editor.errors.delete_file = new Error(sensitiveError);
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_trace_error_redacted',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+      const mockLogger = createMockLogger();
+
+      await withRecordingTrace(async (processor) => {
+        await withTrace('test', () =>
+          executeApplyPatchOperations(
+            agent,
+            [{ toolCall, applyPatch } as any],
+            new Runner({
+              tracingDisabled: false,
+              traceIncludeSensitiveData: false,
+            }),
+            runContext,
+            mockLogger,
+          ),
+        );
+
+        const functionSpan = getEndedFunctionSpan(processor, applyPatch.name);
+        expect(functionSpan.error).toEqual({
+          message: 'Error running tool',
+          data: {
+            tool_name: applyPatch.name,
+            error: REDACTED_TOOL_ERROR_MESSAGE,
+          },
+        });
+        expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+          sensitiveError,
+        );
+      });
+    });
+
+    it('does not trace apply_patch input/output when sensitive data is disabled', async () => {
+      const secretInput = 'super-secret-patch-input';
+      const secretOutput = 'super-secret-patch-output';
+      const editor = new FakeEditor();
+      editor.result = {
+        status: 'completed',
+        output: secretOutput,
+      };
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_trace_sensitive',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'README.md',
+          diff: secretInput,
+        },
+      };
+
+      await withRecordingTrace(async (processor) => {
+        await withTrace('test', () =>
+          executeApplyPatchOperations(
+            agent,
+            [{ toolCall, applyPatch } as any],
+            new Runner({
+              tracingDisabled: false,
+              traceIncludeSensitiveData: false,
+            }),
+            runContext,
+          ),
+        );
+
+        const functionSpan = getEndedFunctionSpan(processor, applyPatch.name);
+        expect(functionSpan.spanData.input).toBe('');
+        expect(functionSpan.spanData.output).toBe('');
+        expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+          secretInput,
+        );
+        expect(JSON.stringify(functionSpan.toJSON())).not.toContain(
+          secretOutput,
+        );
+      });
     });
 
     it('returns failed status when editor throws', async () => {
