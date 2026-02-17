@@ -84,21 +84,38 @@ export function agentInputSerializationReplacer(
   return value;
 }
 
+export type ExtractOutputOptions = {
+  /**
+   * When `true`, the `id` property is removed from reasoning items before they
+   * are returned.  Reasoning items that carry an `id` must be followed by a
+   * matching output item when sent back to the Responses API; stripping the id
+   * avoids 400 errors caused by orphaned reasoning references.
+   *
+   * This is opt-in and does **not** change the default SDK behaviour.
+   */
+  stripReasoningItemIds?: boolean;
+};
+
 // Extracts model-ready output items from run items, excluding approval placeholders.
-// Trailing reasoning items are stripped because persisting a reasoning item
-// without a following assistant output violates the API invariant and causes 400 errors.
 export function extractOutputItemsFromRunItems(
   items: RunItem[],
+  options?: ExtractOutputOptions,
 ): AgentInputItem[] {
   const filtered = items.filter((item) => item.type !== 'tool_approval_item');
 
-  // Strip trailing reasoning items that have no subsequent non-reasoning output.
-  let end = filtered.length;
-  while (end > 0 && filtered[end - 1].type === 'reasoning_item') {
-    end--;
-  }
-
-  return filtered.slice(0, end).map((item) => item.rawItem as AgentInputItem);
+  return filtered.map((item) => {
+    const raw = item.rawItem as AgentInputItem;
+    if (
+      options?.stripReasoningItemIds &&
+      item.type === 'reasoning_item' &&
+      'id' in raw &&
+      raw.id !== undefined
+    ) {
+      const { id: _id, ...rest } = raw as Record<string, unknown>;
+      return rest as AgentInputItem;
+    }
+    return raw;
+  });
 }
 
 /**
@@ -111,7 +128,8 @@ export function extractOutputItemsFromRunItems(
 export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
+  options?: ExtractOutputOptions,
 ): AgentInputItem[] {
-  const outputItems = extractOutputItemsFromRunItems(generatedItems);
+  const outputItems = extractOutputItemsFromRunItems(generatedItems, options);
   return [...toAgentInputList(originalInput), ...outputItems];
 }

@@ -17,6 +17,7 @@ import {
   toAgentInputList,
   getAgentInputItemKey,
   removeAgentInputFromPool,
+  type ExtractOutputOptions,
 } from './items';
 import logger from '../logger';
 
@@ -264,6 +265,7 @@ export async function saveToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
   result: RunResult<any, any>,
+  extractOutputOptions?: ExtractOutputOptions,
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -283,6 +285,7 @@ export async function saveToSession(
     extraInputItems: sessionInputItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
+    extractOutputOptions,
   });
 }
 
@@ -303,6 +306,7 @@ export async function saveStreamInputToSession(
 export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,
+  extractOutputOptions?: ExtractOutputOptions,
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -314,6 +318,7 @@ export async function saveStreamResultToSession(
     newRunItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
+    extractOutputOptions,
   });
 }
 
@@ -536,6 +541,7 @@ async function persistRunItemsToSession(options: {
   extraInputItems?: AgentInputItem[] | undefined;
   lastResponseId?: string;
   alreadyPersistedCount: number;
+  extractOutputOptions?: ExtractOutputOptions;
 }): Promise<void> {
   const {
     session,
@@ -544,6 +550,7 @@ async function persistRunItemsToSession(options: {
     extraInputItems = [],
     lastResponseId,
     alreadyPersistedCount,
+    extractOutputOptions,
   } = options;
 
   if (!session) {
@@ -552,7 +559,7 @@ async function persistRunItemsToSession(options: {
 
   const itemsToSave = [
     ...extraInputItems,
-    ...extractOutputItemsFromRunItems(newRunItems),
+    ...extractOutputItemsFromRunItems(newRunItems, extractOutputOptions),
   ];
 
   if (itemsToSave.length === 0) {

@@ -14,7 +14,7 @@ import {
   runInputGuardrails,
   splitInputGuardrails,
 } from './guardrails';
-import { getTurnInput } from './items';
+import { getTurnInput, type ExtractOutputOptions } from './items';
 import { prepareAgentArtifacts } from './modelPreparation';
 import type { AgentArtifacts } from './types';
 
@@ -47,6 +47,7 @@ type PrepareTurnOptions<
     agent: TAgent,
     turnInput: AgentInputItem[],
   ) => void;
+  extractOutputOptions?: ExtractOutputOptions;
 };
 
 export async function prepareTurn<
@@ -66,6 +67,7 @@ export async function prepareTurn<
     inputGuardrailDefs,
     guardrailHandlers,
     emitAgentStart,
+    extractOutputOptions,
   } = options;
   const artifacts = await prepareAgentArtifacts(state);
 
@@ -100,7 +102,7 @@ export async function prepareTurn<
 
   const turnInput = serverConversationTracker
     ? serverConversationTracker.prepareInput(input, generatedItems)
-    : getTurnInput(input, generatedItems);
+    : getTurnInput(input, generatedItems, extractOutputOptions);
 
   if (state._noActiveAgentRun) {
     state._currentAgent.emit(

@@ -94,7 +94,7 @@ export type {
 } from './runner/errorHandlers';
 export { getTracing } from './runner/tracing';
 export { selectModel } from './runner/modelSettings';
-export { getTurnInput } from './runner/items';
+export { getTurnInput, type ExtractOutputOptions } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
@@ -230,6 +230,16 @@ export type RunConfig = {
    * Returning `undefined` falls back to the SDK default message.
    */
   toolErrorFormatter?: ToolErrorFormatter;
+
+  /**
+   * When `true`, the `id` property is removed from reasoning items before they
+   * are sent back to the model.  Reasoning items that carry an `id` must be
+   * followed by a matching output item in the Responses API; stripping the id
+   * avoids 400 errors caused by orphaned reasoning references.
+   *
+   * Defaults to `false` (IDs are preserved).
+   */
+  stripReasoningItemIds?: boolean;
 };
 
 /**
@@ -364,6 +374,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
+      stripReasoningItemIds: config.stripReasoningItemIds,
     };
     this.traceOverrides = {
       ...(config.traceId !== undefined ? { traceId: config.traceId } : {}),
@@ -534,6 +545,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           session,
           sessionPersistence.getItemsForPersistence(),
           runResult,
+          { stripReasoningItemIds: this.config.stripReasoningItemIds },
         );
       }
       return runResult;
@@ -737,6 +749,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 },
                 emitAgentStart: (context, agent, inputItems) => {
                   this.emit('agent_start', context, agent, inputItems);
+                },
+                extractOutputOptions: {
+                  stripReasoningItemIds:
+                    this.config.stripReasoningItemIds,
                 },
               });
             if (
@@ -1085,6 +1101,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             emitAgentStart: (context, agent, inputItems) => {
               this.emit('agent_start', context, agent, inputItems);
             },
+            extractOutputOptions: {
+              stripReasoningItemIds: this.config.stripReasoningItemIds,
+            },
           });
           if (
             preserveTurnPersistenceOnResume &&
@@ -1273,7 +1292,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultToSession(options.session, result, {
+                stripReasoningItemIds: this.config.stripReasoningItemIds,
+              });
             }
             this.emit(
               'agent_end',
@@ -1291,7 +1312,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // We are done for now. Don't run any output guardrails.
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultToSession(options.session, result, {
+                stripReasoningItemIds: this.config.stripReasoningItemIds,
+              });
             }
             return;
           case 'next_step_handoff':
@@ -1346,7 +1369,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (handledResult) {
         await persistStreamInputIfNeeded();
         if (!serverManagesConversation) {
-          await saveStreamResultToSession(options.session, result);
+          await saveStreamResultToSession(options.session, result, {
+            stripReasoningItemIds: this.config.stripReasoningItemIds,
+          });
         }
         return;
       }
