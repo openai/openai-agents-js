@@ -72,6 +72,21 @@ If you can programmatically determine whether a tool call is safe, you can use t
   title="Human in the loop with hosted MCP tools"
 />
 
+#### Hosted MCP options reference
+
+`hostedMcpTool(...)` supports both MCP server URLs and connector-backed servers:
+
+| Option            | Type                                                                                           | Notes                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `serverLabel`     | `string`                                                                                       | Required label that identifies the hosted MCP server in events and traces.                               |
+| `serverUrl`       | `string`                                                                                       | Remote MCP server URL (use this for regular hosted MCP servers).                                         |
+| `connectorId`     | `string`                                                                                       | OpenAI connector id (use this instead of `serverUrl` for connector-backed hosted servers).               |
+| `authorization`   | `string`                                                                                       | Optional authorization token sent to the hosted MCP backend.                                             |
+| `headers`         | `Record<string, string>`                                                                       | Optional extra request headers.                                                                          |
+| `allowedTools`    | `string[] \| { toolNames?: string[] }`                                                         | Allowlist of tool names exposed to the model.                                                            |
+| `requireApproval` | `'never' \| 'always' \| { always?: { toolNames: string[] }, never?: { toolNames: string[] } }` | Approval policy for hosted MCP tool calls. If omitted, defaults to `'never'`.                            |
+| `onApproval`      | `(context, item) => Promise<{ approve: boolean; reason?: string }>`                            | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling. |
+
 ### Connector-backed hosted servers
 
 Hosted MCP also supports OpenAI connectors. Instead of providing a `serverUrl`, pass the connector's `connectorId` and an `authorization` token. The Responses API then handles authentication and exposes the connector's tools through the hosted MCP interface.

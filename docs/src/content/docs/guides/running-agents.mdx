@@ -162,6 +162,7 @@ The SDK throws a small set of errors you can catch:
 - [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns` reached.
 - [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – model produced invalid output (e.g. malformed JSON, unknown tool).
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – guardrail violations.
+- [`ToolInputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/toolinputguardrailtripwiretriggered) / [`ToolOutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/tooloutputguardrailtripwiretriggered) – tool guardrail violations.
 - [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – guardrails failed to complete.
 - [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – a function tool exceeded `timeoutMs` and used `timeoutBehavior: 'raise_exception'`.
 - [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – function tool execution failed for non-timeout errors.
