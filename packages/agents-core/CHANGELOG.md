@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.4.11
+
+### Patch Changes
+
+- afed6f7: fix: #972 emit tracing function spans for shell, apply_patch, and computer tools
+
 ## 0.4.10
 
 ### Patch Changes
