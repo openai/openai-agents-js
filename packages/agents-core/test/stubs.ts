@@ -14,6 +14,7 @@ import type {
   Editor,
   ApplyPatchOperation,
   ApplyPatchResult,
+  EditorInvocationContext,
 } from '../src/editor';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
@@ -172,31 +173,37 @@ export class FakeShell implements Shell {
 
 export class FakeEditor implements Editor {
   public readonly operations: ApplyPatchOperation[] = [];
+  public readonly contexts: (EditorInvocationContext | undefined)[] = [];
   public result: ApplyPatchResult | void = { status: 'completed' };
   public errors: Partial<Record<ApplyPatchOperation['type'], Error>> = {};
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void> {
-    return this.handle(operation);
+    return this.handle(operation, context);
   }
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void> {
-    return this.handle(operation);
+    return this.handle(operation, context);
   }
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void> {
-    return this.handle(operation);
+    return this.handle(operation, context);
   }
 
   private async handle(
     operation: ApplyPatchOperation,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void> {
     this.operations.push(operation);
+    this.contexts.push(context);
     const error = this.errors[operation.type];
     if (error) {
       throw error;
