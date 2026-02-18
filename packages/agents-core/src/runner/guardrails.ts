@@ -241,7 +241,13 @@ export async function runOutputGuardrails<
   >[],
   output: string,
 ) {
-  const guardrails = runnerOutputGuardrails.concat(
+  // Runner-level output guardrails are context-agnostic, so align them with the active run context type.
+  const runnerGuardrails = runnerOutputGuardrails as OutputGuardrailDefinition<
+    OutputGuardrailMetadata,
+    AgentOutputType<unknown>,
+    TContext
+  >[];
+  const guardrails = runnerGuardrails.concat(
     state._currentAgent.outputGuardrails.map(defineOutputGuardrail),
   );
   if (guardrails.length === 0) {
@@ -249,7 +255,7 @@ export async function runOutputGuardrails<
   }
   const agentOutput = state._currentAgent.processFinalOutput(output);
   const runOutput = getTurnInput([], state._generatedItems);
-  const guardrailArgs: OutputGuardrailFunctionArgs<unknown, TOutput> = {
+  const guardrailArgs: OutputGuardrailFunctionArgs<TContext, TOutput> = {
     agent: state._currentAgent,
     agentOutput,
     context: state._context,

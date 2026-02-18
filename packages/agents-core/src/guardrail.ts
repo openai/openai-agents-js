@@ -209,14 +209,18 @@ export interface OutputGuardrailResult<
  */
 export type OutputGuardrailFunction<
   TOutput extends AgentOutputType = TextOutput,
+  TContext = UnknownContext,
 > = (
-  args: OutputGuardrailFunctionArgs<UnknownContext, TOutput>,
+  args: OutputGuardrailFunctionArgs<TContext, TOutput>,
 ) => Promise<GuardrailFunctionOutput>;
 
 /**
  * A guardrail that checks the output of the agent.
  */
-export interface OutputGuardrail<TOutput extends AgentOutputType = TextOutput> {
+export interface OutputGuardrail<
+  TOutput extends AgentOutputType = TextOutput,
+  TContext = UnknownContext,
+> {
   /**
    * The name of the guardrail.
    */
@@ -225,7 +229,7 @@ export interface OutputGuardrail<TOutput extends AgentOutputType = TextOutput> {
   /**
    * The function that performs the guardrail check.
    */
-  execute: OutputGuardrailFunction<TOutput>;
+  execute: OutputGuardrailFunction<TOutput, TContext>;
 }
 
 /**
@@ -242,10 +246,11 @@ export interface OutputGuardrailMetadata {
 export interface OutputGuardrailDefinition<
   TMeta = OutputGuardrailMetadata,
   TOutput extends AgentOutputType = TextOutput,
+  TContext = UnknownContext,
 > extends OutputGuardrailMetadata {
-  guardrailFunction: OutputGuardrailFunction<TOutput>;
+  guardrailFunction: OutputGuardrailFunction<TOutput, TContext>;
   run(
-    args: OutputGuardrailFunctionArgs<UnknownContext, TOutput>,
+    args: OutputGuardrailFunctionArgs<TContext, TOutput>,
   ): Promise<OutputGuardrailResult<TMeta, TOutput>>;
 }
 
@@ -254,9 +259,10 @@ export interface OutputGuardrailDefinition<
  */
 export interface DefineOutputGuardrailArgs<
   TOutput extends AgentOutputType = TextOutput,
+  TContext = UnknownContext,
 > {
   name: string;
-  execute: OutputGuardrailFunction<TOutput>;
+  execute: OutputGuardrailFunction<TOutput, TContext>;
 }
 
 /**
@@ -264,19 +270,21 @@ export interface DefineOutputGuardrailArgs<
  */
 export function defineOutputGuardrail<
   TOutput extends AgentOutputType = TextOutput,
+  TContext = UnknownContext,
 >({
   name,
   execute,
-}: DefineOutputGuardrailArgs<TOutput>): OutputGuardrailDefinition<
+}: DefineOutputGuardrailArgs<TOutput, TContext>): OutputGuardrailDefinition<
   OutputGuardrailMetadata,
-  TOutput
+  TOutput,
+  TContext
 > {
   return {
     type: 'output',
     name,
     guardrailFunction: execute,
     async run(
-      args: OutputGuardrailFunctionArgs<UnknownContext, TOutput>,
+      args: OutputGuardrailFunctionArgs<TContext, TOutput>,
     ): Promise<OutputGuardrailResult<OutputGuardrailMetadata, TOutput>> {
       return {
         guardrail: { type: 'output', name },
