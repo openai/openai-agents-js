@@ -866,6 +866,7 @@ export async function executeApplyPatchOperations(
   for (const action of actions) {
     const applyPatchTool = action.applyPatch;
     const toolCall = action.toolCall;
+    const editorContext = { runContext };
     const approvalItem = new RunToolApprovalItem(
       toolCall,
       agent,
@@ -927,16 +928,19 @@ export async function executeApplyPatchOperations(
             case 'create_file':
               result = await applyPatchTool.editor.createFile(
                 toolCall.operation,
+                editorContext,
               );
               break;
             case 'update_file':
               result = await applyPatchTool.editor.updateFile(
                 toolCall.operation,
+                editorContext,
               );
               break;
             case 'delete_file':
               result = await applyPatchTool.editor.deleteFile(
                 toolCall.operation,
+                editorContext,
               );
               break;
             default:

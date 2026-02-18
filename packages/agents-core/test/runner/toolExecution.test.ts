@@ -1503,6 +1503,33 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(1);
     });
 
+    it('passes RunContext to apply_patch editor operations', async () => {
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext({ run: 'ctx' });
+      const runner = new Runner({ tracingDisabled: true });
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_context',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+
+      await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+      );
+
+      expect(editor.contexts).toHaveLength(1);
+      expect(editor.contexts[0]?.runContext).toBe(runContext);
+    });
+
     it('emits a function span for apply_patch operations', async () => {
       const editor = new FakeEditor();
       const applyPatch = applyPatchTool({ editor });

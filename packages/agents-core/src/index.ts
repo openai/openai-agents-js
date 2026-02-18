@@ -15,7 +15,12 @@ export {
 } from './agent';
 export { Computer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
-export { ApplyPatchOperation, ApplyPatchResult, Editor } from './editor';
+export {
+  ApplyPatchOperation,
+  ApplyPatchResult,
+  Editor,
+  EditorInvocationContext,
+} from './editor';
 export {
   AgentsError,
   GuardrailExecutionError,

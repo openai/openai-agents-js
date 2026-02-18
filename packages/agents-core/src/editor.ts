@@ -1,4 +1,5 @@
 import type { ApplyPatchOperation } from './types/protocol';
+import type { RunContext } from './runContext';
 export type { ApplyPatchOperation } from './types/protocol';
 
 /**
@@ -16,6 +17,16 @@ export type ApplyPatchResult = {
 };
 
 /**
+ * Runtime context passed to editor operations.
+ */
+export type EditorInvocationContext = {
+  /**
+   * Current run context.
+   */
+  runContext: RunContext;
+};
+
+/**
  * Host interface responsible for applying diffs on disk.
  */
 export interface Editor {
@@ -24,6 +35,7 @@ export interface Editor {
    */
   createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void>;
 
   /**
@@ -31,6 +43,7 @@ export interface Editor {
    */
   updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void>;
 
   /**
@@ -38,5 +51,6 @@ export interface Editor {
    */
   deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult | void>;
 }
