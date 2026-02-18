@@ -208,6 +208,64 @@ describe('Runner.run', () => {
       ]);
     });
 
+    it('applies toolChoice updates from agent_tool_end before the next model call', async () => {
+      class ToolChoiceTrackingModel implements Model {
+        requests: ModelRequest[] = [];
+        private callCount = 0;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          this.callCount += 1;
+
+          if (this.callCount === 1) {
+            return {
+              output: [
+                {
+                  ...TEST_MODEL_FUNCTION_CALL,
+                  id: 'tool-call-1',
+                  callId: 'tool-call-1',
+                  name: 'test',
+                  arguments: '{"test":"first"}',
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+
+          return {
+            output: [fakeModelMessage('finished')],
+            usage: new Usage(),
+          };
+        }
+
+        async *getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ToolChoiceTrackingModel();
+      const agent = new Agent({
+        name: 'ToolChoiceLifecycleAgent',
+        model,
+        tools: [TEST_TOOL],
+        modelSettings: { toolChoice: 'required' },
+      });
+
+      agent.on('agent_tool_end', () => {
+        agent.modelSettings.toolChoice = 'none';
+      });
+
+      const result = await run(agent, 'trigger tool');
+
+      expect(result.finalOutput).toBe('finished');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[0]?.modelSettings.toolChoice).toBe('required');
+      expect(model.requests[1]?.modelSettings.toolChoice).toBe('none');
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {
