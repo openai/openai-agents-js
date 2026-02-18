@@ -242,6 +242,7 @@ export class RealtimeSession<
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
     cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
+  #eventListenersAttached = false;
 
   constructor(
     public readonly initialAgent:
@@ -801,9 +802,27 @@ export class RealtimeSession<
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
     this.#transport.on('turn_done', (event) => {
-      const item = event.response.output[event.response.output.length - 1];
-      const textOutput = getLastTextFromAudioOutputMessage(item) ?? '';
-      const itemId = item?.id ?? '';
+      const outputItems = event.response.output ?? [];
+      let textOutput = '';
+      let itemId = '';
+
+      for (let idx = outputItems.length - 1; idx >= 0; idx--) {
+        const candidate = outputItems[idx];
+        const candidateText = getLastTextFromAudioOutputMessage(candidate);
+        if (typeof candidateText === 'string') {
+          textOutput = candidateText;
+          const candidateId = (candidate as { id?: unknown })?.id;
+          itemId = typeof candidateId === 'string' ? candidateId : '';
+          break;
+        }
+      }
+
+      if (!itemId && outputItems.length > 0) {
+        const lastItem = outputItems[outputItems.length - 1] as {
+          id?: unknown;
+        };
+        itemId = typeof lastItem?.id === 'string' ? lastItem.id : '';
+      }
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
@@ -1006,7 +1025,10 @@ export class RealtimeSession<
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
-    this.#setEventListeners();
+    if (!this.#eventListenersAttached) {
+      this.#setEventListeners();
+      this.#eventListenersAttached = true;
+    }
     await this.#transport.connect({
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,

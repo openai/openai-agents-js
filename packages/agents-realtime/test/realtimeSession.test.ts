@@ -194,6 +194,25 @@ describe('RealtimeSession', () => {
     expect(t.connectCalls[0]?.callId).toBe('call_123');
   });
 
+  it('does not duplicate event handlers when reconnecting', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    const historyUpdatedListener = vi.fn();
+
+    s.on('history_updated', historyUpdatedListener);
+
+    await s.connect({ apiKey: 'test' });
+    await s.connect({ apiKey: 'test' });
+
+    historyUpdatedListener.mockClear();
+
+    t.emit('item_update', createMessage('1', 'hi'));
+
+    expect(historyUpdatedListener).toHaveBeenCalledTimes(1);
+    expect(s.history).toEqual([createMessage('1', 'hi')]);
+  });
+
   it('includes default transcription config when connecting', async () => {
     const t = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
@@ -330,6 +349,49 @@ describe('RealtimeSession', () => {
     expect(toolEnd).toHaveBeenCalledTimes(1);
     expect(agentToolStart).toHaveBeenCalledTimes(1);
     expect(agentToolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits assistant transcript on agent_end when a tool call follows', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const sessionAgentEnd = vi.fn();
+    const agentAgentEnd = vi.fn();
+    const transcript = 'Sure, let me get that for you. One moment.';
+
+    scenarioSession.on('agent_end', sessionAgentEnd);
+    agent.on('agent_end', agentAgentEnd);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('turn_done', {
+      response: {
+        id: 'resp-1',
+        output: [
+          {
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_audio', transcript }],
+          },
+          {
+            id: 'call-1',
+            type: 'function_call',
+            callId: 'call-1',
+            name: 'getCallerPhone',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+    } as any);
+
+    expect(sessionAgentEnd).toHaveBeenCalledTimes(1);
+    expect(sessionAgentEnd.mock.calls[0][2]).toBe(transcript);
+    expect(agentAgentEnd).toHaveBeenCalledTimes(1);
+    expect(agentAgentEnd.mock.calls[0][1]).toBe(transcript);
   });
 
   it('merges completed audio transcripts into history', async () => {
