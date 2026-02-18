@@ -46,7 +46,11 @@ export function maybeResetToolChoice(
   toolUseTracker: AgentToolUseTracker,
   modelSettings: ModelSettings,
 ) {
-  if (agent.resetToolChoice && toolUseTracker.hasUsedTools(agent)) {
+  if (
+    agent.resetToolChoice &&
+    toolUseTracker.hasUsedTools(agent) &&
+    modelSettings.toolChoice !== 'none'
+  ) {
     return { ...modelSettings, toolChoice: undefined };
   }
   return modelSettings;

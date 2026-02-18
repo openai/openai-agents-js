@@ -39,6 +39,17 @@ describe('maybeResetToolChoice', () => {
     const result = maybeResetToolChoice(resetAgent, tracker, modelSettings);
     expect(result.toolChoice).toBe('auto');
   });
+
+  it('keeps explicit none tool choice after tool usage', () => {
+    const resetAgent = new Agent({ name: 'D', resetToolChoice: true });
+    tracker.addToolUse(resetAgent, ['some_tool']);
+
+    const result = maybeResetToolChoice(resetAgent, tracker, {
+      ...modelSettings,
+      toolChoice: 'none',
+    });
+    expect(result.toolChoice).toBe('none');
+  });
 });
 
 describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
