@@ -124,6 +124,40 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
   }
 }
 
+type ParsedInlineImageData = {
+  data: string;
+  mediaType: string;
+};
+
+function parseBase64ImageDataUrl(
+  imageSource: string,
+): ParsedInlineImageData | undefined {
+  if (!imageSource.startsWith('data:')) {
+    return undefined;
+  }
+
+  const commaIndex = imageSource.indexOf(',');
+  if (commaIndex === -1) {
+    return undefined;
+  }
+
+  const metadata = imageSource.slice('data:'.length, commaIndex);
+  if (!metadata.includes('base64')) {
+    return undefined;
+  }
+
+  const [maybeMediaType] = metadata.split(';');
+  const mediaType = maybeMediaType?.trim();
+  if (!mediaType) {
+    return undefined;
+  }
+
+  return {
+    data: imageSource.slice(commaIndex + 1),
+    mediaType,
+  };
+}
+
 /**
  * @internal
  * Converts a list of model items to a list of language model V2 messages.
@@ -223,6 +257,19 @@ export function itemsToLanguageV2Messages(
                       throw new UserError(
                         'Only image URLs are supported for user inputs.',
                       );
+                    }
+
+                    const inlineImage = parseBase64ImageDataUrl(imageSource);
+                    if (inlineImage) {
+                      return {
+                        type: 'file',
+                        data: inlineImage.data,
+                        mediaType: inlineImage.mediaType,
+                        providerOptions: toProviderOptions(
+                          contentProviderData,
+                          model,
+                        ),
+                      };
                     }
 
                     const url = new URL(imageSource);
@@ -609,6 +656,15 @@ function convertStructuredOutputsToAiSdkOutput(
       }
       if (!imageValue) {
         textParts.push('[image]');
+        continue;
+      }
+      const inlineImage = parseBase64ImageDataUrl(imageValue);
+      if (inlineImage) {
+        mediaParts.push({
+          type: 'media',
+          data: inlineImage.data,
+          mediaType: inlineImage.mediaType,
+        });
         continue;
       }
       try {

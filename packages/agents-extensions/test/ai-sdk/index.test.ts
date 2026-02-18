@@ -451,6 +451,32 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts user data URL images to raw base64 with specific mediaType', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_image', image: 'data:image/png;base64,aGVsbG8=' },
+        ],
+      } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'aGVsbG8=',
+            mediaType: 'image/png',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -468,6 +494,10 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_image',
             image: 'https://example.com/image.png',
+          },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
           },
         ],
       } as any,
@@ -503,6 +533,11 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'media',
                   data: 'https://example.com/image.png',
                   mediaType: 'image/*',
+                },
+                {
+                  type: 'media',
+                  data: 'aGVsbG8=',
+                  mediaType: 'image/png',
                 },
               ],
             },
