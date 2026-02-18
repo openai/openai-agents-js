@@ -100,7 +100,7 @@ export async function prepareTurn<
 
   const turnInput = serverConversationTracker
     ? serverConversationTracker.prepareInput(input, generatedItems)
-    : getTurnInput(input, generatedItems);
+    : getTurnInput(input, generatedItems, state._reasoningItemIdPolicy);
 
   if (state._noActiveAgentRun) {
     state._currentAgent.emit(

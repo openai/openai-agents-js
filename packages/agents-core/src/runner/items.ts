@@ -84,13 +84,35 @@ export function agentInputSerializationReplacer(
   return value;
 }
 
+export type ReasoningItemIdPolicy = 'preserve' | 'omit';
+
+function shouldOmitReasoningItemIds(
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
+): boolean {
+  return reasoningItemIdPolicy === 'omit';
+}
+
 // Extracts model-ready output items from run items, excluding approval placeholders.
 export function extractOutputItemsFromRunItems(
   items: RunItem[],
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
+  const omitReasoningItemIds = shouldOmitReasoningItemIds(
+    reasoningItemIdPolicy,
+  );
   return items
     .filter((item) => item.type !== 'tool_approval_item')
-    .map((item) => item.rawItem as AgentInputItem);
+    .map((item) => {
+      const rawItem = item.rawItem as AgentInputItem;
+      if (!omitReasoningItemIds || item.type !== 'reasoning_item') {
+        return rawItem;
+      }
+      if (!rawItem || typeof rawItem !== 'object' || !('id' in rawItem)) {
+        return rawItem;
+      }
+      const { id: _id, ...withoutId } = rawItem as Record<string, unknown>;
+      return withoutId as AgentInputItem;
+    });
 }
 
 /**
@@ -103,7 +125,11 @@ export function extractOutputItemsFromRunItems(
 export function getTurnInput(
   originalInput: string | AgentInputItem[],
   generatedItems: RunItem[],
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const outputItems = extractOutputItemsFromRunItems(generatedItems);
+  const outputItems = extractOutputItemsFromRunItems(
+    generatedItems,
+    reasoningItemIdPolicy,
+  );
   return [...toAgentInputList(originalInput), ...outputItems];
 }

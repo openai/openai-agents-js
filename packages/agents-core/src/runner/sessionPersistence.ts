@@ -552,7 +552,10 @@ async function persistRunItemsToSession(options: {
 
   const itemsToSave = [
     ...extraInputItems,
-    ...extractOutputItemsFromRunItems(newRunItems),
+    ...extractOutputItemsFromRunItems(
+      newRunItems,
+      state._reasoningItemIdPolicy,
+    ),
   ];
 
   if (itemsToSave.length === 0) {

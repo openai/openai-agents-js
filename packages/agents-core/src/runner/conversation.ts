@@ -7,10 +7,12 @@ import { AgentInputItem } from '../types';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import {
   buildAgentInputPool,
+  extractOutputItemsFromRunItems,
   getAgentInputItemKey,
   removeAgentInputFromPool,
   takeAgentInputFromPool,
   toAgentInputList,
+  type ReasoningItemIdPolicy,
 } from './items';
 
 export { getTurnInput } from './items';
@@ -182,6 +184,7 @@ export async function applyCallModelInputFilter<TContext>(
 export class ServerConversationTracker {
   public conversationId?: string;
   public previousResponseId?: string;
+  private readonly reasoningItemIdPolicy?: ReasoningItemIdPolicy;
 
   // Using this flag because WeakSet does not provide a way to check its size.
   private sentInitialInput = false;
@@ -195,12 +198,15 @@ export class ServerConversationTracker {
   constructor({
     conversationId,
     previousResponseId,
+    reasoningItemIdPolicy,
   }: {
     conversationId?: string;
     previousResponseId?: string;
+    reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   }) {
     this.conversationId = conversationId ?? undefined;
     this.previousResponseId = previousResponseId ?? undefined;
+    this.reasoningItemIdPolicy = reasoningItemIdPolicy;
   }
 
   /**
@@ -290,6 +296,7 @@ export class ServerConversationTracker {
     generatedItems: RunItem[],
   ): AgentInputItem[] {
     const inputItems: AgentInputItem[] = [];
+    const generatedItemsForInput: RunItem[] = [];
 
     if (!this.sentInitialInput) {
       const initialItems = toAgentInputList(originalInput);
@@ -319,8 +326,15 @@ export class ServerConversationTracker {
       if (this.sentItems.has(rawItem) || this.serverItems.has(rawItem)) {
         continue;
       }
-      inputItems.push(rawItem as AgentInputItem);
+      generatedItemsForInput.push(item);
     }
+
+    inputItems.push(
+      ...extractOutputItemsFromRunItems(
+        generatedItemsForInput,
+        this.reasoningItemIdPolicy,
+      ),
+    );
 
     return inputItems;
   }

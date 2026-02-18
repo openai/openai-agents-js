@@ -49,6 +49,10 @@ function getFirstTextContent(item: AgentInputItem): string | undefined {
   return undefined;
 }
 
+function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
+  return Array.isArray(request.input) ? request.input : [];
+}
+
 // Test for unhandled rejection when stream loop throws
 
 describe('Runner.run (streaming)', () => {
@@ -300,6 +304,90 @@ describe('Runner.run (streaming)', () => {
     expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
       'stream this input',
     ]);
+  });
+
+  it('applies reasoningItemIdPolicy to follow-up streamed turn input', async () => {
+    class RequestRecordingStreamingModel implements Model {
+      readonly requests: ModelRequest[] = [];
+      #callCount = 0;
+
+      async getResponse(request: ModelRequest): Promise<ModelResponse> {
+        this.requests.push(request);
+        if (this.#callCount++ === 0) {
+          return {
+            output: [
+              {
+                type: 'reasoning',
+                id: 'rs_stream',
+                content: [{ type: 'input_text', text: 'reasoning trace' }],
+              } satisfies protocol.ReasoningItem,
+              {
+                type: 'function_call',
+                id: 'fc_stream',
+                callId: 'call_stream',
+                name: 'echo_tool',
+                status: 'completed',
+                arguments: '{}',
+              } satisfies protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          };
+        }
+        return {
+          output: [fakeModelMessage('stream done')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(request);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `stream_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const model = new RequestRecordingStreamingModel();
+    const echoTool = tool({
+      name: 'echo_tool',
+      description: 'Echoes a static payload.',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'StreamingReasoningPolicyAgent',
+      model,
+      tools: [echoTool],
+    });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'hello', {
+      stream: true,
+      reasoningItemIdPolicy: 'omit',
+    });
+    for await (const _event of result.toStream()) {
+      // Drain the stream.
+    }
+    await result.completed;
+
+    expect(model.requests).toHaveLength(2);
+    const secondRequestReasoning = getRequestInputItems(model.requests[1]).find(
+      (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+    );
+    expect(secondRequestReasoning).toBeDefined();
+    expect(secondRequestReasoning).not.toHaveProperty('id');
   });
 
   it('updates cumulative usage during streaming responses', async () => {

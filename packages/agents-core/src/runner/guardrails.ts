@@ -254,7 +254,11 @@ export async function runOutputGuardrails<
     return;
   }
   const agentOutput = state._currentAgent.processFinalOutput(output);
-  const runOutput = getTurnInput([], state._generatedItems);
+  const runOutput = getTurnInput(
+    [],
+    state._generatedItems,
+    state._reasoningItemIdPolicy,
+  );
   const guardrailArgs: OutputGuardrailFunctionArgs<TContext, TOutput> = {
     agent: state._currentAgent,
     agentOutput,

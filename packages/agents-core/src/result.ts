@@ -131,7 +131,11 @@ class RunResultBase<
    * This can be used as inputs for the next agent run.
    */
   get history(): AgentInputItem[] {
-    return getTurnInput(this.input, this.newItems);
+    return getTurnInput(
+      this.input,
+      this.newItems,
+      this.state._reasoningItemIdPolicy,
+    );
   }
 
   /**
@@ -143,7 +147,7 @@ class RunResultBase<
    * For the output including the agents, use the `newItems` property.
    */
   get output(): AgentOutputItem[] {
-    return getTurnInput([], this.newItems);
+    return getTurnInput([], this.newItems, this.state._reasoningItemIdPolicy);
   }
 
   /**
