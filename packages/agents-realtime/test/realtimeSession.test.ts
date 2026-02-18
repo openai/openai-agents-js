@@ -351,6 +351,49 @@ describe('RealtimeSession', () => {
     expect(agentToolEnd).toHaveBeenCalledTimes(1);
   });
 
+  it('emits assistant transcript on agent_end when a tool call follows', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const sessionAgentEnd = vi.fn();
+    const agentAgentEnd = vi.fn();
+    const transcript = 'Sure, let me get that for you. One moment.';
+
+    scenarioSession.on('agent_end', sessionAgentEnd);
+    agent.on('agent_end', agentAgentEnd);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('turn_done', {
+      response: {
+        id: 'resp-1',
+        output: [
+          {
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_audio', transcript }],
+          },
+          {
+            id: 'call-1',
+            type: 'function_call',
+            callId: 'call-1',
+            name: 'getCallerPhone',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+    } as any);
+
+    expect(sessionAgentEnd).toHaveBeenCalledTimes(1);
+    expect(sessionAgentEnd.mock.calls[0][2]).toBe(transcript);
+    expect(agentAgentEnd).toHaveBeenCalledTimes(1);
+    expect(agentAgentEnd.mock.calls[0][1]).toBe(transcript);
+  });
+
   it('merges completed audio transcripts into history', async () => {
     const transport = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'Listener' });
