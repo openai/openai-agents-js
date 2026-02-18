@@ -1,5 +1,17 @@
 # @openai/agents-realtime
 
+## 0.4.12
+
+### Patch Changes
+
+- e1f1805: fix: #582 prevent duplicate realtime session events after reconnect
+- 9dca060: fix: #551 preserve pre-tool assistant transcript in realtime agent_end events
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+
 ## 0.4.11
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.4.12
+
+### Patch Changes
+
+- 2cd336a: fix: #116 respect toolChoice none overrides after tool lifecycle updates
+- 7a05c7b: feat: #987 pass run context into applyPatch editor operations
+- 883a114: fix: #302 propagate output guardrail context types to OutputGuardrailFunctionArgs
+- deb282d: fix: #479 avoid Bun browser startup crash when shim modules are temporarily unresolved
+
 ## 0.4.11
 
 ### Patch Changes
