@@ -116,7 +116,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
         },
         output: [
           {
-            id: FAKE_ID,
+            id: 'res1',
             role: 'assistant',
             type: 'message',
             status: 'completed',
@@ -130,7 +130,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
             ],
           },
           {
-            id: FAKE_ID,
+            id: 'res1',
             type: 'function_call',
             arguments: '{}',
             name: 'fn',
@@ -204,7 +204,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
-        id: FAKE_ID,
+        id: 'r',
         content: [
           {
             text: 'hello',
@@ -217,7 +217,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
         status: 'completed',
       },
       {
-        id: FAKE_ID,
+        id: 'r',
         type: 'function_call',
         name: 'fn',
         callId: 'call',
@@ -418,5 +418,39 @@ describe('convertChatCompletionsStreamToResponses', () => {
         },
       },
     ]);
+  });
+
+  it('falls back to FAKE_ID when streaming chunks do not include an id', async () => {
+    const resp: ChatCompletion = {
+      id: FAKE_ID,
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield {
+        ...makeChunk({ content: 'hello' }),
+        id: undefined,
+      } as any;
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    expect(final.type).toBe('response_done');
+    expect(final.response.id).toBe(FAKE_ID);
+    expect(final.response.output[0]).toMatchObject({
+      id: FAKE_ID,
+      type: 'message',
+    });
   });
 });
