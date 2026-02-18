@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.4.12
+
+### Patch Changes
+
+- d9f99b3: fix: #722 normalize data URL images for AI SDK providers
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+  - @openai/agents@0.4.12
+
 ## 0.4.11
 
 ### Patch Changes

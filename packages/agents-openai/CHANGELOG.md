@@ -1,5 +1,17 @@
 # @openai/agents-openai
 
+## 0.4.12
+
+### Patch Changes
+
+- 3f8ecf1: fix: #257 move non-standard response message content metadata under providerData
+- acc6ed8: fix: #579 use streamed chunk IDs in Chat Completions traces and output items
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+
 ## 0.4.11
 
 ### Patch Changes
