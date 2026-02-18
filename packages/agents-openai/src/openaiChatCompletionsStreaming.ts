@@ -28,6 +28,10 @@ export async function* convertChatCompletionsStreamToResponses(
   };
 
   for await (const chunk of stream) {
+    if (chunk.id && (response.id === FAKE_ID || !response.id)) {
+      response.id = chunk.id;
+    }
+
     if (!state.started) {
       state.started = true;
       yield {
@@ -95,7 +99,7 @@ export async function* convertChatCompletionsStreamToResponses(
       for (const tc_delta of delta.tool_calls) {
         if (!(tc_delta.index in state.function_calls)) {
           state.function_calls[tc_delta.index] = {
-            id: FAKE_ID,
+            id: response.id || FAKE_ID,
             arguments: '',
             name: '',
             type: 'function_call',
@@ -115,6 +119,7 @@ export async function* convertChatCompletionsStreamToResponses(
 
   // Final output message
   const outputs: protocol.OutputModelItem[] = [];
+  const outputItemId = response.id || FAKE_ID;
 
   if (state.reasoning) {
     outputs.push({
@@ -133,7 +138,7 @@ export async function* convertChatCompletionsStreamToResponses(
       content.push(state.refusal_content);
     }
     outputs.push({
-      id: FAKE_ID,
+      id: outputItemId,
       content,
       role: 'assistant',
       type: 'message',
@@ -142,6 +147,7 @@ export async function* convertChatCompletionsStreamToResponses(
   }
 
   for (const function_call of Object.values(state.function_calls)) {
+    function_call.id = outputItemId;
     // Some providers, such as Bedrock, may send two items:
     // 1) an empty argument, and 2) the actual argument data.
     // This is a workaround for that specific behavior.

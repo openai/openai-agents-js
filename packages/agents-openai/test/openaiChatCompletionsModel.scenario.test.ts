@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTracingDisabled, withTrace } from '@openai/agents-core';
 import * as AgentsCore from '@openai/agents-core';
-import {
-  OpenAIChatCompletionsModel,
-  FAKE_ID,
-} from '../src/openaiChatCompletionsModel';
+import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
 
 type ChunkDelta = {
@@ -116,7 +113,7 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
         rawContent: [{ type: 'reasoning_text', text: 'Step 1 continued' }],
       },
       {
-        id: FAKE_ID,
+        id: 'res-stream',
         type: 'message',
         role: 'assistant',
         status: 'completed',
@@ -130,7 +127,7 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
         ],
       },
       {
-        id: FAKE_ID,
+        id: 'res-stream',
         type: 'function_call',
         name: 'lookup',
         callId: 'call-1',
