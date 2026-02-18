@@ -192,6 +192,8 @@ export class ServerConversationTracker {
   private sentItems = new WeakSet<object>();
   // The items received from the server; using WeakSet for memory efficiency.
   private serverItems = new WeakSet<object>();
+  // Tracks which prepared turn-input item originated from which source object.
+  private preparedItemSources = new WeakMap<object, AgentInputItem>();
   // Track initial input items that have not yet been sent so they can be retried on later turns.
   private remainingInitialInput: AgentInputItem[] | null = null;
 
@@ -302,6 +304,9 @@ export class ServerConversationTracker {
       const initialItems = toAgentInputList(originalInput);
       // Preserve the full initial payload so a filter can drop items without losing their originals.
       inputItems.push(...initialItems);
+      for (const item of initialItems) {
+        this.registerPreparedItemSource(item);
+      }
       this.remainingInitialInput = initialItems.filter(
         (item): item is AgentInputItem =>
           Boolean(item) && typeof item === 'object',
@@ -313,6 +318,9 @@ export class ServerConversationTracker {
     ) {
       // Re-queue prior initial items until the tracker confirms they were delivered to the API.
       inputItems.push(...this.remainingInitialInput);
+      for (const item of this.remainingInitialInput) {
+        this.registerPreparedItemSource(item);
+      }
     }
 
     for (const item of generatedItems) {
@@ -329,12 +337,17 @@ export class ServerConversationTracker {
       generatedItemsForInput.push(item);
     }
 
-    inputItems.push(
-      ...extractOutputItemsFromRunItems(
-        generatedItemsForInput,
-        this.reasoningItemIdPolicy,
-      ),
+    const preparedGeneratedItems = extractOutputItemsFromRunItems(
+      generatedItemsForInput,
+      this.reasoningItemIdPolicy,
     );
+    for (const [index, preparedItem] of preparedGeneratedItems.entries()) {
+      const sourceItem = generatedItemsForInput[index]?.rawItem as
+        | AgentInputItem
+        | undefined;
+      this.registerPreparedItemSource(preparedItem, sourceItem);
+    }
+    inputItems.push(...preparedGeneratedItems);
 
     return inputItems;
   }
@@ -370,13 +383,41 @@ export class ServerConversationTracker {
     items: (AgentInputItem | undefined)[],
   ) {
     for (const item of items) {
-      if (!item || typeof item !== 'object' || delivered.has(item)) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const sourceItem = this.resolvePreparedItemSource(item);
+      if (!sourceItem || typeof sourceItem !== 'object') {
+        continue;
+      }
+      if (delivered.has(sourceItem)) {
         continue;
       }
       // Some inputs may be repeated in the filtered list; only mark unique originals once.
-      delivered.add(item);
-      this.sentItems.add(item);
+      delivered.add(sourceItem);
+      this.sentItems.add(sourceItem);
     }
+  }
+
+  private registerPreparedItemSource(
+    preparedItem: AgentInputItem,
+    sourceItem?: AgentInputItem,
+  ) {
+    if (!preparedItem || typeof preparedItem !== 'object') {
+      return;
+    }
+    if (!sourceItem || typeof sourceItem !== 'object') {
+      this.preparedItemSources.set(preparedItem, preparedItem);
+      return;
+    }
+    this.preparedItemSources.set(preparedItem, sourceItem);
+  }
+
+  private resolvePreparedItemSource(item: AgentInputItem): AgentInputItem {
+    if (!item || typeof item !== 'object') {
+      return item;
+    }
+    return this.preparedItemSources.get(item) ?? item;
   }
 
   private updateRemainingInitialInput(

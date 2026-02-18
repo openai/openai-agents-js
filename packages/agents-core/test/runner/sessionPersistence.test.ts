@@ -107,6 +107,36 @@ describe('ServerConversationTracker', () => {
       },
     ]);
   });
+
+  it('does not resend generated reasoning items after marking omitted IDs as sent', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv-4',
+      reasoningItemIdPolicy: 'omit',
+    });
+    const generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_turn_input',
+          content: [{ type: 'input_text', text: 'reasoning trace' }],
+        },
+        TEST_AGENT,
+      ),
+    ];
+
+    const firstPrepared = tracker.prepareInput([], generatedItems);
+    expect(firstPrepared).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'reasoning trace' }],
+      },
+    ]);
+
+    tracker.markInputAsSent(firstPrepared);
+
+    const secondPrepared = tracker.prepareInput([], generatedItems);
+    expect(secondPrepared).toEqual([]);
+  });
 });
 
 describe('saveStreamResultToSession', () => {
