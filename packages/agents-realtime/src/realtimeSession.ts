@@ -242,6 +242,7 @@ export class RealtimeSession<
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
     cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
+  #eventListenersAttached = false;
 
   constructor(
     public readonly initialAgent:
@@ -1006,7 +1007,10 @@ export class RealtimeSession<
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
-    this.#setEventListeners();
+    if (!this.#eventListenersAttached) {
+      this.#setEventListeners();
+      this.#eventListenersAttached = true;
+    }
     await this.#transport.connect({
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
