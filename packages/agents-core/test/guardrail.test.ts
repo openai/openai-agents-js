@@ -113,6 +113,50 @@ describe('guardrail helpers', () => {
     expectTypeOf(result).toEqualTypeOf<OutputGuardrailResult>();
   });
 
+  it('passes context generic through output guardrail args', () => {
+    type GuardrailContext = { userId: string };
+    const outputGuardrail = defineOutputGuardrail<TextOutput, GuardrailContext>(
+      {
+        name: 'typed-out',
+        execute: async (_args) => ({
+          outputInfo: { ok: true },
+          tripwireTriggered: false,
+        }),
+      },
+    );
+    expect(outputGuardrail.name).toBe('typed-out');
+
+    type OutputGuardrailArgs = Parameters<typeof outputGuardrail.run>[0];
+    expectTypeOf<OutputGuardrailArgs['context']>().toEqualTypeOf<
+      RunContext<GuardrailContext>
+    >();
+  });
+
+  it('wires agent context type into output guardrails', () => {
+    type GuardrailContext = { userId: string };
+    const typedAgent = new Agent<GuardrailContext>({
+      name: 'TypedAgent',
+      outputGuardrails: [
+        {
+          name: 'agent-typed-out',
+          execute: async (_args) => ({
+            outputInfo: { ok: true },
+            tripwireTriggered: false,
+          }),
+        },
+      ],
+    });
+
+    const outputGuardrail = typedAgent.outputGuardrails[0];
+    if (!outputGuardrail) {
+      throw new Error('Expected one output guardrail');
+    }
+    type OutputGuardrailArgs = Parameters<typeof outputGuardrail.execute>[0];
+    expectTypeOf<OutputGuardrailArgs['context']>().toEqualTypeOf<
+      RunContext<GuardrailContext>
+    >();
+  });
+
   it('propagates errors from input guardrail', async () => {
     const guardrailFn = vi.fn(async () => {
       throw new Error('fail');

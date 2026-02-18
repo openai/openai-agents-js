@@ -345,7 +345,7 @@ export interface AgentConfiguration<
    * A list of checks that run on the final output of the agent, after generating a response. Runs
    * only if the agent produces a final output.
    */
-  outputGuardrails: OutputGuardrail<TOutput>[];
+  outputGuardrails: OutputGuardrail<TOutput, TContext>[];
 
   /**
    * The type of the output object. If not provided, the output will be a string.
@@ -476,7 +476,7 @@ export class Agent<
   tools: Tool<TContext>[];
   mcpServers: MCPServer[];
   inputGuardrails: InputGuardrail[];
-  outputGuardrails: OutputGuardrail<AgentOutputType>[];
+  outputGuardrails: OutputGuardrail<AgentOutputType, TContext>[];
   outputType: TOutput = 'text' as TOutput;
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
