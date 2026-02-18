@@ -194,6 +194,25 @@ describe('RealtimeSession', () => {
     expect(t.connectCalls[0]?.callId).toBe('call_123');
   });
 
+  it('does not duplicate event handlers when reconnecting', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    const historyUpdatedListener = vi.fn();
+
+    s.on('history_updated', historyUpdatedListener);
+
+    await s.connect({ apiKey: 'test' });
+    await s.connect({ apiKey: 'test' });
+
+    historyUpdatedListener.mockClear();
+
+    t.emit('item_update', createMessage('1', 'hi'));
+
+    expect(historyUpdatedListener).toHaveBeenCalledTimes(1);
+    expect(s.history).toEqual([createMessage('1', 'hi')]);
+  });
+
   it('includes default transcription config when connecting', async () => {
     const t = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
