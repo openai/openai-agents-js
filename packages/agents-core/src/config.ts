@@ -1,9 +1,25 @@
 // Use function instead of exporting the value to prevent
 // circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
-import {
-  loadEnv as _loadEnv,
-  isBrowserEnvironment,
-} from '@openai/agents-core/_shims';
+import * as _shims from '@openai/agents-core/_shims';
+
+function fallbackIsBrowserEnvironment(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof document !== 'undefined' &&
+    typeof document.createElement === 'function'
+  );
+}
+
+function isBrowserEnvironment(): boolean {
+  try {
+    if (typeof _shims?.isBrowserEnvironment === 'function') {
+      return _shims.isBrowserEnvironment();
+    }
+  } catch {
+    // Fallback below.
+  }
+  return fallbackIsBrowserEnvironment();
+}
 
 /**
  * Loads environment variables from the process environment.
@@ -11,7 +27,12 @@ import {
  * @returns An object containing the environment variables.
  */
 export function loadEnv(): Record<string, string | undefined> {
-  return _loadEnv();
+  try {
+    const env = _shims?.loadEnv?.();
+    return typeof env === 'object' && env != null ? env : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
