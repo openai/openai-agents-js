@@ -1496,20 +1496,20 @@ function convertToMessageContentItem(
   item: OpenAI.Responses.ResponseOutputMessage['content'][number],
 ): protocol.AssistantContent {
   if (item.type === 'output_text') {
-    const { type, text, ...remainingItem } = item;
+    const { type, text, ...providerData } = item;
     return {
       type,
       text,
-      ...remainingItem,
+      ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
     };
   }
 
   if (item.type === 'refusal') {
-    const { type, refusal, ...remainingItem } = item;
+    const { type, refusal, ...providerData } = item;
     return {
       type,
       refusal,
-      ...remainingItem,
+      ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
     };
   }
 
