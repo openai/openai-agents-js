@@ -1430,7 +1430,13 @@ describe('convertToOutputItem', () => {
         type: 'message',
         id: 'm',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'hi' }],
+        content: [
+          {
+            type: 'output_text',
+            text: 'hi',
+            annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+          },
+        ],
         status: 'completed',
       },
       {
@@ -1458,6 +1464,13 @@ describe('convertToOutputItem', () => {
       name: 'web_search_call',
     });
     expect(out[3]).toMatchObject({ type: 'computer_call' });
+    expect((out[0] as any).content[0]).toEqual({
+      type: 'output_text',
+      text: 'hi',
+      providerData: {
+        annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+      },
+    });
   });
 
   it('rejects unknown message content', () => {
