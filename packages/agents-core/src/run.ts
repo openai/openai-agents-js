@@ -816,6 +816,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
 
             state._lastProcessedResponse = processedResponse;
+
+            await guardrailTracker.awaitCompletion();
+
             const turnResult = await resolveTurnAfterModelResponse<TContext>(
               state._currentAgent,
               state._originalInput,
@@ -834,8 +837,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
-
-            await guardrailTracker.awaitCompletion();
           }
 
           const currentStep = state._currentStep;

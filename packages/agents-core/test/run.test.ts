@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import {
   Agent,
+  InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
@@ -842,6 +843,38 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
       expect(result.inputGuardrailResults).toHaveLength(1);
       expect(blockingGuardrail.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
+      const fakeModel = new FakeModel([
+        {
+          output: [fakeModelMessage('I am sorry, this is plain text not JSON')],
+          usage: new Usage(),
+        },
+      ]);
+
+      const agent = new Agent({
+        name: 'GuardrailPriority',
+        model: fakeModel,
+        outputType: z.object({ response: z.string() }),
+        inputGuardrails: [
+          {
+            name: 'slow-tripwire',
+            runInParallel: true,
+            execute: async () => {
+              await new Promise((r) => setTimeout(r, 50));
+              return {
+                tripwireTriggered: true,
+                outputInfo: { reason: 'blocked' },
+              };
+            },
+          },
+        ],
+      });
+
+      await expect(run(agent, 'test')).rejects.toBeInstanceOf(
+        InputGuardrailTripwireTriggered,
+      );
     });
 
     it('output guardrail success', async () => {
