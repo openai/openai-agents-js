@@ -12,7 +12,7 @@ import {
 } from './items';
 import type { ModelResponse, ModelSettings } from './model';
 import { RunContext } from './runContext';
-import { getTurnInput } from './runner/items';
+import { getTurnInput, type ReasoningItemIdPolicy } from './runner/items';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import type { ProcessedResponse } from './runner/types';
@@ -47,13 +47,15 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  * - 1.2: Adds pendingAgentToolRuns for nested agent tool resumption.
  * - 1.3: Adds computer tool approval items to serialized tool_approval_item unions.
  * - 1.4: Adds optional toolInput to serialized run context.
+ * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
  */
-export const CURRENT_SCHEMA_VERSION = '1.4' as const;
+export const CURRENT_SCHEMA_VERSION = '1.5' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
   '1.2',
   '1.3',
+  '1.4',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -339,6 +341,7 @@ export const SerializedRunState = z.object({
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
+  reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
   trace: serializedTraceSchema.nullable(),
 });
 
@@ -381,6 +384,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Latest response identifier returned by the server for server-managed conversations.
    */
   public _previousResponseId: string | undefined;
+  /**
+   * Runtime options that control how run items are converted into model turn input.
+   * This value is serialized so resumed runs keep the same turn-input behavior.
+   */
+  public _reasoningItemIdPolicy: ReasoningItemIdPolicy | undefined;
   /**
    * Effective model settings used for the most recent model call.
    */
@@ -481,6 +489,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
     this._currentAgent = startingAgent;
+    this._reasoningItemIdPolicy = undefined;
     this._toolUseTracker = new AgentToolUseTracker();
     this._pendingAgentToolRuns = new Map();
     this._generatedItems = [];
@@ -502,6 +511,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   ): void {
     this._conversationId = conversationId;
     this._previousResponseId = previousResponseId;
+  }
+
+  /**
+   * Updates runtime options for converting run items into turn input.
+   */
+  public setReasoningItemIdPolicy(policy?: ReasoningItemIdPolicy): void {
+    this._reasoningItemIdPolicy = policy;
   }
 
   /**
@@ -551,7 +567,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * This can be used as inputs for the next agent run.
    */
   get history(): AgentInputItem[] {
-    return getTurnInput(this._originalInput, this._generatedItems);
+    return getTurnInput(
+      this._originalInput,
+      this._generatedItems,
+      this._reasoningItemIdPolicy,
+    );
   }
 
   /**
@@ -713,6 +733,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       lastProcessedResponse: this._lastProcessedResponse as any,
       conversationId: this._conversationId,
       previousResponseId: this._previousResponseId,
+      reasoningItemIdPolicy: this._reasoningItemIdPolicy,
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
@@ -850,6 +871,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._currentTurnInProgress = stateJson.currentTurnInProgress ?? false;
   state._conversationId = stateJson.conversationId ?? undefined;
   state._previousResponseId = stateJson.previousResponseId ?? undefined;
+  state._reasoningItemIdPolicy = stateJson.reasoningItemIdPolicy ?? undefined;
 
   // rebuild tool use tracker
   state._toolUseTracker = new AgentToolUseTracker();

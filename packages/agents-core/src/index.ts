@@ -156,6 +156,7 @@ export type {
   CallModelInputFilterArgs,
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
+  ReasoningItemIdPolicy,
   RunErrorData,
   RunErrorHandler,
   RunErrorHandlerInput,

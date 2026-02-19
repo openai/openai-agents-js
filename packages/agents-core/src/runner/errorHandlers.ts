@@ -92,8 +92,12 @@ const buildRunData = <TContext, TAgent extends Agent<any, any>>(
 ): RunErrorData<TContext, TAgent> => ({
   input: state._originalInput,
   newItems: state._generatedItems,
-  history: getTurnInput(state._originalInput, state._generatedItems),
-  output: getTurnInput([], state._generatedItems),
+  history: getTurnInput(
+    state._originalInput,
+    state._generatedItems,
+    state._reasoningItemIdPolicy,
+  ),
+  output: getTurnInput([], state._generatedItems, state._reasoningItemIdPolicy),
   rawResponses: state._modelResponses,
   lastAgent: state._currentAgent,
   state,

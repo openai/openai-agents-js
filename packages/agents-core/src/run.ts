@@ -71,6 +71,7 @@ import {
   resumeInterruptedTurn,
 } from './runner/runLoop';
 import { applyTraceOverrides, getTracing } from './runner/tracing';
+import type { ReasoningItemIdPolicy } from './runner/items';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
@@ -95,6 +96,7 @@ export type {
 export { getTracing } from './runner/tracing';
 export { selectModel } from './runner/modelSettings';
 export { getTurnInput } from './runner/items';
+export type { ReasoningItemIdPolicy } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
@@ -230,6 +232,11 @@ export type RunConfig = {
    * Returning `undefined` falls back to the SDK default message.
    */
   toolErrorFormatter?: ToolErrorFormatter;
+
+  /**
+   * Controls how run items are converted into model input for subsequent turns.
+   */
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
 };
 
 /**
@@ -248,6 +255,7 @@ type SharedRunOptions<
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
   toolErrorFormatter?: ToolErrorFormatter;
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   /**
    * Error handlers keyed by error kind. Currently only maxTurns errors are supported.
@@ -364,6 +372,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
+      reasoningItemIdPolicy: config.reasoningItemIdPolicy,
     };
     this.traceOverrides = {
       ...(config.traceId !== undefined ? { traceId: config.traceId } : {}),
@@ -438,6 +447,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Per-run callback can override runner-level tool error formatting defaults.
     const toolErrorFormatter =
       resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
+    const reasoningItemIdPolicy = resolvedOptions.reasoningItemIdPolicy;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const traceOverrides = {
@@ -451,6 +461,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback,
       callModelInputFilter,
       toolErrorFormatter,
+      reasoningItemIdPolicy,
     };
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
@@ -633,6 +644,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             startingAgent,
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
+      const resolvedReasoningItemIdPolicy =
+        options.reasoningItemIdPolicy ??
+        (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
+        this.config.reasoningItemIdPolicy;
+      state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
 
       const resolvedConversationId =
         options.conversationId ??
@@ -653,6 +669,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           ? new ServerConversationTracker({
               conversationId: resolvedConversationId,
               previousResponseId: resolvedPreviousResponseId,
+              reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
             })
           : undefined;
 
@@ -946,6 +963,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     ) => void,
     preserveTurnPersistenceOnResume?: boolean,
   ): Promise<void> {
+    const resolvedReasoningItemIdPolicy =
+      options.reasoningItemIdPolicy ??
+      (isResumedState ? result.state._reasoningItemIdPolicy : undefined) ??
+      this.config.reasoningItemIdPolicy;
+    result.state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
     const resolvedConversationId =
       options.conversationId ?? result.state._conversationId;
     const resolvedPreviousResponseId =
@@ -956,6 +978,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ? new ServerConversationTracker({
           conversationId: resolvedConversationId,
           previousResponseId: resolvedPreviousResponseId,
+          reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
         })
       : undefined;
     if (serverConversationTracker) {

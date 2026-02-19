@@ -11,6 +11,7 @@ import { Agent } from '../src/agent';
 import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
+  RunReasoningItem,
   RunToolCallOutputItem,
 } from '../src/items';
 import { applyPatchTool, computerTool, shellTool } from '../src/tool';
@@ -77,6 +78,33 @@ describe('RunState', () => {
 
     const restored = await RunState.fromString(agent, state.toString());
     expect(restored.history).toEqual(state.history);
+  });
+
+  it('preserves reasoningItemIdPolicy after serialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'ReasoningPolicyState' });
+    const state = new RunState(context, 'input', agent, 1);
+    state.setReasoningItemIdPolicy('omit');
+    state._generatedItems.push(
+      new RunReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_state',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        },
+        agent,
+      ),
+    );
+
+    const json = state.toJSON();
+    expect(json.reasoningItemIdPolicy).toBe('omit');
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._reasoningItemIdPolicy).toBe('omit');
+    expect(restored.history[1]).toEqual({
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    });
   });
 
   it('preserves toolInput after serialization', async () => {

@@ -8,6 +8,7 @@ import {
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
   RunMessageOutputItem as MessageOutputItem,
+  RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
   RunToolCallOutputItem as ToolCallOutputItem,
@@ -80,6 +81,61 @@ describe('ServerConversationTracker', () => {
       role: 'user',
       content: originalInput,
     });
+  });
+
+  it('applies reasoningItemIdPolicy when preparing generated reasoning items', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv-3',
+      reasoningItemIdPolicy: 'omit',
+    });
+    const generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_turn_input',
+          content: [{ type: 'input_text', text: 'reasoning trace' }],
+        },
+        TEST_AGENT,
+      ),
+    ];
+
+    const prepared = tracker.prepareInput([], generatedItems);
+    expect(prepared).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'reasoning trace' }],
+      },
+    ]);
+  });
+
+  it('does not resend generated reasoning items after marking omitted IDs as sent', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv-4',
+      reasoningItemIdPolicy: 'omit',
+    });
+    const generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_turn_input',
+          content: [{ type: 'input_text', text: 'reasoning trace' }],
+        },
+        TEST_AGENT,
+      ),
+    ];
+
+    const firstPrepared = tracker.prepareInput([], generatedItems);
+    expect(firstPrepared).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'reasoning trace' }],
+      },
+    ]);
+
+    tracker.markInputAsSent(firstPrepared);
+
+    const secondPrepared = tracker.prepareInput([], generatedItems);
+    expect(secondPrepared).toEqual([]);
   });
 });
 
@@ -170,6 +226,54 @@ describe('saveStreamResultToSession', () => {
     expect(session.events).toEqual(['addItems:1', 'runCompaction:resp_stream']);
     expect(session.items).toHaveLength(1);
     expect(state._currentTurnPersistedItemCount).toBe(1);
+  });
+
+  it('persists reasoning items without IDs when reasoningItemIdPolicy omits them', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'StreamerReasoning',
+      outputType: 'text',
+      instructions: 'stream reasoning test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+    state.setReasoningItemIdPolicy('omit');
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_reasoning',
+    });
+    state._generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_stream',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        },
+        textAgent,
+      ),
+    ];
+
+    const streamedResult = new StreamedRunResult({
+      state,
+    });
+
+    await saveStreamResultToSession(session, streamedResult);
+
+    expect(session.items).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'thinking' }],
+      },
+    ]);
   });
 
   it('skips writes when there is no new streamed output but still runs compaction', async () => {

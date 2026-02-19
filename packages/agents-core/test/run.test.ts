@@ -77,6 +77,10 @@ function getFirstTextContent(item: AgentInputItem): string | undefined {
   return undefined;
 }
 
+function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
+  return Array.isArray(request.input) ? request.input : [];
+}
+
 describe('Runner.run', () => {
   beforeAll(() => {
     setTracingDisabled(true);
@@ -1393,6 +1397,287 @@ describe('Runner.run', () => {
         content: 'a',
       });
       expect(result2[1]).toEqual(msgItem.rawItem);
+    });
+
+    it('uses runner-level reasoningItemIdPolicy when building follow-up turn input', async () => {
+      class RequestRecordingModel implements Model {
+        readonly requests: ModelRequest[] = [];
+        #callCount = 0;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.#callCount++ === 0) {
+            return {
+              output: [
+                {
+                  type: 'reasoning',
+                  id: 'rs_first',
+                  content: [{ type: 'input_text', text: 'reasoning trace' }],
+                } satisfies protocol.ReasoningItem,
+                {
+                  type: 'function_call',
+                  id: 'fc_first',
+                  callId: 'call_first',
+                  name: 'echo_tool',
+                  status: 'completed',
+                  arguments: '{}',
+                } satisfies protocol.FunctionCallItem,
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new RequestRecordingModel();
+      const echoTool = tool({
+        name: 'echo_tool',
+        description: 'Echoes a static payload.',
+        parameters: z.object({}),
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'ReasoningPolicyAgent',
+        model,
+        tools: [echoTool],
+      });
+      const runner = new Runner({
+        reasoningItemIdPolicy: 'omit',
+      });
+
+      const result = await runner.run(agent, 'hello');
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondRequestReasoning = getRequestInputItems(
+        model.requests[1],
+      ).find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(secondRequestReasoning).toBeDefined();
+      expect(secondRequestReasoning).not.toHaveProperty('id');
+
+      const historyReasoning = result.history.find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(historyReasoning).toBeDefined();
+      expect(historyReasoning).not.toHaveProperty('id');
+    });
+
+    it('allows per-run reasoningItemIdPolicy to override runner defaults', async () => {
+      class RequestRecordingModel implements Model {
+        readonly requests: ModelRequest[] = [];
+        #callCount = 0;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.#callCount++ === 0) {
+            return {
+              output: [
+                {
+                  type: 'reasoning',
+                  id: 'rs_override',
+                  content: [{ type: 'input_text', text: 'reasoning trace' }],
+                } satisfies protocol.ReasoningItem,
+                {
+                  type: 'function_call',
+                  id: 'fc_override',
+                  callId: 'call_override',
+                  name: 'echo_tool',
+                  status: 'completed',
+                  arguments: '{}',
+                } satisfies protocol.FunctionCallItem,
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new RequestRecordingModel();
+      const echoTool = tool({
+        name: 'echo_tool',
+        description: 'Echoes a static payload.',
+        parameters: z.object({}),
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'ReasoningPolicyOverrideAgent',
+        model,
+        tools: [echoTool],
+      });
+      const runner = new Runner({
+        reasoningItemIdPolicy: 'preserve',
+      });
+
+      await runner.run(agent, 'hello', {
+        reasoningItemIdPolicy: 'omit',
+      });
+
+      const secondRequestReasoning = getRequestInputItems(
+        model.requests[1],
+      ).find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(secondRequestReasoning).toBeDefined();
+      expect(secondRequestReasoning).not.toHaveProperty('id');
+    });
+
+    it('passes reasoningItemIdPolicy through the run() helper', async () => {
+      class RequestRecordingModel implements Model {
+        readonly requests: ModelRequest[] = [];
+        #callCount = 0;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.#callCount++ === 0) {
+            return {
+              output: [
+                {
+                  type: 'reasoning',
+                  id: 'rs_helper',
+                  content: [{ type: 'input_text', text: 'reasoning trace' }],
+                } satisfies protocol.ReasoningItem,
+                {
+                  type: 'function_call',
+                  id: 'fc_helper',
+                  callId: 'call_helper',
+                  name: 'echo_tool',
+                  status: 'completed',
+                  arguments: '{}',
+                } satisfies protocol.FunctionCallItem,
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new RequestRecordingModel();
+      const echoTool = tool({
+        name: 'echo_tool',
+        description: 'Echoes a static payload.',
+        parameters: z.object({}),
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'ReasoningPolicyHelperAgent',
+        model,
+        tools: [echoTool],
+      });
+
+      await run(agent, 'hello', {
+        reasoningItemIdPolicy: 'omit',
+      });
+
+      const secondRequestReasoning = getRequestInputItems(
+        model.requests[1],
+      ).find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(secondRequestReasoning).toBeDefined();
+      expect(secondRequestReasoning).not.toHaveProperty('id');
+    });
+
+    it('uses serialized reasoningItemIdPolicy when resuming without override', async () => {
+      class RequestRecordingModel implements Model {
+        readonly requests: ModelRequest[] = [];
+        #callCount = 0;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.#callCount++ === 0) {
+            return {
+              output: [
+                {
+                  type: 'reasoning',
+                  id: 'rs_resume',
+                  content: [{ type: 'input_text', text: 'reasoning trace' }],
+                } satisfies protocol.ReasoningItem,
+                {
+                  type: 'function_call',
+                  id: 'fc_resume',
+                  callId: 'call_resume',
+                  name: 'approval_tool',
+                  status: 'completed',
+                  arguments: '{}',
+                } satisfies protocol.FunctionCallItem,
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }
+
+        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new RequestRecordingModel();
+      const approvalTool = tool({
+        name: 'approval_tool',
+        description: 'Requires approval before execution.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'ReasoningPolicyResumeAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const firstRun = await run(agent, 'hello', {
+        reasoningItemIdPolicy: 'omit',
+        maxTurns: 1,
+      });
+      expect(firstRun.interruptions).toHaveLength(1);
+      firstRun.state.approve(firstRun.interruptions[0]);
+
+      const restoredState = await RunState.fromString(
+        agent,
+        firstRun.state.toString(),
+      );
+      const resumedRun = await run(agent, restoredState, { maxTurns: 1 });
+
+      expect(resumedRun.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      const secondRequestReasoning = getRequestInputItems(
+        model.requests[1],
+      ).find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(secondRequestReasoning).toBeDefined();
+      expect(secondRequestReasoning).not.toHaveProperty('id');
     });
 
     it('run() helper reuses underlying runner', async () => {
@@ -2734,6 +3019,94 @@ describe('Runner.run', () => {
       expect(Array.isArray(sentInput)).toBe(true);
       expect(sentInput).toHaveLength(1);
       expect(getFirstTextContent(sentInput[0])).toBe('Hello override');
+    });
+
+    it('allows callModelInputFilter to override omitted reasoning IDs', async () => {
+      class ReasoningTrackingModel extends FakeModel {
+        requests: ModelRequest[] = [];
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          const cloned: ModelRequest = {
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          };
+          this.requests.push(cloned);
+          return await super.getResponse(request);
+        }
+      }
+
+      const model = new ReasoningTrackingModel([
+        {
+          output: [
+            {
+              type: 'reasoning',
+              id: 'rs_filter',
+              content: [{ type: 'input_text', text: 'thinking...' }],
+            } as protocol.ReasoningItem,
+            {
+              type: 'function_call',
+              id: 'fc_filter',
+              callId: 'call_filter',
+              name: 'echo_tool',
+              status: 'completed',
+              arguments: '{}',
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+
+      const echoTool = tool({
+        name: 'echo_tool',
+        description: 'Echoes a static payload.',
+        parameters: z.object({}),
+        execute: async () => 'ok',
+      });
+      const agent = new Agent({
+        name: 'ReasoningFilterOverrideAgent',
+        model,
+        tools: [echoTool],
+      });
+
+      const runner = new Runner({
+        reasoningItemIdPolicy: 'omit',
+        callModelInputFilter: ({ modelData }) => ({
+          instructions: modelData.instructions,
+          input: modelData.input.map((item) => {
+            if (item.type !== 'reasoning' || 'id' in item) {
+              return item;
+            }
+            return { ...item, id: 'rs_reintroduced' } as protocol.ReasoningItem;
+          }),
+        }),
+      });
+
+      const result = await runner.run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(Array.isArray(secondInput)).toBe(true);
+      const secondReasoning = secondInput.find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(secondReasoning).toBeDefined();
+      expect(secondReasoning?.id).toBe('rs_reintroduced');
+
+      const historyReasoning = result.history.find(
+        (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+      );
+      expect(historyReasoning).toBeDefined();
+      expect(historyReasoning).not.toHaveProperty('id');
     });
 
     it('keeps server conversation tracking aligned with filtered inputs', async () => {
