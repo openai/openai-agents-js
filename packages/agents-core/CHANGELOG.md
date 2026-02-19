@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.4.13
+
+### Patch Changes
+
+- cbadc0f: Fix parallel input guardrail tripwire being preempted by ModelBehaviorError when using structured output in non-streaming run
+- 5dfe016: fix: rehydrate RunState interruptions and type getInterruptions
+- 6698105: fix(agents-core): persist reasoning item ID policy across resumes and clarify filter interaction (enhancing #977)
+
 ## 0.4.12
 
 ### Patch Changes
