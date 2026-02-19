@@ -557,11 +557,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   /**
    * Returns all interruptions if the current step is an interruption otherwise returns an empty array.
    */
-  getInterruptions() {
+  getInterruptions(): RunToolApprovalItem[] {
     if (this._currentStep?.type !== 'next_step_interruption') {
       return [];
     }
-    return this._currentStep.data.interruptions;
+    const interruptions = this._currentStep.data.interruptions;
+    return Array.isArray(interruptions)
+      ? (interruptions as RunToolApprovalItem[])
+      : [];
   }
 
   private getPendingAgentToolRunKey(toolName: string, callId: string): string {
@@ -929,6 +932,18 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       type: 'next_step_handoff',
       newAgent: agentMap.get(stateJson.currentStep.newAgent.name) as TAgent,
     };
+  } else if (stateJson.currentStep?.type === 'next_step_interruption') {
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        ...stateJson.currentStep.data,
+        interruptions: deserializeInterruptions(
+          stateJson.currentStep.data?.interruptions,
+          agentMap,
+          state._currentAgent,
+        ),
+      },
+    };
   }
   return state;
 }
@@ -1058,6 +1073,92 @@ export function deserializeItem(
         serializedItem.toolName,
       );
   }
+}
+
+function deserializeInterruptionItem(
+  serializedItem: unknown,
+  agentMap: Map<string, Agent<any, any>>,
+  currentAgent: Agent<any, any>,
+): RunToolApprovalItem | undefined {
+  if (serializedItem instanceof RunToolApprovalItem) {
+    return serializedItem;
+  }
+
+  const parsed = itemSchema.safeParse(serializedItem);
+  if (parsed.success) {
+    if (parsed.data.type === 'tool_approval_item') {
+      const mappedAgent = agentMap.get(parsed.data.agent.name) ?? currentAgent;
+      return new RunToolApprovalItem(
+        parsed.data.rawItem,
+        mappedAgent,
+        parsed.data.toolName,
+      );
+    }
+
+    const item = deserializeItem(parsed.data, agentMap);
+    return item instanceof RunToolApprovalItem ? item : undefined;
+  }
+
+  if (!serializedItem || typeof serializedItem !== 'object') {
+    return undefined;
+  }
+
+  const value = serializedItem as {
+    rawItem?: unknown;
+    toolName?: unknown;
+    agent?: { name?: unknown };
+  };
+
+  if (!value.rawItem || typeof value.rawItem !== 'object') {
+    return undefined;
+  }
+
+  const rawItem = value.rawItem as { type?: unknown; name?: unknown };
+  if (
+    rawItem.type !== 'function_call' &&
+    rawItem.type !== 'hosted_tool_call' &&
+    rawItem.type !== 'computer_call' &&
+    rawItem.type !== 'shell_call' &&
+    rawItem.type !== 'apply_patch_call'
+  ) {
+    return undefined;
+  }
+
+  const agentName =
+    value.agent && typeof value.agent.name === 'string'
+      ? value.agent.name
+      : undefined;
+  const mappedAgent =
+    (agentName ? agentMap.get(agentName) : undefined) ?? currentAgent;
+  const toolName =
+    typeof value.toolName === 'string'
+      ? value.toolName
+      : typeof rawItem.name === 'string'
+        ? rawItem.name
+        : undefined;
+
+  return new RunToolApprovalItem(
+    value.rawItem as RunToolApprovalItem['rawItem'],
+    mappedAgent,
+    toolName,
+  );
+}
+
+function deserializeInterruptions(
+  serializedInterruptions: unknown,
+  agentMap: Map<string, Agent<any, any>>,
+  currentAgent: Agent<any, any>,
+): RunToolApprovalItem[] {
+  if (!Array.isArray(serializedInterruptions)) {
+    return [];
+  }
+
+  return serializedInterruptions
+    .map((item) => deserializeInterruptionItem(item, agentMap, currentAgent))
+    .filter(
+      (item): item is RunToolApprovalItem =>
+        item instanceof RunToolApprovalItem,
+    );
 }
 
 /**

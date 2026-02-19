@@ -292,6 +292,138 @@ describe('RunState', () => {
     expect(newState._trace).toBeNull();
   });
 
+  it('fromString rehydrates interruption items as RunToolApprovalItem', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'InterruptAgent' });
+    const state = new RunState(context, 'input', agent, 3);
+    const rawApproval: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'secure_tool',
+      callId: 'call-secure-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [new ToolApprovalItem(rawApproval, agent)],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const interruptions = restored.getInterruptions();
+    expect(interruptions).toHaveLength(1);
+    expect(interruptions[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(interruptions[0].name).toBe('secure_tool');
+    expect(interruptions[0].agent).toBe(agent);
+  });
+
+  it('fromString falls back to current agent for serialized interruptions with unknown agent', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'InterruptFallbackAgent' });
+    const state = new RunState(context, 'input', agent, 3);
+    const rawApproval: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'nested_tool',
+      callId: 'call-nested-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const serialized = state.toJSON() as any;
+    serialized.currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          {
+            type: 'tool_approval_item',
+            rawItem: rawApproval,
+            agent: { name: 'NestedAsToolAgent' },
+            toolName: 'nested_tool',
+          },
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const interruptions = restored.getInterruptions();
+    expect(interruptions).toHaveLength(1);
+    expect(interruptions[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(interruptions[0].name).toBe('nested_tool');
+    expect(interruptions[0].agent).toBe(agent);
+    expect(() => restored.toString()).not.toThrow();
+  });
+
+  it('fromString rehydrates hosted tool interruptions and supports approval', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'HostedInterruptAgent' });
+    const state = new RunState(context, 'input', agent, 3);
+    const rawApproval: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval-1',
+      name: 'search_codex_code',
+      arguments: '{}',
+      status: 'completed',
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [new ToolApprovalItem(rawApproval, agent)],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const interruptions = restored.getInterruptions();
+    expect(interruptions).toHaveLength(1);
+    expect(interruptions[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(interruptions[0].name).toBe('search_codex_code');
+
+    restored.approve(interruptions[0]);
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'search_codex_code',
+        callId: 'approval-1',
+      }),
+    ).toBe(true);
+  });
+
+  it('fromString rehydrates interruptions from legacy raw interruption shape', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'LegacyInterruptAgent' });
+    const state = new RunState(context, 'input', agent, 3);
+    const rawApproval: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'legacy_tool',
+      callId: 'legacy-call-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const serialized = state.toJSON() as any;
+    serialized.currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          {
+            rawItem: rawApproval,
+            toolName: 'legacy_tool',
+          },
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const interruptions = restored.getInterruptions();
+    expect(interruptions).toHaveLength(1);
+    expect(interruptions[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(interruptions[0].name).toBe('legacy_tool');
+    expect(interruptions[0].agent).toBe(agent);
+  });
+
   it('serializes and restores guardrail results', async () => {
     const context = new RunContext();
     const agentA = new Agent({ name: 'A' });
