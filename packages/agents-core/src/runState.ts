@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Agent } from './agent';
+import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
 import {
   RunMessageOutputItem,
   RunItem,
@@ -995,6 +996,13 @@ export function buildAgentMap(
         if (!map.has(handoff.agent.name)) {
           queue.push(handoff.agent);
         }
+      }
+    }
+
+    for (const tool of currentAgent.tools) {
+      const sourceAgent = getAgentToolSourceAgent(tool);
+      if (sourceAgent && !map.has(sourceAgent.name)) {
+        queue.push(sourceAgent);
       }
     }
   }

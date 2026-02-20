@@ -48,6 +48,7 @@ import {
 } from './agentToolInput';
 import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
+import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   | RunResult<TContext, TAgent>
@@ -848,6 +849,7 @@ export class Agent<
         return agentTool;
       },
     };
+    registerAgentToolSourceAgent(agentTool, this);
 
     return agentTool;
   }
