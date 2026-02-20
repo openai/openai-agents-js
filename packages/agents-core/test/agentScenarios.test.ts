@@ -540,6 +540,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     const first = await runner.run(outerAgent, 'start');
 
     expect(first.interruptions).toHaveLength(1);
+    expect(first.interruptions?.[0]?.agent.name).toBe('NestedAgent');
 
     const outerOutputsBefore = first.newItems.filter(
       (item) =>
@@ -557,6 +558,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     if (!approval) {
       throw new Error('Expected nested tool approval interruption');
     }
+    expect(approval.agent.name).toBe('NestedAgent');
     restored.approve(approval);
 
     const resumed = await runner.run(outerAgent, restored);

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent } from './agent';
+import { AGENT_AS_TOOL_SOURCE_AGENT, Agent } from './agent';
 import {
   RunMessageOutputItem,
   RunItem,
@@ -976,6 +976,10 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
 export function buildAgentMap(
   initialAgent: Agent<any, any>,
 ): Map<string, Agent<any, any>> {
+  type AgentToolWithSourceAgent = {
+    [AGENT_AS_TOOL_SOURCE_AGENT]?: Agent<any, any>;
+  };
+
   const map = new Map<string, Agent<any, any>>();
   const queue: Agent<any, any>[] = [initialAgent];
 
@@ -995,6 +999,18 @@ export function buildAgentMap(
         if (!map.has(handoff.agent.name)) {
           queue.push(handoff.agent);
         }
+      }
+    }
+
+    for (const tool of currentAgent.tools) {
+      if (tool.type !== 'function') {
+        continue;
+      }
+      const sourceAgent = (tool as AgentToolWithSourceAgent)[
+        AGENT_AS_TOOL_SOURCE_AGENT
+      ];
+      if (sourceAgent && !map.has(sourceAgent.name)) {
+        queue.push(sourceAgent);
       }
     }
   }

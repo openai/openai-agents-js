@@ -49,6 +49,10 @@ import {
 import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 
+export const AGENT_AS_TOOL_SOURCE_AGENT = Symbol(
+  'openai.agents.agentAsToolSourceAgent',
+);
+
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   | RunResult<TContext, TAgent>
   | StreamedRunResult<TContext, TAgent>
@@ -848,6 +852,12 @@ export class Agent<
         return agentTool;
       },
     };
+    Object.defineProperty(agentTool, AGENT_AS_TOOL_SOURCE_AGENT, {
+      value: this,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
 
     return agentTool;
   }
