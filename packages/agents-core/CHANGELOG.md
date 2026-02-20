@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.4.14
+
+### Patch Changes
+
+- 76a695e: fix: preserve nested agent tool approval agent after run state restore
+
 ## 0.4.13
 
 ### Patch Changes
