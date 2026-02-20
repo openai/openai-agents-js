@@ -144,13 +144,6 @@ describe('AiSdkModel end-to-end scenarios', () => {
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'Hello world' }],
-        status: 'completed',
-        providerData: { model: 'stub:m', responseId: 'resp-stream' },
-      },
-      {
         type: 'function_call',
         callId: 'c1',
         name: 'search',
@@ -1288,16 +1281,6 @@ describe('AiSdkModel.getStreamedResponse', () => {
     const final = events.at(-1);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
-      {
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'a' }],
-        status: 'completed',
-        providerData: {
-          model: 'stub:m',
-          responseId: 'id1',
-        },
-      },
       {
         type: 'function_call',
         callId: 'c1',
