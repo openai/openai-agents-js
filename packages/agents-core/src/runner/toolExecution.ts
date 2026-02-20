@@ -272,47 +272,40 @@ async function buildApprovalRejectionResult<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, toolErrorFormatter } = deps;
-  return withFunctionSpan(
-    async (span) => {
-      const response = await resolveApprovalRejectionMessage({
-        runContext: state._context,
-        toolType: 'function',
-        toolName: toolRun.tool.name,
-        callId: toolRun.toolCall.callId,
-        toolErrorFormatter,
-      });
-      const traceErrorMessage = runner.config.traceIncludeSensitiveData
-        ? response
-        : TOOL_APPROVAL_REJECTION_MESSAGE;
+  return withToolFunctionSpan(runner, toolRun.tool.name, async (span) => {
+    const response = await resolveApprovalRejectionMessage({
+      runContext: state._context,
+      toolType: 'function',
+      toolName: toolRun.tool.name,
+      callId: toolRun.toolCall.callId,
+      toolErrorFormatter,
+    });
+    const traceErrorMessage = runner.config.traceIncludeSensitiveData
+      ? response
+      : TOOL_APPROVAL_REJECTION_MESSAGE;
 
-      span.setError({
-        message: traceErrorMessage,
-        data: {
-          tool_name: toolRun.tool.name,
-          error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
-        },
-      });
-
-      if (runner.config.traceIncludeSensitiveData) {
-        span.spanData.output = response;
-      }
-      return {
-        type: 'function_output' as const,
-        tool: toolRun.tool,
-        output: response,
-        runItem: new RunToolCallOutputItem(
-          getToolCallOutputItem(toolRun.toolCall, response),
-          agent,
-          response,
-        ),
-      };
-    },
-    {
+    span?.setError({
+      message: traceErrorMessage,
       data: {
-        name: toolRun.tool.name,
+        tool_name: toolRun.tool.name,
+        error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
       },
-    },
-  );
+    });
+
+    if (span && runner.config.traceIncludeSensitiveData) {
+      span.spanData.output = response;
+    }
+    return {
+      type: 'function_output' as const,
+      tool: toolRun.tool,
+      output: response,
+      runItem: new RunToolCallOutputItem(
+        getToolCallOutputItem(toolRun.toolCall, response),
+        agent,
+        response,
+      ),
+    };
+  });
 }
 
 async function handleFunctionApproval<TContext>(
@@ -353,132 +346,125 @@ async function runApprovedFunctionTool<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state } = deps;
-  return withFunctionSpan(
-    async (span) => {
-      if (runner.config.traceIncludeSensitiveData) {
-        span.spanData.input = toolRun.toolCall.arguments;
-      }
+  return withToolFunctionSpan(runner, toolRun.tool.name, async (span) => {
+    if (span && runner.config.traceIncludeSensitiveData) {
+      span.spanData.input = toolRun.toolCall.arguments;
+    }
 
-      try {
-        const inputGuardrailResult = await runToolInputGuardrails({
-          guardrails: toolRun.tool.inputGuardrails,
+    try {
+      const inputGuardrailResult = await runToolInputGuardrails({
+        guardrails: toolRun.tool.inputGuardrails,
+        context: state._context,
+        agent,
+        toolCall: toolRun.toolCall,
+        onResult: (result) => {
+          state._toolInputGuardrailResults.push(result);
+        },
+      });
+
+      emitToolStart(
+        runner,
+        state._context,
+        agent,
+        toolRun.tool,
+        toolRun.toolCall,
+      );
+
+      let toolOutput: unknown;
+      if (inputGuardrailResult.type === 'reject') {
+        toolOutput = inputGuardrailResult.message;
+      } else {
+        const resumeState = state.getPendingAgentToolRun(
+          toolRun.tool.name,
+          toolRun.toolCall.callId,
+        );
+        toolOutput = await invokeFunctionTool({
+          tool: toolRun.tool,
+          runContext: state._context,
+          input: toolRun.toolCall.arguments,
+          details: { toolCall: toolRun.toolCall, resumeState },
+        });
+        toolOutput = await runToolOutputGuardrails({
+          guardrails: toolRun.tool.outputGuardrails,
           context: state._context,
           agent,
           toolCall: toolRun.toolCall,
+          toolOutput,
           onResult: (result) => {
-            state._toolInputGuardrailResults.push(result);
+            state._toolOutputGuardrailResults.push(result);
           },
         });
+      }
+      const stringResult = toSmartString(toolOutput);
 
-        emitToolStart(
-          runner,
-          state._context,
+      emitToolEnd(
+        runner,
+        state._context,
+        agent,
+        toolRun.tool,
+        stringResult,
+        toolRun.toolCall,
+      );
+
+      if (span && runner.config.traceIncludeSensitiveData) {
+        span.spanData.output = stringResult;
+      }
+
+      const functionResult: FunctionToolResult<TContext> = {
+        type: 'function_output' as const,
+        tool: toolRun.tool,
+        output: toolOutput,
+        runItem: new RunToolCallOutputItem(
+          getToolCallOutputItem(toolRun.toolCall, toolOutput),
           agent,
-          toolRun.tool,
-          toolRun.toolCall,
-        );
+          toolOutput,
+        ),
+      };
 
-        let toolOutput: unknown;
-        if (inputGuardrailResult.type === 'reject') {
-          toolOutput = inputGuardrailResult.message;
+      const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
+        | RunResult<TContext, Agent<TContext, any>>
+        | undefined;
+      if (nestedRunResult) {
+        functionResult.agentRunResult = nestedRunResult;
+        const nestedInterruptions = nestedRunResult.interruptions;
+        if (nestedInterruptions.length > 0) {
+          functionResult.interruptions = nestedInterruptions;
+          state.setPendingAgentToolRun(
+            toolRun.tool.name,
+            toolRun.toolCall.callId,
+            nestedRunResult.state.toString(),
+          );
         } else {
-          const resumeState = state.getPendingAgentToolRun(
+          state.clearPendingAgentToolRun(
             toolRun.tool.name,
             toolRun.toolCall.callId,
           );
-          toolOutput = await invokeFunctionTool({
-            tool: toolRun.tool,
-            runContext: state._context,
-            input: toolRun.toolCall.arguments,
-            details: { toolCall: toolRun.toolCall, resumeState },
-          });
-          toolOutput = await runToolOutputGuardrails({
-            guardrails: toolRun.tool.outputGuardrails,
-            context: state._context,
-            agent,
-            toolCall: toolRun.toolCall,
-            toolOutput,
-            onResult: (result) => {
-              state._toolOutputGuardrailResults.push(result);
-            },
-          });
         }
-        const stringResult = toSmartString(toolOutput);
-
-        emitToolEnd(
-          runner,
-          state._context,
-          agent,
-          toolRun.tool,
-          stringResult,
-          toolRun.toolCall,
-        );
-
-        if (runner.config.traceIncludeSensitiveData) {
-          span.spanData.output = stringResult;
-        }
-
-        const functionResult: FunctionToolResult<TContext> = {
-          type: 'function_output' as const,
-          tool: toolRun.tool,
-          output: toolOutput,
-          runItem: new RunToolCallOutputItem(
-            getToolCallOutputItem(toolRun.toolCall, toolOutput),
-            agent,
-            toolOutput,
-          ),
-        };
-
-        const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
-          | RunResult<TContext, Agent<TContext, any>>
-          | undefined;
-        if (nestedRunResult) {
-          functionResult.agentRunResult = nestedRunResult;
-          const nestedInterruptions = nestedRunResult.interruptions;
-          if (nestedInterruptions.length > 0) {
-            functionResult.interruptions = nestedInterruptions;
-            state.setPendingAgentToolRun(
-              toolRun.tool.name,
-              toolRun.toolCall.callId,
-              nestedRunResult.state.toString(),
-            );
-          } else {
-            state.clearPendingAgentToolRun(
-              toolRun.tool.name,
-              toolRun.toolCall.callId,
-            );
-          }
-        }
-
-        return functionResult;
-      } catch (error) {
-        span.setError({
-          message: 'Error running tool',
-          data: {
-            tool_name: toolRun.tool.name,
-            error: String(error),
-          },
-        });
-
-        const errorResult = String(error);
-        emitToolEnd(
-          runner,
-          state._context,
-          agent,
-          toolRun.tool,
-          errorResult,
-          toolRun.toolCall,
-        );
-
-        throw error;
       }
-    },
-    {
-      data: {
-        name: toolRun.tool.name,
-      },
-    },
-  );
+
+      return functionResult;
+    } catch (error) {
+      span?.setError({
+        message: 'Error running tool',
+        data: {
+          tool_name: toolRun.tool.name,
+          error: String(error),
+        },
+      });
+
+      const errorResult = String(error);
+      emitToolEnd(
+        runner,
+        state._context,
+        agent,
+        toolRun.tool,
+        errorResult,
+        toolRun.toolCall,
+      );
+
+      throw error;
+    }
+  });
 }
 
 /**
