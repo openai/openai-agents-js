@@ -1093,6 +1093,10 @@ export class AiSdkModel implements Model {
         const output: ModelResponse['output'] = [];
 
         const resultContent = (result as any).content ?? [];
+        console.log(
+          'DEBUG: resultContent is',
+          JSON.stringify(resultContent, null, 2),
+        );
 
         // Emit reasoning before tool calls so Anthropic thinking signatures propagate into the next turn.
         // Extract and add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
@@ -1469,7 +1473,7 @@ export class AiSdkModel implements Model {
         }
       }
 
-      if (textOutput) {
+      if (textOutput && Object.keys(functionCalls).length === 0) {
         outputs.push({
           type: 'message',
           role: 'assistant',
