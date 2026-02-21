@@ -1469,7 +1469,7 @@ export class AiSdkModel implements Model {
         }
       }
 
-      if (textOutput) {
+      if (textOutput && Object.keys(functionCalls).length === 0) {
         outputs.push({
           type: 'message',
           role: 'assistant',
