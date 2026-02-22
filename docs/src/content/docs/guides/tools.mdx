@@ -39,8 +39,18 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
-The exact parameter sets match the OpenAI Responses API – refer to the official documentation
-for advanced options like `rankingOptions` or semantic filters.
+The SDK provides helper functions that return hosted tool definitions:
+
+| Helper function                 | Notes                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `webSearchTool(options?)`       | JS-friendly options such as `searchContextSize`, `userLocation`, and `filters.allowedDomains`.             |
+| `fileSearchTool(ids, options?)` | Accepts one or more vector store IDs as the first argument, plus options like `maxNumResults` and filters. |
+| `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided.                                     |
+| `imageGenerationTool(options?)` | Supports image generation configuration such as `size`, `quality`, `background`, and output format.        |
+
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool
+payloads. Refer to the official OpenAI documentation for the full tool schemas and advanced options like
+ranking options or semantic filters.
 
 ---
 
