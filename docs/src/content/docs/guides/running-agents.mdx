@@ -56,20 +56,21 @@ The input can either be a string (which is considered a user message), or a list
 
 The additional options are:
 
-| Option                 | Default | Description                                                                                                                                          |
-| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stream`               | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model.                                                     |
-| `context`              | –       | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context).                   |
-| `maxTurns`             | `10`    | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached.                    |
-| `signal`               | –       | `AbortSignal` for cancellation.                                                                                                                      |
-| `session`              | –       | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions).                                                     |
-| `sessionInputCallback` | –       | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions).                 |
-| `callModelInputFilter` | –       | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter). |
-| `toolErrorFormatter`   | –       | Hook to customize tool approval rejection messages returned to the model. See [Tool error formatter](#tool-error-formatter).                         |
-| `tracing`              | –       | Per-run tracing configuration overrides (for example, export API key).                                                                               |
-| `errorHandlers`        | –       | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers).                                                 |
-| `conversationId`       | –       | Reuse a server-side conversation (OpenAI Responses API + Conversations API only).                                                                    |
-| `previousResponseId`   | –       | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only).                                           |
+| Option                  | Default | Description                                                                                                                                                                      |
+| ----------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream`                | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model.                                                                                 |
+| `context`               | –       | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context).                                               |
+| `maxTurns`              | `10`    | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached.                                                |
+| `signal`                | –       | `AbortSignal` for cancellation.                                                                                                                                                  |
+| `session`               | –       | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions).                                                                                 |
+| `sessionInputCallback`  | –       | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions).                                             |
+| `callModelInputFilter`  | –       | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter).                             |
+| `toolErrorFormatter`    | –       | Hook to customize tool approval rejection messages returned to the model. See [Tool error formatter](#tool-error-formatter).                                                     |
+| `reasoningItemIdPolicy` | –       | Controls whether reasoning-item `id`s are preserved or omitted when prior run items are turned back into model input. See [Reasoning item ID policy](#reasoning-item-id-policy). |
+| `tracing`               | –       | Per-run tracing configuration overrides (for example, export API key).                                                                                                           |
+| `errorHandlers`         | –       | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers).                                                                             |
+| `conversationId`        | –       | Reuse a server-side conversation (OpenAI Responses API + Conversations API only).                                                                                                |
+| `previousResponseId`    | –       | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only).                                                                       |
 
 ## Streaming
 
@@ -79,23 +80,24 @@ Streaming allows you to additionally receive streaming events as the LLM runs. O
 
 If you are creating your own `Runner` instance, you can pass in a `RunConfig` object to configure the runner.
 
-| Field                       | Type                     | Purpose                                                                                          |
-| --------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `model`                     | `string \| Model`        | Force a specific model for **all** agents in the run.                                            |
-| `modelProvider`             | `ModelProvider`          | Resolves model names – defaults to the OpenAI provider.                                          |
-| `modelSettings`             | `ModelSettings`          | Global tuning parameters that override per‑agent settings.                                       |
-| `handoffInputFilter`        | `HandoffInputFilter`     | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one). |
-| `inputGuardrails`           | `InputGuardrail[]`       | Guardrails applied to the _initial_ user input.                                                  |
-| `outputGuardrails`          | `OutputGuardrail[]`      | Guardrails applied to the _final_ output.                                                        |
-| `tracingDisabled`           | `boolean`                | Disable OpenAI Tracing completely.                                                               |
-| `traceIncludeSensitiveData` | `boolean`                | Exclude LLM/tool inputs & outputs from traces while still emitting spans.                        |
-| `workflowName`              | `string`                 | Appears in the Traces dashboard – helps group related runs.                                      |
-| `traceId` / `groupId`       | `string`                 | Manually specify the trace or group ID instead of letting the SDK generate one.                  |
-| `traceMetadata`             | `Record<string, string>` | Arbitrary metadata to attach to every span.                                                      |
-| `tracing`                   | `TracingConfig`          | Per-run tracing overrides (for example, export API key).                                         |
-| `sessionInputCallback`      | `SessionInputCallback`   | Default history merge strategy for all runs on this runner.                                      |
-| `callModelInputFilter`      | `CallModelInputFilter`   | Global hook to edit model inputs before each model call.                                         |
-| `toolErrorFormatter`        | `ToolErrorFormatter`     | Global hook to customize tool approval rejection messages returned to the model.                 |
+| Field                       | Type                     | Purpose                                                                                                               |
+| --------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `model`                     | `string \| Model`        | Force a specific model for **all** agents in the run.                                                                 |
+| `modelProvider`             | `ModelProvider`          | Resolves model names – defaults to the OpenAI provider.                                                               |
+| `modelSettings`             | `ModelSettings`          | Global tuning parameters that override per‑agent settings.                                                            |
+| `handoffInputFilter`        | `HandoffInputFilter`     | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one).                      |
+| `inputGuardrails`           | `InputGuardrail[]`       | Guardrails applied to the _initial_ user input.                                                                       |
+| `outputGuardrails`          | `OutputGuardrail[]`      | Guardrails applied to the _final_ output.                                                                             |
+| `tracingDisabled`           | `boolean`                | Disable OpenAI Tracing completely.                                                                                    |
+| `traceIncludeSensitiveData` | `boolean`                | Exclude LLM/tool inputs & outputs from traces while still emitting spans.                                             |
+| `workflowName`              | `string`                 | Appears in the Traces dashboard – helps group related runs.                                                           |
+| `traceId` / `groupId`       | `string`                 | Manually specify the trace or group ID instead of letting the SDK generate one.                                       |
+| `traceMetadata`             | `Record<string, string>` | Arbitrary metadata to attach to every span.                                                                           |
+| `tracing`                   | `TracingConfig`          | Per-run tracing overrides (for example, export API key).                                                              |
+| `sessionInputCallback`      | `SessionInputCallback`   | Default history merge strategy for all runs on this runner.                                                           |
+| `callModelInputFilter`      | `CallModelInputFilter`   | Global hook to edit model inputs before each model call.                                                              |
+| `toolErrorFormatter`        | `ToolErrorFormatter`     | Global hook to customize tool approval rejection messages returned to the model.                                      |
+| `reasoningItemIdPolicy`     | `ReasoningItemIdPolicy`  | Default policy for preserving or omitting reasoning-item `id`s when replaying generated items into later model calls. |
 
 ## Conversations / chat threads
 
@@ -146,6 +148,54 @@ Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in
 Use `toolErrorFormatter` to customize approval-rejection messages that are sent back to the model when a tool call is rejected. This lets you return domain-specific wording (for example, compliance guidance) instead of the SDK default message.
 
 The formatter can be set per-run (`runner.run(..., { toolErrorFormatter })`) or globally in `RunConfig` (`toolErrorFormatter` in `new Runner(...)`).
+
+The formatter currently runs for `approval_rejected` events and receives:
+
+- `kind` (currently always `'approval_rejected'`)
+- `toolType` (`'function'`, `'computer'`, `'shell'`, or `'apply_patch'`)
+- `toolName`
+- `callId`
+- `defaultMessage` (the SDK fallback message)
+- `runContext`
+
+Return a string to override the message, or return `undefined` to keep the SDK default. If the formatter throws (or returns a non-string value), the SDK logs a warning and falls back to the default approval-rejection message.
+
+## Reasoning item ID policy
+
+Use `reasoningItemIdPolicy` to control whether reasoning items keep their `id` fields when the SDK converts previously generated run items back into `AgentInputItem[]` for later model input.
+
+This affects places where the SDK replays generated model items as input, such as:
+
+- follow-up model calls inside the same run (for example, after tool execution),
+- subsequent turns that reuse generated items as input/history,
+- resumed runs from a saved `RunState`,
+- derived result views like `result.history` / `result.output` (which are model-input-shaped arrays).
+
+- `'preserve'` (default) keeps reasoning-item IDs.
+- `'omit'` strips the `id` field from reasoning items before they are sent back as input.
+- Non-reasoning items are unaffected.
+
+What this does **not** change:
+
+- raw model responses (`result.rawResponses`),
+- run items (`result.newItems`),
+- the model's current-turn output as returned by the provider.
+
+In other words, the policy applies when the SDK builds the **next input** from prior generated items.
+
+You can set the policy per run (`runner.run(..., { reasoningItemIdPolicy: 'omit' })`) or as the runner default (`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). When resuming from a saved `RunState`, the previously resolved policy is reused unless you override it.
+
+### Interaction with `callModelInputFilter`
+
+`reasoningItemIdPolicy` is applied before `callModelInputFilter`. If you need custom behavior, `callModelInputFilter` can still inspect the prepared input and re-introduce or remove reasoning IDs manually before the model call.
+
+### When to use `'omit'`
+
+Use `'omit'` when you want replayed reasoning items to be normalized without IDs (for example, to keep forwarded/replayed model inputs simpler or to match integration requirements in your app pipeline).
+
+It is also a useful troubleshooting option if your backend/provider rejects replayed reasoning items with request validation errors (for example, HTTP `400` errors related to reasoning item IDs in follow-up inputs). In those cases, stripping replayed reasoning IDs with `'omit'` can avoid sending IDs that the backend treats as invalid for a new request.
+
+Keep `'preserve'` if you want the SDK to carry reasoning-item IDs through replayed inputs and your integration accepts them.
 
 ## Error handlers
 
