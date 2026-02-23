@@ -86,6 +86,25 @@ endpoints:
 You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need
 custom networking settings.
 
+### Responses WebSocket transport
+
+When you use the OpenAI provider with the Responses API, you can send requests over a WebSocket transport instead of the default HTTP transport.
+
+Enable it globally with `setOpenAIResponsesTransport('websocket')`, or enable it per provider with `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })`.
+
+You do not need `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` just to use the WebSocket transport. If reconnecting for each run/request is acceptable, your existing `run()` / `Runner.run()` usage will continue to work after enabling `setOpenAIResponsesTransport('websocket')`.
+
+Use `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` / `Runner` only when you want to optimize connection reuse and manage the websocket provider lifecycle more explicitly:
+
+- `withResponsesWebSocketSession(...)`: convenient scoped lifecycle with automatic cleanup after the callback.
+- Custom `OpenAIProvider` / `Runner`: explicit lifecycle control (including shutdown cleanup) in your own app architecture.
+
+Despite the name, `withResponsesWebSocketSession(...)` is a transport lifecycle helper and is unrelated to the memory `Session` interface described in the [sessions guide](/openai-agents-js/guides/sessions).
+
+If you use a websocket proxy or gateway, configure `websocketBaseURL` on `OpenAIProvider` or set `OPENAI_WEBSOCKET_BASE_URL`.
+
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) for a full streaming + HITL example using the Responses WebSocket transport.
+
 ---
 
 ## ModelSettings
