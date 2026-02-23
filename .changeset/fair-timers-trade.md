@@ -1,7 +1,7 @@
 ---
-'@openai/agents': patch
-'@openai/agents-core': patch
-'@openai/agents-openai': patch
+'@openai/agents': minor
+'@openai/agents-core': minor
+'@openai/agents-openai': minor
 ---
 
 feat: add responses websocket transport and scoped websocket session helper
