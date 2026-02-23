@@ -1,5 +1,18 @@
 # @openai/agents
 
+## 0.5.0
+
+### Minor Changes
+
+- c590057: feat: add responses websocket transport and scoped websocket session helper
+
+### Patch Changes
+
+- Updated dependencies [c590057]
+  - @openai/agents-core@0.5.0
+  - @openai/agents-openai@0.5.0
+  - @openai/agents-realtime@0.5.0
+
 ## 0.4.15
 
 ### Patch Changes
