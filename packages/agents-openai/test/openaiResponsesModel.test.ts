@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { OpenAIResponsesModel } from '../src/openaiResponsesModel';
 import { HEADERS } from '../src/defaults';
-import type OpenAI from 'openai';
+import OpenAI from 'openai';
 import {
   setTracingDisabled,
   withTrace,
@@ -160,6 +160,93 @@ describe('OpenAIResponsesModel', () => {
       const [args] = createMock.mock.calls[0];
       expect(args.tools).toEqual([]);
       expect(args.prompt).toBeUndefined();
+    });
+  });
+
+  it('prevents extra_body from overriding non-streaming request mode', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-non-stream', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_body: {
+              stream: true,
+              metadata: { transport: 'http' },
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.stream).toBe(false);
+      expect(args.metadata).toEqual({ transport: 'http' });
+    });
+  });
+
+  it('preserves null extra_headers entries as SDK header unsets on HTTP requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-http-headers', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_headers: {
+              'User-Agent': null,
+              'X-Request-Header': 'present',
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [, opts] = createMock.mock.calls[0];
+      const headers = opts.headers as Record<string, string | null>;
+      expect(headers['X-Request-Header']).toBe('present');
+      expect(headers['user-agent']).toBeNull();
+      expect((headers as any).values).toBeUndefined();
+      expect((headers as any).nulls).toBeUndefined();
+
+      const sdkClient = new OpenAI({ apiKey: 'sk-test' });
+      const sdkHeaders = (await (sdkClient as any).buildHeaders({
+        options: { headers },
+        method: 'post',
+        bodyHeaders: undefined,
+        retryCount: 0,
+      })) as Headers;
+      expect(sdkHeaders.get('X-Request-Header')).toBe('present');
+      expect(sdkHeaders.get('User-Agent')).toBeNull();
+      expect(sdkHeaders.get('values')).toBeNull();
+      expect(sdkHeaders.get('nulls')).toBeNull();
     });
   });
 
@@ -713,6 +800,91 @@ describe('OpenAIResponsesModel', () => {
           event: events[1],
         },
       ]);
+    });
+  });
+
+  it('prevents extra_body from overriding streamed request mode', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream',
+          output: [],
+          usage: {},
+        } as any,
+        sequence_number: 1,
+      };
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model-stream');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'data',
+        modelSettings: {
+          providerData: {
+            extra_body: {
+              stream: false,
+              metadata: { transport: 'http' },
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      for await (const _event of model.getStreamedResponse(request as any)) {
+        // Consume the stream to exercise the public path.
+      }
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.stream).toBe(true);
+      expect(args.metadata).toEqual({ transport: 'http' });
+    });
+  });
+
+  it('rejects non-plain transport override mappings', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            extra_query: new URLSearchParams({ tenant: 'acme' }),
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Responses websocket extra query must be a mapping.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
     });
   });
 

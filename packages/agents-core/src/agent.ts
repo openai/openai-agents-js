@@ -46,6 +46,11 @@ import {
   resolveAgentToolInput,
   type StructuredToolInputBuilder,
 } from './agentToolInput';
+import {
+  getAgentToolParentRunConfigFromDetails,
+  getInheritedAgentToolRunConfig,
+  mergeAgentToolRunConfig,
+} from './agentToolRunConfig';
 import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
@@ -706,7 +711,15 @@ export class Agent<
         ) {
           throw new ModelBehaviorError('Agent tool called with invalid input');
         }
-        const runner = new Runner(runConfig ?? {});
+        const inheritedRunConfig = getInheritedAgentToolRunConfig(
+          getAgentToolParentRunConfigFromDetails(details),
+          runConfig,
+        );
+        const nestedRunConfig = mergeAgentToolRunConfig(
+          inheritedRunConfig,
+          runConfig,
+        );
+        const runner = new Runner(nestedRunConfig);
         const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
         const resumeContext =
           resumeContextStrategy === 'preferSerialized' ? undefined : runContext;

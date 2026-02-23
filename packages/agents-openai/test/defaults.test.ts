@@ -4,7 +4,9 @@ import {
   setTracingExportApiKey,
   getTracingExportApiKey,
   shouldUseResponsesByDefault,
+  shouldUseResponsesWebSocketByDefault,
   setOpenAIAPI,
+  setOpenAIResponsesTransport,
   getDefaultOpenAIClient,
   setDefaultOpenAIClient,
   setDefaultOpenAIKey,
@@ -25,6 +27,12 @@ describe('Defaults', () => {
     expect(shouldUseResponsesByDefault()).toBe(true);
     setOpenAIAPI('chat_completions');
     expect(shouldUseResponsesByDefault()).toBe(false);
+  });
+  test('shouldUseResponsesWebSocketByDefault', async () => {
+    setOpenAIResponsesTransport('websocket');
+    expect(shouldUseResponsesWebSocketByDefault()).toBe(true);
+    setOpenAIResponsesTransport('http');
+    expect(shouldUseResponsesWebSocketByDefault()).toBe(false);
   });
   test('get/setDefaultOpenAIClient', async () => {
     const client = new OpenAI({ apiKey: 'foo' });

@@ -14,6 +14,7 @@ import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
 import { combineAbortSignals } from './utils/abortSignals';
 import { RunContext } from './runContext';
+import type { RunConfig } from './run';
 import type { RunResult } from './result';
 import { InvalidToolInputError, ToolTimeoutError, UserError } from './errors';
 import logger from './logger';
@@ -58,6 +59,10 @@ export type ToolCallDetails = {
   toolCall?: protocol.FunctionCallItem;
   resumeState?: string;
   signal?: AbortSignal;
+  /**
+   * Internal: parent runner config for nested agent-tool runs (Agent.asTool).
+   */
+  parentRunConfig?: Partial<RunConfig>;
 };
 
 export type FunctionToolTimeoutBehavior = 'error_as_result' | 'raise_exception';
@@ -1415,6 +1420,24 @@ type ToolCallDetailsWithTimeoutFlag = ToolCallDetails & {
   [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]?: true;
 };
 
+function cloneObjectWithDescriptorsAndOverrides<
+  TBase extends object,
+  TOverrides extends object,
+>(value: TBase, overrides: TOverrides): TBase & TOverrides {
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<
+    PropertyKey,
+    PropertyDescriptor
+  >;
+  for (const key of Reflect.ownKeys(overrides)) {
+    delete descriptors[key];
+  }
+  const clone = Object.create(
+    Object.getPrototypeOf(value),
+    descriptors,
+  ) as TBase & TOverrides;
+  return Object.assign(clone, overrides);
+}
+
 function normalizeFunctionToolTimeoutConfig<Context = UnknownContext>(args: {
   toolName: string;
   timeoutMs?: number;
@@ -1514,7 +1537,11 @@ async function invokeFunctionToolWithTimeout<
   const { signal: invocationSignal, cleanup: cleanupAbortSignals } =
     combineAbortSignals(details?.signal, timeoutController.signal);
   const invokeDetails: ToolCallDetails | undefined = invocationSignal
-    ? { ...(details ?? {}), signal: invocationSignal }
+    ? details
+      ? cloneObjectWithDescriptorsAndOverrides(details, {
+          signal: invocationSignal,
+        })
+      : { signal: invocationSignal }
     : details;
   const timeoutError = new ToolTimeoutError({
     toolName,
@@ -1579,10 +1606,9 @@ export async function invokeFunctionTool<
     const detailsWithFlag: ToolCallDetailsWithTimeoutFlag | undefined =
       typeof invocationDetails === 'undefined'
         ? undefined
-        : {
-            ...invocationDetails,
-            [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]: true,
-          };
+        : cloneObjectWithDescriptorsAndOverrides(invocationDetails, {
+            [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]: true as const,
+          });
 
     return tool.invoke(invocationRunContext, invocationInput, detailsWithFlag);
   };

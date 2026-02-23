@@ -1,9 +1,18 @@
 export { OpenAIProvider } from './openaiProvider';
-export { OpenAIResponsesModel } from './openaiResponsesModel';
+export {
+  withResponsesWebSocketSession,
+  type ResponsesWebSocketSession,
+  type ResponsesWebSocketSessionOptions,
+} from './responsesWebSocketSession';
+export {
+  OpenAIResponsesModel,
+  OpenAIResponsesWSModel,
+} from './openaiResponsesModel';
 export { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
 export {
   setDefaultOpenAIClient,
   setOpenAIAPI,
+  setOpenAIResponsesTransport,
   setDefaultOpenAIKey,
   setTracingExportApiKey,
 } from './defaults';

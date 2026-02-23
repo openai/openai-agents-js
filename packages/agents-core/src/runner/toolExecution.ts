@@ -6,6 +6,7 @@ import type {
   ToolOutputText,
 } from '../types/protocol';
 import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
+import { setAgentToolParentRunConfigOnDetails } from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import { ToolCallError, ToolTimeoutError, UserError } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
@@ -378,11 +379,16 @@ async function runApprovedFunctionTool<TContext>(
           toolRun.tool.name,
           toolRun.toolCall.callId,
         );
+        const toolDetails = {
+          toolCall: toolRun.toolCall,
+          resumeState,
+        };
+        setAgentToolParentRunConfigOnDetails(toolDetails, runner.config);
         toolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
           input: toolRun.toolCall.arguments,
-          details: { toolCall: toolRun.toolCall, resumeState },
+          details: toolDetails,
         });
         toolOutput = await runToolOutputGuardrails({
           guardrails: toolRun.tool.outputGuardrails,

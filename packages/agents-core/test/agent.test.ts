@@ -328,6 +328,389 @@ describe('Agent', () => {
     expect(calledOptions?.signal).toBe(abortController.signal);
   });
 
+  it('inherits only parent runner model config for nested agent tools by default', async () => {
+    const agent = new Agent({
+      name: 'Inherited Config Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+    const inheritedProvider = new FakeModelProvider();
+    const parentInputGuardrail = {
+      name: 'parent-input',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: false,
+        outputInfo: null,
+      }),
+    };
+    const parentOutputGuardrail = {
+      name: 'parent-output',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: false,
+        outputInfo: null,
+      }),
+    };
+    const handoffInputFilter = vi.fn();
+    const parentRunner = new Runner({
+      modelProvider: inheritedProvider,
+      model: 'parent-model',
+      modelSettings: { temperature: 0.2 },
+      inputGuardrails: [parentInputGuardrail],
+      outputGuardrails: [parentOutputGuardrail],
+      handoffInputFilter,
+      traceIncludeSensitiveData: false,
+      traceId: 'trace_parent_fixed',
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'use inherited config' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelProvider).toBe(inheritedProvider);
+    expect(nestedRunner.config.model).toBe('parent-model');
+    expect(nestedRunner.config.modelSettings).toEqual({ temperature: 0.2 });
+    expect(nestedRunner.config.inputGuardrails).toBeUndefined();
+    expect(nestedRunner.config.outputGuardrails).toBeUndefined();
+    expect(nestedRunner.config.handoffInputFilter).toBeUndefined();
+    expect(nestedRunner.config.traceId).toBeUndefined();
+    expect(nestedRunner.config.traceIncludeSensitiveData).toBe(true);
+  });
+
+  it('does not inherit parent tool-selection modelSettings into nested agent tools', async () => {
+    const agent = new Agent({
+      name: 'Nested Tool Settings Filter Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        temperature: 0.2,
+        toolChoice: 'required',
+        parallelToolCalls: true,
+        providerData: { tenant: 'acme' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'filter nested tool settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      temperature: 0.2,
+      providerData: { tenant: 'acme' },
+    });
+    expect(nestedRunner.config.modelSettings?.toolChoice).toBeUndefined();
+    expect(
+      nestedRunner.config.modelSettings?.parallelToolCalls,
+    ).toBeUndefined();
+  });
+
+  it('does not inherit parent model overrides when agent tool overrides modelProvider', async () => {
+    const agent = new Agent({
+      name: 'Mixed Provider Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const childProvider = new FakeModelProvider();
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelProvider: childProvider,
+      },
+    });
+    const parentProvider = new FakeModelProvider();
+    const parentRunner = new Runner({
+      modelProvider: parentProvider,
+      model: 'parent-model',
+      modelSettings: { temperature: 0.4 },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'use child provider' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelProvider).toBe(childProvider);
+    expect(nestedRunner.config.model).toBeUndefined();
+    expect(nestedRunner.config.modelSettings).toBeUndefined();
+  });
+
+  it('merges inherited modelSettings with agent tool modelSettings overrides', async () => {
+    const agent = new Agent({
+      name: 'Merged Model Settings Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          maxTokens: 42,
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        reasoning: { effort: 'medium' },
+        providerData: { tenant: 'acme' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge model settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      reasoning: { effort: 'medium' },
+      providerData: { tenant: 'acme' },
+      maxTokens: 42,
+    });
+  });
+
+  it('deep-merges nested inherited modelSettings objects for agent tool overrides', async () => {
+    const agent = new Agent({
+      name: 'Nested Model Settings Merge Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          reasoning: { summary: 'detailed' },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        reasoning: { effort: 'medium', summary: 'auto' },
+        text: { verbosity: 'medium' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'deep merge nested model settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      reasoning: { effort: 'medium', summary: 'detailed' },
+      text: { verbosity: 'medium' },
+    });
+  });
+
+  it('merges inherited providerData within nested agent tool modelSettings', async () => {
+    const agent = new Agent({
+      name: 'Merged ProviderData Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_body: { child: true },
+            childOnly: 'yes',
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extra_query: { tenant: 'acme' },
+          extra_headers: { 'X-Proxy': '1' },
+          parentOnly: 'keep',
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge provider data' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_query: { tenant: 'acme' },
+      extra_headers: { 'X-Proxy': '1' },
+      extra_body: { child: true },
+      parentOnly: 'keep',
+      childOnly: 'yes',
+    });
+  });
+
+  it('merges nested transport override maps within inherited providerData', async () => {
+    const agent = new Agent({
+      name: 'Merged Transport Override ProviderData Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_headers: { 'X-Child': '2' },
+            extra_query: { region: 'us' },
+            extra_body: { child: true },
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extra_headers: { 'X-Parent': '1', 'X-Shared': 'parent' },
+          extra_query: { tenant: 'acme' },
+          extra_body: { parent: true },
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge nested transport overrides' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_headers: {
+        'X-Parent': '1',
+        'X-Shared': 'parent',
+        'X-Child': '2',
+      },
+      extra_query: {
+        tenant: 'acme',
+        region: 'us',
+      },
+      extra_body: {
+        parent: true,
+        child: true,
+      },
+    });
+  });
+
+  it('merges transport override maps across snake/camel alias keys', async () => {
+    const agent = new Agent({
+      name: 'Merged Alias Transport Override Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_query: { childRegion: 'us' },
+            extraHeaders: { 'X-Child': '2' },
+            extraBody: { child: true },
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extraQuery: { parentTenant: 'acme' },
+          extra_headers: { 'X-Parent': '1' },
+          extra_body: { parent: true },
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge alias transport overrides' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_query: { parentTenant: 'acme', childRegion: 'us' },
+      extraQuery: { parentTenant: 'acme', childRegion: 'us' },
+      extra_headers: { 'X-Parent': '1', 'X-Child': '2' },
+      extraHeaders: { 'X-Parent': '1', 'X-Child': '2' },
+      extra_body: { parent: true, child: true },
+      extraBody: { parent: true, child: true },
+    });
+  });
+
   it('combines runOptions and tool-call abort signals for nested runner', async () => {
     const agent = new Agent({
       name: 'Combined Signal Agent',

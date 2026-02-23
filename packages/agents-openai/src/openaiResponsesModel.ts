@@ -19,7 +19,6 @@ import type {
   SerializedOutputType,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
-import type { Stream } from 'openai/streaming';
 import logger from './logger';
 import {
   ToolChoiceFunction,
@@ -28,6 +27,26 @@ import {
 } from 'openai/resources/responses/responses';
 import { z } from 'zod';
 import { HEADERS } from './defaults';
+import {
+  ResponsesWebSocketConnection,
+  ResponsesWebSocketInternalError,
+  isWebSocketNotOpenError,
+  shouldWrapNoEventWebSocketError,
+  throwIfAborted,
+  webSocketFrameToText,
+  withAbortSignal,
+  withTimeout,
+  type WebSocketMessageValue,
+} from './responsesWebSocketConnection';
+import {
+  applyHeadersToAccumulator,
+  createHeaderAccumulator,
+  ensureResponsesWebSocketPath,
+  headerAccumulatorToRecord,
+  headerAccumulatorToSDKHeaders,
+  mergeQueryParamsIntoURL,
+  splitResponsesTransportOverrides,
+} from './responsesTransportUtils';
 import {
   CodeInterpreterStatus,
   FileSearchStatus,
@@ -44,6 +63,28 @@ type ToolChoice =
   // TOOD: remove this once the underlying ToolChoiceTypes include this
   | { type: 'web_search' }
   | ToolChoiceFunction;
+
+type ResponsesCreateRequestSDKHeaders = ReturnType<
+  typeof headerAccumulatorToSDKHeaders
+>;
+
+type BuiltResponsesCreateRequest = {
+  requestData: Record<string, any>;
+  sdkRequestHeaders: ResponsesCreateRequestSDKHeaders;
+  signal: AbortSignal | undefined;
+  transportExtraHeaders?: Record<string, unknown>;
+  transportExtraQuery?: Record<string, unknown>;
+};
+
+type WebSocketRequestTimeoutDeadline = {
+  configuredTimeoutMs: number;
+  deadlineAtMs: number;
+};
+
+type EnsuredResponsesWebSocketConnection = {
+  connection: ResponsesWebSocketConnection;
+  reused: boolean;
+};
 
 type ResponseFunctionCallOutputListItem =
   | {
@@ -1792,53 +1833,101 @@ function convertToOutputItem(
 
 export { getToolChoice, converTool, getInputItems, convertToOutputItem };
 
+const TERMINAL_RESPONSES_STREAM_EVENT_TYPES = new Set([
+  'response.completed',
+  'response.failed',
+  'response.incomplete',
+  'response.error',
+]);
+
+function isTerminalResponsesStreamEventType(
+  eventType: string | undefined,
+): boolean {
+  return (
+    typeof eventType === 'string' &&
+    TERMINAL_RESPONSES_STREAM_EVENT_TYPES.has(eventType)
+  );
+}
+
 /**
  * Model implementation that uses OpenAI's Responses API to generate responses.
  */
 export class OpenAIResponsesModel implements Model {
-  #client: OpenAI;
-  #model: string;
+  protected readonly _client: OpenAI;
+  protected readonly _model: string;
+
   constructor(client: OpenAI, model: string) {
-    this.#client = client;
-    this.#model = model;
+    this._client = client;
+    this._model = model;
   }
 
   /**
    * @internal
    */
-  async #fetchResponse(
+  protected async _fetchResponse(
     request: ModelRequest,
     stream: true,
-  ): Promise<Stream<OpenAI.Responses.ResponseStreamEvent>>;
-  async #fetchResponse(
+  ): Promise<AsyncIterable<OpenAI.Responses.ResponseStreamEvent>>;
+  protected async _fetchResponse(
     request: ModelRequest,
     stream: false,
   ): Promise<OpenAI.Responses.Response>;
-  async #fetchResponse(
+  protected async _fetchResponse(
     request: ModelRequest,
     stream: boolean,
   ): Promise<
-    Stream<OpenAI.Responses.ResponseStreamEvent> | OpenAI.Responses.Response
+    | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
+    | OpenAI.Responses.Response
   > {
+    const builtRequest = this._buildResponsesCreateRequest(request, stream);
+
+    const response = await this._client.responses.create(
+      builtRequest.requestData,
+      {
+        headers: builtRequest.sdkRequestHeaders as any,
+        signal: builtRequest.signal,
+        ...(builtRequest.transportExtraQuery
+          ? { query: builtRequest.transportExtraQuery }
+          : {}),
+      },
+    );
+
+    if (logger.dontLogModelData) {
+      logger.debug('Response received');
+    } else {
+      logger.debug(`Response received: ${JSON.stringify(response, null, 2)}`);
+    }
+
+    return response;
+  }
+
+  protected _buildResponsesCreateRequest(
+    request: ModelRequest,
+    stream: boolean,
+  ): BuiltResponsesCreateRequest {
     const input = getInputItems(request.input);
     const { tools, include } = getTools(request.tools, request.handoffs);
     const toolChoice = getToolChoice(request.modelSettings.toolChoice);
-    const { text, ...restOfProviderData } =
-      request.modelSettings.providerData ?? {};
+    const {
+      providerData: providerDataWithoutTransport,
+      overrides: transportOverrides,
+    } = splitResponsesTransportOverrides(request.modelSettings.providerData);
+    const { text, ...restOfProviderData } = providerDataWithoutTransport;
+
     if (request.modelSettings.reasoning) {
-      // Merge top-level reasoning settings with provider data
+      // Merge top-level reasoning settings with provider data.
       restOfProviderData.reasoning = {
         ...request.modelSettings.reasoning,
         ...restOfProviderData.reasoning,
       };
     }
+
     let mergedText = text;
     if (request.modelSettings.text) {
-      // Merge top-level text settings with provider data
+      // Merge top-level text settings with provider data.
       mergedText = { ...request.modelSettings.text, ...text };
     }
     const responseFormat = getResponseFormat(request.outputType, mergedText);
-
     const prompt = getPrompt(request.prompt);
 
     let parallelToolCalls: boolean | undefined = undefined;
@@ -1864,8 +1953,8 @@ export class OpenAIResponsesModel implements Model {
       !shouldSendTools &&
       typeof toolChoice === 'object';
 
-    const requestData = {
-      ...(shouldSendModel ? { model: this.#model } : {}),
+    let requestData = {
+      ...(shouldSendModel ? { model: this._model } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,
@@ -1892,26 +1981,49 @@ export class OpenAIResponsesModel implements Model {
       ...restOfProviderData,
     };
 
+    if (transportOverrides.extraBody) {
+      requestData = {
+        ...requestData,
+        ...transportOverrides.extraBody,
+      };
+    }
+
+    // Keep the transport mode aligned with the calling path even if extra_body includes stream.
+    requestData.stream = stream;
+
+    const requestHeaderAccumulator = createHeaderAccumulator();
+    applyHeadersToAccumulator(requestHeaderAccumulator, HEADERS);
+    applyHeadersToAccumulator(
+      requestHeaderAccumulator,
+      transportOverrides.extraHeaders,
+      {
+        allowBlockedOverride: true,
+      },
+    );
+    const sdkRequestHeaders = headerAccumulatorToSDKHeaders(
+      requestHeaderAccumulator,
+    );
+
+    const builtRequest: BuiltResponsesCreateRequest = {
+      requestData,
+      sdkRequestHeaders,
+      signal: request.signal,
+      transportExtraHeaders: transportOverrides.extraHeaders,
+      transportExtraQuery: transportOverrides.extraQuery,
+    };
+
     if (logger.dontLogModelData) {
       logger.debug('Calling LLM');
     } else {
       logger.debug(
-        `Calling LLM. Request data: ${JSON.stringify(requestData, null, 2)}`,
+        `Calling LLM. Request data: ${JSON.stringify(
+          builtRequest.requestData,
+          null,
+          2,
+        )}`,
       );
     }
-
-    const response = await this.#client.responses.create(requestData, {
-      headers: HEADERS,
-      signal: request.signal,
-    });
-
-    if (logger.dontLogModelData) {
-      logger.debug('Response received');
-    } else {
-      logger.debug(`Response received: ${JSON.stringify(response, null, 2)}`);
-    }
-
-    return response;
+    return builtRequest;
   }
 
   /**
@@ -1921,7 +2033,7 @@ export class OpenAIResponsesModel implements Model {
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
     const response = await withResponseSpan(async (span) => {
-      const response = await this.#fetchResponse(request, false);
+      const response = await this._fetchResponse(request, false);
 
       if (request.tracing) {
         span.spanData.response_id = response.id;
@@ -1968,20 +2080,25 @@ export class OpenAIResponsesModel implements Model {
           span.spanData._input = request.input;
         }
       }
-      const response = await this.#fetchResponse(request, true);
+      const response = await this._fetchResponse(request, true);
 
       let finalResponse: OpenAI.Responses.Response | undefined;
       for await (const event of response) {
-        if (event.type === 'response.created') {
+        const eventType = (event as { type?: string }).type;
+        if (eventType === 'response.created') {
           yield {
             type: 'response_started',
             providerData: {
               ...event,
             },
           };
-        } else if (event.type === 'response.completed') {
-          finalResponse = event.response;
-          const { response, ...remainingEvent } = event;
+        } else if (isTerminalResponsesStreamEventType(eventType)) {
+          const terminalEvent =
+            event as OpenAI.Responses.ResponseStreamEvent & {
+              response: OpenAI.Responses.Response;
+            };
+          finalResponse = terminalEvent.response;
+          const { response, ...remainingEvent } = terminalEvent;
           const { output, usage, id, ...remainingResponse } = response;
           yield {
             type: 'response_done',
@@ -2006,12 +2123,16 @@ export class OpenAIResponsesModel implements Model {
             },
             providerData: remainingEvent,
           };
-          yield {
-            type: 'model',
-            event: event,
-          };
-        } else if (event.type === 'response.output_text.delta') {
-          const { delta, ...remainingEvent } = event;
+          if (eventType === 'response.completed') {
+            yield {
+              type: 'model',
+              event: event,
+            };
+          }
+        } else if (eventType === 'response.output_text.delta') {
+          const { delta, ...remainingEvent } = event as {
+            delta: string;
+          } & Record<string, any>;
           yield {
             type: 'output_text_delta',
             delta: delta,
@@ -2052,6 +2173,601 @@ export class OpenAIResponsesModel implements Model {
   }
 }
 
+export type OpenAIResponsesWSModelOptions = {
+  websocketBaseURL?: string;
+  reuseConnection?: boolean;
+};
+
+/**
+ * Model implementation that uses the OpenAI Responses API over a websocket transport.
+ *
+ * @see {@link https://developers.openai.com/api/docs/guides/websocket-mode}
+ */
+export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
+  #websocketBaseURL?: string;
+  #reuseConnection: boolean;
+  #wsConnection: ResponsesWebSocketConnection | undefined;
+  #wsConnectionIdentity: string | undefined;
+  #wsRequestLock: Promise<void> = Promise.resolve();
+
+  constructor(
+    client: OpenAI,
+    model: string,
+    options: OpenAIResponsesWSModelOptions = {},
+  ) {
+    super(client, model);
+    this.#websocketBaseURL = options.websocketBaseURL;
+    this.#reuseConnection = options.reuseConnection ?? true;
+  }
+
+  /**
+   * @internal
+   */
+  protected async _fetchResponse(
+    request: ModelRequest,
+    stream: true,
+  ): Promise<AsyncIterable<OpenAI.Responses.ResponseStreamEvent>>;
+  protected async _fetchResponse(
+    request: ModelRequest,
+    stream: false,
+  ): Promise<OpenAI.Responses.Response>;
+  protected async _fetchResponse(
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<
+    | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
+    | OpenAI.Responses.Response
+  > {
+    // The websocket transport always uses streamed Responses events, then callers either
+    // consume the stream directly or collapse it into the final terminal response.
+    const builtRequest = this._buildResponsesCreateRequest(request, true);
+
+    if (stream) {
+      return this.#iterWebSocketResponseEvents(builtRequest);
+    }
+
+    let finalResponse: OpenAI.Responses.Response | undefined;
+    for await (const event of this.#iterWebSocketResponseEvents(builtRequest)) {
+      const eventType = (event as { type?: string }).type;
+      if (isTerminalResponsesStreamEventType(eventType)) {
+        finalResponse = (event as { response: OpenAI.Responses.Response })
+          .response;
+      }
+    }
+
+    if (!finalResponse) {
+      throw new Error(
+        'Responses websocket stream ended without a terminal response event.',
+      );
+    }
+
+    return finalResponse;
+  }
+
+  async close(): Promise<void> {
+    await this.#dropWebSocketConnection();
+  }
+
+  async *#iterWebSocketResponseEvents(
+    builtRequest: BuiltResponsesCreateRequest,
+  ): AsyncIterable<OpenAI.Responses.ResponseStreamEvent> {
+    const requestTimeoutDeadline =
+      this.#createWebSocketRequestTimeoutDeadline();
+    const releaseLock = await this.#acquireWebSocketRequestLock(
+      builtRequest.signal,
+      requestTimeoutDeadline,
+    );
+
+    let receivedAnyEvent = false;
+    let sawTerminalResponseEvent = false;
+    try {
+      throwIfAborted(builtRequest.signal);
+      const { frame, wsURL, headers } = await this.#prepareWebSocketRequest(
+        builtRequest,
+        requestTimeoutDeadline,
+      );
+      throwIfAborted(builtRequest.signal);
+      let connection = await this.#ensureWebSocketConnection(
+        wsURL,
+        headers,
+        builtRequest.signal,
+        requestTimeoutDeadline,
+      );
+      let reusedConnectionForCurrentAttempt = connection.reused;
+      let activeConnection = connection.connection;
+      const setActiveConnection = (
+        nextConnection: EnsuredResponsesWebSocketConnection,
+      ): void => {
+        connection = nextConnection;
+        activeConnection = nextConnection.connection;
+        reusedConnectionForCurrentAttempt = nextConnection.reused;
+      };
+      throwIfAborted(builtRequest.signal);
+      const serializedFrame = JSON.stringify(frame);
+      const sendSerializedFrame = async () => {
+        try {
+          await activeConnection.send(serializedFrame);
+        } catch (error) {
+          if (!isWebSocketNotOpenError(error)) {
+            throw error;
+          }
+
+          setActiveConnection(
+            await this.#reconnectWebSocketConnection(
+              wsURL,
+              headers,
+              builtRequest.signal,
+              requestTimeoutDeadline,
+            ),
+          );
+          await activeConnection.send(serializedFrame);
+        }
+      };
+      await sendSerializedFrame();
+
+      while (true) {
+        const rawFrame = await this.#nextWebSocketFrame(
+          activeConnection,
+          builtRequest.signal,
+          requestTimeoutDeadline,
+        );
+        if (rawFrame === null) {
+          if (!receivedAnyEvent && reusedConnectionForCurrentAttempt) {
+            // The request frame was already sent on a reused socket. If the
+            // socket closes before the first response event arrives, the server
+            // may still be processing the request, so replaying `response.create`
+            // can duplicate model work and tool side effects.
+            receivedAnyEvent = true;
+            throw new Error(
+              'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+            );
+          }
+          throw new ResponsesWebSocketInternalError(
+            'connection_closed_before_terminal_response_event',
+            'Responses websocket connection closed before a terminal response event.',
+          );
+        }
+
+        const payloadText = await webSocketFrameToText(rawFrame);
+        const payload = JSON.parse(payloadText);
+        const eventType =
+          isRecord(payload) && typeof payload.type === 'string'
+            ? payload.type
+            : undefined;
+
+        if (eventType === 'error') {
+          receivedAnyEvent = true;
+          throw new Error(
+            `Responses websocket error: ${JSON.stringify(payload)}`,
+          );
+        }
+
+        const event = payload as OpenAI.Responses.ResponseStreamEvent;
+        const isTerminalResponseEvent =
+          isTerminalResponsesStreamEventType(eventType);
+        receivedAnyEvent = true;
+        if (isTerminalResponseEvent) {
+          sawTerminalResponseEvent = true;
+        }
+        yield event;
+
+        if (isTerminalResponseEvent) {
+          return;
+        }
+      }
+    } catch (error) {
+      if (
+        !receivedAnyEvent &&
+        !(error instanceof OpenAI.APIUserAbortError) &&
+        shouldWrapNoEventWebSocketError(error)
+      ) {
+        const wrappedError = new Error(
+          'Responses websocket connection closed before any response events were received. The feature may not be enabled for this account or model yet.',
+        );
+        if (error instanceof Error) {
+          (wrappedError as Error & { cause?: unknown }).cause = error;
+        }
+        throw wrappedError;
+      }
+      throw error;
+    } finally {
+      const shouldDropConnection =
+        !sawTerminalResponseEvent || !this.#reuseConnection;
+      const dropConnectionPromise = shouldDropConnection
+        ? this.#dropWebSocketConnection()
+        : undefined;
+      releaseLock();
+      await dropConnectionPromise;
+    }
+  }
+
+  async #prepareWebSocketRequest(
+    builtRequest: BuiltResponsesCreateRequest,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<{
+    frame: Record<string, any>;
+    wsURL: string;
+    headers: Record<string, string>;
+  }> {
+    const wsURL = this.#prepareWebSocketURL(builtRequest.transportExtraQuery);
+    const headers = await this.#mergeWebSocketHeaders(
+      wsURL,
+      builtRequest.transportExtraHeaders,
+      builtRequest.signal,
+      requestTimeoutDeadline,
+    );
+    const frame = {
+      ...builtRequest.requestData,
+      type: 'response.create',
+      stream: true,
+    };
+
+    return { frame, wsURL, headers };
+  }
+
+  async #mergeWebSocketHeaders(
+    wsURL: string,
+    extraHeaders: Record<string, unknown> | undefined,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<Record<string, string>> {
+    await this.#awaitWebSocketRequestTimedOperation(
+      this.#refreshClientApiKey(),
+      signal,
+      requestTimeoutDeadline,
+      (configuredTimeoutMs) =>
+        `Responses websocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
+    );
+
+    const headerAccumulator = createHeaderAccumulator();
+    const clientWithInternals = this._client as OpenAI & {
+      _options?: { defaultHeaders?: unknown };
+      authHeaders?: (opts: unknown) => Promise<unknown>;
+    };
+    const handshakeURL = new URL(wsURL);
+    const handshakeQuery = searchParamsToAuthHeaderQuery(
+      handshakeURL.searchParams,
+    );
+
+    const authHeaders =
+      typeof clientWithInternals.authHeaders === 'function'
+        ? await this.#awaitWebSocketRequestTimedOperation(
+            clientWithInternals.authHeaders({
+              method: 'get',
+              path: handshakeURL.pathname,
+              ...(handshakeQuery ? { query: handshakeQuery } : {}),
+            }),
+            signal,
+            requestTimeoutDeadline,
+            (configuredTimeoutMs) =>
+              `Responses websocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
+          )
+        : undefined;
+    applyHeadersToAccumulator(headerAccumulator, authHeaders);
+    if (
+      typeof clientWithInternals.authHeaders !== 'function' &&
+      typeof this._client.apiKey === 'string' &&
+      this._client.apiKey.length > 0 &&
+      this._client.apiKey !== 'Missing Key'
+    ) {
+      applyHeadersToAccumulator(headerAccumulator, {
+        Authorization: `Bearer ${this._client.apiKey}`,
+      });
+    }
+    if (this._client.organization) {
+      applyHeadersToAccumulator(headerAccumulator, {
+        'OpenAI-Organization': this._client.organization,
+      });
+    }
+    if (this._client.project) {
+      applyHeadersToAccumulator(headerAccumulator, {
+        'OpenAI-Project': this._client.project,
+      });
+    }
+
+    applyHeadersToAccumulator(
+      headerAccumulator,
+      clientWithInternals._options?.defaultHeaders,
+    );
+    applyHeadersToAccumulator(headerAccumulator, HEADERS);
+    applyHeadersToAccumulator(headerAccumulator, extraHeaders, {
+      allowBlockedOverride: true,
+    });
+    return headerAccumulatorToRecord(headerAccumulator);
+  }
+
+  #prepareWebSocketURL(
+    extraQuery: Record<string, unknown> | undefined,
+  ): string {
+    const baseURL = new URL(this.#websocketBaseURL ?? this._client.baseURL);
+    const explicitBaseQuery =
+      typeof this.#websocketBaseURL === 'string'
+        ? new URLSearchParams(baseURL.search)
+        : undefined;
+    const clientWithInternals = this._client as OpenAI & {
+      _options?: { defaultQuery?: unknown };
+    };
+
+    if (baseURL.protocol === 'https:') {
+      baseURL.protocol = 'wss:';
+    } else if (baseURL.protocol === 'http:') {
+      baseURL.protocol = 'ws:';
+    } else if (baseURL.protocol !== 'ws:' && baseURL.protocol !== 'wss:') {
+      throw new UserError(
+        `Unsupported websocket base URL protocol: ${baseURL.protocol}`,
+      );
+    }
+
+    baseURL.pathname = ensureResponsesWebSocketPath(baseURL.pathname);
+    mergeQueryParamsIntoURL(
+      baseURL,
+      clientWithInternals._options?.defaultQuery as
+        | Record<string, unknown>
+        | undefined,
+    );
+    if (explicitBaseQuery && Array.from(explicitBaseQuery.keys()).length > 0) {
+      const explicitTopLevelKeys = new Set<string>();
+      for (const key of explicitBaseQuery.keys()) {
+        const bracketIndex = key.indexOf('[');
+        explicitTopLevelKeys.add(
+          bracketIndex >= 0 ? key.slice(0, bracketIndex) : key,
+        );
+      }
+      for (const topLevelKey of explicitTopLevelKeys) {
+        for (const existingKey of Array.from(baseURL.searchParams.keys())) {
+          if (
+            existingKey === topLevelKey ||
+            existingKey.startsWith(`${topLevelKey}[`)
+          ) {
+            baseURL.searchParams.delete(existingKey);
+          }
+        }
+      }
+      for (const [key, value] of explicitBaseQuery.entries()) {
+        baseURL.searchParams.append(key, value);
+      }
+    }
+    mergeQueryParamsIntoURL(baseURL, extraQuery);
+
+    return baseURL.toString();
+  }
+
+  async #ensureWebSocketConnection(
+    wsURL: string,
+    headers: Record<string, string>,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<EnsuredResponsesWebSocketConnection> {
+    const identity = this.#getConnectionIdentity(wsURL, headers);
+
+    if (
+      this.#wsConnection &&
+      this.#wsConnectionIdentity &&
+      this.#wsConnectionIdentity === identity &&
+      this.#wsConnection.isReusable()
+    ) {
+      return { connection: this.#wsConnection, reused: true };
+    }
+
+    await this.#dropWebSocketConnection();
+    const connectTimeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+      (configuredTimeoutMs) =>
+        `Responses websocket connection timed out before opening after ${configuredTimeoutMs}ms.`,
+    );
+    this.#wsConnection = await ResponsesWebSocketConnection.connect(
+      wsURL,
+      headers,
+      signal,
+      connectTimeout.timeoutMs,
+      connectTimeout.errorMessage,
+    );
+    this.#wsConnectionIdentity = identity;
+    return { connection: this.#wsConnection, reused: false };
+  }
+
+  async #reconnectWebSocketConnection(
+    wsURL: string,
+    headers: Record<string, string>,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<EnsuredResponsesWebSocketConnection> {
+    await this.#dropWebSocketConnection();
+    throwIfAborted(signal);
+    const connection = await this.#ensureWebSocketConnection(
+      wsURL,
+      headers,
+      signal,
+      requestTimeoutDeadline,
+    );
+    throwIfAborted(signal);
+    return connection;
+  }
+
+  #getConnectionIdentity(
+    wsURL: string,
+    headers: Record<string, string>,
+  ): string {
+    const normalizedHeaders = Object.entries(headers)
+      .map(([key, value]) => [key.toLowerCase(), value] as const)
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+        `${leftKey}:${leftValue}`.localeCompare(`${rightKey}:${rightValue}`),
+      );
+
+    return JSON.stringify([wsURL, normalizedHeaders]);
+  }
+
+  async #dropWebSocketConnection(): Promise<void> {
+    const connectionToClose = this.#wsConnection;
+    if (!connectionToClose) {
+      this.#wsConnectionIdentity = undefined;
+      return;
+    }
+
+    // Detach cached state before awaiting close so queued requests can proceed
+    // without racing against this teardown path.
+    this.#wsConnection = undefined;
+    this.#wsConnectionIdentity = undefined;
+
+    try {
+      await connectionToClose.close();
+    } catch {
+      // Ignore close errors and reset the cached connection.
+    }
+  }
+
+  async #acquireWebSocketRequestLock(
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<() => void> {
+    throwIfAborted(signal);
+    const queueWaitTimeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+      (configuredTimeoutMs) =>
+        `Responses websocket request queue wait timed out after ${configuredTimeoutMs}ms.`,
+    );
+
+    const previousLock = this.#wsRequestLock;
+    let released = false;
+    let resolveOwnLock!: () => void;
+
+    const ownLock = new Promise<void>((resolve) => {
+      resolveOwnLock = resolve;
+    });
+    const releaseLock = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      resolveOwnLock();
+    };
+
+    this.#wsRequestLock = previousLock.then(() => ownLock);
+
+    try {
+      await withAbortSignal(
+        withTimeout(
+          previousLock,
+          queueWaitTimeout.timeoutMs,
+          queueWaitTimeout.errorMessage,
+        ),
+        signal,
+      );
+      throwIfAborted(signal);
+      return releaseLock;
+    } catch (error) {
+      releaseLock();
+      throw error;
+    }
+  }
+
+  async #refreshClientApiKey(): Promise<void> {
+    const clientWithInternals = this._client as OpenAI & {
+      _callApiKey?: () => Promise<boolean>;
+    };
+
+    if (typeof clientWithInternals._callApiKey === 'function') {
+      await clientWithInternals._callApiKey();
+    }
+  }
+
+  #getWebSocketFrameReadTimeoutMs(): number | undefined {
+    const clientWithTimeout = this._client as OpenAI & {
+      timeout?: unknown;
+      _options?: { timeout?: unknown };
+    };
+    const timeoutCandidate =
+      typeof clientWithTimeout.timeout === 'number'
+        ? clientWithTimeout.timeout
+        : clientWithTimeout._options?.timeout;
+
+    if (typeof timeoutCandidate === 'number') {
+      return timeoutCandidate;
+    }
+
+    return OpenAI.DEFAULT_TIMEOUT;
+  }
+
+  #createWebSocketRequestTimeoutDeadline():
+    | WebSocketRequestTimeoutDeadline
+    | undefined {
+    const timeoutMs = this.#getWebSocketFrameReadTimeoutMs();
+    if (
+      typeof timeoutMs !== 'number' ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0
+    ) {
+      return undefined;
+    }
+
+    return {
+      configuredTimeoutMs: timeoutMs,
+      deadlineAtMs: Date.now() + timeoutMs,
+    };
+  }
+
+  #resolveWebSocketRequestTimeout(
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+    errorMessageForConfiguredTimeout: (configuredTimeoutMs: number) => string,
+  ): { timeoutMs: number | undefined; errorMessage: string } {
+    const configuredTimeoutMs =
+      requestTimeoutDeadline?.configuredTimeoutMs ??
+      this.#getWebSocketFrameReadTimeoutMs();
+    const safeConfiguredTimeoutMs =
+      typeof configuredTimeoutMs === 'number'
+        ? configuredTimeoutMs
+        : OpenAI.DEFAULT_TIMEOUT;
+    const errorMessage = errorMessageForConfiguredTimeout(
+      safeConfiguredTimeoutMs,
+    );
+    if (!requestTimeoutDeadline) {
+      return { timeoutMs: configuredTimeoutMs, errorMessage };
+    }
+
+    const remainingTimeoutMs = Math.ceil(
+      requestTimeoutDeadline.deadlineAtMs - Date.now(),
+    );
+    if (remainingTimeoutMs <= 0) {
+      throw new Error(errorMessage);
+    }
+
+    return { timeoutMs: remainingTimeoutMs, errorMessage };
+  }
+
+  async #awaitWebSocketRequestTimedOperation<T>(
+    promise: Promise<T>,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+    errorMessageForConfiguredTimeout: (configuredTimeoutMs: number) => string,
+  ): Promise<T> {
+    const timeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+      errorMessageForConfiguredTimeout,
+    );
+    return await withAbortSignal(
+      withTimeout(promise, timeout.timeoutMs, timeout.errorMessage),
+      signal,
+    );
+  }
+
+  async #nextWebSocketFrame(
+    connection: ResponsesWebSocketConnection,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
+  ): Promise<WebSocketMessageValue | null> {
+    const frameReadTimeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+      (configuredTimeoutMs) =>
+        `Responses websocket frame read timed out after ${configuredTimeoutMs}ms.`,
+    );
+    return await withTimeout(
+      connection.nextFrame(signal),
+      frameReadTimeout.timeoutMs,
+      frameReadTimeout.errorMessage,
+    );
+  }
+}
+
 /**
  * Sending an empty string for instructions can override the prompt parameter.
  * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
@@ -2068,6 +2784,29 @@ function normalizeInstructions(
     return instructions;
   }
   return undefined;
+}
+
+function searchParamsToAuthHeaderQuery(
+  searchParams: URLSearchParams,
+): Record<string, string | string[]> | undefined {
+  const query: Record<string, string | string[]> = {};
+  let hasEntries = false;
+
+  for (const [key, value] of searchParams.entries()) {
+    hasEntries = true;
+    const existingValue = query[key];
+    if (typeof existingValue === 'undefined') {
+      query[key] = value;
+      continue;
+    }
+    if (Array.isArray(existingValue)) {
+      existingValue.push(value);
+      continue;
+    }
+    query[key] = [existingValue, value];
+  }
+
+  return hasEntries ? query : undefined;
 }
 
 function toRequestUsageEntry(

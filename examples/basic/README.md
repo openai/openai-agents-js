@@ -19,6 +19,10 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F basic start:stream-items
   ```
+- `stream-ws.ts` – Responses WebSocket streaming with tools, HITL approval, and `previousResponseId`.
+  ```bash
+  pnpm -F basic start:stream-ws
+  ```
 - `dynamic-system-prompt.ts` – Instructions picked dynamically per run.
   ```bash
   pnpm -F basic start:dynamic-system-prompt
