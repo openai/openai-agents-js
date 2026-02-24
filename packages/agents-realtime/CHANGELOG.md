@@ -1,5 +1,12 @@
 # @openai/agents-realtime
 
+## 0.5.1
+
+### Patch Changes
+
+- 36bb158: fix: sync OpenAI realtime model autocomplete names
+  - @openai/agents-core@0.5.1
+
 ## 0.5.0
 
 ### Patch Changes
