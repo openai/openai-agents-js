@@ -64,6 +64,18 @@ See [the streamed example](https://github.com/openai/openai-agents-js/tree/main/
 for a fully worked script that prints both the plain text stream and the
 raw event stream.
 
+### Responses WebSocket transport (optional)
+
+The streaming APIs on this page also work with the OpenAI Responses WebSocket transport.
+
+Enable it globally with `setOpenAIResponsesTransport('websocket')`, or use your own `OpenAIProvider` with `useResponsesWebSocket: true`.
+
+You do not need `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` just to stream over WebSocket. If reconnecting between runs is acceptable, `run()` / `Runner.run(..., { stream: true })` still works after enabling the transport.
+
+Use `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` / `Runner` when you want connection reuse and more explicit provider lifecycle control.
+
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) for a complete example with streaming, tool calls, approvals, and `previousResponseId`.
+
 ## Event types
 
 The stream yields three different event types:

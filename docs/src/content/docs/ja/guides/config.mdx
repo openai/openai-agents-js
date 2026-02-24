@@ -7,13 +7,14 @@ import { Code } from '@astrojs/starlight/components';
 import setDefaultOpenAIKeyExample from '../../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
 import setDefaultOpenAIClientExample from '../../../../../../examples/docs/config/setDefaultOpenAIClient.ts?raw';
 import setOpenAIAPIExample from '../../../../../../examples/docs/config/setOpenAIAPI.ts?raw';
+import setOpenAIResponsesTransportExample from '../../../../../../examples/docs/config/setOpenAIResponsesTransport.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 import setTracingDisabledExample from '../../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
 
 ## API キーとクライアント
 
-デフォルトでは、SDK は初回インポート時に環境変数 `OPENAI_API_KEY` を読み取ります。環境変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
+既定では、SDK は最初にインポートされたときに環境変数 `OPENAI_API_KEY` を読み取ります。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
 
 <Code
   lang="typescript"
@@ -21,7 +22,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="既定の OpenAI キーを設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK は既定のキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK は既定のキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
@@ -33,19 +34,29 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API を設定" />
 
+Responses API を使用している場合は、OpenAI プロバイダーのトランスポートも選択できます。既定は HTTP です。
+
+<Code
+  lang="typescript"
+  code={setOpenAIResponsesTransportExample}
+  title="Responses のトランスポートを設定"
+/>
+
+`setOpenAIResponsesTransport('websocket')` を使用して WebSocket トランスポートを有効化し、`setOpenAIResponsesTransport('http')` で戻せます。WebSocket トラフィックをプロキシまたはゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定するか、`OpenAIProvider` の `websocketBaseURL` を構成してください。
+
 ## トレーシング
 
-トレーシングはデフォルトで有効で、上記の OpenAI キーを使用します。
+トレーシングは既定で有効で、上記の OpenAI キーを使用します。
 
-別のキーは `setTracingExportApiKey()` で設定できます:
+別のキーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
   code={setTracingExportApiKeyExample}
-  title="トレーシングのエクスポート API キーを設定"
+  title="トレーシング送信の API キーを設定"
 />
 
-トレーシングを完全に無効化することもできます:
+トレーシングは完全に無効化することもできます。
 
 <Code
   lang="typescript"
@@ -57,7 +68,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ## デバッグログ
 
-SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
 
 ```bash
 export DEBUG=openai-agents*
@@ -65,21 +76,21 @@ export DEBUG=openai-agents*
 
 セッション永続化のアクティビティを記録するには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定します。
 
-`@openai/agents` の `getLogger(namespace)` を使って、モジュール専用の名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使用して、モジュール用の名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーを取得" />
 
-### ログ内の機微なデータ
+### ログ内の機微データ
 
-一部のログにはユーザー データが含まれる場合があります。以下の環境変数を設定して無効化できます。
+一部のログにはユーザーデータが含まれる場合があります。次の環境変数を設定して無効化してください。
 
-LLM の入力・出力のロギングを無効化するには:
+LLM の入力と出力の記録を無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力・出力のロギングを無効化するには:
+ツールの入力と出力の記録を無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1

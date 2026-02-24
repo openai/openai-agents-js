@@ -23,6 +23,7 @@
     "start:remote-image": "tsx remote-image.ts",
     "start:remote-pdf": "tsx remote-pdf.ts",
     "start:stream-items": "tsx stream-items.ts",
+    "start:stream-ws": "tsx stream-ws.ts",
     "start:stream-text": "tsx stream-text.ts",
     "start:json-schema-output-type": "tsx json-schema-output-type.ts",
     "start:tool-use-behavior": "tsx tool-use-behavior.ts",

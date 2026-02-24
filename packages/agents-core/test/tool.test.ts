@@ -789,6 +789,63 @@ describe('tool.invoke', () => {
     expect(abortReason).toBeInstanceOf(ToolTimeoutError);
   });
 
+  it('applies timeout signal overrides even when details.signal is readonly', async () => {
+    let abortReason: unknown;
+    const originalSignal = new AbortController().signal;
+    const details = {
+      toolCall: {
+        type: 'function_call' as const,
+        name: 'readonly_signal_timeout_tool',
+        callId: 'call-readonly-signal-timeout',
+        status: 'completed' as const,
+        arguments: '{}',
+      },
+      signal: originalSignal,
+    };
+    Object.defineProperty(details, 'signal', {
+      value: originalSignal,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    Object.freeze(details);
+
+    const t = tool({
+      name: 'readonly_signal_timeout_tool',
+      description: 'times out with readonly invocation details.signal',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async (_args, _context, invokeDetails) => {
+        expect(invokeDetails?.signal).toBeDefined();
+        expect(invokeDetails?.signal).not.toBe(originalSignal);
+        invokeDetails?.signal?.addEventListener(
+          'abort',
+          () => {
+            abortReason = invokeDetails.signal?.reason;
+          },
+          { once: true },
+        );
+
+        await new Promise<void>(() => {
+          // Intentionally keep pending to assert timeout handling on readonly details.
+        });
+        return 'done';
+      },
+    });
+
+    const result = await invokeFunctionTool({
+      tool: t,
+      runContext: new RunContext(),
+      input: '{}',
+      details: details as any,
+    });
+
+    expect(result).toBe(
+      "Tool 'readonly_signal_timeout_tool' timed out after 5ms.",
+    );
+    expect(abortReason).toBeInstanceOf(ToolTimeoutError);
+  });
+
   it('keeps timeout behavior when tools resolve synchronously on abort', async () => {
     const t = tool({
       name: 'abort_resolving_tool',

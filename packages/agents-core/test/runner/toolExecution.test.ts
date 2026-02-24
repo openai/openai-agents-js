@@ -9,6 +9,7 @@ import {
 } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import { saveAgentToolRunResult } from '../../src/agentToolRunResults';
+import { getAgentToolParentRunConfigFromDetails } from '../../src/agentToolRunConfig';
 import {
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
@@ -2062,6 +2063,42 @@ describe('executeShellActions', () => {
       );
       expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
       expect(invokeSpy).toHaveBeenCalled();
+    });
+
+    it('does not expose parentRunConfig on public tool callback details', async () => {
+      const circularProvider: Record<string, unknown> = {};
+      circularProvider.self = circularProvider;
+      runner = new Runner({
+        tracingDisabled: true,
+        modelProvider: circularProvider as any,
+      });
+
+      const t = makeTool(false);
+      let capturedDetails: Record<string, unknown> | undefined;
+      vi.spyOn(t, 'invoke').mockImplementation(async (_ctx, _args, details) => {
+        capturedDetails = details as Record<string, unknown> | undefined;
+        return 'ok';
+      });
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      expect(capturedDetails).toBeDefined();
+      expect(Object.keys(capturedDetails ?? {})).not.toContain(
+        'parentRunConfig',
+      );
+      expect((capturedDetails as any)?.parentRunConfig).toBeUndefined();
+      expect(
+        getAgentToolParentRunConfigFromDetails(capturedDetails)?.modelProvider,
+      ).toBe(circularProvider);
+      expect(() => JSON.stringify(capturedDetails)).not.toThrow();
     });
 
     it('returns a timeout message when timeoutBehavior is error_as_result', async () => {

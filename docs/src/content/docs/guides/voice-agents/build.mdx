@@ -28,7 +28,9 @@ import serverAgentExample from '../../../../../../examples/docs/voice-agents/ser
 import delegationAgentExample from '../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
 import turnDetectionExample from '../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
 
-## Audio handling
+## Session setup
+
+### Audio handling
 
 Some transport layers like the default `OpenAIRealtimeWebRTC` will handle audio input and output
 automatically for you. For other transport mechanisms like `OpenAIRealtimeWebSocket` you will have to
@@ -36,7 +38,7 @@ handle session audio yourself:
 
 <Code lang="typescript" code={handleAudioExample} />
 
-## Session configuration
+### Session configuration
 
 You can configure your session by passing additional options to either the [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) during construction or
 when you call `connect(...)`.
@@ -71,7 +73,9 @@ Additional `RealtimeSession` options you can set at construction time:
 | `url`    | `string`                                      | Optional custom Realtime endpoint URL.                |
 | `callId` | `string`                                      | Attach to an existing SIP-initiated call/session.     |
 
-## Handoffs
+## Agent capabilities
+
+### Handoffs
 
 Similarly to regular agents, you can use handoffs to break your agent into multiple agents and orchestrate between them to improve the performance of your agents and better scope the problem.
 
@@ -81,7 +85,7 @@ Unlike regular agents, handoffs behave slightly differently for Realtime Agents.
 
 Additionally, this means that the `voice` or `model` cannot be changed as part of the handoff. You can also only connect to other Realtime Agents. If you need to use a different model, for example a reasoning model like `gpt-5-mini`, you can use [delegation through tools](#delegation-through-tools).
 
-## Tools
+### Tools
 
 Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
@@ -98,7 +102,7 @@ This sends the tool output back to the session while leaving response triggering
 
 Function tool timeout options (`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`) work the same way in Realtime sessions. With the default `error_as_result`, the timeout message is sent as tool output. With `raise_exception`, the session emits an `error` event with [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) and does not send tool output for that call.
 
-### Accessing the conversation history
+#### Accessing the conversation history
 
 Additionally to the arguments that the agent called a particular tool with, you can also access a snapshot of the current conversation history that is tracked by the Realtime Session. This can be useful if you need to perform a more complex action based on the current state of the conversation or are planning to use [tools for delegation](#delegation-through-tools).
 
@@ -110,7 +114,7 @@ Additionally to the arguments that the agent called a particular tool with, you 
   yet.
 </Aside>
 
-### Approval before tool execution
+#### Approval before tool execution
 
 If you define your tool with `needsApproval: true` the agent will emit a `tool_approval_requested` event before executing the tool.
 
@@ -123,7 +127,7 @@ By listening to this event you can show a UI to the user to approve or reject th
   won't be able to process new requests from the user.
 </Aside>
 
-## Guardrails
+### Guardrails
 
 Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These guardrail checks will be performed based on the transcript of the agent's response and therefore requires that the text output of your model is enabled (it is enabled by default).
 
@@ -141,7 +145,9 @@ If you want to modify this behavior you can pass a `outputGuardrailSettings` obj
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
-## Turn detection / voice activity detection
+## Interaction flow
+
+### Turn detection / voice activity detection
 
 The Realtime Session will automatically detect when the user is speaking and trigger new turns using the built-in [voice activity detection modes of the Realtime API](https://platform.openai.com/docs/guides/realtime-vad).
 
@@ -151,7 +157,7 @@ You can change the voice activity detection mode by passing a `turnDetection` ob
 
 Modifying the turn detection settings can help calibrate unwanted interruptions and dealing with silence. Check out the [Realtime API documentation for more details on the different settings](https://platform.openai.com/docs/guides/realtime-vad)
 
-## Interruptions
+### Interruptions
 
 When using the built-in voice activity detection, speaking over the agent automatically triggers
 the agent to detect and update its context based on what was said. It will also emit an
@@ -168,7 +174,7 @@ In either way, the Realtime Session will handle both interrupting the generation
 
 If you are using WebRTC to connect to your agent, it will also clear the audio output. If you are using WebSocket, you will need to handle this yourself by stopping audio playack of whatever has been queued up to be played.
 
-## Text input
+### Text input
 
 If you want to send text input to your agent, you can use the `sendMessage` method on the `RealtimeSession`.
 
@@ -177,7 +183,9 @@ provide additional context to the conversation.
 
 <Code lang="typescript" code={sendMessageExample} />
 
-## Conversation history management
+## Conversation state and delegation
+
+### Conversation history management
 
 The `RealtimeSession` automatically manages the conversation history in a `history` property:
 
@@ -189,13 +197,13 @@ you can use the `updateHistory` method.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
-### Limitations
+#### Limitations
 
 1. You can currently not update/change function tool calls after the fact
 2. Text output in the history requires transcripts and text modalities to be enabled
 3. Responses that were truncated due to an interruption do not have a transcript
 
-## Delegation through tools
+### Delegation through tools
 
 ![Delegation through tools](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 

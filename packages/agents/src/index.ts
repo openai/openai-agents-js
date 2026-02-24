@@ -2,7 +2,9 @@ import { setDefaultModelProvider } from '@openai/agents-core';
 import { OpenAIProvider } from '@openai/agents-openai';
 import { setDefaultOpenAITracingExporter } from '@openai/agents-openai';
 
-setDefaultModelProvider(new OpenAIProvider());
+setDefaultModelProvider(
+  new OpenAIProvider({ cacheResponsesWebSocketModels: false }),
+);
 setDefaultOpenAITracingExporter();
 
 export * from '@openai/agents-core';

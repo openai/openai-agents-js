@@ -23,11 +23,15 @@ import websocketSessionExample from '../../../../../examples/docs/voice-agents/w
 import transportEventsExample from '../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 
+## Overview
+
 ![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
 Voice Agents use OpenAI speech-to-speech models to provide realtime voice chat. These models support streaming audio, text, and tool calls and are great for applications like voice/phone customer support, mobile app experiences, and voice chat.
 
 The Voice Agents SDK provides a TypeScript client for the [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime).
+
+## Start here
 
 <LinkCard
   title="Voice Agents Quickstart"
@@ -35,7 +39,7 @@ The Voice Agents SDK provides a TypeScript client for the [OpenAI Realtime API](
   description="Build your first realtime voice assistant using the OpenAI Agents SDK in minutes."
 />
 
-### Key features
+## Key features
 
 - Connect over WebSocket or WebRTC
 - Can be used both in the browser and for backend connections
@@ -45,6 +49,13 @@ The Voice Agents SDK provides a TypeScript client for the [OpenAI Realtime API](
 - Custom guardrails to monitor model output
 - Callbacks for streamed events
 - Reuse the same components for both text and voice agents
+
+## Explore the voice guides
+
+- [Building Voice Agents](/openai-agents-js/guides/voice-agents/build) for session setup, tools, guardrails, interruptions, and history management.
+- [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) for WebRTC/WebSocket/SIP transport choices and custom transports.
+
+## Why speech-to-speech
 
 By using speech-to-speech models, we can leverage the model's ability to process the audio in realtime without the need of transcribing and reconverting the text back to audio after the model acted.
 

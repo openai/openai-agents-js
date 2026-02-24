@@ -18,6 +18,11 @@ The OpenAI Agents SDK is supported on the following server environments:
   - Traces need to be manually flushed at the end of the request. [See the tracing guide](/openai-agents-js/guides/tracing#export-loop-lifecycle) for more details.
   - Due to Cloudflare Workers' limited support for `AsyncLocalStorage` some traces might not be accurate
   - Outbound WebSocket connections must use a fetch-based upgrade (not the global `WebSocket` constructor). For Realtime, use the Cloudflare transport in `@openai/agents-extensions` (`CloudflareRealtimeTransportLayer`).
+- **Responses API WebSocket transport**:
+  - Requires a global `WebSocket` implementation.
+  - The `WebSocket` implementation must support custom headers for the handshake.
+  - Many browser-style WebSocket APIs (and some edge runtimes) do not support custom outbound headers. In those environments, use the default HTTP Responses transport instead.
+  - If you see errors mentioning a missing global `WebSocket` implementation or lack of custom-header support, the runtime websocket implementation is not compatible with the Responses WebSocket transport.
 - **Browsers**:
   - Tracing is currently not supported in browsers
 - **v8 isolates**:

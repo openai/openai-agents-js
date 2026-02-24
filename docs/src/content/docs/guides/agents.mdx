@@ -29,7 +29,9 @@ The rest of this page walks through every Agent feature in more detail.
 
 ---
 
-## Basic configuration
+## Agent fundamentals
+
+### Basic configuration
 
 The `Agent` constructor takes a single configuration object. The most commonly‑used
 properties are shown below.
@@ -51,7 +53,7 @@ properties are shown below.
 
 ---
 
-## Context
+### Context
 
 Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`. The _context_
 is a dependency‑injection object that you create and pass to `Runner.run()`. It is forwarded to
@@ -62,7 +64,7 @@ services (database connections, user metadata, feature flags, …).
 
 ---
 
-## Output types
+### Output types
 
 By default, an Agent returns **plain text** (`string`). If you want the model to return a
 structured object you can specify the `outputType` property. The SDK accepts:
@@ -82,7 +84,9 @@ plain text.
 
 ---
 
-## Multi-agent system design patterns
+## Composition patterns
+
+### Multi-agent system design patterns
 
 There are many ways to compose agents together. Two patterns we regularly see in
 production apps are:
@@ -92,13 +96,13 @@ production apps are:
 
 These approaches are complementary. Managers give you a single place to enforce guardrails or rate limits, while handoffs let each agent focus on a single task without retaining control of the conversation.
 
-### Manager (agents as tools)
+#### Manager (agents as tools)
 
 In this pattern the manager never hands over control—the LLM uses the tools and the manager summarizes the final answer. Read more in the [tools guide](/openai-agents-js/guides/tools#agents-as-tools).
 
 <Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
 
-### Handoffs
+#### Handoffs
 
 With handoffs the triage agent routes requests, but once a handoff occurs the specialist agent owns the conversation until it produces a final output. This keeps prompts short and lets you reason about each agent independently. Learn more in the [handoffs guide](/openai-agents-js/guides/handoffs).
 
@@ -106,7 +110,9 @@ With handoffs the triage agent routes requests, but once a handoff occurs the sp
 
 ---
 
-## Dynamic instructions
+## Advanced configuration and runtime controls
+
+### Dynamic instructions
 
 `instructions` can be a **function** instead of a string. The function receives the current
 `RunContext` and the Agent instance and can return a string _or_ a `Promise<string>`.
@@ -121,7 +127,7 @@ Both synchronous and `async` functions are supported.
 
 ---
 
-## Lifecycle hooks
+### Lifecycle hooks
 
 For advanced use‑cases you can observe the Agent lifecycle by listening on events. To learn what's available, refer to agent hook event names listed [here](https://github.com/openai/openai-agents-js/blob/main/packages/agents-core/src/lifecycle.ts).
 
@@ -133,7 +139,7 @@ For advanced use‑cases you can observe the Agent lifecycle by listening on eve
 
 ---
 
-## Guardrails
+### Guardrails
 
 Guardrails allow you to validate or transform user input and agent output. They are configured
 via the `inputGuardrails` and `outputGuardrails` arrays. See the
@@ -141,7 +147,7 @@ via the `inputGuardrails` and `outputGuardrails` arrays. See the
 
 ---
 
-## Cloning / copying agents
+### Cloning / copying agents
 
 Need a slightly modified version of an existing agent? Use the `clone()` method, which returns
 an entirely new `Agent` instance.
@@ -150,7 +156,7 @@ an entirely new `Agent` instance.
 
 ---
 
-## Forcing tool use
+### Forcing tool use
 
 Supplying tools doesn’t guarantee the LLM will call one. You can **force** tool use with
 `modelSettings.toolChoice`:
@@ -162,7 +168,7 @@ Supplying tools doesn’t guarantee the LLM will call one. You can **force** too
 
 <Code lang="typescript" code={agentForcingToolUse} title="Forcing tool use" />
 
-### Preventing infinite loops
+#### Preventing infinite loops
 
 After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents
 the model from entering an infinite loop where it repeatedly tries to call the tool. You can
