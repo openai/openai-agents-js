@@ -23,7 +23,9 @@ This removes the need to manually call `toInputList()` or stitch history between
 
 ---
 
-## Quick start
+## Getting started
+
+### Quick start
 
 Use `OpenAIConversationsSession` to sync memory with the [Conversations API](https://platform.openai.com/docs/api-reference/conversations), or swap in any other `Session` implementation.
 
@@ -51,7 +53,9 @@ If you need to pre-create a conversation ID before constructing the session, use
 
 ---
 
-## How the runner uses sessions
+## Core session behavior
+
+### How the runner uses sessions
 
 - **Before each run** it retrieves the session history, merges it with the new turn's input, and passes the combined list to your agent.
 - **After a non-streaming run** one call to `session.addItems()` persists both the original user input and the model outputs from the latest turn.
@@ -60,7 +64,7 @@ If you need to pre-create a conversation ID before constructing the session, use
 
 ---
 
-## Inspecting and editing history
+### Inspecting and editing history
 
 Sessions expose simple CRUD helpers so you can build "undo", "clear chat", or audit features.
 
@@ -74,7 +78,9 @@ Sessions expose simple CRUD helpers so you can build "undo", "clear chat", or au
 
 ---
 
-## Bring your own storage
+## Custom storage and merge behavior
+
+### Bring your own storage
 
 Implement the `Session` interface to back memory with Redis, DynamoDB, SQLite, or another datastore. Only five asynchronous methods are required.
 
@@ -88,7 +94,7 @@ Custom sessions let you enforce retention policies, add encryption, or attach me
 
 ---
 
-## Control how history and new items merge
+### Control how history and new items merge
 
 When you pass an array of `AgentInputItem`s as the run input, provide a `sessionInputCallback` to merge them with stored history deterministically. The runner loads the existing history, calls your callback **before the model invocation**, and hands the returned array to the model as the turn’s complete input. This hook is ideal for trimming old items, deduplicating tool results, or highlighting only the context you want the model to see.
 
@@ -102,7 +108,9 @@ For string inputs the runner merges history automatically, so the callback is op
 
 ---
 
-## Handling approvals and resumable runs
+## Resumable runs
+
+### Handling approvals and resumable runs
 
 Human-in-the-loop flows often pause a run to wait for approval:
 
@@ -123,7 +131,9 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 
 ---
 
-## Compact OpenAI Responses history automatically
+## Advanced: transcript compaction
+
+### Compact OpenAI Responses history automatically
 
 `OpenAIResponsesCompactionSession` decorates any `Session` and relies on the OpenAI Responses API to keep transcripts short. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. The decorator clears and rewrites the underlying session with the compacted output, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
 
@@ -152,7 +162,7 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 | `store`          | `boolean`                                     | Indicates whether the last run stored server state.               |
 | `force`          | `boolean`                                     | Bypass `shouldTriggerCompaction` and compact immediately.         |
 
-### Manual compaction for low-latency streaming
+#### Manual compaction for low-latency streaming
 
 Compaction clears and rewrites the underlying session, so the SDK waits for it before resolving a streaming run. If compaction is heavy, `result.completed` can stay pending for a few seconds after the last output token. For low-latency streaming or faster turn-taking, disable auto-compaction and call `runCompaction` yourself between turns (or during idle time).
 

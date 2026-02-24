@@ -23,7 +23,9 @@ Alternatively, you can create your own runner instance:
 
 After running your agent, you will receive a [result](/openai-agents-js/guides/results) object that contains the final output and the full history of the run.
 
-## The agent loop
+## Runner lifecycle and configuration
+
+### The agent loop
 
 When you use the run method in Runner, you pass in a starting agent and input. The input can either be a string (which is considered a user message), or a list of input items, which are the items in the OpenAI Responses API.
 
@@ -41,14 +43,14 @@ The runner then runs a loop:
   it produces text output with the desired type, and there are no tool calls.
 </Aside>
 
-### Runner lifecycle
+#### Runner lifecycle
 
 Create a `Runner` when your app starts and reuse it across requests. The instance
 stores global configuration such as model provider and tracing options. Only
 create another `Runner` if you need a completely different setup. For simple
 scripts you can also call `run()` which uses a default runner internally.
 
-## Run arguments
+### Run arguments
 
 The input to the `run()` method is an initial agent to start the run on, input for the run and a set of options.
 
@@ -72,11 +74,11 @@ The additional options are:
 | `conversationId`        | –       | Reuse a server-side conversation (OpenAI Responses API + Conversations API only).                                                                                                |
 | `previousResponseId`    | –       | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only).                                                                       |
 
-## Streaming
+### Streaming
 
 Streaming allows you to additionally receive streaming events as the LLM runs. Once the stream is started, the `StreamedRunResult` will contain the complete information about the run, including all the new outputs produces. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
 
-## Run config
+### Run config
 
 If you are creating your own `Runner` instance, you can pass in a `RunConfig` object to configure the runner.
 
@@ -99,7 +101,9 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `toolErrorFormatter`        | `ToolErrorFormatter`     | Global hook to customize tool approval rejection messages returned to the model.                                      |
 | `reasoningItemIdPolicy`     | `ReasoningItemIdPolicy`  | Default policy for preserving or omitting reasoning-item `id`s when replaying generated items into later model calls. |
 
-## Conversations / chat threads
+## State and conversation management
+
+### Conversations / chat threads
 
 Each call to `runner.run()` (or `run()` utility) represents one **turn** in your application-level conversation. You choose how much of the `RunResult` you show the end‑user – sometimes only `finalOutput`, other times every generated item.
 
@@ -111,13 +115,13 @@ Each call to `runner.run()` (or `run()` utility) represents one **turn** in your
 
 See [the chat example](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts) for an interactive version.
 
-### Server-managed conversations
+#### Server-managed conversations
 
 You can let the OpenAI Responses API persist conversation history for you instead of sending your entire local transcript on every turn. This is useful when you are coordinating long conversations or multiple services. See the [Conversation state guide](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses) for details.
 
 OpenAI exposes two ways to reuse server-side state:
 
-#### 1. `conversationId` for an entire conversation
+##### 1. `conversationId` for an entire conversation
 
 You can create a conversation once using [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) and then reuse its ID for every turn. The SDK automatically includes only the newly generated items.
 
@@ -127,7 +131,7 @@ You can create a conversation once using [Conversations API](https://platform.op
   title="Reusing a server conversation"
 />
 
-#### 2. `previousResponseId` to continue from the last turn
+##### 2. `previousResponseId` to continue from the last turn
 
 If you want to start only with Responses API anyway, you can chain each request using the ID returned from the previous response. This keeps the context alive across turns without creating a full conversation resource.
 
@@ -137,13 +141,15 @@ If you want to start only with Responses API anyway, you can chain each request 
   title="Chaining with previousResponseId"
 />
 
-## Call model input filter
+## Hooks and customization
+
+### Call model input filter
 
 Use `callModelInputFilter` to edit the model input _right before_ the model is called. This hook receives the current agent, context, and the combined input items (including session history when present). Return the updated `input` array and optional `instructions` to redact sensitive data, drop old messages, or inject additional system guidance.
 
 Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in the `Runner` config (`callModelInputFilter` in `RunConfig`).
 
-## Tool error formatter
+### Tool error formatter
 
 Use `toolErrorFormatter` to customize approval-rejection messages that are sent back to the model when a tool call is rejected. This lets you return domain-specific wording (for example, compliance guidance) instead of the SDK default message.
 
@@ -160,7 +166,7 @@ The formatter currently runs for `approval_rejected` events and receives:
 
 Return a string to override the message, or return `undefined` to keep the SDK default. If the formatter throws (or returns a non-string value), the SDK logs a warning and falls back to the default approval-rejection message.
 
-## Reasoning item ID policy
+### Reasoning item ID policy
 
 Use `reasoningItemIdPolicy` to control whether reasoning items keep their `id` fields when the SDK converts previously generated run items back into `AgentInputItem[]` for later model input.
 
@@ -185,11 +191,11 @@ In other words, the policy applies when the SDK builds the **next input** from p
 
 You can set the policy per run (`runner.run(..., { reasoningItemIdPolicy: 'omit' })`) or as the runner default (`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). When resuming from a saved `RunState`, the previously resolved policy is reused unless you override it.
 
-### Interaction with `callModelInputFilter`
+#### Interaction with `callModelInputFilter`
 
 `reasoningItemIdPolicy` is applied before `callModelInputFilter`. If you need custom behavior, `callModelInputFilter` can still inspect the prepared input and re-introduce or remove reasoning IDs manually before the model call.
 
-### When to use `'omit'`
+#### When to use `'omit'`
 
 Use `'omit'` when you want replayed reasoning items to be normalized without IDs (for example, to keep forwarded/replayed model inputs simpler or to match integration requirements in your app pipeline).
 
@@ -197,7 +203,9 @@ It is also a useful troubleshooting option if your backend/provider rejects repl
 
 Keep `'preserve'` if you want the SDK to carry reasoning-item IDs through replayed inputs and your integration accepts them.
 
-## Error handlers
+## Errors and recovery
+
+### Error handlers
 
 Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. Currently, only `maxTurns` is supported.
 
@@ -205,7 +213,7 @@ Use `errorHandlers` to convert supported runtime errors into a final output inst
 - `errorHandlers.default` is used as a fallback for supported kinds.
 - Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`.
 
-## Exceptions
+### Exceptions
 
 The SDK throws a small set of errors you can catch:
 

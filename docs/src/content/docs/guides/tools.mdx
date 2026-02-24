@@ -26,7 +26,12 @@ computer. The JavaScript/TypeScript SDK supports six categories:
 
 ---
 
-## 1. Hosted tools (OpenAI Responses API)
+## Tool categories
+
+The rest of this guide first covers each tool category, then summarizes cross-cutting tool
+selection and prompting guidance.
+
+### 1. Hosted tools (OpenAI Responses API)
 
 When you use the `OpenAIResponsesModel` you can add the following built‑in tools:
 
@@ -54,7 +59,7 @@ ranking options or semantic filters.
 
 ---
 
-## 2. Local built-in tools
+### 2. Local built-in tools
 
 Local built-in tools run in your own environment and require you to supply implementations:
 
@@ -83,7 +88,7 @@ for end-to-end usage.
 
 ---
 
-## 3. Function tools
+### 3. Function tools
 
 You can turn **any** function into a tool with the `tool()` helper.
 
@@ -93,7 +98,7 @@ You can turn **any** function into a tool with the `tool()` helper.
   title="Function tool with Zod parameters"
 />
 
-### Options reference
+#### Options reference
 
 | Field                  | Required | Description                                                                                                                                                                                                                                           |
 | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -111,7 +116,7 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `inputGuardrails`      | No       | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                                                                                             |
 | `outputGuardrails`     | No       | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                                                                                              |
 
-### Function tool timeouts
+#### Function tool timeouts
 
 Use `timeoutMs` to bound each function tool invocation.
 
@@ -122,7 +127,7 @@ Use `timeoutMs` to bound each function tool invocation.
 
 If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) to enforce the same timeout behavior as normal agent runs.
 
-### Non‑strict JSON‑schema tools
+#### Non‑strict JSON‑schema tools
 
 If you need the model to _guess_ invalid or partial input you can disable strict mode when using
 raw JSON schema:
@@ -135,7 +140,7 @@ raw JSON schema:
 
 ---
 
-## 4. Agents as tools
+### 4. Agents as tools
 
 Sometimes you want an Agent to _assist_ another Agent without fully handing off the conversation. Use `agent.asTool()`:
 
@@ -157,7 +162,7 @@ Advanced structured-input options for `agent.asTool()`:
 - `includeInputSchema`: includes the input JSON schema in the nested run for stronger schema-aware behavior.
 - `resumeState`: controls context reconciliation strategy when resuming nested serialized `RunState`.
 
-### Streaming events from agent tools
+#### Streaming events from agent tools
 
 Agent tools can stream all nested run events back to your app. Choose the hook style that fits how you construct the tool:
 
@@ -176,7 +181,7 @@ Agent tools can stream all nested run events back to your app. Choose the hook s
 
 ---
 
-## 5. MCP servers
+### 5. MCP servers
 
 You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent.
 For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:
@@ -188,7 +193,7 @@ When managing multiple servers (or partial failures), use `connectMcpServers` an
 
 ---
 
-## 6. Experimental: Codex tool
+### 6. Experimental: Codex tool
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This surface is experimental and may change.
 
@@ -230,14 +235,16 @@ Run-context thread reuse example:
 
 ---
 
-## Tool use behavior
+## Tool strategy and best practices
+
+### Tool use behavior
 
 Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) for controlling when and how a model
 must use tools (`modelSettings.toolChoice`, `toolUseBehavior`, etc.).
 
 ---
 
-## Best practices
+### Best practices
 
 - **Short, explicit descriptions** – describe _what_ the tool does _and when to use it_.
 - **Validate inputs** – use Zod schemas for strict JSON validation where possible.

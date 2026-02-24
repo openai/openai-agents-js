@@ -26,7 +26,9 @@ In day‑to‑day work you normally only interact with model **names** and occas
   title="Specifying a model per‑agent"
 />
 
-## Default model
+## Choosing models
+
+### Default model
 
 When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) for compatibility and low latency. If you have access, we recommend setting your agents to [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) for higher quality while keeping explicit `modelSettings`.
 
@@ -47,7 +49,7 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
   title="Set a default model for a Runner"
 />
 
-### GPT-5.x models
+#### GPT-5.x models
 
 When you use any GPT-5.x model such as [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
@@ -59,13 +61,15 @@ When you use any GPT-5.x model such as [`gpt-5.2`](https://platform.openai.com/d
 
 For lower latency, using `reasoning.effort: "none"` with `gpt-5.2` is recommended. The gpt-4.1 family (including mini and nano variants) also remains a solid choice for building interactive agent apps.
 
-### Non-GPT-5 models
+#### Non-GPT-5 models
 
 If you pass a non–GPT-5 model name without custom `modelSettings`, the SDK reverts to generic `modelSettings` compatible with any model.
 
 ---
 
-## The OpenAI provider
+## OpenAI provider configuration
+
+### The OpenAI provider
 
 The default `ModelProvider` resolves names using the OpenAI APIs. It supports two distinct
 endpoints:
@@ -75,7 +79,7 @@ endpoints:
 | Chat Completions | Standard chat & function calls                                    | `setOpenAIAPI('chat_completions')`      |
 | Responses        | New streaming‑first generative API (tool calls, flexible outputs) | `setOpenAIAPI('responses')` _(default)_ |
 
-### Authentication
+#### Authentication
 
 <Code
   lang="typescript"
@@ -86,7 +90,7 @@ endpoints:
 You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need
 custom networking settings.
 
-### Responses WebSocket transport
+#### Responses WebSocket transport
 
 When you use the OpenAI provider with the Responses API, you can send requests over a WebSocket transport instead of the default HTTP transport.
 
@@ -107,7 +111,9 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 
 ---
 
-## ModelSettings
+## Model behavior and prompts
+
+### ModelSettings
 
 `ModelSettings` mirrors the OpenAI parameters but is provider‑agnostic.
 
@@ -136,7 +142,7 @@ Attach settings at either level:
 
 ---
 
-## Prompt
+### Prompt
 
 Agents can be configured with a `prompt` parameter, indicating a server-stored
 prompt configuration that should be used to control the Agent's behavior. Currently,
@@ -156,7 +162,9 @@ values you may have configured in your stored prompt.
 
 ---
 
-## Custom model providers
+## Advanced providers and observability
+
+### Custom model providers
 
 Implementing your own provider is straightforward – implement `ModelProvider` and `Model` and
 pass the provider to the `Runner` constructor:
@@ -171,7 +179,7 @@ If you want a ready-made adapter for non-OpenAI models, see [Using any model wit
 
 ---
 
-## Tracing exporter
+### Tracing exporter
 
 When using the OpenAI provider you can opt‑in to automatic trace export by providing your API
 key:

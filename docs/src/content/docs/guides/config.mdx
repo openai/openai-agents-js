@@ -12,7 +12,9 @@ import setTracingExportApiKeyExample from '../../../../../examples/docs/config/s
 import setTracingDisabledExample from '../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../examples/docs/config/getLogger.ts?raw';
 
-## API keys and clients
+## OpenAI client and transport
+
+### API keys and clients
 
 By default the SDK reads the `OPENAI_API_KEY` environment variable when first imported. If setting the variable is not possible you can call `setDefaultOpenAIKey()` manually.
 
@@ -30,9 +32,13 @@ You may also pass your own `OpenAI` client instance. The SDK will otherwise crea
   title="Set default OpenAI client"
 />
 
+### API selection
+
 Finally you can switch between the Responses API and the Chat Completions API.
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
+
+### Responses transport
 
 If you are using the Responses API, you can also choose the OpenAI provider transport. The default is HTTP.
 
@@ -44,7 +50,9 @@ If you are using the Responses API, you can also choose the OpenAI provider tran
 
 Use `setOpenAIResponsesTransport('websocket')` to enable the WebSocket transport and `setOpenAIResponsesTransport('http')` to switch back. If you route websocket traffic through a proxy or gateway, set `OPENAI_WEBSOCKET_BASE_URL` (or configure `websocketBaseURL` on your `OpenAIProvider`).
 
-## Tracing
+## Observability and debugging
+
+### Tracing
 
 Tracing is enabled by default and uses the OpenAI key from the section above.
 
@@ -66,7 +74,7 @@ Tracing can also be disabled entirely:
 
 If you’d like to learn more about the tracing feature, please check out [Tracing guide](/openai-agents-js/guides/tracing).
 
-## Debug logging
+### Debug logging
 
 The SDK uses the [`debug`](https://www.npmjs.com/package/debug) package for debug logging. Set the `DEBUG` environment variable to `openai-agents*` to see verbose logs.
 
@@ -80,7 +88,7 @@ You can obtain a namespaced logger for your own modules using `getLogger(namespa
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
-### Sensitive data in logs
+#### Sensitive data in logs
 
 Certain logs may contain user data. Disable them by setting these environment variables.
 
