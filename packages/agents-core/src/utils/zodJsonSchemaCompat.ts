@@ -473,22 +473,46 @@ function buildEnum(
   if (!def) {
     return undefined;
   }
+  let values: unknown[] | undefined;
   if (Array.isArray(def.values)) {
-    return { enum: def.values as unknown[] };
+    // Zod v3 z.enum() — values is a string array
+    values = def.values as unknown[];
+  } else if (def.entries && typeof def.entries === 'object') {
+    // Zod v4 z.enum() / z.nativeEnum() — entries is an object
+    values = resolveNativeEnumValues(def.entries as Record<string, unknown>);
+  } else if (Array.isArray(def.options)) {
+    values = def.options as unknown[];
+  } else if (def.values && typeof def.values === 'object') {
+    // Zod v3 z.nativeEnum() — values is the TS enum object
+    values = resolveNativeEnumValues(def.values as Record<string, unknown>);
+  } else if (def.enum && typeof def.enum === 'object') {
+    // Fallback for alternative Zod internals
+    values = resolveNativeEnumValues(def.enum as Record<string, unknown>);
   }
-  if (def.entries && typeof def.entries === 'object') {
-    return { enum: Object.values(def.entries as Record<string, unknown>) };
+  if (!values || !values.length) {
+    return undefined;
   }
-  if (Array.isArray(def.options)) {
-    return { enum: def.options as unknown[] };
-  }
-  if (def.values && typeof def.values === 'object') {
-    return { enum: Object.values(def.values as Record<string, unknown>) };
-  }
-  if (def.enum && typeof def.enum === 'object') {
-    return { enum: Object.values(def.enum as Record<string, unknown>) };
-  }
-  return undefined;
+  // @see https://github.com/StefanTerdell/zod-to-json-schema/blob/master/src/parsers/enum.ts
+  const parsedTypes = Array.from(new Set(values.map((v) => typeof v)));
+  const type =
+    parsedTypes.length === 1
+      ? parsedTypes[0] === 'string'
+        ? 'string'
+        : 'number'
+      : ['string', 'number'];
+  return { type, enum: values };
+}
+
+/**
+ * Filter TypeScript's reverse-mapping keys from numeric native enums.
+ * e.g. `enum E { A = 0 }` compiles to `{ A: 0, "0": "A" }` — keep only forward mappings.
+ * @see https://github.com/StefanTerdell/zod-to-json-schema/blob/master/src/parsers/nativeEnum.ts#L12-L15
+ */
+function resolveNativeEnumValues(enumObj: Record<string, unknown>): unknown[] {
+  const actualKeys = Object.keys(enumObj).filter(
+    (key) => typeof enumObj[enumObj[key] as string] !== 'number',
+  );
+  return actualKeys.map((key) => enumObj[key]);
 }
 
 function readShape(input: unknown): Record<string, unknown> | undefined {

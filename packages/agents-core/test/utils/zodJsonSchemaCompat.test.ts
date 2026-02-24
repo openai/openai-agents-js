@@ -85,7 +85,10 @@ describe('utils/zodJsonSchemaCompat', () => {
         },
       ],
     });
-    expect(jsonSchema?.properties.choice).toEqual({ enum: ['one', 'two'] });
+    expect(jsonSchema?.properties.choice).toEqual({
+      type: 'string',
+      enum: ['one', 'two'],
+    });
   });
 
   it('converts nested record and array structures', () => {
@@ -157,7 +160,44 @@ describe('utils/zodJsonSchemaCompat', () => {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     });
     expect(jsonSchema?.properties.nativeEnum).toEqual({
+      type: 'string',
       enum: ['ready', 'done'],
+    });
+  });
+
+  it('includes type:"number" for numeric native enums', () => {
+    enum Priority {
+      Low = 0,
+      Medium = 1,
+      High = 2,
+    }
+
+    const schema = z.object({
+      priority: z.nativeEnum(Priority),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.properties.priority).toEqual({
+      type: 'number',
+      enum: [0, 1, 2],
+    });
+  });
+
+  it('includes type:["string","number"] for mixed native enums', () => {
+    enum Mixed {
+      Label = 'label',
+      Count = 1,
+      Unit = 'px',
+    }
+
+    const schema = z.object({
+      mixed: z.nativeEnum(Mixed),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(schema);
+    expect(jsonSchema?.properties.mixed).toEqual({
+      type: ['string', 'number'],
+      enum: ['label', 1, 'px'],
     });
   });
 
