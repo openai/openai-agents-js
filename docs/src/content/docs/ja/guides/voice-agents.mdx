@@ -23,29 +23,40 @@ import websocketSessionExample from '../../../../../../examples/docs/voice-agent
 import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 
-![リアルタイムエージェント](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+## 概要
 
-音声エージェントは、OpenAI の speech-to-speech モデルを使ってリアルタイムの音声チャットを提供します。これらのモデルは音声、テキスト、ツール呼び出しのストリーミングをサポートし、音声/電話のカスタマーサポート、モバイルアプリの体験、音声チャットなどの用途に最適です。
+![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-Voice Agents SDK は、[OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 向けの TypeScript クライアントを提供します。
+音声エージェントは OpenAI の speech-to-speech モデルを使用して、リアルタイムの音声チャットを提供します。これらのモデルは音声のストリーミング、テキスト、ツール呼び出しをサポートし、音声/電話のカスタマーサポート、モバイルアプリの体験、ボイスチャットなどの用途に最適です。
+
+Voice Agents SDK は [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 向けの TypeScript クライアントを提供します。
+
+## はじめに
 
 <LinkCard
   title="クイックスタート"
   href="/openai-agents-js/ja/guides/voice-agents/quickstart"
-  description="OpenAI Agents SDK を使って数分で最初のリアルタイム音声アシスタントを構築"
+  description="OpenAI Agents SDK を使って、リアルタイム音声アシスタントを数分で構築します。"
 />
 
-### 主な機能
+## 主な機能
 
-- WebSocket または WebRTC 経由で接続
-- ブラウザおよびバックエンド接続の両方で利用可能
-- 音声および割り込みのハンドリング
+- WebSocket または WebRTC で接続
+- ブラウザとバックエンド接続の両方で使用可能
+- 音声と割り込みのハンドリング
 - ハンドオフによるマルチエージェントのオーケストレーション
 - ツールの定義と呼び出し
-- モデル出力を監視するためのカスタム ガードレール
-- ストリーミングされたイベントのコールバック
-- テキストと音声のエージェントの両方で同じコンポーネントを再利用
+- モデル出力を監視するカスタムガードレール
+- ストリーミングイベント用のコールバック
+- 同じコンポーネントをテキストエージェントと音声エージェントの両方で再利用
 
-speech-to-speech モデルを使うことで、モデルが動作した後にテキストへ文字起こしして再度音声に変換する必要なく、音声をリアルタイムに処理するモデルの能力を活用できます。
+## 音声ガイドを探る
 
-![speech-to-speech モデル](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+- セッション設定、ツール、ガードレール、割り込み、履歴管理については [音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build)
+- WebRTC/WebSocket/SIP のトランスポート選択とカスタムトランスポートについては [リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport)
+
+## speech-to-speech を使う理由
+
+speech-to-speech モデルを使用することで、モデルが動作した後に音声を文字起こしし、テキストを再度音声に変換し直すことなく、モデルのリアルタイム処理能力を活用できます。
+
+![Speech-to-speech モデル](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
