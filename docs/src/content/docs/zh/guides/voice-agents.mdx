@@ -23,29 +23,40 @@ import websocketSessionExample from '../../../../../../examples/docs/voice-agent
 import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 
+## 概述
+
 ![实时智能体](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-语音智能体使用 OpenAI 语音到语音模型提供实时语音聊天。这些模型支持音频、文本与工具调用的流式传输，适用于语音/电话客服、移动应用体验和语音聊天等场景。
+语音智能体使用 OpenAI 的语音到语音模型，提供实时语音聊天。这些模型支持音频、文本与工具调用的流式传输，非常适合用于语音/电话客服、移动应用体验与语音聊天等场景。
 
 Voice Agents SDK 为 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 提供 TypeScript 客户端。
+
+## 从这里开始
 
 <LinkCard
   title="快速开始"
   href="/openai-agents-js/zh/guides/voice-agents/quickstart"
-  description="使用 OpenAI Agents SDK 在几分钟内构建您的第一个实时语音助手。"
+  description="几分钟内使用 OpenAI Agents SDK 构建您的第一个实时语音助手。"
 />
 
-### 关键特性
+## 关键特性
 
 - 通过 WebSocket 或 WebRTC 连接
-- 可用于浏览器与后端连接
+- 既可在浏览器端使用，也可用于后端连接
 - 音频与打断处理
 - 通过交接实现多智能体编排
 - 工具定义与调用
 - 自定义护栏以监控模型输出
 - 流式事件回调
-- 文本与语音智能体复用同一组件
+- 复用相同组件于文本与语音智能体
 
-通过使用语音到语音模型，我们可以利用模型实时处理音频的能力，而无需在模型执行后将音频转写为文本再转换回音频。
+## 浏览语音指南
+
+- [构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build)：涵盖会话设置、工具、护栏、打断与历史记录管理。
+- [传输机制](/openai-agents-js/zh/guides/voice-agents/transport)：介绍 WebRTC/WebSocket/SIP 的传输选择与自定义传输。
+
+## 为什么选择语音到语音
+
+通过使用语音到语音模型，我们可以在无需先转写为文本并在模型响应后再转换回音频的情况下，直接利用模型对音频进行实时处理的能力。
 
 ![语音到语音模型](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
