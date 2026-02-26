@@ -206,7 +206,11 @@ function getValueTypeName(value: unknown): string {
     return typeof value;
   }
 
-  return value.constructor?.name ?? 'Object';
+  try {
+    return value.constructor?.name ?? 'Object';
+  } catch {
+    return 'Object';
+  }
 }
 
 function truncatedPreview(value: unknown): Record<string, JsonCompatibleValue> {
