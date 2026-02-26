@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.5.2
+
+### Patch Changes
+
+- 85cdea4: fix: preserve OpenAI Responses request IDs in raw responses
+- c0c5d43: fix: sanitize oversized tracing span payloads
+- Updated dependencies [85cdea4]
+- Updated dependencies [3da9364]
+  - @openai/agents-core@0.5.2
+
 ## 0.5.1
 
 ### Patch Changes
