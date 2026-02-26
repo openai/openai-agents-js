@@ -23,9 +23,30 @@ export type OpenAITracingExporterOptions = {
 };
 
 type GenerationUsageData = NonNullable<GenerationSpanData['usage']>;
+type JsonCompatibleValue =
+  | null
+  | string
+  | number
+  | boolean
+  | JsonCompatibleValue[]
+  | { [key: string]: JsonCompatibleValue };
+
+const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
+const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
+const UNSERIALIZABLE = Symbol('openaiTracingExporter.unserializable');
+const textEncoder = new TextEncoder();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function isGenerationSpanData(
@@ -38,35 +59,311 @@ function isGenerationUsageData(usage: unknown): usage is GenerationUsageData {
   return isRecord(usage);
 }
 
+function isFiniteJsonNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function valueJsonSizeBytes(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') {
+      return OPENAI_TRACING_MAX_FIELD_BYTES + 1;
+    }
+    return textEncoder.encode(serialized).length;
+  } catch {
+    return OPENAI_TRACING_MAX_FIELD_BYTES + 1;
+  }
+}
+
+function truncateStringForJsonLimit(value: string, maxBytes: number): string {
+  const valueSize = valueJsonSizeBytes(value);
+  if (valueSize <= maxBytes) {
+    return value;
+  }
+
+  const suffixSize = valueJsonSizeBytes(
+    OPENAI_TRACING_STRING_TRUNCATION_SUFFIX,
+  );
+  if (suffixSize > maxBytes) {
+    return '';
+  }
+  if (suffixSize === maxBytes) {
+    return OPENAI_TRACING_STRING_TRUNCATION_SUFFIX;
+  }
+
+  const budgetWithoutSuffix = maxBytes - suffixSize;
+  let estimatedChars = Math.floor(
+    (value.length * budgetWithoutSuffix) / Math.max(valueSize, 1),
+  );
+  estimatedChars = Math.max(0, Math.min(value.length, estimatedChars));
+
+  let best =
+    value.slice(0, estimatedChars) + OPENAI_TRACING_STRING_TRUNCATION_SUFFIX;
+  let bestSize = valueJsonSizeBytes(best);
+  while (bestSize > maxBytes && estimatedChars > 0) {
+    const overflowRatio = (bestSize - maxBytes) / Math.max(bestSize, 1);
+    const trimChars = Math.max(
+      1,
+      Math.floor(estimatedChars * overflowRatio) + 1,
+    );
+    estimatedChars = Math.max(0, estimatedChars - trimChars);
+    best =
+      value.slice(0, estimatedChars) + OPENAI_TRACING_STRING_TRUNCATION_SUFFIX;
+    bestSize = valueJsonSizeBytes(best);
+  }
+
+  return best;
+}
+
+function sanitizeJsonCompatibleValue(
+  value: unknown,
+  seen: Set<object> = new Set(),
+): JsonCompatibleValue | typeof UNSERIALIZABLE {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : UNSERIALIZABLE;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return UNSERIALIZABLE;
+    }
+
+    seen.add(value);
+    const sanitized: JsonCompatibleValue[] = [];
+    try {
+      for (const nestedValue of value) {
+        const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
+        if (sanitizedNested !== UNSERIALIZABLE) {
+          sanitized.push(sanitizedNested);
+        }
+      }
+    } finally {
+      seen.delete(value);
+    }
+
+    return sanitized;
+  }
+
+  if (!isPlainObject(value)) {
+    return UNSERIALIZABLE;
+  }
+
+  if (seen.has(value)) {
+    return UNSERIALIZABLE;
+  }
+
+  seen.add(value);
+  const sanitized: Record<string, JsonCompatibleValue> = {};
+  try {
+    for (const [key, nestedValue] of Object.entries(value)) {
+      const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
+      if (sanitizedNested !== UNSERIALIZABLE) {
+        sanitized[key] = sanitizedNested;
+      }
+    }
+  } finally {
+    seen.delete(value);
+  }
+
+  return sanitized;
+}
+
+function getValueTypeName(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+
+  if (typeof value !== 'object') {
+    return typeof value;
+  }
+
+  return value.constructor?.name ?? 'Object';
+}
+
+function truncatedPreview(value: unknown): Record<string, JsonCompatibleValue> {
+  const typeName = getValueTypeName(value);
+  let preview = `<${typeName} truncated>`;
+
+  if (Array.isArray(value)) {
+    preview = `<${typeName} len=${value.length} truncated>`;
+  } else if (ArrayBuffer.isView(value)) {
+    preview = `<${typeName} bytes=${value.byteLength} truncated>`;
+  } else if (value instanceof ArrayBuffer) {
+    preview = `<${typeName} bytes=${value.byteLength} truncated>`;
+  } else if (value instanceof Map || value instanceof Set) {
+    preview = `<${typeName} len=${value.size} truncated>`;
+  } else if (isPlainObject(value)) {
+    preview = `<${typeName} len=${Object.keys(value).length} truncated>`;
+  }
+
+  return {
+    truncated: true,
+    original_type: typeName,
+    preview,
+  };
+}
+
+function truncateJsonValueForLimit(
+  value: JsonCompatibleValue,
+  maxBytes: number,
+): JsonCompatibleValue {
+  if (valueJsonSizeBytes(value) <= maxBytes) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return truncateStringForJsonLimit(value, maxBytes);
+  }
+
+  if (Array.isArray(value)) {
+    return truncateListForJsonLimit(value, maxBytes);
+  }
+
+  if (isPlainObject(value)) {
+    return truncateMappingForJsonLimit(value, maxBytes);
+  }
+
+  return truncatedPreview(value);
+}
+
+function truncateMappingForJsonLimit(
+  value: Record<string, JsonCompatibleValue>,
+  maxBytes: number,
+): Record<string, JsonCompatibleValue> {
+  const truncated = { ...value };
+  let currentSize = valueJsonSizeBytes(truncated);
+
+  while (Object.keys(truncated).length > 0 && currentSize > maxBytes) {
+    let largestKey: string | undefined;
+    let largestChildSize = -1;
+
+    for (const [key, child] of Object.entries(truncated)) {
+      const childSize = valueJsonSizeBytes(child);
+      if (childSize > largestChildSize) {
+        largestKey = key;
+        largestChildSize = childSize;
+      }
+    }
+
+    if (!largestKey) {
+      break;
+    }
+
+    const child = truncated[largestKey];
+    const childBudget = Math.max(
+      0,
+      maxBytes - (currentSize - largestChildSize),
+    );
+    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+
+    if (truncatedChild === child) {
+      delete truncated[largestKey];
+    } else {
+      truncated[largestKey] = truncatedChild;
+    }
+
+    currentSize = valueJsonSizeBytes(truncated);
+  }
+
+  return truncated;
+}
+
+function truncateListForJsonLimit(
+  value: JsonCompatibleValue[],
+  maxBytes: number,
+): JsonCompatibleValue[] {
+  const truncated = [...value];
+  let currentSize = valueJsonSizeBytes(truncated);
+
+  while (truncated.length > 0 && currentSize > maxBytes) {
+    let largestIndex = 0;
+    let largestChildSize = -1;
+
+    for (let index = 0; index < truncated.length; index += 1) {
+      const childSize = valueJsonSizeBytes(truncated[index]);
+      if (childSize > largestChildSize) {
+        largestIndex = index;
+        largestChildSize = childSize;
+      }
+    }
+
+    const child = truncated[largestIndex];
+    const childBudget = Math.max(
+      0,
+      maxBytes - (currentSize - largestChildSize),
+    );
+    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+
+    if (truncatedChild === child) {
+      truncated.splice(largestIndex, 1);
+    } else {
+      truncated[largestIndex] = truncatedChild;
+    }
+
+    currentSize = valueJsonSizeBytes(truncated);
+  }
+
+  return truncated;
+}
+
+function truncateSpanFieldValue(value: unknown): unknown {
+  if (valueJsonSizeBytes(value) <= OPENAI_TRACING_MAX_FIELD_BYTES) {
+    return value;
+  }
+
+  const sanitizedValue = sanitizeJsonCompatibleValue(value);
+  if (sanitizedValue === UNSERIALIZABLE) {
+    return truncatedPreview(value);
+  }
+
+  return truncateJsonValueForLimit(
+    sanitizedValue,
+    OPENAI_TRACING_MAX_FIELD_BYTES,
+  );
+}
+
 function sanitizeGenerationUsageForTracesIngest(
   usage: GenerationUsageData,
 ): GenerationUsageData | undefined {
   const inputTokens = usage.input_tokens;
   const outputTokens = usage.output_tokens;
 
-  if (
-    typeof inputTokens !== 'number' ||
-    Number.isNaN(inputTokens) ||
-    typeof outputTokens !== 'number' ||
-    Number.isNaN(outputTokens)
-  ) {
+  if (!isFiniteJsonNumber(inputTokens) || !isFiniteJsonNumber(outputTokens)) {
     return undefined;
   }
 
-  const details: Record<string, unknown> = {};
-  if (isRecord(usage.details)) {
-    Object.assign(details, usage.details);
+  const details: Record<string, JsonCompatibleValue> = {};
+  if (isPlainObject(usage.details)) {
+    for (const [key, value] of Object.entries(usage.details)) {
+      const sanitizedValue = sanitizeJsonCompatibleValue(value);
+      if (sanitizedValue !== UNSERIALIZABLE) {
+        details[key] = sanitizedValue;
+      }
+    }
   }
+
   for (const [key, value] of Object.entries(usage)) {
     if (
       key === 'input_tokens' ||
       key === 'output_tokens' ||
       key === 'details' ||
-      value === undefined
+      value === undefined ||
+      value === null
     ) {
       continue;
     }
-    details[key] = value;
+    const sanitizedValue = sanitizeJsonCompatibleValue(value);
+    if (sanitizedValue !== UNSERIALIZABLE) {
+      details[key] = sanitizedValue;
+    }
   }
 
   return {
@@ -84,24 +381,53 @@ function sanitizeGenerationUsageForTracesIngest(
 function sanitizeSpanDataForTracesIngest(
   spanData: Record<string, unknown>,
 ): Record<string, unknown> {
+  let sanitizedSpanData = spanData;
+  let didMutate = false;
+
+  for (const fieldName of ['input', 'output']) {
+    if (!(fieldName in spanData)) {
+      continue;
+    }
+
+    const sanitizedField = truncateSpanFieldValue(spanData[fieldName]);
+    if (sanitizedField === spanData[fieldName]) {
+      continue;
+    }
+
+    if (!didMutate) {
+      sanitizedSpanData = { ...spanData };
+      didMutate = true;
+    }
+    sanitizedSpanData[fieldName] = sanitizedField;
+  }
+
   if (
     !isGenerationSpanData(spanData) ||
     !isGenerationUsageData(spanData.usage)
   ) {
-    return spanData;
+    return didMutate ? sanitizedSpanData : spanData;
   }
 
   const sanitizedUsage = sanitizeGenerationUsageForTracesIngest(spanData.usage);
   if (!sanitizedUsage) {
-    const { usage, ...rest } = spanData;
-    void usage;
-    return rest;
+    if (!didMutate) {
+      sanitizedSpanData = { ...spanData };
+      didMutate = true;
+    }
+
+    delete sanitizedSpanData.usage;
+    return sanitizedSpanData;
   }
 
-  return {
-    ...spanData,
-    usage: sanitizedUsage,
-  };
+  if (sanitizedUsage === spanData.usage) {
+    return didMutate ? sanitizedSpanData : spanData;
+  }
+
+  if (!didMutate) {
+    sanitizedSpanData = { ...spanData };
+  }
+  sanitizedSpanData.usage = sanitizedUsage;
+  return sanitizedSpanData;
 }
 
 function sanitizePayloadItemForTracesIngest(

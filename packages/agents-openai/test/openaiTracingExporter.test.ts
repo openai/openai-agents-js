@@ -5,6 +5,10 @@ import { createCustomSpan } from '@openai/agents-core';
 import logger from '../src/logger';
 
 describe('OpenAITracingExporter', () => {
+  const maxFieldBytes = 100_000;
+  const truncationSuffix = '... [truncated]';
+  const jsonSizeBytes = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value)).length;
   const fakeSpan = createCustomSpan({
     data: {
       name: 'test',
@@ -122,6 +126,54 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('drops unserializable generation usage detail fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1b',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            details: {
+              provider: 'ai-sdk',
+              bigint: 1n,
+            },
+            opaque: new Map([['skip', true]]),
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        provider: 'ai-sdk',
+      },
+    });
+  });
+
   it('drops non-object generation usage.details', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
@@ -200,6 +252,221 @@ describe('OpenAITracingExporter', () => {
     expect(JSON.parse(opts.body as string).data[0].span_data).toEqual({
       type: 'generation',
     });
+  });
+
+  it('truncates oversized span input strings', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-large-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const originalInput = 'x'.repeat(maxFieldBytes + 5_000);
+    const item = {
+      exportedPayload: {
+        object: 'trace.span',
+        id: 'span-large-input',
+        trace_id: 'trace-large-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: originalInput,
+        },
+        error: null,
+      },
+      toJSON() {
+        return this.exportedPayload;
+      },
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(typeof sentInput).toBe('string');
+    expect(sentInput.endsWith(truncationSuffix)).toBe(true);
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+    expect(item.exportedPayload.span_data.input).toBe(originalInput);
+  });
+
+  it('truncates oversized structured span input without flattening it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-large-structured-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-large-structured-input',
+        trace_id: 'trace-large-structured-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: {
+            blob: 'x'.repeat(maxFieldBytes + 5_000),
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(sentInput).toEqual(
+      expect.objectContaining({
+        blob: expect.any(String),
+      }),
+    );
+    expect(sentInput.blob.endsWith(truncationSuffix)).toBe(true);
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
+  it('preserves nested generation input list shape while truncating large payloads', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-large-list-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-large-list-input',
+        trace_id: 'trace-large-list-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_audio',
+                  input_audio: {
+                    data: 'x'.repeat(maxFieldBytes + 5_000),
+                    format: 'wav',
+                  },
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(Array.isArray(sentInput)).toBe(true);
+    expect(sentInput[0].role).toBe('user');
+    expect(sentInput[0].content[0].input_audio.format).toBe('wav');
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
+  it('replaces oversized unserializable outputs with a preview object', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-unserializable-output',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const output = new Uint8Array(maxFieldBytes + 5_000);
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-unserializable-output',
+        trace_id: 'trace-unserializable-output',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'function',
+          output,
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.output).toEqual({
+      truncated: true,
+      original_type: 'Uint8Array',
+      preview: `<Uint8Array bytes=${output.byteLength} truncated>`,
+    });
+  });
+
+  it('truncates escape-heavy strings based on JSON byte size', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-escape-heavy-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-escape-heavy-input',
+        trace_id: 'trace-escape-heavy-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: ('\\\\' + '"').repeat(40_000) + 'tail',
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(sentInput.endsWith(truncationSuffix)).toBe(true);
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
   });
 
   it('retries on server errors', async () => {
