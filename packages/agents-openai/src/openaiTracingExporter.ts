@@ -171,28 +171,30 @@ function sanitizeJsonCompatibleValue(
     return sanitized;
   }
 
-  if (!isPlainObject(value)) {
-    return UNSERIALIZABLE;
-  }
-
-  if (seen.has(value)) {
-    return UNSERIALIZABLE;
-  }
-
-  seen.add(value);
-  const sanitized: Record<string, JsonCompatibleValue> = {};
-  try {
-    for (const [key, nestedValue] of Object.entries(value)) {
-      const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
-      if (sanitizedNested !== UNSERIALIZABLE) {
-        sanitized[key] = sanitizedNested;
-      }
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) {
+      return UNSERIALIZABLE;
     }
-  } finally {
-    seen.delete(value);
+
+    seen.add(value);
+    const sanitized: Record<string, JsonCompatibleValue> = {};
+    try {
+      for (const [key, nestedValue] of Object.entries(value)) {
+        const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
+        if (sanitizedNested !== UNSERIALIZABLE) {
+          sanitized[key] = sanitizedNested;
+        }
+      }
+    } catch {
+      return UNSERIALIZABLE;
+    } finally {
+      seen.delete(value);
+    }
+
+    return sanitized;
   }
 
-  return sanitized;
+  return UNSERIALIZABLE;
 }
 
 function getValueTypeName(value: unknown): string {

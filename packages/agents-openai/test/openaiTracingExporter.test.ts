@@ -158,7 +158,7 @@ describe('OpenAITracingExporter', () => {
               provider: 'ai-sdk',
               bigint: 1n,
             },
-            opaque: new Map([['skip', true]]),
+            opaque: () => 'skip',
           },
         },
         error: null,
@@ -173,6 +173,60 @@ describe('OpenAITracingExporter', () => {
       output_tokens: 34,
       details: {
         provider: 'ai-sdk',
+      },
+    });
+  });
+
+  it('keeps generation usage detail values with enumerable fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    class EnumerableValue {
+      label = 'enumerable';
+      count = 2;
+    }
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1bb',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            details: {
+              enumerable: new EnumerableValue(),
+            },
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        enumerable: {
+          label: 'enumerable',
+          count: 2,
+        },
       },
     });
   });
@@ -513,6 +567,54 @@ describe('OpenAITracingExporter', () => {
     expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
   });
 
+  it('keeps enumerable non-plain objects when truncating span input', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-enumerable-objects-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    class EnumerableInputValue {
+      label = 'class-instance';
+      count = 3;
+    }
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-enumerable-objects-input',
+        trace_id: 'trace-enumerable-objects-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: {
+            blob: 'x'.repeat(maxFieldBytes + 5_000),
+            enumerable: new EnumerableInputValue(),
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(sentInput.blob.endsWith(truncationSuffix)).toBe(true);
+    expect(sentInput.enumerable).toEqual({
+      label: 'class-instance',
+      count: 3,
+    });
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
   it('replaces oversized unserializable outputs with a preview object', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
@@ -525,7 +627,7 @@ describe('OpenAITracingExporter', () => {
       maxDelay: 20,
     });
 
-    const output = new Uint8Array(maxFieldBytes + 5_000);
+    const output = (() => {}) as unknown;
     const item = {
       toJSON: () => ({
         object: 'trace.span',
@@ -547,8 +649,8 @@ describe('OpenAITracingExporter', () => {
     const [, opts] = fetchMock.mock.calls[0];
     expect(JSON.parse(opts.body as string).data[0].span_data.output).toEqual({
       truncated: true,
-      original_type: 'Uint8Array',
-      preview: `<Uint8Array bytes=${output.byteLength} truncated>`,
+      original_type: 'function',
+      preview: '<function truncated>',
     });
   });
 
