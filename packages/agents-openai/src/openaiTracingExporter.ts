@@ -160,9 +160,9 @@ function sanitizeJsonCompatibleValue(
     try {
       for (const nestedValue of value) {
         const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
-        if (sanitizedNested !== UNSERIALIZABLE) {
-          sanitized.push(sanitizedNested);
-        }
+        sanitized.push(
+          sanitizedNested === UNSERIALIZABLE ? null : sanitizedNested,
+        );
       }
     } finally {
       seen.delete(value);

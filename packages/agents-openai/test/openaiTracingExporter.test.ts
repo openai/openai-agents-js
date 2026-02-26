@@ -231,6 +231,52 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('preserves array positions in generation usage details', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1bc',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            details: {
+              items: ['a', () => 'bad', 'b'],
+            },
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        items: ['a', null, 'b'],
+      },
+    });
+  });
+
   it('keeps generation usage detail values with toJSON support', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
@@ -612,6 +658,50 @@ describe('OpenAITracingExporter', () => {
       label: 'class-instance',
       count: 3,
     });
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
+  it('preserves array positions when truncating span input', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-array-positions-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-array-positions-input',
+        trace_id: 'trace-array-positions-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: [
+            {
+              role: 'user',
+              content: ['a', () => 'bad', 'b', 'x'.repeat(maxFieldBytes)],
+            },
+          ],
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(sentInput[0].content[0]).toBe('a');
+    expect(sentInput[0].content[1]).toBeNull();
+    expect(sentInput[0].content[2]).toBe('b');
+    expect(typeof sentInput[0].content[3]).toBe('string');
     expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
   });
 
