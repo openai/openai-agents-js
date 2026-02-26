@@ -765,7 +765,7 @@ describe('OpenAITracingExporter', () => {
       maxDelay: 20,
     });
 
-    const output = (() => {}) as unknown;
+    const output = 1n as unknown;
     const item = {
       toJSON: () => ({
         object: 'trace.span',
@@ -787,8 +787,8 @@ describe('OpenAITracingExporter', () => {
     const [, opts] = fetchMock.mock.calls[0];
     expect(JSON.parse(opts.body as string).data[0].span_data.output).toEqual({
       truncated: true,
-      original_type: 'function',
-      preview: '<function truncated>',
+      original_type: 'bigint',
+      preview: '<bigint truncated>',
     });
   });
 
@@ -892,6 +892,43 @@ describe('OpenAITracingExporter', () => {
       original_type: 'Object',
       preview: '<Object len=1 truncated>',
     });
+  });
+
+  it('omits top-level input and output values that JSON would omit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-omitted-top-level-fields',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-omitted-top-level-fields',
+        trace_id: 'trace-omitted-top-level-fields',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: undefined,
+          output: () => 'omit',
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentSpanData = JSON.parse(opts.body as string).data[0].span_data;
+    expect(sentSpanData).not.toHaveProperty('input');
+    expect(sentSpanData).not.toHaveProperty('output');
   });
 
   it('truncates escape-heavy strings based on JSON byte size', async () => {

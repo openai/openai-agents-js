@@ -74,6 +74,9 @@ function isFiniteJsonNumber(value: unknown): value is number {
 function valueJsonSizeBytes(value: unknown): number {
   try {
     const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      return 0;
+    }
     if (typeof serialized !== 'string') {
       return OPENAI_TRACING_MAX_FIELD_BYTES + 1;
     }
