@@ -397,8 +397,7 @@ function sanitizeGenerationUsageForTracesIngest(
       key === 'input_tokens' ||
       key === 'output_tokens' ||
       key === 'details' ||
-      value === undefined ||
-      value === null
+      value === undefined
     ) {
       continue;
     }

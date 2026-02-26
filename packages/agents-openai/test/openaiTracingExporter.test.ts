@@ -177,6 +177,54 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('keeps null generation usage extra fields in details', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1ba',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            total_tokens: null,
+            details: {
+              provider: 'ai-sdk',
+            },
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        provider: 'ai-sdk',
+        total_tokens: null,
+      },
+    });
+  });
+
   it('keeps generation usage detail values with enumerable fields', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
