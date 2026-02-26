@@ -376,6 +376,22 @@ function truncateSpanFieldValue(value: unknown): unknown {
   );
 }
 
+function cloneRecordSafely(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const clone: Record<string, unknown> = {};
+
+  for (const key of Object.keys(value)) {
+    try {
+      clone[key] = value[key];
+    } catch {
+      // Omit unreadable properties so tracing export remains non-fatal.
+    }
+  }
+
+  return clone;
+}
+
 export const _openAITracingExporterTestUtils = {
   valueJsonSizeBytes,
   truncateJsonValueForLimit,
@@ -441,13 +457,26 @@ function sanitizeSpanDataForTracesIngest(
       continue;
     }
 
-    const sanitizedField = truncateSpanFieldValue(spanData[fieldName]);
-    if (sanitizedField === spanData[fieldName]) {
+    let fieldValue: unknown;
+    try {
+      fieldValue = spanData[fieldName];
+    } catch {
+      if (!didMutate) {
+        sanitizedSpanData = cloneRecordSafely(spanData);
+        didMutate = true;
+      }
+
+      delete sanitizedSpanData[fieldName];
+      continue;
+    }
+
+    const sanitizedField = truncateSpanFieldValue(fieldValue);
+    if (sanitizedField === fieldValue) {
       continue;
     }
 
     if (!didMutate) {
-      sanitizedSpanData = { ...spanData };
+      sanitizedSpanData = cloneRecordSafely(spanData);
       didMutate = true;
     }
     sanitizedSpanData[fieldName] = sanitizedField;
@@ -463,7 +492,7 @@ function sanitizeSpanDataForTracesIngest(
   const sanitizedUsage = sanitizeGenerationUsageForTracesIngest(spanData.usage);
   if (!sanitizedUsage) {
     if (!didMutate) {
-      sanitizedSpanData = { ...spanData };
+      sanitizedSpanData = cloneRecordSafely(spanData);
       didMutate = true;
     }
 
@@ -476,7 +505,7 @@ function sanitizeSpanDataForTracesIngest(
   }
 
   if (!didMutate) {
-    sanitizedSpanData = { ...spanData };
+    sanitizedSpanData = cloneRecordSafely(spanData);
   }
   sanitizedSpanData.usage = sanitizedUsage;
   return sanitizedSpanData;

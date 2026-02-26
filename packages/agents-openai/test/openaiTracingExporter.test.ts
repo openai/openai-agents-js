@@ -931,6 +931,46 @@ describe('OpenAITracingExporter', () => {
     expect(sentSpanData).not.toHaveProperty('output');
   });
 
+  it('omits span output when its getter throws during sanitization', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-throwing-output-getter',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const spanData = {
+      type: 'function',
+      get output() {
+        throw new Error('output access failed');
+      },
+    };
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-throwing-output-getter',
+        trace_id: 'trace-throwing-output-getter',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: spanData,
+        error: null,
+      }),
+    } as any;
+
+    await expect(exporter.export([item])).resolves.toBeUndefined();
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentSpanData = JSON.parse(opts.body as string).data[0].span_data;
+    expect(sentSpanData.type).toBe('function');
+    expect(sentSpanData).not.toHaveProperty('output');
+  });
+
   it('truncates escape-heavy strings based on JSON byte size', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
