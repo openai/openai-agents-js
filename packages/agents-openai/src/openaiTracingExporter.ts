@@ -274,7 +274,7 @@ function truncateMappingForJsonLimit(
       }
     }
 
-    if (!largestKey) {
+    if (largestKey === undefined) {
       break;
     }
 

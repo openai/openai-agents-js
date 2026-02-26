@@ -790,6 +790,20 @@ describe('OpenAITracingExporter', () => {
     expect(truncated).toEqual({});
   });
 
+  it('truncates mapping children stored under empty-string keys', () => {
+    const truncated =
+      _openAITracingExporterTestUtils.truncateMappingForJsonLimit(
+        { '': 'x'.repeat(maxFieldBytes), keep: 'y' },
+        128,
+      );
+
+    expect(truncated).toHaveProperty('');
+    expect(typeof truncated['']).toBe('string');
+    expect((truncated[''] as string).endsWith(truncationSuffix)).toBe(true);
+    expect(truncated.keep).toBe('y');
+    expect(jsonSizeBytes(truncated)).toBeLessThanOrEqual(128);
+  });
+
   it('deletes list children when child budget is zero', () => {
     const truncated = _openAITracingExporterTestUtils.truncateListForJsonLimit(
       [{}, {}],
