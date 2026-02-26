@@ -262,9 +262,16 @@ function truncateMappingForJsonLimit(
       0,
       maxBytes - (currentSize - largestChildSize),
     );
-    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    if (childBudget === 0) {
+      delete truncated[largestKey];
+      currentSize = valueJsonSizeBytes(truncated);
+      continue;
+    }
 
-    if (truncatedChild === child) {
+    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
+
+    if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
       delete truncated[largestKey];
     } else {
       truncated[largestKey] = truncatedChild;
@@ -300,9 +307,16 @@ function truncateListForJsonLimit(
       0,
       maxBytes - (currentSize - largestChildSize),
     );
-    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    if (childBudget === 0) {
+      truncated.splice(largestIndex, 1);
+      currentSize = valueJsonSizeBytes(truncated);
+      continue;
+    }
 
-    if (truncatedChild === child) {
+    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
+
+    if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
       truncated.splice(largestIndex, 1);
     } else {
       truncated[largestIndex] = truncatedChild;
@@ -329,6 +343,13 @@ function truncateSpanFieldValue(value: unknown): unknown {
     OPENAI_TRACING_MAX_FIELD_BYTES,
   );
 }
+
+export const _openAITracingExporterTestUtils = {
+  valueJsonSizeBytes,
+  truncateJsonValueForLimit,
+  truncateMappingForJsonLimit,
+  truncateListForJsonLimit,
+};
 
 function sanitizeGenerationUsageForTracesIngest(
   usage: GenerationUsageData,

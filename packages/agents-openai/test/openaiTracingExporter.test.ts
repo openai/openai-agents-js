@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { OpenAITracingExporter } from '../src/openaiTracingExporter';
+import {
+  OpenAITracingExporter,
+  _openAITracingExporterTestUtils,
+} from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
 import { createCustomSpan } from '@openai/agents-core';
 import logger from '../src/logger';
@@ -467,6 +470,25 @@ describe('OpenAITracingExporter', () => {
     const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
     expect(sentInput.endsWith(truncationSuffix)).toBe(true);
     expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
+  it('deletes mapping children when child budget is zero', () => {
+    const truncated =
+      _openAITracingExporterTestUtils.truncateMappingForJsonLimit(
+        { a: {}, b: {} },
+        0,
+      );
+
+    expect(truncated).toEqual({});
+  });
+
+  it('deletes list children when child budget is zero', () => {
+    const truncated = _openAITracingExporterTestUtils.truncateListForJsonLimit(
+      [{}, {}],
+      0,
+    );
+
+    expect(truncated).toEqual([]);
   });
 
   it('retries on server errors', async () => {
