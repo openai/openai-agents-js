@@ -50,7 +50,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function hasToJSON(value: object): value is object & { toJSON: () => unknown } {
-  return typeof (value as { toJSON?: unknown }).toJSON === 'function';
+  try {
+    return typeof (value as { toJSON?: unknown }).toJSON === 'function';
+  } catch {
+    return false;
+  }
 }
 
 function isGenerationSpanData(

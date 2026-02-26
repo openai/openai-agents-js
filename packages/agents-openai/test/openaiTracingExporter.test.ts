@@ -843,6 +843,57 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('falls back when toJSON access throws during sanitization', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-tojson-throws-output',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const output = {};
+    Object.defineProperty(output, 'toJSON', {
+      get() {
+        throw new Error('toJSON access failed');
+      },
+    });
+    Object.defineProperty(output, 'payload', {
+      enumerable: true,
+      get() {
+        throw new Error('payload access failed');
+      },
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-tojson-throws-output',
+        trace_id: 'trace-tojson-throws-output',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'function',
+          output,
+        },
+        error: null,
+      }),
+    } as any;
+
+    await expect(exporter.export([item])).resolves.toBeUndefined();
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.output).toEqual({
+      truncated: true,
+      original_type: 'Object',
+      preview: '<Object len=1 truncated>',
+    });
+  });
+
   it('truncates escape-heavy strings based on JSON byte size', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
