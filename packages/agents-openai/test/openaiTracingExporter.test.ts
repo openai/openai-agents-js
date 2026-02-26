@@ -894,6 +894,63 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('caps preview metadata when the constructor name is extremely long', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-long-preview-metadata',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const longTypeName = 'Type' + 'x'.repeat(maxFieldBytes);
+    const output = {};
+    Object.defineProperty(output, 'constructor', {
+      get() {
+        return { name: longTypeName };
+      },
+    });
+    Object.defineProperty(output, 'toJSON', {
+      get() {
+        throw new Error('toJSON access failed');
+      },
+    });
+    Object.defineProperty(output, 'payload', {
+      enumerable: true,
+      get() {
+        throw new Error('payload access failed');
+      },
+    });
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-long-preview-metadata',
+        trace_id: 'trace-long-preview-metadata',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'function',
+          output,
+        },
+        error: null,
+      }),
+    } as any;
+
+    await expect(exporter.export([item])).resolves.toBeUndefined();
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentOutput = JSON.parse(opts.body as string).data[0].span_data.output;
+    expect(sentOutput.truncated).toBe(true);
+    expect(sentOutput.original_type.endsWith(truncationSuffix)).toBe(true);
+    expect(typeof sentOutput.preview).toBe('string');
+    expect(jsonSizeBytes(sentOutput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
   it('omits top-level input and output values that JSON would omit', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);

@@ -250,10 +250,70 @@ function truncatedPreview(value: unknown): Record<string, JsonCompatibleValue> {
     preview = `<${typeName} len=${Object.keys(value).length} truncated>`;
   }
 
-  return {
+  let previewObject: Record<string, JsonCompatibleValue> = {
     truncated: true,
     original_type: typeName,
     preview,
+  };
+
+  if (valueJsonSizeBytes(previewObject) <= OPENAI_TRACING_MAX_FIELD_BYTES) {
+    return previewObject;
+  }
+
+  const previewBudget = Math.max(
+    0,
+    OPENAI_TRACING_MAX_FIELD_BYTES -
+      valueJsonSizeBytes({
+        truncated: true,
+        original_type: typeName,
+        preview: '',
+      }),
+  );
+  previewObject = {
+    truncated: true,
+    original_type: typeName,
+    preview: truncateStringForJsonLimit(preview, previewBudget),
+  };
+
+  if (valueJsonSizeBytes(previewObject) <= OPENAI_TRACING_MAX_FIELD_BYTES) {
+    return previewObject;
+  }
+
+  const typeBudget = Math.max(
+    0,
+    OPENAI_TRACING_MAX_FIELD_BYTES -
+      valueJsonSizeBytes({
+        truncated: true,
+        original_type: '',
+        preview: previewObject.preview,
+      }),
+  );
+  previewObject = {
+    truncated: true,
+    original_type: truncateStringForJsonLimit(typeName, typeBudget),
+    preview: previewObject.preview,
+  };
+
+  if (valueJsonSizeBytes(previewObject) <= OPENAI_TRACING_MAX_FIELD_BYTES) {
+    return previewObject;
+  }
+
+  const finalPreviewBudget = Math.max(
+    0,
+    OPENAI_TRACING_MAX_FIELD_BYTES -
+      valueJsonSizeBytes({
+        truncated: true,
+        original_type: previewObject.original_type,
+        preview: '',
+      }),
+  );
+  return {
+    truncated: true,
+    original_type: previewObject.original_type,
+    preview: truncateStringForJsonLimit(
+      previewObject.preview as string,
+      finalPreviewBudget,
+    ),
   };
 }
 
