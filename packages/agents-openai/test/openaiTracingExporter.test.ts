@@ -971,6 +971,52 @@ describe('OpenAITracingExporter', () => {
     expect(sentSpanData).not.toHaveProperty('output');
   });
 
+  it('falls back to a preview when deep nesting overflows recursive truncation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-deep-nesting-output',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    const output: Record<string, unknown> = {};
+    let cursor = output;
+    for (let index = 0; index < 15_000; index += 1) {
+      cursor.child = {};
+      cursor = cursor.child as Record<string, unknown>;
+    }
+    cursor.payload = 'x'.repeat(maxFieldBytes);
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-deep-nesting-output',
+        trace_id: 'trace-deep-nesting-output',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'function',
+          output,
+        },
+        error: null,
+      }),
+    } as any;
+
+    await expect(exporter.export([item])).resolves.toBeUndefined();
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.output).toEqual({
+      truncated: true,
+      original_type: 'Object',
+      preview: '<Object len=1 truncated>',
+    });
+  });
+
   it('truncates escape-heavy strings based on JSON byte size', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);

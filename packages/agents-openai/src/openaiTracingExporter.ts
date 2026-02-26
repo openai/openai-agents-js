@@ -32,6 +32,7 @@ type JsonCompatibleValue =
   | { [key: string]: JsonCompatibleValue };
 
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
+const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
 const UNSERIALIZABLE = Symbol('openaiTracingExporter.unserializable');
 const textEncoder = new TextEncoder();
@@ -129,7 +130,12 @@ function truncateStringForJsonLimit(value: string, maxBytes: number): string {
 function sanitizeJsonCompatibleValue(
   value: unknown,
   seen: Set<object> = new Set(),
+  depth: number = 0,
 ): JsonCompatibleValue | typeof UNSERIALIZABLE {
+  if (depth >= OPENAI_TRACING_MAX_RECURSION_DEPTH) {
+    return UNSERIALIZABLE;
+  }
+
   if (
     value === null ||
     typeof value === 'string' ||
@@ -149,7 +155,7 @@ function sanitizeJsonCompatibleValue(
 
     seen.add(value);
     try {
-      return sanitizeJsonCompatibleValue(value.toJSON(), seen);
+      return sanitizeJsonCompatibleValue(value.toJSON(), seen, depth + 1);
     } catch {
       return UNSERIALIZABLE;
     } finally {
@@ -166,7 +172,11 @@ function sanitizeJsonCompatibleValue(
     const sanitized: JsonCompatibleValue[] = [];
     try {
       for (const nestedValue of value) {
-        const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
+        const sanitizedNested = sanitizeJsonCompatibleValue(
+          nestedValue,
+          seen,
+          depth + 1,
+        );
         sanitized.push(
           sanitizedNested === UNSERIALIZABLE ? null : sanitizedNested,
         );
@@ -187,7 +197,11 @@ function sanitizeJsonCompatibleValue(
     const sanitized: Record<string, JsonCompatibleValue> = {};
     try {
       for (const [key, nestedValue] of Object.entries(value)) {
-        const sanitizedNested = sanitizeJsonCompatibleValue(nestedValue, seen);
+        const sanitizedNested = sanitizeJsonCompatibleValue(
+          nestedValue,
+          seen,
+          depth + 1,
+        );
         if (sanitizedNested !== UNSERIALIZABLE) {
           sanitized[key] = sanitizedNested;
         }
@@ -246,7 +260,12 @@ function truncatedPreview(value: unknown): Record<string, JsonCompatibleValue> {
 function truncateJsonValueForLimit(
   value: JsonCompatibleValue,
   maxBytes: number,
+  depth: number = 0,
 ): JsonCompatibleValue {
+  if (depth >= OPENAI_TRACING_MAX_RECURSION_DEPTH) {
+    return truncatedPreview(value);
+  }
+
   if (valueJsonSizeBytes(value) <= maxBytes) {
     return value;
   }
@@ -256,11 +275,11 @@ function truncateJsonValueForLimit(
   }
 
   if (Array.isArray(value)) {
-    return truncateListForJsonLimit(value, maxBytes);
+    return truncateListForJsonLimit(value, maxBytes, depth + 1);
   }
 
   if (isPlainObject(value)) {
-    return truncateMappingForJsonLimit(value, maxBytes);
+    return truncateMappingForJsonLimit(value, maxBytes, depth + 1);
   }
 
   return truncatedPreview(value);
@@ -269,6 +288,7 @@ function truncateJsonValueForLimit(
 function truncateMappingForJsonLimit(
   value: Record<string, JsonCompatibleValue>,
   maxBytes: number,
+  depth: number = 0,
 ): Record<string, JsonCompatibleValue> {
   const truncated = { ...value };
   let currentSize = valueJsonSizeBytes(truncated);
@@ -300,7 +320,11 @@ function truncateMappingForJsonLimit(
       continue;
     }
 
-    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    const truncatedChild = truncateJsonValueForLimit(
+      child,
+      childBudget,
+      depth + 1,
+    );
     const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
 
     if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
@@ -318,6 +342,7 @@ function truncateMappingForJsonLimit(
 function truncateListForJsonLimit(
   value: JsonCompatibleValue[],
   maxBytes: number,
+  depth: number = 0,
 ): JsonCompatibleValue[] {
   const truncated = [...value];
   let currentSize = valueJsonSizeBytes(truncated);
@@ -345,7 +370,11 @@ function truncateListForJsonLimit(
       continue;
     }
 
-    const truncatedChild = truncateJsonValueForLimit(child, childBudget);
+    const truncatedChild = truncateJsonValueForLimit(
+      child,
+      childBudget,
+      depth + 1,
+    );
     const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
 
     if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
@@ -360,20 +389,79 @@ function truncateListForJsonLimit(
   return truncated;
 }
 
+function exceedsNestingDepthLimit(value: unknown, maxDepth: number): boolean {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      break;
+    }
+
+    if (current.depth >= maxDepth) {
+      return true;
+    }
+
+    if (!current.value || typeof current.value !== 'object') {
+      continue;
+    }
+
+    if (seen.has(current.value)) {
+      continue;
+    }
+    seen.add(current.value);
+
+    try {
+      if (hasToJSON(current.value)) {
+        stack.push({
+          value: current.value.toJSON(),
+          depth: current.depth + 1,
+        });
+        continue;
+      }
+
+      const nestedValues = Array.isArray(current.value)
+        ? current.value
+        : Object.values(current.value);
+      for (const nestedValue of nestedValues) {
+        stack.push({
+          value: nestedValue,
+          depth: current.depth + 1,
+        });
+      }
+    } catch {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function truncateSpanFieldValue(value: unknown): unknown {
   if (valueJsonSizeBytes(value) <= OPENAI_TRACING_MAX_FIELD_BYTES) {
     return value;
   }
 
-  const sanitizedValue = sanitizeJsonCompatibleValue(value);
-  if (sanitizedValue === UNSERIALIZABLE) {
+  if (exceedsNestingDepthLimit(value, OPENAI_TRACING_MAX_RECURSION_DEPTH)) {
     return truncatedPreview(value);
   }
 
-  return truncateJsonValueForLimit(
-    sanitizedValue,
-    OPENAI_TRACING_MAX_FIELD_BYTES,
-  );
+  try {
+    const sanitizedValue = sanitizeJsonCompatibleValue(value);
+    if (sanitizedValue === UNSERIALIZABLE) {
+      return truncatedPreview(value);
+    }
+
+    return truncateJsonValueForLimit(
+      sanitizedValue,
+      OPENAI_TRACING_MAX_FIELD_BYTES,
+    );
+  } catch {
+    // Deeply nested or otherwise hostile values should degrade to a preview
+    // instead of failing the whole export batch.
+    return truncatedPreview(value);
+  }
 }
 
 function cloneRecordSafely(
