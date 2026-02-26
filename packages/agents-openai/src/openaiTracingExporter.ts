@@ -49,6 +49,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function hasToJSON(value: object): value is object & { toJSON: () => unknown } {
+  return typeof (value as { toJSON?: unknown }).toJSON === 'function';
+}
+
 function isGenerationSpanData(
   spanData: Record<string, unknown>,
 ): spanData is GenerationSpanData {
@@ -129,6 +133,21 @@ function sanitizeJsonCompatibleValue(
 
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : UNSERIALIZABLE;
+  }
+
+  if (value && typeof value === 'object' && hasToJSON(value)) {
+    if (seen.has(value)) {
+      return UNSERIALIZABLE;
+    }
+
+    seen.add(value);
+    try {
+      return sanitizeJsonCompatibleValue(value.toJSON(), seen);
+    } catch {
+      return UNSERIALIZABLE;
+    } finally {
+      seen.delete(value);
+    }
   }
 
   if (Array.isArray(value)) {

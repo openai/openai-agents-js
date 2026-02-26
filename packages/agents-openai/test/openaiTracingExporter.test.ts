@@ -177,6 +177,67 @@ describe('OpenAITracingExporter', () => {
     });
   });
 
+  it('keeps generation usage detail values with toJSON support', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-whitelist',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    class CustomValue {
+      toJSON() {
+        return { kind: 'custom', ok: true };
+      }
+    }
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-1c',
+        trace_id: 'trace-1',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 34,
+            details: {
+              createdAt: new Date('2026-02-26T00:00:00.000Z'),
+              location: new URL('https://example.com/path'),
+              custom: new CustomValue(),
+            },
+            payload: Buffer.from('abc'),
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string).data[0].span_data.usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 34,
+      details: {
+        createdAt: '2026-02-26T00:00:00.000Z',
+        location: 'https://example.com/path',
+        custom: { kind: 'custom', ok: true },
+        payload: {
+          type: 'Buffer',
+          data: [97, 98, 99],
+        },
+      },
+    });
+  });
+
   it('drops non-object generation usage.details', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
@@ -394,6 +455,61 @@ describe('OpenAITracingExporter', () => {
     expect(Array.isArray(sentInput)).toBe(true);
     expect(sentInput[0].role).toBe('user');
     expect(sentInput[0].content[0].input_audio.format).toBe('wav');
+    expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
+  });
+
+  it('keeps JSON-serializable non-plain objects when truncating span input', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key-json-objects-input',
+      endpoint: 'https://example.com/ingest',
+      maxRetries: 1,
+      baseDelay: 10,
+      maxDelay: 20,
+    });
+
+    class SerializableValue {
+      toJSON() {
+        return { label: 'custom-object' };
+      }
+    }
+
+    const item = {
+      toJSON: () => ({
+        object: 'trace.span',
+        id: 'span-json-objects-input',
+        trace_id: 'trace-json-objects-input',
+        parent_id: null,
+        started_at: 'start',
+        ended_at: 'end',
+        span_data: {
+          type: 'generation',
+          input: {
+            blob: 'x'.repeat(maxFieldBytes + 5_000),
+            createdAt: new Date('2026-02-26T00:00:00.000Z'),
+            location: new URL('https://example.com/traces'),
+            payload: Buffer.from('abc'),
+            custom: new SerializableValue(),
+          },
+        },
+        error: null,
+      }),
+    } as any;
+
+    await exporter.export([item]);
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const sentInput = JSON.parse(opts.body as string).data[0].span_data.input;
+    expect(sentInput.blob.endsWith(truncationSuffix)).toBe(true);
+    expect(sentInput.createdAt).toBe('2026-02-26T00:00:00.000Z');
+    expect(sentInput.location).toBe('https://example.com/traces');
+    expect(sentInput.payload).toEqual({
+      type: 'Buffer',
+      data: [97, 98, 99],
+    });
+    expect(sentInput.custom).toEqual({ label: 'custom-object' });
     expect(jsonSizeBytes(sentInput)).toBeLessThanOrEqual(maxFieldBytes);
   });
 
