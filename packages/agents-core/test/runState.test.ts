@@ -8,6 +8,7 @@ import {
 } from '../src/runState';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
+import { Usage } from '../src/usage';
 import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
@@ -105,6 +106,28 @@ describe('RunState', () => {
       type: 'reasoning',
       content: [{ type: 'input_text', text: 'thinking' }],
     });
+  });
+
+  it('preserves requestId on serialized model responses', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'RequestIdState' });
+    const state = new RunState(context, 'input', agent, 1);
+    state._modelResponses = [
+      {
+        usage: new Usage(),
+        output: [TEST_MODEL_MESSAGE],
+        responseId: 'resp_123',
+        requestId: 'req_123',
+      },
+    ];
+    state._lastTurnResponse = state._modelResponses[0];
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._modelResponses).toHaveLength(1);
+    expect(restored._modelResponses[0].responseId).toBe('resp_123');
+    expect(restored._modelResponses[0].requestId).toBe('req_123');
+    expect(restored._lastTurnResponse?.requestId).toBe('req_123');
   });
 
   it('preserves toolInput after serialization', async () => {

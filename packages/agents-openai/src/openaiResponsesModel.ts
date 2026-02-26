@@ -1849,6 +1849,67 @@ function isTerminalResponsesStreamEventType(
   );
 }
 
+type ResponseStreamWithRequestID =
+  AsyncIterable<OpenAI.Responses.ResponseStreamEvent> & {
+    withResponse?: () => Promise<{
+      data: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
+      request_id: string | null;
+    }>;
+  };
+
+function getOpenAIResponseRequestId(
+  response: object | undefined,
+): string | undefined {
+  const requestId = (response as { _request_id?: string | null } | undefined)
+    ?._request_id;
+  return typeof requestId === 'string' && requestId.length > 0
+    ? requestId
+    : undefined;
+}
+
+function attachOpenAIResponseRequestId(
+  response: object,
+  requestId: string | undefined,
+): void {
+  if (!requestId) {
+    return;
+  }
+
+  const currentRequestId = getOpenAIResponseRequestId(
+    response as { _request_id?: string | null },
+  );
+  if (currentRequestId) {
+    return;
+  }
+
+  try {
+    Object.defineProperty(response, '_request_id', {
+      value: requestId,
+      enumerable: false,
+    });
+  } catch {
+    // Some custom clients may freeze their response objects. In that case we
+    // still expose requestId on the normalized SDK response.
+  }
+}
+
+async function* withAttachedResponseRequestId(
+  stream: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>,
+  requestId: string | undefined,
+): AsyncIterable<OpenAI.Responses.ResponseStreamEvent> {
+  for await (const event of stream) {
+    const eventType = (event as { type?: string }).type;
+    if (isTerminalResponsesStreamEventType(eventType)) {
+      const response = (event as { response?: object }).response;
+      if (response && typeof response === 'object') {
+        attachOpenAIResponseRequestId(response, requestId);
+      }
+    }
+
+    yield event;
+  }
+}
+
 /**
  * Model implementation that uses OpenAI's Responses API to generate responses.
  */
@@ -1880,8 +1941,7 @@ export class OpenAIResponsesModel implements Model {
     | OpenAI.Responses.Response
   > {
     const builtRequest = this._buildResponsesCreateRequest(request, stream);
-
-    const response = await this._client.responses.create(
+    const responsePromise = this._client.responses.create(
       builtRequest.requestData,
       {
         headers: builtRequest.sdkRequestHeaders as any,
@@ -1890,7 +1950,27 @@ export class OpenAIResponsesModel implements Model {
           ? { query: builtRequest.transportExtraQuery }
           : {}),
       },
-    );
+    ) as ResponseStreamWithRequestID | Promise<OpenAI.Responses.Response>;
+
+    let response:
+      | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
+      | OpenAI.Responses.Response;
+    if (stream) {
+      const withResponse = (responsePromise as ResponseStreamWithRequestID)
+        .withResponse;
+      if (typeof withResponse === 'function') {
+        const streamedResponse = await withResponse.call(responsePromise);
+        response = withAttachedResponseRequestId(
+          streamedResponse.data,
+          streamedResponse.request_id ?? undefined,
+        );
+      } else {
+        response =
+          (await responsePromise) as AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
+      }
+    } else {
+      response = (await responsePromise) as OpenAI.Responses.Response;
+    }
 
     if (logger.dontLogModelData) {
       logger.debug('Response received');
@@ -2057,6 +2137,7 @@ export class OpenAIResponsesModel implements Model {
       }),
       output: convertToOutputItem(response.output),
       responseId: response.id,
+      requestId: getOpenAIResponseRequestId(response),
       providerData: response,
     };
 
@@ -2104,6 +2185,7 @@ export class OpenAIResponsesModel implements Model {
             type: 'response_done',
             response: {
               id: id,
+              requestId: getOpenAIResponseRequestId(response),
               output: convertToOutputItem(output),
               usage: {
                 inputTokens: usage?.input_tokens ?? 0,
@@ -2345,6 +2427,8 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         const event = payload as OpenAI.Responses.ResponseStreamEvent;
         const isTerminalResponseEvent =
           isTerminalResponsesStreamEventType(eventType);
+        // Successful websocket responses do not currently expose a transport
+        // request ID analogous to the HTTP x-request-id header.
         receivedAnyEvent = true;
         if (isTerminalResponseEvent) {
           sawTerminalResponseEvent = true;

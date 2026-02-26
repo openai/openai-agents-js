@@ -76,6 +76,41 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('getResponse exposes the OpenAI request ID on ModelResponse', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-request-id',
+        usage: {},
+        output: [],
+      };
+      Object.defineProperty(fakeResponse, '_request_id', {
+        value: 'req_nonstream_123',
+        enumerable: false,
+      });
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const result = await model.getResponse(request as any);
+
+      expect(result.responseId).toBe('res-request-id');
+      expect(result.requestId).toBe('req_nonstream_123');
+    });
+  });
+
   it('omits previous_response_id when conversation is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-conv', usage: {}, output: [] };
@@ -956,6 +991,63 @@ describe('OpenAIResponsesModel', () => {
           },
         ],
       });
+    });
+  });
+
+  it('getStreamedResponse preserves request IDs from HTTP streaming responses', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-request-id',
+          output: [],
+          usage: {},
+        },
+        sequence_number: 1,
+      } as any;
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+
+      const withResponse = vi.fn().mockResolvedValue({
+        data: fakeStream(),
+        request_id: 'req_stream_123',
+      });
+      const createMock = vi.fn().mockReturnValue({
+        withResponse,
+      });
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      expect(withResponse).toHaveBeenCalledTimes(1);
+      const responseDone = received.find((ev) => ev.type === 'response_done');
+      expect(responseDone).toBeDefined();
+      expect((responseDone as any).response.id).toBe('res-stream-request-id');
+      expect((responseDone as any).response.requestId).toBe('req_stream_123');
     });
   });
 

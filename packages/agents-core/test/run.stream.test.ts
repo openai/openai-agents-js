@@ -2072,6 +2072,25 @@ describe('Runner.run (streaming)', () => {
     expect(saveResultSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves requestId from response_done in rawResponses', async () => {
+    const agent = new Agent({
+      name: 'StreamRequestId',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+        responseId: 'resp_123',
+        requestId: 'req_stream_123',
+      }),
+    });
+
+    const result = await run(agent, 'hello', { stream: true });
+    await result.completed;
+
+    expect(result.rawResponses).toHaveLength(1);
+    expect(result.rawResponses[0].responseId).toBe('resp_123');
+    expect(result.rawResponses[0].requestId).toBe('req_stream_123');
+  });
+
   it('runs blocking input guardrails before streaming starts', async () => {
     let guardrailFinished = false;
 
@@ -2150,7 +2169,8 @@ class ImmediateStreamingModel implements Model {
     yield {
       type: 'response_done',
       response: {
-        id: 'r',
+        id: this.response.responseId ?? 'r',
+        requestId: this.response.requestId,
         usage: {
           requests: usage.requests,
           inputTokens: usage.inputTokens,

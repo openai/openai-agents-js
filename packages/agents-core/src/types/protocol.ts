@@ -840,6 +840,11 @@ export const StreamEventResponseCompleted = SharedBase.extend({
     id: z.string(),
 
     /**
+     * The transport request ID for this model call, if provided by the model SDK or transport.
+     */
+    requestId: z.string().optional(),
+
+    /**
      * The usage data for the response.
      */
     usage: UsageData,

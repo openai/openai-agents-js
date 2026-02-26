@@ -570,6 +570,7 @@ describe('OpenAIResponsesWSModel', () => {
       );
       expect(responseDone).toBeDefined();
       expect((responseDone as any).response.id).toBe('resp_terminal');
+      expect((responseDone as any).response.requestId).toBeUndefined();
       expect((responseDone as any).response.providerData?.status).toBe(
         expectedStatus,
       );

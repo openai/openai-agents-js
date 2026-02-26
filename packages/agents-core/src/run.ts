@@ -1194,6 +1194,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   usage: new Usage(parsed.response.usage),
                   output: parsed.response.output,
                   responseId: parsed.response.id,
+                  requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
               }

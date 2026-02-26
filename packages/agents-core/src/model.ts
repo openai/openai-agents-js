@@ -331,6 +331,11 @@ export type ModelResponse = {
   responseId?: string;
 
   /**
+   * The transport request ID for this model call, if provided by the model SDK or transport.
+   */
+  requestId?: string;
+
+  /**
    * Raw response data from the underlying model provider.
    */
   providerData?: Record<string, any>;

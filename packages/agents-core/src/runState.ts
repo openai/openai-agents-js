@@ -49,14 +49,16 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  * - 1.3: Adds computer tool approval items to serialized tool_approval_item unions.
  * - 1.4: Adds optional toolInput to serialized run context.
  * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
+ * - 1.6: Adds optional requestId to serialized model responses.
  */
-export const CURRENT_SCHEMA_VERSION = '1.5' as const;
+export const CURRENT_SCHEMA_VERSION = '1.6' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
   '1.2',
   '1.3',
   '1.4',
+  '1.5',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -122,6 +124,7 @@ const modelResponseSchema = z.object({
   usage: usageSchema,
   output: z.array(protocol.OutputModelItem),
   responseId: z.string().optional(),
+  requestId: z.string().optional(),
   providerData: z.record(z.string(), z.any()).optional(),
 });
 
@@ -711,6 +714,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           },
           output: response.output as any,
           responseId: response.responseId,
+          requestId: response.requestId,
           providerData: response.providerData,
         };
       }),
@@ -1052,6 +1056,7 @@ export function deserializeModelResponse(
       protocol.OutputModelItem.parse(item),
     ),
     responseId: serializedModelResponse.responseId,
+    requestId: serializedModelResponse.requestId,
     providerData: serializedModelResponse.providerData,
   };
 }
