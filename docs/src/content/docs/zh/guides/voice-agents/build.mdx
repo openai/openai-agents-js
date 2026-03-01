@@ -30,12 +30,12 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 <Aside type="caution">
 
-请尽早选择你的架构：
+请尽早确定你的架构：
 
 - `OpenAIRealtimeWebRTC` 是最简单的浏览器方案，并且会为你处理音频输入/输出。
-- `OpenAIRealtimeWebSocket` 提供更多控制能力，但你必须自行管理音频采集与播放。
+- `OpenAIRealtimeWebSocket` 提供更多控制能力，但你必须自己管理音频采集和播放。
 - 函数工具会在 `RealtimeSession` 运行的位置执行。如果会话在浏览器中运行，工具也会在浏览器中运行。
-- Realtime 交接会保持相同的语音和模型。如果你需要不同的后端模型，请通过工具委托，而不是使用交接。
+- Realtime 交接会保持相同的语音和模型。如果你需要不同的后端模型，请通过工具进行委托，而不是使用交接。
 
 </Aside>
 
@@ -43,11 +43,11 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 ### 音频处理
 
-某些传输层（例如默认的 `OpenAIRealtimeWebRTC`）会自动处理音频输入和输出。对于其他传输机制（例如 `OpenAIRealtimeWebSocket`），你需要自行处理会话音频：
+某些传输层（例如默认的 `OpenAIRealtimeWebRTC`）会自动为你处理音频输入和输出。对于其他传输机制（例如 `OpenAIRealtimeWebSocket`），你需要自己处理会话音频：
 
 <Code lang="typescript" code={handleAudioExample} />
 
-当底层传输支持时，`session.muted` 会报告当前静音状态，`session.mute(true | false)` 会切换麦克风采集。`OpenAIRealtimeWebSocket` 不实现静音：`session.muted` 返回 `null`，且 `session.mute()` 会抛出异常。因此，对于 websocket 方案，你应在本地暂停采集，并停止调用 `sendAudio()`，直到需要重新开启麦克风。
+当底层传输支持时，`session.muted` 会报告当前静音状态，`session.mute(true | false)` 用于切换麦克风采集。`OpenAIRealtimeWebSocket` 不实现静音：`session.muted` 返回 `null`，且 `session.mute()` 会抛出异常，因此在 websocket 配置下，你应在本地暂停采集，并在麦克风应重新开启前停止调用 `sendAudio()`。
 
 ### 会话配置
 
@@ -55,148 +55,148 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 <Code lang="typescript" code={configureSessionExample} />
 
-这些传输层允许你传入与 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) 匹配的任意参数。
+这些传输层允许你传入任何与 [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update) 匹配的参数。
 
-建议优先使用较新的配置结构：`outputModalities`、`audio.input` 和 `audio.output`。旧版顶层字段（如 `modalities`、`inputAudioFormat`、`outputAudioFormat`、`inputAudioTranscription` 和 `turnDetection`）仍会为向后兼容而被规范化处理，但新代码应使用这里展示的嵌套 `audio` 结构。
+建议优先使用较新的配置结构，即 `outputModalities`、`audio.input` 和 `audio.output`。旧版顶层字段如 `modalities`、`inputAudioFormat`、`outputAudioFormat`、`inputAudioTranscription` 和 `turnDetection` 仍会为向后兼容而被标准化处理，但新代码应使用这里展示的嵌套 `audio` 结构。
 
-对于新增且在 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) 中没有对应参数的项，你可以使用 `providerData`。传入 `providerData` 的任何内容都会直接作为 `session` 对象的一部分传递。
+对于较新的参数，如果在 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) 中没有对应参数，可使用 `providerData`。传入 `providerData` 的任何内容都会作为 `session` 对象的一部分直接传递。
 
 可在构造时设置的其他 `RealtimeSession` 选项：
 
-| Option                                        | Type                              | Purpose                                                                |
-| --------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------- |
-| `context`                                     | `TContext`                        | 合并到会话上下文中的额外本地上下文。                                   |
-| `historyStoreAudio`                           | `boolean`                         | 在本地历史快照中存储音频数据（默认关闭）。                             |
-| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | 会话的输出护栏（见 [Guardrails](#guardrails)）。                       |
-| `outputGuardrailSettings`                     | `{ debounceTextLength?: number }` | 护栏触发节奏。默认为 `100`；使用 `-1` 表示仅在完整文本可用时运行一次。 |
-| `tracingDisabled`                             | `boolean`                         | 禁用会话追踪。                                                         |
-| `groupId`                                     | `string`                          | 在多个会话或后端运行之间对追踪进行分组。                               |
-| `traceMetadata`                               | `Record<string, any>`             | 附加到会话追踪的自定义元数据。                                         |
-| `workflowName`                                | `string`                          | 追踪工作流的友好名称。                                                 |
-| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | MCP 工具调用完成后自动触发模型响应（默认：`true`）。                   |
-| `toolErrorFormatter`                          | `ToolErrorFormatter`              | 自定义返回给模型的工具审批拒绝消息。                                   |
+| Option                                        | Type                              | Purpose                                                              |
+| --------------------------------------------- | --------------------------------- | -------------------------------------------------------------------- |
+| `context`                                     | `TContext`                        | 合并到会话上下文中的额外本地上下文。                                 |
+| `historyStoreAudio`                           | `boolean`                         | 在本地历史快照中存储音频数据（默认关闭）。                           |
+| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | 会话的输出护栏（参见 [Guardrails](#guardrails)）。                   |
+| `outputGuardrailSettings`                     | `{ debounceTextLength?: number }` | 护栏触发节奏。默认 `100`；设为 `-1` 表示仅在完整文本可用时运行一次。 |
+| `tracingDisabled`                             | `boolean`                         | 禁用会话追踪。                                                       |
+| `groupId`                                     | `string`                          | 在多个会话或后端运行间对追踪进行分组。                               |
+| `traceMetadata`                               | `Record<string, any>`             | 附加到会话追踪的自定义元数据。                                       |
+| `workflowName`                                | `string`                          | 追踪工作流的友好名称。                                               |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | MCP 工具调用完成后自动触发模型响应（默认：`true`）。                 |
+| `toolErrorFormatter`                          | `ToolErrorFormatter`              | 自定义返回给模型的工具审批拒绝消息。                                 |
 
 `connect(...)` 选项：
 
-| Option   | Type                                          | Purpose                                |
-| -------- | --------------------------------------------- | -------------------------------------- |
-| `apiKey` | `string \| (() => string \| Promise<string>)` | 此连接使用的 API key（或惰性加载器）。 |
-| `model`  | `OpenAIRealtimeModels \| string`              | 传输连接的可选模型覆盖。               |
-| `url`    | `string`                                      | 可选的自定义 Realtime 端点 URL。       |
-| `callId` | `string`                                      | 绑定到一个已有的 SIP 发起通话/会话。   |
+| Option   | Type                                          | Purpose                              |
+| -------- | --------------------------------------------- | ------------------------------------ |
+| `apiKey` | `string \| (() => string \| Promise<string>)` | 此连接使用的 API key（或懒加载器）。 |
+| `model`  | `OpenAIRealtimeModels \| string`              | 传输连接可选的模型覆盖。             |
+| `url`    | `string`                                      | 可选的自定义 Realtime 端点 URL。     |
+| `callId` | `string`                                      | 绑定到已存在的 SIP 发起通话/会话。   |
 
 ## 智能体能力
 
 ### 交接
 
-与常规智能体类似，你可以使用交接将智能体拆分为多个智能体，并在它们之间编排，以提升智能体性能并更好地界定问题范围。
+与常规智能体类似，你可以使用交接将智能体拆分为多个智能体，并在它们之间进行智能体编排，以提升智能体性能并更好地界定问题范围。
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-与常规智能体不同，交接在 Realtime Agents 中的行为略有差异。执行交接时，进行中的会话会更新为新智能体配置。因此，智能体会自动访问当前对话历史，并且当前不会应用输入过滤器。
+与常规智能体不同，Realtime Agents 中的交接行为略有不同。执行交接时，进行中的会话会更新为新的智能体配置。因此，智能体会自动访问当前对话历史，并且目前不会应用输入过滤器。
 
-此外，这也意味着无法在交接过程中更改 `voice` 或 `model`。你也只能连接到其他 Realtime Agents。比如如果你需要使用不同模型（如推理模型 `gpt-5-mini`），可以使用 [delegation through tools](#delegation-through-tools)。
+此外，这也意味着 `voice` 或 `model` 不能在交接中更改。你也只能连接到其他 Realtime Agents。例如如果需要使用不同模型（如推理模型 `gpt-5.2`），可以使用[通过工具委托](#delegation-through-tools)。
 
 ### 工具
 
-与常规智能体一样，Realtime Agents 可以调用工具执行操作。Realtime 支持**函数工具**（本地执行）和**托管 MCP 工具**（由 Realtime API 远程执行）。你可以使用与常规智能体相同的 `tool()` 辅助函数来定义函数工具。
+与常规智能体一样，Realtime Agents 可以调用工具执行操作。Realtime 支持**函数工具**（本地执行）和**托管 MCP 工具**（由 Realtime API 远程执行）。你可以使用与常规智能体相同的 `tool()` 辅助方法来定义函数工具。
 
 <Code lang="typescript" code={defineToolExample} />
 
 #### 函数工具
 
-函数工具会在与你的 `RealtimeSession` 相同的环境中运行。这意味着如果你的会话在浏览器中运行，工具也会在浏览器中执行。如果你需要执行敏感操作，请在工具内部调用后端，并让服务器执行特权操作。
+函数工具与 `RealtimeSession` 在同一环境中运行。这意味着如果会话运行在浏览器中，工具也会在浏览器中执行。如果需要执行敏感操作，请在工具内部调用后端，让服务器完成特权工作。
 
-这使得浏览器侧工具可以作为服务端逻辑的轻量回传通道。例如，[`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next) 在浏览器中定义了一个 `refundBackchannel` 工具，它会将请求和当前对话历史转发到服务器上的 `handleRefundRequest(...)`，在那里一个独立的 `Runner` 可使用不同智能体或模型评估退款，然后将结果返回给语音会话。
+这样，浏览器侧工具就可以作为连接服务器端逻辑的轻量回传通道。例如，[`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next) 在浏览器中定义了 `refundBackchannel` 工具，将请求和当前对话历史转发到服务器上的 `handleRefundRequest(...)`，在那里独立的 `Runner` 可以使用不同的智能体或模型评估退款，再将结果返回语音会话。
 
 #### 托管 MCP 工具
 
 托管 MCP 工具可通过 `hostedMcpTool` 配置，并在远程执行。当 MCP 工具可用性变化时，会话会发出 `mcp_tools_changed`。若要阻止会话在 MCP 工具调用完成后自动触发模型响应，请设置 `automaticallyTriggerResponseForMcpToolCalls: false`。
 
-当前过滤后的 MCP 工具列表也可通过 `session.availableMcpTools` 获取。该属性与 `mcp_tools_changed` 事件都只反映活动智能体上启用的托管 MCP 服务器，并且会应用智能体配置中的任何 `allowed_tools` 过滤条件。
+当前过滤后的 MCP 工具列表也可通过 `session.availableMcpTools` 获取。该属性与 `mcp_tools_changed` 事件都只反映活动智能体上已启用的托管 MCP 服务器，并且已应用智能体配置中的 `allowed_tools` 过滤。
 
 #### 后台结果
 
-工具执行期间，智能体将无法处理来自用户的新请求。提升体验的一种方式是让智能体在即将执行工具时进行提示，或说一些固定短语，为工具执行争取时间。
+工具执行期间，智能体将无法处理用户的新请求。一种提升体验的方式是让智能体在即将执行工具时先告知用户，或说一些固定短语来争取执行时间。
 
-如果某个函数工具完成后不应立即触发新的模型响应，请从 `@openai/agents/realtime` 返回 `backgroundResult(output)`。
-这样会将工具输出回传到会话，同时将响应触发权交由你控制。
+如果某个函数工具完成后不应立即触发新的模型响应，可从 `@openai/agents/realtime` 返回 `backgroundResult(output)`。
+这会将工具输出回传到会话，同时将响应触发时机交由你控制。
 
 #### 超时
 
-函数工具超时选项（`timeoutMs`、`timeoutBehavior`、`timeoutErrorFunction`）在 Realtime 会话中的行为相同。默认 `error_as_result` 下，超时消息会作为工具输出发送。使用 `raise_exception` 时，会话会发出带有 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) 的 `error` 事件，并且不会为该次调用发送工具输出。
+函数工具超时选项（`timeoutMs`、`timeoutBehavior`、`timeoutErrorFunction`）在 Realtime 会话中的行为相同。默认 `error_as_result` 下，超时消息会作为工具输出发送。使用 `raise_exception` 时，会话会发出包含 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) 的 `error` 事件，并且该次调用不会发送工具输出。
 
 #### 访问对话历史
 
-除了智能体调用某个工具时传入的参数外，你还可以访问由 Realtime Session 跟踪的当前对话历史快照。如果你需要基于当前对话状态执行更复杂操作，或计划使用 [tools for delegation](#delegation-through-tools)，这会很有帮助。
+除了智能体调用某个工具时传入的参数外，你还可以访问 Realtime Session 跟踪的当前对话历史快照。如果你需要基于当前对话状态执行更复杂操作，或计划使用[用于委托的工具](#delegation-through-tools)，这会很有帮助。
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
-  传入的历史是工具调用当时的历史快照。 用户最后一句话的转录可能还不可用。
+  传入的历史是工具调用时刻的历史快照。 用户最后一句话的转写可能尚未可用。
 </Aside>
 
 #### 工具执行前审批
 
 如果你在定义工具时设置 `needsApproval: true`，智能体会在执行工具前发出 `tool_approval_requested` 事件。
 
-监听该事件后，你可以向用户展示 UI，让其批准或拒绝工具调用。
+监听该事件后，你可以向用户展示 UI，让其批准或拒绝该工具调用。
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  当语音智能体正在等待工具调用审批时， 智能体无法处理来自用户的新请求。
+  当语音智能体在等待工具调用审批时， 将无法处理用户的新请求。
 </Aside>
 
 ### 护栏
 
-护栏提供了一种方式，用于监控智能体输出是否违反某组规则，并立即截断响应。这些护栏检查基于智能体响应的转录文本执行，因此要求模型启用文本输出（默认已启用）。
+护栏可用于监控智能体输出是否违反一组规则，并立即中断响应。这些护栏检查基于智能体响应的转写文本执行，因此要求启用模型文本输出（默认已启用）。
 
-你提供的护栏会在模型响应返回时异步运行，使你可以根据预定义分类触发器截断响应，例如“提到某个被禁词”。
+你提供的护栏会在模型响应返回时异步运行，使你可以基于预定义分类触发器中断响应，例如“提到某个特定禁用词”。
 
-当护栏触发时，会话会发出 `guardrail_tripped` 事件。该事件还会提供一个 `details` 对象，其中包含触发护栏的 `itemId`。
+当护栏触发时，会话会发出 `guardrail_tripped` 事件。事件还会提供一个 `details` 对象，其中包含触发护栏的 `itemId`。
 
 <Code lang="typescript" code={guardrailsExample} />
 
-默认情况下，护栏每 100 个字符运行一次，并在最终转录可用时再运行一次。由于朗读文本通常比生成转录更慢，这通常能让护栏在用户听到之前就截断不安全输出。
+默认情况下，护栏每 100 个字符运行一次，并在最终转写可用时再运行一次。由于说出文本通常比生成转写更慢，这通常能让护栏在用户听到前就截断不安全输出。
 
 如果你想修改此行为，可以向会话传入 `outputGuardrailSettings` 对象。
 
-当你只希望在响应结束时、对完整生成的转录评估一次时，请设置 `debounceTextLength: -1`。
+当你只想在响应结束时，对完整生成的转写评估一次时，设置 `debounceTextLength: -1`。
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
 ## 交互流程
 
-### 轮次检测/语音活动检测
+### 回合检测 / 语音活动检测
 
-Realtime Session 会自动检测用户何时发言，并使用内置的 [Realtime API 语音活动检测模式](https://platform.openai.com/docs/guides/realtime-vad) 触发新轮次。
+Realtime Session 会使用 [Realtime API 内置的语音活动检测模式](https://platform.openai.com/docs/guides/realtime-vad)自动检测用户何时说话并触发新回合。
 
-你可以通过在会话配置中传入 `audio.input.turnDetection` 来更改语音活动检测模式。
+你可以在会话配置中传入 `audio.input.turnDetection` 来更改语音活动检测模式。
 
 <Code lang="typescript" code={turnDetectionExample} />
 
-调整轮次检测设置有助于校准不必要的打断和静默处理。更多不同设置细节请查看 [Realtime API 文档](https://platform.openai.com/docs/guides/realtime-vad)
+修改回合检测设置有助于校准不必要的打断与静音处理。更多不同设置的细节请参阅 [Realtime API 文档](https://platform.openai.com/docs/guides/realtime-vad)。
 
 ### 打断
 
-使用内置语音活动检测时，用户插话会自动触发智能体检测并根据发言内容更新上下文。同时还会发出 `audio_interrupted` 事件。这可用于立即停止所有音频播放（仅适用于 WebSocket 连接）。
+使用内置语音活动检测时，用户在智能体说话时插话会自动触发智能体检测，并根据所说内容更新上下文。它还会发出 `audio_interrupted` 事件。这可用于立即停止所有音频播放（仅适用于 WebSocket 连接）。
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-如果你希望手动打断，例如在 UI 中提供“停止”按钮，可以手动调用 `interrupt()`：
+如果你想手动打断（例如在 UI 中提供“停止”按钮），可以手动调用 `interrupt()`：
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
 无论哪种方式，Realtime Session 都会处理中断智能体生成、截断其对已向用户说出内容的认知，并更新历史。
 
-如果你使用 WebRTC 连接智能体，还会清空音频输出。如果你使用 WebSocket，则需要自行处理：停止播放所有已排队待播放的音频。
+如果你使用 WebRTC 连接智能体，它还会清空音频输出。如果你使用 WebSocket，则需自行处理，停止播放所有已排队待播的音频。
 
 ### 文本输入
 
-如果你希望向智能体发送文本输入，可以使用 `RealtimeSession` 上的 `sendMessage` 方法。
+如果你想向智能体发送文本输入，可以使用 `RealtimeSession` 上的 `sendMessage` 方法。
 
-当你希望用户以两种模态与智能体交互，或向对话提供额外上下文时，这会很有用。
+这在你希望用户以两种模态与智能体交互，或为对话提供额外上下文时非常有用。
 
 <Code lang="typescript" code={sendMessageExample} />
 
@@ -206,26 +206,27 @@ Realtime Session 会自动检测用户何时发言，并使用内置的 [Realtim
 
 `RealtimeSession` 会在 `history` 属性中自动管理对话历史：
 
-你可以用它将历史渲染给客户，或在其上执行额外操作。由于该历史会在对话过程中持续变化，你可以监听 `history_updated` 事件。
+你可以用它向客户渲染历史，或对其执行其他操作。由于该历史会在对话过程中持续变化，你可以监听 `history_updated` 事件。
 
-如果你想修改历史（例如完全删除一条消息或更新其转录），可以使用 `updateHistory` 方法。
+如果你想修改历史，例如完全删除某条消息或更新其转写，
+可以使用 `updateHistory` 方法。
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 #### 限制
 
-1. 目前你无法在事后更新/更改函数工具调用
-2. 历史中的文本输出需要启用转录和文本模态
-3. 因中断而被截断的响应没有转录
+1. 当前你无法在事后更新/修改函数工具调用
+2. 历史中的文本输出要求启用转写和文本模态
+3. 因打断而截断的响应不包含转写
 
 ### 通过工具委托
 
-![Delegation through tools](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
+![通过工具委托](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-通过将对话历史与工具调用结合，你可以把对话委托给另一个后端智能体执行更复杂的操作，然后将结果返回给用户。
+将对话历史与工具调用结合后，你可以把对话委托给另一个后端智能体执行更复杂的操作，然后将结果返回给用户。
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-随后下面这段代码会在服务器上执行。本例中是通过 Next.js 中的 server actions 执行。
+随后下面的代码会在服务器上执行。在此示例中，是通过 Next.js 的 server actions 执行。
 
 <Code lang="typescript" code={serverAgentExample} />
