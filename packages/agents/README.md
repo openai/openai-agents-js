@@ -1,17 +1,23 @@
 # OpenAI Agents SDK (JavaScript/TypeScript)
 
+[![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents)
+[![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
+
 The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. It is provider-agnostic, supporting OpenAI APIs and more.
 
 <img src="https://cdn.openai.com/API/docs/images/orchestration.png" alt="Image of the Agents Tracing UI" style="max-height: 803px;">
 
+> [!NOTE]
+> Looking for the Python version? Check out [OpenAI Agents SDK Python](https://github.com/openai/openai-agents-python).
+
 ## Core concepts
 
 1. **Agents**: LLMs configured with instructions, tools, guardrails, and handoffs.
-2. **Handoffs**: Specialized tool calls for transferring control between agents.
+2. **Agents as tools / Handoffs**: Delegating to other agents for specific tasks.
 3. **Guardrails**: Configurable safety checks for input and output validation.
 4. **Tracing**: Built-in tracking of agent runs, allowing you to view, debug, and optimize your workflows.
 
-Explore the [`examples/`](examples/) directory to see the SDK in action.
+Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
 ## Supported Features
 
@@ -39,7 +45,7 @@ Explore the [`examples/`](examples/) directory to see the SDK in action.
 - Deno
 - Bun
 
-Experimental support:
+#### Experimental support:
 
 - Cloudflare Workers with `nodejs_compat` enabled
 
@@ -51,7 +57,7 @@ Experimental support:
 npm install @openai/agents zod
 ```
 
-## Hello world example
+### Run your first agent
 
 ```js
 import { Agent, run } from '@openai/agents';
@@ -73,130 +79,7 @@ console.log(result.finalOutput);
 
 (_If running this, ensure you set the `OPENAI_API_KEY` environment variable_)
 
-## Functions example
-
-```js
-import { z } from 'zod';
-import { Agent, run, tool } from '@openai/agents';
-
-const getWeatherTool = tool({
-  name: 'get_weather',
-  description: 'Get the weather for a given city',
-  parameters: z.object({ city: z.string() }),
-  execute: async (input) => {
-    return `The weather in ${input.city} is sunny`;
-  },
-});
-
-const agent = new Agent({
-  name: 'Data agent',
-  instructions: 'You are a data agent',
-  tools: [getWeatherTool],
-});
-
-async function main() {
-  const result = await run(agent, 'What is the weather in Tokyo?');
-  console.log(result.finalOutput);
-}
-
-main().catch(console.error);
-```
-
-## Handoffs example
-
-```js
-import { z } from 'zod';
-import { Agent, run, tool } from '@openai/agents';
-
-const getWeatherTool = tool({
-  name: 'get_weather',
-  description: 'Get the weather for a given city',
-  parameters: z.object({ city: z.string() }),
-  execute: async (input) => {
-    return `The weather in ${input.city} is sunny`;
-  },
-});
-
-const dataAgent = new Agent({
-  name: 'Data agent',
-  instructions: 'You are a data agent',
-  handoffDescription: 'You know everything about the weather',
-  tools: [getWeatherTool],
-});
-
-// Use Agent.create method to ensure the finalOutput type considers handoffs
-const agent = Agent.create({
-  name: 'Basic test agent',
-  instructions: 'You are a basic agent',
-  handoffs: [dataAgent],
-});
-
-async function main() {
-  const result = await run(agent, 'What is the weather in San Francisco?');
-  console.log(result.finalOutput);
-}
-
-main().catch(console.error);
-```
-
-## Voice Agent
-
-```js
-import { z } from 'zod';
-import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents-realtime';
-
-const getWeatherTool = tool({
-  name: 'get_weather',
-  description: 'Get the weather for a given city',
-  parameters: z.object({ city: z.string() }),
-  execute: async (input) => {
-    return `The weather in ${input.city} is sunny`;
-  },
-});
-
-const agent = new RealtimeAgent({
-  name: 'Data agent',
-  instructions: 'You are a data agent',
-  tools: [getWeatherTool],
-});
-
-// Intended to run in the browser
-const { apiKey } = await fetch('/path/to/ephemeral/key/generation').then(
-  (resp) => resp.json(),
-);
-// Automatically configures audio input/output — start talking
-const session = new RealtimeSession(agent);
-await session.connect({ apiKey });
-```
-
-## The agent loop
-
-When you call `Runner.run()`, the SDK executes a loop until a final output is produced.
-
-1. The agent is invoked with the given input, using the model and settings configured on the agent (or globally).
-2. The LLM returns a response, which may include tool calls or handoff requests.
-3. If the response contains a final output (see below), the loop ends and the result is returned.
-4. If the response contains a handoff, the agent is switched to the new agent and the loop continues.
-5. If there are tool calls, the tools are executed, their results are appended to the message history, and the loop continues.
-
-You can control the maximum number of iterations with the `maxTurns` parameter.
-
-### Final output
-
-The final output is the last thing the agent produces in the loop.
-
-1. If the agent has an `outputType` (structured output), the loop ends when the LLM returns a response matching that type.
-2. If there is no `outputType` (plain text), the first LLM response without tool calls or handoffs is considered the final output.
-
-**Summary of the agent loop:**
-
-- If the current agent has an `outputType`, the loop runs until structured output of that type is produced.
-- If not, the loop runs until a message is produced with no tool calls or handoffs.
-
-### Error handling
-
-- If the maximum number of turns is exceeded, a `MaxTurnsExceededError` is thrown unless it is handled.
-- If a guardrail is triggered, a `GuardrailTripwireTriggered` exception is raised.
+Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
 ## Acknowledgements
 
@@ -210,4 +93,4 @@ We'd like to acknowledge the excellent work of the open-source community, especi
 
 We're committed to building the Agents SDK as an open source framework so others in the community can expand on our approach.
 
-For more details, see the [documentation](https://openai.github.io/openai-agents-js) or explore the [`examples/`](examples/) directory.
+For more details, see the [documentation](https://openai.github.io/openai-agents-js) or explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory.
