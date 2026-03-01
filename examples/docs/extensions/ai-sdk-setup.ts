@@ -7,7 +7,7 @@ import { openai } from '@ai-sdk/openai';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 // Create a model instance to be used by the agent
-const model = aisdk(openai('gpt-5-mini'));
+const model = aisdk(openai('gpt-5.2'));
 
 // Create an agent with the model
 const agent = new Agent({

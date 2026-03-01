@@ -1,5 +1,5 @@
 ---
-title: Orchestrating multiple agents
+title: Agent orchestration
 description: Coordinate the flow between several agents
 ---
 

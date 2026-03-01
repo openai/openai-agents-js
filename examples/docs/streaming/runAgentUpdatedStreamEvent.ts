@@ -1,8 +1,10 @@
-import type { Agent } from '@openai/agents';
+import type {
+  RunAgentUpdatedStreamEvent,
+  RunStreamEvent,
+} from '@openai/agents';
 
-type RunAgentUpdatedStreamEvent = {
-  type: 'agent_updated_stream_event';
-  agent: Agent<any, any>;
-};
-
-void ({} as RunAgentUpdatedStreamEvent);
+export function isRunAgentUpdatedStreamEvent(
+  event: RunStreamEvent,
+): event is RunAgentUpdatedStreamEvent {
+  return event.type === 'agent_updated_stream_event';
+}

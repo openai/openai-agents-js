@@ -128,12 +128,12 @@ const sidebar = [
     },
     items: [
       {
-        label: 'Orchestrating multiple agents',
+        label: 'Agent orchestration',
         link: '/guides/multi-agent',
         translations: {
-          ja: 'マルチエージェント',
-          zh: '多智能体编排',
-          ko: '멀티 에이전트 오케스트레이션',
+          ja: 'エージェントオーケストレーション',
+          zh: '智能体编排',
+          ko: '에이전트 오케스트레이션',
         },
       },
       {

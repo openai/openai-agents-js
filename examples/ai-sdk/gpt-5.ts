@@ -15,12 +15,12 @@ export async function main() {
     instructions:
       'You are a helpful assistant. When you need to get the weather, you must use tools.',
     tools: [getWeatherTool],
-    model: aisdk(openai('gpt-5-mini')),
+    model: aisdk(openai('gpt-5.2')),
     modelSettings: {
       providerData: {
         providerOptions: {
           openai: {
-            reasoningEffort: 'minimal',
+            reasoningEffort: 'none',
             textVerbosity: 'low',
           },
         },

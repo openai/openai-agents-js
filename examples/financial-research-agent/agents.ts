@@ -46,7 +46,7 @@ export type FinancialSearchPlan = z.infer<typeof FinancialSearchPlan>;
 export const plannerAgent = new Agent({
   name: 'FinancialPlannerAgent',
   instructions: plannerPrompt,
-  model: 'gpt-5-mini',
+  model: 'gpt-5.2',
   outputType: FinancialSearchPlan,
 });
 

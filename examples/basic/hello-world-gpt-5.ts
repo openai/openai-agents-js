@@ -13,16 +13,16 @@ const output = z.object({
 });
 
 async function main() {
-  withTrace('GPT-5 Assistant', async () => {
+  withTrace('GPT-5.2 Assistant', async () => {
     const prompt =
       'Tell me about recursion in programming in a few sentences. Quickly responding with a single answer is fine.';
 
     const agent = new Agent({
-      name: 'GPT-5 Assistant',
-      model: 'gpt-5',
+      name: 'GPT-5.2 Assistant',
+      model: 'gpt-5.2',
       instructions: "You're a helpful assistant.",
       modelSettings: {
-        reasoning: { effort: 'minimal' },
+        reasoning: { effort: 'none' },
         text: { verbosity: 'low' },
       },
       outputType: output,
@@ -35,7 +35,7 @@ async function main() {
     // const agent2 = agent.clone({
     //   modelSettings: {
     //     providerData: {
-    //       reasoning: { effort: 'minimal' },
+    //       reasoning: { effort: 'none' },
     //       text: { verbosity: 'low' },
     //     }
     //   },
@@ -44,11 +44,11 @@ async function main() {
     // console.log(result2.finalOutput);
 
     const completionsAgent = new Agent({
-      name: 'GPT-5 Assistant',
-      model: new OpenAIChatCompletionsModel(new OpenAI(), 'gpt-5'),
+      name: 'GPT-5.2 Assistant',
+      model: new OpenAIChatCompletionsModel(new OpenAI(), 'gpt-5.2'),
       instructions: "You're a helpful assistant.",
       modelSettings: {
-        reasoning: { effort: 'minimal' },
+        reasoning: { effort: 'none' },
         text: { verbosity: 'low' },
       },
       outputType: output,
@@ -60,7 +60,7 @@ async function main() {
     // const completionsAgent2 = completionsAgent.clone({
     //   modelSettings: {
     //     providerData: {
-    //       reasoning_effort: 'minimal',
+    //       reasoning_effort: 'none',
     //       verbosity: 'low',
     //     }
     //   },

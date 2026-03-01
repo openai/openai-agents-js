@@ -9,7 +9,7 @@ const agent = new Agent({
   name: 'Refund Expert',
   instructions:
     'You are a refund expert. You are given a request to process a refund and you need to determine if the request is valid.',
-  model: 'gpt-5-mini',
+  model: 'gpt-5.2',
   outputType: z.object({
     reasong: z.string(),
     refundApproved: z.boolean(),

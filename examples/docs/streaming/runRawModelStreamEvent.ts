@@ -1,8 +1,7 @@
-import type { ResponseStreamEvent } from '@openai/agents';
+import type { RunRawModelStreamEvent, RunStreamEvent } from '@openai/agents';
 
-type RunRawModelStreamEvent = {
-  type: 'raw_model_stream_event';
-  data: ResponseStreamEvent;
-};
-
-void ({} as RunRawModelStreamEvent);
+export function isRunRawModelStreamEvent(
+  event: RunStreamEvent,
+): event is RunRawModelStreamEvent {
+  return event.type === 'raw_model_stream_event';
+}
