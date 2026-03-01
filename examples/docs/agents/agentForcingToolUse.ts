@@ -14,5 +14,5 @@ const agent = new Agent({
   name: 'Strict tool user',
   instructions: 'Always answer using the calculator tool.',
   tools: [calculatorTool],
-  modelSettings: { toolChoice: 'auto' },
+  modelSettings: { toolChoice: 'required' },
 });
