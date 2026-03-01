@@ -976,6 +976,28 @@ export function getResponseFormat(
   };
 }
 
+export type AiSdkOutputTextTransformContext = {
+  request: ModelRequest;
+  provider: string;
+  modelId: string;
+  specificationVersion: 'v2' | 'v3' | 'unknown';
+  stream: boolean;
+};
+
+export type AiSdkOutputTextTransform = (
+  text: string,
+  context: AiSdkOutputTextTransformContext,
+) => string | Promise<string>;
+
+export type AiSdkModelOptions = {
+  /**
+   * Optional hook to normalize finalized assistant text emitted by the adapter.
+   * Runs on non-stream responses and on the final `response_done` event for
+   * streams. Incremental `output_text_delta` events are not transformed.
+   */
+  transformOutputText?: AiSdkOutputTextTransform;
+};
+
 /**
  * Wraps a model from the AI SDK that adheres to the LanguageModelV2 spec to be used used as a model
  * in the OpenAI Agents SDK to use other models.
@@ -1002,10 +1024,37 @@ export function getResponseFormat(
  */
 export class AiSdkModel implements Model {
   #model: LanguageModelCompatible;
+  #options: AiSdkModelOptions;
   #logger = getLogger('openai-agents:extensions:ai-sdk');
-  constructor(model: LanguageModelCompatible) {
+  constructor(model: LanguageModelCompatible, options: AiSdkModelOptions = {}) {
     ensureSupportedModel(model);
     this.#model = model;
+    this.#options = options;
+  }
+
+  async #transformOutputText(
+    text: string,
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<string> {
+    const transform = this.#options.transformOutputText;
+    if (!transform) {
+      return text;
+    }
+
+    const transformed = await transform(text, {
+      request,
+      provider: this.#model.provider,
+      modelId: this.#model.modelId,
+      specificationVersion: getSpecVersion(this.#model),
+      stream,
+    });
+
+    if (typeof transformed !== 'string') {
+      throw new UserError('transformOutputText must return a string');
+    }
+
+    return transformed;
   }
 
   async getResponse(request: ModelRequest) {
@@ -1171,9 +1220,14 @@ export class AiSdkModel implements Model {
             (c: any) => c && c.type === 'text' && typeof c.text === 'string',
           );
           if (textItem) {
+            const transformedText = await this.#transformOutputText(
+              textItem.text,
+              request,
+              false,
+            );
             output.push({
               type: 'message',
-              content: [{ type: 'output_text', text: textItem.text }],
+              content: [{ type: 'output_text', text: transformedText }],
               role: 'assistant',
               status: 'completed',
               providerData: mergeProviderData(
@@ -1470,10 +1524,15 @@ export class AiSdkModel implements Model {
       }
 
       if (textOutput) {
+        const transformedText = await this.#transformOutputText(
+          textOutput.text,
+          request,
+          true,
+        );
         outputs.push({
           type: 'message',
           role: 'assistant',
-          content: [textOutput],
+          content: [{ ...textOutput, text: transformedText }],
           status: 'completed',
           providerData: mergeProviderData(
             baseProviderData,
@@ -1605,10 +1664,14 @@ export class AiSdkModel implements Model {
  * ```
  *
  * @param model - The Vercel AI SDK model to wrap.
+ * @param options - Optional AI SDK adapter behavior overrides.
  * @returns The wrapped model.
  */
-export function aisdk(model: LanguageModelCompatible) {
-  return new AiSdkModel(model);
+export function aisdk(
+  model: LanguageModelCompatible,
+  options: AiSdkModelOptions = {},
+) {
+  return new AiSdkModel(model, options);
 }
 
 function extractTokenCount(usage: any, key: string): number {

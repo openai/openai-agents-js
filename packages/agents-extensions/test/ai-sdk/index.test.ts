@@ -1,17 +1,19 @@
 import { describe, test, expect, vi } from 'vitest';
 import {
   AiSdkModel,
+  aisdk,
   getResponseFormat,
   itemsToLanguageV2Messages,
   parseArguments,
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../../src/ai-sdk/index';
-import { protocol, withTrace, UserError } from '@openai/agents';
+import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import type { JSONSchema7, LanguageModelV2 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 import { allowConsole } from '../../../../helpers/tests/console-guard';
+import { z } from 'zod';
 
 function stubModel(
   partial: Partial<Pick<LanguageModelV2, 'doGenerate' | 'doStream'>>,
@@ -60,6 +62,20 @@ function partsStream(parts: any[]): ReadableStream<any> {
   );
 }
 
+const structuredOutputType: SerializedOutputType = {
+  type: 'json_schema',
+  name: 'output',
+  strict: false,
+  schema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string' },
+    },
+    required: ['content'],
+    additionalProperties: false,
+  },
+};
+
 describe('getResponseFormat', () => {
   test('converts text output type', () => {
     const outputType: SerializedOutputType = 'text';
@@ -91,6 +107,81 @@ describe('getResponseFormat', () => {
 });
 
 describe('AiSdkModel end-to-end scenarios', () => {
+  test('supports structured final output from plain JSON text without transforms', async () => {
+    const model = aisdk(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: '{"content":"structured without transform"}',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const agent = new Agent({
+      name: 'Structured Agent',
+      model,
+      outputType: z.object({
+        content: z.string(),
+      }),
+    });
+
+    const result = await run(agent, 'hi');
+    expect(result.finalOutput).toEqual({
+      content: 'structured without transform',
+    });
+  });
+
+  test('supports structured final output via transformOutputText', async () => {
+    const model = aisdk(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: '```json\n{"content":"structured"}\n```',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+      {
+        transformOutputText(text) {
+          return (
+            text.match(/```(?:json)?\s*([\s\S]*?)\s*```/)?.[1]?.trim() ?? text
+          );
+        },
+      },
+    );
+
+    const agent = new Agent({
+      name: 'Structured Agent',
+      model,
+      outputType: z.object({
+        content: z.string(),
+      }),
+    });
+
+    const result = await run(agent, 'hi');
+    expect(result.finalOutput).toEqual({ content: 'structured' });
+  });
+
   test('streams interleaved text and multiple tool calls with usage', async () => {
     const parts = [
       { type: 'text-delta', delta: 'Hello ' },
@@ -723,6 +814,62 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('applies transformOutputText to finalized assistant text', async () => {
+    const transformOutputText = vi.fn((text: string, context: any) => {
+      expect(context.stream).toBe(false);
+      expect(context.provider).toBe('stub');
+      expect(context.modelId).toBe('m');
+      expect(context.request.outputType).toEqual(structuredOutputType);
+      return text.match(/```(?:json)?\s*([\s\S]*?)\s*```/)?.[1]?.trim() ?? text;
+    });
+
+    const model = aisdk(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: '```json\n{"content":"structured"}\n```',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: structuredOutputType,
+        tracing: false,
+      } as any),
+    );
+
+    expect(transformOutputText).toHaveBeenCalledTimes(1);
+    expect(res.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '{"content":"structured"}' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+        },
+      },
+    ]);
+  });
+
   test('accepts specificationVersion v3 models with compatible shape', async () => {
     const model = new AiSdkModel(
       stubModel(
@@ -1303,6 +1450,73 @@ describe('AiSdkModel.getStreamedResponse', () => {
         callId: 'c1',
         name: 'foo',
         arguments: '{"k":"v"}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('applies transformOutputText to finalized streamed assistant text', async () => {
+    const transformOutputText = vi.fn((text: string, context: any) => {
+      expect(context.stream).toBe(true);
+      expect(context.request.outputType).toEqual(structuredOutputType);
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      return jsonMatch?.[0] ?? text;
+    });
+
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream([
+              {
+                type: 'text-delta',
+                delta:
+                  'Result:\n```json\n{"content":"streamed structured"}\n```',
+              },
+              { type: 'response-metadata', id: 'id1' },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 1, outputTokens: 2 },
+              },
+            ]),
+          } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: structuredOutputType,
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    expect(transformOutputText).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual({
+      type: 'output_text_delta',
+      delta: 'Result:\n```json\n{"content":"streamed structured"}\n```',
+    });
+
+    const final = events.at(-1);
+    expect(final.type).toBe('response_done');
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: '{"content":"streamed structured"}' },
+        ],
         status: 'completed',
         providerData: {
           model: 'stub:m',
