@@ -34,6 +34,7 @@ const packageProjects = packageEntries.map((entry) => {
 
 export default defineConfig({
   test: {
+    pool: 'threads',
     projects: packageProjects,
     // Coverage options are global in Vitest workspaces.
     // Keep the filter at the root to avoid scanning docs/examples/dist output.

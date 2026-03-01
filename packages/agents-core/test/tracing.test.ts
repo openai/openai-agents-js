@@ -617,32 +617,41 @@ describe('BatchTraceProcessor', () => {
   });
 
   it('waits while an export is in progress during shutdown', async () => {
-    let resolveExport: (() => void) | null = null;
-    let exportCalls = 0;
-    const exporterWithDelay: TracingExporter = {
-      export: async () => {
-        exportCalls += 1;
-        if (exportCalls === 1) {
-          return new Promise<void>((resolve) => {
-            resolveExport = resolve;
-          });
-        }
-      },
-    };
-    const processor = new BatchTraceProcessor(exporterWithDelay, {
-      maxQueueSize: 10,
-      maxBatchSize: 1,
-      exportTriggerRatio: 0.1,
-      scheduleDelay: 10000,
-    });
+    vi.useFakeTimers();
+    try {
+      let resolveExport: (() => void) | null = null;
+      let exportCalls = 0;
+      const exporterWithDelay: TracingExporter = {
+        export: async () => {
+          exportCalls += 1;
+          if (exportCalls === 1) {
+            return new Promise<void>((resolve) => {
+              resolveExport = resolve;
+            });
+          }
+        },
+      };
+      const processor = new BatchTraceProcessor(exporterWithDelay, {
+        maxQueueSize: 10,
+        maxBatchSize: 1,
+        exportTriggerRatio: 0.1,
+        scheduleDelay: 10000,
+      });
 
-    await processor.onTraceStart(new Trace({ name: 'first' }));
-    const pendingExport = processor.onTraceStart(new Trace({ name: 'second' }));
+      await processor.onTraceStart(new Trace({ name: 'first' }));
+      const pendingExport = processor.onTraceStart(
+        new Trace({ name: 'second' }),
+      );
 
-    const shutdownPromise = processor.shutdown();
-    setTimeout(() => resolveExport?.(), 10);
-    await pendingExport;
-    await shutdownPromise;
+      const shutdownPromise = processor.shutdown();
+      setTimeout(() => resolveExport?.(), 10);
+      await vi.advanceTimersByTimeAsync(10);
+      await pendingExport;
+      await vi.advanceTimersByTimeAsync(1000);
+      await shutdownPromise;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('logs when automatic export loops are unsupported', async () => {

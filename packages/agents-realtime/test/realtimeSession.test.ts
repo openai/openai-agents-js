@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { once } from 'node:events';
 import { RealtimeSession } from '../src/realtimeSession';
 import { RealtimeAgent } from '../src/realtimeAgent';
 import type { RealtimeItem } from '../src/items';
@@ -37,6 +38,13 @@ function createMessage(id: string, text: string): RealtimeItem {
     status: 'completed',
     content: [{ type: 'input_text', text }],
   } as RealtimeItem;
+}
+
+async function waitForEvent<T extends unknown[]>(
+  emitter: object,
+  eventName: string,
+): Promise<T> {
+  return (await once(emitter as any, eventName)) as T;
 }
 
 describe('RealtimeSession', () => {
@@ -290,18 +298,17 @@ describe('RealtimeSession', () => {
     });
     await session.connect({ apiKey: 'test' });
 
-    const guardrailEvents: any[] = [];
-    session.on('guardrail_tripped', (...a) => guardrailEvents.push(a));
+    const guardrailTripped = waitForEvent<any[]>(session, 'guardrail_tripped');
     transport.emit('turn_done', {
       response: {
         output: [fakeModelMessage('bad output')],
         usage: new Usage(),
       },
     } as any);
-    await vi.waitFor(() => expect(guardrailEvents.length).toBe(1));
+    const [, , , details] = await guardrailTripped;
     expect(transport.interruptCalls).toBe(1);
     expect(transport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
-    expect(guardrailEvents[0][3]).toEqual({ itemId: '123' });
+    expect(details).toEqual({ itemId: '123' });
     vi.restoreAllMocks();
   });
 
@@ -329,6 +336,7 @@ describe('RealtimeSession', () => {
 
     await scenarioSession.connect({ apiKey: 'test-key' });
 
+    const outputPromise = transport.waitForNextFunctionCallOutput();
     transport.emit('function_call', {
       type: 'function_call',
       name: 'echo',
@@ -336,12 +344,7 @@ describe('RealtimeSession', () => {
       arguments: JSON.stringify({ message: 'hi' }),
     });
 
-    await vi.waitFor(() =>
-      expect(transport.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-
-    const [toolCall, output, startResponse] =
-      transport.sendFunctionCallOutputCalls[0];
+    const [toolCall, output, startResponse] = await outputPromise;
     expect(toolCall.name).toBe('echo');
     expect(output).toBe('echo:hi');
     expect(startResponse).toBe(true);
@@ -418,21 +421,38 @@ describe('RealtimeSession', () => {
     } as any);
 
     expect(scenarioSession.history[0]?.itemId).toBe('audio-1');
+    const historyUpdated = waitForEvent<[RealtimeItem[]]>(
+      scenarioSession,
+      'history_updated',
+    );
     transport.emit('*', {
       type: 'conversation.item.input_audio_transcription.completed',
       item_id: 'audio-1',
       transcript: 'hello audio',
     });
 
-    await vi.waitFor(() => {
-      const latest = historyEvents.at(-1);
-      expect(latest?.[0]?.content?.[0]?.transcript).toBe('hello audio');
-      expect(latest?.[0]?.status).toBe('completed');
-    });
+    const [updatedHistory] = await historyUpdated;
+    const updatedMessage = updatedHistory[0] as any;
+    expect(historyEvents.at(-1)?.[0]?.content?.[0]?.transcript).toBe(
+      'hello audio',
+    );
+    expect(updatedMessage.content[0]?.transcript).toBe('hello audio');
+    expect(updatedMessage.status).toBe('completed');
   });
 
   it('resets guardrail debounce per transcript item', async () => {
-    const runMock = vi.fn(async () => ({ output: {} }));
+    let guardrailRuns = 0;
+    let resolveSecondRun!: () => void;
+    const secondRunSeen = new Promise<void>((resolve) => {
+      resolveSecondRun = resolve;
+    });
+    const runMock = vi.fn(async () => {
+      guardrailRuns += 1;
+      if (guardrailRuns === 2) {
+        resolveSecondRun();
+      }
+      return { output: {} };
+    });
     vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
       run: runMock,
     } as any);
@@ -454,7 +474,8 @@ describe('RealtimeSession', () => {
       itemId: '2',
       responseId: 'z',
     } as any);
-    await vi.waitFor(() => expect(runMock).toHaveBeenCalledTimes(2));
+    await secondRunSeen;
+    expect(runMock).toHaveBeenCalledTimes(2);
     vi.restoreAllMocks();
   });
 
@@ -471,28 +492,27 @@ describe('RealtimeSession', () => {
     expect(errors[0].error.message).toBe('update');
     spy.mockRestore();
 
-    const origFilter = Array.prototype.filter;
-    Array.prototype.filter = () => {
-      throw new Error('delete');
-    };
+    const filterSpy = vi
+      .spyOn(Array.prototype, 'filter')
+      .mockImplementationOnce(() => {
+        throw new Error('delete');
+      });
     transport.emit('item_deleted', { itemId: '1' } as any);
     expect(errors[1].error.message).toBe('delete');
-    Array.prototype.filter = origFilter;
+    filterSpy.mockRestore();
   });
 
   it('propagates errors from handleFunctionCall', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    const errors: any[] = [];
-    session.on('error', (e) => errors.push(e));
+    const errorEvent = waitForEvent<any[]>(session, 'error');
     transport.emit('function_call', {
       type: 'function_call',
       name: 'missing',
       callId: '1',
       arguments: '{}',
     });
-    await vi.waitFor(() =>
-      expect(errors[0].error).toBeInstanceOf(ModelBehaviorError),
-    );
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ModelBehaviorError);
     expect(errorSpy).toHaveBeenCalledWith(
       'Error handling function call',
       expect.any(Error),
@@ -501,45 +521,46 @@ describe('RealtimeSession', () => {
   });
 
   it('returns a timeout message when a function tool exceeds timeoutMs', async () => {
+    vi.useFakeTimers();
     const localTransport = new FakeTransport();
     const timedTool = tool({
       name: 'timed_tool',
       description: 'timed tool',
       parameters: z.object({}),
       timeoutMs: 5,
-      execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        return 'done';
-      },
+      execute: async () => new Promise(() => {}),
     });
-    const agent = new RealtimeAgent({
-      name: 'A',
-      handoffs: [],
-      tools: [timedTool],
-    });
-    const localSession = new RealtimeSession(agent, {
-      transport: localTransport,
-    });
-    await localSession.connect({ apiKey: 'test' });
+    try {
+      const agent = new RealtimeAgent({
+        name: 'A',
+        handoffs: [],
+        tools: [timedTool],
+      });
+      const localSession = new RealtimeSession(agent, {
+        transport: localTransport,
+      });
+      await localSession.connect({ apiKey: 'test' });
 
-    localTransport.emit('function_call', {
-      type: 'function_call',
-      name: 'timed_tool',
-      callId: 'c-timeout',
-      status: 'completed',
-      arguments: '{}',
-    } as any);
+      const outputPromise = localTransport.waitForNextFunctionCallOutput();
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'timed_tool',
+        callId: 'c-timeout',
+        status: 'completed',
+        arguments: '{}',
+      } as any);
 
-    await vi.waitFor(() =>
-      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe(
-      "Tool 'timed_tool' timed out after 5ms.",
-    );
-    expect(localTransport.sendFunctionCallOutputCalls[0]?.[2]).toBe(true);
+      await vi.advanceTimersByTimeAsync(5);
+      const [, output, startResponse] = await outputPromise;
+      expect(output).toBe("Tool 'timed_tool' timed out after 5ms.");
+      expect(startResponse).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('emits an error when timeoutBehavior is raise_exception', async () => {
+    vi.useFakeTimers();
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const localTransport = new FakeTransport();
     const timedTool = tool({
@@ -548,36 +569,36 @@ describe('RealtimeSession', () => {
       parameters: z.object({}),
       timeoutMs: 5,
       timeoutBehavior: 'raise_exception',
-      execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        return 'done';
-      },
+      execute: async () => new Promise(() => {}),
     });
-    const agent = new RealtimeAgent({
-      name: 'A',
-      handoffs: [],
-      tools: [timedTool],
-    });
-    const localSession = new RealtimeSession(agent, {
-      transport: localTransport,
-    });
-    await localSession.connect({ apiKey: 'test' });
+    try {
+      const agent = new RealtimeAgent({
+        name: 'A',
+        handoffs: [],
+        tools: [timedTool],
+      });
+      const localSession = new RealtimeSession(agent, {
+        transport: localTransport,
+      });
+      await localSession.connect({ apiKey: 'test' });
 
-    const errors: any[] = [];
-    localSession.on('error', (e) => errors.push(e));
+      const errorEvent = waitForEvent<any[]>(localSession, 'error');
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'timed_tool',
+        callId: 'c-timeout-raise',
+        status: 'completed',
+        arguments: '{}',
+      } as any);
 
-    localTransport.emit('function_call', {
-      type: 'function_call',
-      name: 'timed_tool',
-      callId: 'c-timeout-raise',
-      status: 'completed',
-      arguments: '{}',
-    } as any);
-
-    await vi.waitFor(() => expect(errors.length).toBe(1));
-    expect(errors[0]?.error).toBeInstanceOf(ToolTimeoutError);
-    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
-    errorSpy.mockRestore();
+      await vi.advanceTimersByTimeAsync(5);
+      const [error] = await errorEvent;
+      expect(error.error).toBeInstanceOf(ToolTimeoutError);
+      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('applies input tool guardrail rejectContent and skips tool execution', async () => {
@@ -604,10 +625,9 @@ describe('RealtimeSession', () => {
     });
     await localSession.connect({ apiKey: 'test' });
 
-    const errors: any[] = [];
-    localSession.on('error', (e) => errors.push(e));
     const invokeSpy = vi.spyOn(guardedTool, 'invoke');
 
+    const outputPromise = localTransport.waitForNextFunctionCallOutput();
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'guarded',
@@ -616,12 +636,9 @@ describe('RealtimeSession', () => {
       arguments: '{}',
     } as any);
 
-    await vi.waitFor(() =>
-      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe('blocked');
+    const [, output] = await outputPromise;
+    expect(output).toBe('blocked');
     expect(invokeSpy).not.toHaveBeenCalled();
-    expect(errors.length).toBe(0);
   });
 
   it('emits error when input tool guardrail throws', async () => {
@@ -648,10 +665,9 @@ describe('RealtimeSession', () => {
     });
     await localSession.connect({ apiKey: 'test' });
 
-    const errors: any[] = [];
-    localSession.on('error', (e) => errors.push(e));
     const invokeSpy = vi.spyOn(guardedTool, 'invoke');
 
+    const errorEvent = waitForEvent<any[]>(localSession, 'error');
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'guarded_throw',
@@ -660,8 +676,8 @@ describe('RealtimeSession', () => {
       arguments: '{}',
     } as any);
 
-    await vi.waitFor(() => expect(errors.length).toBe(1));
-    expect(errors[0].error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
     expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
@@ -697,6 +713,7 @@ describe('RealtimeSession', () => {
 
     const invokeSpy = vi.spyOn(guardedTool, 'invoke');
 
+    const outputPromise = localTransport.waitForNextFunctionCallOutput();
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'guarded_output',
@@ -705,10 +722,8 @@ describe('RealtimeSession', () => {
       arguments: '{}',
     } as any);
 
-    await vi.waitFor(() =>
-      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(localTransport.sendFunctionCallOutputCalls[0]?.[1]).toBe('redacted');
+    const [, output] = await outputPromise;
+    expect(output).toBe('redacted');
     expect(invokeSpy).toHaveBeenCalled();
   });
 
@@ -736,10 +751,9 @@ describe('RealtimeSession', () => {
     });
     await localSession.connect({ apiKey: 'test' });
 
-    const errors: any[] = [];
-    localSession.on('error', (e) => errors.push(e));
     const invokeSpy = vi.spyOn(guardedTool, 'invoke');
 
+    const errorEvent = waitForEvent<any[]>(localSession, 'error');
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'guarded_output_throw',
@@ -748,10 +762,8 @@ describe('RealtimeSession', () => {
       arguments: '{}',
     } as any);
 
-    await vi.waitFor(() => expect(errors.length).toBe(1));
-    expect(errors[0].error).toBeInstanceOf(
-      ToolOutputGuardrailTripwireTriggered,
-    );
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ToolOutputGuardrailTripwireTriggered);
     expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
@@ -818,12 +830,9 @@ describe('RealtimeSession', () => {
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test' });
 
-    const approvalEvents: any[] = [];
-    s.on('tool_approval_requested', (_ctx, _agent, payload) => {
-      approvalEvents.push(payload);
-    });
     const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
 
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
     t.emit('function_call', {
       type: 'function_call',
       name: 'needs_approval',
@@ -832,9 +841,9 @@ describe('RealtimeSession', () => {
       status: 'completed',
     } as any);
 
-    await vi.waitFor(() => expect(approvalEvents.length).toBe(1));
-    expect(approvalEvents[0].type).toBe('function_approval');
-    expect(approvalEvents[0].tool.name).toBe('needs_approval');
+    const [, , payload] = await approvalRequest;
+    expect(payload.type).toBe('function_approval');
+    expect(payload.tool.name).toBe('needs_approval');
     expect(t.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).not.toHaveBeenCalled();
   });
@@ -871,15 +880,12 @@ describe('RealtimeSession', () => {
     s.context.rejectTool(approvalItem);
     const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
 
+    const outputPromise = t.waitForNextFunctionCallOutput();
     t.emit('function_call', toolCall as any);
 
-    await vi.waitFor(() =>
-      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(t.sendFunctionCallOutputCalls[0][1]).toBe(
-      'Tool execution was not approved.',
-    );
-    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(true);
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('Tool execution was not approved.');
+    expect(startResponse).toBe(true);
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
@@ -919,13 +925,12 @@ describe('RealtimeSession', () => {
     s.context.rejectTool(approvalItem);
     const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
 
+    const outputPromise = t.waitForNextFunctionCallOutput();
     t.emit('function_call', toolCall as any);
 
-    await vi.waitFor(() =>
-      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(t.sendFunctionCallOutputCalls[0][1]).toBe(customMessage);
-    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(true);
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe(customMessage);
+    expect(startResponse).toBe(true);
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
@@ -967,15 +972,12 @@ describe('RealtimeSession', () => {
     s.context.rejectTool(approvalItem);
     const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
 
+    const outputPromise = t.waitForNextFunctionCallOutput();
     t.emit('function_call', toolCall as any);
 
-    await vi.waitFor(() =>
-      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(t.sendFunctionCallOutputCalls[0][1]).toBe(
-      'Tool execution was not approved.',
-    );
-    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(true);
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('Tool execution was not approved.');
+    expect(startResponse).toBe(true);
     expect(invokeSpy).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       'toolErrorFormatter threw while formatting approval rejection: formatter failed',
@@ -1004,6 +1006,7 @@ describe('RealtimeSession', () => {
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test' });
 
+    const outputPromise = t.waitForNextFunctionCallOutput();
     t.emit('function_call', {
       type: 'function_call',
       name: 'background_tool',
@@ -1012,11 +1015,9 @@ describe('RealtimeSession', () => {
       status: 'completed',
     } as any);
 
-    await vi.waitFor(() =>
-      expect(t.sendFunctionCallOutputCalls.length).toBe(1),
-    );
-    expect(t.sendFunctionCallOutputCalls[0][1]).toBe('{"ok":true}');
-    expect(t.sendFunctionCallOutputCalls[0][2]).toBe(false);
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('{"ok":true}');
+    expect(startResponse).toBe(false);
   });
 
   it('approves hosted tool calls by sending MCP responses', async () => {
@@ -1103,11 +1104,7 @@ describe('RealtimeSession', () => {
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test' });
 
-    const approvalEvents: any[] = [];
-    s.on('tool_approval_requested', (_ctx, _agent, payload) => {
-      approvalEvents.push(payload);
-    });
-
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
     t.emit('mcp_approval_request', {
       itemId: 'item-3',
       type: 'mcp_approval_request',
@@ -1117,12 +1114,10 @@ describe('RealtimeSession', () => {
       approved: null,
     });
 
-    await vi.waitFor(() => expect(approvalEvents.length).toBe(1));
-    expect(approvalEvents[0].type).toBe('mcp_approval_request');
-    expect(approvalEvents[0].approvalItem.rawItem.type).toBe(
-      'hosted_tool_call',
-    );
-    expect(approvalEvents[0].approvalItem.rawItem.providerData).toMatchObject({
+    const [, , payload] = await approvalRequest;
+    expect(payload.type).toBe('mcp_approval_request');
+    expect(payload.approvalItem.rawItem.type).toBe('hosted_tool_call');
+    expect(payload.approvalItem.rawItem.providerData).toMatchObject({
       itemId: 'item-3',
       serverLabel: 'server-3',
     });

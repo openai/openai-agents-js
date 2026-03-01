@@ -126,6 +126,10 @@ export class FakeTransport
   extends EventEmitterDelegate<RealtimeTransportEventTypes>
   implements RealtimeTransportLayer
 {
+  #functionCallOutputWaiters: Array<{
+    count: number;
+    resolve: (call: [TransportToolCallEvent, string, boolean]) => void;
+  }> = [];
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'disconnected';
   muted: boolean = false;
@@ -185,7 +189,30 @@ export class FakeTransport
     output: string,
     startResponse: boolean,
   ): void {
-    this.sendFunctionCallOutputCalls.push([toolCall, output, startResponse]);
+    const call: [TransportToolCallEvent, string, boolean] = [
+      toolCall,
+      output,
+      startResponse,
+    ];
+    this.sendFunctionCallOutputCalls.push(call);
+    const ready = this.#functionCallOutputWaiters.filter(
+      (waiter) => this.sendFunctionCallOutputCalls.length >= waiter.count,
+    );
+    this.#functionCallOutputWaiters = this.#functionCallOutputWaiters.filter(
+      (waiter) => this.sendFunctionCallOutputCalls.length < waiter.count,
+    );
+    for (const waiter of ready) {
+      waiter.resolve(this.sendFunctionCallOutputCalls[waiter.count - 1]!);
+    }
+  }
+
+  waitForNextFunctionCallOutput(): Promise<
+    [TransportToolCallEvent, string, boolean]
+  > {
+    const count = this.sendFunctionCallOutputCalls.length + 1;
+    return new Promise((resolve) => {
+      this.#functionCallOutputWaiters.push({ count, resolve });
+    });
   }
 
   sendMcpResponse(approvalRequest: any, approved: boolean): void {
