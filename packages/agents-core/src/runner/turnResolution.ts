@@ -821,7 +821,19 @@ export async function resolveTurnAfterModelResponse<TContext>(
         agent.outputType,
         'final_output',
       );
-      const [error] = await safeExecute(() => parser(potentialFinalOutput));
+
+      // Try to clean up markdown codeblocks if they exist before parsing
+      let cleanedOutput = potentialFinalOutput;
+      if (typeof cleanedOutput === 'string') {
+        const match = cleanedOutput.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (match && match[1]) {
+          cleanedOutput = match[1];
+        } else {
+          cleanedOutput = cleanedOutput.trim();
+        }
+      }
+
+      const [error] = await safeExecute(() => parser(cleanedOutput));
       if (error) {
         const outputErrorMessage = formatFinalOutputTypeError(error);
         addErrorToCurrentSpan({
@@ -838,7 +850,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
         newResponse,
         preStepItems,
         newItems,
-        { type: 'next_step_final_output', output: potentialFinalOutput },
+        { type: 'next_step_final_output', output: cleanedOutput },
       );
     }
   }
