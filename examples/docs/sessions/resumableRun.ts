@@ -10,11 +10,14 @@ const session = new MemorySession();
 
 const result = await runner.run(agent, 'Search the itinerary', {
   session,
-  stream: true,
 });
 
 if (result.interruptions?.length) {
   // ... collect user feedback, then resume the agent in a later turn.
+  for (const interruption of result.interruptions) {
+    result.state.approve(interruption);
+  }
+
   const continuation = await runner.run(agent, result.state, { session });
   console.log(continuation.finalOutput);
 }
