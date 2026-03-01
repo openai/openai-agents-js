@@ -99,6 +99,13 @@ Enable it globally with `setOpenAIResponsesTransport('websocket')`, or enable it
 
 You do not need `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` just to use the WebSocket transport. If reconnecting for each run/request is acceptable, your existing `run()` / `Runner.run()` usage will continue to work after enabling `setOpenAIResponsesTransport('websocket')`.
 
+Transport selection follows model resolution:
+
+- `setOpenAIResponsesTransport('websocket')` only affects string model names that are later resolved through the OpenAI provider while using the Responses API.
+- If you pass a concrete `Model` instance to an `Agent` or `Runner`, that instance is used as-is. `OpenAIResponsesWSModel` stays on WebSocket, `OpenAIResponsesModel` stays on HTTP, and `OpenAIChatCompletionsModel` stays on Chat Completions.
+- If you provide your own `modelProvider`, that provider controls model resolution. Enable WebSocket there instead of relying on the global setter.
+- If you route through a proxy, gateway, or other OpenAI-compatible endpoint, the target must support the WebSocket `/responses` endpoint. You may also need to set `websocketBaseURL` explicitly.
+
 Use `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` / `Runner` only when you want to optimize connection reuse and manage the websocket provider lifecycle more explicitly:
 
 - `withResponsesWebSocketSession(...)`: convenient scoped lifecycle with automatic cleanup after the callback.

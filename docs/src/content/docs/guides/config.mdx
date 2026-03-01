@@ -61,6 +61,8 @@ If you are using the Responses API, you can also choose the OpenAI provider tran
 
 Use `setOpenAIResponsesTransport('websocket')` to enable the WebSocket transport and `setOpenAIResponsesTransport('http')` to switch back. If you route websocket traffic through a proxy or gateway, set `OPENAI_WEBSOCKET_BASE_URL` (or configure `websocketBaseURL` on your `OpenAIProvider`).
 
+This process-wide default only affects models that are later resolved through the default OpenAI provider. If you pass a concrete `Model` instance or a custom `modelProvider`, configure the transport there instead. See the [Models guide](/openai-agents-js/guides/models#responses-websocket-transport).
+
 ## Observability and debugging
 
 ### Tracing

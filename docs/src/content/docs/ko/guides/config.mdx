@@ -12,19 +12,19 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 import setTracingDisabledExample from '../../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
 
-이 페이지에서는 일반적으로 앱 시작 시 한 번 설정하는 **SDK 전역 기본값**을 다룹니다. 예를 들어 기본 OpenAI 클라이언트, 전송 방식, 트레이싱 내보내기 키, 디버그 로깅 동작 등이 있습니다. 이러한 설정은 기본적으로 프로세스 전역에 적용되므로, 에이전트별 또는 실행별 튜닝보다 공통 설정에 적합한 위치입니다.
+이 페이지에서는 앱 시작 시 보통 한 번만 설정하는 **SDK 전반 기본값**을 다룹니다. 예를 들어 기본 OpenAI 클라이언트, 전송 방식, 트레이싱 내보내기 키, 디버그 로깅 동작 등이 있습니다. 이러한 설정은 기본적으로 프로세스 전체에 적용되므로, 에이전트별 또는 실행별 튜닝보다 전역 설정에 적합합니다.
 
-대신 특정 `Agent`, `Runner`, 또는 `run()` 호출을 설정해야 한다면 다음을 참고하세요.
+대신 특정 `Agent`, `Runner`, 또는 `run()` 호출을 설정해야 한다면 다음을 참고하세요:
 
-- `Runner` 및 실행별 옵션은 [에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 참고하세요.
-- 에이전트 수준 및 러너 수준 모델 설정은 [모델](/openai-agents-js/ko/guides/models)을 참고하세요.
-- 실행별 트레이싱 설정 및 exporter 동작은 [트레이싱](/openai-agents-js/ko/guides/tracing)을 참고하세요.
+- `Runner` 및 실행별 옵션은 [에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 참고하세요
+- 에이전트 수준 및 러너 수준 모델 설정은 [모델](/openai-agents-js/ko/guides/models)을 참고하세요
+- 실행별 트레이싱 구성 및 exporter 동작은 [트레이싱](/openai-agents-js/ko/guides/tracing)을 참고하세요
 
-## OpenAI 클라이언트와 전송 방식
+## OpenAI 클라이언트 및 전송 방식
 
-### API 키와 클라이언트
+### API 키 및 클라이언트
 
-기본적으로 SDK 는 OpenAI 클라이언트를 생성해야 할 때 `OPENAI_API_KEY`를 지연(lazy) 방식으로 확인합니다. 환경 변수를 설정할 수 없는 경우 `setDefaultOpenAIKey()`를 수동으로 호출하세요.
+기본적으로 SDK 는 OpenAI 클라이언트를 생성해야 할 때 지연 방식으로 `OPENAI_API_KEY`를 확인합니다. 환경 변수를 설정할 수 없다면 `setDefaultOpenAIKey()`를 수동으로 호출하세요.
 
 <Code
   lang="typescript"
@@ -32,7 +32,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="Set default OpenAI key"
 />
 
-직접 `OpenAI` 클라이언트 인스턴스를 전달할 수도 있습니다. 그렇지 않으면 SDK 가 기본 키를 사용해 자동으로 클라이언트를 생성합니다.
+직접 만든 `OpenAI` 클라이언트 인스턴스를 전달할 수도 있습니다. 그렇지 않으면 SDK 가 기본 키를 사용해 자동으로 생성합니다.
 
 <Code
   lang="typescript"
@@ -56,17 +56,19 @@ Responses API 를 사용하는 경우 OpenAI provider 전송 방식도 선택할
   title="Set Responses transport"
 />
 
-WebSocket 전송을 활성화하려면 `setOpenAIResponsesTransport('websocket')`를 사용하고, 다시 전환하려면 `setOpenAIResponsesTransport('http')`를 사용하세요. websocket 트래픽을 프록시 또는 게이트웨이로 라우팅하는 경우 `OPENAI_WEBSOCKET_BASE_URL`을 설정하세요(또는 `OpenAIProvider`에서 `websocketBaseURL`을 설정하세요).
+WebSocket 전송을 활성화하려면 `setOpenAIResponsesTransport('websocket')`를 사용하고, 다시 전환하려면 `setOpenAIResponsesTransport('http')`를 사용하세요. 프록시 또는 게이트웨이를 통해 websocket 트래픽을 라우팅한다면 `OPENAI_WEBSOCKET_BASE_URL`을 설정하세요(또는 `OpenAIProvider`에서 `websocketBaseURL`을 설정하세요).
 
-## 관측성과 디버깅
+이 프로세스 전체 기본값은 이후 기본 OpenAI provider 를 통해 확인되는 모델에만 영향을 줍니다. 구체적인 `Model` 인스턴스나 사용자 지정 `modelProvider`를 전달하는 경우에는 해당 위치에서 전송 방식을 설정하세요. [모델 가이드](/openai-agents-js/ko/guides/models#responses-websocket-transport)를 참고하세요.
+
+## 관측 가능성 및 디버깅
 
 ### 트레이싱
 
-트레이싱은 지원되는 서버 런타임에서 기본적으로 활성화됩니다. 브라우저와 `NODE_ENV=test` 환경에서는 기본적으로 비활성화됩니다.
+지원되는 서버 런타임에서는 기본적으로 트레이싱이 활성화됩니다. 브라우저와 `NODE_ENV=test`에서는 기본적으로 비활성화됩니다.
 
 기본적으로 트레이스 내보내기는 위 섹션과 동일한 OpenAI 키를 사용합니다.
 
-별도의 키는 `setTracingExportApiKey()`로 설정할 수 있습니다.
+`setTracingExportApiKey()`를 통해 별도의 키를 설정할 수 있습니다:
 
 <Code
   lang="typescript"
@@ -74,7 +76,7 @@ WebSocket 전송을 활성화하려면 `setOpenAIResponsesTransport('websocket')
   title="Set tracing export API key"
 />
 
-트레이싱을 완전히 비활성화할 수도 있습니다.
+트레이싱을 완전히 비활성화할 수도 있습니다:
 
 <Code
   lang="typescript"
@@ -94,21 +96,21 @@ export DEBUG=openai-agents*
 
 세션 영속성 활동을 로깅하려면 `OPENAI_AGENTS__DEBUG_SAVE_SESSION=1`을 설정하세요.
 
-`@openai/agents`의 `getLogger(namespace)`를 사용해 자체 모듈용 네임스페이스 로거를 가져올 수 있습니다.
+`@openai/agents`의 `getLogger(namespace)`를 사용하면 자체 모듈용 네임스페이스 로거를 가져올 수 있습니다.
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
-#### 로그의 민감한 데이터
+#### 로그의 민감 데이터
 
 일부 로그에는 사용자 데이터가 포함될 수 있습니다. 다음 환경 변수를 설정해 비활성화하세요.
 
-LLM 입력 및 출력을 로깅하지 않으려면 다음을 설정하세요.
+LLM 입력 및 출력을 로깅하지 않으려면:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-도구 입력 및 출력을 로깅하지 않으려면 다음을 설정하세요.
+도구 입력 및 출력을 로깅하지 않으려면:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
