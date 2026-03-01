@@ -29,13 +29,15 @@ import delegationAgentExample from '../../../../../../examples/docs/voice-agents
 import turnDetectionExample from '../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
 
 <Aside type="caution">
-  Choose your architecture early:
+
+Choose your architecture early:
 
 - `OpenAIRealtimeWebRTC` is the simplest browser path and handles audio input/output for you.
 - `OpenAIRealtimeWebSocket` gives you more control, but you must manage audio capture and playback yourself.
 - Function tools run wherever the `RealtimeSession` runs. If the session runs in the browser, the tool runs in the browser too.
 - Realtime handoffs keep the same voice and model. If you need a different backend model, delegate through a tool instead of a handoff.
-  </Aside>
+
+</Aside>
 
 ## Session setup
 
