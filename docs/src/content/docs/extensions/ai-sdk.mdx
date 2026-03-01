@@ -9,6 +9,7 @@ import aiSdkModelExample from '../../../../../examples/docs/extensions/ai-sdk-mo
 import aiSdkProviderDataExample from '../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
 import aiSdkProviderMetadataExample from '../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
 import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
+import aiSdkTransformOutputTextExample from '../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
 import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
@@ -82,6 +83,18 @@ would become
 />
 
 when using the AI SDK integration.
+
+## Normalizing finalized output text
+
+Some providers return structured output as plain text with extra wrapping, such as JSON code fences. If you need provider-specific cleanup before the Agents runtime validates the final output, pass `transformOutputText` when creating the adapter:
+
+<Code
+  lang="typescript"
+  code={aiSdkTransformOutputTextExample}
+  title="Normalize finalized output text"
+/>
+
+`transformOutputText` runs on finalized assistant text for non-streamed responses and on the final `response_done` event for streamed responses. It does not modify incremental `output_text_delta` events.
 
 ## Picking the right integration
 
