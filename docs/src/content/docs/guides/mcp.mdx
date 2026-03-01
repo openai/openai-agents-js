@@ -76,16 +76,16 @@ If you can programmatically determine whether a tool call is safe, you can use t
 
 `hostedMcpTool(...)` supports both MCP server URLs and connector-backed servers:
 
-| Option            | Type                                                                | Notes                                                                                                         |
-| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `serverLabel`     | `string`                                                            | Required label that identifies the hosted MCP server in events and traces.                                    |
-| `serverUrl`       | `string`                                                            | Remote MCP server URL (use this for regular hosted MCP servers).                                              |
-| `connectorId`     | `string`                                                            | OpenAI connector id (use this instead of `serverUrl` for connector-backed hosted servers).                    |
-| `authorization`   | `string`                                                            | Optional authorization token sent to the hosted MCP backend.                                                  |
-| `headers`         | `Record<string, string>`                                            | Optional extra request headers.                                                                               |
-| `allowedTools`    | `string[] \| object`                                                | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`.                  |
-| `requireApproval` | `'never' \| 'always' \| object`                                     | Approval policy for hosted MCP tool calls. Use the object form for per-tool overrides. Defaults to `'never'`. |
-| `onApproval`      | `(context, item) => Promise<{ approve: boolean; reason?: string }>` | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling.      |
+| Option            | Type                            | Notes                                                                                                         |
+| ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `serverLabel`     | `string`                        | Required label that identifies the hosted MCP server in events and traces.                                    |
+| `serverUrl`       | `string`                        | Remote MCP server URL (use this for regular hosted MCP servers).                                              |
+| `connectorId`     | `string`                        | OpenAI connector id (use this instead of `serverUrl` for connector-backed hosted servers).                    |
+| `authorization`   | `string`                        | Optional authorization token sent to the hosted MCP backend.                                                  |
+| `headers`         | `Record<string, string>`        | Optional extra request headers.                                                                               |
+| `allowedTools`    | `string[] \| object`            | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`.                  |
+| `requireApproval` | `'never' \| 'always' \| object` | Approval policy for hosted MCP tool calls. Use the object form for per-tool overrides. Defaults to `'never'`. |
+| `onApproval`      | Approval callback               | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling.      |
 
 `requireApproval` object form:
 
@@ -94,6 +94,18 @@ If you can programmatically determine whether a tool call is safe, you can use t
   always?: { toolNames: string[] };
   never?: { toolNames: string[] };
 }
+```
+
+`onApproval` signature:
+
+```ts
+async function onApproval(
+  context,
+  item,
+): Promise<{
+  approve: boolean;
+  reason?: string;
+}> {}
 ```
 
 ### Connector-backed hosted servers

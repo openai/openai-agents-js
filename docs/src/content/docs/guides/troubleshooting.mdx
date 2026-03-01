@@ -24,7 +24,7 @@ The OpenAI Agents SDK is supported on the following server environments:
   - Many browser-style WebSocket APIs (and some edge runtimes) do not support custom outbound headers. In those environments, use the default HTTP Responses transport instead.
   - If you see errors mentioning a missing global `WebSocket` implementation or lack of custom-header support, the runtime websocket implementation is not compatible with the Responses WebSocket transport.
 - **Browsers**:
-  - Tracing is currently not supported in browsers
+  - The core SDK can be bundled for browser use, but tracing is disabled by default there.
 - **v8 isolates**:
   - While you should be able to bundle the SDK for v8 isolates if you use a bundler with the right browser polyfills, tracing will not work
   - v8 isolates have not been extensively tested

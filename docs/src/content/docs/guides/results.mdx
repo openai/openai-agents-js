@@ -13,6 +13,21 @@ When you [run your agent](/openai-agents-js/guides/running-agents), you will eit
 - [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) if you call `run` without `stream: true`
 - [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) if you call `run` with `stream: true`. For details on streaming, also check the [streaming guide](/openai-agents-js/guides/streaming).
 
+## Which property should I use?
+
+Most applications only need a few result properties:
+
+| Property                    | Use it when you need...                                                         |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `finalOutput`               | The final answer to show the user.                                              |
+| `history`                   | A full next-turn input array (`input + generated items`) for manual chat loops. |
+| `output`                    | Only the model-output-shaped items generated in this run.                       |
+| `newItems`                  | Rich run items with agent/tool metadata for logs, UIs, or audits.               |
+| `lastAgent` / `activeAgent` | The agent that should usually handle the next turn.                             |
+| `lastResponseId`            | Continuation with `previousResponseId` on the next OpenAI Responses turn.       |
+| `interruptions`             | Pending tool approvals you must resolve before resuming.                        |
+| `state`                     | A serializable snapshot for resume/retry flows.                                 |
+
 ## Final output
 
 The `finalOutput` property contains the final output of the last agent that ran. This result is either:
@@ -41,6 +56,14 @@ There are two ways you can access the inputs for your next turn:
 - `result.history` — contains a copy of both your input and the output of the agents.
 - `result.output` — contains the output of the full agent run.
 
+In practice:
+
+- Use `result.history` when you are manually carrying the whole conversation in your application.
+- Use `result.output` when you already store the prior conversation history elsewhere and only want the new
+  output items from this run.
+- If you are using `conversationId` or `previousResponseId`, you usually do not pass either one
+  back into `run()`. Instead, pass only the new user input and reuse the server-managed ID.
+
 `history` is a convenient way to maintain a full history in a chat-like use case:
 
 <Code lang="typescript" code={historyLoop} title="History loop" />
@@ -48,6 +71,8 @@ There are two ways you can access the inputs for your next turn:
 ## Last agent
 
 The `lastAgent` property contains the last agent that ran. Depending on your application, this is often useful for the next time the user inputs something. For example, if you have a frontline triage agent that hands off to a language-specific agent, you can store the last agent, and reuse it the next time the user messages the agent.
+
+`activeAgent` is an alias for the same value.
 
 In streaming mode it can also be useful to access the `currentAgent` property that's mapping to the current agent that is running.
 
@@ -65,11 +90,11 @@ The `newItems` property contains the new items generated during the run. The ite
 
 ## State
 
-The `state` property contains the state of the run. Most of what is attached to the `result` is derived from the `state` but the `state` is serializable/deserializable and can also be used as input for a subsequent call to `run` in case you need to [recover from an error](/openai-agents-js/guides/running-agents#exceptions) or deal with an [`interruption`](#interruptions).
+The `state` property contains the state of the run. Most of what is attached to the `result` is derived from the `state`, but `state` is also serializable/deserializable and can be used as input for a subsequent call to `run()` if you need to [recover from an error](/openai-agents-js/guides/running-agents#exceptions) or resume a paused [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop) flow.
 
 ## Interruptions
 
-If you are using `needsApproval` in your agent, your `run` might trigger some `interruptions` that you need to handle before continuing. In that case `interruptions` will be an array of `ToolApprovalItem`s that caused the interruption. Check out the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop) for more information on how to work with interruptions.
+If you are using `needsApproval` in your agent, your run might pause and expose `interruptions`. This array contains the `RunToolApprovalItem`s that require a decision before the run can continue. Resolve them through `result.state.approve(...)` / `result.state.reject(...)`, then call `run()` again with that same state. Check the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop) for end-to-end patterns.
 
 ## Other information
 
@@ -79,7 +104,7 @@ The `rawResponses` property contains the raw LLM responses generated by the mode
 
 ### Last response ID
 
-The `lastResponseId` property contains the ID of the last response generated by the model during the agent run.
+The `lastResponseId` property contains the ID of the last response generated by the model during the agent run. This is the value you pass back as `previousResponseId` on the next turn when using OpenAI Responses API chaining.
 
 ### Guardrail results
 

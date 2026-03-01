@@ -55,7 +55,7 @@ Tool guardrails return a `behavior`:
 - `rejectContent` — short‑circuit with a message (tool call is skipped or output is replaced).
 - `throwException` — throw a tripwire error immediately.
 
-Tool guardrails apply to function tools created with `tool()`. Hosted tools and local built‑in tools (`computerTool`, `shellTool`, `applyPatchTool`) do not use this guardrail pipeline.
+Tool guardrails apply to function tools created with `tool()`. Hosted tools and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) do not use this guardrail pipeline.
 
 ## Tripwires
 

@@ -8,6 +8,9 @@ import basicStreamingExample from '../../../../../examples/docs/streaming/basicS
 import nodeTextStreamExample from '../../../../../examples/docs/streaming/nodeTextStream.ts?raw';
 import handleAllEventsExample from '../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../examples/docs/streaming/streamedHITL.ts?raw';
+import runRawModelStreamEventExample from '../../../../../examples/docs/streaming/runRawModelStreamEvent.ts?raw';
+import runItemStreamEventExample from '../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
+import runAgentUpdatedStreamEventExample from '../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
 The Agents SDK can deliver output from the model and other execution
 steps incrementally. Streaming keeps your UI responsive and avoids
@@ -46,7 +49,11 @@ another destination.
 
 The promise `stream.completed` resolves once the run and all pending
 callbacks are completed. Always await it if you want to ensure there is
-no more output.
+no more output. This includes post-processing work such as session persistence
+or history compaction hooks that finish after the last text token arrives.
+
+`toTextStream()` only emits assistant text. Tool calls, handoffs, approvals,
+and other runtime events are available from the full event stream.
 
 ### Listen to all events
 
@@ -74,6 +81,9 @@ You do not need `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider
 
 Use `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` / `Runner` when you want connection reuse and more explicit provider lifecycle control.
 
+Continuation with `previousResponseId` uses the same semantics as the HTTP transport. The difference
+is just the transport and connection lifecycle.
+
 If you build the provider yourself, remember to call `await provider.close()` when shutting down.
 Websocket-backed model wrappers are cached for reuse by default, and closing the provider releases
 those connections. `withResponsesWebSocketSession(...)` gives you the same reuse but scopes cleanup
@@ -87,12 +97,11 @@ The stream yields three different event types:
 
 ### raw_model_stream_event
 
-```ts
-type RunRawModelStreamEvent = {
-  type: 'raw_model_stream_event';
-  data: ResponseStreamEvent;
-};
-```
+<Code
+  lang="typescript"
+  code={runRawModelStreamEventExample}
+  title="RunRawModelStreamEvent"
+/>
 
 Example:
 
@@ -108,13 +117,11 @@ Example:
 
 ### run_item_stream_event
 
-```ts
-type RunItemStreamEvent = {
-  type: 'run_item_stream_event';
-  name: RunItemStreamEventName;
-  item: RunItem;
-};
-```
+<Code
+  lang="typescript"
+  code={runItemStreamEventExample}
+  title="RunItemStreamEvent"
+/>
 
 `name` identifies which kind of item was produced:
 
@@ -145,12 +152,11 @@ Example handoff payload:
 
 ### agent_updated_stream_event
 
-```ts
-type RunAgentUpdatedStreamEvent = {
-  type: 'agent_updated_stream_event';
-  agent: Agent<any, any>;
-};
-```
+<Code
+  lang="typescript"
+  code={runAgentUpdatedStreamEventExample}
+  title="RunAgentUpdatedStreamEvent"
+/>
 
 Example:
 
@@ -166,10 +172,12 @@ Example:
 ## Human in the loop while streaming
 
 Streaming is compatible with handoffs that pause execution (for example
-when a tool requires approval). The `interruption` field on the stream
-object exposes the interruptions, and you can continue execution by
+when a tool requires approval). The `interruptions` field on the stream
+object exposes the pending approvals, and you can continue execution by
 calling `state.approve()` or `state.reject()` for each of them.
-Executing again with `{ stream: true }` resumes streaming output.
+After the stream pauses, `stream.completed` resolves and `stream.interruptions`
+contains the approvals to handle. Executing again with `{ stream: true }`
+resumes streaming output.
 
 <Code
   lang="typescript"

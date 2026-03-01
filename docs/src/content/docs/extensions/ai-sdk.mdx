@@ -4,7 +4,13 @@ description: Connect your Agents SDK agents to any model through the Vercel's AI
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import aiSdkImportsExample from '../../../../../examples/docs/extensions/ai-sdk-imports.ts?raw';
+import aiSdkModelExample from '../../../../../examples/docs/extensions/ai-sdk-model.ts?raw';
+import aiSdkProviderDataExample from '../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
+import aiSdkProviderMetadataExample from '../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
 import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
+import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
+import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
 <Aside type="caution">
   This adapter is still in beta. You may run into issues with some model
@@ -13,7 +19,7 @@ import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-se
   quickly.
 </Aside>
 
-Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel's AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
+Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
 
 ## Setup
 
@@ -33,16 +39,15 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
 
 3. Import the adapter and model to connect to your agent:
 
-   ```typescript
-   import { openai } from '@ai-sdk/openai';
-   import { aisdk } from '@openai/agents-extensions/ai-sdk';
-   ```
+   <Code
+     lang="typescript"
+     code={aiSdkImportsExample}
+     title="Import the adapter"
+   />
 
 4. Initialize an instance of the model to be used by the agent:
 
-   ```typescript
-   const model = aisdk(openai('gpt-5-mini'));
-   ```
+   <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
 
 </Steps>
 
@@ -62,29 +67,28 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
 
 If you need to send provider-specific options with a message, pass them through `providerMetadata`. The values are forwarded directly to the underlying AI SDK model. For example, the following `providerData` in the Agents SDK
 
-```ts
-providerData: {
-  anthropic: {
-    cacheControl: {
-      type: 'ephemeral';
-    }
-  }
-}
-```
+<Code
+  lang="typescript"
+  code={aiSdkProviderDataExample}
+  title="Agents SDK providerData"
+/>
 
 would become
 
-```ts
-providerMetadata: {
-  anthropic: {
-    cacheControl: {
-      type: 'ephemeral';
-    }
-  }
-}
-```
+<Code
+  lang="typescript"
+  code={aiSdkProviderMetadataExample}
+  title="AI SDK providerMetadata"
+/>
 
 when using the AI SDK integration.
+
+## Picking the right integration
+
+There are two related integrations in `@openai/agents-extensions`:
+
+- `@openai/agents-extensions/ai-sdk` adapts an AI SDK model so an `Agent` can run on it.
+- `@openai/agents-extensions/ai-sdk-ui` adapts a streamed Agents SDK run so AI SDK UI routes can return a standard streaming `Response`.
 
 ## AI SDK UI stream helpers
 
@@ -94,5 +98,23 @@ when using the AI SDK integration.
 - `createAiSdkUiMessageStreamResponse(source, options?)` for `UIMessageChunk` streaming responses.
 
 Both helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object and return a `Response` with streaming-friendly headers.
+
+Use `createAiSdkUiMessageStreamResponse(...)` when your UI needs structured chunks such as tool calls or reasoning parts. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
+
+Example Next.js route for UI message streaming:
+
+<Code
+  lang="typescript"
+  code={aiSdkUiMessageStreamResponseExample}
+  title="UI message stream response"
+/>
+
+Example Next.js route for text-only streaming:
+
+<Code
+  lang="typescript"
+  code={aiSdkTextStreamResponseExample}
+  title="Text stream response"
+/>
 
 For end-to-end usage, see the `examples/ai-sdk-ui` app in this repository.

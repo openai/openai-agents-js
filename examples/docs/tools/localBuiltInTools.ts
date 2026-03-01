@@ -48,5 +48,3 @@ const agent = new Agent({
     applyPatchTool({ editor, needsApproval: true }),
   ],
 });
-
-void agent;

@@ -11,6 +11,7 @@ import promptIdExample from '../../../../../examples/basic/prompt-id.ts?raw';
 import agentWithModelExample from '../../../../../examples/docs/models/agentWithModel.ts?raw';
 import runnerWithModelExample from '../../../../../examples/docs/models/runnerWithModel.ts?raw';
 import gpt5DefaultModelSettingsExample from '../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
+import setDefaultModelProviderExample from '../../../../../examples/docs/models/setDefaultModelProvider.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
@@ -176,6 +177,18 @@ pass the provider to the `Runner` constructor:
   code={modelCustomProviderExample}
   title="Minimal custom provider"
 />
+
+If you want every `run()` call and every newly constructed `Runner` to use the same provider by
+default, set it once during app startup:
+
+<Code
+  lang="typescript"
+  code={setDefaultModelProviderExample}
+  title="Set a default model provider"
+/>
+
+This is useful when your app standardizes on a non-OpenAI provider and you do not want to pass a
+custom `Runner` everywhere.
 
 If you want a ready-made adapter for non-OpenAI models, see [Using any model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk).
 

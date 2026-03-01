@@ -18,7 +18,7 @@ Tools let an Agent **take actions** – fetch data, call external APIs, execute 
 computer. The JavaScript/TypeScript SDK supports six categories:
 
 1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation)_
-2. **Local built-in tools** – run in your environment. _(computer use, shell, apply_patch)_
+2. **Built-in execution tools** – SDK-provided tools that execute outside the model. _(computer use and apply_patch run locally; shell can run locally or in hosted containers)_
 3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 4. **Agents as tools** – expose an entire Agent as a callable tool.
 5. **MCP servers** – attach a Model Context Protocol server (local or remote).
@@ -59,32 +59,65 @@ ranking options or semantic filters.
 
 ---
 
-### 2. Local built-in tools
+### 2. Built-in execution tools
 
-Local built-in tools run in your own environment and require you to supply implementations:
+These tools are built into the SDK, but execution happens outside the model response itself:
 
-- **Computer use** – implement the `Computer` interface and pass it to `computerTool()`.
-- **Shell** – either provide a local `Shell` implementation, or configure a hosted container environment.
-- **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`.
+- **Computer use** – implement the `Computer` interface and pass it to `computerTool()`. This always runs against a local `Computer` implementation that you provide.
+- **Shell** – either provide a local `Shell` implementation, or configure a hosted container environment with `shellTool({ environment })`.
+- **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`. This always runs against a local `Editor` implementation that you provide.
 
-Computer and apply-patch tools execute locally and are **not** hosted by OpenAI. Shell tools can run
-locally or in hosted container environments, depending on `shellTool()` configuration.
-The tool calls are still requested by the model’s responses, but your application controls how those
-calls are executed.
+The tool calls are still requested by the model, but your application or configured execution
+environment performs the work.
 
 <Code
   lang="typescript"
   code={localBuiltInToolsExample}
-  title="Local built-in tools"
+  title="Built-in execution tools"
 />
 
-For hosted shell environments, configure `shellTool({ environment })` with either:
+#### Computer tool specifics
 
-- `type: 'container_auto'` to create a managed container for the run (supports network policy, memory limit, and skills).
+`computerTool()` accepts either:
+
+- A concrete `Computer` instance.
+- An initializer function that creates a `Computer` per run.
+- A provider object with `{ create, dispose }` when you need run-scoped setup and teardown.
+
+Use `needsApproval` when computer actions should pause for user review, and `onSafetyCheck` when
+you want to acknowledge or reject pending safety checks raised during a computer action.
+
+#### Shell tool specifics
+
+`shellTool()` has two modes:
+
+- Local mode: provide `shell`, and optionally `environment: { type: 'local', skills }` plus `needsApproval` and `onApproval` for automatic approval handling.
+- Hosted container mode: provide `environment` with `type: 'container_auto'` or `type: 'container_reference'`.
+
+In local mode, `environment.skills` lets you mount local skills by `name`, `description`, and filesystem `path`.
+
+In hosted container mode, configure `shellTool({ environment })` with either:
+
+- `type: 'container_auto'` to create a managed container for the run.
 - `type: 'container_reference'` to reuse an existing container by `containerId`.
 
-See `examples/tools/container-shell-skill-ref.ts` and `examples/tools/container-shell-inline-skill.ts`
-for end-to-end usage.
+Hosted `container_auto` environments support:
+
+- `networkPolicy`, including allowlists with `domainSecrets`.
+- `fileIds` for mounting uploaded files.
+- `memoryLimit` for container sizing.
+- `skills`, either by `skill_reference` or inline zip bundles.
+
+Hosted shell environments do not accept `shell`, `needsApproval`, or `onApproval`, because the
+execution happens in the hosted container environment instead of your local process.
+
+See `examples/tools/local-shell.ts`, `examples/tools/container-shell-skill-ref.ts`, and
+`examples/tools/container-shell-inline-skill.ts` for end-to-end usage.
+
+#### Apply-patch tool specifics
+
+`applyPatchTool()` mirrors the local approval flow from `shellTool()`: use `needsApproval` to pause
+before file edits and `onApproval` when you want an app-level callback to auto-approve or reject.
 
 ---
 

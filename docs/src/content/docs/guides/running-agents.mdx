@@ -103,6 +103,22 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 
 ## State and conversation management
 
+### Choose one memory strategy
+
+There are four common ways to carry state into the next turn:
+
+| Strategy             | Where state lives         | Best for                                                                 | What you pass on the next turn                        |
+| -------------------- | ------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `result.history`     | Your app memory           | Small chat loops, full manual control, any provider                      | `result.history`                                      |
+| `session`            | Your storage + the SDK    | Persistent chat state, resumable runs, custom stores                     | The same `session` instance (or a store-backed one)   |
+| `conversationId`     | OpenAI Conversations API  | Shared server-side state across workers/services                         | The same `conversationId` plus only the new user turn |
+| `previousResponseId` | OpenAI Responses API only | The simplest server-managed continuation without creating a conversation | `result.lastResponseId` plus only the new user turn   |
+
+`result.history` and `session` are client-managed. `conversationId` and `previousResponseId` are
+OpenAI-managed and only apply when you are using the OpenAI Responses API. In most applications,
+pick one persistence strategy per conversation. Mixing client-managed history with server-managed
+state can duplicate context unless you are deliberately reconciling both layers.
+
 ### Conversations / chat threads
 
 Each call to `runner.run()` (or `run()` utility) represents one **turn** in your application-level conversation. You choose how much of the `RunResult` you show the end‑user – sometimes only `finalOutput`, other times every generated item.
@@ -117,7 +133,12 @@ See [the chat example](https://github.com/openai/openai-agents-js/tree/main/exam
 
 #### Server-managed conversations
 
-You can let the OpenAI Responses API persist conversation history for you instead of sending your entire local transcript on every turn. This is useful when you are coordinating long conversations or multiple services. See the [Conversation state guide](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses) for details.
+You can let the OpenAI Responses API persist conversation history for you instead of sending your
+entire local conversation history on every turn. This is useful when you are coordinating long conversations
+or multiple services. With either server-managed approach below, pass only the new turn's input on
+each request. The API reuses prior state for you. See the
+[Conversation state guide](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)
+for details.
 
 OpenAI exposes two ways to reuse server-side state:
 
@@ -140,6 +161,10 @@ If you want to start only with Responses API anyway, you can chain each request 
   code={previousResponseIdExample}
   title="Chaining with previousResponseId"
 />
+
+`conversationId` and `previousResponseId` are mutually exclusive. Use `conversationId` when you
+want a named conversation resource you can share across systems, and `previousResponseId` when you
+just want the cheapest SDK-level continuation primitive from one response to the next.
 
 ## Hooks and customization
 

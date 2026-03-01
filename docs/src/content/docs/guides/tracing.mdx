@@ -27,9 +27,14 @@ There are two ways to disable tracing in server environments:
 
 ## Export loop lifecycle
 
-In most environments traces will automatically be exported on a regular interval. In the browser or in Cloudflare Workers, this functionality is disabled by default. Traces will still get exported if too many are queued up but they are not exported on a regular interval. Instead you should use `getGlobalTraceProvider().forceFlush()` to manually export the traces as part of your code's lifecycle.
+In supported server runtimes, traces are exported on a regular interval. In some runtimes,
+including Cloudflare Workers, the automatic export loop is unavailable even though tracing itself is
+still enabled. In those environments you should call `getGlobalTraceProvider().forceFlush()` as part
+of your request lifecycle to export queued traces before the runtime is torn down.
 
-For example, in a Cloudflare Worker, you should wrap your code into a `try/catch/finally` block and use force flush with `waitUntil` to ensure that traces are exported before the worker exits.
+This guidance does not apply to browsers because tracing is disabled there by default.
+
+For example, in a Cloudflare Worker, you should wrap your code into a `try/catch/finally` block and use `forceFlush()` with `waitUntil` to ensure that traces are exported before the worker exits.
 
 <Code
   lang="typescript"

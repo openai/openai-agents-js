@@ -35,5 +35,3 @@ await run(agent, 'Inspect src/tool.ts and summarize it.', { context });
 await run(agent, 'Now list refactoring opportunities.', { context });
 
 const threadId = context.codexThreadId_engineer;
-
-void threadId;

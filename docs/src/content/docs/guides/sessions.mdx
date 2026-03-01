@@ -10,6 +10,8 @@ import customSession from '../../../../../examples/docs/sessions/customSession.t
 import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 import responsesCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
 import manualCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
+import memorySessionExample from '../../../../../examples/docs/sessions/memorySession.ts?raw';
+import resumableRunExample from '../../../../../examples/docs/sessions/resumableRun.ts?raw';
 
 Sessions give the Agents SDK a **persistent memory layer**. Provide any object that implements the `Session` interface to `Runner.run`, and the SDK handles the rest. When a session is present, the runner automatically:
 
@@ -17,9 +19,13 @@ Sessions give the Agents SDK a **persistent memory layer**. Provide any object t
 2. Persists new user input and assistant output after each run completes.
 3. Keeps the session available for future turns, whether you call the runner with new user text or resume from an interrupted `RunState`.
 
-This removes the need to manually call `toInputList()` or stitch history between turns. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. Because they share the `Session` interface, you can plug in your own storage backend. For inspiration beyond the Conversations API, explore the sample session backends under `examples/memory/` (Prisma, file-backed, and more). When you use an OpenAI Responses model, wrap any session with `OpenAIResponsesCompactionSession` to automatically shrink stored transcripts via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact).
+This removes the need to manually call `toInputList()` or stitch history between turns. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. Because they share the `Session` interface, you can plug in your own storage backend. For inspiration beyond the Conversations API, explore the sample session backends under `examples/memory/` (Prisma, file-backed, and more). When you use an OpenAI Responses model, wrap any session with `OpenAIResponsesCompactionSession` to automatically shrink stored conversation history via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact).
 
 > Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
+
+Use sessions when you want the SDK to manage client-side memory for you. If you are already using
+OpenAI server-managed state with `conversationId` or `previousResponseId`, you usually do not also
+need a session for the same conversation history.
 
 ---
 
@@ -37,6 +43,15 @@ Use `OpenAIConversationsSession` to sync memory with the [Conversations API](htt
 
 Reusing the same session instance ensures the agent receives the full conversation history before every turn and automatically persists new items. Switching to a different `Session` implementation requires no other code changes.
 
+For local demos, tests, or process-local chat state, `MemorySession` provides the same interface
+without talking to OpenAI:
+
+<Code
+  lang="typescript"
+  code={memorySessionExample}
+  title="Use MemorySession for local state"
+/>
+
 `OpenAIConversationsSession` constructor options:
 
 | Option           | Type     | Notes                                                          |
@@ -47,6 +62,16 @@ Reusing the same session instance ensures the agent receives the full conversati
 | `baseURL`        | `string` | Base URL for OpenAI-compatible endpoints.                      |
 | `organization`   | `string` | OpenAI organization ID for requests.                           |
 | `project`        | `string` | OpenAI project ID for requests.                                |
+
+`MemorySession` constructor options:
+
+| Option         | Type               | Notes                                                                    |
+| -------------- | ------------------ | ------------------------------------------------------------------------ |
+| `sessionId`    | `string`           | Stable identifier for logs or tests. Generated automatically by default. |
+| `initialItems` | `AgentInputItem[]` | Seed the session with existing history.                                  |
+| `logger`       | `Logger`           | Override the logger used for debug output.                               |
+
+`MemorySession` stores everything in local process memory, so it is reset when your process exits.
 
 If you need to pre-create a conversation ID before constructing the session, use
 `startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
@@ -104,7 +129,8 @@ When you pass an array of `AgentInputItem`s as the run input, provide a `session
   title="Truncate history with sessionInputCallback"
 />
 
-For string inputs the runner merges history automatically, so the callback is optional.
+For string inputs the runner merges history automatically, so the callback is optional. The callback
+only runs when your turn input is already an item array.
 
 ---
 
@@ -114,28 +140,21 @@ For string inputs the runner merges history automatically, so the callback is op
 
 Human-in-the-loop flows often pause a run to wait for approval:
 
-```typescript
-const result = await runner.run(agent, 'Search the itinerary', {
-  session,
-  stream: true,
-});
+<Code
+  lang="typescript"
+  code={resumableRunExample}
+  title="Resume a run with the same session"
+/>
 
-if (result.requiresApproval) {
-  // ... collect user feedback, then resume the agent in a later turn
-  const continuation = await runner.run(agent, result.state, { session });
-  console.log(continuation.finalOutput);
-}
-```
-
-When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Human-in-the-loop (HITL) flows stay fully compatible—approval checkpoints still round-trip through `RunState` while the session keeps the transcript complete.
+When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Human-in-the-loop (HITL) flows stay fully compatible—approval checkpoints still round-trip through `RunState` while the session keeps the conversation history complete.
 
 ---
 
-## Advanced: transcript compaction
+## Advanced: history compaction
 
 ### Compact OpenAI Responses history automatically
 
-`OpenAIResponsesCompactionSession` decorates any `Session` and relies on the OpenAI Responses API to keep transcripts short. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. The decorator clears and rewrites the underlying session with the compacted output, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
+`OpenAIResponsesCompactionSession` decorates any `Session` and uses the OpenAI Responses API to replace a long stored history with a shorter equivalent list of conversation items. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. Depending on `compactionMode`, the request is built either from the latest Responses API chain or from the session's current items. The default trigger compacts once at least 10 non-user items have accumulated; override `shouldTriggerCompaction` to base the decision on token counts or custom heuristics. After compaction returns, the decorator clears the underlying session and rewrites it with the reduced item list, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
 
 <Code
   lang="typescript"
@@ -152,6 +171,11 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 | `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests.                                                                      |
 | `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                          |
 | `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items. |
+
+`compactionMode: 'previous_response_id'` is useful when you are already chaining turns with
+Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current
+session items instead, which is helpful when the response chain is unavailable or you want the
+underlying session contents to be the source of truth.
 
 `runCompaction(args)` options:
 

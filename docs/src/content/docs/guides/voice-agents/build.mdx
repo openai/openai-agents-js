@@ -28,6 +28,15 @@ import serverAgentExample from '../../../../../../examples/docs/voice-agents/ser
 import delegationAgentExample from '../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
 import turnDetectionExample from '../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
 
+<Aside type="caution">
+  Choose your architecture early:
+
+- `OpenAIRealtimeWebRTC` is the simplest browser path and handles audio input/output for you.
+- `OpenAIRealtimeWebSocket` gives you more control, but you must manage audio capture and playback yourself.
+- Function tools run wherever the `RealtimeSession` runs. If the session runs in the browser, the tool runs in the browser too.
+- Realtime handoffs keep the same voice and model. If you need a different backend model, delegate through a tool instead of a handoff.
+  </Aside>
+
 ## Session setup
 
 ### Audio handling
@@ -62,18 +71,18 @@ For parameters that are new and don't have a matching parameter in the [Realtime
 
 Additional `RealtimeSession` options you can set at construction time:
 
-| Option                                        | Type                              | Purpose                                                                          |
-| --------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
-| `context`                                     | `TContext`                        | Extra local context merged into the session context.                             |
-| `historyStoreAudio`                           | `boolean`                         | Store audio data in the local history snapshot (disabled by default).            |
-| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | Output guardrails for the session (see [Guardrails](#guardrails)).               |
-| `outputGuardrailSettings`                     | `RealtimeOutputGuardrailSettings` | Frequency and behavior for guardrail checks.                                     |
-| `tracingDisabled`                             | `boolean`                         | Disable tracing for the session.                                                 |
-| `groupId`                                     | `string`                          | Group traces across sessions or backend runs.                                    |
-| `traceMetadata`                               | `Record<string, any>`             | Custom metadata to attach to session traces.                                     |
-| `workflowName`                                | `string`                          | Friendly name for the trace workflow.                                            |
-| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
-| `toolErrorFormatter`                          | `ToolErrorFormatter`              | Customize tool approval rejection messages returned to the model.                |
+| Option                                        | Type                              | Purpose                                                                                 |
+| --------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------- |
+| `context`                                     | `TContext`                        | Extra local context merged into the session context.                                    |
+| `historyStoreAudio`                           | `boolean`                         | Store audio data in the local history snapshot (disabled by default).                   |
+| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | Output guardrails for the session (see [Guardrails](#guardrails)).                      |
+| `outputGuardrailSettings`                     | `{ debounceTextLength?: number }` | Guardrail cadence. Defaults to `100`; use `-1` to only run once full text is available. |
+| `tracingDisabled`                             | `boolean`                         | Disable tracing for the session.                                                        |
+| `groupId`                                     | `string`                          | Group traces across sessions or backend runs.                                           |
+| `traceMetadata`                               | `Record<string, any>`             | Custom metadata to attach to session traces.                                            |
+| `workflowName`                                | `string`                          | Friendly name for the trace workflow.                                                   |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`).        |
+| `toolErrorFormatter`                          | `ToolErrorFormatter`              | Customize tool approval rejection messages returned to the model.                       |
 
 `connect(...)` options:
 
@@ -102,7 +111,13 @@ Just like regular agents, Realtime Agents can call tools to perform actions. Rea
 
 <Code lang="typescript" code={defineToolExample} />
 
-Function tools run in the same environment as your `RealtimeSession`. This means if you are running your session in the browser, the tool executes in the browser. If you need to perform sensitive actions, make an HTTP request to your backend within the tool.
+#### Function tools
+
+Function tools run in the same environment as your `RealtimeSession`. This means if you are running your session in the browser, the tool executes in the browser. If you need to perform sensitive actions, call your backend from inside the tool and let the server do the privileged work.
+
+This lets a browser-side tool act as a thin backchannel to server-side logic. For example, [`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next) defines a `refundBackchannel` tool in the browser that forwards the request and current conversation history to `handleRefundRequest(...)` on the server, where a separate `Runner` can use a different agent or model to evaluate the refund before returning the result to the voice session.
+
+#### Hosted MCP tools
 
 Hosted MCP tools can be configured with `hostedMcpTool` and are executed remotely. When MCP tool availability changes the session emits `mcp_tools_changed`. To prevent the session from auto-triggering a model response after MCP tool calls complete, set `automaticallyTriggerResponseForMcpToolCalls: false`.
 
@@ -110,10 +125,14 @@ The current filtered MCP tool list is also available as `session.availableMcpToo
 property and the `mcp_tools_changed` event reflect only the hosted MCP servers enabled on the
 active agent, after applying any `allowed_tools` filters from the agent configuration.
 
+#### Background results
+
 While the tool is executing the agent will not be able to process new requests from the user. One way to improve the experience is by telling your agent to announce when it is about to execute a tool or say specific phrases to buy the agent some time to execute the tool.
 
 If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`.
 This sends the tool output back to the session while leaving response triggering under your control.
+
+#### Timeouts
 
 Function tool timeout options (`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`) work the same way in Realtime sessions. With the default `error_as_result`, the timeout message is sent as tool output. With `raise_exception`, the session emits an `error` event with [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) and does not send tool output for that call.
 
@@ -152,11 +171,11 @@ When a guardrail trips the session emits a `guardrail_tripped` event. The event 
 
 <Code lang="typescript" code={guardrailsExample} />
 
-By default guardrails are run every 100 characters or at the end of the response text has been generated.
-Since speaking out the text normally takes longer it means that in most cases the guardrail should catch
-the violation before the user can hear it.
+By default guardrails run every 100 characters and again when the final transcript is available. Because speaking the text usually takes longer than generating the transcript, this often lets the guardrail cut off unsafe output before the user hears it.
 
 If you want to modify this behavior you can pass a `outputGuardrailSettings` object to the session.
+
+Set `debounceTextLength: -1` when you only want to evaluate the fully generated transcript once, at the end of the response.
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 

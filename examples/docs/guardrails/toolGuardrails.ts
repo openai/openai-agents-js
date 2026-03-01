@@ -49,5 +49,3 @@ const agent = new Agent({
   instructions: 'Classify incoming text.',
   tools: [classifyTool],
 });
-
-void agent;

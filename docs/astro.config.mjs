@@ -111,6 +111,15 @@ const sidebar = [
     },
   },
   {
+    label: 'Configuring the SDK',
+    link: '/guides/config',
+    translations: {
+      ja: 'SDK の設定',
+      zh: 'SDK 配置',
+      ko: 'SDK 설정',
+    },
+  },
+  {
     label: 'Guides',
     translations: {
       ja: 'ガイド',
@@ -118,42 +127,6 @@ const sidebar = [
       ko: '가이드',
     },
     items: [
-      {
-        label: 'Agents',
-        link: '/guides/agents',
-        translations: {
-          ja: 'エージェント',
-          zh: '智能体',
-          ko: '에이전트',
-        },
-      },
-      {
-        label: 'Running Agents',
-        link: '/guides/running-agents',
-        translations: {
-          ja: 'エージェントの実行',
-          zh: '运行智能体',
-          ko: '에이전트 실행',
-        },
-      },
-      {
-        label: 'Results',
-        link: '/guides/results',
-        translations: {
-          ja: 'エージェントの実行結果',
-          zh: '执行结果',
-          ko: '실행 결과',
-        },
-      },
-      {
-        label: 'Tools',
-        link: '/guides/tools',
-        translations: {
-          ja: 'ツール',
-          zh: '工具',
-          ko: '도구',
-        },
-      },
       {
         label: 'Orchestrating multiple agents',
         link: '/guides/multi-agent',
@@ -164,30 +137,12 @@ const sidebar = [
         },
       },
       {
-        label: 'Handoffs',
-        link: '/guides/handoffs',
+        label: 'Agents',
+        link: '/guides/agents',
         translations: {
-          ja: 'ハンドオフ',
-          zh: '交接',
-          ko: '핸드오프',
-        },
-      },
-      {
-        label: 'Context management',
-        link: '/guides/context',
-        translations: {
-          ja: 'コンテキスト管理',
-          zh: '上下文管理',
-          ko: '컨텍스트 관리',
-        },
-      },
-      {
-        label: 'Sessions',
-        link: '/guides/sessions',
-        translations: {
-          ja: 'セッション',
-          zh: '会话',
-          ko: '세션',
+          ja: 'エージェント',
+          zh: '智能体',
+          ko: '에이전트',
         },
       },
       {
@@ -200,12 +155,30 @@ const sidebar = [
         },
       },
       {
+        label: 'Tools',
+        link: '/guides/tools',
+        translations: {
+          ja: 'ツール',
+          zh: '工具',
+          ko: '도구',
+        },
+      },
+      {
         label: 'Guardrails',
         link: '/guides/guardrails',
         translations: {
           ja: 'ガードレール',
           zh: '护栏',
           ko: '가드레일',
+        },
+      },
+      {
+        label: 'Running Agents',
+        link: '/guides/running-agents',
+        translations: {
+          ja: 'エージェントの実行',
+          zh: '运行智能体',
+          ko: '에이전트 실행',
         },
       },
       {
@@ -218,12 +191,48 @@ const sidebar = [
         },
       },
       {
+        label: 'Handoffs',
+        link: '/guides/handoffs',
+        translations: {
+          ja: 'ハンドオフ',
+          zh: '交接',
+          ko: '핸드오프',
+        },
+      },
+      {
+        label: 'Results',
+        link: '/guides/results',
+        translations: {
+          ja: 'エージェントの実行結果',
+          zh: '执行结果',
+          ko: '실행 결과',
+        },
+      },
+      {
         label: 'Human-in-the-loop',
         link: '/guides/human-in-the-loop',
         translations: {
           ja: '人間の介入（HITL）',
           zh: '人机协作',
           ko: '휴먼 인 더 루프 (HITL)',
+        },
+      },
+      {
+        label: 'Sessions',
+        link: '/guides/sessions',
+        translations: {
+          ja: 'セッション',
+          zh: '会话',
+          ko: '세션',
+        },
+      },
+      {
+        label: 'Context management',
+        link: '/guides/context',
+        translations: {
+          ja: 'コンテキスト管理',
+          zh: '上下文管理',
+          ko: '컨텍스트 관리',
         },
       },
       {
@@ -242,33 +251,6 @@ const sidebar = [
           ja: 'トレーシング',
           zh: '追踪',
           ko: '트레이싱',
-        },
-      },
-      {
-        label: 'Configuring the SDK',
-        link: '/guides/config',
-        translations: {
-          ja: 'SDK の設定',
-          zh: 'SDK 配置',
-          ko: 'SDK 설정',
-        },
-      },
-      {
-        label: 'Troubleshooting',
-        link: '/guides/troubleshooting',
-        translations: {
-          ja: 'トラブルシューティング',
-          zh: '故障排除',
-          ko: '문제 해결',
-        },
-      },
-      {
-        label: 'Release process',
-        link: '/guides/release',
-        translations: {
-          ja: 'リリースプロセス',
-          zh: '发布流程',
-          ko: '릴리스 프로세스',
         },
       },
     ],
@@ -355,6 +337,24 @@ const sidebar = [
         },
       },
     ],
+  },
+  {
+    label: 'Troubleshooting',
+    link: '/guides/troubleshooting',
+    translations: {
+      ja: 'トラブルシューティング',
+      zh: '故障排除',
+      ko: '문제 해결',
+    },
+  },
+  {
+    label: 'Release process',
+    link: '/guides/release',
+    translations: {
+      ja: 'リリースプロセス',
+      zh: '发布流程',
+      ko: '릴리스 프로세스',
+    },
   },
   {
     label: 'API Reference',
