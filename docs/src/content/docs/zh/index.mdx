@@ -10,40 +10,40 @@ import Hero from '../../../components/Hero.astro';
 import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 
 <Hero>
-  <Fragment slot="title">快速上手</Fragment>
+  <Fragment slot="title">快速开始</Fragment>
   <Fragment slot="description">几分钟内构建您的第一个智能体。</Fragment>
   <Fragment slot="cta">开始构建</Fragment>
 </Hero>
 
 ## 概述
 
-[OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) 让您以轻量、易用且抽象极少的方式构建具备智能体能力的 AI 应用。它是我们此前智能体实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的面向生产升级版本，并且也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 仅包含一小组基础组件：
+[适用于 TypeScript 的 OpenAI Agents SDK](https://github.com/openai/openai-agents-js) 以轻量、易用且抽象极少的方式，帮助你构建智能体 AI 应用。它是我们此前智能体实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的生产级升级版本，并且也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只包含一组非常精简的基础组件：
 
-- **智能体（Agents）**：配备 instructions 和 tools 的 LLM
-- **Agents as tools / 交接（Handoffs）**：允许智能体将特定任务委托给其他智能体
-- **护栏（Guardrails）**：用于校验传入智能体的输入
+- **智能体**：配备 instructions 和 tools 的 LLM
+- **Agents as tools / 交接**：允许智能体将特定任务委派给其他智能体
+- **护栏**：可对智能体输入进行校验
 
-结合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，帮助您以较低学习成本构建真实世界的应用。此外，SDK 内置了**追踪（tracing）**功能，可用于可视化与调试智能体流程，并支持对其进行评估，甚至为您的应用微调模型。
+结合 TypeScript，这些基础组件足以表达工具与智能体之间的复杂关系，让你无需陡峭的学习曲线即可构建真实应用。此外，SDK 内置了**追踪**能力，可用于可视化和调试智能体流程，也可用于评估，甚至为你的应用微调模型。
 
-## 为什么使用 Agents SDK
+## 使用 Agents SDK 的原因
 
-该 SDK 的设计遵循两条原则：
+SDK 有两条核心设计原则：
 
-1. 功能足够有用，但基础组件足够少，便于快速上手。
-2. 开箱即用体验优秀，同时允许您精细定制每一步行为。
+1. 功能足够实用，同时基础组件足够少，能快速上手。
+2. 开箱即用效果优秀，同时你也可以精确定制每一步行为。
 
-主要特性包括：
+以下是 SDK 的主要功能：
 
-- **智能体循环（Agent loop）**：内置循环负责调用工具、将结果返回给 LLM，并持续迭代直至任务完成。
-- **TypeScript 优先（TypeScript-first）**：使用原生 TypeScript 语言特性编排与串联智能体，无需学习新的抽象。
-- **Agents as tools / 交接（Handoffs）**：用于跨多个智能体协调与委派工作的强大机制。
-- **护栏（Guardrails）**：与智能体执行并行进行输入校验与安全检查，未通过时快速失败。
-- **函数工具（Function tools）**：将任意 TypeScript 函数变为工具，自动生成 schema，并通过 Zod 驱动校验。
-- **MCP 服务器工具集成**：内置 MCP 服务器工具集成，其用法与函数工具相同。
-- **会话（Sessions）**：在智能体循环内维护工作上下文的持久化内存层。
-- **人工干预（Human in the loop）**：跨智能体运行引入人工参与的内置机制。
-- **追踪（Tracing）**：内置工作流可视化、调试与监控，支持 OpenAI 全套评估、微调与蒸馏工具。
-- **实时智能体（Realtime Agents）**：构建强大的语音智能体，支持自动打断检测、上下文管理、护栏等特性。
+- **智能体循环**：内置智能体循环，负责处理工具调用、将结果返回给 LLM，并持续运行直到任务完成。
+- **TypeScript 优先**：使用原生 TypeScript 语言特性编排和串联智能体，无需学习新的抽象。
+- **Agents as tools / 交接**：用于在多个智能体之间进行协作与任务委派的强大机制。
+- **护栏**：与智能体执行并行运行输入校验和安全检查，并在检查未通过时快速失败。
+- **函数工具**：可将任意 TypeScript 函数转换为工具，并自动生成 schema 与基于 Zod 的校验。
+- **MCP 服务器工具调用**：内置 MCP 服务器工具集成，使用方式与函数工具一致。
+- **会话**：持久化记忆层，用于在智能体循环中维持工作上下文。
+- **人工干预**：内置机制，支持在人机协作场景中参与智能体运行。
+- **追踪**：内置追踪能力，用于可视化、调试和监控工作流，并支持 OpenAI 的评估、微调和蒸馏工具套件。
+- **实时智能体**：可构建强大的语音智能体，支持自动打断检测、上下文管理、护栏等功能。
 
 ## 安装
 
@@ -51,14 +51,28 @@ import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 npm install @openai/agents zod
 ```
 
-SDK 需要 Zod v4；通过 npm 安装 `zod` 会获取 v4 的最新版本。
+SDK 需要 Zod v4；通过 npm 安装 `zod` 将获取最新的 v4 版本。
 
 ## Hello World 示例
 
 <Code lang="typescript" code={helloWorldExample} title="Hello World" />
 
-(_如果要运行此示例，请确保已设置 `OPENAI_API_KEY` 环境变量_)
+（_如果要运行，请确保已设置 `OPENAI_API_KEY` 环境变量_）
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
+
+## 入门入口
+
+<LinkCard
+  title="快速开始"
+  href="/openai-agents-js/zh/guides/quickstart"
+  description="构建你的第一个文本智能体，并学习 SDK 的核心工作流。"
+/>
+
+<LinkCard
+  title="语音智能体快速开始"
+  href="/openai-agents-js/zh/guides/voice-agents/quickstart"
+  description="如果你要构建语音交互，请从 Realtime 语音路径开始。"
+/>

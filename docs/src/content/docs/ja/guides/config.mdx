@@ -12,11 +12,19 @@ import setTracingExportApiKeyExample from '../../../../../../examples/docs/confi
 import setTracingDisabledExample from '../../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
 
+このページでは、アプリ起動時に通常一度だけ設定する **SDK 全体のデフォルト** について説明します。たとえば、デフォルトの OpenAI クライアント、トランスポート、トレーシングのエクスポートキー、デバッグログの挙動などです。これらの設定はデフォルトでプロセス全体に適用されるため、エージェント単位や実行単位の調整ではなく、共通設定を行うのに適した場所です。
+
+代わりに特定の `Agent`、`Runner`、または `run()` 呼び出しを設定したい場合は、次を参照してください。
+
+- `Runner` と実行ごとのオプションは [エージェントの実行](/openai-agents-js/ja/guides/running-agents)
+- エージェントレベルおよび Runner レベルのモデル設定は [モデル](/openai-agents-js/ja/guides/models)
+- 実行固有のトレーシング設定とエクスポーターの挙動は [トレーシング](/openai-agents-js/ja/guides/tracing)
+
 ## OpenAI クライアントとトランスポート
 
 ### API キーとクライアント
 
-デフォルトでは SDK は最初のインポート時に環境変数 `OPENAI_API_KEY` を読み込みます。変数を設定できない場合は、手動で `setDefaultOpenAIKey()` を呼び出せます。
+デフォルトでは SDK は OpenAI クライアントの作成が必要になった時点で `OPENAI_API_KEY` を遅延解決します。環境変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出してください。
 
 <Code
   lang="typescript"
@@ -24,7 +32,7 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
   title="Set default OpenAI key"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定がない場合、SDK はデフォルトのキーを使って自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。指定しない場合、SDK はデフォルトキーを使って自動的に作成します。
 
 <Code
   lang="typescript"
@@ -34,13 +42,13 @@ import getLoggerExample from '../../../../../../examples/docs/config/getLogger.t
 
 ### API の選択
 
-最後に、Responses API と Chat Completions API を切り替えられます。
+最後に、Responses API と Chat Completions API を切り替えることもできます。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
 
 ### Responses トランスポート
 
-Responses API を使用している場合、OpenAI プロバイダのトランスポートも選べます。デフォルトは HTTP です。
+Responses API を使用している場合は、OpenAI プロバイダーのトランスポートも選択できます。デフォルトは HTTP です。
 
 <Code
   lang="typescript"
@@ -48,15 +56,17 @@ Responses API を使用している場合、OpenAI プロバイダのトラン�
   title="Set Responses transport"
 />
 
-WebSocket トランスポートを有効にするには `setOpenAIResponsesTransport('websocket')`、元に戻すには `setOpenAIResponsesTransport('http')` を使用します。WebSocket トラフィックをプロキシやゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定するか、`OpenAIProvider` の `websocketBaseURL` を構成してください。
+`setOpenAIResponsesTransport('websocket')` を使うと WebSocket トランスポートを有効化でき、`setOpenAIResponsesTransport('http')` で戻せます。WebSocket トラフィックをプロキシやゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定してください（または `OpenAIProvider` の `websocketBaseURL` を設定してください）。
 
 ## 可観測性とデバッグ
 
 ### トレーシング
 
-トレーシングはデフォルトで有効で、上記の OpenAI キーを使用します。
+トレーシングは、サポートされるサーバーランタイムではデフォルトで有効です。ブラウザーおよび `NODE_ENV=test` の場合はデフォルトで無効です。
 
-別のキーは `setTracingExportApiKey()` で設定できます:
+デフォルトでは、トレースのエクスポートには上記セクションと同じ OpenAI キーが使われます。
+
+別のキーは `setTracingExportApiKey()` で設定できます。
 
 <Code
   lang="typescript"
@@ -64,7 +74,7 @@ WebSocket トランスポートを有効にするには `setOpenAIResponsesTrans
   title="Set tracing export API key"
 />
 
-トレーシングは完全に無効化することもできます:
+トレーシングは完全に無効化することもできます。
 
 <Code
   lang="typescript"
@@ -72,33 +82,33 @@ WebSocket トランスポートを有効にするには `setOpenAIResponsesTrans
   title="Disable tracing"
 />
 
-トレーシング機能の詳細は [トレーシング](/openai-agents-js/ja/guides/tracing) をご覧ください。
+トレーシング機能の詳細については、[トレーシング ガイド](/openai-agents-js/ja/guides/tracing) を参照してください。
 
-### デバッグロギング
+### デバッグログ
 
-SDK はデバッグロギングに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。冗長なログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細ログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定してください。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-セッション永続化のアクティビティを記録するには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定します。
+セッション永続化のアクティビティをログに出すには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定します。
 
-`@openai/agents` の `getLogger(namespace)` を使うと、独自モジュール用の名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使うと、独自モジュール向けに名前空間付きロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
-#### ログ内の機微情報
+#### ログ内の機微データ
 
-一部のログにはユーザーデータが含まれる場合があります。以下の環境変数を設定して無効化できます。
+一部のログにはユーザーデータが含まれる場合があります。次の環境変数を設定して無効化してください。
 
-LLM の入力と出力のロギングを無効化するには:
+LLM の入出力ログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
-ツールの入力と出力のロギングを無効化するには:
+ツールの入出力ログを無効化するには:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1

@@ -6,12 +6,18 @@ description: Create your first AI Agent from scratch
 import { Steps } from '@astrojs/starlight/components';
 import { Code } from '@astrojs/starlight/components';
 import quickstartExample from '../../../../../../examples/docs/quickstart/index.ts?raw';
+import createAgentExample from '../../../../../../examples/docs/quickstart/createAgent.ts?raw';
+import runAgentExample from '../../../../../../examples/docs/quickstart/runAgent.ts?raw';
+import agentWithToolsExample from '../../../../../../examples/docs/quickstart/agentWithTools.ts?raw';
+import additionalAgentsExample from '../../../../../../examples/docs/quickstart/additionalAgents.ts?raw';
+import defineHandoffsExample from '../../../../../../examples/docs/quickstart/defineHandoffs.ts?raw';
+import runOrchestrationExample from '../../../../../../examples/docs/quickstart/runOrchestration.ts?raw';
 
 ## プロジェクトのセットアップ
 
 <Steps>
 
-1. プロジェクトを作成し、npm を初期化します。一度だけ実行すれば十分です
+1. プロジェクトを作成して npm を初期化します。これは一度だけ実行すれば十分です
 
    ```bash
    mkdir my_project
@@ -19,152 +25,93 @@ import quickstartExample from '../../../../../../examples/docs/quickstart/index.
    npm init -y
    ```
 
-2. Agents SDK をインストールします（Zod v4 が必要です）
+2. Agents SDK と Zod をインストールします。SDK はツールスキーマと structured outputs に Zod v4 を使用します
 
    ```bash
    npm install @openai/agents zod
    ```
 
-3. OpenAI API キーを設定します。未取得の場合は、OpenAI API キーの作成手順については[こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)をご覧ください
+3. OpenAI API キーを設定します。まだ持っていない場合は、OpenAI API キーを作成するために [この手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) に従ってください
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   あるいは、`setDefaultOpenAIKey('<api key>')` を呼び出してプログラムからキーを設定し、トレーシングには `setTracingExportApiKey('<api key>')` を使用できます。
-   詳細は[SDK の設定](/openai-agents-js/ja/guides/config)をご覧ください
+   あるいは、`setDefaultOpenAIKey('<api key>')` を呼び出してキーをプログラムから設定し、
+   トレーシングには `setTracingExportApiKey('<api key>')` を使用することもできます。
+   詳細は [SDK の設定](/openai-agents-js/ja/guides/config) を参照してください
 
 </Steps>
 
-## はじめてのエージェントの作成
+## 最初のエージェントの作成
 
-エージェントは instructions と name で定義します
+エージェントは instructions と名前で定義します。
 
-```typescript
-import { Agent } from '@openai/agents';
+<Code lang="typescript" code={createAgentExample} title="エージェントを作成" />
 
-const agent = new Agent({
-  name: 'History Tutor',
-  instructions:
-    'You provide assistance with historical queries. Explain important events and context clearly.',
-});
-```
+## 最初のエージェントの実行
 
-## はじめてのエージェントの実行
+エージェントの実行には `run` メソッドを使用できます。実行を開始するには、開始したいエージェントと渡したい入力の両方を渡します。
 
-`run` メソッドでエージェントを実行できます。開始するエージェントと、渡したい入力の両方を渡すと実行が開始されます
+これにより、その実行中に行われた最終出力とアクションを含む結果が返されます。
 
-これにより、その実行中に実行されたアクションや最終出力を含む実行結果が返されます
+<Code lang="typescript" code={runAgentExample} title="エージェントを実行" />
 
-```typescript
-import { Agent, run } from '@openai/agents';
+2 回目のターンでは、`result.history` を `run()` に戻すか、[セッション](/openai-agents-js/ja/guides/sessions) を関連付けるか、
+`conversationId` / `previousResponseId` を使って OpenAI サーバー管理の状態を再利用できます。[エージェントの実行](/openai-agents-js/ja/guides/running-agents)
+では、これらの方法を比較しています。
 
-const agent = new Agent({
-  name: 'History Tutor',
-  instructions:
-    'You provide assistance with historical queries. Explain important events and context clearly.',
-});
+## エージェントへのツール追加
 
-const result = await run(agent, 'When did sharks first appear?');
+エージェントにツールを与えることで、情報の検索やアクションの実行ができます。
 
-console.log(result.finalOutput);
-```
+<Code lang="typescript" code={agentWithToolsExample} title="ツールを追加" />
 
-## エージェントへのツールの付与
+## 追加エージェントの作成
 
-エージェントに tools を与えることで、情報の参照やアクションの実行が可能になります
+追加のエージェントも同様に定義でき、問題をより小さな部分に分割して、エージェントが目の前のタスクにより集中できるようになります。また、エージェント上でモデルを定義することで、問題ごとに異なるモデルを使うこともできます。
 
-```typescript
-import { Agent, tool } from '@openai/agents';
-
-const historyFunFact = tool({
-  // The name of the tool will be used by the agent to tell what tool to use.
-  name: 'history_fun_fact',
-  // The description is used to describe **when** to use the tool by telling it **what** it does.
-  description: 'Give a fun fact about a historical event',
-  // This tool takes no parameters, so we provide an empty Zod Object.
-  parameters: z.object({}),
-  execute: async () => {
-    // The output will be returned back to the Agent to use
-    return 'Sharks are older than trees.';
-  },
-});
-
-const agent = new Agent({
-  name: 'History Tutor',
-  instructions:
-    'You provide assistance with historical queries. Explain important events and context clearly.',
-  // Adding the tool to the agent
-  tools: [historyFunFact],
-});
-```
-
-## エージェントの追加
-
-追加のエージェントを同様に定義して、問題を小さなパーツに分解し、エージェントが目の前のタスクにより集中できるようにします。また、エージェントにモデルを定義することで、問題ごとに異なるモデルを使用できます
-
-```typescript
-const historyTutorAgent = new Agent({
-  name: 'History Tutor',
-  instructions:
-    'You provide assistance with historical queries. Explain important events and context clearly.',
-});
-
-const mathTutorAgent = new Agent({
-  name: 'Math Tutor',
-  instructions:
-    'You provide help with math problems. Explain your reasoning at each step and include examples',
-});
-```
+<Code
+  lang="typescript"
+  code={additionalAgentsExample}
+  title="専門エージェントを作成"
+/>
 
 ## ハンドオフの定義
 
-複数のエージェント間をオーケストレーションするために、エージェントに `handoffs` を定義できます。これにより、エージェントは会話を次のエージェントに引き継げるようになります。これは実行中に自動的に行われます
+複数のエージェント間をオーケストレーションするには、エージェントに `handoffs` を定義できます。これにより、エージェントが会話を次のエージェントに引き継げるようになります。これは実行中に自動で行われます。
 
-```typescript
-// Using the Agent.create method to ensures type safety for the final output
-const triageAgent = Agent.create({
-  name: 'Triage Agent',
-  instructions:
-    "You determine which agent to use based on the user's homework question",
-  handoffs: [historyTutorAgent, mathTutorAgent],
-});
-```
+<Code lang="typescript" code={defineHandoffsExample} title="ハンドオフを定義" />
 
-実行後、結果の `finalAgent` プロパティを確認すると、どのエージェントが最終応答を生成したかが分かります
+実行後は、結果の `lastAgent` プロパティを見ることで、どのエージェントが最終応答を生成したかを確認できます。
 
 ## エージェントオーケストレーションの実行
 
-Runner は個々のエージェントの実行、ハンドオフ、およびツール実行の処理を行います
+ランナーは、個々のエージェントの実行、ハンドオフ、ツール呼び出しを処理します。
 
-```typescript
-import { run } from '@openai/agents';
+<Code
+  lang="typescript"
+  code={runOrchestrationExample}
+  title="エージェントオーケストレーションを実行"
+/>
 
-async function main() {
-  const result = await run(triageAgent, 'What is the capital of France?');
-  console.log(result.finalOutput);
-}
+## 全体の統合
 
-main().catch((err) => console.error(err));
-```
-
-## すべてをまとめる
-
-これまでの内容を 1 つの完全な例にまとめます。これを `index.js` に配置して実行します
+すべてを 1 つの完全な例にまとめましょう。これを `index.js` ファイルに配置して実行します。アプリがすでに TypeScript 用に設定されている場合は、代わりに `index.ts` を使用できます。
 
 <Code lang="typescript" code={quickstartExample} title="クイックスタート" />
 
-## トレースの表示
+## トレースの確認
 
-Agents SDK は自動的にトレースを生成します。これにより、エージェントの動作、呼び出したツール、どのエージェントにハンドオフしたかを確認できます
+Agents SDK は自動的にトレースを生成します。これにより、エージェントがどのように動作しているか、どのツールを呼び出したか、どのエージェントにハンドオフしたかを確認できます。
 
 エージェント実行中に何が起きたかを確認するには、
-[OpenAI ダッシュボードの Trace viewer](https://platform.openai.com/traces) に移動します
+[OpenAI Dashboard の Trace viewer](https://platform.openai.com/traces) に移動してください。
 
 ## 次のステップ
 
-さらに複雑なエージェントフローの構築方法を学びましょう:
+より複雑な agentic フローの構築方法を学びましょう:
 
 - [エージェント](/openai-agents-js/ja/guides/agents) の設定について学ぶ
-- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) について学ぶ
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents) と [セッション](/openai-agents-js/ja/guides/sessions) について学ぶ
 - [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models) について学ぶ

@@ -3,44 +3,44 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポートされる環境
+## サポート対象環境
 
-OpenAI Agents SDK は次のサーバー環境でサポートされています:
+OpenAI Agents SDK は、次のサーバー環境でサポートされています:
 
 - Node.js 22+
 - Deno 2.35+
 - Bun 1.2.5+
 
-### 限定サポート
+### 制限付きサポート
 
-- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で使用できますが、現時点ではいくつかの制限があります:
-  - 現在の SDK は `nodejs_compat` を有効にする必要があります
-  - トレースはリクエストの最後に手動でフラッシュする必要があります。詳細は [トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください
-  - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースが正確でない可能性があります
-  - アウトバウンド WebSocket 接続は fetch ベースのアップグレードを使用する必要があります（グローバルの `WebSocket` コンストラクタは不可）。Realtime を使用する場合は、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください
-- **Responses API WebSocket transport**:
-  - グローバルな `WebSocket` 実装が必要です
-  - ハンドシェイク時のカスタムヘッダーをサポートする `WebSocket` 実装が必要です
-  - 多くのブラウザスタイルの WebSocket API（および一部のエッジランタイム）は、アウトバウンドのカスタムヘッダーをサポートしていません。そのような環境では、代わりにデフォルトの HTTP Responses トランスポートを使用してください
-  - グローバルな `WebSocket` 実装が見つからない、またはカスタムヘッダーのサポートがないことを示すエラーが表示される場合、そのランタイムの WebSocket 実装は Responses WebSocket トランスポートと互換性がありません
-- **Browsers**:
-  - ブラウザでは現在トレーシングはサポートされていません
+- **Cloudflare Workers**: Agents SDK は Cloudflare Workers で利用できますが、現在はいくつかの制限があります:
+  - SDK は現在 `nodejs_compat` を有効にする必要があります
+  - リクエストの最後でトレースを手動で flush する必要があります。詳細は [トレーシング ガイド](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle) を参照してください。
+  - Cloudflare Workers の `AsyncLocalStorage` サポートが限定的なため、一部のトレースは正確でない場合があります
+  - 外向きの WebSocket 接続では、fetch ベースの upgrade（グローバルの `WebSocket` コンストラクターではない）を使う必要があります。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください。
+- **Responses API WebSocket トランスポート**:
+  - グローバルな `WebSocket` 実装が必要です。
+  - `WebSocket` 実装は、ハンドシェイク時のカスタムヘッダーをサポートしている必要があります。
+  - 多くのブラウザー型 WebSocket API（および一部のエッジランタイム）は、外向きカスタムヘッダーをサポートしていません。そのような環境では、代わりにデフォルトの HTTP Responses トランスポートを使用してください。
+  - グローバル `WebSocket` 実装が見つからない、またはカスタムヘッダーのサポート不足を示すエラーが出る場合、そのランタイムの websocket 実装は Responses WebSocket トランスポートと互換性がありません。
+- **ブラウザー**:
+  - コア SDK はブラウザー向けにバンドルできますが、その場合トレーシングはデフォルトで無効です。
 - **v8 isolates**:
-  - 適切なブラウザポリフィルを備えたバンドラを使用すれば v8 isolates 向けに SDK をバンドルできますが、トレーシングは動作しません
-  - v8 isolates での動作は広範にはテストされていません
+  - 適切なブラウザー polyfill を持つ bundler を使えば v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは動作しません
+  - v8 isolates は広範にはテストされていません
 
-## デバッグロギング
+## デバッグログ
 
-SDK で問題が発生している場合は、デバッグロギングを有効にして詳細な情報を取得できます。
+SDK で問題が発生している場合は、デバッグログを有効にすると、何が起きているかについてより多くの情報を得られます。
 
-`DEBUG` 環境変数を `openai-agents:*` に設定してデバッグロギングを有効にします。
+`DEBUG` 環境変数を `openai-agents:*` に設定すると、デバッグログを有効にできます。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-または、SDK の特定の部分にデバッグをスコープできます:
+または、SDK の特定部分にデバッグ対象を絞ることもできます:
 
-- `openai-agents:core` — SDK の主要な実行ロジック
+- `openai-agents:core` — SDK のメイン実行ロジック
 - `openai-agents:openai` — OpenAI API 呼び出し
-- `openai-agents:realtime` — Realtime Agents のコンポーネント
+- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント

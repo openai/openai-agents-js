@@ -4,96 +4,116 @@ description: Connect your Agents SDK agents to any model through the Vercel's AI
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import aiSdkImportsExample from '../../../../../../examples/docs/extensions/ai-sdk-imports.ts?raw';
+import aiSdkModelExample from '../../../../../../examples/docs/extensions/ai-sdk-model.ts?raw';
+import aiSdkProviderDataExample from '../../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
+import aiSdkProviderMetadataExample from '../../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
+import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
+import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。特に小規模なモデルプロバイダーでは問題が発生する可能性があります。問題があれば
+  このアダプターは現在も beta
+  です。特に小規模なものを含む一部のモデルプロバイダーでは問題が発生する可能性があります。問題を見つけた場合は
   [GitHub issues](https://github.com/openai/openai-agents-js/issues)
   からご報告ください。迅速に修正します。
 </Aside>
 
-Agents SDK は標準で Responses API や Chat Completions API を介して OpenAI モデルと連携します。ただし、別のモデルを使用したい場合は、[Vercel の AI SDK](https://sdk.vercel.ai/) が提供する幅広い対応モデルを、このアダプターを通じて Agents SDK に取り込むことができます。
+Agents SDK は標準で Responses API または Chat Completions API を通じて OpenAI のモデルで動作します。ただし別のモデルを使いたい場合は、[Vercel AI SDK](https://sdk.vercel.ai/) がサポートするさまざまなモデルを、このアダプター経由で Agents SDK に組み込めます。
 
 ## セットアップ
 
 <Steps>
 
-1. 拡張機能パッケージをインストールして AI SDK アダプターを導入します:
+1. extensions パッケージをインストールして AI SDK アダプターを導入します
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から使用したいモデルのパッケージを選び、インストールします:
+2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から使用したいモデルパッケージを選び、インストールします
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. アダプターとモデルをインポートしてエージェントに接続します:
+3. アダプターとモデルを import して、エージェントに接続します
 
-   ```typescript
-   import { openai } from '@ai-sdk/openai';
-   import { aisdk } from '@openai/agents-extensions/ai-sdk';
-   ```
+   <Code
+     lang="typescript"
+     code={aiSdkImportsExample}
+     title="Import the adapter"
+   />
 
-4. エージェントで使用するモデルのインスタンスを初期化します:
+4. エージェントが使用するモデルのインスタンスを初期化します
 
-   ```typescript
-   const model = aisdk(openai('gpt-5-mini'));
-   ```
+   <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
 
 </Steps>
 
 <Aside type="caution">
   `specificationVersion` が `v2` または `v3` の AI SDK
-  プロバイダーに対応しています。特別な理由で旧来の v1
-  プロバイダースタイルを使い続ける必要がある場合は、
-  [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
+  プロバイダーをサポートしています。古い v1
+  のプロバイダースタイルを継続して使う明確な理由がある場合は、[examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
   からモジュールをコピーしてプロジェクトに含めてください。
 </Aside>
 
 ## 例
 
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
+
+## provider metadata の受け渡し
+
+メッセージと一緒にプロバイダー固有のオプションを送る必要がある場合は、`providerMetadata` を通して渡します。値は基盤となる AI SDK モデルに直接転送されます。たとえば、Agents SDK で次の `providerData` を指定すると
+
 <Code
   lang="typescript"
-  code={aiSdkSetupExample}
-  title="AI SDK のセットアップ"
+  code={aiSdkProviderDataExample}
+  title="Agents SDK providerData"
 />
 
-## プロバイダー メタデータの受け渡し
+AI SDK 連携では次のような
 
-メッセージにプロバイダー固有のオプションを送る必要がある場合は、`providerMetadata` を通して渡します。値は基盤となる AI SDK モデルにそのまま転送されます。たとえば、Agents SDK で次の `providerData`
+<Code
+  lang="typescript"
+  code={aiSdkProviderMetadataExample}
+  title="AI SDK providerMetadata"
+/>
 
-```ts
-providerData: {
-  anthropic: {
-    cacheControl: {
-      type: 'ephemeral';
-    }
-  }
-}
-```
+形になります。
 
-は、AI SDK 連携を使用する場合は次のようになります
+## 適切な連携方法の選択
 
-```ts
-providerMetadata: {
-  anthropic: {
-    cacheControl: {
-      type: 'ephemeral';
-    }
-  }
-}
-```
+`@openai/agents-extensions` には関連する連携が 2 つあります。
 
-## AI SDK UI ストリーム ヘルパー
+- `@openai/agents-extensions/ai-sdk` は AI SDK モデルを適合させ、`Agent` がその上で実行できるようにします
+- `@openai/agents-extensions/ai-sdk-ui` はストリーミングされた Agents SDK 実行を適合させ、AI SDK UI ルートが標準的なストリーミング `Response` を返せるようにします
 
-`@openai/agents-extensions/ai-sdk-ui` は、Agents SDK のストリームを AI SDK UI ルートに接続するためのレスポンスヘルパーを提供します:
+## AI SDK UI ストリームヘルパー
 
-- `createAiSdkTextStreamResponse(source, options?)`: プレーンテキストのストリーミングレスポンス
-- `createAiSdkUiMessageStreamResponse(source, options?)`: `UIMessageChunk` のストリーミングレスポンス
+`@openai/agents-extensions/ai-sdk-ui` は、Agents SDK のストリームを AI SDK UI ルートに接続するためのレスポンスヘルパーを提供します。
 
-どちらのヘルパーも `StreamedRunResult`、ストリーム互換のソース、または互換ラッパーオブジェクトを受け取り、ストリーミングに適したヘッダー付きの `Response` を返します。
+- `createAiSdkTextStreamResponse(source, options?)`: プレーンテキストのストリーミングレスポンス向け
+- `createAiSdkUiMessageStreamResponse(source, options?)`: `UIMessageChunk` のストリーミングレスポンス向け
 
-エンドツーエンドの使用例については、このリポジトリ内の `examples/ai-sdk-ui` アプリを参照してください。
+どちらのヘルパーも `StreamedRunResult`、ストリームライクなソース、または互換ラッパーオブジェクトを受け取り、ストリーミングに適したヘッダー付きの `Response` を返します。
+
+ツール呼び出しや推論パートのような構造化チャンクが UI で必要な場合は `createAiSdkUiMessageStreamResponse(...)` を使ってください。プレーンテキストだけが必要な場合は `createAiSdkTextStreamResponse(...)` を使ってください。
+
+UI メッセージストリーミング用の Next.js ルート例:
+
+<Code
+  lang="typescript"
+  code={aiSdkUiMessageStreamResponseExample}
+  title="UI message stream response"
+/>
+
+テキストのみのストリーミング用 Next.js ルート例:
+
+<Code
+  lang="typescript"
+  code={aiSdkTextStreamResponseExample}
+  title="Text stream response"
+/>
+
+エンドツーエンドの使い方は、このリポジトリ内の `examples/ai-sdk-ui` アプリを参照してください。
