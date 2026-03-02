@@ -10,41 +10,41 @@ import Hero from '../../../components/Hero.astro';
 import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
 
 <Hero>
-  <Fragment slot="title">빠른 시작</Fragment>
+  <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    단 몇 분 만에 첫 에이전트를 만들 수 있습니다
+    소수의 기본 구성 요소로 텍스트 및 음성 에이전트를 구축하세요.
   </Fragment>
   <Fragment slot="cta">시작하기</Fragment>
 </Hero>
 
 ## 개요
 
-[TypeScript 용 OpenAI Agents SDK](https://github.com/openai/openai-agents-js)는 매우 적은 추상화로 가볍고 사용하기 쉬운 패키지에서 에이전트형 AI 앱을 구축할 수 있게 해줍니다. 이 SDK 는 이전 에이전트 실험인 [Swarm](https://github.com/openai/swarm/tree/main)의 프로덕션 준비 버전 업그레이드이며, [Python 버전도 제공됩니다](https://github.com/openai/openai-agents-python). Agents SDK 는 매우 작은 기본 구성요소 집합을 제공합니다:
+[TypeScript용 OpenAI Agents SDK](https://github.com/openai/openai-agents-js)는 매우 적은 추상화로, 가볍고 사용하기 쉬운 패키지에서 에이전트형 AI 앱을 구축할 수 있게 해줍니다. 이는 에이전트를 위한 이전 실험 프로젝트인 [Swarm](https://github.com/openai/swarm/tree/main)의 프로덕션 준비 버전 업그레이드이며, [Python에서도 사용 가능](https://github.com/openai/openai-agents-python)합니다. Agents SDK는 매우 작은 기본 구성 요소 집합을 제공합니다.
 
-- **에이전트**: instructions 및 tools 를 갖춘 LLM
-- **Agents as tools / 핸드오프**: 에이전트가 특정 작업을 다른 에이전트에 위임할 수 있게 해주는 기능
-- **가드레일**: 에이전트 입력을 검증할 수 있게 해주는 기능
+- **에이전트**: instructions와 tools를 갖춘 LLM
+- **Agents as tools / 핸드오프**: 특정 작업을 위해 에이전트가 다른 에이전트에 위임할 수 있게 해줍니다
+- **가드레일**: 에이전트 입력을 검증할 수 있게 해줍니다
 
-TypeScript 와 결합하면 이 기본 구성요소들은 도구와 에이전트 간의 복잡한 관계를 표현할 만큼 강력하며, 가파른 학습 곡선 없이도 실제 애플리케이션을 구축할 수 있게 해줍니다. 또한 SDK 에는 에이전트 흐름을 시각화하고 디버깅할 수 있는 내장 **트레이싱**이 포함되어 있으며, 이를 평가하고 애플리케이션에 맞게 모델을 파인튜닝하는 것까지 가능합니다.
+TypeScript와 결합하면, 이러한 기본 구성 요소만으로도 도구와 에이전트 사이의 복잡한 관계를 표현할 만큼 강력하며, 가파른 학습 곡선 없이 실제 애플리케이션을 구축할 수 있습니다. 또한 SDK에는 에이전트형 플로우를 시각화하고 디버깅할 수 있는 내장 **트레이싱**이 포함되어 있으며, 이를 평가하고 애플리케이션에 맞게 모델을 파인튜닝하는 것도 가능합니다.
 
 ## Agents SDK 사용 이유
 
-SDK 는 두 가지 핵심 설계 원칙을 가집니다:
+SDK의 핵심 설계 원칙은 두 가지입니다.
 
-1. 사용할 가치가 있을 만큼 충분한 기능을 제공하되, 빠르게 학습할 수 있을 만큼 기본 구성요소는 적게 유지합니다.
-2. 기본 설정만으로도 잘 동작하지만, 실제 동작을 원하는 대로 정확히 커스터마이즈할 수 있습니다.
+1. 사용할 가치가 있을 만큼 충분한 기능을 제공하되, 빠르게 익힐 수 있도록 기본 구성 요소 수는 적게 유지합니다.
+2. 즉시 잘 동작하면서도, 실제 동작을 정확히 원하는 대로 커스터마이즈할 수 있습니다.
 
-다음은 SDK 의 주요 기능입니다:
+다음은 SDK의 주요 기능입니다.
 
-- **에이전트 루프**: 도구 호출을 처리하고, 결과를 LLM 에 다시 전달하며, 작업이 완료될 때까지 계속하는 내장 에이전트 루프
-- **TypeScript 우선**: 새로운 추상화를 배울 필요 없이, TypeScript 의 기본 언어 기능으로 에이전트를 오케스트레이션하고 체이닝
-- **Agents as tools / 핸드오프**: 여러 에이전트 간 작업을 조율하고 위임하기 위한 강력한 메커니즘
-- **가드레일**: 에이전트 실행과 병렬로 입력 검증 및 안전성 검사를 수행하고, 검사를 통과하지 못하면 빠르게 실패 처리
+- **에이전트 루프**: 도구 호출을 처리하고, 결과를 LLM에 다시 전달하며, 작업이 완료될 때까지 계속하는 내장 에이전트 루프
+- **TypeScript 우선**: 새로운 추상화를 배울 필요 없이, TypeScript 고유 기능으로 에이전트를 오케스트레이션하고 체이닝
+- **Agents as tools / 핸드오프**: 여러 에이전트 간 작업을 조율하고 위임하는 강력한 메커니즘
+- **가드레일**: 에이전트 실행과 병렬로 입력 검증 및 안전성 검사를 수행하고, 검사를 통과하지 못하면 즉시 실패 처리
 - **함수 도구**: 자동 스키마 생성과 Zod 기반 검증으로 모든 TypeScript 함수를 도구로 변환
 - **MCP 서버 도구 호출**: 함수 도구와 동일한 방식으로 동작하는 내장 MCP 서버 도구 통합
-- **세션**: 에이전트 루프 내 작업 컨텍스트를 유지하기 위한 영속 메모리 계층
+- **세션**: 에이전트 루프 내 작업 컨텍스트를 유지하기 위한 영속 메모리 레이어
 - **휴먼인더루프 (HITL)**: 에이전트 실행 전반에 사람을 참여시키는 내장 메커니즘
-- **트레이싱**: 워크플로를 시각화, 디버깅, 모니터링하기 위한 내장 트레이싱과 OpenAI 평가, 파인튜닝, 증류 도구 제품군 지원
+- **트레이싱**: 워크플로를 시각화, 디버깅, 모니터링하기 위한 내장 트레이싱과 OpenAI 평가/파인튜닝/증류 도구 모음 지원
 - **실시간 에이전트**: 자동 인터럽션(중단 처리) 감지, 컨텍스트 관리, 가드레일 등의 기능으로 강력한 음성 에이전트 구축
 
 ## 설치
@@ -53,7 +53,17 @@ SDK 는 두 가지 핵심 설계 원칙을 가집니다:
 npm install @openai/agents zod
 ```
 
-SDK 는 Zod v4 가 필요합니다. npm 으로 `zod`를 설치하면 최신 v4 릴리스를 가져옵니다.
+SDK는 Zod v4를 필요로 하며, npm으로 `zod`를 설치하면 최신 v4 릴리스를 가져옵니다.
+
+## 시작 지점 선택
+
+대부분의 첫 사용자에게는 다음 진입점 중 하나면 충분합니다.
+
+| 다음으로 시작                                                                                  | 이런 경우 사용                                                     | 참고                                                                                                        |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `@openai/agents`                                                                               | 대부분의 텍스트 또는 음성 애플리케이션을 구축하는 경우             | 권장 기본값입니다. OpenAI provider 설정을 포함하며, `@openai/agents/realtime` 아래에 음성 API를 노출합니다. |
+| `@openai/agents-realtime`                                                                      | 독립형 Realtime 패키지만 필요한 경우                               | 브라우저 전용 음성 앱이나 더 좁은 패키지 경계를 원할 때 유용합니다.                                         |
+| 하위 수준 패키지 (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | 하위 수준 조합, 커스텀 provider 연결, 또는 특정 통합이 필요한 경우 | 대부분의 신규 사용자는 구체적인 필요가 생길 때까지는 무시해도 됩니다.                                       |
 
 ## Hello World 예제
 
@@ -67,14 +77,30 @@ export OPENAI_API_KEY=sk-...
 
 ## 시작 안내
 
+먼저 경로 하나를 선택해 처음부터 끝까지 동작하게 만든 뒤, 더 깊은 가이드로 돌아오세요.
+
 <LinkCard
   title="빠른 시작"
   href="/openai-agents-js/ko/guides/quickstart"
-  description="첫 텍스트 기반 에이전트를 만들고 SDK 핵심 워크플로를 학습하세요."
+  description="첫 텍스트 기반 에이전트를 구축하고 SDK 핵심 워크플로를 익혀보세요."
 />
 
 <LinkCard
-  title="음성 에이전트 빠른 시작"
+  title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="음성 상호작용을 구축할 때는 Realtime 음성 경로로 시작하세요."
+  description="음성 상호작용을 구축할 때 Realtime 음성 경로로 시작하세요."
 />
+
+## 경로 선택
+
+수행할 작업은 알고 있지만 어떤 페이지를 봐야 할지 모를 때 이 표를 사용하세요.
+
+| 목표                                                     | 시작 위치                                                                                                   |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 첫 텍스트 에이전트를 만들고 하나의 전체 실행을 확인하기  | [빠른 시작](/openai-agents-js/ko/guides/quickstart)                                                         |
+| 함수 도구, 호스티드 툴, 또는 Agents as tools 추가        | [도구](/openai-agents-js/ko/guides/tools)                                                                   |
+| 핸드오프와 매니저 스타일 오케스트레이션 중 선택하기      | [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)                                          |
+| 턴 간 메모리 유지하기                                    | [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 및 [세션](/openai-agents-js/ko/guides/sessions) |
+| OpenAI 모델, websocket 전송, 또는 비OpenAI provider 사용 | [모델](/openai-agents-js/ko/guides/models)                                                                  |
+| 출력, 실행 항목, 인터럽션(중단 처리), 재개 상태 검토     | [실행 결과](/openai-agents-js/ko/guides/results)                                                            |
+| 저지연 음성 에이전트 구축                                | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart)                                            |
