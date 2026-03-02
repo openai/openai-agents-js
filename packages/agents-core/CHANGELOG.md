@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.5.3
+
+### Patch Changes
+
+- b9c0378: perf: speed up tracing and realtime unit tests
+- e9f701e: feat: expose agent tool invocation metadata in custom output extractors
+
 ## 0.5.2
 
 ### Patch Changes

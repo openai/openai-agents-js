@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.5.3
+
+### Patch Changes
+
+- 04b2049: feat: #261 add ai-sdk output text transform hook for provider compatibility
+- c1f7a71: docs: update README files
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+- Updated dependencies [c1f7a71]
+  - @openai/agents-core@0.5.3
+  - @openai/agents@0.5.3
+
 ## 0.5.2
 
 ### Patch Changes
