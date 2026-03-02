@@ -10,6 +10,7 @@ import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBu
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
+import agentToolRunContextExample from '../../../../../examples/docs/tools/agentToolRunContext.ts?raw';
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
@@ -188,6 +189,14 @@ Under the hood the SDK:
 When you run an agent as a tool, Agents SDK creates a runner with the default settings and run the agent with it within the function execution. If you want to provide any properties of `runConfig` or `runOptions`, you can pass them to the `asTool()` method to customize the runner's behavior.
 
 You can also set `needsApproval` and `isEnabled` on the agent tool via `asTool()` options to integrate with human‑in‑the‑loop flows and conditional tool availability.
+
+Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the current `Agent.asTool()` invocation. In that callback the result always comes from `Agent.asTool()`, so `agentToolInvocation` is always defined and exposes `toolName`, `toolCallId`, and `toolArguments`. Use `result.runContext` for the regular app context and `toolInput`. This metadata is scoped to the current nested invocation and is not serialized into `RunState`.
+
+<Code
+  lang="typescript"
+  code={agentToolRunContextExample}
+  title="Read agent tool invocation metadata"
+/>
 
 Advanced structured-input options for `agent.asTool()`:
 

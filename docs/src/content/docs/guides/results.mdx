@@ -26,6 +26,7 @@ Most applications only need a few result properties:
 | `lastAgent` / `activeAgent` | The agent that should usually handle the next turn.                             |
 | `lastResponseId`            | Continuation with `previousResponseId` on the next OpenAI Responses turn.       |
 | `interruptions`             | Pending tool approvals you must resolve before resuming.                        |
+| `runContext`                | App context, approvals, usage, and nested `toolInput`.                          |
 | `state`                     | A serializable snapshot for resume/retry flows.                                 |
 
 ## Final output
@@ -91,6 +92,10 @@ The `newItems` property contains the new items generated during the run. The ite
 ## State
 
 The `state` property contains the state of the run. Most of what is attached to the `result` is derived from the `state`, but `state` is also serializable/deserializable and can be used as input for a subsequent call to `run()` if you need to [recover from an error](/openai-agents-js/guides/running-agents#exceptions) or resume a paused [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop) flow.
+
+## Run context
+
+The `runContext` property is the supported way to read the public run context for a result. `result.runContext.context` is the app context you passed into `run()`, and `result.runContext.toolInput` contains structured agent-tool input when that nested run was given one.
 
 ## Interruptions
 
