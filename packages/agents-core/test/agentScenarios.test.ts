@@ -885,9 +885,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       runOptions: { context: nestedContext },
       resumeState: { contextStrategy: 'preferSerialized' },
       customOutputExtractor: (result) =>
-        String(
-          (result.state._context.context as { snapshot?: string }).snapshot,
-        ),
+        String((result.runContext.context as { snapshot?: string }).snapshot),
     });
 
     const outerModel = new RecordingModel();

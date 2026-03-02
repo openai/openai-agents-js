@@ -513,7 +513,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       sessionPersistence?.setPreparedItems(prepared.sessionItems);
     }
-
     // Streaming runs persist the input asynchronously, so track a one-shot helper
     // that can be awaited from multiple branches without double-writing.
     const ensureStreamInputPersisted =

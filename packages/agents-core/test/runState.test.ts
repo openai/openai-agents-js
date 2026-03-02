@@ -23,6 +23,7 @@ import {
   FakeShell,
   FakeEditor,
 } from './stubs';
+import { RunResult } from '../src/result';
 import { createAgentSpan } from '../src/tracing';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import type { MCPServer, MCPTool } from '../src/mcp';
@@ -138,6 +139,217 @@ describe('RunState', () => {
 
     const restored = await RunState.fromString(agent, state.toString());
     expect(restored._context.toolInput).toEqual(context.toolInput);
+  });
+
+  it('preserves agent-tool context metadata after serialization', async () => {
+    const context = new RunContext({ foo: 'bar' });
+    const agentToolMetadata = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const agent = new Agent({ name: 'AgentToolContextAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    state._agentToolInvocationInfo = agentToolMetadata;
+
+    const serialized = state.toJSON();
+    expect(serialized.agentToolInvocation).toEqual(agentToolMetadata);
+    expect(serialized.context.agentTool).toBeUndefined();
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(new RunResult(restored as any).agentToolInvocation).toEqual(
+      agentToolMetadata,
+    );
+  });
+
+  it('restores legacy 1.7 agent-tool metadata payloads', async () => {
+    const context = new RunContext({ foo: 'bar' });
+    const agentToolMetadata = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const agent = new Agent({ name: 'LegacyAgentToolContextAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const serialized = state.toJSON() as any;
+
+    serialized.$schemaVersion = '1.7';
+    serialized.context.agentTool = agentToolMetadata;
+    delete serialized.agentToolInvocation;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    expect(new RunResult(restored as any).agentToolInvocation).toEqual(
+      agentToolMetadata,
+    );
+  });
+
+  it('does not infer agent-tool metadata from reused public contexts', () => {
+    const agent = new Agent({ name: 'ReusedContextAgent' });
+    const nestedState = new RunState(
+      new RunContext({ foo: 'bar' }),
+      '',
+      agent,
+      1,
+    );
+    nestedState._agentToolInvocationInfo = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+
+    const nestedResult = new RunResult(nestedState as any);
+    const reusedState = new RunState(
+      nestedResult.runContext as RunContext<unknown>,
+      'input',
+      agent,
+      1,
+    );
+
+    expect(reusedState._context).toBe(nestedState._context);
+    expect(reusedState._agentToolInvocationInfo).toBeUndefined();
+    expect(
+      new RunResult(reusedState as any).agentToolInvocation,
+    ).toBeUndefined();
+    expect(reusedState.toJSON().agentToolInvocation).toBeUndefined();
+  });
+
+  it('keeps override context instance state when merging agent-tool runs', async () => {
+    class ExtendedRunContext extends RunContext<{ foo: string }> {
+      marker: string;
+
+      constructor(context: { foo: string }, marker: string) {
+        super(context);
+        this.marker = marker;
+      }
+    }
+
+    const agent = new Agent({ name: 'MergedAgentToolContextAgent' });
+    const serializedContext = new RunContext({ foo: 'serialized' });
+    serializedContext.toolInput = { input: 'stale' };
+    const serializedAgentToolMetadata = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"stale"}',
+    };
+    serializedContext.approveTool(
+      new ToolApprovalItem(
+        {
+          type: 'function_call',
+          name: 'secure_tool',
+          callId: 'call-1',
+          status: 'completed',
+          arguments: '{}',
+        } as any,
+        agent,
+      ),
+    );
+    const state = new RunState(serializedContext, 'input', agent, 1);
+    state._agentToolInvocationInfo = serializedAgentToolMetadata;
+    const overrideContext = new ExtendedRunContext(
+      { foo: 'fresh' },
+      'fresh-marker',
+    );
+    overrideContext.toolInput = { input: 'fresh' };
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+
+    expect(restored._context).toBe(overrideContext);
+    expect(restored._context).toBeInstanceOf(ExtendedRunContext);
+    expect((restored._context as ExtendedRunContext).marker).toBe(
+      'fresh-marker',
+    );
+    expect(restored._context.toolInput).toEqual({ input: 'fresh' });
+    expect(overrideContext.toJSON().toolInput).toEqual({ input: 'fresh' });
+    expect(
+      new RunResult(
+        new RunState(overrideContext, 'fresh input', agent, 1) as any,
+      ).agentToolInvocation,
+    ).toBeUndefined();
+    expect(new RunResult(restored as any).agentToolInvocation).toEqual(
+      serializedAgentToolMetadata,
+    );
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'secure_tool',
+        callId: 'call-1',
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps override context instance state when replacing agent-tool runs', async () => {
+    class ExtendedRunContext extends RunContext<{ foo: string }> {
+      marker: string;
+
+      constructor(context: { foo: string }, marker: string) {
+        super(context);
+        this.marker = marker;
+      }
+    }
+
+    const agent = new Agent({ name: 'ReplacedAgentToolContextAgent' });
+    const serializedContext = new RunContext({ foo: 'serialized' });
+    serializedContext.toolInput = { input: 'stale' };
+    const serializedAgentToolMetadata = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"stale"}',
+    };
+    serializedContext.approveTool(
+      new ToolApprovalItem(
+        {
+          type: 'function_call',
+          name: 'secure_tool',
+          callId: 'call-1',
+          status: 'completed',
+          arguments: '{}',
+        } as any,
+        agent,
+      ),
+    );
+    const state = new RunState(serializedContext, 'input', agent, 1);
+    state._agentToolInvocationInfo = serializedAgentToolMetadata;
+    const overrideContext = new ExtendedRunContext(
+      { foo: 'fresh' },
+      'fresh-marker',
+    );
+    overrideContext.toolInput = { input: 'fresh' };
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      overrideContext,
+      { contextStrategy: 'replace' },
+    );
+
+    expect(restored._context).toBe(overrideContext);
+    expect(restored._context).toBeInstanceOf(ExtendedRunContext);
+    expect((restored._context as ExtendedRunContext).marker).toBe(
+      'fresh-marker',
+    );
+    expect(restored._context.toolInput).toEqual({ input: 'fresh' });
+    expect(overrideContext.toJSON().toolInput).toEqual({ input: 'fresh' });
+    expect(
+      new RunResult(
+        new RunState(overrideContext, 'fresh input', agent, 1) as any,
+      ).agentToolInvocation,
+    ).toBeUndefined();
+    expect(new RunResult(restored as any).agentToolInvocation).toEqual(
+      serializedAgentToolMetadata,
+    );
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'secure_tool',
+        callId: 'call-1',
+      }),
+    ).toBeUndefined();
   });
 
   it('tracks pending agent tool runs using tool name and call id', async () => {

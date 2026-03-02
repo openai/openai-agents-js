@@ -8,6 +8,13 @@ type ApprovalRecord = {
   rejected: boolean | string[];
 };
 
+type RunContextJson = {
+  context: any;
+  usage: Usage;
+  approvals: Record<string, ApprovalRecord>;
+  toolInput?: unknown;
+};
+
 /**
  * A context object that is passed to the `Runner.run()` method.
  */
@@ -36,6 +43,28 @@ export class RunContext<TContext = UnknownContext> {
     this.context = context;
     this.usage = new Usage();
     this.#approvals = new Map();
+  }
+
+  /**
+   * Creates a child context instance for forked runs.
+   * Subclasses should override this to preserve custom instance state safely.
+   * @internal
+   */
+  protected _createFork(): RunContext<TContext> {
+    return new RunContext(this.context);
+  }
+
+  /**
+   * Copies shared runtime state into a child context.
+   * @internal
+   */
+  protected _cloneSharedState<TTarget extends RunContext<TContext>>(
+    target: TTarget,
+  ): TTarget {
+    target.context = this.context;
+    target.usage = this.usage;
+    target.#approvals = this.#approvals;
+    return target;
   }
 
   /**
@@ -204,9 +233,7 @@ export class RunContext<TContext = UnknownContext> {
    * @internal
    */
   _forkWithToolInput(toolInput: unknown): RunContext<TContext> {
-    const fork = new RunContext(this.context);
-    fork.usage = this.usage;
-    fork.#approvals = this.#approvals;
+    const fork = this._cloneSharedState(this._createFork());
     fork.toolInput = toolInput;
     return fork;
   }
@@ -216,24 +243,13 @@ export class RunContext<TContext = UnknownContext> {
    * @internal
    */
   _forkWithoutToolInput(): RunContext<TContext> {
-    const fork = new RunContext(this.context);
-    fork.usage = this.usage;
-    fork.#approvals = this.#approvals;
+    const fork = this._cloneSharedState(this._createFork());
+    fork.toolInput = undefined;
     return fork;
   }
 
-  toJSON(): {
-    context: any;
-    usage: Usage;
-    approvals: Record<string, ApprovalRecord>;
-    toolInput?: unknown;
-  } {
-    const json: {
-      context: any;
-      usage: Usage;
-      approvals: Record<string, ApprovalRecord>;
-      toolInput?: unknown;
-    } = {
+  toJSON(): RunContextJson {
+    const json: RunContextJson = {
       context: this.context,
       usage: this.usage,
       approvals: Object.fromEntries(this.#approvals.entries()),

@@ -34,6 +34,7 @@ import type {
 } from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
 import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
+import type { AgentToolInvocationInfo } from './agentToolInvocationInfo';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -50,8 +51,9 @@ import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
  * - 1.4: Adds optional toolInput to serialized run context.
  * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
  * - 1.6: Adds optional requestId to serialized model responses.
+ * - 1.7: Adds optional agentToolInvocation metadata to serialized run state.
  */
-export const CURRENT_SCHEMA_VERSION = '1.6' as const;
+export const CURRENT_SCHEMA_VERSION = '1.7' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -59,6 +61,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.3',
   '1.4',
   '1.5',
+  '1.6',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -304,6 +307,12 @@ const toolOutputGuardrailResultSchema = z.object({
   output: toolGuardrailFunctionOutputSchema,
 });
 
+const agentToolInvocationInfoSchema = z.object({
+  toolName: z.string(),
+  toolCallId: z.string().optional(),
+  toolArguments: z.string().optional(),
+});
+
 export const SerializedRunState = z.object({
   $schemaVersion,
   currentTurn: z.number(),
@@ -321,7 +330,12 @@ export const SerializedRunState = z.object({
     ),
     context: z.record(z.string(), z.any()),
     toolInput: z.any().optional(),
+    // Legacy in-branch location. Serialized output now prefers the top-level invocation field.
+    agentTool: agentToolInvocationInfoSchema.optional(),
   }),
+  // Legacy top-level key kept for local compatibility while this branch evolves.
+  agentTool: agentToolInvocationInfoSchema.optional(),
+  agentToolInvocation: agentToolInvocationInfoSchema.optional(),
   toolUseTracker: z.record(z.string(), z.array(z.string())),
   maxTurns: z.number(),
   currentAgentSpan: SerializedSpan.nullable().optional(),
@@ -405,6 +419,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Run context tracking approvals, usage, and other metadata.
    */
   public _context: RunContext<TContext>;
+  /**
+   * Public-facing metadata for nested agent-tool runs. This is serialized separately so
+   * results can expose agent-tool fields without mutating the live run context.
+   */
+  public _agentToolInvocationInfo: AgentToolInvocationInfo | undefined;
 
   /**
    * The usage aggregated for this run. This includes per-request breakdowns when available.
@@ -489,6 +508,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     maxTurns: number,
   ) {
     this._context = context;
+    this._agentToolInvocationInfo = undefined;
     this._originalInput = structuredClone(originalInput);
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
@@ -680,6 +700,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     options: { includeTracingApiKey?: boolean } = {},
   ): z.infer<typeof SerializedRunState> {
     const includeTracingApiKey = options.includeTracingApiKey === true;
+    const contextJson = this._context.toJSON();
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -718,7 +739,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           providerData: response.providerData,
         };
       }),
-      context: this._context.toJSON(),
+      context: contextJson,
       toolUseTracker: this._toolUseTracker.toJSON(),
       maxTurns: this._maxTurns,
       currentAgentSpan: this._currentAgentSpan?.toJSON() as any,
@@ -745,6 +766,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
+      ...(this._agentToolInvocationInfo
+        ? { agentToolInvocation: this._agentToolInvocationInfo }
+        : {}),
     };
 
     // parsing the schema to ensure the output is valid for reparsing
@@ -837,6 +861,10 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   const agentMap = buildAgentMap(initialAgent);
   const contextOverride = options.contextOverride;
   const contextStrategy = options.contextStrategy ?? 'merge';
+  const serializedAgentToolInvocation =
+    stateJson.agentToolInvocation ??
+    stateJson.agentTool ??
+    stateJson.context.agentTool;
 
   //
   // Rebuild the context
@@ -875,6 +903,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     currentAgent as TAgent,
     stateJson.maxTurns,
   );
+  state._agentToolInvocationInfo = serializedAgentToolInvocation;
   state._currentTurn = stateJson.currentTurn;
   state._currentTurnInProgress = stateJson.currentTurnInProgress ?? false;
   state._conversationId = stateJson.conversationId ?? undefined;
