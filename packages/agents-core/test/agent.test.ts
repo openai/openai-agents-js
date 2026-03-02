@@ -309,8 +309,20 @@ describe('Agent', () => {
     const runSpy = vi
       .spyOn(Runner.prototype, 'run')
       .mockImplementation(async (_agent, _input, options) => {
+        const state = new RunState(
+          options?.context as RunContext<any>,
+          inputPayload.input,
+          agent,
+          1,
+        );
         return {
-          runContext: options?.context,
+          state,
+          get runContext() {
+            return state._context;
+          },
+          get agentToolInvocation() {
+            return state._agentToolInvocation;
+          },
           finalOutput: 'nested output',
         } as any;
       });
@@ -348,7 +360,7 @@ describe('Agent', () => {
     expect(customOutputExtractor).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves agent-tool metadata when serializing a nested result state', async () => {
+  it('does not persist agent-tool metadata when serializing a nested result state', async () => {
     const agent = new Agent({
       name: 'Serializable Agent',
       instructions: 'You do tests.',
@@ -362,26 +374,31 @@ describe('Agent', () => {
     );
     const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
       state: nestedState,
+      get runContext() {
+        return nestedState._context;
+      },
+      get agentToolInvocation() {
+        return nestedState._agentToolInvocation;
+      },
       finalOutput: 'nested output',
     } as any);
     const customOutputExtractor = vi.fn(async (result: any) => {
-      expect(result.state._agentToolInvocationInfo).toEqual({
+      expect(result.state._agentToolInvocation).toEqual({
         toolName: 'Serializable_Agent',
         toolCallId: 'call-serialize',
         toolArguments: JSON.stringify(inputPayload),
       });
+      expect(result.state.toJSON()).not.toHaveProperty('agentToolInvocation');
       const restoredState = await RunState.fromString(
         agent,
         result.state.toString(),
       );
-      expect(restoredState._agentToolInvocationInfo).toEqual({
+      expect(restoredState._agentToolInvocation).toBeUndefined();
+      expect(result.agentToolInvocation).toEqual({
         toolName: 'Serializable_Agent',
         toolCallId: 'call-serialize',
         toolArguments: JSON.stringify(inputPayload),
       });
-      expect(result.agentToolInvocation).toEqual(
-        restoredState._agentToolInvocationInfo,
-      );
       return 'custom output';
     });
     const tool = agent.asTool({
@@ -408,7 +425,7 @@ describe('Agent', () => {
     expect(customOutputExtractor).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves serialized agent-tool metadata on manual resumes', async () => {
+  it('rebuilds agent-tool metadata for manual resumes without persistence', async () => {
     const agent = new Agent({
       name: 'Resume Agent',
       instructions: 'You do tests.',
@@ -419,11 +436,6 @@ describe('Agent', () => {
       agent,
       1,
     );
-    resumeState._agentToolInvocationInfo = {
-      toolName: 'ResumeTool',
-      toolCallId: 'call-saved',
-      toolArguments: '{"input":"saved"}',
-    };
     const runSpy = vi
       .spyOn(Runner.prototype, 'run')
       .mockImplementation(async (_agent, input) => {
@@ -432,7 +444,7 @@ describe('Agent', () => {
         return {
           state: resumedState,
           get agentToolInvocation() {
-            return resumedState._agentToolInvocationInfo;
+            return resumedState._agentToolInvocation;
           },
           finalOutput: 'nested output',
           rawResponses: [],
@@ -441,8 +453,8 @@ describe('Agent', () => {
     const customOutputExtractor = vi.fn((result: any) => {
       expect(result.agentToolInvocation).toEqual({
         toolName: 'ResumeTool',
-        toolCallId: 'call-saved',
-        toolArguments: '{"input":"saved"}',
+        toolCallId: undefined,
+        toolArguments: undefined,
       });
       return 'custom output';
     });
@@ -1426,11 +1438,23 @@ describe('Agent', () => {
     const runSpy = vi
       .spyOn(Runner.prototype, 'run')
       .mockImplementation(async (_agent, _input, options) => {
+        const state = new RunState(
+          options?.context as RunContext<any>,
+          inputPayload.input,
+          agent,
+          1,
+        );
         return {
+          state,
           rawResponses: [],
           completed: Promise.resolve(),
           interruptions: [],
-          runContext: options?.context,
+          get runContext() {
+            return state._context;
+          },
+          get agentToolInvocation() {
+            return state._agentToolInvocation;
+          },
           finalOutput: 'tool output',
           [Symbol.asyncIterator]: async function* () {
             for (const event of streamEvents) {

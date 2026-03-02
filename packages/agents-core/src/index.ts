@@ -166,7 +166,7 @@ export type {
   RunErrorKind,
 } from './run';
 export { RunContext } from './runContext';
-export type { AgentToolInvocationInfo } from './agentToolInvocationInfo';
+export type { AgentToolInvocation } from './agentToolInvocation';
 export { RunState } from './runState';
 export type { TracingConfig } from './tracing';
 export {

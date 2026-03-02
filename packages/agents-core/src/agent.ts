@@ -54,8 +54,7 @@ import {
 import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
-import type { AgentToolInvocationInfo } from './agentToolInvocationInfo';
-import { attachAgentToolInvocation } from './agentToolInvocationResult';
+import type { AgentToolInvocation } from './agentToolInvocation';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   | RunResult<TContext, TAgent>
@@ -67,7 +66,7 @@ export type CompletedAgentToolInvocationRunResult<
   TContext,
   TAgent extends Agent<TContext, any>,
 > = CompletedRunResult<TContext, TAgent> & {
-  agentToolInvocation: AgentToolInvocationInfo;
+  agentToolInvocation: AgentToolInvocation;
 };
 
 type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
@@ -701,7 +700,7 @@ export class Agent<
                 : typeof context !== 'undefined'
                   ? new RunContext(context as TContext)
                   : new RunContext<TContext>();
-        const agentToolInvocationInfo: AgentToolInvocationInfo = {
+        const agentToolInvocation: AgentToolInvocation = {
           toolName: details?.toolCall?.name ?? baseTool.name,
           toolCallId: details?.toolCall?.callId,
           toolArguments: details?.toolCall?.arguments,
@@ -767,10 +766,6 @@ export class Agent<
             );
           }
         }
-        const resumedAgentToolInvocationInfo =
-          runInput instanceof RunState
-            ? runInput._agentToolInvocationInfo
-            : undefined;
         // Only flip to streaming mode when a handler is provided to avoid extra overhead for callers that do not need events.
         // Flip to streaming if either a legacy onStream callback or event handlers are registered; otherwise stay on the non-stream path to avoid extra overhead.
         const shouldStream =
@@ -823,19 +818,14 @@ export class Agent<
             TContext,
             TAgent
           >;
-          const resolvedAgentToolInvocationInfo =
-            details?.toolCall || !resumedAgentToolInvocationInfo
-              ? agentToolInvocationInfo
-              : resumedAgentToolInvocationInfo;
           if (completedResult.state instanceof RunState) {
-            completedResult.state._agentToolInvocationInfo =
-              resolvedAgentToolInvocationInfo;
+            completedResult.state._agentToolInvocation = agentToolInvocation;
           }
-          const completedResultWithAgentToolInvocationInfo =
-            attachAgentToolInvocation(
-              completedResult,
-              resolvedAgentToolInvocationInfo,
-            ) as CompletedAgentToolInvocationRunResult<TContext, TAgent>;
+          const completedResultWithAgentToolInvocation =
+            completedResult as CompletedAgentToolInvocationRunResult<
+              TContext,
+              TAgent
+            >;
 
           const usesStopAtToolNames =
             typeof this.toolUseBehavior === 'object' &&
@@ -853,7 +843,7 @@ export class Agent<
           let outputText: string;
           if (typeof customOutputExtractor === 'function') {
             outputText = await customOutputExtractor(
-              completedResultWithAgentToolInvocationInfo,
+              completedResultWithAgentToolInvocation,
             );
           } else {
             const finalOutputText =
@@ -881,7 +871,7 @@ export class Agent<
           if (details?.toolCall) {
             saveAgentToolRunResult(
               details.toolCall,
-              completedResultWithAgentToolInvocationInfo,
+              completedResultWithAgentToolInvocation,
             );
           }
           return outputText;

@@ -19,7 +19,7 @@ import { RunStreamEvent } from './events';
 import { getTurnInput } from './runner/items';
 import { RunState } from './runState';
 import { RunContext } from './runContext';
-import type { AgentToolInvocationInfo } from './agentToolInvocationInfo';
+import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import logger from './logger';
 import { StreamEventTextStream } from './types/protocol';
@@ -123,7 +123,7 @@ export interface RunResultData<
   /**
    * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
    */
-  agentToolInvocation?: AgentToolInvocationInfo;
+  agentToolInvocation?: AgentToolInvocation;
 }
 
 class RunResultBase<
@@ -179,8 +179,8 @@ class RunResultBase<
   /**
    * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
    */
-  get agentToolInvocation(): AgentToolInvocationInfo | undefined {
-    return this.state._agentToolInvocationInfo;
+  get agentToolInvocation(): AgentToolInvocation | undefined {
+    return this.state._agentToolInvocation;
   }
 
   /**

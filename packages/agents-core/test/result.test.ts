@@ -54,7 +54,7 @@ describe('RunResult', () => {
 
   it('exposes nested agent-tool metadata', () => {
     const state = new RunState(new RunContext(), '', agent, 1);
-    state._agentToolInvocationInfo = {
+    state._agentToolInvocation = {
       toolName: 'nested_tool',
       toolCallId: 'call-outer',
       toolArguments: '{"input":"hello"}',
@@ -87,7 +87,7 @@ describe('RunResult', () => {
       1,
     );
     state._context.toolInput = { input: 'hello' };
-    state._agentToolInvocationInfo = {
+    state._agentToolInvocation = {
       toolName: 'nested_tool',
       toolCallId: 'call-outer',
       toolArguments: '{"input":"hello"}',
@@ -120,7 +120,7 @@ describe('RunResult', () => {
 
   it('does not carry nested agent-tool metadata into a new top-level run', () => {
     const nestedState = new RunState(new RunContext(), '', agent, 1);
-    nestedState._agentToolInvocationInfo = {
+    nestedState._agentToolInvocation = {
       toolName: 'nested_tool',
       toolCallId: 'call-outer',
       toolArguments: '{"input":"hello"}',
@@ -136,9 +136,9 @@ describe('RunResult', () => {
     const reusedResult = new RunResult(reusedState as any);
 
     expect(reusedState._context).toBe(nestedState._context);
-    expect(reusedState._agentToolInvocationInfo).toBeUndefined();
+    expect(reusedState._agentToolInvocation).toBeUndefined();
     expect(reusedResult.agentToolInvocation).toBeUndefined();
-    expect(reusedState.toJSON().agentToolInvocation).toBeUndefined();
+    expect(reusedState.toJSON()).not.toHaveProperty('agentToolInvocation');
   });
 });
 

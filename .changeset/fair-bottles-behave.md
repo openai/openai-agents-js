@@ -3,4 +3,4 @@
 '@openai/agents': patch
 ---
 
-feat: expose agent tool invocation metadata on run results
+feat: expose agent tool invocation metadata in custom output extractors
