@@ -34,6 +34,7 @@ import type {
 } from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
 import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
+import type { AgentToolInvocation } from './agentToolInvocation';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -405,6 +406,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Run context tracking approvals, usage, and other metadata.
    */
   public _context: RunContext<TContext>;
+  /**
+   * Runtime-only metadata for the current nested agent-tool invocation.
+   */
+  public _agentToolInvocation: AgentToolInvocation | undefined;
 
   /**
    * The usage aggregated for this run. This includes per-request breakdowns when available.
@@ -489,6 +494,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     maxTurns: number,
   ) {
     this._context = context;
+    this._agentToolInvocation = undefined;
     this._originalInput = structuredClone(originalInput);
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
@@ -680,6 +686,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     options: { includeTracingApiKey?: boolean } = {},
   ): z.infer<typeof SerializedRunState> {
     const includeTracingApiKey = options.includeTracingApiKey === true;
+    const contextJson = this._context.toJSON();
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -718,7 +725,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           providerData: response.providerData,
         };
       }),
-      context: this._context.toJSON(),
+      context: contextJson,
       toolUseTracker: this._toolUseTracker.toJSON(),
       maxTurns: this._maxTurns,
       currentAgentSpan: this._currentAgentSpan?.toJSON() as any,

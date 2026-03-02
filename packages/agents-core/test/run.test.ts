@@ -89,6 +89,49 @@ describe('Runner.run', () => {
   });
 
   describe('basic', () => {
+    it('does not persist nested agent-tool metadata when resuming a RunState', async () => {
+      const agent = new Agent({
+        name: 'ReusedNestedStateAgent',
+        instructions: 'Finish the run.',
+        model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+      });
+      const nestedState = new RunState(new RunContext(), 'input', agent, 1);
+      nestedState._agentToolInvocation = {
+        toolName: 'nested_tool',
+        toolCallId: 'call-outer',
+        toolArguments: '{"input":"hello"}',
+      };
+      const restoredState = await RunState.fromString(
+        agent,
+        nestedState.toString(),
+      );
+
+      const result = await new Runner().run(agent, restoredState);
+
+      expect(result.agentToolInvocation).toBeUndefined();
+      expect(restoredState._agentToolInvocation).toBeUndefined();
+      expect(restoredState.toJSON()).not.toHaveProperty('agentToolInvocation');
+    });
+
+    it('clears stale agent-tool metadata when reusing an in-memory RunState', async () => {
+      const agent = new Agent({
+        name: 'ReusedInMemoryNestedStateAgent',
+        instructions: 'Finish the run.',
+        model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+      });
+      const nestedState = new RunState(new RunContext(), 'input', agent, 1);
+      nestedState._agentToolInvocation = {
+        toolName: 'nested_tool',
+        toolCallId: 'call-outer',
+        toolArguments: '{"input":"hello"}',
+      };
+
+      const result = await new Runner().run(agent, nestedState);
+
+      expect(result.agentToolInvocation).toBeUndefined();
+      expect(nestedState._agentToolInvocation).toBeUndefined();
+    });
+
     function buildRejectedToolRunState(agent: Agent<any, any>) {
       const rawItem = {
         name: 'toolZ',

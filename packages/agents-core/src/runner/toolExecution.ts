@@ -435,10 +435,11 @@ async function runApprovedFunctionTool<TContext>(
         const nestedInterruptions = nestedRunResult.interruptions;
         if (nestedInterruptions.length > 0) {
           functionResult.interruptions = nestedInterruptions;
+          const nestedRunStateJson = nestedRunResult.state.toJSON();
           state.setPendingAgentToolRun(
             toolRun.tool.name,
             toolRun.toolCall.callId,
-            nestedRunResult.state.toString(),
+            JSON.stringify(nestedRunStateJson),
           );
         } else {
           state.clearPendingAgentToolRun(

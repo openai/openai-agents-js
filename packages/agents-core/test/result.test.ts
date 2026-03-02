@@ -43,6 +43,103 @@ describe('RunResult', () => {
     const result = new RunResult(state);
     expect(result.activeAgent).toBe(agent);
   });
+
+  it('exposes the top-level run context', () => {
+    const state = createState();
+    const result = new RunResult(state);
+
+    expect(result.runContext).toBe(state._context);
+    expect(result.agentToolInvocation).toBeUndefined();
+  });
+
+  it('exposes nested agent-tool metadata', () => {
+    const state = new RunState(new RunContext(), '', agent, 1);
+    state._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const result = new RunResult(state as any);
+
+    expect(result.runContext).toBe(state._context);
+    expect(result.agentToolInvocation).toEqual({
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    });
+  });
+
+  it('exposes nested agent-tool metadata without changing custom run contexts', () => {
+    class ExtendedRunContext extends RunContext<{ locale: string }> {
+      describe() {
+        return `${this.context.locale}:${(this.toolInput as { input?: string } | undefined)?.input}`;
+      }
+
+      get summary() {
+        return this.context.locale;
+      }
+    }
+
+    const state = new RunState(
+      new ExtendedRunContext({ locale: 'en-US' }),
+      '',
+      agent,
+      1,
+    );
+    state._context.toolInput = { input: 'hello' };
+    state._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+    const result = new RunResult(state as any);
+    const firstContext = result.runContext as ExtendedRunContext;
+    const secondContext = result.runContext as ExtendedRunContext;
+
+    expect(firstContext).toBe(secondContext);
+    expect(firstContext).toBeInstanceOf(ExtendedRunContext);
+    expect(firstContext.describe()).toBe('en-US:hello');
+    expect(
+      (firstContext as ExtendedRunContext & { summary: string }).summary,
+    ).toBe('en-US');
+    expect(result.agentToolInvocation).toEqual({
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    });
+
+    firstContext.toolInput = { input: 'updated' };
+    expect(
+      (result.runContext as RunContext<{ locale: string }>).toolInput,
+    ).toEqual({
+      input: 'updated',
+    });
+    expect(state._context.toolInput).toEqual({ input: 'updated' });
+    expect(state.toJSON().context.toolInput).toEqual({ input: 'updated' });
+  });
+
+  it('does not carry nested agent-tool metadata into a new top-level run', () => {
+    const nestedState = new RunState(new RunContext(), '', agent, 1);
+    nestedState._agentToolInvocation = {
+      toolName: 'nested_tool',
+      toolCallId: 'call-outer',
+      toolArguments: '{"input":"hello"}',
+    };
+
+    const nestedResult = new RunResult(nestedState as any);
+    const reusedState = new RunState(
+      nestedResult.runContext as RunContext<unknown>,
+      '',
+      agent,
+      1,
+    );
+    const reusedResult = new RunResult(reusedState as any);
+
+    expect(reusedState._context).toBe(nestedState._context);
+    expect(reusedState._agentToolInvocation).toBeUndefined();
+    expect(reusedResult.agentToolInvocation).toBeUndefined();
+    expect(reusedState.toJSON()).not.toHaveProperty('agentToolInvocation');
+  });
 });
 
 describe('StreamedRunResult', () => {

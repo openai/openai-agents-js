@@ -18,6 +18,8 @@ import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
 import { getTurnInput } from './runner/items';
 import { RunState } from './runState';
+import { RunContext } from './runContext';
+import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import logger from './logger';
 import { StreamEventTextStream } from './types/protocol';
@@ -112,6 +114,16 @@ export interface RunResultData<
    * The state of the run.
    */
   state: RunState<any, TAgent>;
+
+  /**
+   * The public run context for this run.
+   */
+  runContext: RunContext<any>;
+
+  /**
+   * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
+   */
+  agentToolInvocation?: AgentToolInvocation;
 }
 
 class RunResultBase<
@@ -155,6 +167,20 @@ class RunResultBase<
    */
   get input(): string | AgentInputItem[] {
     return this.state._originalInput;
+  }
+
+  /**
+   * The public run context for this run.
+   */
+  get runContext(): RunContext<TContext> {
+    return this.state._context;
+  }
+
+  /**
+   * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
+   */
+  get agentToolInvocation(): AgentToolInvocation | undefined {
+    return this.state._agentToolInvocation;
   }
 
   /**

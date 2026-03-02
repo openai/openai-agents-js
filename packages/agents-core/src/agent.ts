@@ -54,12 +54,19 @@ import {
 import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
+import type { AgentToolInvocation } from './agentToolInvocation';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   | RunResult<TContext, TAgent>
   | StreamedRunResult<TContext, TAgent>
 ) & {
   finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
+};
+export type CompletedAgentToolInvocationRunResult<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+> = CompletedRunResult<TContext, TAgent> & {
+  agentToolInvocation: AgentToolInvocation;
 };
 
 type AgentToolRunOptions<TContext, TAgent extends Agent<TContext, any>> = Omit<
@@ -107,7 +114,7 @@ type AgentToolOptions<
    * from the agent will be used.
    */
   customOutputExtractor?: (
-    output: CompletedRunResult<TContext, TAgent>,
+    output: CompletedAgentToolInvocationRunResult<TContext, TAgent>,
   ) => string | Promise<string>;
   /**
    * Whether invoking this tool requires approval, matching the behavior of {@link tool} helpers.
@@ -683,16 +690,25 @@ export class Agent<
         details?: ToolCallDetails,
       ) => {
         const typedParams = params as ToolExecuteArgument<TParameters>;
-        const runContextBase =
+        const runContextBase: RunContext<TContext> =
           runOptions?.context instanceof RunContext
             ? runOptions.context
             : typeof runOptions?.context !== 'undefined'
               ? new RunContext(runOptions.context)
-              : (context ?? new RunContext());
+              : context instanceof RunContext
+                ? context
+                : typeof context !== 'undefined'
+                  ? new RunContext(context as TContext)
+                  : new RunContext<TContext>();
+        const agentToolInvocation: AgentToolInvocation = {
+          toolName: details?.toolCall?.name ?? baseTool.name,
+          toolCallId: details?.toolCall?.callId,
+          toolArguments: details?.toolCall?.arguments,
+        };
         const shouldClearToolInput =
           !shouldCaptureToolInput &&
           typeof runContextBase.toolInput !== 'undefined';
-        const runContext =
+        const runContext: RunContext<TContext> =
           shouldCaptureToolInput &&
           typeof runContextBase._forkWithToolInput === 'function'
             ? runContextBase._forkWithToolInput(typedParams)
@@ -802,6 +818,14 @@ export class Agent<
             TContext,
             TAgent
           >;
+          if (completedResult.state instanceof RunState) {
+            completedResult.state._agentToolInvocation = agentToolInvocation;
+          }
+          const completedResultWithAgentToolInvocation =
+            completedResult as CompletedAgentToolInvocationRunResult<
+              TContext,
+              TAgent
+            >;
 
           const usesStopAtToolNames =
             typeof this.toolUseBehavior === 'object' &&
@@ -818,7 +842,9 @@ export class Agent<
           }
           let outputText: string;
           if (typeof customOutputExtractor === 'function') {
-            outputText = await customOutputExtractor(completedResult);
+            outputText = await customOutputExtractor(
+              completedResultWithAgentToolInvocation,
+            );
           } else {
             const finalOutputText =
               typeof completedResult.finalOutput !== 'undefined'
@@ -843,7 +869,10 @@ export class Agent<
           }
 
           if (details?.toolCall) {
-            saveAgentToolRunResult(details.toolCall, completedResult);
+            saveAgentToolRunResult(
+              details.toolCall,
+              completedResultWithAgentToolInvocation,
+            );
           }
           return outputText;
         } finally {

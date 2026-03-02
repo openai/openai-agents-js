@@ -13,6 +13,7 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
+export type { CompletedAgentToolInvocationRunResult } from './agent';
 export { Computer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
 export {
@@ -165,6 +166,7 @@ export type {
   RunErrorKind,
 } from './run';
 export { RunContext } from './runContext';
+export type { AgentToolInvocation } from './agentToolInvocation';
 export { RunState } from './runState';
 export type { TracingConfig } from './tracing';
 export {
