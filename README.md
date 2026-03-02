@@ -12,30 +12,16 @@ The OpenAI Agents SDK is a lightweight yet powerful framework for building multi
 
 ## Core concepts
 
-1. **Agents**: LLMs configured with instructions, tools, guardrails, and handoffs.
-2. **Agents as tools / Handoffs**: Delegating to other agents for specific tasks.
-3. **Guardrails**: Configurable safety checks for input and output validation.
-4. **Tracing**: Built-in tracking of agent runs, allowing you to view, debug, and optimize your workflows.
+1. [**Agents**](https://openai.github.io/openai-agents-js/guides/agents): LLMs configured with instructions, tools, guardrails, and handoffs
+1. **[Agents as tools](https://openai.github.io/openai-agents-js/guides/tools/#4-agents-as-tools) / [Handoffs](https://openai.github.io/openai-agents-js/guides/handoffs/)**: Delegating to other agents for specific tasks
+1. [**Tools**](https://openai.github.io/openai-agents-js/guides/tools/): Various Tools let agents take actions (functions, MCP, hosted tools)
+1. [**Guardrails**](https://openai.github.io/openai-agents-js/guides/guardrails/): Configurable safety checks for input and output validation
+1. [**Human in the loop**](https://openai.github.io/openai-agents-js/guides/human-in-the-loop/): Built-in mechanisms for involving humans across agent runs
+1. [**Sessions**](https://openai.github.io/openai-agents-js/guides/sessions/): Automatic conversation history management across agent runs
+1. [**Tracing**](https://openai.github.io/openai-agents-js/guides/tracing/): Built-in tracking of agent runs, allowing you to view, debug and optimize your workflows
+1. [**Realtime Agents**](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/): Build powerful voice agents with full features
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
-
-## Supported Features
-
-- [x] **Multi-Agent Workflows**: Compose and orchestrate multiple agents in a single workflow.
-- [x] **Tool Integration**: Seamlessly call tools/functions from within agent responses.
-- [x] **Handoffs**: Transfer control between agents dynamically during a run.
-- [x] **Structured Outputs**: Support for both plain text and schema-validated structured outputs.
-- [x] **Streaming Responses**: Stream agent outputs and events in real time.
-- [x] **Tracing & Debugging**: Built-in tracing for visualizing and debugging agent runs.
-- [x] **Guardrails**: Input and output validation for safety and reliability.
-- [x] **Parallelization**: Run agents or tool calls in parallel and aggregate results.
-- [x] **Human-in-the-Loop**: Integrate human approval or intervention into workflows.
-- [x] **Realtime Voice Agents**: Build realtime voice agents using WebRTC or WebSockets
-- [x] **Local MCP Server Support**: Give an Agent access to a locally running MCP server to provide tools
-- [x] **Separate optimized browser package**: Dedicated package meant to run in the browser for Realtime agents.
-- [x] **Broader model support**: Use non-OpenAI models through the Vercel AI SDK adapter
-- [ ] **Long running functions**: Suspend an agent loop to execute a long-running function and revive it later <img src="https://img.shields.io/badge/Future-lightgrey" alt="Future" style="width: auto; height: 1em; vertical-align: middle;">
-- [ ] **Voice pipeline**: Chain text-based agents using speech-to-text and text-to-speech into a voice agent <img src="https://img.shields.io/badge/Future-lightgrey" alt="Future" style="width: auto; height: 1em; vertical-align: middle;">
 
 ## Get started
 
