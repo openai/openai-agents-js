@@ -643,6 +643,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             startingAgent,
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
+      if (isResumedState) {
+        state._agentToolInvocation = undefined;
+      }
       const resolvedReasoningItemIdPolicy =
         options.reasoningItemIdPolicy ??
         (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
@@ -1439,6 +1442,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             agent,
             options.maxTurns ?? DEFAULT_MAX_TURNS,
           );
+      if (isResumedState) {
+        state._agentToolInvocation = undefined;
+      }
       const resolvedConversationId =
         options.conversationId ??
         (isResumedState ? state._conversationId : undefined);
