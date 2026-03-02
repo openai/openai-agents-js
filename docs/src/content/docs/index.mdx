@@ -10,8 +10,10 @@ import Hero from '../../components/Hero.astro';
 import helloWorldExample from '../../../../examples/docs/hello-world.ts?raw';
 
 <Hero>
-  <Fragment slot="title">Quickstart</Fragment>
-  <Fragment slot="description">Build your first agent in minutes.</Fragment>
+  <Fragment slot="title">OpenAI Agents SDK</Fragment>
+  <Fragment slot="description">
+    Build text and voice agents with a small set of primitives.
+  </Fragment>
   <Fragment slot="cta">Let's build</Fragment>
 </Hero>
 
@@ -53,6 +55,16 @@ npm install @openai/agents zod
 
 The SDK requires Zod v4; installing `zod` via npm will fetch the latest v4 release.
 
+## Choose your starting point
+
+Most first-time users only need one of these entry points:
+
+| Start with                                                                                         | Use it when                                                                         | Notes                                                                                                              |
+| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `@openai/agents`                                                                                   | You are building most text or voice applications.                                   | Recommended default. It includes the OpenAI provider setup and exposes voice APIs under `@openai/agents/realtime`. |
+| `@openai/agents-realtime`                                                                          | You only need the standalone Realtime package.                                      | Useful for browser-only voice apps or when you want a narrower package boundary.                                   |
+| Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need.                                                   |
+
 ## Hello world example
 
 <Code lang="typescript" code={helloWorldExample} title="Hello World" />
@@ -65,6 +77,8 @@ export OPENAI_API_KEY=sk-...
 
 ## Start here
 
+Pick one path first, get it working end to end, then come back for the deeper guides.
+
 <LinkCard
   title="Quickstart"
   href="/openai-agents-js/guides/quickstart"
@@ -76,3 +90,17 @@ export OPENAI_API_KEY=sk-...
   href="/openai-agents-js/guides/voice-agents/quickstart"
   description="Start with the Realtime voice path when you are building spoken interactions."
 />
+
+## Choose your path
+
+Use this table when you know the job you want to do, but not which page explains it.
+
+| Goal                                                            | Start here                                                                                                  |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Build the first text agent and see one complete run             | [Quickstart](/openai-agents-js/guides/quickstart)                                                           |
+| Add function tools, hosted tools, or agents as tools            | [Tools](/openai-agents-js/guides/tools)                                                                     |
+| Decide between handoffs and manager-style orchestration         | [Agent orchestration](/openai-agents-js/guides/multi-agent)                                                 |
+| Keep memory across turns                                        | [Running agents](/openai-agents-js/guides/running-agents) and [Sessions](/openai-agents-js/guides/sessions) |
+| Use OpenAI models, websocket transport, or non-OpenAI providers | [Models](/openai-agents-js/guides/models)                                                                   |
+| Review outputs, run items, interruptions, and resume state      | [Results](/openai-agents-js/guides/results)                                                                 |
+| Build a low-latency voice agent                                 | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart)                                 |

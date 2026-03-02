@@ -5,6 +5,8 @@ description: Coordinate the flow between several agents
 
 Orchestration refers to the flow of agents in your app. Which agents run, in what order, and how do they decide what happens next? There are two main ways to orchestrate agents:
 
+> Read this page after the [Quickstart](/openai-agents-js/guides/quickstart) or [Agents](/openai-agents-js/guides/agents) guide. This page is about workflow design across multiple agents, not the `Agent` constructor itself.
+
 1. Allowing the LLM to make decisions: this uses the intelligence of an LLM to plan, reason, and decide on what steps to take based on that.
 2. Orchestrating via code: determining the flow of agents via your code.
 

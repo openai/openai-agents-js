@@ -5,24 +5,13 @@ description: Build your first realtime voice assistant using the OpenAI Agents S
 
 import { Steps, Aside, Code } from '@astrojs/starlight/components';
 import helloWorldExample from '../../../../../../examples/docs/voice-agents/helloWorld.ts?raw';
-import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
-import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
-import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
-import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
-import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
-import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+
+<Aside type="note">
+  This quickstart uses `@openai/agents`, which is the recommended default for
+  most apps. If you prefer the standalone Realtime package, install
+  `@openai/agents-realtime` and replace imports from `@openai/agents/realtime`
+  with `@openai/agents-realtime` in the examples below.
+</Aside>
 
 ## Project setup and credentials
 
@@ -36,13 +25,11 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
    npm create vite@latest my-project -- --template vanilla-ts
    ```
 
-2. **Install the Agents SDK** (requires Zod v4)
+2. **Install the recommended package** (requires Zod v4)
 
    ```bash
    npm install @openai/agents zod
    ```
-
-   Alternatively you can install `@openai/agents-realtime` for a standalone browser package.
 
 3. **Generate a client ephemeral token**
 
@@ -61,7 +48,9 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
       }'
    ```
 
-   The response will contain a "value" string a the top level, which starts with "ek\_" prefix. You can use this ephemeral key to establish a WebRTC connection later on. Note that this key is only valid for a short period of time and will need to be regenerated.
+   The response contains a top-level `value` field that starts with the `ek_` prefix, plus the
+   effective `session` object. Use `value` as the client secret when establishing the WebRTC
+   connection. This token is short-lived, so your backend should mint a fresh one when needed.
 
 </Steps>
 
@@ -128,16 +117,8 @@ import thinClientExample from '../../../../../../examples/docs/voice-agents/thin
 
 ## Next Steps
 
-From here you can start designing and building your own voice agent. Voice agents include a lot of the same features as regular agents, but have some of their own unique features.
+From here you can start designing and building your own voice agent:
 
-- Learn how to give your voice agent:
-  - [Tools](/openai-agents-js/guides/voice-agents/build#tools)
-  - [Handoffs](/openai-agents-js/guides/voice-agents/build#handoffs)
-  - [Guardrails](/openai-agents-js/guides/voice-agents/build#guardrails)
-  - [Handle audio interruptions](/openai-agents-js/guides/voice-agents/build#interruptions)
-  - [Manage session history](/openai-agents-js/guides/voice-agents/build#conversation-history-management)
-
-- Learn more about the different transport layers.
-  - [WebRTC](/openai-agents-js/guides/voice-agents/transport#connecting-over-webrtc)
-  - [WebSocket](/openai-agents-js/guides/voice-agents/transport#connecting-over-websocket)
-  - [Building your own transport mechanism](/openai-agents-js/guides/voice-agents/transport#building-your-own-transport-mechanism)
+- Add [tools](/openai-agents-js/guides/voice-agents/build#tools), [handoffs](/openai-agents-js/guides/voice-agents/build#handoffs), and [guardrails](/openai-agents-js/guides/voice-agents/build#guardrails).
+- Learn how to [handle audio interruptions](/openai-agents-js/guides/voice-agents/build#interruptions) and [manage session history](/openai-agents-js/guides/voice-agents/build#conversation-history-management).
+- Choose the right transport for your deployment: [WebRTC](/openai-agents-js/guides/voice-agents/transport#connecting-over-webrtc), [WebSocket](/openai-agents-js/guides/voice-agents/transport#connecting-over-websocket), or [a custom transport](/openai-agents-js/guides/voice-agents/transport#building-your-own-transport-mechanism).
