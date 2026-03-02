@@ -25,6 +25,9 @@ Model (LLM) that has been configured with:
 
 <Code lang="typescript" code={simpleAgent} title="Basic Agent definition" />
 
+> Use this page when you want to define or customize a single `Agent`. If you are deciding how
+> several agents should collaborate, read [Agent orchestration](/openai-agents-js/guides/multi-agent).
+
 The rest of this page walks through every Agent feature in more detail.
 
 ---
@@ -84,17 +87,14 @@ plain text.
 
 ---
 
-## Composition patterns
+## Agents in multi-agent systems
 
-### Multi-agent system design patterns
-
-There are many ways to compose agents together. Two patterns we regularly see in
-production apps are:
+Two SDK entry points show up most often when an agent participates in a larger workflow:
 
 1. **Manager (agents as tools)** – a central agent owns the conversation and invokes specialized agents that are exposed as tools.
 2. **Handoffs** – the initial agent delegates the entire conversation to a specialist once it has identified the user's request.
 
-These approaches are complementary. Managers give you a single place to enforce guardrails or rate limits, while handoffs let each agent focus on a single task without retaining control of the conversation.
+These approaches are complementary. Managers give you a single place to enforce guardrails or rate limits, while handoffs let each agent focus on a single task without retaining control of the conversation. For the design tradeoffs and when to choose each pattern, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
 #### Manager (agents as tools)
 

@@ -111,7 +111,7 @@ const sidebar = [
     },
   },
   {
-    label: 'Configuring the SDK',
+    label: 'Configuration',
     link: '/guides/config',
     translations: {
       ja: 'SDK の設定',
@@ -127,15 +127,6 @@ const sidebar = [
       ko: '가이드',
     },
     items: [
-      {
-        label: 'Agent orchestration',
-        link: '/guides/multi-agent',
-        translations: {
-          ja: 'エージェントオーケストレーション',
-          zh: '智能体编排',
-          ko: '에이전트 오케스트레이션',
-        },
-      },
       {
         label: 'Agents',
         link: '/guides/agents',
@@ -188,6 +179,15 @@ const sidebar = [
           ja: 'ストリーミング',
           zh: '流式传输',
           ko: '스트리밍',
+        },
+      },
+      {
+        label: 'Agent orchestration',
+        link: '/guides/multi-agent',
+        translations: {
+          ja: 'エージェントオーケストレーション',
+          zh: '智能体编排',
+          ko: '에이전트 오케스트레이션',
         },
       },
       {
@@ -348,15 +348,6 @@ const sidebar = [
     },
   },
   {
-    label: 'Release process',
-    link: '/guides/release',
-    translations: {
-      ja: 'リリースプロセス',
-      zh: '发布流程',
-      ko: '릴리스 프로세스',
-    },
-  },
-  {
     label: 'API Reference',
     translations: {
       ja: 'APIリファレンス',
@@ -396,6 +387,15 @@ const sidebar = [
         items: [extensionsTypeDocSidebarGroup],
       },
     ],
+  },
+  {
+    label: 'Maintainers: release process',
+    link: '/guides/release',
+    translations: {
+      ja: 'リリースプロセス',
+      zh: '发布流程',
+      ko: '릴리스 프로세스',
+    },
   },
 ];
 
