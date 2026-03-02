@@ -1,5 +1,14 @@
 # @openai/agents-realtime
 
+## 0.5.3
+
+### Patch Changes
+
+- b9c0378: perf: speed up tracing and realtime unit tests
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+  - @openai/agents-core@0.5.3
+
 ## 0.5.2
 
 ### Patch Changes

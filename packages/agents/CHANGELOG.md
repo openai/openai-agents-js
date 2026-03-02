@@ -1,5 +1,17 @@
 # @openai/agents
 
+## 0.5.3
+
+### Patch Changes
+
+- e9f701e: feat: expose agent tool invocation metadata in custom output extractors
+- c1f7a71: docs: update README files
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+  - @openai/agents-core@0.5.3
+  - @openai/agents-realtime@0.5.3
+  - @openai/agents-openai@0.5.3
+
 ## 0.5.2
 
 ### Patch Changes
