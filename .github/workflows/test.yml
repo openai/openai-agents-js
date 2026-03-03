@@ -109,7 +109,7 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
-          version: 10.29.2
+          version: 10.30.3
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
@@ -157,7 +157,7 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
-          version: 10.29.2
+          version: 10.30.3
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
