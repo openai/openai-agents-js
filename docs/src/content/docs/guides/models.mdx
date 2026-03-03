@@ -159,6 +159,9 @@ prompt configuration that should be used to control the Agent's behavior. Curren
 this option is only supported when you use the OpenAI
 [Responses API](https://platform.openai.com/docs/api-reference/responses).
 
+`prompt` can be either a static object or a function that returns one at runtime. For the callback
+shape, see [Dynamic prompts](/openai-agents-js/guides/agents#dynamic-prompts).
+
 | Field       | Type     | Notes                                                                                                                                  |
 | ----------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptId`  | `string` | Unique identifier for a prompt.                                                                                                        |

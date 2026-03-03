@@ -132,6 +132,11 @@ When you pass an array of `AgentInputItem`s as the run input, provide a `session
 For string inputs the runner merges history automatically, so the callback is optional. The callback
 only runs when your turn input is already an item array.
 
+If you are also using `conversationId` or `previousResponseId`, keep at least one new item from the
+current turn in the callback result. Those server-managed APIs depend on the current-turn delta. If
+the callback drops every new item, the SDK restores the original new inputs and logs a warning
+instead of sending an empty delta.
+
 ---
 
 ## Resumable runs
@@ -164,13 +169,13 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 
 `OpenAIResponsesCompactionSession` constructor options:
 
-| Option                    | Type                                          | Notes                                                                                                    |
-| ------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `client`                  | `OpenAI`                                      | OpenAI client used for `responses.compact`.                                                              |
-| `underlyingSession`       | `Session`                                     | Backing session store to clear/rewrite with compacted items (must not be `OpenAIConversationsSession`).  |
-| `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests.                                                                      |
-| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                          |
-| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items. |
+| Option                    | Type                                          | Notes                                                                                                                                                 |
+| ------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client`                  | `OpenAI`                                      | OpenAI client used for `responses.compact`.                                                                                                           |
+| `underlyingSession`       | `Session`                                     | Backing session store to clear/rewrite with compacted items. Defaults to an in-memory session for demos and must not be `OpenAIConversationsSession`. |
+| `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests. Defaults to the SDK's current default OpenAI model.                                                               |
+| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                                                                       |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items.                                              |
 
 `compactionMode: 'previous_response_id'` is useful when you are already chaining turns with
 Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current

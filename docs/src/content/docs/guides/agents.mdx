@@ -11,6 +11,7 @@ import agentWithAodOutputType from '../../../../../examples/docs/agents/agentWit
 import agentsAsTools from '../../../../../examples/docs/agents/agentsAsTools.ts?raw';
 import agentWithHandoffs from '../../../../../examples/docs/agents/agentWithHandoffs.ts?raw';
 import agentWithDynamicInstructions from '../../../../../examples/docs/agents/agentWithDynamicInstructions.ts?raw';
+import agentWithDynamicPrompt from '../../../../../examples/docs/agents/agentWithDynamicPrompt.ts?raw';
 import agentWithLifecycleHooks from '../../../../../examples/docs/agents/agentWithLifecycleHooks.ts?raw';
 import agentCloning from '../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
@@ -39,18 +40,18 @@ The rest of this page walks through every Agent feature in more detail.
 The `Agent` constructor takes a single configuration object. The most commonly‑used
 properties are shown below.
 
-| Property                          | Required | Description                                                                                                                                  |
-| --------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                            | yes      | A short human‑readable identifier.                                                                                                           |
-| `instructions`                    | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).                                                  |
-| `prompt`                          | no       | OpenAI Responses API prompt configuration. See [Prompt](/openai-agents-js/guides/models#prompt).                                             |
-| `handoffDescription`              | no       | Short description used when this agent is offered as a handoff tool.                                                                         |
-| `model`                           | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                      |
-| `modelSettings`                   | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`. |
-| `tools`                           | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                          |
-| `mcpServers`                      | no       | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp).                                              |
-| `resetToolChoice`                 | no       | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use).  |
-| `handoffOutputTypeWarningEnabled` | no       | Emit a warning when handoff output types differ (default: `true`).                                                                           |
+| Property                          | Required | Description                                                                                                                                    |
+| --------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                            | yes      | A short human‑readable identifier.                                                                                                             |
+| `instructions`                    | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).                                                    |
+| `prompt`                          | no       | OpenAI Responses API prompt configuration. Accepts a static prompt object or a function. See [Prompt](/openai-agents-js/guides/models#prompt). |
+| `handoffDescription`              | no       | Short description used when this agent is offered as a handoff tool.                                                                           |
+| `model`                           | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                        |
+| `modelSettings`                   | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`.   |
+| `tools`                           | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                            |
+| `mcpServers`                      | no       | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp).                                                |
+| `resetToolChoice`                 | no       | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use).    |
+| `handoffOutputTypeWarningEnabled` | no       | Emit a warning when handoff output types differ (default: `true`).                                                                             |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -108,6 +109,12 @@ With handoffs the triage agent routes requests, but once a handoff occurs the sp
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
 
+If your handoff targets can return different output types, prefer `Agent.create(...)` over
+`new Agent(...)`. That lets TypeScript infer the union of possible `finalOutput` shapes across the
+handoff graph and avoids the runtime warning controlled by
+`handoffOutputTypeWarningEnabled`. See the [results guide](/openai-agents-js/guides/results#final-output)
+for an end-to-end example.
+
 ---
 
 ## Advanced configuration and runtime controls
@@ -124,6 +131,23 @@ With handoffs the triage agent routes requests, but once a handoff occurs the sp
 />
 
 Both synchronous and `async` functions are supported.
+
+---
+
+### Dynamic prompts
+
+`prompt` supports the same callback shape as `instructions`, but returns a prompt configuration
+object instead of a string. This is useful when the prompt ID, version, or variables depend on the
+current run context.
+
+<Code
+  lang="typescript"
+  code={agentWithDynamicPrompt}
+  title="Agent with dynamic prompt"
+/>
+
+This is only supported when you use the OpenAI Responses API. Both synchronous and `async`
+functions are supported.
 
 ---
 
