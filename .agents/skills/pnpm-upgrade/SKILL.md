@@ -21,18 +21,23 @@ Use these steps to update pnpm and CI pins without blunt search/replace.
    - Use `GITHUB_TOKEN`/`GH_TOKEN` if available for higher rate limits.
    - Store as `ACTION_TAG` (e.g., `v4.2.0`). Abort if missing.
 
-4. Update workflows carefully (no broad regex)
+4. Resolve the action tag to an immutable commit SHA
+   - Run `git ls-remote https://github.com/pnpm/action-setup "refs/tags/${ACTION_TAG}^{}"` and capture the SHA as `ACTION_SHA`.
+   - If the dereferenced tag is missing, fall back to `git ls-remote https://github.com/pnpm/action-setup "refs/tags/${ACTION_TAG}"`.
+   - Abort if `ACTION_SHA` is empty.
+
+5. Update workflows carefully (no broad regex)
    - Files: everything under `.github/workflows/` that uses `pnpm/action-setup`.
    - For each file, edit by hand:
-     - Set `uses: pnpm/action-setup@${ACTION_TAG}`.
+     - Set `uses: pnpm/action-setup@${ACTION_SHA}`.
      - If a `with: version:` field exists, set it to `${PNPM_VERSION}` (keep quoting style/indent).
    - Do not touch unrelated steps. Avoid multiline sed/perl one-liners.
 
-5. Verify
+6. Verify
    - Run `pnpm -v` and confirm it matches `packageManager`.
    - `git diff` to ensure only intended workflow/package.json changes.
 
-6. Follow-up
+7. Follow-up
    - If runtime code/build/test config was changed (not typical here), run `$code-change-verification`; otherwise, a light check is enough.
    - Commit with `chore: upgrade pnpm toolchain` and open a PR (automation may do this).
 
@@ -40,4 +45,5 @@ Use these steps to update pnpm and CI pins without blunt search/replace.
 
 - Tools needed: `curl`, `jq`, `node`, `pnpm`/`corepack`. Install if missing.
 - Keep edits minimal and readable—prefer explicit file edits over global replacements.
+- GitHub Actions must stay pinned to commit SHAs, not tags. Use the latest release tag only to discover the commit SHA to pin.
 - If GitHub API is rate-limited, retry with a token or bail out rather than guessing the tag.
