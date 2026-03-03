@@ -13,17 +13,19 @@ import manualCompactionSession from '../../../../../../examples/docs/sessions/re
 import memorySessionExample from '../../../../../../examples/docs/sessions/memorySession.ts?raw';
 import resumableRunExample from '../../../../../../examples/docs/sessions/resumableRun.ts?raw';
 
-세션은 Agents SDK에 **지속형 메모리 계층**을 제공합니다. `Session` 인터페이스를 구현한 객체를 `Runner.run`에 전달하면 나머지는 SDK가 처리합니다. 세션이 있으면 러너는 자동으로 다음을 수행합니다:
+세션은 Agents SDK에 **지속적인 메모리 계층**을 제공합니다. `Session` 인터페이스를 구현한 객체를 `Runner.run`에 전달하면 나머지는 SDK가 처리합니다. 세션이 있으면 러너는 자동으로 다음을 수행합니다.
 
-1. 이전에 저장된 대화 항목을 가져와 다음 턴의 앞에 붙입니다
-2. 각 실행이 완료된 뒤 새로운 사용자 입력과 어시스턴트 출력을 저장합니다
-3. 새 사용자 텍스트로 러너를 호출하든, 중단된 `RunState`에서 재개하든 이후 턴에서도 세션을 계속 사용할 수 있게 유지합니다
+1. 이전에 저장된 대화 항목을 가져와 다음 턴 앞에 추가합니다
+2. 각 실행이 완료된 후 새 사용자 입력과 어시스턴트 출력을 저장합니다
+3. 새 사용자 텍스트로 러너를 호출하든 인터럽션(중단 처리)된 `RunState`에서 재개하든, 이후 턴에서도 세션을 계속 사용할 수 있게 유지합니다
 
-이렇게 하면 턴 사이에서 `toInputList()`를 수동으로 호출하거나 히스토리를 직접 이어 붙일 필요가 없습니다. TypeScript SDK는 두 가지 구현을 제공합니다: Conversations API용 `OpenAIConversationsSession`과 로컬 개발용 `MemorySession`입니다. 둘 다 `Session` 인터페이스를 공유하므로 자체 스토리지 백엔드를 연결할 수 있습니다. Conversations API 외의 참고 구현은 `examples/memory/` 아래 샘플 세션 백엔드(Prisma, 파일 기반 등)를 확인하세요. OpenAI Responses 모델을 사용할 때는 어떤 세션이든 `OpenAIResponsesCompactionSession`으로 감싸서 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact)를 통해 저장된 대화 히스토리를 자동으로 축소할 수 있습니다.
+이렇게 하면 `toInputList()`를 수동으로 호출하거나 턴 사이에서 기록을 직접 이어 붙일 필요가 없습니다. TypeScript SDK는 두 가지 구현을 제공합니다. Conversations API용 `OpenAIConversationsSession`과 로컬 개발용 `MemorySession`입니다. 둘 다 `Session` 인터페이스를 공유하므로 자체 스토리지 백엔드를 연결할 수 있습니다. Conversations API 외의 예시는 `examples/memory/` 아래의 샘플 세션 백엔드(Prisma, 파일 기반 등)를 확인하세요. OpenAI Responses 모델을 사용할 때는 세션을 `OpenAIResponsesCompactionSession`으로 감싸면 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact)를 통해 저장된 대화 기록을 자동으로 축소할 수 있습니다.
 
 > 팁: 이 페이지의 `OpenAIConversationsSession` 예제를 실행하려면 SDK가 Conversations API를 호출할 수 있도록 `OPENAI_API_KEY` 환경 변수를 설정하세요(또는 세션 생성 시 `apiKey`를 제공하세요)
 
-세션은 SDK가 클라이언트 측 메모리를 관리하도록 하고 싶을 때 사용하세요. 이미 `conversationId` 또는 `previousResponseId`로 OpenAI 서버 관리 상태를 사용 중이라면, 같은 대화 히스토리에 대해 보통 세션을 추가로 사용할 필요는 없습니다.
+SDK가 클라이언트 측 메모리를 관리하게 하려면 세션을 사용하세요. 이미
+`conversationId` 또는 `previousResponseId`로 OpenAI 서버 관리 상태를 사용 중이라면 보통 같은 대화 기록에 대해
+세션을 추가로 사용할 필요는 없습니다.
 
 ---
 
@@ -31,7 +33,7 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
 
 ### 빠른 시작
 
-`OpenAIConversationsSession`을 사용해 [Conversations API](https://platform.openai.com/docs/api-reference/conversations)와 메모리를 동기화하거나, 다른 `Session` 구현으로 교체할 수 있습니다.
+[Conversations API](https://platform.openai.com/docs/api-reference/conversations)와 메모리를 동기화하려면 `OpenAIConversationsSession`을 사용하거나, 다른 `Session` 구현으로 교체하세요.
 
 <Code
   lang="typescript"
@@ -39,9 +41,10 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
   title="세션 메모리로 Conversations API 사용"
 />
 
-같은 세션 인스턴스를 재사용하면 에이전트는 매 턴 전에 전체 대화 히스토리를 받고, 새 항목도 자동으로 저장됩니다. 다른 `Session` 구현으로 바꿔도 추가 코드 변경은 필요하지 않습니다.
+같은 세션 인스턴스를 재사용하면 에이전트가 매 턴 전에 전체 대화 기록을 받고 새 항목도 자동으로 저장됩니다. 다른 `Session` 구현으로 전환해도 다른 코드 변경은 필요하지 않습니다.
 
-로컬 데모, 테스트, 또는 프로세스 로컬 채팅 상태에는 `MemorySession`이 OpenAI와 통신하지 않고 동일한 인터페이스를 제공합니다:
+로컬 데모, 테스트, 또는 프로세스 로컬 채팅 상태에는 `MemorySession`이 OpenAI와 통신 없이
+동일한 인터페이스를 제공합니다.
 
 <Code
   lang="typescript"
@@ -51,85 +54,92 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
 
 `OpenAIConversationsSession` 생성자 옵션:
 
-| 옵션             | 타입     | 참고                                                     |
-| ---------------- | -------- | -------------------------------------------------------- |
-| `conversationId` | `string` | 지연 생성 대신 기존 대화를 재사용합니다                  |
-| `client`         | `OpenAI` | 사전 설정된 OpenAI 클라이언트를 전달합니다               |
-| `apiKey`         | `string` | 내부 OpenAI 클라이언트를 생성할 때 사용하는 API 키입니다 |
-| `baseURL`        | `string` | OpenAI 호환 엔드포인트용 기본 URL입니다                  |
-| `organization`   | `string` | 요청에 사용할 OpenAI organization ID입니다               |
-| `project`        | `string` | 요청에 사용할 OpenAI project ID입니다                    |
+| 옵션             | 타입     | 참고                                                |
+| ---------------- | -------- | --------------------------------------------------- |
+| `conversationId` | `string` | 지연 생성 대신 기존 대화를 재사용합니다             |
+| `client`         | `OpenAI` | 미리 구성된 OpenAI 클라이언트를 전달합니다          |
+| `apiKey`         | `string` | 내부 OpenAI 클라이언트 생성에 사용하는 API 키입니다 |
+| `baseURL`        | `string` | OpenAI 호환 엔드포인트용 기본 URL입니다             |
+| `organization`   | `string` | 요청에 사용할 OpenAI organization ID입니다          |
+| `project`        | `string` | 요청에 사용할 OpenAI project ID입니다               |
 
 `MemorySession` 생성자 옵션:
 
-| 옵션           | 타입               | 참고                                                           |
-| -------------- | ------------------ | -------------------------------------------------------------- |
-| `sessionId`    | `string`           | 로그 또는 테스트용 고정 식별자입니다. 기본값은 자동 생성됩니다 |
-| `initialItems` | `AgentInputItem[]` | 기존 히스토리로 세션을 초기화합니다                            |
-| `logger`       | `Logger`           | 디버그 출력에 사용하는 로거를 재정의합니다                     |
+| 옵션           | 타입               | 참고                                                               |
+| -------------- | ------------------ | ------------------------------------------------------------------ |
+| `sessionId`    | `string`           | 로그 또는 테스트용 안정적인 식별자입니다. 기본값은 자동 생성됩니다 |
+| `initialItems` | `AgentInputItem[]` | 기존 기록으로 세션을 초기화합니다                                  |
+| `logger`       | `Logger`           | 디버그 출력에 사용할 로거를 재정의합니다                           |
 
 `MemorySession`은 모든 데이터를 로컬 프로세스 메모리에 저장하므로 프로세스가 종료되면 초기화됩니다.
 
-세션 생성 전에 대화 ID를 미리 만들어야 한다면 `startOpenAIConversationsSession(client?)`를 사용하고, 반환된 ID를 `conversationId`로 전달하세요.
+세션 생성 전에 대화 ID를 미리 만들어야 한다면
+`startOpenAIConversationsSession(client?)`를 사용하고 반환된 ID를 `conversationId`로 전달하세요.
 
 ---
 
-## 핵심 세션 동작
+## 세션 핵심 동작
 
 ### 러너의 세션 사용 방식
 
-- **각 실행 전** 세션 히스토리를 가져와 새 턴 입력과 병합한 뒤, 결합된 목록을 에이전트에 전달합니다
+- **각 실행 전** 세션 기록을 가져와 새 턴 입력과 병합한 뒤 결합된 목록을 에이전트에 전달합니다
 - **비스트리밍 실행 후** `session.addItems()` 한 번으로 원래 사용자 입력과 최신 턴의 모델 출력을 함께 저장합니다
-- **스트리밍 실행의 경우** 먼저 사용자 입력을 기록하고 턴이 완료되면 스트리밍 출력을 추가합니다
-- **`RunResult.state`에서 재개할 때**(승인 또는 기타 인터럽션(중단 처리))도 같은 `session`을 계속 전달하세요. 재개된 턴은 입력 재준비 없이 메모리에 추가됩니다
+- **스트리밍 실행의 경우** 먼저 사용자 입력을 저장하고 턴 완료 후 스트리밍 출력을 추가합니다
+- **`RunResult.state`에서 재개할 때**(승인 또는 기타 인터럽션) 동일한 `session`을 계속 전달하세요. 재개된 턴은 입력 재준비 없이 메모리에 추가됩니다
 
 ---
 
-### 히스토리 조회와 편집
+### 기록 조회 및 편집
 
-세션은 간단한 CRUD 헬퍼를 제공하므로 "실행 취소", "채팅 지우기", 감사 기능 등을 구현할 수 있습니다.
+세션은 간단한 CRUD 도우미를 제공하므로 "실행 취소", "채팅 비우기", 감사 기능을 구현할 수 있습니다.
 
-<Code lang="typescript" code={manageHistory} title="저장된 항목 읽기 및 편집" />
+<Code lang="typescript" code={manageHistory} title="저장된 항목 조회 및 편집" />
 
 `session.getItems()`는 저장된 `AgentInputItem[]`를 반환합니다. 마지막 항목을 제거하려면 `popItem()`을 호출하세요. 에이전트를 다시 실행하기 전 사용자 수정에 유용합니다.
 
 ---
 
-## 커스텀 스토리지와 병합 동작
+## 사용자 지정 스토리지 및 병합 동작
 
-### 자체 스토리지 사용
+### 사용자 스토리지 연결
 
 `Session` 인터페이스를 구현해 Redis, DynamoDB, SQLite 또는 다른 데이터스토어를 메모리 백엔드로 사용할 수 있습니다. 필요한 것은 비동기 메서드 5개뿐입니다.
 
 <Code
   lang="typescript"
   code={customSession}
-  title="커스텀 인메모리 세션 구현"
+  title="사용자 지정 인메모리 세션 구현"
 />
 
-커스텀 세션을 사용하면 보존 정책 적용, 암호화 추가, 저장 전 각 대화 턴에 메타데이터 부착 등을 수행할 수 있습니다.
+사용자 지정 세션을 사용하면 보존 정책 적용, 암호화 추가, 저장 전 각 대화 턴에 메타데이터 첨부가 가능합니다.
 
 ---
 
-### 히스토리와 새 항목의 병합 방식 제어
+### 기록과 새 항목의 병합 제어
 
-실행 입력으로 `AgentInputItem` 배열을 전달할 때, 저장된 히스토리와 결정적으로 병합하려면 `sessionInputCallback`을 제공하세요. 러너는 기존 히스토리를 로드하고 **모델 호출 전에** 콜백을 실행한 뒤, 반환된 배열을 해당 턴의 전체 입력으로 모델에 전달합니다. 이 훅은 오래된 항목 트리밍, 도구 결과 중복 제거, 모델에 보여줄 컨텍스트만 강조할 때 이상적입니다.
+실행 입력으로 `AgentInputItem` 배열을 전달할 때는 `sessionInputCallback`을 제공해 저장된 기록과 결정론적으로 병합하세요. 러너는 기존 기록을 불러오고 **모델 호출 전에** 콜백을 실행한 뒤, 반환 배열을 해당 턴의 전체 입력으로 모델에 전달합니다. 이 훅은 오래된 항목 잘라내기, 도구 결과 중복 제거, 모델에 보여줄 컨텍스트 선별에 적합합니다.
 
 <Code
   lang="typescript"
   code={sessionInputCallback}
-  title="sessionInputCallback으로 히스토리 자르기"
+  title="sessionInputCallback으로 기록 자르기"
 />
 
-문자열 입력의 경우 러너가 히스토리를 자동 병합하므로 콜백은 선택 사항입니다. 콜백은 턴 입력이 이미 항목 배열일 때만 실행됩니다.
+문자열 입력의 경우 러너가 기록을 자동 병합하므로 콜백은 선택 사항입니다. 이 콜백은
+턴 입력이 이미 항목 배열일 때만 실행됩니다.
+
+`conversationId` 또는 `previousResponseId`도 함께 사용 중이라면 콜백 결과에
+현재 턴의 새 항목을 최소 하나는 유지하세요. 이 서버 관리 API는 현재 턴 델타에 의존합니다.
+콜백이 모든 새 항목을 제거하면 SDK는 빈 델타를 보내는 대신 원래 새 입력을 복원하고
+경고 로그를 남깁니다.
 
 ---
 
 ## 재개 가능한 실행
 
-### 승인 및 재개 가능한 실행 처리
+### 승인 및 재개 실행 처리
 
-휴먼인더루프 (HITL) 흐름에서는 승인 대기를 위해 실행을 일시 중지하는 경우가 많습니다:
+휴먼인더루프 (HITL) 흐름은 승인 대기를 위해 실행을 자주 일시 중지합니다.
 
 <Code
   lang="typescript"
@@ -137,15 +147,15 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
   title="같은 세션으로 실행 재개"
 />
 
-이전 `RunState`에서 재개하면 새 턴이 같은 메모리 레코드에 추가되어 단일 대화 히스토리가 유지됩니다. Human-in-the-loop (HITL) 흐름도 완전히 호환됩니다. 승인 체크포인트는 여전히 `RunState`를 통해 왕복되고, 세션은 대화 히스토리를 완전하게 유지합니다.
+이전 `RunState`에서 재개하면 단일 대화 기록을 유지하기 위해 새 턴이 같은 메모리 기록에 추가됩니다. Human-in-the-loop (HITL) 흐름과도 완전히 호환됩니다. 승인 체크포인트는 계속 `RunState`를 통해 왕복되고, 세션은 대화 기록을 완전하게 유지합니다.
 
 ---
 
-## 고급: 히스토리 압축
+## 고급: 기록 압축
 
-### OpenAI Responses 히스토리 자동 압축
+### OpenAI Responses 기록 자동 압축
 
-`OpenAIResponsesCompactionSession`은 모든 `Session`을 데코레이트하고 OpenAI Responses API를 사용해 긴 저장 히스토리를 더 짧지만 동등한 대화 항목 목록으로 대체합니다. 각 턴이 저장된 뒤 러너는 최신 `responseId`를 `runCompaction`에 전달하고, 결정 훅이 true를 반환하면 `responses.compact`를 호출합니다. `compactionMode`에 따라 요청은 최신 Responses API 체인 또는 세션의 현재 항목으로 구성됩니다. 기본 트리거는 사용자 외 항목이 최소 10개 누적되면 압축하며, 토큰 수나 커스텀 휴리스틱 기준으로 결정하려면 `shouldTriggerCompaction`을 재정의하세요. 압축이 완료되면 데코레이터는 기본 세션을 비우고 축소된 항목 목록으로 다시 씁니다. 따라서 서버 관리 히스토리 흐름이 다른 `OpenAIConversationsSession`과는 함께 사용하지 마세요.
+`OpenAIResponsesCompactionSession`은 어떤 `Session`이든 데코레이트할 수 있으며, OpenAI Responses API를 사용해 긴 저장 기록을 더 짧지만 동등한 대화 항목 목록으로 대체합니다. 각 턴이 저장된 후 러너는 최신 `responseId`를 `runCompaction`에 전달하고, 결정 훅이 true를 반환하면 `responses.compact`를 호출합니다. `compactionMode`에 따라 요청은 최신 Responses API 체인 또는 세션의 현재 항목으로 구성됩니다. 기본 트리거는 사용자 항목이 아닌 항목이 10개 이상 누적되면 압축을 수행합니다. 토큰 수나 사용자 지정 휴리스틱 기반으로 결정하려면 `shouldTriggerCompaction`을 재정의하세요. 압축이 반환되면 데코레이터는 기본 세션을 비우고 축소된 항목 목록으로 다시 작성하므로, 다른 서버 관리 기록 흐름을 사용하는 `OpenAIConversationsSession`과 함께 사용하지 마세요.
 
 <Code
   lang="typescript"
@@ -155,33 +165,36 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
 
 `OpenAIResponsesCompactionSession` 생성자 옵션:
 
-| 옵션                      | 타입                                          | 참고                                                                                             |
-| ------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `client`                  | `OpenAI`                                      | `responses.compact`에 사용할 OpenAI 클라이언트입니다                                             |
-| `underlyingSession`       | `Session`                                     | 압축된 항목으로 비우고 다시 쓸 백킹 세션 저장소입니다(`OpenAIConversationsSession`이면 안 됨)    |
-| `model`                   | `OpenAI.ResponsesModel`                       | 압축 요청에 사용할 모델입니다                                                                    |
-| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | 압축이 서버 응답 체인을 쓸지 로컬 입력 항목을 쓸지 제어합니다                                    |
-| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | `responseId`, `compactionMode`, 후보 항목, 현재 세션 항목을 기반으로 하는 커스텀 트리거 훅입니다 |
+| 옵션                      | 타입                                          | 참고                                                                                                                                              |
+| ------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client`                  | `OpenAI`                                      | `responses.compact`에 사용할 OpenAI 클라이언트입니다                                                                                              |
+| `underlyingSession`       | `Session`                                     | 압축된 항목으로 비우기/재작성할 백엔드 세션 스토어입니다. 데모에서는 기본 인메모리 세션을 사용하며 `OpenAIConversationsSession`이어서는 안 됩니다 |
+| `model`                   | `OpenAI.ResponsesModel`                       | 압축 요청에 사용할 모델입니다. 기본값은 SDK의 현재 기본 OpenAI 모델입니다                                                                         |
+| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | 압축이 서버 응답 체이닝을 사용할지 로컬 입력 항목을 사용할지 제어합니다                                                                           |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | `responseId`, `compactionMode`, 후보 항목, 현재 세션 항목을 기반으로 한 사용자 지정 트리거 훅입니다                                               |
 
-`compactionMode: 'previous_response_id'`는 이미 Responses API response ID로 턴을 체이닝하고 있을 때 유용합니다. 대신 `compactionMode: 'input'`은 현재 세션 항목으로 압축 요청을 재구성하므로, response 체인을 사용할 수 없거나 기본 세션 내용 자체를 단일 진실 원천으로 삼고 싶을 때 도움이 됩니다.
+`compactionMode: 'previous_response_id'`는
+이미 Responses API response ID로 턴을 체이닝할 때 유용합니다. 반면 `compactionMode: 'input'`은 현재
+세션 항목으로 압축 요청을 재구성하므로, 응답 체인을 사용할 수 없거나
+기본 세션 내용을 단일 기준 원본으로 삼고 싶을 때 유용합니다.
 
 `runCompaction(args)` 옵션:
 
-| 옵션             | 타입                                          | 참고                                                               |
-| ---------------- | --------------------------------------------- | ------------------------------------------------------------------ |
-| `responseId`     | `string`                                      | `previous_response_id` 모드용 최신 Responses API response id입니다 |
-| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | 설정된 모드를 호출별로 재정의하는 선택 옵션입니다                  |
-| `store`          | `boolean`                                     | 마지막 실행이 서버 상태를 저장했는지 나타냅니다                    |
-| `force`          | `boolean`                                     | `shouldTriggerCompaction`을 우회하고 즉시 압축합니다               |
+| 옵션             | 타입                                          | 참고                                                         |
+| ---------------- | --------------------------------------------- | ------------------------------------------------------------ |
+| `responseId`     | `string`                                      | `previous_response_id` 모드용 최신 Responses API response id |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | 구성된 모드를 호출 단위로 재정의하는 선택 옵션입니다         |
+| `store`          | `boolean`                                     | 마지막 실행이 서버 상태를 저장했는지 나타냅니다              |
+| `force`          | `boolean`                                     | `shouldTriggerCompaction`을 우회하고 즉시 압축합니다         |
 
-#### 저지연 스트리밍을 위한 수동 압축
+#### 수동 압축(저지연 스트리밍)
 
-압축은 기본 세션을 비우고 다시 쓰므로 SDK는 스트리밍 실행을 resolve하기 전에 이를 기다립니다. 압축 작업이 무거우면 마지막 출력 토큰 이후에도 `result.completed`가 몇 초간 대기 상태일 수 있습니다. 저지연 스트리밍이나 더 빠른 턴 전환이 필요하다면 자동 압축을 끄고 턴 사이(또는 유휴 시간)에 직접 `runCompaction`을 호출하세요.
+압축은 기본 세션을 비우고 다시 작성하므로 SDK는 스트리밍 실행을 완료 처리하기 전에 이를 기다립니다. 압축 작업이 무거우면 마지막 출력 토큰 이후 몇 초 동안 `result.completed`가 대기 상태로 남을 수 있습니다. 저지연 스트리밍 또는 더 빠른 턴 전환이 필요하면 자동 압축을 비활성화하고 턴 사이(또는 유휴 시간)에 `runCompaction`을 직접 호출하세요.
 
 <Code
   lang="typescript"
   code={manualCompactionSession}
-  title="자동 압축 비활성화 후 턴 사이 압축"
+  title="자동 압축 비활성화 및 턴 사이 압축"
 />
 
-아카이브나 핸드오프 전에 히스토리를 줄이려면 언제든 `runCompaction({ force: true })`를 호출할 수 있습니다. 압축 결정 추적은 `DEBUG=openai-agents:openai:compaction`으로 디버그 로그를 활성화하세요.
+기록을 보관하거나 핸드오프하기 전에 언제든 `runCompaction({ force: true })`를 호출해 기록을 축소할 수 있습니다. 압축 결정 추적을 위해 `DEBUG=openai-agents:openai:compaction`으로 디버그 로그를 활성화하세요.
