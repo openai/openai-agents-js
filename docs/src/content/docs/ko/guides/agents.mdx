@@ -11,43 +11,45 @@ import agentWithAodOutputType from '../../../../../../examples/docs/agents/agent
 import agentsAsTools from '../../../../../../examples/docs/agents/agentsAsTools.ts?raw';
 import agentWithHandoffs from '../../../../../../examples/docs/agents/agentWithHandoffs.ts?raw';
 import agentWithDynamicInstructions from '../../../../../../examples/docs/agents/agentWithDynamicInstructions.ts?raw';
+import agentWithDynamicPrompt from '../../../../../../examples/docs/agents/agentWithDynamicPrompt.ts?raw';
 import agentWithLifecycleHooks from '../../../../../../examples/docs/agents/agentWithLifecycleHooks.ts?raw';
 import agentCloning from '../../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
 
 에이전트는 OpenAI Agents SDK의 핵심 구성 요소입니다. **Agent**는 다음으로 구성되도록 설정된 Large Language
-Model (LLM)입니다.
+Model (LLM)입니다:
 
-- **Instructions** – 모델이 _자신이 누구인지_ 와 _어떻게 응답해야 하는지_ 를 알려주는 시스템 프롬프트
+- **Instructions** – 모델에 *자신의 역할*과 *응답 방식*을 알려주는 시스템 프롬프트
 - **Model** – 호출할 OpenAI 모델과 선택적 모델 튜닝 매개변수
 - **Tools** – 작업 수행을 위해 LLM이 호출할 수 있는 함수 또는 API 목록
 
 <Code lang="typescript" code={simpleAgent} title="Basic Agent definition" />
 
-> 단일 `Agent`를 정의하거나 커스터마이즈하려면 이 페이지를 사용하세요. 여러 에이전트가 어떻게 협업해야 할지 결정하는 중이라면 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)을 읽어보세요.
+> 단일 `Agent`를 정의하거나 커스터마이즈하려는 경우 이 페이지를 사용하세요. 여러 에이전트가 어떻게 협업해야 하는지 결정 중이라면 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)을 읽어보세요.
 
-이 페이지의 나머지 부분에서는 모든 Agent 기능을 더 자세히 살펴봅니다.
+이 페이지의 나머지 부분에서는 모든 Agent 기능을 더 자세히 설명합니다.
 
 ---
 
-## 에이전트 기본 요소
+## Agent 기본 사항
 
 ### 기본 설정
 
-`Agent` 생성자는 단일 설정 객체를 받습니다. 가장 자주 사용하는 속성은 아래와 같습니다.
+`Agent` 생성자는 단일 설정 객체를 받습니다. 가장 자주 사용하는
+속성은 아래와 같습니다.
 
-| Property                          | Required | Description                                                                                                                                  |
-| --------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                            | yes      | 사람이 읽기 쉬운 짧은 식별자입니다.                                                                                                          |
-| `instructions`                    | yes      | 시스템 프롬프트(문자열 **또는** 함수 - [동적 instructions](#dynamic-instructions) 참고)입니다.                                               |
-| `prompt`                          | no       | OpenAI Responses API 프롬프트 설정입니다. [Prompt](/openai-agents-js/ko/guides/models#prompt)를 참고하세요.                                  |
-| `handoffDescription`              | no       | 이 에이전트를 핸드오프 도구로 제공할 때 사용하는 짧은 설명입니다.                                                                            |
-| `model`                           | no       | 모델 이름 **또는** 커스텀 [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 구현입니다.                                           |
-| `modelSettings`                   | no       | 튜닝 매개변수(temperature, top_p 등)입니다. 필요한 속성이 최상위에 없으면 `providerData` 아래에 포함할 수 있습니다.                          |
-| `tools`                           | no       | 모델이 호출할 수 있는 [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) 인스턴스 배열입니다.                                      |
-| `mcpServers`                      | no       | 에이전트에 도구를 제공하는 MCP 서버입니다. [모델 컨텍스트 프로토콜 (MCP) 가이드](/openai-agents-js/ko/guides/mcp)를 참고하세요.              |
-| `resetToolChoice`                 | no       | 도구 호출 후 `toolChoice`를 기본값(기본: `true`)으로 재설정해 도구 사용 루프를 방지합니다. [도구 사용 강제](#forcing-tool-use)를 참고하세요. |
-| `handoffOutputTypeWarningEnabled` | no       | 핸드오프 출력 타입이 다를 때 경고를 발생시킵니다(기본: `true`).                                                                              |
+| Property                          | Required | Description                                                                                                                                   |
+| --------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                            | yes      | 사람이 읽기 쉬운 짧은 식별자                                                                                                                  |
+| `instructions`                    | yes      | 시스템 프롬프트(문자열 **또는** 함수 - [동적 instructions](#dynamic-instructions) 참고)                                                       |
+| `prompt`                          | no       | OpenAI Responses API 프롬프트 설정. 정적 프롬프트 객체 또는 함수를 받을 수 있습니다. [Prompt](/openai-agents-js/ko/guides/models#prompt) 참고 |
+| `handoffDescription`              | no       | 이 에이전트가 핸드오프 도구로 제공될 때 사용하는 짧은 설명                                                                                    |
+| `model`                           | no       | 모델 이름 **또는** 커스텀 [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 구현                                                   |
+| `modelSettings`                   | no       | 튜닝 매개변수(temperature, top_p 등). 필요한 속성이 최상위에 없으면 `providerData` 아래에 포함할 수 있습니다                                  |
+| `tools`                           | no       | 모델이 호출할 수 있는 [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) 인스턴스 배열                                              |
+| `mcpServers`                      | no       | 에이전트에 도구를 제공하는 MCP 서버. [모델 컨텍스트 프로토콜 (MCP)](/openai-agents-js/ko/guides/mcp) 가이드 참고                              |
+| `resetToolChoice`                 | no       | 도구 호출 후 `toolChoice`를 기본값으로 재설정(기본값: `true`)하여 도구 사용 루프를 방지. [도구 사용 강제](#forcing-tool-use) 참고             |
+| `handoffOutputTypeWarningEnabled` | no       | 핸드오프 출력 타입이 다를 때 경고를 발생(기본값: `true`)                                                                                      |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -55,7 +57,10 @@ Model (LLM)입니다.
 
 ### 컨텍스트
 
-에이전트는 **컨텍스트 타입에 대해 제네릭**입니다. 즉, `Agent<TContext, TOutput>`입니다. _컨텍스트_ 는 사용자가 생성해 `Runner.run()`에 전달하는 의존성 주입 객체입니다. 이 객체는 모든 도구, 가드레일, 핸드오프 등에 전달되며 상태 저장이나 공용 서비스(데이터베이스 연결, 사용자 메타데이터, 기능 플래그 등) 제공에 유용합니다.
+에이전트는 **컨텍스트 타입에 대해 제네릭**입니다. 즉 `Agent<TContext, TOutput>`입니다. *컨텍스트*는
+여러분이 생성하여 `Runner.run()`에 전달하는 의존성 주입 객체입니다. 이는
+모든 도구, 가드레일, 핸드오프 등에 전달되며 상태 저장 또는 공통
+서비스(데이터베이스 연결, 사용자 메타데이터, 기능 플래그 등) 제공에 유용합니다.
 
 <Code lang="typescript" code={agentWithContext} title="Agent with context" />
 
@@ -63,10 +68,11 @@ Model (LLM)입니다.
 
 ### 출력 타입
 
-기본적으로 Agent는 **일반 텍스트**(`string`)를 반환합니다. 모델이 구조화된 객체를 반환하도록 하려면 `outputType` 속성을 지정할 수 있습니다. SDK는 다음을 지원합니다.
+기본적으로 Agent는 **일반 텍스트**(`string`)를 반환합니다. 모델이 구조화된 객체를 반환하도록 하려면
+`outputType` 속성을 지정할 수 있습니다. SDK는 다음을 받습니다:
 
 1. [Zod](https://github.com/colinhacks/zod) 스키마(`z.object({...})`)
-2. JSON 스키마 호환 객체
+2. JSON 스키마와 호환되는 임의의 객체
 
 <Code
   lang="typescript"
@@ -74,30 +80,37 @@ Model (LLM)입니다.
   title="Structured output with Zod"
 />
 
-`outputType`이 제공되면 SDK는 일반 텍스트 대신 자동으로 [structured outputs](https://platform.openai.com/docs/guides/structured-outputs)를 사용합니다.
+`outputType`이 제공되면 SDK는 일반 텍스트 대신
+[structured outputs](https://platform.openai.com/docs/guides/structured-outputs)를 자동으로 사용합니다.
 
 ---
 
-## 다중 에이전트 시스템의 에이전트
+## 멀티 에이전트 시스템의 에이전트
 
-에이전트가 더 큰 워크플로에 참여할 때 가장 자주 등장하는 SDK 진입점은 두 가지입니다.
+에이전트가 더 큰 워크플로에 참여할 때 가장 자주 등장하는 SDK 진입점은 두 가지입니다:
 
-1. **Manager (agents as tools)** – 중앙 에이전트가 대화를 소유하고, 도구로 노출된 전문 에이전트를 호출합니다.
-2. **Handoffs** – 초기 에이전트가 사용자의 요청을 식별한 뒤 전체 대화를 전문 에이전트에 위임합니다.
+1. **매니저(도구로서의 에이전트)** - 중앙 에이전트가 대화를 관리하고, 도구로 노출된 전문 에이전트를 호출합니다
+2. **핸드오프** - 초기 에이전트가 사용자의 요청을 식별한 뒤 전체 대화를 전문 에이전트에게 위임합니다
 
-이 접근법들은 상호 보완적입니다. Manager는 가드레일이나 속도 제한을 적용할 단일 지점을 제공하고, handoffs는 대화 제어를 유지하지 않은 채 각 에이전트가 단일 작업에 집중하도록 해줍니다. 설계상의 트레이드오프와 각 패턴의 선택 기준은 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)을 참고하세요.
+이 접근 방식들은 상호 보완적입니다. 매니저는 가드레일이나 속도 제한을 강제할 단일 지점을 제공하고, 핸드오프는 각 에이전트가 대화 제어를 유지하지 않고도 단일 작업에 집중할 수 있게 해줍니다. 설계 트레이드오프와 각 패턴의 선택 기준은 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)을 참고하세요.
 
-#### Manager (agents as tools)
+#### 매니저(도구로서의 에이전트)
 
-이 패턴에서 manager는 제어를 넘기지 않습니다. LLM이 도구를 사용하고 manager가 최종 답변을 요약합니다. 자세한 내용은 [도구 가이드](/openai-agents-js/ko/guides/tools#agents-as-tools)를 참고하세요.
+이 패턴에서는 매니저가 제어를 넘기지 않습니다. LLM이 도구를 사용하고 매니저가 최종 답변을 요약합니다. 자세한 내용은 [도구](/openai-agents-js/ko/guides/tools#agents-as-tools) 가이드를 참고하세요.
 
 <Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
 
 #### 핸드오프
 
-handoffs에서는 트리아지 에이전트가 요청을 라우팅하지만, 핸드오프가 발생하면 전문 에이전트가 최종 출력을 만들 때까지 대화를 소유합니다. 이렇게 하면 프롬프트를 짧게 유지하고 각 에이전트를 독립적으로 다룰 수 있습니다. 자세한 내용은 [핸드오프 가이드](/openai-agents-js/ko/guides/handoffs)를 참고하세요.
+핸드오프에서는 트리아지 에이전트가 요청을 라우팅하지만, 한 번 핸드오프가 발생하면 전문 에이전트가 최종 출력을 생성할 때까지 대화를 소유합니다. 이렇게 하면 프롬프트를 짧게 유지할 수 있고 각 에이전트를 독립적으로 추론할 수 있습니다. 자세한 내용은 [핸드오프](/openai-agents-js/ko/guides/handoffs) 가이드를 참고하세요.
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
+
+핸드오프 대상이 서로 다른 출력 타입을 반환할 수 있다면 `new Agent(...)`보다
+`Agent.create(...)`를 사용하는 것이 좋습니다. 그러면 TypeScript가 핸드오프 그래프 전반의 가능한
+`finalOutput` 형태의 유니온을 추론할 수 있고,
+`handoffOutputTypeWarningEnabled`로 제어되는 런타임 경고를 피할 수 있습니다. 엔드투엔드 예시는
+[실행 결과](/openai-agents-js/ko/guides/results#final-output) 가이드를 참고하세요.
 
 ---
 
@@ -105,7 +118,8 @@ handoffs에서는 트리아지 에이전트가 요청을 라우팅하지만, 핸
 
 ### 동적 instructions
 
-`instructions`는 문자열 대신 **함수**일 수 있습니다. 함수는 현재 `RunContext`와 Agent 인스턴스를 받아 문자열 _또는_ `Promise<string>`을 반환할 수 있습니다.
+`instructions`는 문자열 대신 **함수**일 수 있습니다. 이 함수는 현재
+`RunContext`와 Agent 인스턴스를 받아 문자열 _또는_ `Promise<string>`을 반환할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -113,17 +127,36 @@ handoffs에서는 트리아지 에이전트가 요청을 라우팅하지만, 핸
   title="Agent with dynamic instructions"
 />
 
-동기 함수와 `async` 함수 모두 지원됩니다.
+동기 함수와 `async` 함수 모두 지원합니다.
 
 ---
 
-### 수명주기 훅
+### 동적 프롬프트
 
-고급 사용 사례에서는 이벤트를 리스닝해 Agent 수명주기를 관찰할 수 있습니다.
+`prompt`는 `instructions`와 동일한 콜백 형태를 지원하지만, 문자열 대신 프롬프트 설정
+객체를 반환합니다. 프롬프트 ID, 버전 또는 변수가 현재
+실행 컨텍스트에 따라 달라질 때 유용합니다.
 
-`Agent` 인스턴스는 해당 인스턴스에 대한 수명주기 이벤트를 발생시키고, `Runner`는 전체 실행에 걸쳐 동일한 이벤트 이름을 단일 스트림으로 발생시킵니다. 이는 핸드오프와 도구 호출을 한곳에서 관찰하려는 다중 에이전트 워크플로에 유용합니다.
+<Code
+  lang="typescript"
+  code={agentWithDynamicPrompt}
+  title="Agent with dynamic prompt"
+/>
 
-공통 이벤트 이름은 다음과 같습니다.
+이는 OpenAI Responses API를 사용할 때만 지원됩니다. 동기 함수와 `async`
+함수 모두 지원합니다.
+
+---
+
+### 라이프사이클 훅
+
+고급 사용 사례에서는 이벤트를 리슨하여 Agent 라이프사이클을 관찰할 수 있습니다.
+
+`Agent` 인스턴스는 해당 인스턴스에 대한 라이프사이클 이벤트를 발생시키고, `Runner`는
+동일한 이벤트 이름을 전체 실행에 대한 단일 스트림으로 발생시킵니다. 이는 멀티 에이전트
+워크플로에서 핸드오프와 도구 호출을 한 곳에서 관찰하려는 경우에 유용합니다.
+
+공유 이벤트 이름은 다음과 같습니다:
 
 | Event              | Agent hook arguments                    | Runner hook arguments                          |
 | ------------------ | --------------------------------------- | ---------------------------------------------- |
@@ -143,13 +176,16 @@ handoffs에서는 트리아지 에이전트가 요청을 라우팅하지만, 핸
 
 ### 가드레일
 
-가드레일을 사용하면 사용자 입력과 에이전트 출력을 검증하거나 변환할 수 있습니다. `inputGuardrails` 및 `outputGuardrails` 배열로 설정합니다. 자세한 내용은 [가드레일 가이드](/openai-agents-js/ko/guides/guardrails)를 참고하세요.
+가드레일을 사용하면 사용자 입력과 에이전트 출력을 검증하거나 변환할 수 있습니다. 이는
+`inputGuardrails` 및 `outputGuardrails` 배열을 통해 설정합니다. 자세한 내용은
+[가드레일](/openai-agents-js/ko/guides/guardrails) 가이드를 참고하세요.
 
 ---
 
 ### 에이전트 복제/복사
 
-기존 에이전트를 약간 수정한 버전이 필요하신가요? `clone()` 메서드를 사용하면 완전히 새로운 `Agent` 인스턴스를 반환합니다.
+기존 에이전트를 약간 수정한 버전이 필요하신가요? `clone()` 메서드를 사용하면
+완전히 새로운 `Agent` 인스턴스를 반환합니다.
 
 <Code lang="typescript" code={agentCloning} title="Cloning Agents" />
 
@@ -157,23 +193,27 @@ handoffs에서는 트리아지 에이전트가 요청을 라우팅하지만, 핸
 
 ### 도구 사용 강제
 
-도구를 제공해도 LLM이 반드시 호출하는 것은 아닙니다. `modelSettings.toolChoice`로 도구 사용을 **강제**할 수 있습니다.
+도구를 제공해도 LLM이 반드시 호출하는 것은 아닙니다. `modelSettings.toolChoice`로
+도구 사용을 **강제**할 수 있습니다:
 
-1. `'auto'` (기본값) – LLM이 도구 사용 여부를 결정합니다.
-2. `'required'` – LLM이 반드시 도구를 호출해야 합니다(어떤 도구인지는 선택 가능).
-3. `'none'` – LLM은 도구를 호출하면 **안 됩니다**.
-4. 특정 도구 이름(예: `'calculator'`) – LLM이 해당 도구를 반드시 호출해야 합니다.
+1. `'auto'`(기본값) - LLM이 도구 사용 여부를 결정
+2. `'required'` - LLM이 도구를 _반드시_ 호출(어떤 도구인지는 선택 가능)
+3. `'none'` - LLM이 도구를 **호출하면 안 됨**
+4. 특정 도구 이름(예: `'calculator'`) - LLM이 해당 도구를 반드시 호출
 
 <Code lang="typescript" code={agentForcingToolUse} title="Forcing tool use" />
 
 #### 무한 루프 방지
 
-도구 호출 후 SDK는 자동으로 `toolChoice`를 `'auto'`로 되돌립니다. 이렇게 하면 모델이 도구를 반복 호출하려는 무한 루프에 빠지는 것을 방지할 수 있습니다. `resetToolChoice` 플래그 또는 `toolUseBehavior` 설정으로 이 동작을 재정의할 수 있습니다.
+도구 호출 후 SDK는 `toolChoice`를 자동으로 `'auto'`로 재설정합니다. 이렇게 하면
+모델이 도구를 반복 호출하려는 무한 루프에 빠지는 것을 방지할 수 있습니다.
+이 동작은 `resetToolChoice` 플래그 또는
+`toolUseBehavior` 설정으로 재정의할 수 있습니다:
 
-- `'run_llm_again'` (기본값) – 도구 결과를 사용해 LLM을 다시 실행합니다.
-- `'stop_on_first_tool'` – 첫 번째 도구 결과를 최종 답변으로 처리합니다.
-- `{ stopAtToolNames: ['my_tool'] }` – 목록의 도구 중 하나가 호출되면 중지합니다.
-- `(context, toolResults) => ...` – 실행을 종료할지 반환하는 커스텀 함수
+- `'run_llm_again'`(기본값) - 도구 결과와 함께 LLM을 다시 실행
+- `'stop_on_first_tool'` - 첫 번째 도구 결과를 최종 답변으로 처리
+- `{ stopAtToolNames: ['my_tool'] }` - 나열된 도구 중 하나가 호출되면 중지
+- `(context, toolResults) => ...` - 실행을 종료할지 여부를 반환하는 커스텀 함수
 
 ```typescript
 const agent = new Agent({
@@ -182,12 +222,12 @@ const agent = new Agent({
 });
 ```
 
-참고: `toolUseBehavior`는 **함수 도구**에만 적용됩니다. 호스티드 툴은 항상 처리를 위해 모델로 다시 반환됩니다.
+참고: `toolUseBehavior`는 **함수 도구**에만 적용됩니다. Hosted tools는 항상 처리 후 모델로 돌아갑니다.
 
 ---
 
 ## 다음 단계
 
-- [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 방법을 알아보세요.
-- [도구](/openai-agents-js/ko/guides/tools), [가드레일](/openai-agents-js/ko/guides/guardrails), [모델](/openai-agents-js/ko/guides/models)을 더 깊이 살펴보세요.
-- 사이드바의 **@openai/agents** 아래 전체 TypeDoc 레퍼런스를 확인해 보세요.
+- [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 방법 알아보기
+- [도구](/openai-agents-js/ko/guides/tools), [가드레일](/openai-agents-js/ko/guides/guardrails), [모델](/openai-agents-js/ko/guides/models) 심화 학습
+- 사이드바의 **@openai/agents** 아래 전체 TypeDoc 레퍼런스 살펴보기
