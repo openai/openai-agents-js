@@ -1,6 +1,6 @@
 ---
-title: Connect Realtime Agents to Twilio
-description: Connect your Agents SDK agents to Twilio to use voice agents
+title: Realtime Agents on Twilio
+description: Run Agents SDK voice agents over Twilio phone calls
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
@@ -8,14 +8,14 @@ import twilioBasicExample from '../../../../../examples/docs/extensions/twilio-b
 import twilioServerExample from '../../../../../examples/realtime-twilio/index.ts?raw';
 
 Twilio offers a [Media Streams API](https://www.twilio.com/docs/voice/media-streams) that sends the
-raw audio from a phone call to a WebSocket server. This set up can be used to connect your
+raw audio from a phone call to a WebSocket server. This setup can be used to connect your
 [voice agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport
 in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However,
 this requires you to set the right audio format and adjust your own interruption timing as phone
 calls will naturally introduce more latency than a web-based conversation.
 
-To improve the set up experience, we've created a dedicated transport layer that handles the
-connection to Twilio for you, including handling interruptions and audio forwarding for you.
+To improve the setup experience, we've created a dedicated transport layer that handles the
+connection to Twilio, including interruption handling and audio forwarding.
 
 <Aside type="caution">
   This adapter is still in beta. You may run into edge case issues or bugs.
@@ -32,8 +32,8 @@ connection to Twilio for you, including handling interruptions and audio forward
 
 2. **Set up a WebSocket server that can receive events from Twilio.**
 
-   If you are developing locally, this will require you to configure a local tunnel like
-   this will require you to configure a local tunnel like [`ngrok`](https://ngrok.io/) or
+   If you are developing locally, you will need to configure a local tunnel like
+   [`ngrok`](https://ngrok.io/) or
    [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)
    to make your local server accessible to Twilio. You can use the `TwilioRealtimeTransportLayer`
    to connect to Twilio.
@@ -66,7 +66,7 @@ Any event and behavior that you would expect from a `RealtimeSession` will work 
 including tool calls, guardrails, and more. Read the [voice agents guide](/openai-agents-js/guides/voice-agents)
 for more information on how to use the `RealtimeSession` with voice agents.
 
-## Tips and Considerations
+## Tips and considerations
 
 1. **Speed is the name of the game.**
 

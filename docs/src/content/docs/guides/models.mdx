@@ -197,7 +197,14 @@ default, set it once during app startup:
 This is useful when your app standardizes on a non-OpenAI provider and you do not want to pass a
 custom `Runner` everywhere.
 
-If you want a ready-made adapter for non-OpenAI models, see [Using any model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk).
+#### AI SDK integration
+
+If you want to use non-OpenAI models without implementing `ModelProvider` yourself, see [Using any
+model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk). That adapter lets you plug an AI
+SDK model into the Agents runtime directly, which is useful when your app already standardizes on
+AI SDK providers or you want access to the wider provider ecosystem. It also documents how Agents
+SDK `providerData` maps to AI SDK `providerMetadata`, plus the stream helpers available for AI SDK
+UI routes.
 
 ---
 

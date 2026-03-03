@@ -182,7 +182,7 @@ const sidebar = [
         },
       },
       {
-        label: 'Agent orchestration',
+        label: 'Agent Orchestration',
         link: '/guides/multi-agent',
         translations: {
           ja: 'エージェントオーケストレーション',
@@ -227,7 +227,7 @@ const sidebar = [
         },
       },
       {
-        label: 'Context management',
+        label: 'Context Management',
         link: '/guides/context',
         translations: {
           ja: 'コンテキスト管理',
@@ -310,30 +310,30 @@ const sidebar = [
     },
     items: [
       {
-        label: 'Use any model with the AI SDK',
+        label: 'AI SDK Integration',
         link: '/extensions/ai-sdk',
         translations: {
-          ja: 'AI SDK で任意モデルを指定',
-          zh: '使用 AI SDK 指定任意模型',
-          ko: 'AI SDK로 어떤 모델이든 사용',
+          ja: 'AI SDK 連携',
+          zh: 'AI SDK 集成',
+          ko: 'AI SDK 연동',
         },
       },
       {
-        label: 'Connect Realtime Agents to Twilio',
+        label: 'Realtime Agents on Twilio',
         link: '/extensions/twilio',
         translations: {
-          ja: 'Realtime Agent を Twilio に接続',
-          zh: '将实时智能体连接到 Twilio',
-          ko: 'Realtime 에이전트를 Twilio에 연결',
+          ja: 'Twilio 上の Realtime Agent',
+          zh: 'Twilio 上的实时智能体',
+          ko: 'Twilio용 Realtime 에이전트',
         },
       },
       {
-        label: 'Cloudflare Workers Transport',
+        label: 'Realtime Agents on Cloudflare',
         link: '/extensions/cloudflare',
         translations: {
-          ja: 'Cloudflare Workers 用トランスポート',
-          zh: 'Cloudflare Workers 传输',
-          ko: 'Cloudflare Workers 전송',
+          ja: 'Cloudflare 上の Realtime Agent',
+          zh: 'Cloudflare 上的实时智能体',
+          ko: 'Cloudflare용 Realtime 에이전트',
         },
       },
     ],
