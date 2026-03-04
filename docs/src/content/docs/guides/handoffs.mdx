@@ -3,7 +3,7 @@ title: Handoffs
 description: Delegate tasks from one agent to another
 ---
 
-import { Code } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
 import basicUsageExample from '../../../../../examples/docs/handoffs/basicUsage.ts?raw';
 import customizeHandoffExample from '../../../../../examples/docs/handoffs/customizeHandoff.ts?raw';
 import handoffInputExample from '../../../../../examples/docs/handoffs/handoffInput.ts?raw';
@@ -33,10 +33,12 @@ The `handoff()` function lets you tweak the generated tool.
 - `agent` – the agent to hand off to.
 - `toolNameOverride` – override the default `transfer_to_<agent_name>` tool name.
 - `toolDescriptionOverride` – override the default tool description.
-- `onHandoff` – callback when the handoff occurs. Receives a `RunContext` and optionally parsed input.
-- `inputType` – expected input schema for the handoff.
+- `onHandoff` – callback when the handoff occurs. Receives a `RunContext` and, when `inputType` is configured, the parsed handoff payload.
+- `inputType` – schema for the handoff tool-call arguments.
 - `inputFilter` – filter the history passed to the next agent.
 - `isEnabled` – boolean or predicate that exposes the handoff only for matching runs.
+
+The `handoff()` helper always transfers control to the specific `agent` you passed in. If you have multiple possible destinations, register one handoff per destination and let the model choose among them. Use a custom `Handoff` when your own handoff code must decide which agent to return at invocation time.
 
 <Code
   lang="typescript"
@@ -46,15 +48,48 @@ The `handoff()` function lets you tweak the generated tool.
 
 ## Handoff inputs
 
-Sometimes you want the LLM to provide data when invoking a handoff. Define an input schema and use it in `handoff()`.
+Sometimes you want the model to attach a small structured payload when it chooses a handoff. Define `inputType` and `onHandoff` together for that case.
 
 <Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
+
+`inputType` describes the arguments for the handoff tool call itself. The SDK exposes that schema to the model as the handoff tool's `parameters`, parses the returned arguments locally, and passes the parsed value to `onHandoff`.
+
+It does not replace the next agent's main input, and it does not choose a different destination. The `handoff()` helper still transfers to the specific agent you wrapped, and the receiving agent still sees the conversation history unless you change it with an `inputFilter`.
+
+`inputType` is also separate from `RunContext`. Use it for metadata the model decides at handoff time, not for application state or dependencies you already have locally.
+
+### When to use `inputType`
+
+Use `inputType` when the handoff needs a small piece of model-generated routing metadata such as `reason`, `language`, `priority`, or `summary`. For example, a triage agent can hand off to a refund agent with `{ reason: 'duplicate_charge', priority: 'high' }`, and `onHandoff` can log or persist that metadata before the refund agent takes over.
+
+Choose a different mechanism when the goal is different:
+
+- Put existing application state in `RunContext`.
+- Use `inputFilter` if you want to change what history the receiving agent sees.
+- Register one handoff per destination if there are multiple possible specialists. `inputType` can add metadata to the chosen handoff, but it does not dispatch between destinations.
+- Prefer a Zod schema when you want the SDK to validate the parsed payload before `onHandoff` runs; a raw JSON Schema only defines the tool contract sent to the model.
 
 ## Input filters
 
 By default a handoff receives the entire conversation history. To modify what gets passed to the next agent, provide an `inputFilter`. Common helpers live in `@openai/agents-core/extensions`.
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
+
+An `inputFilter` receives and returns a `HandoffInputData` object:
+
+- `inputHistory` – the input history before the run started.
+- `preHandoffItems` – items generated before the turn where the handoff happened.
+- `newItems` – items generated during the current turn, including the handoff call/output items.
+- `runContext` – the active run context.
+
+If you also configure `handoffInputFilter` on the `Runner`, the per-handoff `inputFilter` takes precedence for that specific handoff.
+
+<Aside type="note">
+  Handoffs stay within a single run. Input guardrails still apply only to the
+  first agent in the chain, and output guardrails only to the agent that
+  produces the final output. Use tool guardrails when you need checks around
+  each custom function-tool call inside the workflow.
+</Aside>
 
 ## Recommended prompts
 
