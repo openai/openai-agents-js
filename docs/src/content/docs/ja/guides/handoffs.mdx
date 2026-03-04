@@ -3,26 +3,26 @@ title: ハンドオフ
 description: Delegate tasks from one agent to another
 ---
 
-import { Code } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
 import basicUsageExample from '../../../../../../examples/docs/handoffs/basicUsage.ts?raw';
 import customizeHandoffExample from '../../../../../../examples/docs/handoffs/customizeHandoff.ts?raw';
 import handoffInputExample from '../../../../../../examples/docs/handoffs/handoffInput.ts?raw';
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-ハンドオフを使うと、エージェントは会話の一部を別のエージェントに委任できます。これは、異なるエージェントが特定の領域に特化している場合に便利です。たとえばカスタマーサポートアプリでは、予約、返金、FAQ を扱うエージェントを用意できます。
+ハンドオフを使うと、エージェントは会話の一部を別のエージェントに委任できます。これは、異なるエージェントが特定領域に特化している場合に便利です。たとえばカスタマーサポートアプリでは、予約、返金、FAQ を扱うエージェントを用意できます。
 
-ハンドオフは、LLM に対してはツールとして表現されます。`Refund Agent` という名前のエージェントにハンドオフする場合、ツール名は `transfer_to_refund_agent` になります。
+ハンドオフは LLM に対してツールとして表現されます。`Refund Agent` という名前のエージェントにハンドオフする場合、ツール名は `transfer_to_refund_agent` になります。
 
-> 専門エージェントに会話を引き継ぐべきだと判断できるようになったら、[エージェント](/openai-agents-js/ja/guides/agents#composition-patterns) の後にこのページを読んでください。専門エージェントを元のエージェントの背後で動かしたい場合は、代わりに [Agents as tools](/openai-agents-js/ja/guides/tools#4-agents-as-tools) を使ってください。
+> このページは、専門担当が会話を引き継ぐべきだと分かった段階で [エージェント](/openai-agents-js/guides/agents#composition-patterns) の後に読んでください。専門担当を元のエージェントの背後で動かしたい場合は、代わりに [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools) を使ってください。
 
 ## ハンドオフの作成
 
 すべてのエージェントは `handoffs` オプションを受け取ります。ここには、他の `Agent` インスタンス、または `handoff()` ヘルパーが返す `Handoff` オブジェクトを含められます。
 
-`Agent` インスタンスをそのまま渡した場合、`handoffDescription`（指定されている場合）がデフォルトのツール説明に追記されます。モデルがそのハンドオフを選ぶべきタイミングを明確にするために使ってください。
+単なる `Agent` インスタンスを渡すと、その `handoffDescription`（指定されている場合）がデフォルトのツール説明に追記されます。モデルがそのハンドオフを選ぶべき条件を明確にするために使ってください。
 
-### 基本的な使用方法
+### 基本的な使い方
 
 <Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
 
@@ -33,10 +33,12 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 - `agent` – ハンドオフ先のエージェント
 - `toolNameOverride` – デフォルトの `transfer_to_<agent_name>` ツール名を上書き
 - `toolDescriptionOverride` – デフォルトのツール説明を上書き
-- `onHandoff` – ハンドオフ発生時のコールバック。`RunContext` と、必要に応じてパース済み入力を受け取る
-- `inputType` – ハンドオフで期待する入力スキーマ
+- `onHandoff` – ハンドオフ発生時のコールバック。`RunContext` と、`inputType` が設定されている場合はパース済みのハンドオフペイロードを受け取ります
+- `inputType` – ハンドオフのツールコール引数用スキーマ
 - `inputFilter` – 次のエージェントに渡す履歴をフィルタリング
 - `isEnabled` – 一致する実行でのみハンドオフを公開する boolean または述語関数
+
+`handoff()` ヘルパーは、渡された特定の `agent` に常に制御を移します。行き先候補が複数ある場合は、行き先ごとに 1 つずつハンドオフを登録し、モデルに選択させてください。呼び出し時にどのエージェントを返すかを独自のハンドオフコードで決定する必要がある場合は、カスタム `Handoff` を使用してください。
 
 <Code
   lang="typescript"
@@ -46,19 +48,52 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ## ハンドオフ入力
 
-ハンドオフ呼び出し時に、LLM にデータを渡させたい場合があります。その場合は入力スキーマを定義して、`handoff()` で使用します。
+モデルがハンドオフ選択時に小さな structured outputs ペイロードを添付できるようにしたい場合があります。その場合は `inputType` と `onHandoff` を組み合わせて定義します。
 
 <Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
+`inputType` は、ハンドオフツールコール自体の引数を記述します。SDK はそのスキーマをハンドオフツールの `parameters` としてモデルに公開し、返された引数をローカルでパースして、パース済みの値を `onHandoff` に渡します。
+
+これは次のエージェントのメイン入力を置き換えるものではなく、別の行き先を選ぶものでもありません。`handoff()` ヘルパーは、ラップした特定のエージェントに引き続きハンドオフし、受信側エージェントは `inputFilter` で変更しない限り会話履歴を受け取ります。
+
+`inputType` は `RunContext` とも別物です。ハンドオフ時点でモデルが決定するメタデータに使い、ローカルですでに保持しているアプリケーション状態や依存関係には使わないでください。
+
+### `inputType` の利用場面
+
+`inputType` は、ハンドオフに `reason`、`language`、`priority`、`summary` などのモデル生成ルーティングメタデータが少量必要な場合に使います。たとえば、トリアージエージェントは `{ reason: 'duplicate_charge', priority: 'high' }` を添えて返金エージェントにハンドオフでき、`onHandoff` は返金エージェントが引き継ぐ前にそのメタデータをログ出力または永続化できます。
+
+目的が異なる場合は、別の手段を選んでください。
+
+- 既存のアプリケーション状態は `RunContext` に入れる
+- 受信側エージェントが見る履歴を変更したい場合は `inputFilter` を使う
+- 専門エージェントの候補が複数ある場合は、行き先ごとに 1 つずつハンドオフを登録する。`inputType` は選ばれたハンドオフにメタデータを追加できますが、行き先間の振り分けは行いません
+- `onHandoff` 実行前に SDK にパース済みペイロードを検証させたい場合は、元の JSON Schema より Zod スキーマを優先する。元の JSON Schema は、モデルに送るツール契約を定義するだけです
+
 ## 入力フィルター
 
-デフォルトでは、ハンドオフは会話履歴全体を受け取ります。次のエージェントに渡す内容を変更するには、`inputFilter` を指定します。一般的なヘルパーは `@openai/agents-core/extensions` にあります。
+デフォルトでは、ハンドオフは会話履歴全体を受け取ります。次のエージェントに渡す内容を変更するには、`inputFilter` を指定します。よく使うヘルパーは `@openai/agents-core/extensions` にあります。
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
+`inputFilter` は `HandoffInputData` オブジェクトを受け取り、同じ型で返します。
+
+- `inputHistory` – 実行開始前の入力履歴
+- `preHandoffItems` – ハンドオフが発生したターンより前に生成された項目
+- `newItems` – 現在のターン中に生成された項目（ハンドオフの call/output 項目を含む）
+- `runContext` – 現在の実行コンテキスト
+
+`Runner` 側でも `handoffInputFilter` を設定している場合、特定のハンドオフでは個別の `inputFilter` が優先されます。
+
+<Aside type="note">
+  ハンドオフは単一の実行内にとどまります。入力ガードレールはチェーン内の最初の
+  エージェントにのみ適用され、出力ガードレールは最終出力を生成する
+  エージェントにのみ適用されます。ワークフロー内の各カスタム関数ツール呼び出し
+  ごとに検査が必要な場合は、ツールガードレールを使用してください。
+</Aside>
+
 ## 推奨プロンプト
 
-プロンプト内でハンドオフに言及すると、LLM はより安定して応答します。SDK は `RECOMMENDED_PROMPT_PREFIX` を通じて推奨プレフィックスを提供しています。
+プロンプトでハンドオフに言及すると、LLM はより安定して応答します。SDK は `RECOMMENDED_PROMPT_PREFIX` として推奨プレフィックスを公開しています。
 
 <Code
   lang="typescript"
@@ -68,8 +103,8 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ## 関連ガイド
 
-- マネージャーとハンドオフの選び方は [エージェント](/openai-agents-js/ja/guides/agents#composition-patterns)
-- より広いワークフロー上のトレードオフは [エージェントオーケストレーション](/openai-agents-js/ja/guides/multi-agent)
-- `agent.asTool()` を使うマネージャー方式の代替は [ツール](/openai-agents-js/ja/guides/tools#4-agents-as-tools)
-- 実行時にハンドオフがどう動作するかは [エージェントの実行](/openai-agents-js/ja/guides/running-agents)
-- ハンドオフグラフ全体で型付き `finalOutput` を扱う方法は [エージェントの実行結果](/openai-agents-js/ja/guides/results#final-output)
+- マネージャーとハンドオフの選び方は [エージェント](/openai-agents-js/guides/agents#composition-patterns)
+- より広いワークフロー上のトレードオフは [エージェントオーケストレーション](/openai-agents-js/guides/multi-agent)
+- `agent.asTool()` を使うマネージャー方式の代替は [ツール](/openai-agents-js/guides/tools#4-agents-as-tools)
+- 実行時のハンドオフ動作は [エージェントの実行](/openai-agents-js/guides/running-agents)
+- ハンドオフグラフ全体での型付き `finalOutput` は [エージェントの実行結果](/openai-agents-js/guides/results#final-output)
