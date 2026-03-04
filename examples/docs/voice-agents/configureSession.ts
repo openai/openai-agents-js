@@ -8,7 +8,7 @@ const agent = new RealtimeAgent({
 const session = new RealtimeSession(agent, {
   model: 'gpt-realtime',
   config: {
-    outputModalities: ['text', 'audio'],
+    outputModalities: ['audio'],
     audio: {
       input: {
         format: 'pcm16',

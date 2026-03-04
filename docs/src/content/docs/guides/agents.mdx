@@ -16,18 +16,28 @@ import agentWithLifecycleHooks from '../../../../../examples/docs/agents/agentWi
 import agentCloning from '../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
 
-Agents are the main building‑block of the OpenAI Agents SDK. An **Agent** is a Large Language
-Model (LLM) that has been configured with:
+Agents are the main building‑block of the OpenAI Agents SDK. An **Agent** is a Large Language Model (LLM) that has been configured with:
 
-- **Instructions** – the system prompt that tells the model _who it is_ and _how it should
-  respond_.
+- **Instructions** – the system prompt that tells the model _who it is_ and _how it should respond_.
 - **Model** – which OpenAI model to call, plus any optional model tuning parameters.
 - **Tools** – a list of functions or APIs the LLM can invoke to accomplish a task.
 
 <Code lang="typescript" code={simpleAgent} title="Basic Agent definition" />
 
-> Use this page when you want to define or customize a single `Agent`. If you are deciding how
-> several agents should collaborate, read [Agent orchestration](/openai-agents-js/guides/multi-agent).
+> Use this page when you want to define or customize a single `Agent`. If you are deciding how several agents should collaborate, read [Agent orchestration](/openai-agents-js/guides/multi-agent).
+
+### Choose the next guide
+
+Use this page as the hub for agent definition. Jump out to the adjacent guide that matches the next decision you need to make.
+
+| If you want to... | Read next |
+| --- | --- |
+| Choose a model or configure stored prompts | [Models](/openai-agents-js/guides/models) |
+| Add capabilities to the agent | [Tools](/openai-agents-js/guides/tools) |
+| Decide between managers and handoffs | [Agent orchestration](/openai-agents-js/guides/multi-agent) |
+| Configure handoff behavior | [Handoffs](/openai-agents-js/guides/handoffs) |
+| Run turns, stream events, or manage state | [Running agents](/openai-agents-js/guides/running-agents) |
+| Inspect final output, run items, or resume | [Results](/openai-agents-js/guides/results) |
 
 The rest of this page walks through every Agent feature in more detail.
 
@@ -37,21 +47,25 @@ The rest of this page walks through every Agent feature in more detail.
 
 ### Basic configuration
 
-The `Agent` constructor takes a single configuration object. The most commonly‑used
-properties are shown below.
+The `Agent` constructor takes a single configuration object. The most commonly‑used properties are shown below.
 
-| Property                          | Required | Description                                                                                                                                    |
-| --------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                            | yes      | A short human‑readable identifier.                                                                                                             |
-| `instructions`                    | yes      | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)).                                                    |
-| `prompt`                          | no       | OpenAI Responses API prompt configuration. Accepts a static prompt object or a function. See [Prompt](/openai-agents-js/guides/models#prompt). |
-| `handoffDescription`              | no       | Short description used when this agent is offered as a handoff tool.                                                                           |
-| `model`                           | no       | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation.                                        |
-| `modelSettings`                   | no       | Tuning parameters (temperature, top_p, etc.). If the properties you need aren’t at the top level, you can include them under `providerData`.   |
-| `tools`                           | no       | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call.                                            |
-| `mcpServers`                      | no       | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp).                                                |
-| `resetToolChoice`                 | no       | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use).    |
-| `handoffOutputTypeWarningEnabled` | no       | Emit a warning when handoff output types differ (default: `true`).                                                                             |
+| Property | Required | Description |
+| --- | --- | --- |
+| `name` | yes | A short human‑readable identifier. |
+| `instructions` | yes | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)). |
+| `prompt` | no | OpenAI Responses API prompt configuration. Accepts a static prompt object or a function. See [Prompt](/openai-agents-js/guides/models#prompt). |
+| `handoffDescription` | no | Short description used when this agent is offered as a handoff tool. |
+| `handoffs` | no | Delegate the conversation to specialist agents. See [Composition patterns](#composition-patterns) and the [Handoffs guide](/openai-agents-js/guides/handoffs). |
+| `model` | no | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation. |
+| `modelSettings` | no | Tuning parameters (temperature, top_p, etc.). See [Models](/openai-agents-js/guides/models#modelsettings). If the properties you need aren’t at the top level, you can include them under `providerData`. |
+| `tools` | no | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call. See [Tools](/openai-agents-js/guides/tools). |
+| `mcpServers` | no | MCP-backed tools for the agent. See the [MCP guide](/openai-agents-js/guides/mcp). |
+| `inputGuardrails` | no | Guardrails applied to the first user input for this agent chain. See [Guardrails](/openai-agents-js/guides/guardrails). |
+| `outputGuardrails` | no | Guardrails applied to the final output for this agent. See [Guardrails](/openai-agents-js/guides/guardrails). |
+| `outputType` | no | Return structured output instead of plain text. See [Output types](#output-types) and [Results](/openai-agents-js/guides/results#final-output). |
+| `toolUseBehavior` | no | Control whether function-tool results loop back to the model or finish the run. See [Forcing tool use](#forcing-tool-use). |
+| `resetToolChoice` | no | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use). |
+| `handoffOutputTypeWarningEnabled` | no | Emit a warning when handoff output types differ (default: `true`). See [Results](/openai-agents-js/guides/results#final-output). |
 
 <Code lang="typescript" code={agentWithTools} title="Agent with tools" />
 
@@ -59,10 +73,7 @@ properties are shown below.
 
 ### Context
 
-Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`. The _context_
-is a dependency‑injection object that you create and pass to `Runner.run()`. It is forwarded to
-every tool, guardrail, handoff, etc. and is useful for storing state or providing shared
-services (database connections, user metadata, feature flags, …).
+Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`. The _context_ is a dependency‑injection object that you create and pass to `Runner.run()`. It is forwarded to every tool, guardrail, handoff, etc. and is useful for storing state or providing shared services (database connections, user metadata, feature flags, …).
 
 <Code lang="typescript" code={agentWithContext} title="Agent with context" />
 
@@ -70,8 +81,7 @@ services (database connections, user metadata, feature flags, …).
 
 ### Output types
 
-By default, an Agent returns **plain text** (`string`). If you want the model to return a
-structured object you can specify the `outputType` property. The SDK accepts:
+By default, an Agent returns **plain text** (`string`). If you want the model to return a structured object you can specify the `outputType` property. The SDK accepts:
 
 1. A [Zod](https://github.com/colinhacks/zod) schema (`z.object({...})`).
 2. Any JSON‑schema‑compatible object.
@@ -82,13 +92,25 @@ structured object you can specify the `outputType` property. The SDK accepts:
   title="Structured output with Zod"
 />
 
-When `outputType` is provided, the SDK automatically uses
-[structured outputs](https://platform.openai.com/docs/guides/structured-outputs) instead of
-plain text.
+When `outputType` is provided, the SDK automatically uses [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) instead of plain text.
 
 ---
 
-## Agents in multi-agent systems
+### OpenAI platform mapping
+
+Some agent concepts map directly to OpenAI platform concepts, while others are configured when you run the agent rather than when you define it.
+
+| SDK concept | OpenAI guide | When it matters |
+| --- | --- | --- |
+| `outputType` | [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | The agent should return typed JSON or a Zod-validated object instead of text. |
+| `tools` / hosted tools | [Tools guide](https://developers.openai.com/api/docs/guides/tools) | The model should search, retrieve, execute code, or call your functions/tools. |
+| `conversationId` / `previousResponseId` | [Conversation state](https://developers.openai.com/api/docs/guides/conversation-state) | You want OpenAI to persist or chain conversation state between turns. |
+
+`conversationId` and `previousResponseId` are run-time controls, not `Agent` constructor fields. Use [Running agents](/openai-agents-js/guides/running-agents) when you need those SDK entry points.
+
+---
+
+## Composition patterns
 
 Two SDK entry points show up most often when an agent participates in a larger workflow:
 
@@ -109,11 +131,7 @@ With handoffs the triage agent routes requests, but once a handoff occurs the sp
 
 <Code lang="typescript" code={agentWithHandoffs} title="Agent with handoffs" />
 
-If your handoff targets can return different output types, prefer `Agent.create(...)` over
-`new Agent(...)`. That lets TypeScript infer the union of possible `finalOutput` shapes across the
-handoff graph and avoids the runtime warning controlled by
-`handoffOutputTypeWarningEnabled`. See the [results guide](/openai-agents-js/guides/results#final-output)
-for an end-to-end example.
+If your handoff targets can return different output types, prefer `Agent.create(...)` over `new Agent(...)`. That lets TypeScript infer the union of possible `finalOutput` shapes across the handoff graph and avoids the runtime warning controlled by `handoffOutputTypeWarningEnabled`. See the [results guide](/openai-agents-js/guides/results#final-output) for an end-to-end example.
 
 ---
 
@@ -121,8 +139,7 @@ for an end-to-end example.
 
 ### Dynamic instructions
 
-`instructions` can be a **function** instead of a string. The function receives the current
-`RunContext` and the Agent instance and can return a string _or_ a `Promise<string>`.
+`instructions` can be a **function** instead of a string. The function receives the current `RunContext` and the Agent instance and can return a string _or_ a `Promise<string>`.
 
 <Code
   lang="typescript"
@@ -136,9 +153,7 @@ Both synchronous and `async` functions are supported.
 
 ### Dynamic prompts
 
-`prompt` supports the same callback shape as `instructions`, but returns a prompt configuration
-object instead of a string. This is useful when the prompt ID, version, or variables depend on the
-current run context.
+`prompt` supports the same callback shape as `instructions`, but returns a prompt configuration object instead of a string. This is useful when the prompt ID, version, or variables depend on the current run context.
 
 <Code
   lang="typescript"
@@ -146,8 +161,7 @@ current run context.
   title="Agent with dynamic prompt"
 />
 
-This is only supported when you use the OpenAI Responses API. Both synchronous and `async`
-functions are supported.
+This is only supported when you use the OpenAI Responses API. Both synchronous and `async` functions are supported.
 
 ---
 
@@ -155,19 +169,17 @@ functions are supported.
 
 For advanced use‑cases you can observe the Agent lifecycle by listening on events.
 
-`Agent` instances emit lifecycle events for that specific agent instance, while `Runner` emits the
-same event names as a single stream across the whole run. This is useful for multi-agent
-workflows where you want one place to observe handoffs and tool calls.
+`Agent` instances emit lifecycle events for that specific agent instance, while `Runner` emits the same event names as a single stream across the whole run. This is useful for multi-agent workflows where you want one place to observe handoffs and tool calls.
 
 The shared event names are:
 
-| Event              | Agent hook arguments                    | Runner hook arguments                          |
-| ------------------ | --------------------------------------- | ---------------------------------------------- |
-| `agent_start`      | `(context, agent, turnInput?)`          | `(context, agent, turnInput?)`                 |
-| `agent_end`        | `(context, output)`                     | `(context, agent, output)`                     |
-| `agent_handoff`    | `(context, nextAgent)`                  | `(context, fromAgent, toAgent)`                |
-| `agent_tool_start` | `(context, tool, { toolCall })`         | `(context, agent, tool, { toolCall })`         |
-| `agent_tool_end`   | `(context, tool, result, { toolCall })` | `(context, agent, tool, result, { toolCall })` |
+| Event | Agent hook arguments | Runner hook arguments |
+| --- | --- | --- |
+| `agent_start` | `(context, agent, turnInput?)` | `(context, agent, turnInput?)` |
+| `agent_end` | `(context, output)` | `(context, agent, output)` |
+| `agent_handoff` | `(context, nextAgent)` | `(context, fromAgent, toAgent)` |
+| `agent_tool_start` | `(context, tool, { toolCall })` | `(context, agent, tool, { toolCall })` |
+| `agent_tool_end` | `(context, tool, result, { toolCall })` | `(context, agent, tool, result, { toolCall })` |
 
 <Code
   lang="typescript"
@@ -179,16 +191,13 @@ The shared event names are:
 
 ### Guardrails
 
-Guardrails allow you to validate or transform user input and agent output. They are configured
-via the `inputGuardrails` and `outputGuardrails` arrays. See the
-[guardrails guide](/openai-agents-js/guides/guardrails) for details.
+Guardrails allow you to validate or transform user input and agent output. They are configured via the `inputGuardrails` and `outputGuardrails` arrays. See the [guardrails guide](/openai-agents-js/guides/guardrails) for details.
 
 ---
 
 ### Cloning / copying agents
 
-Need a slightly modified version of an existing agent? Use the `clone()` method, which returns
-an entirely new `Agent` instance.
+Need a slightly modified version of an existing agent? Use the `clone()` method, which returns an entirely new `Agent` instance.
 
 <Code lang="typescript" code={agentCloning} title="Cloning Agents" />
 
@@ -196,8 +205,7 @@ an entirely new `Agent` instance.
 
 ### Forcing tool use
 
-Supplying tools doesn’t guarantee the LLM will call one. You can **force** tool use with
-`modelSettings.toolChoice`:
+Supplying tools doesn’t guarantee the LLM will call one. You can **force** tool use with `modelSettings.toolChoice`:
 
 1. `'auto'` (default) – the LLM decides whether to use a tool.
 2. `'required'` – the LLM _must_ call a tool (it can choose which one).
@@ -208,10 +216,7 @@ Supplying tools doesn’t guarantee the LLM will call one. You can **force** too
 
 #### Preventing infinite loops
 
-After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents
-the model from entering an infinite loop where it repeatedly tries to call the tool. You can
-override this behavior via the `resetToolChoice` flag or by configuring
-`toolUseBehavior`:
+After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents the model from entering an infinite loop where it repeatedly tries to call the tool. You can override this behavior via the `resetToolChoice` flag or by configuring `toolUseBehavior`:
 
 - `'run_llm_again'` (default) – run the LLM again with the tool result.
 - `'stop_on_first_tool'` – treat the first tool result as the final answer.
@@ -229,8 +234,12 @@ Note: `toolUseBehavior` only applies to **function tools**. Hosted tools always 
 
 ---
 
-## Next steps
+## Related guides
 
-- Learn how to [run agents](/openai-agents-js/guides/running-agents).
-- Dive into [tools](/openai-agents-js/guides/tools), [guardrails](/openai-agents-js/guides/guardrails), and [models](/openai-agents-js/guides/models).
+- [Models](/openai-agents-js/guides/models) for model selection, stored prompts, and provider configuration.
+- [Tools](/openai-agents-js/guides/tools) for function tools, hosted tools, MCP, and `agent.asTool()`.
+- [Agent orchestration](/openai-agents-js/guides/multi-agent) for choosing between managers, handoffs, and code-driven orchestration.
+- [Handoffs](/openai-agents-js/guides/handoffs) for configuring specialist delegation.
+- [Running agents](/openai-agents-js/guides/running-agents) for executing turns, streaming, and conversation state.
+- [Results](/openai-agents-js/guides/results) for `finalOutput`, run items, and resume state.
 - Explore the full TypeDoc reference under **@openai/agents** in the sidebar.

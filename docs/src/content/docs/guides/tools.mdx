@@ -15,8 +15,9 @@ import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts
 import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
 
-Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a
-computer. The JavaScript/TypeScript SDK supports six categories:
+Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a computer. The JavaScript/TypeScript SDK supports six categories:
+
+> Read this page after [Agents](/openai-agents-js/guides/agents) once you know which agent should own the task and you want to give it capabilities. If you are still deciding between delegation patterns, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
 1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation)_
 2. **Built-in execution tools** – SDK-provided tools that execute outside the model. _(computer use and apply_patch run locally; shell can run locally or in hosted containers)_
@@ -29,34 +30,31 @@ computer. The JavaScript/TypeScript SDK supports six categories:
 
 ## Tool categories
 
-The rest of this guide first covers each tool category, then summarizes cross-cutting tool
-selection and prompting guidance.
+The rest of this guide first covers each tool category, then summarizes cross-cutting tool selection and prompting guidance.
 
 ### 1. Hosted tools (OpenAI Responses API)
 
 When you use the `OpenAIResponsesModel` you can add the following built‑in tools:
 
-| Tool                    | Type string          | Purpose                               |
-| ----------------------- | -------------------- | ------------------------------------- |
-| Web search              | `'web_search'`       | Internet search.                      |
-| File / retrieval search | `'file_search'`      | Query vector stores hosted on OpenAI. |
-| Code Interpreter        | `'code_interpreter'` | Run code in a sandboxed environment.  |
-| Image generation        | `'image_generation'` | Generate images based on text.        |
+| Tool | Type string | Purpose |
+| --- | --- | --- |
+| Web search | `'web_search'` | Internet search. |
+| File / retrieval search | `'file_search'` | Query vector stores hosted on OpenAI. |
+| Code Interpreter | `'code_interpreter'` | Run code in a sandboxed environment. |
+| Image generation | `'image_generation'` | Generate images based on text. |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
 The SDK provides helper functions that return hosted tool definitions:
 
-| Helper function                 | Notes                                                                                                                                                                                               |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `webSearchTool(options?)`       | JS-friendly options such as `searchContextSize`, `userLocation`, and `filters.allowedDomains`.                                                                                                      |
-| `fileSearchTool(ids, options?)` | Accepts one or more vector store IDs as the first argument, plus options like `maxNumResults`, `includeSearchResults`, `rankingOptions`, and filters.                                               |
-| `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided.                                                                                                                              |
+| Helper function | Notes |
+| --- | --- |
+| `webSearchTool(options?)` | JS-friendly options such as `searchContextSize`, `userLocation`, and `filters.allowedDomains`. |
+| `fileSearchTool(ids, options?)` | Accepts one or more vector store IDs as the first argument, plus options like `maxNumResults`, `includeSearchResults`, `rankingOptions`, and filters. |
+| `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided. |
 | `imageGenerationTool(options?)` | Supports image generation configuration such as `model`, `size`, `quality`, `background`, `inputFidelity`, `inputImageMask`, `moderation`, `outputCompression`, `partialImages`, and output format. |
 
-These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool
-payloads. Refer to the official OpenAI documentation for the full tool schemas and advanced options like
-ranking options or semantic filters.
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters.
 
 ---
 
@@ -68,8 +66,7 @@ These tools are built into the SDK, but execution happens outside the model resp
 - **Shell** – either provide a local `Shell` implementation, or configure a hosted container environment with `shellTool({ environment })`.
 - **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`. This always runs against a local `Editor` implementation that you provide.
 
-The tool calls are still requested by the model, but your application or configured execution
-environment performs the work.
+The tool calls are still requested by the model, but your application or configured execution environment performs the work.
 
 <Code
   lang="typescript"
@@ -85,8 +82,7 @@ environment performs the work.
 - An initializer function that creates a `Computer` per run.
 - A provider object with `{ create, dispose }` when you need run-scoped setup and teardown.
 
-Use `needsApproval` when computer actions should pause for user review, and `onSafetyCheck` when
-you want to acknowledge or reject pending safety checks raised during a computer action.
+Use `needsApproval` when computer actions should pause for user review, and `onSafetyCheck` when you want to acknowledge or reject pending safety checks raised during a computer action.
 
 #### Shell tool specifics
 
@@ -109,16 +105,13 @@ Hosted `container_auto` environments support:
 - `memoryLimit` for container sizing.
 - `skills`, either by `skill_reference` or inline zip bundles.
 
-Hosted shell environments do not accept `shell`, `needsApproval`, or `onApproval`, because the
-execution happens in the hosted container environment instead of your local process.
+Hosted shell environments do not accept `shell`, `needsApproval`, or `onApproval`, because the execution happens in the hosted container environment instead of your local process.
 
-See `examples/tools/local-shell.ts`, `examples/tools/container-shell-skill-ref.ts`, and
-`examples/tools/container-shell-inline-skill.ts` for end-to-end usage.
+See `examples/tools/local-shell.ts`, `examples/tools/container-shell-skill-ref.ts`, and `examples/tools/container-shell-inline-skill.ts` for end-to-end usage.
 
 #### Apply-patch tool specifics
 
-`applyPatchTool()` mirrors the local approval flow from `shellTool()`: use `needsApproval` to pause
-before file edits and `onApproval` when you want an app-level callback to auto-approve or reject.
+`applyPatchTool()` mirrors the local approval flow from `shellTool()`: use `needsApproval` to pause before file edits and `onApproval` when you want an app-level callback to auto-approve or reject.
 
 ---
 
@@ -134,21 +127,21 @@ You can turn **any** function into a tool with the `tool()` helper.
 
 #### Options reference
 
-| Field                  | Required | Description                                                                                                                                                                                                                                           |
-| ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                 | No       | Defaults to the function name (e.g., `get_weather`).                                                                                                                                                                                                  |
-| `description`          | Yes      | Clear, human-readable description shown to the LLM.                                                                                                                                                                                                   |
-| `parameters`           | Yes      | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode.                                                                                                                                                 |
-| `strict`               | No       | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching.                                                                                                                              |
-| `execute`              | Yes      | `(args, context, details) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. `context` is optional `RunContext`; `details` includes metadata like `toolCall`, `resumeState`, and `signal`. |
-| `errorFunction`        | No       | Custom handler `(context, error) => string` for transforming internal errors into a user-visible string.                                                                                                                                              |
-| `timeoutMs`            | No       | Per-call timeout in milliseconds. Must be greater than 0 and less than or equal to `2147483647`.                                                                                                                                                      |
-| `timeoutBehavior`      | No       | Timeout mode: `error_as_result` (default) returns a model-visible timeout message, and `raise_exception` throws `ToolTimeoutError`.                                                                                                                   |
-| `timeoutErrorFunction` | No       | Custom handler `(context, timeoutError) => string` for timeout output when `timeoutBehavior` is `error_as_result`.                                                                                                                                    |
-| `needsApproval`        | No       | Require human approval before execution. See the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop).                                                                                                                               |
-| `isEnabled`            | No       | Conditionally expose the tool per run; accepts a boolean or predicate.                                                                                                                                                                                |
-| `inputGuardrails`      | No       | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                                                                                             |
-| `outputGuardrails`     | No       | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails).                                                                                                              |
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | No | Defaults to the function name (e.g., `get_weather`). |
+| `description` | Yes | Clear, human-readable description shown to the LLM. |
+| `parameters` | Yes | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode. |
+| `strict` | No | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching. |
+| `execute` | Yes | `(args, context, details) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. `context` is optional `RunContext`; `details` includes metadata like `toolCall`, `resumeState`, and `signal`. |
+| `errorFunction` | No | Custom handler `(context, error) => string` for transforming internal errors into a user-visible string. |
+| `timeoutMs` | No | Per-call timeout in milliseconds. Must be greater than 0 and less than or equal to `2147483647`. |
+| `timeoutBehavior` | No | Timeout mode: `error_as_result` (default) returns a model-visible timeout message, and `raise_exception` throws `ToolTimeoutError`. |
+| `timeoutErrorFunction` | No | Custom handler `(context, timeoutError) => string` for timeout output when `timeoutBehavior` is `error_as_result`. |
+| `needsApproval` | No | Require human approval before execution. See the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop). |
+| `isEnabled` | No | Conditionally expose the tool per run; accepts a boolean or predicate. |
+| `inputGuardrails` | No | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
+| `outputGuardrails` | No | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 
 #### Function tool timeouts
 
@@ -163,8 +156,7 @@ If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agent
 
 #### Non‑strict JSON‑schema tools
 
-If you need the model to _guess_ invalid or partial input you can disable strict mode when using
-raw JSON schema:
+If you need the model to _guess_ invalid or partial input you can disable strict mode when using raw JSON schema:
 
 <Code
   lang="typescript"
@@ -177,6 +169,8 @@ raw JSON schema:
 ### 4. Agents as tools
 
 Sometimes you want an Agent to _assist_ another Agent without fully handing off the conversation. Use `agent.asTool()`:
+
+If you are still choosing between `agent.asTool()` and `handoff()`, compare the patterns in the [Agents guide](/openai-agents-js/guides/agents#composition-patterns) and [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
 <Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
 
@@ -225,13 +219,11 @@ Agent tools can stream all nested run events back to your app. Choose the hook s
 
 ### 5. MCP servers
 
-You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent.
-For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:
+You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent. For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:
 
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
-See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example. Also, if you're looking for a comprehensitve guide for MCP server tool integration, refer to [MCP guide](/openai-agents-js/guides/mcp) for details.
-When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
+See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) for a complete example. Also, if you're looking for a comprehensitve guide for MCP server tool integration, refer to [MCP guide](/openai-agents-js/guides/mcp) for details. When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
 
 ---
 
@@ -281,8 +273,7 @@ Run-context thread reuse example:
 
 ### Tool use behavior
 
-Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) for controlling when and how a model
-must use tools (`modelSettings.toolChoice`, `toolUseBehavior`, etc.).
+Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) for controlling when and how a model must use tools (`modelSettings.toolChoice`, `toolUseBehavior`, etc.).
 
 ---
 
@@ -295,8 +286,11 @@ must use tools (`modelSettings.toolChoice`, `toolUseBehavior`, etc.).
 
 ---
 
-## Next steps
+## Related guides
 
-- Learn about [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use).
-- Add [guardrails](/openai-agents-js/guides/guardrails) to validate tool inputs or outputs.
+- [Agents](/openai-agents-js/guides/agents) for defining tool-bearing agents and controlling `toolUseBehavior`.
+- [Agent orchestration](/openai-agents-js/guides/multi-agent) for deciding when to use agents as tools versus handoffs.
+- [Running agents](/openai-agents-js/guides/running-agents) for execution flow, streaming, and conversation state.
+- [Models](/openai-agents-js/guides/models) for hosted OpenAI model configuration and Responses transport choices.
+- [Guardrails](/openai-agents-js/guides/guardrails) to validate tool inputs or outputs.
 - Dive into the TypeDoc reference for [`tool()`](/openai-agents-js/openai/agents/functions/tool) and the various hosted tool types.
