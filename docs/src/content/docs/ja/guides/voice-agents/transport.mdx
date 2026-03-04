@@ -3,23 +3,7 @@ title: リアルタイムトランスポート
 description: Learn about the different transport layers that can be used with Realtime Agents.
 ---
 
-import { Steps } from '@astrojs/starlight/components';
-import { Code } from '@astrojs/starlight/components';
-
-import createAgentExample from '../../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
-import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../../examples/docs/voice-agents/createSession.ts?raw';
-import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
-import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import { Aside, Code } from '@astrojs/starlight/components';
 import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
 import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
 import sipTransportExample from '../../../../../../../examples/docs/voice-agents/sipTransport.ts?raw';
@@ -27,62 +11,90 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
+セッションをどこで実行するか、およびどの程度まで元のメディアやイベントを制御したいかに応じて、トランスポートを選択します。
+
+| シナリオ | 推奨トランスポート | 理由 |
+| --- | --- | --- |
+| ブラウザの speech-to-speech アプリ | `OpenAIRealtimeWebRTC` | 最も導入しやすい経路です。SDK がマイク入力、再生、WebRTC 接続を管理します。 |
+| サーバーサイドの音声ループまたはカスタム音声パイプライン | `OpenAIRealtimeWebSocket` | すでに音声の録音/再生を制御していて、イベントへ直接アクセスしたい場合に適しています。 |
+| SIP または電話ブリッジ | `OpenAIRealtimeSIP` | `callId` により、SIP 起点の既存 Realtime 通話に `RealtimeSession` を接続します。 |
+| Cloudflare Workers / workerd | Cloudflare 拡張トランスポート | workerd ではグローバル `WebSocket` コンストラクターで外向き WebSocket を開けません。 |
+| Twilio でのプロバイダー固有の電話フロー | Twilio 拡張トランスポート | Twilio の音声転送と割り込み挙動を処理します。 |
+
+<Aside type="note">
+  ブラウザ向けプロダクトを構築していて、自分で元の音声を管理する理由がない場合は、
+  WebRTC から始めてください。サーバー上で実行する場合や、別のメディアシステムを
+  ブリッジする場合は、WebSocket または SIP から始めてください。
+</Aside>
+
 ## デフォルトのトランスポート層
 
-### WebRTC 経由での接続
+### WebRTC はブラウザでのデフォルト選択肢
 
-デフォルトのトランスポート層は WebRTC を使用します。音声はマイクから録音され、自動的に再生されます。
+デフォルトのブラウザトランスポートは WebRTC を使用します。音声はマイクから自動で取得され、自動で再生されます。そのため [クイックスタート](/openai-agents-js/guides/voice-agents/quickstart) では、一時トークンと `session.connect(...)` だけで接続できます。
 
-独自のメディアストリームや audio 要素を使用するには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
+この経路では、`session.connect()` は解決前に初期セッション設定が `session.updated` で確認されるまで待機を試みるため、音声が流れ始める前に instructions と tools が適用されます。確認イベントが届かない場合でも、タイムアウトのフォールバックがあります。
+
+独自のメディアストリームまたはオーディオ要素を使うには、セッション作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-より低レベルなカスタマイズのために、`OpenAIRealtimeWebRTC` は `changePeerConnection` も受け付けます。これにより、オファー生成前に新規作成された `RTCPeerConnection` を検査または置換できます。
+より低レベルなカスタマイズとして、`OpenAIRealtimeWebRTC` は `changePeerConnection` も受け付けます。これにより、offer 生成前に新規作成された `RTCPeerConnection` を検査または置き換えできます。
 
-### WebSocket 経由での接続
+### WebSocket はサーバーでのデフォルト選択肢
 
-セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡すことで、WebRTC の代わりに WebSocket 接続を使用できます。これは Twilio で電話エージェントを構築するなど、サーバー側のユースケースで有効です。
+セッション作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` インスタンスを渡すと、WebRTC の代わりに WebSocket 接続を使用します。これはサーバーサイドのユースケース、電話ブリッジ、カスタム音声パイプラインに適しています。
+
+WebSocket 経路では、`session.connect()` はソケットが開き初期設定が送信された時点で解決されます。対応する `session.updated` イベントはわずかに遅れて届く場合があるため、`connect()` が完了した時点でその更新がすでに反映済みとは限りません。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-任意の録音/再生ライブラリを使用して、元の PCM16 オーディオバイトを処理します。
+元の PCM16 音声バイトの処理には、任意の録音/再生ライブラリを使用してください。
 
-高度な統合のために、`OpenAIRealtimeWebSocket` は `createWebSocket()` を受け付けるため、独自のソケット実装を供給できます。また、カスタムコネクタがソケットを接続状態に遷移させる責務を持つ場合は `skipOpenEventListeners` を使用します。`@openai/agents-extensions` の Cloudflare トランスポートは、これらのフック上に構築されています。
+高度な統合向けに、`OpenAIRealtimeWebSocket` は `createWebSocket()` を受け付けるため独自のソケット実装を指定できます。また、カスタムコネクター側でソケットを接続状態へ遷移させる場合は `skipOpenEventListeners` を使えます。`@openai/agents-extensions` の Cloudflare トランスポートはこれらのフックを基盤にしています。
 
-### SIP 経由での接続
+### SIP は通話プロバイダーと電話ブリッジ向け
 
-`OpenAIRealtimeSIP` トランスポートを使用して、Twilio などのプロバイダーからの SIP 通話をブリッジします。トランスポートは、テレフォニー・プロバイダーが発行する SIP イベントと Realtime セッションを同期させます。
+既存の SIP 起点 Realtime 通話に `RealtimeSession` を接続したい場合は `OpenAIRealtimeSIP` を使用します。これは薄い SIP 対応トランスポートです。音声は SIP 通話自体で処理され、SDK セッションは `callId` で接続します。
 
-1. `OpenAIRealtimeSIP.buildInitialConfig()` で初期セッション構成を生成して、着信を受け入れます。これにより、SIP 招待と Realtime セッションが同一のデフォルトを共有します
-2. `OpenAIRealtimeSIP` トランスポートを使用する `RealtimeSession` をアタッチし、プロバイダーの Webhook によって発行された `callId` で接続します
-3. セッションイベントをリッスンして、通話分析、文字起こし、またはエスカレーションロジックを駆動します
+1. `OpenAIRealtimeSIP.buildInitialConfig()` で初期セッション設定を生成して着信を受け付けます。これにより SIP 招待と後続の SDK セッションが同じデフォルト設定で開始されます。
+2. `OpenAIRealtimeSIP` トランスポートを使う `RealtimeSession` を接続し、プロバイダー webhook が発行した `callId` で接続します。
+3. プロバイダー固有のメディア転送やイベントブリッジが必要な場合は、Twilio 拡張などの統合トランスポートを使用します。
 
 <Code lang="typescript" code={sipTransportExample} />
 
-#### Cloudflare Workers（workerd）の注意事項
+### Cloudflare Workers と workerd
 
-Cloudflare Workers やその他の workerd ランタイムは、グローバルな `WebSocket` コンストラクタを使用してアウトバウンド WebSocket を開くことができません。拡張パッケージの Cloudflare トランスポートを使用してください。これは内部で `fetch()` ベースのアップグレードを実行します。
+Cloudflare Workers や他の workerd ランタイムでは、グローバル `WebSocket` コンストラクターを使って外向き WebSocket を開くことはできません。拡張パッケージの Cloudflare トランスポートを使用してください。内部で `fetch()` ベースの upgrade を実行します。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### 独自トランスポート機構の構築
+完全な設定は [Cloudflare 上の Realtime Agent](/openai-agents-js/extensions/cloudflare) を参照してください。
 
-別の音声対音声 API を使用したい場合や、独自のカスタムトランスポート機構を持っている場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを発火することで独自に作成できます。
+### Twilio 電話通話
 
-## Realtime API へのより直接的なアクセス
+`RealtimeSession` は、生の WebSocket か `@openai/agents-extensions` の専用 Twilio トランスポートのいずれかで Twilio に接続できます。Twilio Media Streams 向けの割り込みタイミングと音声転送を SDK に処理させたい場合、専用トランスポートがより適したデフォルトです。
 
-OpenAI Realtime API を使用しつつ、より直接的に Realtime API にアクセスしたい場合は、次の 2 つのオプションがあります。
+完全な設定は [Twilio 上の Realtime Agent](/openai-agents-js/extensions/twilio) を参照してください。
+
+### 独自トランスポートの利用
+
+別の speech-to-speech API を使いたい場合や独自のカスタムトランスポート機構がある場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを自分で発行できます。
+
+## 必要時の元 Realtime イベントへのアクセス
+
+基盤となる Realtime API により直接アクセスしたい場合、方法は 2 つあります。
 
 ### オプション 1 - トランスポート層へのアクセス
 
-`RealtimeSession` のあらゆる機能の恩恵を受けたい場合は、`session.transport` を介してトランスポート層にアクセスできます。
+`RealtimeSession` の機能を活かしたまま使いたい場合は、`session.transport` からトランスポート層にアクセスできます。
 
-トランスポート層は受信したあらゆるイベントを `*` イベントの下で発火し、`sendEvent()` メソッドを使用して元のイベントを送信できます。
+トランスポート層は受信したすべてのイベントを `*` イベントとして発行し、`sendEvent()` で元イベントを送信できます。これは `session.update`、`response.create`、`response.cancel` など低レベル操作のためのエスケープハッチです。
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### オプション 2 — トランスポート層のみの使用
+### オプション 2 - トランスポート層のみの利用
 
-自動ツール実行やガードレールなどが不要な場合は、接続と割り込みのみを管理する「薄い」クライアントとしてトランスポート層を使用できます。
+自動ツール実行、ガードレール、またはローカル履歴管理が不要な場合は、接続と割り込みのみを管理する「薄い」クライアントとしてトランスポート層だけを利用することもできます。
 
 <Code lang="typescript" code={thinClientExample} />

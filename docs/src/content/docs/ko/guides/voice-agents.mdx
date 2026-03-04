@@ -3,60 +3,63 @@ title: 음성 에이전트 개요
 description: Build realtime voice assistants using RealtimeAgent and RealtimeSession
 ---
 
-import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
-import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
-import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
-import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
-import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
-import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
-import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ## 개요
 
-![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+![실시간 에이전트](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-음성 에이전트는 OpenAI 음성-대-음성 모델을 사용해 실시간 음성 채팅을 제공합니다. 이들 모델은 오디오, 텍스트, 도구 호출의 스트리밍을 지원하며, 음성/전화 고객 지원, 모바일 앱 경험, 음성 채팅 같은 애플리케이션에 적합합니다.
+음성 에이전트를 사용하면 OpenAI speech-to-speech 모델 위에서 저지연 음성 인터페이스를 구축할 수 있습니다. SDK는 Realtime API의 멘탈 모델은 그대로 유지하면서, 원문 이벤트 흐름을 `RealtimeAgent`, `RealtimeSession`, 전송 헬퍼로 감싸 도구, 가드레일, 핸드오프, 세션 기록을 더 쉽게 다룰 수 있게 해줍니다.
 
-Voice Agents SDK는 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)를 위한 TypeScript 클라이언트를 제공합니다.
+내부적으로는 공식 가이드인 [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/)의 동일한 Realtime 개념이 그대로 적용됩니다. 음성 에이전트 SDK는 이 API 위에 TypeScript 우선 계층을 추가해, 전송 및 이벤트 처리를 처음부터 다시 구현하는 대신 제품 로직에 집중할 수 있게 합니다.
 
-## 시작하기
+<Aside type="note">
+  브라우저 클라이언트를 WebRTC로 연결하는 경우 먼저 빠른 시작부터 확인하세요.
+  WebRTC, WebSocket, SIP, Twilio, Cloudflare Workers 중에서 선택 중이라면 먼저
+  전송 방식 가이드를 확인하세요.
+</Aside>
+
+## 시작 지점
 
 <LinkCard
   title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="OpenAI Agents SDK를 사용해 몇 분 만에 첫 실시간 음성 어시스턴트를 구축하세요."
+  description="OpenAI Agents SDK를 사용해 몇 분 안에 첫 실시간 음성 어시스턴트를 구축하세요."
 />
 
-## 주요 기능
+<LinkCard
+  title="음성 에이전트 구축"
+  href="/openai-agents-js/ko/guides/voice-agents/build"
+  description="SDK에서 세션 수명 주기, VAD, 인터럽션(중단 처리), 멀티모달 입력, 도구, 기록이 동작하는 방식을 알아보세요."
+/>
 
-- WebSocket 또는 WebRTC로 연결
-- 브라우저와 백엔드 연결 모두에서 사용 가능
-- 오디오 및 인터럽션(중단 처리) 처리
-- 핸드오프를 통한 멀티 에이전트 오케스트레이션
-- 도구 정의 및 호출
-- 모델 출력을 모니터링하는 커스텀 가드레일
-- 스트리밍 이벤트 콜백
-- 텍스트 및 음성 에이전트 모두에서 동일한 컴포넌트 재사용
+<LinkCard
+  title="전송 방식"
+  href="/openai-agents-js/ko/guides/voice-agents/transport"
+  description="WebRTC, WebSocket, SIP 또는 커스텀 전송 중에서 선택하고, 언제 원문 이벤트로 내려가야 하는지 파악하세요."
+/>
 
-## 음성 가이드 살펴보기
+## SDK 추가 기능
 
-- 세션 설정, 도구, 가드레일, 인터럽션, 히스토리 관리를 위한 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build)
-- WebRTC/WebSocket/SIP 전송 선택과 커스텀 전송을 위한 [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport)
+- 임시 클라이언트 토큰을 사용하는 브라우저 우선 WebRTC 설정
+- 서버 측 WebSocket 및 SIP 전송 옵션
+- 자동 인터럽션(중단 처리) 처리 및 로컬 대화 기록 자동 업데이트
+- 실시간 핸드오프를 통한 다중 에이전트 오케스트레이션
+- 함수 도구, 호스티드 MCP 도구, 승인 및 위임 패턴
+- 실시간 음성 상호작용을 위한 출력 가드레일 및 트레이싱 지원
 
-## 음성-대-음성 사용 이유
+## 다음 페이지 선택
 
-음성-대-음성 모델을 사용하면, 모델이 동작한 후 텍스트로 전사하고 다시 오디오로 재변환할 필요 없이 오디오를 실시간으로 처리하는 모델의 능력을 활용할 수 있습니다.
+| 다음이 필요하다면... | 이동할 곳 |
+| --- | --- |
+| WebRTC와 임시 토큰으로 브라우저 클라이언트를 안전하게 연결 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |
+| 세션 수명 주기, VAD, 인터럽션(중단 처리), 이미지 입력, 도구, 기록 이해 | [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build) |
+| WebRTC, WebSocket, SIP, 커스텀 전송 중 선택 | [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport) |
+| Twilio에서 전화/텔레포니 경험 실행 | [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio) |
+| Cloudflare Workers 또는 다른 workerd 런타임에서 연결 | [Cloudflare용 Realtime 에이전트](/openai-agents-js/ko/extensions/cloudflare) |
 
-![음성-대-음성 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+## speech-to-speech 필요성
+
+speech-to-speech 모델은 사용자 오디오를 직접 처리하므로, 매 턴마다 별도의 speech-to-text, 텍스트 추론, text-to-speech 체인을 구축할 필요가 없습니다. 이를 통해 지연 시간을 줄이고, 실시간 애플리케이션에서 인터럽션(중단 처리), 텍스트와 음성 혼합 입력, 도구 호출이 훨씬 자연스럽게 느껴지도록 합니다.
+
+![Speech-to-speech 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

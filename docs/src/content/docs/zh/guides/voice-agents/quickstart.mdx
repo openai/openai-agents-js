@@ -8,9 +8,9 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 <Aside type="note">
   本快速开始使用
-  `@openai/agents`，这是大多数应用推荐的默认选项。如果你更倾向于使用独立的
-  Realtime 包，请安装 `@openai/agents-realtime`，并将下面示例中从
-  `@openai/agents/realtime` 导入的内容替换为 `@openai/agents-realtime`。
+  `@openai/agents`，这是大多数应用推荐的默认包。如果你更偏好独立的 Realtime
+  包，请安装 `@openai/agents-realtime`，并将下方示例中从
+  `@openai/agents/realtime` 的导入替换为 `@openai/agents-realtime`。
 </Aside>
 
 ## 项目设置与凭据
@@ -19,7 +19,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 1. **创建项目**
 
-   在本快速开始中，我们将创建一个可在浏览器中使用的语音智能体。如果你想体验一个新项目，可以试试 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html)。
+   在本快速开始中，我们将创建一个可在浏览器中使用的语音智能体。如果你想快速搭建一个新项目，可以从 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html) 开始。
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -33,7 +33,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 3. **生成客户端临时令牌**
 
-   由于该应用将在用户浏览器中运行，我们需要一种安全方式通过 Realtime API 连接到模型。为此，可以使用应在后端服务器生成的[临时客户端密钥](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token)。出于测试目的，你也可以使用 `curl` 和常规 OpenAI API 密钥生成一个密钥。
+   由于此应用将在用户浏览器中运行，我们需要一种安全方式通过 Realtime API 连接到模型。推荐流程与官方 [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/) 指南一致：你的后端创建一个短期有效的临时客户端令牌，然后浏览器使用该令牌建立 WebRTC 连接。出于测试目的，你也可以使用 `curl` 和常规 OpenAI API key 生成令牌。
 
    ```bash
    export OPENAI_API_KEY="sk-proj-...(your own key here)"
@@ -48,17 +48,21 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
       }'
    ```
 
-   响应包含一个顶层 `value` 字段（以 `ek_` 前缀开头），以及生效的
-   `session` 对象。建立 WebRTC
-   连接时，请将 `value` 用作客户端密钥。该令牌有效期较短，因此后端应在需要时签发新的令牌。
+   响应包含一个顶层 `value` 字段（以 `ek_` 前缀开头），以及生效的 `session` 对象。建立 WebRTC 连接时，请将 `value` 用作客户端密钥。该令牌生命周期很短，因此后端应在需要时签发新的令牌。如果你的浏览器会话需要带有 `authorization` 或自定义 `headers` 的远程 MCP 服务器工具，请将该托管 MCP 配置放在服务端发送到 `POST /v1/realtime/client_secrets` 的 `session` 负载中，而不是在浏览器代码中暴露这些凭据。
 
 </Steps>
 
-## 语音智能体创建与连接
+<Aside type="note">
+  生产环境浏览器流程：浏览器向后端请求新的临时令牌，后端使用服务器 API key 调用
+  `POST /v1/realtime/client_secrets`，浏览器再将返回的 `ek_...` 令牌传给
+  `session.connect(...)`。
+</Aside>
+
+## 语音智能体的创建与连接
 
 <Steps>
 
-1. **创建你的第一个 Agent**
+1. **创建第一个 Agent**
 
    创建新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
 
@@ -73,7 +77,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **创建会话**
 
-   与常规智能体不同，语音智能体会在 `RealtimeSession` 中持续运行并监听；该会话会持续处理对话以及与模型的连接。这个会话还会处理音频处理、中断，以及我们稍后会介绍的许多其他生命周期功能。
+   与常规智能体不同，语音智能体会持续运行在 `RealtimeSession` 中，由它负责会话处理以及随时间与模型保持连接。该会话还管理音频处理、中断以及你稍后会配置的更完整会话生命周期。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -83,31 +87,37 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
    });
    ```
 
-   `RealtimeSession` 构造函数的第一个参数是 `agent`。这个智能体将是用户最先可以交互的智能体。
+   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。这个智能体将是用户首先交互的对象。
 
 3. **连接到会话**
 
-   要连接到会话，你需要传入之前生成的客户端临时令牌。
+   要连接到会话，你需要传入此前生成的客户端临时令牌。
 
    ```typescript
    await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
-   这会在浏览器中通过 WebRTC 连接到 Realtime API，并自动配置麦克风和扬声器用于音频输入与输出。如果你是在后端服务器（如 Node.js）上运行 `RealtimeSession`，SDK 会自动使用 WebSocket 连接。你可以在[Realtime 传输层](/openai-agents-js/zh/guides/voice-agents/transport)指南中了解不同传输层的更多信息。
+   在浏览器中，这会通过 WebRTC 连接到 Realtime API，并自动为你配置麦克风采集和音频播放。在默认 WebRTC 路径下，SDK 会在数据通道打开后立即发送初始会话配置，并在 `connect()` 解析前尽量等待对应的 `session.updated` 确认；如果确认始终未到达，则会超时回退。如果你在 Node.js 等服务器运行时中运行 `RealtimeSession`，SDK 会自动回退到 WebSocket；在 WebSocket 路径下，`connect()` 会在套接字打开且初始配置发送后解析，因此 `session.updated` 可能稍后才到达。你可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中了解更多传输方式选择。
 
 </Steps>
+
+<Aside type="note">
+  如果你希望对对等连接或原始传输事件进行更底层控制，请参阅
+  [`examples/realtime-next` 中的 `/raw-client`
+  示例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)。
+</Aside>
 
 ## 应用运行与测试
 
 <Steps>
 
-1. **整合所有内容**
+1. **整体集成**
 
    <Code lang="typescript" code={helloWorldExample} />
 
-2. **启动并开始对话**
+2. **启动应用并开始对话**
 
-   启动你的 Web 服务器，并访问包含新 Realtime Agent 代码的页面。你应该会看到麦克风访问请求。授予访问权限后，你就可以开始与智能体对话了。
+   启动你的 Web 服务器并打开包含新 Realtime Agent 代码的页面。你应会看到麦克风权限请求。授予访问权限后，你就可以开始与你的智能体对话了。
 
    ```bash
    npm run dev
@@ -120,5 +130,6 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 接下来，你可以开始设计并构建自己的语音智能体：
 
 - 添加[工具](/openai-agents-js/zh/guides/voice-agents/build#tools)、[交接](/openai-agents-js/zh/guides/voice-agents/build#handoffs)和[护栏](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
-- 学习如何[处理音频中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)以及[管理会话历史](/openai-agents-js/zh/guides/voice-agents/build#conversation-history-management)。
-- 为你的部署选择合适的传输方式：[WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#connecting-over-webrtc)、[WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#connecting-over-websocket)或[自定义传输机制](/openai-agents-js/zh/guides/voice-agents/transport#building-your-own-transport-mechanism)。
+- 了解[轮次检测与语音活动检测](/openai-agents-js/zh/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)以及[手动响应控制](/openai-agents-js/zh/guides/voice-agents/build#manual-response-control)如何影响对话循环。
+- 添加[文本输入](/openai-agents-js/zh/guides/voice-agents/build#text-input)、[图像输入](/openai-agents-js/zh/guides/voice-agents/build#image-input)和[会话历史管理](/openai-agents-js/zh/guides/voice-agents/build#conversation-history-management)。
+- 为你的部署选择合适的传输方式：[WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#webrtc-is-the-default-browser-choice)、[WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#websocket-is-the-default-server-choice)或[自定义传输](/openai-agents-js/zh/guides/voice-agents/transport#bring-your-own-transport)。

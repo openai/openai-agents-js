@@ -3,35 +3,23 @@ title: 语音智能体概述
 description: Build realtime voice assistants using RealtimeAgent and RealtimeSession
 ---
 
-import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
-import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
-import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
-import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
-import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
-import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
-import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
+import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ## 概述
 
 ![实时智能体](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-语音智能体使用 OpenAI 的语音到语音模型，提供实时语音聊天。这些模型支持音频、文本与工具调用的流式传输，非常适合用于语音/电话客服、移动应用体验与语音聊天等场景。
+语音智能体让您可以基于 OpenAI speech-to-speech 模型构建低延迟的语音交互界面。SDK 保留了 Realtime API 的心智模型，但通过 `RealtimeAgent`、`RealtimeSession` 和传输辅助工具封装了原始事件流，使工具、护栏、交接和会话历史更易于使用。
 
-Voice Agents SDK 为 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) 提供 TypeScript 客户端。
+在底层，官方指南 [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、[Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/) 和 [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) 中的同一套 Realtime 概念仍然适用。语音智能体 SDK 在该 API 之上增加了 TypeScript 优先的一层，让您可以专注于产品逻辑，而不是从零重建传输与事件处理。
 
-## 从这里开始
+<Aside type="note">
+  如果您要用 WebRTC 连接浏览器客户端，请先从快速开始开始。 如果您正在
+  WebRTC、WebSocket、SIP、Twilio 或 Cloudflare Workers 之间做选择，
+  请先阅读传输机制指南。
+</Aside>
+
+## 入门导航
 
 <LinkCard
   title="快速开始"
@@ -39,24 +27,39 @@ Voice Agents SDK 为 [OpenAI Realtime API](https://platform.openai.com/docs/guid
   description="几分钟内使用 OpenAI Agents SDK 构建您的第一个实时语音助手。"
 />
 
-## 关键特性
+<LinkCard
+  title="构建语音智能体"
+  href="/openai-agents-js/zh/guides/voice-agents/build"
+  description="了解 SDK 中的会话生命周期、VAD、中断、多模态输入、工具和历史记录如何工作。"
+/>
 
-- 通过 WebSocket 或 WebRTC 连接
-- 既可在浏览器端使用，也可用于后端连接
-- 音频与打断处理
-- 通过交接实现多智能体编排
-- 工具定义与调用
-- 自定义护栏以监控模型输出
-- 流式事件回调
-- 复用相同组件于文本与语音智能体
+<LinkCard
+  title="传输机制"
+  href="/openai-agents-js/zh/guides/voice-agents/transport"
+  description="在 WebRTC、WebSocket、SIP 或自定义传输之间进行选择，并了解何时下探到原始事件层。"
+/>
 
-## 浏览语音指南
+## SDK 的增强能力
 
-- [构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build)：涵盖会话设置、工具、护栏、打断与历史记录管理。
-- [传输机制](/openai-agents-js/zh/guides/voice-agents/transport)：介绍 WebRTC/WebSocket/SIP 的传输选择与自定义传输。
+- 面向浏览器优先的 WebRTC 配置，支持临时客户端令牌。
+- 服务端 WebSocket 与 SIP 传输选项。
+- 自动处理中断并更新本地会话历史。
+- 通过实时交接实现多智能体编排。
+- 函数工具、远程 MCP 服务器工具、审批和委派模式。
+- 为实时语音交互提供输出护栏与追踪支持。
 
-## 为什么选择语音到语音
+## 下一页选择
 
-通过使用语音到语音模型，我们可以在无需先转写为文本并在模型响应后再转换回音频的情况下，直接利用模型对音频进行实时处理的能力。
+| 如果您需要…… | 前往 |
+| --- | --- |
+| 使用 WebRTC 和临时令牌安全连接浏览器客户端 | [快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart) |
+| 理解会话生命周期、VAD、中断、图像输入、工具和历史记录 | [构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build) |
+| 在 WebRTC、WebSocket、SIP 和自定义传输之间做选择 | [传输机制](/openai-agents-js/zh/guides/voice-agents/transport) |
+| 在 Twilio 上运行电话或语音通信体验 | [Twilio 上的实时智能体](/openai-agents-js/zh/extensions/twilio) |
+| 从 Cloudflare Workers 或其他 workerd 运行时连接 | [Cloudflare 上的实时智能体](/openai-agents-js/zh/extensions/cloudflare) |
 
-![语音到语音模型](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+## 选择 speech-to-speech 的原因
+
+speech-to-speech 模型会直接处理用户音频，因此您不必为每一轮都构建独立的语音转文本、文本推理和文本转语音链路。这可以降低延迟，并让中断、文本与语音混合输入以及工具调用在实时应用中显得更加自然。
+
+![Speech-to-speech 模型](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
