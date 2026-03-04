@@ -34,6 +34,32 @@ Use local context for things like:
   read from or write to it freely.
 </Aside>
 
+Within a single run, derived contexts share the same underlying app context, approvals, and usage tracking. Nested `agent.asTool()` runs may attach a different `toolInput`, but they do not get an isolated copy of your app state by default.
+
+### What `RunContext` exposes
+
+`RunContext<T>` is a wrapper around your app-defined context object. In practice you will most often use:
+
+- `runContext.context` for your own mutable app state and dependencies.
+- `runContext.usage` for the aggregated token/request usage of the current run.
+- `runContext.toolInput` for structured input when the current run is executing inside `agent.asTool()`.
+- `runContext.approveTool(...)` / `runContext.rejectTool(...)` when you need to update approval state programmatically.
+
+Only `runContext.context` is your app-defined object. The other fields are runtime metadata managed by the SDK.
+
+If you later serialize a [`RunState`](/openai-agents-js/guides/results#state) for [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop), that runtime metadata is saved with the state. Avoid putting secrets in `runContext.context` if you intend to persist or transmit serialized state.
+
+<Aside type="note">
+  `RunContext` is about local app state for the current run. Conversation state
+  is a separate concern: use `result.history`, `session`, `conversationId`, or
+  `previousResponseId` depending on how you want to carry turns forward. See
+  [Running
+  agents](/openai-agents-js/guides/running-agents#state-and-conversation-management)
+  for that decision.
+</Aside>
+
+If you subclass `RunContext`, verify that nested or derived runs still preserve any subclass-specific instance state you rely on. The SDK creates forked contexts internally during nested runs.
+
 ## Agent/LLM context
 
 When the LLM is called, the only data it can see comes from the conversation history. To make additional information available you have a few options:

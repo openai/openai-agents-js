@@ -15,6 +15,16 @@ There are two kinds of guardrails:
 1. **Input guardrails** run on the initial user input.
 2. **Output guardrails** run on the final agent output.
 
+## Workflow boundaries
+
+Guardrails are attached to agents, but they do not necessarily run on every agent in a workflow:
+
+- **Input guardrails** run only for the first agent in the chain.
+- **Output guardrails** run only for the agent that produces the final output.
+- **Tool guardrails** run on every function-tool invocation, with input guardrails before execution and output guardrails after execution.
+
+If you need checks around each custom function-tool call in a workflow that includes managers or handoffs, use **tool guardrails** instead of agent-level input/output guardrails.
+
 ## Input guardrails
 
 Input guardrails run in three steps:
@@ -23,8 +33,7 @@ Input guardrails run in three steps:
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult).
 3. If `tripwireTriggered` is `true`, an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) error is thrown.
 
-> **Note**
-> Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
+> **Note** Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
 
 ### Execution modes
 
@@ -39,12 +48,15 @@ Output guardrails run in 3 steps:
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
 3. If `tripwireTriggered` is `true`, an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error is thrown.
 
-> **Note**
-> Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime voice interactions see [the voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
+> **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime voice interactions see [the voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
+
+Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
 
 ## Tool guardrails
 
-Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. They are configured on the tool itself (via `tool()` options) and run for every tool invocation.
+Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. They are configured on the tool itself (via `tool()` options) and run for every invocation of that tool.
+
+In practice, this means custom function tools where you set `inputGuardrails` and/or `outputGuardrails` on `tool({...})`.
 
 - **Input tool guardrails** run before the tool executes and can reject the call with a message or throw a tripwire.
 - **Output tool guardrails** run after the tool executes and can replace the output with a rejection message or throw a tripwire.
@@ -55,7 +67,7 @@ Tool guardrails return a `behavior`:
 - `rejectContent` — short‑circuit with a message (tool call is skipped or output is replaced).
 - `throwException` — throw a tripwire error immediately.
 
-Tool guardrails apply to function tools created with `tool()`. Hosted tools and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) do not use this guardrail pipeline.
+Tool guardrails apply to function tools you define with `tool()`. Handoffs are presented to the model as function-like tools, but they run through the SDK's handoff path rather than the normal function-tool pipeline, so tool guardrails do not apply to the handoff call itself. Hosted tools and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) also do not use this guardrail pipeline, and `agent.asTool()` does not currently expose tool-guardrail options directly.
 
 ## Tripwires
 
