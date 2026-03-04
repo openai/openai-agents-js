@@ -3,6 +3,7 @@ import {
   convertToolChoice,
   extractAllAssistantContent,
   extractAllUserContent,
+  getCompatibleToolChoice,
   itemsToMessages,
   toolToOpenAI,
   convertHandoffTool,
@@ -57,6 +58,24 @@ describe('convertToolChoice', () => {
       function: { name: 'myFunc' },
     });
   });
+
+  test('getCompatibleToolChoice rejects impossible choices', () => {
+    expect(() => getCompatibleToolChoice('required', [])).toThrow(
+      /requires at least one available tool/,
+    );
+    expect(() =>
+      getCompatibleToolChoice('missing', [
+        {
+          type: 'function',
+          function: {
+            name: 'available',
+            description: 'Available tool',
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+        },
+      ]),
+    ).toThrow(/does not match any available tool or handoff/);
+  });
 });
 
 describe('content extraction helpers', () => {
@@ -71,14 +90,68 @@ describe('content extraction helpers', () => {
       {
         type: 'audio',
         audio: 'abc',
-        providerData: { input_audio: { foo: 'bar' } },
+        providerData: { input_audio: { format: 'mp3', foo: 'bar' } },
       },
     ];
     const converted = extractAllUserContent(userContent);
     expect(converted).toEqual([
       { type: 'text', text: 'u1', a: 1 },
       { type: 'image_url', image_url: { url: 'http://img', detail: 'auto' } },
-      { type: 'input_audio', input_audio: { data: 'abc', foo: 'bar' } },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', format: 'mp3', foo: 'bar' },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_text',
+        text: 'u1',
+        providerData: {
+          type: 'override_type',
+          text: 'override_text',
+          extraText: true,
+        },
+      },
+      {
+        type: 'input_image',
+        image: 'http://img',
+        providerData: {
+          type: 'override_image',
+          image_url: { url: 'http://override', detail: 'high' },
+          extraImage: true,
+        },
+      },
+      {
+        type: 'audio',
+        audio: 'abc',
+        format: 'wav',
+        providerData: {
+          type: 'override_audio',
+          input_audio: { data: 'override', format: 'mp3', foo: 'bar' },
+          extraAudio: true,
+        },
+      },
+    ];
+
+    expect(extractAllUserContent(userContent)).toEqual([
+      {
+        type: 'text',
+        text: 'u1',
+        extraText: true,
+      },
+      {
+        type: 'image_url',
+        image_url: { url: 'http://img', detail: 'high' },
+        extraImage: true,
+      },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', format: 'wav', foo: 'bar' },
+        extraAudio: true,
+      },
     ]);
   });
 
@@ -107,7 +180,7 @@ describe('content extraction helpers', () => {
         audio: 'abc',
         providerData: {
           type: 'override_audio',
-          input_audio: { data: 'override', foo: 'bar' },
+          input_audio: { data: 'override', format: 'wav', foo: 'bar' },
           extraAudio: true,
         },
       },
@@ -126,7 +199,7 @@ describe('content extraction helpers', () => {
       },
       {
         type: 'input_audio',
-        input_audio: { data: 'abc', foo: 'bar' },
+        input_audio: { data: 'abc', format: 'wav', foo: 'bar' },
         extraAudio: true,
       },
     ]);
@@ -196,6 +269,30 @@ describe('content extraction helpers', () => {
     ];
     expect(() => extractAllUserContent(userContent)).toThrow(
       /requires a data URL or file ID/,
+    );
+  });
+
+  test('extractAllUserContent throws on audio file IDs', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'audio',
+        audio: { id: 'file-audio' },
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /only supports inline audio data/i,
+    );
+  });
+
+  test('extractAllUserContent throws when audio format is missing', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'audio',
+        audio: 'abc',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires format "wav" or "mp3"/i,
     );
   });
 
@@ -358,6 +455,64 @@ describe('itemsToMessages', () => {
       },
       { role: 'tool', tool_call_id: 'call1', content: 'res' },
     ]);
+  });
+
+  test('rejects namespaced function call history', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'lookup_account',
+        namespace: 'crm',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
+  });
+
+  test('rejects dotted function call names without namespace metadata', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'crm.lookup_account',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
+  });
+
+  test('rejects self-namespaced function call history', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'get_shipping_eta',
+        namespace: 'get_shipping_eta',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        callId: 'call1',
+        output: 'tomorrow',
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
   });
 
   test('handles built-in file_search_call and errors on unsupported type', () => {

@@ -7,6 +7,8 @@ import {
   RunReasoningItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '@openai/agents';
 import type { UIMessageChunk } from 'ai';
 import { createAiSdkUiMessageStreamResponse } from '../../src/ai-sdk-ui/index';
@@ -311,6 +313,633 @@ describe('createAiSdkUiMessageStreamResponse', () => {
     expect(toolOutput).toMatchObject({
       toolCallId: 'call-1',
       output: 'Inline results',
+      dynamic: true,
+    });
+  });
+
+  test('preserves namespaced tool names and emits tool_search events', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const toolSearchCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-1',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+      },
+      agent,
+    );
+
+    const toolSearchOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-1',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+      },
+      agent,
+    );
+
+    const namespacedToolCall = new RunToolCallItem(
+      {
+        type: 'function_call',
+        callId: 'call-namespace-1',
+        name: 'lookup_account',
+        namespace: 'crm',
+        arguments: JSON.stringify({ accountId: 'acct_42' }),
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', toolSearchCall);
+      yield new RunItemStreamEvent(
+        'tool_search_output_created',
+        toolSearchOutput,
+      );
+      yield new RunItemStreamEvent('tool_called', namespacedToolCall);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+
+    expect(chunks.map((chunk) => chunk.type)).toEqual([
+      'start',
+      'tool-input-start',
+      'tool-input-available',
+      'tool-output-available',
+      'tool-input-start',
+      'tool-input-available',
+      'finish',
+    ]);
+
+    const toolSearchInput = chunks.find(
+      (chunk) =>
+        chunk.type === 'tool-input-available' &&
+        (chunk as any).toolName === 'tool_search',
+    );
+    const toolSearchOutputChunk = chunks.find(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+    const namespacedInput = chunks.find(
+      (chunk) =>
+        chunk.type === 'tool-input-available' &&
+        (chunk as any).toolName === 'crm.lookup_account',
+    );
+
+    expect(toolSearchInput).toMatchObject({
+      toolCallId: 'tool-search-call-1',
+      toolName: 'tool_search',
+      input: {
+        paths: ['crm'],
+        query: 'lookup account',
+      },
+      dynamic: true,
+    });
+    expect(toolSearchOutputChunk).toMatchObject({
+      toolCallId: 'tool-search-call-1',
+      output: [
+        {
+          type: 'tool_reference',
+          functionName: 'lookup_account',
+          namespace: 'crm',
+        },
+      ],
+      dynamic: true,
+    });
+    expect(namespacedInput).toMatchObject({
+      toolCallId: 'call-namespace-1',
+      toolName: 'crm.lookup_account',
+      input: { accountId: 'acct_42' },
+      dynamic: true,
+    });
+  });
+
+  test('matches tool_search outputs by call_id when outputs arrive out of order', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const toolSearchCall1 = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-1',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        providerData: {
+          call_id: 'call-ts-1',
+        },
+      },
+      agent,
+    );
+    const toolSearchCall2 = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-2',
+        status: 'completed',
+        arguments: {
+          paths: ['billing'],
+          query: 'lookup invoice',
+        },
+        providerData: {
+          call_id: 'call-ts-2',
+        },
+      },
+      agent,
+    );
+
+    const toolSearchOutput2 = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-2',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: {
+          call_id: 'call-ts-2',
+        },
+      },
+      agent,
+    );
+    const toolSearchOutput1 = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-1',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: {
+          call_id: 'call-ts-1',
+        },
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', toolSearchCall1);
+      yield new RunItemStreamEvent('tool_search_called', toolSearchCall2);
+      yield new RunItemStreamEvent(
+        'tool_search_output_created',
+        toolSearchOutput2,
+      );
+      yield new RunItemStreamEvent(
+        'tool_search_output_created',
+        toolSearchOutput1,
+      );
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const outputs = chunks.filter(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+
+    expect(outputs).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'call-ts-2',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        dynamic: true,
+      },
+      {
+        type: 'tool-output-available',
+        toolCallId: 'call-ts-1',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('does not let server tool_search outputs without call_id consume pending client searches', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const toolSearchCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-client',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        providerData: {
+          execution: 'client',
+        },
+      },
+      agent,
+    );
+    const serverOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: {
+          execution: 'server',
+        },
+      },
+      agent,
+    );
+    const clientOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-client',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: {
+          execution: 'client',
+        },
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', toolSearchCall);
+      yield new RunItemStreamEvent('tool_search_output_created', serverOutput);
+      yield new RunItemStreamEvent('tool_search_output_created', clientOutput);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const outputs = chunks.filter(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+
+    expect(outputs).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'tool-search-output-server',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        dynamic: true,
+      },
+      {
+        type: 'tool-output-available',
+        toolCallId: 'tool-search-call-client',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('does not queue hosted tool_search calls as pending client searches in streamed events', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const serverCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-server',
+        status: 'completed',
+        arguments: {
+          paths: ['billing'],
+          query: 'lookup invoice',
+        },
+        providerData: {
+          call_id: 'ts_call_server',
+          execution: 'server',
+        },
+      },
+      agent,
+    );
+    const serverOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: {
+          execution: 'server',
+        },
+      },
+      agent,
+    );
+    const clientCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-client',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        providerData: {
+          call_id: 'ts_call_client',
+          execution: 'client',
+        },
+      },
+      agent,
+    );
+    const clientOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-client',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: {
+          execution: 'client',
+        },
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', serverCall);
+      yield new RunItemStreamEvent('tool_search_output_created', serverOutput);
+      yield new RunItemStreamEvent('tool_search_called', clientCall);
+      yield new RunItemStreamEvent('tool_search_output_created', clientOutput);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const outputs = chunks.filter(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+
+    expect(outputs).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'ts_call_server',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        dynamic: true,
+      },
+      {
+        type: 'tool-output-available',
+        toolCallId: 'ts_call_client',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('reuses hosted tool_search call ids when streamed server outputs omit call_id', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const serverCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-server',
+        status: 'completed',
+        arguments: {
+          paths: ['billing'],
+          query: 'lookup invoice',
+        },
+        providerData: {
+          execution: 'server',
+        },
+      },
+      agent,
+    );
+    const serverOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: {
+          execution: 'server',
+        },
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', serverCall);
+      yield new RunItemStreamEvent('tool_search_output_created', serverOutput);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const outputs = chunks.filter(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+
+    expect(outputs).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'tool-search-call-server',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('emits updated tool_search outputs when the same call_id repeats', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const toolSearchCall = new RunToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'tool-search-call-1',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        providerData: {
+          call_id: 'call-ts-1',
+        },
+      },
+      agent,
+    );
+    const staleOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-stale',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account_old',
+            namespace: 'crm',
+          },
+        ],
+        providerData: {
+          call_id: 'call-ts-1',
+        },
+      },
+      agent,
+    );
+    const freshOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'tool-search-output-fresh',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: {
+          call_id: 'call-ts-1',
+        },
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_search_called', toolSearchCall);
+      yield new RunItemStreamEvent('tool_search_output_created', staleOutput);
+      yield new RunItemStreamEvent('tool_search_output_created', freshOutput);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const outputs = chunks.filter(
+      (chunk) => chunk.type === 'tool-output-available',
+    );
+
+    expect(outputs).toEqual([
+      {
+        type: 'tool-output-available',
+        toolCallId: 'call-ts-1',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account_old',
+            namespace: 'crm',
+          },
+        ],
+        dynamic: true,
+      },
+      {
+        type: 'tool-output-available',
+        toolCallId: 'call-ts-1',
+        output: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('collapses same-name namespace tool names in streamed events', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const namespacedToolCall = new RunToolCallItem(
+      {
+        type: 'function_call',
+        callId: 'call-namespace-self-1',
+        name: 'lookup_account',
+        namespace: 'lookup_account',
+        arguments: JSON.stringify({ accountId: 'acct_42' }),
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_called', namespacedToolCall);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+
+    const namespacedInput = chunks.find(
+      (chunk) =>
+        chunk.type === 'tool-input-available' &&
+        (chunk as any).toolCallId === 'call-namespace-self-1',
+    );
+
+    expect(namespacedInput).toMatchObject({
+      toolCallId: 'call-namespace-self-1',
+      toolName: 'lookup_account',
+      input: { accountId: 'acct_42' },
       dynamic: true,
     });
   });

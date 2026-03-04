@@ -1,6 +1,10 @@
 import { Agent } from './agent';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
+import {
+  getFunctionToolQualifiedName,
+  resolveFunctionToolCallName,
+} from './toolIdentity';
 
 export class RunItemBase {
   public readonly type: string = 'base_item' as const;
@@ -47,6 +51,42 @@ export class RunToolCallItem extends RunItemBase {
 
   constructor(
     public rawItem: protocol.ToolCallItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
+export class RunToolSearchCallItem extends RunItemBase {
+  public readonly type = 'tool_search_call_item' as const;
+
+  constructor(
+    public rawItem: protocol.ToolSearchCallItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
+export class RunToolSearchOutputItem extends RunItemBase {
+  public readonly type = 'tool_search_output_item' as const;
+
+  constructor(
+    public rawItem: protocol.ToolSearchOutputItem,
     public agent: Agent,
   ) {
     super();
@@ -157,7 +197,7 @@ export class RunToolApprovalItem extends RunItemBase {
     public toolName?: string,
   ) {
     super();
-    this.toolName = toolName ?? (rawItem as any).name;
+    this.toolName = toolName ?? getDefaultApprovalToolName(rawItem, agent);
   }
 
   /**
@@ -184,9 +224,45 @@ export class RunToolApprovalItem extends RunItemBase {
   }
 }
 
+function getDefaultApprovalToolName(
+  rawItem: RunToolApprovalItem['rawItem'],
+  agent: Agent<any, any>,
+): string | undefined {
+  if (rawItem.type !== 'function_call') {
+    return (rawItem as any).name;
+  }
+
+  const availableFunctionTools = new Map(
+    agent.tools.flatMap((tool) => {
+      if (tool.type !== 'function' || typeof tool.name !== 'string') {
+        return [];
+      }
+      return [[getFunctionToolQualifiedName(tool) ?? tool.name, tool] as const];
+    }),
+  );
+
+  const resolvedToolName = resolveFunctionToolCallName(
+    rawItem,
+    availableFunctionTools,
+  );
+
+  if (
+    typeof rawItem.name === 'string' &&
+    typeof rawItem.namespace === 'string' &&
+    rawItem.namespace === rawItem.name &&
+    !availableFunctionTools.has(`${rawItem.namespace}.${rawItem.name}`)
+  ) {
+    return rawItem.name;
+  }
+
+  return resolvedToolName ?? rawItem.name;
+}
+
 export type RunItem =
   | RunMessageOutputItem
   | RunToolCallItem
+  | RunToolSearchCallItem
+  | RunToolSearchOutputItem
   | RunReasoningItem
   | RunHandoffCallItem
   | RunToolCallOutputItem

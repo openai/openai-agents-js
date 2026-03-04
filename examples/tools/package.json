@@ -17,6 +17,7 @@
     "start:computer-use": "tsx computer-use.ts",
     "start:computer-use-hitl": "tsx computer-use-hitl.ts",
     "start:file-search": "tsx file-search.ts",
+    "start:tool-search": "tsx tool-search.ts",
     "start:web-search": "tsx web-search.ts",
     "start:web-search-filters": "tsx web-search-filters.ts",
     "start:code-interpreter": "tsx code-interpreter.ts",

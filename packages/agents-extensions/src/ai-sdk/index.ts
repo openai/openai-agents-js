@@ -30,9 +30,15 @@ import {
   getLogger,
   ModelSettingsToolChoice,
 } from '@openai/agents';
+import {
+  getToolSearchProviderCallId,
+  resolveToolSearchCallId,
+  shouldQueuePendingToolSearchCall,
+  takePendingToolSearchCallId,
+  toolQualifiedName,
+} from '@openai/agents-core/utils';
 import type { GenerationUsageData } from '@openai/agents';
-import { isZodObject } from '@openai/agents/utils';
-import { encodeUint8ArrayToBase64 } from '@openai/agents/utils';
+import { isZodObject, encodeUint8ArrayToBase64 } from '@openai/agents/utils';
 
 // Minimal compatibility type to allow V3 (or future) models that follow the same shape as V2.
 type LanguageModelV3Compatible = {
@@ -172,10 +178,15 @@ export function itemsToLanguageV2Messages(
   modelSettings?: ModelSettings,
 ): LanguageModelV2Message[] {
   const messages: LanguageModelV2Message[] = [];
+  const toolCallNamesById = new Map<string, string>();
+  const pendingToolSearchCallIds: string[] = [];
+  const pendingServerToolSearchCallIds: string[] = [];
+  let generatedToolSearchCallId = 0;
   let currentAssistantMessage: LanguageModelV2Message | undefined;
   let pendingReasonerReasoning:
     | { text: string; providerOptions: Record<string, any> }
     | undefined;
+  const collapsedItems = collapseReplacedToolSearchOutputs(items);
   const flushPendingReasonerReasoningToMessages = () => {
     if (
       !(
@@ -213,7 +224,7 @@ export function itemsToLanguageV2Messages(
     pendingReasonerReasoning = undefined;
   };
 
-  for (const item of items) {
+  for (const item of collapsedItems) {
     if (item.type === 'message' || typeof item.type === 'undefined') {
       const { role, content, providerData } = item;
       if (role === 'system') {
@@ -373,10 +384,12 @@ export function itemsToLanguageV2Messages(
           };
           pendingReasonerReasoning = undefined;
         }
+        const toolName = getAiSdkToolName(item);
+        toolCallNamesById.set(item.callId, toolName);
         const content: LanguageModelV2ToolCallPart = {
           type: 'tool-call',
           toolCallId: item.callId,
-          toolName: item.name,
+          toolName,
           input: parseArguments(item.arguments),
           providerOptions: toProviderOptions(item.providerData, model),
         };
@@ -389,11 +402,109 @@ export function itemsToLanguageV2Messages(
         messages.push(currentAssistantMessage);
         currentAssistantMessage = undefined;
       }
+      const toolName =
+        toolCallNamesById.get(item.callId) ?? getAiSdkToolName(item);
       const toolResult: LanguageModelV2ToolResultPart = {
         type: 'tool-result',
         toolCallId: item.callId,
-        toolName: item.name,
+        toolName,
         output: convertToAiSdkOutput(item.output),
+        providerOptions: toProviderOptions(item.providerData, model),
+      };
+      messages.push({
+        role: 'tool',
+        content: [toolResult],
+        providerOptions: toProviderOptions(item.providerData, model),
+      });
+      continue;
+    } else if (item.type === 'tool_search_call') {
+      if (!currentAssistantMessage) {
+        currentAssistantMessage = {
+          role: 'assistant',
+          content: [],
+          providerOptions: toProviderOptions(item.providerData, model),
+        };
+      }
+
+      if (
+        Array.isArray(currentAssistantMessage.content) &&
+        currentAssistantMessage.role === 'assistant'
+      ) {
+        if (
+          shouldIncludeReasoningContent(model, modelSettings) &&
+          pendingReasonerReasoning
+        ) {
+          currentAssistantMessage.content.push({
+            type: 'reasoning',
+            text: pendingReasonerReasoning.text,
+            providerOptions: pendingReasonerReasoning.providerOptions,
+          });
+          currentAssistantMessage.providerOptions = {
+            ...pendingReasonerReasoning.providerOptions,
+            ...currentAssistantMessage.providerOptions,
+          };
+          pendingReasonerReasoning = undefined;
+        }
+        const toolCallId = resolveToolSearchCallId(item, () => {
+          generatedToolSearchCallId += 1;
+          return `tool_search_${generatedToolSearchCallId}`;
+        });
+        if (shouldQueuePendingToolSearchCall(item)) {
+          pendingToolSearchCallIds.push(toolCallId);
+        } else {
+          pendingServerToolSearchCallIds.push(toolCallId);
+        }
+        toolCallNamesById.set(toolCallId, 'tool_search');
+        const content: LanguageModelV2ToolCallPart = {
+          type: 'tool-call',
+          toolCallId,
+          toolName: 'tool_search',
+          input: item.arguments,
+          providerOptions: toProviderOptions(item.providerData, model),
+        };
+        currentAssistantMessage.content.push(content);
+      }
+      continue;
+    } else if (item.type === 'tool_search_output') {
+      flushPendingReasonerReasoningToMessages();
+      if (currentAssistantMessage) {
+        messages.push(currentAssistantMessage);
+        currentAssistantMessage = undefined;
+      }
+      const rawToolSearchExecution =
+        (item as { execution?: unknown }).execution ??
+        item.providerData?.execution;
+      const toolSearchExecution =
+        rawToolSearchExecution === 'client' ||
+        rawToolSearchExecution === 'server'
+          ? rawToolSearchExecution
+          : undefined;
+      const toolCallId =
+        toolSearchExecution === 'server'
+          ? takeQueuedToolSearchResultCallId(
+              item,
+              pendingServerToolSearchCallIds,
+              () => {
+                generatedToolSearchCallId += 1;
+                return `tool_search_${generatedToolSearchCallId}`;
+              },
+            )
+          : takePendingToolSearchCallId(item, pendingToolSearchCallIds, () => {
+              generatedToolSearchCallId += 1;
+              return `tool_search_${generatedToolSearchCallId}`;
+            });
+      const toolName = toolCallNamesById.get(toolCallId) ?? 'tool_search';
+      const toolResult: LanguageModelV2ToolResultPart = {
+        type: 'tool-result',
+        toolCallId,
+        toolName,
+        output: {
+          type: 'json',
+          value: {
+            ...(typeof item.status === 'string' ? { status: item.status } : {}),
+            tools: item.tools,
+          },
+        },
         providerOptions: toProviderOptions(item.providerData, model),
       };
       messages.push({
@@ -622,6 +733,181 @@ function expectsObjectArguments(
   return false;
 }
 
+function buildRequestedToolsByName(
+  request: Pick<ModelRequest, 'tools' | 'handoffs'>,
+): Map<string, SerializedTool | SerializedHandoff> {
+  const toolsByName = new Map<string, SerializedTool | SerializedHandoff>();
+
+  const addRequestedTool = (
+    name: string,
+    tool: SerializedTool | SerializedHandoff,
+  ) => {
+    const existing = toolsByName.get(name);
+    if (
+      name === 'tool_search' &&
+      existing &&
+      isHostedToolSearchTool(existing) !== isHostedToolSearchTool(tool)
+    ) {
+      throw new UserError(
+        'AiSdkModel cannot disambiguate a hosted tool_search helper from a custom tool or handoff that is also named "tool_search". Rename the custom tool or use a different adapter.',
+      );
+    }
+
+    toolsByName.set(name, tool);
+  };
+
+  for (const tool of request.tools) {
+    addRequestedTool(
+      tool.type === 'function'
+        ? getSerializedFunctionToolName(tool)
+        : tool.name,
+      tool,
+    );
+  }
+
+  for (const handoff of request.handoffs) {
+    addRequestedTool(handoff.toolName, handoff);
+  }
+
+  return toolsByName;
+}
+
+function isHostedToolSearchTool(
+  tool: SerializedTool | SerializedHandoff | undefined,
+): tool is Extract<SerializedTool, { type: 'hosted_tool' }> {
+  return (
+    !!tool &&
+    !('toolName' in tool) &&
+    tool.type === 'hosted_tool' &&
+    tool.providerData?.type === 'tool_search'
+  );
+}
+
+function normalizeToolSearchArguments(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value ?? {};
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function takeQueuedToolSearchResultCallId(
+  value: {
+    providerData?: unknown;
+    call_id?: unknown;
+    callId?: unknown;
+    id?: unknown;
+  },
+  pendingCallIds: string[],
+  generateFallbackId?: () => string,
+): string {
+  const explicitCallId = getToolSearchProviderCallId(value);
+  if (explicitCallId) {
+    const pendingIndex = pendingCallIds.indexOf(explicitCallId);
+    if (pendingIndex >= 0) {
+      pendingCallIds.splice(pendingIndex, 1);
+    }
+    return explicitCallId;
+  }
+
+  return (
+    pendingCallIds.shift() ?? resolveToolSearchCallId(value, generateFallbackId)
+  );
+}
+
+function getToolSearchOutputReplacementKey(
+  item: protocol.ToolSearchOutputItem,
+): string | undefined {
+  const providerCallId = getToolSearchProviderCallId(item);
+  if (providerCallId) {
+    return `call:${providerCallId}`;
+  }
+
+  if (typeof item.id === 'string' && item.id.length > 0) {
+    return `item:${item.id}`;
+  }
+
+  return undefined;
+}
+
+function collapseReplacedToolSearchOutputs(
+  items: protocol.ModelItem[],
+): protocol.ModelItem[] {
+  const latestIndexByReplacementKey = new Map<string, number>();
+
+  items.forEach((item, index) => {
+    if (item.type !== 'tool_search_output') {
+      return;
+    }
+
+    const replacementKey = getToolSearchOutputReplacementKey(item);
+    if (replacementKey) {
+      latestIndexByReplacementKey.set(replacementKey, index);
+    }
+  });
+
+  return items.filter((item, index) => {
+    if (item.type !== 'tool_search_output') {
+      return true;
+    }
+
+    const replacementKey = getToolSearchOutputReplacementKey(item);
+    if (!replacementKey) {
+      return true;
+    }
+
+    return latestIndexByReplacementKey.get(replacementKey) === index;
+  });
+}
+
+function createProtocolToolCallItem(args: {
+  requestedTool: SerializedTool | SerializedHandoff | undefined;
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  providerData: Record<string, any> | undefined;
+}): protocol.FunctionCallItem | protocol.ToolSearchCallItem {
+  const { requestedTool, toolCallId, toolName, input, providerData } = args;
+
+  if (isHostedToolSearchTool(requestedTool)) {
+    return {
+      type: 'tool_search_call',
+      id: toolCallId,
+      arguments: normalizeToolSearchArguments(input),
+      status: 'completed',
+      providerData,
+    };
+  }
+
+  let toolCallArguments: string;
+  if (typeof input === 'string') {
+    toolCallArguments =
+      input === '' && expectsObjectArguments(requestedTool)
+        ? JSON.stringify({})
+        : input;
+  } else {
+    toolCallArguments = JSON.stringify(input ?? {});
+  }
+
+  return {
+    type: 'function_call',
+    callId: toolCallId,
+    name: toolName,
+    arguments: toolCallArguments,
+    status: 'completed',
+    providerData,
+  };
+}
+
 /**
  * Maps the protocol-level structured outputs into the Language Model V2 result primitives.
  * The AI SDK expects either plain text or content parts (text + media), so we merge multiple
@@ -704,6 +990,16 @@ function convertStructuredOutputsToAiSdkOutput(
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
+}
+
+function getAiSdkToolName(tool: { name: string; namespace?: string }): string {
+  return toolQualifiedName(tool.name, tool.namespace) ?? tool.name;
+}
+
+function getSerializedFunctionToolName(
+  tool: Extract<SerializedTool, { type: 'function' }>,
+): string {
+  return getAiSdkToolName(tool);
 }
 
 function getModelIdentifier(model: LanguageModelCompatible): string {
@@ -893,6 +1189,19 @@ function formatInlineData(
   return mediaType ? `data:${mediaType};base64,${base64}` : base64;
 }
 
+function getHostedToolArgs(providerData: unknown): Record<string, any> {
+  if (!isRecord(providerData)) {
+    return {};
+  }
+
+  if (isRecord(providerData.args)) {
+    return providerData.args;
+  }
+
+  const { type: _type, name: _name, args: _args, ...rest } = providerData;
+  return rest;
+}
+
 /**
  * @internal
  * Converts a tool to a language model V2 tool.
@@ -905,9 +1214,14 @@ export function toolToLanguageV2Tool(
   tool: SerializedTool,
 ): LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat {
   if (tool.type === 'function') {
+    if (tool.deferLoading) {
+      throw new UserError(
+        'The AI SDK adapter does not support deferred Responses function tools (`toolNamespace()` or `deferLoading: true`). Use a Responses API model directly.',
+      );
+    }
     return {
       type: 'function',
-      name: tool.name,
+      name: getSerializedFunctionToolName(tool),
       description: tool.description,
       inputSchema: tool.parameters as JSONSchema7,
     };
@@ -922,7 +1236,7 @@ export function toolToLanguageV2Tool(
       type: providerToolType,
       id: `${providerToolPrefix}.${tool.name}`,
       name: tool.name,
-      args: tool.providerData?.args ?? {},
+      args: getHostedToolArgs(tool.providerData),
     };
   }
 
@@ -1107,6 +1421,8 @@ export class AiSdkModel implements Model {
           throw new UserError('Zod output type is not yet supported');
         }
 
+        const requestedToolsByName = buildRequestedToolsByName(request);
+
         const responseFormat: LanguageModelV2CallOptions['responseFormat'] =
           getResponseFormat(request.outputType);
 
@@ -1167,19 +1483,10 @@ export class AiSdkModel implements Model {
           (c: any) => c && c.type === 'tool-call',
         );
         const hasToolCalls = toolCalls.length > 0;
-
-        const toolsNameToToolMap = new Map<
-          string,
-          SerializedTool | SerializedHandoff
-        >(request.tools.map((tool) => [tool.name, tool] as const));
-
-        for (const handoff of request.handoffs) {
-          toolsNameToToolMap.set(handoff.toolName, handoff);
-        }
         for (const toolCall of toolCalls) {
           const requestedTool =
             typeof toolCall.toolName === 'string'
-              ? toolsNameToToolMap.get(toolCall.toolName)
+              ? requestedToolsByName.get(toolCall.toolName)
               : undefined;
 
           if (!requestedTool && toolCall.toolName) {
@@ -1188,27 +1495,19 @@ export class AiSdkModel implements Model {
             );
           }
 
-          let toolCallArguments: string;
-          if (typeof toolCall.input === 'string') {
-            toolCallArguments =
-              toolCall.input === '' && expectsObjectArguments(requestedTool)
-                ? JSON.stringify({})
-                : toolCall.input;
-          } else {
-            toolCallArguments = JSON.stringify(toolCall.input ?? {});
-          }
-          output.push({
-            type: 'function_call',
-            callId: toolCall.toolCallId,
-            name: toolCall.toolName,
-            arguments: toolCallArguments,
-            status: 'completed',
-            providerData: mergeProviderData(
-              baseProviderData,
-              toolCall.providerMetadata ??
-                (hasToolCalls ? result.providerMetadata : undefined),
-            ),
-          });
+          output.push(
+            createProtocolToolCallItem({
+              requestedTool,
+              toolCallId: toolCall.toolCallId,
+              toolName: toolCall.toolName,
+              input: toolCall.input,
+              providerData: mergeProviderData(
+                baseProviderData,
+                toolCall.providerMetadata ??
+                  (hasToolCalls ? result.providerMetadata : undefined),
+              ),
+            }),
+          );
         }
 
         // Some of other platforms may return both tool calls and text.
@@ -1380,6 +1679,7 @@ export class AiSdkModel implements Model {
         abortSignal: request.signal,
         ...(request.modelSettings.providerData ?? {}),
       };
+      const requestedToolsByName = buildRequestedToolsByName(request);
 
       if (this.#logger.dontLogModelData) {
         this.#logger.debug('Request received (streamed)');
@@ -1398,7 +1698,10 @@ export class AiSdkModel implements Model {
       let usagePromptTokens = 0;
       let usageCompletionTokens = 0;
       let usageInputTokensDetails: Record<string, number> | undefined;
-      const functionCalls: Record<string, protocol.FunctionCallItem> = {};
+      const functionCalls: Record<
+        string,
+        protocol.FunctionCallItem | protocol.ToolSearchCallItem
+      > = {};
       let textOutput: protocol.OutputText | undefined;
 
       // State for tracking reasoning blocks (for Anthropic extended thinking):
@@ -1465,17 +1768,20 @@ export class AiSdkModel implements Model {
           case 'tool-call': {
             const toolCallId = (part as any).toolCallId;
             if (toolCallId) {
-              functionCalls[toolCallId] = {
-                type: 'function_call',
-                callId: toolCallId,
-                name: (part as any).toolName,
-                arguments: (part as any).input ?? '',
-                status: 'completed',
+              const requestedTool =
+                typeof (part as any).toolName === 'string'
+                  ? requestedToolsByName.get((part as any).toolName)
+                  : undefined;
+              functionCalls[toolCallId] = createProtocolToolCallItem({
+                requestedTool,
+                toolCallId,
+                toolName: (part as any).toolName,
+                input: (part as any).input,
                 providerData: mergeProviderData(
                   baseProviderData,
                   (part as any).providerMetadata,
                 ),
-              };
+              });
             }
             break;
           }

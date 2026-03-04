@@ -5,6 +5,7 @@ import { RunState } from '../runState';
 import { ComputerTool, Tool, resolveComputer } from '../tool';
 import { serializeHandoff, serializeTool } from '../utils/serialize';
 import { ensureAgentSpan } from './tracing';
+import { validateClientToolSearchSupport } from './toolSearch';
 import { AgentArtifacts } from './types';
 
 const computerInitPromisesByRunState = new WeakMap<
@@ -57,6 +58,7 @@ export async function prepareAgentArtifacts<
   TAgent extends Agent<TContext, AgentOutputType>,
 >(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
   const capabilities = await collectAgentCapabilities(state);
+  validateClientToolSearchSupport(capabilities.tools);
   await warmUpComputerTools(capabilities.tools, state._context);
   await initializeComputerTools(capabilities.tools, state);
   state.setCurrentAgentSpan(
@@ -85,10 +87,13 @@ async function collectAgentCapabilities<TContext>(
   tools: Tool<TContext>[];
 }> {
   const handoffs = await state._currentAgent.getEnabledHandoffs(state._context);
-  const tools = (await state._currentAgent.getAllTools(
+  const configuredTools = (await state._currentAgent.getAllTools(
     state._context,
   )) as Tool<TContext>[];
-  return { handoffs, tools };
+  const runtimeLoadedTools = state.getToolSearchRuntimeTools(
+    state._currentAgent,
+  ) as Tool<TContext>[];
+  return { handoffs, tools: [...configuredTools, ...runtimeLoadedTools] };
 }
 
 async function warmUpComputerTools<TContext>(

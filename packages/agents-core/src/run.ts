@@ -50,7 +50,7 @@ import {
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
-import { processModelResponse } from './runner/modelOutputs';
+import { processModelResponseAsync } from './runner/modelOutputs';
 import {
   addStepToRunResult,
   streamStepItemsToRunResult,
@@ -827,11 +827,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const processedResponse = processModelResponse(
+            const processedResponse = await processModelResponseAsync(
               state._lastTurnResponse,
               state._currentAgent,
               preparedCall.tools,
               preparedCall.handoffs,
+              state,
+              [...preparedCall.turnInput, ...state._generatedItems],
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1249,11 +1251,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
           result.state._modelResponses.push(result.state._lastTurnResponse);
 
-          const processedResponse = processModelResponse(
+          const processedResponse = await processModelResponseAsync(
             result.state._lastTurnResponse,
             currentAgent,
             preparedCall.tools,
             preparedCall.handoffs,
+            result.state,
+            [...preparedCall.turnInput, ...result.state._generatedItems],
           );
 
           result.state._lastProcessedResponse = processedResponse;

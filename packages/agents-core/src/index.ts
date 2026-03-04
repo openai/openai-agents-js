@@ -94,6 +94,8 @@ export {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from './items';
 export { AgentHooks } from './lifecycle';
 export { getLogger } from './logger';
@@ -171,6 +173,7 @@ export { RunState } from './runState';
 export type { TracingConfig } from './tracing';
 export {
   HostedTool,
+  attachClientToolSearchExecutor,
   ComputerTool,
   computerTool,
   ShellTool,
@@ -185,12 +188,18 @@ export {
   ToolTimeoutErrorFunction,
   Tool,
   tool,
+  toolNamespace,
   invokeFunctionTool,
+  getClientToolSearchExecutor,
+  getToolSearchRuntimeToolKey,
   ToolExecuteArgument,
   ToolEnabledFunction,
   ToolOptionsWithGuardrails,
 } from './tool';
 export type {
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
   ComputerOnSafetyCheckFunction,
   ComputerSafetyCheck,
   ComputerSafetyCheckResult,
@@ -210,6 +219,7 @@ export type {
   ShellToolContainerNetworkPolicyDomainSecret,
   ToolInputParameters,
   ToolOptions,
+  ToolNamespaceOptions,
 } from './tool';
 export type {
   ToolOutputText,
@@ -240,6 +250,11 @@ export type {
   FunctionCallResultItem,
   JsonSchemaDefinition,
   ReasoningItem,
+  ToolReference,
+  ToolSearchOutputTool,
+  ToolSearchCallArguments,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   ResponseStreamEvent,
   SystemMessageItem,
   TextOutput,

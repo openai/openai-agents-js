@@ -8,7 +8,7 @@
     "dotenv": "^16.5.0",
     "fastify": "^5.8.1",
     "fastify-raw-body": "^5.0.0",
-    "openai": "^6.20.0"
+    "openai": "^6.26.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

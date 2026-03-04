@@ -14,8 +14,16 @@ import {
   RunMessageOutputItem,
   RunReasoningItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '../src/items';
-import { applyPatchTool, computerTool, shellTool } from '../src/tool';
+import {
+  applyPatchTool,
+  computerTool,
+  shellTool,
+  tool,
+  toolNamespace,
+} from '../src/tool';
 import * as protocol from '../src/types/protocol';
 import {
   TEST_MODEL_MESSAGE,
@@ -27,6 +35,7 @@ import { RunResult } from '../src/result';
 import { createAgentSpan } from '../src/tracing';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import type { MCPServer, MCPTool } from '../src/mcp';
+import { z } from 'zod';
 
 describe('RunState', () => {
   it('initializes with default values', () => {
@@ -515,6 +524,190 @@ describe('RunState', () => {
     );
   });
 
+  it('accepts schema version 1.6 payloads during deserialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Agent16' });
+    const state = new RunState(context, 'input1', agent, 2);
+    state._modelResponses = [
+      {
+        usage: new Usage(),
+        output: [TEST_MODEL_MESSAGE],
+        responseId: 'resp_16',
+        requestId: 'req_16',
+      },
+    ];
+    state._lastTurnResponse = state._modelResponses[0];
+
+    const jsonVersion = state.toJSON() as any;
+    jsonVersion.$schemaVersion = '1.6';
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(jsonVersion),
+    );
+
+    expect(restored._lastTurnResponse?.responseId).toBe('resp_16');
+    expect(restored._lastTurnResponse?.requestId).toBe('req_16');
+  });
+
+  it('rejects schema version 1.7 payloads with tool_search items during deserialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Agent18' });
+    const state = new RunState(context, 'input1', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_17',
+          callId: 'ts_call_17',
+          status: 'completed',
+          arguments: { paths: ['crm'], query: 'profile' },
+        } as any,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_17',
+          callId: 'ts_call_17',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        } as any,
+        agent,
+      ),
+    );
+
+    const jsonVersion = state.toJSON() as any;
+    jsonVersion.$schemaVersion = '1.7';
+
+    await expect(() =>
+      RunState.fromString(agent, JSON.stringify(jsonVersion)),
+    ).rejects.toThrow(
+      'Run state schema version 1.7 does not support tool_search items.',
+    );
+  });
+
+  it('accepts schema version 1.8 payloads with tool_search items during deserialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Agent18' });
+    const state = new RunState(context, 'input1', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_18',
+          callId: 'ts_call_18',
+          status: 'completed',
+          arguments: { paths: ['crm'], query: 'profile' },
+        } as any,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_18',
+          callId: 'ts_call_18',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        } as any,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._generatedItems[0]).toBeInstanceOf(RunToolSearchCallItem);
+    expect(restored._generatedItems[1]).toBeInstanceOf(RunToolSearchOutputItem);
+  });
+
+  it('preserves raw tool_search call_id and execution fields through RunState serialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Agent18RawSearch' });
+    const state = new RunState(context, 'input1', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_raw',
+          call_id: 'call_ts_raw',
+          execution: 'server',
+          status: 'completed',
+          arguments: { paths: ['crm'], query: 'profile' },
+        } as any,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_raw',
+          call_id: 'call_ts_raw',
+          execution: 'server',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        } as any,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const restoredCall = restored._generatedItems[0] as RunToolSearchCallItem;
+    const restoredOutput = restored
+      ._generatedItems[1] as RunToolSearchOutputItem;
+
+    expect(restoredCall.rawItem).toMatchObject({
+      type: 'tool_search_call',
+      call_id: 'call_ts_raw',
+      execution: 'server',
+    });
+    expect(restoredOutput.rawItem).toMatchObject({
+      type: 'tool_search_output',
+      call_id: 'call_ts_raw',
+      execution: 'server',
+    });
+  });
+
+  it('accepts schema version 1.7 payloads when non-item context data mentions tool_search types', async () => {
+    const context = new RunContext({
+      custom: {
+        type: 'tool_search_output',
+        note: 'This is plain context data, not a serialized run item.',
+      },
+    });
+    const agent = new Agent({ name: 'Agent17' });
+    const state = new RunState(context, 'input1', agent, 2);
+
+    const jsonVersion = state.toJSON() as any;
+    jsonVersion.$schemaVersion = '1.7';
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(jsonVersion),
+    );
+
+    expect((restored._context.context as any).custom).toEqual({
+      type: 'tool_search_output',
+      note: 'This is plain context data, not a serialized run item.',
+    });
+  });
+
   it('approve updates context approvals correctly', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent2' });
@@ -808,6 +1001,121 @@ describe('RunState', () => {
     ).toBe('Blocked everywhere');
   });
 
+  it('tracks qualified tool names for namespaced approvals', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AgentNamespaceApproval' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup_account',
+      namespace: 'crm',
+      callId: 'cid_namespace',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.approve(approvalItem);
+
+    expect(
+      state._context.isToolApproved({
+        toolName: 'crm.lookup_account',
+        callId: 'cid_namespace',
+      }),
+    ).toBe(true);
+    expect(approvalItem.toolName).toBe('crm.lookup_account');
+  });
+
+  it('preserves declared tool names for top-level deferred approvals across resume', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AgentDeferredApproval' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      callId: 'cid_shipping_eta',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(rawItem, agent, 'get_shipping_eta'),
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const [approvalItem] = restored.getInterruptions();
+    restored.approve(approvalItem);
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'get_shipping_eta',
+        callId: 'cid_shipping_eta',
+      }),
+    ).toBe(true);
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'get_shipping_eta.get_shipping_eta',
+        callId: 'cid_shipping_eta',
+      }),
+    ).toBeUndefined();
+    expect(approvalItem.toolName).toBe('get_shipping_eta');
+  });
+
+  it('resolves top-level deferred approval names from the agent tool set across resume', async () => {
+    const context = new RunContext();
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const agent = new Agent({
+      name: 'AgentDeferredApprovalResolved',
+      tools: [shippingEta],
+    });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      callId: 'cid_shipping_eta',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [new ToolApprovalItem(rawItem, agent)],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    const [approvalItem] = restored.getInterruptions();
+    restored.approve(approvalItem);
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'get_shipping_eta',
+        callId: 'cid_shipping_eta',
+      }),
+    ).toBe(true);
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'get_shipping_eta.get_shipping_eta',
+        callId: 'cid_shipping_eta',
+      }),
+    ).toBeUndefined();
+    expect(approvalItem.toolName).toBe('get_shipping_eta');
+  });
+
   it('fromString reconstructs state for simple agent', async () => {
     const context = new RunContext({ a: 1 });
     const agent = new Agent({ name: 'Solo' });
@@ -1061,6 +1369,245 @@ describe('deserialize helpers', () => {
     );
     expect(item.type).toBe('message_output_item');
     expect((item as any).agent).toBe(agent);
+  });
+
+  it('deserializeItem restores ToolSearchCallItem', () => {
+    const agent = new Agent({ name: 'SearchAgent' });
+    const map = new Map([[agent.name, agent]]);
+    const item = deserializeItem(
+      {
+        type: 'tool_search_call_item',
+        rawItem: {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: { paths: ['crm'], query: 'profile' },
+        },
+        agent: { name: 'SearchAgent' },
+      },
+      map,
+    );
+
+    expect(item).toBeInstanceOf(RunToolSearchCallItem);
+    expect((item as RunToolSearchCallItem).rawItem.arguments).toEqual({
+      paths: ['crm'],
+      query: 'profile',
+    });
+  });
+
+  it('deserializeItem restores ToolSearchOutputItem', () => {
+    const agent = new Agent({ name: 'SearchAgent' });
+    const map = new Map([[agent.name, agent]]);
+    const item = deserializeItem(
+      {
+        type: 'tool_search_output_item',
+        rawItem: {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'lookup_account',
+              namespace: 'crm',
+            },
+          ],
+        },
+        agent: { name: 'SearchAgent' },
+      },
+      map,
+    );
+
+    expect(item).toBeInstanceOf(RunToolSearchOutputItem);
+    expect((item as RunToolSearchOutputItem).rawItem.tools).toEqual([
+      {
+        type: 'tool_reference',
+        functionName: 'lookup_account',
+        namespace: 'crm',
+      },
+    ]);
+  });
+
+  it('deserializeItem restores ToolSearchOutputItem with concrete tool payloads', () => {
+    const agent = new Agent({ name: 'SearchAgent' });
+    const map = new Map([[agent.name, agent]]);
+    const item = deserializeItem(
+      {
+        type: 'tool_search_output_item',
+        rawItem: {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          status: 'completed',
+          tools: [
+            {
+              type: 'namespace',
+              name: 'crm',
+              description: 'CRM tools.',
+              tools: [
+                {
+                  type: 'function',
+                  name: 'lookup_account',
+                  description: 'Look up an account.',
+                  deferLoading: true,
+                  strict: true,
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      customerId: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['customerId'],
+                    additionalProperties: false,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        agent: { name: 'SearchAgent' },
+      },
+      map,
+    );
+
+    expect(item).toBeInstanceOf(RunToolSearchOutputItem);
+    expect((item as RunToolSearchOutputItem).rawItem.tools).toEqual([
+      {
+        type: 'namespace',
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account.',
+            deferLoading: true,
+            strict: true,
+            parameters: {
+              type: 'object',
+              properties: {
+                customerId: {
+                  type: 'string',
+                },
+              },
+              required: ['customerId'],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('deserializeProcessedResponse restores namespaced function tools', async () => {
+    const crmLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account in CRM.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'crm',
+    });
+    const billingLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account in billing.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      execute: async () => 'billing',
+    });
+    const crmNamespace = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [crmLookup],
+    });
+    const billingNamespace = toolNamespace({
+      name: 'billing',
+      description: 'Billing tools',
+      tools: [billingLookup],
+    });
+    const agent = new Agent({
+      name: 'NamespacedRestore',
+      tools: [...crmNamespace, ...billingNamespace],
+    });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_restore',
+      callId: 'call_restore',
+      name: 'lookup_account',
+      namespace: 'billing',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: functionCall, tool: billingNamespace[0] as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['billing.lookup_account'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._lastProcessedResponse?.functions[0]?.tool).toBe(
+      billingNamespace[0],
+    );
+    expect(restored._lastProcessedResponse?.functions[0]?.toolCall).toEqual(
+      functionCall,
+    );
+  });
+
+  it('deserializeProcessedResponse restores top-level deferred function tools', async () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const agent = new Agent({
+      name: 'DeferredRestore',
+      tools: [shippingEta],
+    });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: functionCall, tool: shippingEta as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['get_shipping_eta'],
+      hasToolsOrApprovalsToRun: () => true,
+    } as any;
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._lastProcessedResponse?.functions[0]?.tool).toBe(
+      shippingEta,
+    );
+    expect(restored._lastProcessedResponse?.functions[0]?.toolCall).toEqual(
+      functionCall,
+    );
   });
 
   it('deserializeProcessedResponse restores computer actions', async () => {
@@ -1345,5 +1892,58 @@ describe('deserialize helpers', () => {
       state._lastProcessedResponse?.mcpApprovalRequests[0].requestItem.rawItem
         .providerData,
     );
+  });
+
+  it('rejects resumed function tools when isEnabled is false in replacement context', async () => {
+    const lookupAccountParams = z.object({
+      accountId: z.string(),
+    });
+    const crmLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool<typeof lookupAccountParams, { enabled: boolean }>({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: lookupAccountParams,
+          isEnabled: async ({ runContext }) => runContext.context.enabled,
+          execute: async () => 'crm',
+        }),
+      ],
+    })[0];
+    const agent = new Agent({
+      name: 'CRM',
+      tools: [crmLookup as any],
+    });
+    const state = new RunState(new RunContext({ enabled: true }), '', agent, 1);
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_lookup',
+      callId: 'call_lookup',
+      name: 'lookup_account',
+      namespace: 'crm',
+      status: 'completed',
+      arguments: '{"accountId":"acct_42"}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: crmLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup_account'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await expect(
+      RunState.fromStringWithContext(
+        agent,
+        state.toString(),
+        new RunContext({ enabled: false }),
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toThrow(/Tool .*lookup_account.* not found/);
   });
 });

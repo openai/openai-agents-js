@@ -25,6 +25,8 @@ export type RunItemStreamEventName =
   | 'message_output_created'
   | 'handoff_requested'
   | 'handoff_occurred'
+  | 'tool_search_called'
+  | 'tool_search_output_created'
   | 'tool_called'
   | 'tool_output'
   | 'reasoning_item_created'

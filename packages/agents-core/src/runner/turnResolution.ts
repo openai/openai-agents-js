@@ -25,6 +25,7 @@ import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
 import type { FunctionToolResult } from '../tool';
+import { getFunctionToolQualifiedName } from '../toolIdentity';
 
 type ApprovalItemLike =
   | RunToolApprovalItem
@@ -402,7 +403,10 @@ export async function resolveInterruptedTurn<TContext>(
       return false;
     }
     const isApprovedCall = functionCallIds.includes(callId);
-    const isPendingNested = state.hasPendingAgentToolRun(run.tool.name, callId);
+    const isPendingNested = state.hasPendingAgentToolRun(
+      getFunctionToolQualifiedName(run.tool) ?? run.tool.name,
+      callId,
+    );
     if (!isApprovedCall && !isPendingNested) {
       return false;
     }

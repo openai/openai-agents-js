@@ -25,6 +25,11 @@ import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
 import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
 import {
+  FUNCTION_TOOL_NAMESPACE,
+  FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
+  getFunctionToolQualifiedName,
+} from './toolIdentity';
+import {
   resolveToolInputGuardrails,
   resolveToolOutputGuardrails,
   ToolInputGuardrailDefinition,
@@ -236,6 +241,11 @@ export type FunctionTool<
    * Whether the tool is strict. If true, the model must try to strictly follow the schema (might result in slower response times).
    */
   strict: boolean;
+
+  /**
+   * Responses API only. Hides a top-level function tool definition until tool search loads it.
+   */
+  deferLoading?: boolean;
 
   /**
    * The function to invoke when the tool is called.
@@ -884,6 +894,8 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
 export function hostedMcpTool<Context = UnknownContext>(
   options: {
     allowedTools?: string[] | { toolNames?: string[] };
+    deferLoading?: boolean;
+    serverDescription?: string;
   } &
     // MCP server
     (| {
@@ -926,7 +938,9 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
             headers: options.headers,
+            server_description: options.serverDescription,
           }
         : {
             type: 'mcp',
@@ -934,12 +948,14 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_url: options.serverUrl,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval:
               typeof options.requireApproval === 'string'
                 ? 'always'
                 : buildRequireApproval(options.requireApproval),
             on_approval: options.onApproval,
+            server_description: options.serverDescription,
           };
     return {
       type: 'hosted_tool',
@@ -958,7 +974,9 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
             headers: options.headers,
+            server_description: options.serverDescription,
           }
         : {
             type: 'mcp',
@@ -966,12 +984,14 @@ export function hostedMcpTool<Context = UnknownContext>(
             connector_id: options.connectorId,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval:
               typeof options.requireApproval === 'string'
                 ? 'always'
                 : buildRequireApproval(options.requireApproval),
             on_approval: options.onApproval,
+            server_description: options.serverDescription,
           };
     return {
       type: 'hosted_tool',
@@ -988,16 +1008,20 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_label: options.serverLabel,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
+            server_description: options.serverDescription,
           }
         : {
             type: 'mcp',
             server_label: options.serverLabel,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            defer_loading: options.deferLoading,
             require_approval:
               typeof options.requireApproval === 'string'
                 ? 'always'
                 : buildRequireApproval(options.requireApproval),
             on_approval: options.onApproval,
+            server_description: options.serverDescription,
           };
     return {
       type: 'hosted_tool',
@@ -1025,6 +1049,80 @@ export type HostedTool = {
    */
   providerData?: Record<string, any>;
 };
+
+export type ClientToolSearchLoadDefaultFunction<Context = UnknownContext> = (
+  paths: string[],
+) => Tool<Context>[];
+
+export type ClientToolSearchExecutorArgs<Context = UnknownContext> = {
+  agent: Agent<Context, any>;
+  availableTools: Tool<Context>[];
+  loadDefault: ClientToolSearchLoadDefaultFunction<Context>;
+  runContext: RunContext<Context>;
+  toolCall: protocol.ToolSearchCallItem;
+};
+
+export type ClientToolSearchExecutorResult<Context = UnknownContext> =
+  | Tool<Context>
+  | Tool<Context>[]
+  | null
+  | undefined;
+
+export type ClientToolSearchExecutor<Context = UnknownContext> = (
+  args: ClientToolSearchExecutorArgs<Context>,
+) =>
+  | ClientToolSearchExecutorResult<Context>
+  | Promise<ClientToolSearchExecutorResult<Context>>;
+
+export const CLIENT_TOOL_SEARCH_EXECUTOR = Symbol('clientToolSearchExecutor');
+
+type HostedToolWithClientToolSearchExecutor<Context = UnknownContext> =
+  HostedTool & {
+    [CLIENT_TOOL_SEARCH_EXECUTOR]?: ClientToolSearchExecutor<Context>;
+  };
+
+export function attachClientToolSearchExecutor<Context = UnknownContext>(
+  tool: HostedTool,
+  executor: ClientToolSearchExecutor<Context>,
+): HostedTool {
+  Object.defineProperty(tool, CLIENT_TOOL_SEARCH_EXECUTOR, {
+    value: executor,
+    enumerable: false,
+    configurable: true,
+  });
+  return tool;
+}
+
+export function getClientToolSearchExecutor<Context = UnknownContext>(
+  tool: Tool<Context>,
+): ClientToolSearchExecutor<Context> | undefined {
+  if (tool.type !== 'hosted_tool') {
+    return undefined;
+  }
+
+  return (tool as HostedToolWithClientToolSearchExecutor<Context>)[
+    CLIENT_TOOL_SEARCH_EXECUTOR
+  ];
+}
+
+export function getToolSearchRuntimeToolKey<Context = UnknownContext>(
+  tool: Tool<Context>,
+): string | undefined {
+  if (tool.type === 'function') {
+    return getFunctionToolQualifiedName(tool) ?? tool.name;
+  }
+
+  if (
+    tool.type === 'hosted_tool' &&
+    tool.providerData?.type === 'mcp' &&
+    typeof tool.providerData.server_label === 'string' &&
+    tool.providerData.server_label.length > 0
+  ) {
+    return `mcp:${tool.providerData.server_label}`;
+  }
+
+  return undefined;
+}
 
 /**
  * A tool that can be called by the model.
@@ -1274,6 +1372,11 @@ type StrictToolOptions<
   strict?: true;
 
   /**
+   * Responses API only. Hides a top-level function tool definition until tool search loads it.
+   */
+  deferLoading?: boolean;
+
+  /**
    * The function to invoke when the tool is called.
    */
   execute: ToolExecuteFunction<TParameters, Context>;
@@ -1342,6 +1445,11 @@ type NonStrictToolOptions<
   strict: false;
 
   /**
+   * Responses API only. Hides a top-level function tool definition until tool search loads it.
+   */
+  deferLoading?: boolean;
+
+  /**
    * The function to invoke when the tool is called.
    */
   execute: ToolExecuteFunction<TParameters, Context>;
@@ -1399,6 +1507,17 @@ export type ToolOptionsWithGuardrails<
   TParameters extends ToolInputParameters,
   Context = UnknownContext,
 > = ToolOptions<TParameters, Context>;
+
+type NamespacedFunctionTool<
+  Context = UnknownContext,
+  TParameters extends ToolInputParameters = ToolInputParameters,
+  Result = unknown,
+> = FunctionTool<Context, TParameters, Result> & {
+  [FUNCTION_TOOL_NAMESPACE]?: string;
+  [FUNCTION_TOOL_NAMESPACE_DESCRIPTION]?: string;
+};
+
+type AnyFunctionTool = FunctionTool<any, any, any>;
 
 type FunctionToolInvocationArgs<
   Context = UnknownContext,
@@ -1787,6 +1906,7 @@ export function tool<
     description: options.description,
     parameters,
     strict: strictMode,
+    deferLoading: options.deferLoading ?? false,
     invoke,
     needsApproval,
     timeoutMs,
@@ -1796,6 +1916,73 @@ export function tool<
     inputGuardrails: resolveToolInputGuardrails(options.inputGuardrails),
     outputGuardrails: resolveToolOutputGuardrails(options.outputGuardrails),
   };
+}
+
+export type ToolNamespaceOptions<
+  TTools extends readonly AnyFunctionTool[] = readonly AnyFunctionTool[],
+> = {
+  /**
+   * The namespace name to expose to the model.
+   */
+  name: string;
+
+  /**
+   * Description shared by all tools in the namespace.
+   */
+  description: string;
+
+  /**
+   * Function tools to attach to the namespace.
+   */
+  tools: TTools;
+};
+
+/**
+ * Responses API only. Group function tools under a shared namespace.
+ *
+ * @param options - Namespace metadata and function tools to attach.
+ * @returns shallow-cloned function tools carrying namespace metadata.
+ */
+export function toolNamespace<TTools extends readonly AnyFunctionTool[]>(
+  options: ToolNamespaceOptions<TTools>,
+): TTools {
+  if (typeof options !== 'object' || options === null) {
+    throw new UserError('toolNamespace() requires a namespace config object.');
+  }
+
+  const { name, description, tools } = options;
+
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new UserError('toolNamespace() requires a non-empty namespace name.');
+  }
+  if (typeof description !== 'string' || description.trim().length === 0) {
+    throw new UserError(
+      'toolNamespace() requires a non-empty description because the Responses API requires namespace descriptions.',
+    );
+  }
+  if (!Array.isArray(tools)) {
+    throw new UserError('toolNamespace() requires an array of function tools.');
+  }
+  if (tools.some((tool) => tool?.type !== 'function')) {
+    throw new UserError(
+      'toolNamespace() only supports FunctionTool instances.',
+    );
+  }
+
+  const namespaceName = toFunctionToolName(name.trim());
+  if (tools.some((tool) => tool.name === namespaceName)) {
+    throw new UserError(
+      `toolNamespace() does not allow a tool named "${namespaceName}" inside namespace "${namespaceName}" because Responses self-namespaced calls would be ambiguous.`,
+    );
+  }
+  const normalizedDescription = description.trim();
+
+  return tools.map((tool) =>
+    cloneObjectWithDescriptorsAndOverrides(tool as NamespacedFunctionTool, {
+      [FUNCTION_TOOL_NAMESPACE]: namespaceName,
+      [FUNCTION_TOOL_NAMESPACE_DESCRIPTION]: normalizedDescription,
+    }),
+  ) as unknown as TTools;
 }
 
 function buildRequireApproval(requireApproval: {

@@ -12,6 +12,8 @@ import {
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
   RunToolCallOutputItem as ToolCallOutputItem,
+  RunToolSearchCallItem as ToolSearchCallItem,
+  RunToolSearchOutputItem as ToolSearchOutputItem,
 } from '../../src/items';
 import { ModelResponse } from '../../src/model';
 import {
@@ -729,6 +731,156 @@ describe('saveToSession', () => {
       this.items = [];
     }
   }
+
+  it('keeps tool_search ids when persisting session history without call ids', async () => {
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'ToolSearchSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new MemorySession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+
+    state._generatedItems = [
+      new ToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          status: 'completed',
+          arguments: {
+            query: 'shipping eta',
+            paths: ['shipping'],
+          },
+        },
+        agent,
+      ),
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          call_id: null,
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+            },
+          ],
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    ];
+
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      new RunResult(state),
+    );
+
+    expect(session.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          query: 'shipping eta',
+          paths: ['shipping'],
+        },
+      },
+      {
+        type: 'tool_search_output',
+        call_id: null,
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('strips tool_search ids when persisting session history with call ids', async () => {
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'ToolSearchSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new MemorySession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+
+    state._generatedItems = [
+      new ToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call',
+          call_id: 'tool_search_call_1',
+          status: 'completed',
+          arguments: {
+            query: 'shipping eta',
+            paths: ['shipping'],
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output',
+          call_id: 'tool_search_call_1',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+            },
+          ],
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    ];
+
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      new RunResult(state),
+    );
+
+    expect(session.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'tool_search_call',
+        call_id: 'tool_search_call_1',
+        status: 'completed',
+        arguments: {
+          query: 'shipping eta',
+          paths: ['shipping'],
+        },
+      },
+      {
+        type: 'tool_search_output',
+        call_id: 'tool_search_call_1',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      },
+    ]);
+  });
 
   it('persists tool outputs when resuming a turn after approvals', async () => {
     const textAgent = new Agent<UnknownContext, 'text'>({

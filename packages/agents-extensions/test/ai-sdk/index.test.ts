@@ -426,6 +426,598 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('preserves qualified names for namespaced function calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: '1',
+        name: 'lookup_account',
+        namespace: 'crm',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: '1',
+        name: 'lookup_account',
+        output: 'crm result',
+      } as any,
+      {
+        type: 'function_call',
+        callId: '2',
+        name: 'get_shipping_eta',
+        namespace: 'get_shipping_eta',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: '2',
+        name: 'get_shipping_eta',
+        output: 'eta result',
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: '1',
+            toolName: 'crm.lookup_account',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: '1',
+            toolName: 'crm.lookup_account',
+            output: { type: 'text', value: 'crm result' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: '2',
+            toolName: 'get_shipping_eta.get_shipping_eta',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: '2',
+            toolName: 'get_shipping_eta.get_shipping_eta',
+            output: { type: 'text', value: 'eta result' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts tool_search items into tool call and tool output messages', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: { paths: ['crm'], query: 'lookup account' },
+        providerData: { a: 1 },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { b: 2 },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'ts_call',
+            toolName: 'tool_search',
+            input: { paths: ['crm'], query: 'lookup account' },
+            providerOptions: { a: 1 },
+          },
+        ],
+        providerOptions: { a: 1 },
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'ts_call',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: {
+                status: 'completed',
+                tools: [
+                  {
+                    type: 'tool_reference',
+                    functionName: 'lookup_account',
+                    namespace: 'crm',
+                  },
+                ],
+              },
+            },
+            providerOptions: { b: 2 },
+          },
+        ],
+        providerOptions: { b: 2 },
+      },
+    ]);
+  });
+
+  test('matches tool_search outputs by call_id when they arrive out of order', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_item_1',
+        status: 'completed',
+        arguments: { paths: ['crm'], query: 'lookup account' },
+        providerData: { call_id: 'call_ts_1' },
+      } as any,
+      {
+        type: 'tool_search_call',
+        id: 'ts_item_2',
+        status: 'completed',
+        arguments: { paths: ['billing'], query: 'lookup invoice' },
+        providerData: { call_id: 'call_ts_2' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_2',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: { call_id: 'call_ts_2' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_1',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { call_id: 'call_ts_1' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs[0]).toMatchObject({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_ts_1',
+          toolName: 'tool_search',
+          input: { paths: ['crm'], query: 'lookup account' },
+          providerOptions: { call_id: 'call_ts_1' },
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_ts_2',
+          toolName: 'tool_search',
+          input: { paths: ['billing'], query: 'lookup invoice' },
+          providerOptions: { call_id: 'call_ts_2' },
+        },
+      ],
+    });
+    expect(msgs[1]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_ts_2',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_invoice',
+                  namespace: 'billing',
+                },
+              ],
+            },
+          },
+          providerOptions: { call_id: 'call_ts_2' },
+        },
+      ],
+      providerOptions: { call_id: 'call_ts_2' },
+    });
+    expect(msgs[2]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_ts_1',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_account',
+                  namespace: 'crm',
+                },
+              ],
+            },
+          },
+          providerOptions: { call_id: 'call_ts_1' },
+        },
+      ],
+      providerOptions: { call_id: 'call_ts_1' },
+    });
+  });
+
+  test('does not let server tool_search outputs without call_id hijack pending client searches', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_client',
+        status: 'completed',
+        arguments: { paths: ['crm'], query: 'lookup account' },
+        providerData: { execution: 'client' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: { execution: 'server' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_client',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { execution: 'client' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs[0]).toMatchObject({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'ts_call_client',
+          toolName: 'tool_search',
+        },
+      ],
+    });
+    expect(msgs[1]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'ts_output_server',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_invoice',
+                  namespace: 'billing',
+                },
+              ],
+            },
+          },
+          providerOptions: { execution: 'server' },
+        },
+      ],
+      providerOptions: { execution: 'server' },
+    });
+    expect(msgs[2]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'ts_call_client',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_account',
+                  namespace: 'crm',
+                },
+              ],
+            },
+          },
+          providerOptions: { execution: 'client' },
+        },
+      ],
+      providerOptions: { execution: 'client' },
+    });
+  });
+
+  test('reuses hosted tool_search call ids when server outputs omit call_id', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_server',
+        status: 'completed',
+        arguments: { paths: ['billing'], query: 'lookup invoice' },
+        providerData: {
+          execution: 'server',
+        },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: { execution: 'server' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs[0]).toMatchObject({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'ts_call_server',
+          toolName: 'tool_search',
+        },
+      ],
+    });
+    expect(msgs[1]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'ts_call_server',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_invoice',
+                  namespace: 'billing',
+                },
+              ],
+            },
+          },
+          providerOptions: { execution: 'server' },
+        },
+      ],
+      providerOptions: { execution: 'server' },
+    });
+  });
+
+  test('does not queue hosted tool_search calls as pending client searches', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_server',
+        status: 'completed',
+        arguments: { paths: ['billing'], query: 'lookup invoice' },
+        providerData: {
+          call_id: 'ts_call_server',
+          execution: 'server',
+        },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_invoice',
+            namespace: 'billing',
+          },
+        ],
+        providerData: { execution: 'server' },
+      } as any,
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_client',
+        status: 'completed',
+        arguments: { paths: ['crm'], query: 'lookup account' },
+        providerData: {
+          call_id: 'ts_call_client',
+          execution: 'client',
+        },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_client',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { execution: 'client' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs[3]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'ts_call_client',
+          toolName: 'tool_search',
+          output: {
+            type: 'json',
+            value: {
+              status: 'completed',
+              tools: [
+                {
+                  type: 'tool_reference',
+                  functionName: 'lookup_account',
+                  namespace: 'crm',
+                },
+              ],
+            },
+          },
+          providerOptions: { execution: 'client' },
+        },
+      ],
+      providerOptions: { execution: 'client' },
+    });
+  });
+
+  test('treats later tool_search outputs with the same call_id as replacements', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_item_1',
+        status: 'completed',
+        arguments: { paths: ['crm'], query: 'lookup account' },
+        providerData: { call_id: 'call_ts_1' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_stale',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account_old',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { call_id: 'call_ts_1' },
+      } as any,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_fresh',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+        providerData: { call_id: 'call_ts_1' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call_ts_1',
+            toolName: 'tool_search',
+            input: { paths: ['crm'], query: 'lookup account' },
+            providerOptions: { call_id: 'call_ts_1' },
+          },
+        ],
+        providerOptions: { call_id: 'call_ts_1' },
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_ts_1',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: {
+                status: 'completed',
+                tools: [
+                  {
+                    type: 'tool_reference',
+                    functionName: 'lookup_account',
+                    namespace: 'crm',
+                  },
+                ],
+              },
+            },
+            providerOptions: { call_id: 'call_ts_1' },
+          },
+        ],
+        providerOptions: { call_id: 'call_ts_1' },
+      },
+    ]);
+  });
+
   test('throws on built-in tool calls', () => {
     const items: protocol.ModelItem[] = [
       { type: 'hosted_tool_call', name: 'search' } as any,
@@ -537,6 +1129,35 @@ describe('itemsToLanguageV2Messages', () => {
       {
         role: 'assistant',
         content: [{ type: 'reasoning', text: 'why', providerOptions: {} }],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('uses namespace-qualified tool names for result-only function_call_result items', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        callId: 'call_1',
+        name: 'lookup_account',
+        namespace: 'billing',
+        output: { type: 'text', text: 'found' },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'billing.lookup_account',
+            output: { type: 'text', value: 'found' },
+            providerOptions: {},
+          },
+        ],
         providerOptions: {},
       },
     ]);
@@ -718,6 +1339,51 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
+  test('maps namespaced function tools to qualified names', () => {
+    const tool = {
+      type: 'function',
+      name: 'lookup_account',
+      namespace: 'crm',
+      description: 'd',
+      parameters: {} as any,
+    } as any;
+    expect(toolToLanguageV2Tool(model, tool)).toEqual({
+      type: 'function',
+      name: 'crm.lookup_account',
+      description: 'd',
+      inputSchema: {},
+    });
+  });
+
+  test('maps same-name namespaces to qualified names', () => {
+    const tool = {
+      type: 'function',
+      name: 'lookup_account',
+      namespace: 'lookup_account',
+      description: 'd',
+      parameters: {} as any,
+    } as any;
+    expect(toolToLanguageV2Tool(model, tool)).toEqual({
+      type: 'function',
+      name: 'lookup_account.lookup_account',
+      description: 'd',
+      inputSchema: {},
+    });
+  });
+
+  test('rejects deferred Responses function tools', () => {
+    const tool = {
+      type: 'function',
+      name: 'lookup_account',
+      description: 'd',
+      parameters: {} as any,
+      deferLoading: true,
+    } as any;
+    expect(() => toolToLanguageV2Tool(model, tool)).toThrow(
+      /AI SDK adapter does not support deferred Responses function tools/,
+    );
+  });
+
   test('maps builtin tools', () => {
     const tool = {
       type: 'hosted_tool',
@@ -729,6 +1395,40 @@ describe('toolToLanguageV2Tool', () => {
       id: `${model.provider}.search`,
       name: 'search',
       args: { q: 1 },
+    });
+  });
+
+  test('maps tool_search config from providerData when hosted args are implicit', () => {
+    const tool = {
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search',
+        name: 'tool_search',
+        execution: 'client',
+        description: 'Search local deferred tools.',
+        parameters: {
+          type: 'object',
+          properties: {
+            namespace: { type: 'string' },
+          },
+        },
+      },
+    } as any;
+    expect(toolToLanguageV2Tool(model, tool)).toEqual({
+      type: 'provider-defined',
+      id: `${model.provider}.tool_search`,
+      name: 'tool_search',
+      args: {
+        execution: 'client',
+        description: 'Search local deferred tools.',
+        parameters: {
+          type: 'object',
+          properties: {
+            namespace: { type: 'string' },
+          },
+        },
+      },
     });
   });
 
@@ -958,6 +1658,244 @@ describe('AiSdkModel.getResponse', () => {
       type: 'function_call',
       arguments: '{}',
     });
+  });
+
+  test('normalizes empty string input for namespaced object tools in doGenerate', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'crm.lookup_account',
+                input: '',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            providerMetadata: { meta: true },
+            response: { id: 'id' },
+            finishReason: 'tool-calls',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            namespace: 'crm',
+            description: 'accepts object',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toHaveLength(1);
+    expect(res.output[0]).toMatchObject({
+      type: 'function_call',
+      name: 'crm.lookup_account',
+      arguments: '{}',
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  test('preserves hosted tool_search calls in doGenerate', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'ts_call_1',
+                toolName: 'tool_search',
+                input: '{"paths":["crm"],"query":"lookup account"}',
+                providerMetadata: { execution: 'client' },
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            providerMetadata: { meta: true },
+            response: { id: 'id' },
+            finishReason: 'tool-calls',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: {
+              type: 'tool_search',
+              execution: 'client',
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toEqual([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_1',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+          execution: 'client',
+        },
+      },
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  test('rejects ambiguous hosted and custom tool_search names in doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate(...args: any[]) {
+          return doGenerate(...args);
+        },
+      }),
+    );
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'hosted_tool',
+              name: 'tool_search',
+              providerData: {
+                type: 'tool_search',
+                execution: 'client',
+              },
+            } as any,
+            {
+              type: 'function',
+              name: 'tool_search',
+              description: 'Custom tool_search function',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /cannot disambiguate a hosted tool_search helper from a custom tool or handoff/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('keeps same-name namespace tool calls distinct from bare tools in doGenerate', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'lookup_account.lookup_account',
+                input: '',
+              },
+            ],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            providerMetadata: { meta: true },
+            response: { id: 'id' },
+            finishReason: 'tool-calls',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Top-level lookup tool.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+          {
+            type: 'function',
+            name: 'lookup_account',
+            namespace: 'lookup_account',
+            description: 'Same-name namespace lookup tool.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toHaveLength(1);
+    expect(res.output[0]).toMatchObject({
+      type: 'function_call',
+      name: 'lookup_account.lookup_account',
+      arguments: '{}',
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   test('normalizes empty string tool input for handoff schemas', async () => {
@@ -1589,6 +2527,78 @@ describe('AiSdkModel.getStreamedResponse', () => {
         ...toolCallProviderMetadata,
       },
     });
+  });
+
+  test('preserves hosted tool_search calls in streaming mode', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'ts_call_1',
+        toolName: 'tool_search',
+        input: '{"paths":["crm"],"query":"lookup account"}',
+        providerMetadata: { execution: 'client' },
+      },
+      { type: 'response-metadata', id: 'resp-stream-tool-search' },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ];
+
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return {
+            stream: partsStream(parts),
+          } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const ev of model.getStreamedResponse({
+      input: 'hi',
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        } as any,
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(ev);
+    }
+
+    const final = events.at(-1);
+    expect(final.type).toBe('response_done');
+    expect(final.response.output).toEqual([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call_1',
+        arguments: {
+          paths: ['crm'],
+          query: 'lookup account',
+        },
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'resp-stream-tool-search',
+          execution: 'client',
+        },
+      },
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   test('includes base providerData in streaming mode even when providerMetadata is not present', async () => {
@@ -2707,6 +3717,52 @@ describe('AiSdkModel', () => {
         providerOptions: { meta: 1 },
       },
     ]);
+  });
+
+  test('rejects ambiguous hosted and custom tool_search names in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(...args: any[]) {
+          return doStream(...args);
+        },
+      }),
+    );
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: {
+              type: 'tool_search',
+              execution: 'client',
+            },
+          } as any,
+          {
+            type: 'function',
+            name: 'tool_search',
+            description: 'Custom tool_search function',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /cannot disambiguate a hosted tool_search helper from a custom tool or handoff/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
   });
 
   describe('parseArguments', () => {

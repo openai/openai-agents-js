@@ -15,6 +15,8 @@ import {
 } from '@openai/agents-core';
 import { getProviderDataWithoutReservedKeys } from './utils/providerData';
 
+const CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
 ): ChatCompletionToolChoiceOption | undefined {
@@ -26,6 +28,46 @@ export function convertToolChoice(
     type: 'function',
     function: { name: toolChoice },
   };
+}
+
+export function getCompatibleToolChoice(
+  toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
+  tools: ChatCompletionTool[],
+): ChatCompletionToolChoiceOption | undefined {
+  const converted = convertToolChoice(toolChoice);
+  if (converted == undefined || converted === 'auto' || converted === 'none') {
+    return converted;
+  }
+
+  if (converted === 'required') {
+    if (tools.length === 0) {
+      throw new UserError(
+        'modelSettings.toolChoice="required" requires at least one available tool in Chat Completions mode.',
+      );
+    }
+    return converted;
+  }
+
+  if (typeof converted !== 'object' || !('function' in converted)) {
+    return converted;
+  }
+
+  const availableToolNames = new Set(
+    tools
+      .map((tool) =>
+        tool.type === 'function' && 'function' in tool
+          ? tool.function.name
+          : undefined,
+      )
+      .filter((name): name is string => typeof name === 'string'),
+  );
+  if (!availableToolNames.has(converted.function.name)) {
+    throw new UserError(
+      `modelSettings.toolChoice="${converted.function.name}" does not match any available tool or handoff in Chat Completions mode.`,
+    );
+  }
+
+  return converted;
 }
 
 export function extractAllAssistantContent(
@@ -148,18 +190,36 @@ export function extractAllUserContent(
         ...rest,
       });
     } else if (c.type === 'audio') {
+      if (typeof c.audio !== 'string') {
+        throw new UserError(
+          `Chat Completions only supports inline audio data for input_audio: ${JSON.stringify(c)}`,
+        );
+      }
+      const inputAudioFormat =
+        c.format === 'wav' || c.format === 'mp3'
+          ? c.format
+          : c.providerData?.input_audio?.format === 'wav' ||
+              c.providerData?.input_audio?.format === 'mp3'
+            ? c.providerData.input_audio.format
+            : undefined;
+      if (!inputAudioFormat) {
+        throw new UserError(
+          `Chat Completions input_audio requires format "wav" or "mp3": ${JSON.stringify(c)}`,
+        );
+      }
       const rest = getProviderDataWithoutReservedKeys(c.providerData, [
         'type',
         'input_audio',
       ]);
       const inputAudio = getProviderDataWithoutReservedKeys(
         c.providerData?.input_audio,
-        ['data'],
+        ['data', 'format'],
       );
       out.push({
         type: 'input_audio',
         input_audio: {
-          data: c.audio as string,
+          data: c.audio,
+          format: inputAudioFormat,
           ...inputAudio,
         } as ChatCompletionContentPartInputAudio['input_audio'],
         ...rest,
@@ -320,7 +380,25 @@ export function itemsToMessages(
         'Computer use calls are not supported for chat completions. Got item: ' +
           JSON.stringify(item),
       );
+    } else if (
+      item.type === 'tool_search_call' ||
+      item.type === 'tool_search_output'
+    ) {
+      throw new UserError(
+        'Tool search items are not supported for chat completions. Please use the Responses API when replaying tool search history.',
+      );
     } else if (item.type === 'function_call') {
+      const hasQualifiedOrInvalidName =
+        typeof item.name === 'string' &&
+        !CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN.test(item.name);
+      if (
+        hasQualifiedOrInvalidName ||
+        (typeof item.namespace === 'string' && item.namespace.trim().length > 0)
+      ) {
+        throw new UserError(
+          'Namespaced function call history is not supported for chat completions. Please use the Responses API when replaying namespaced tool calls.',
+        );
+      }
       const asst = ensureAssistantMessage();
       const toolCalls = asst.tool_calls ?? [];
       const funcCall = item;

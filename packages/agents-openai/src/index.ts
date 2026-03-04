@@ -25,8 +25,10 @@ export {
   webSearchTool,
   fileSearchTool,
   codeInterpreterTool,
+  toolSearchTool,
   imageGenerationTool,
 } from './tools';
+export type { ToolSearchTool } from './tools';
 export {
   OpenAIConversationsSession,
   startOpenAIConversationsSession,

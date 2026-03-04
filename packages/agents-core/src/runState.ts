@@ -7,6 +7,8 @@ import {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
   RunReasoningItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
@@ -33,8 +35,19 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
-import { HostedMCPTool, ShellTool, ApplyPatchTool } from './tool';
+import {
+  getToolSearchRuntimeToolKey,
+  HostedMCPTool,
+  ShellTool,
+  ApplyPatchTool,
+  Tool,
+} from './tool';
 import type { AgentToolInvocation } from './agentToolInvocation';
+import {
+  getFunctionToolQualifiedName,
+  resolveFunctionToolCallName,
+} from './toolIdentity';
+import { getToolSearchOutputReplacementKey } from './utils/toolSearch';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -51,9 +64,10 @@ import type { AgentToolInvocation } from './agentToolInvocation';
  * - 1.4: Adds optional toolInput to serialized run context.
  * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
  * - 1.6: Adds optional requestId to serialized model responses.
- * - 1.7: Adds optional approval rejection messages to serialized run context.
+ * - 1.7: Adds optional approval rejection messages.
+ * - 1.8: Adds tool search item variants to serialized run state payloads.
  */
-export const CURRENT_SCHEMA_VERSION = '1.7' as const;
+export const CURRENT_SCHEMA_VERSION = '1.8' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -62,6 +76,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.4',
   '1.5',
   '1.6',
+  '1.7',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -135,6 +150,16 @@ const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('message_output_item'),
     rawItem: protocol.AssistantMessageItem,
+    agent: serializedAgentSchema,
+  }),
+  z.object({
+    type: z.literal('tool_search_call_item'),
+    rawItem: protocol.ToolSearchCallItem,
+    agent: serializedAgentSchema,
+  }),
+  z.object({
+    type: z.literal('tool_search_output_item'),
+    rawItem: protocol.ToolSearchOutputItem,
     agent: serializedAgentSchema,
   }),
   z.object({
@@ -356,6 +381,17 @@ export const SerializedRunState = z.object({
 
 export type FinalOutputSource = 'error_handler' | 'turn_resolution';
 
+type ToolSearchRuntimeToolEntry<TContext = UnknownContext> = {
+  order: number;
+  tools: Tool<TContext>[];
+};
+
+type ToolSearchRuntimeToolState<TContext = UnknownContext> = {
+  anonymousEntries: ToolSearchRuntimeToolEntry<TContext>[];
+  keyedEntries: Map<string, ToolSearchRuntimeToolEntry<TContext>>;
+  nextOrder: number;
+};
+
 /**
  * Serializable snapshot of an agent's run, including context, usage and trace.
  * While this class has publicly writable properties (prefixed with `_`), they are not meant to be
@@ -490,6 +526,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Trace associated with this run if tracing is enabled.
    */
   public _trace: Trace | null = null;
+  /**
+   * Runtime-only tool_search-loaded tools, scoped by agent name and preserved across turns for
+   * the lifetime of this in-memory run.
+   */
+  public _toolSearchRuntimeToolsByAgentName = new Map<
+    string,
+    ToolSearchRuntimeToolState<TContext>
+  >();
 
   constructor(
     context: RunContext<TContext>,
@@ -539,6 +583,67 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public setCurrentAgentSpan(span?: Span<AgentSpanData>): void {
     this._currentAgentSpan = span;
+  }
+
+  private getOrCreateToolSearchRuntimeToolState(
+    agentName: string,
+  ): ToolSearchRuntimeToolState<TContext> {
+    let state = this._toolSearchRuntimeToolsByAgentName.get(agentName);
+    if (!state) {
+      state = {
+        anonymousEntries: [],
+        keyedEntries: new Map(),
+        nextOrder: 0,
+      };
+      this._toolSearchRuntimeToolsByAgentName.set(agentName, state);
+    }
+    return state;
+  }
+
+  public recordToolSearchRuntimeTools(
+    agent: Agent<any, any>,
+    toolSearchOutput: protocol.ToolSearchOutputItem,
+    tools: Tool<TContext>[],
+  ): void {
+    const runtimeState = this.getOrCreateToolSearchRuntimeToolState(agent.name);
+    const entry: ToolSearchRuntimeToolEntry<TContext> = {
+      order: runtimeState.nextOrder++,
+      tools,
+    };
+    const replacementKey = getToolSearchOutputReplacementKey(toolSearchOutput);
+    if (replacementKey) {
+      runtimeState.keyedEntries.set(replacementKey, entry);
+      return;
+    }
+
+    runtimeState.anonymousEntries.push(entry);
+  }
+
+  public getToolSearchRuntimeTools(agent: Agent<any, any>): Tool<TContext>[] {
+    const runtimeState = this._toolSearchRuntimeToolsByAgentName.get(
+      agent.name,
+    );
+    if (!runtimeState) {
+      return [];
+    }
+
+    const dedupedTools = new Map<string, Tool<TContext>>();
+    const orderedEntries = [
+      ...runtimeState.keyedEntries.values(),
+      ...runtimeState.anonymousEntries,
+    ].sort((a, b) => a.order - b.order);
+    let anonymousCounter = 0;
+
+    for (const entry of orderedEntries) {
+      for (const tool of entry.tools) {
+        const key =
+          getToolSearchRuntimeToolKey(tool) ??
+          `anonymous:${entry.order}:${anonymousCounter++}`;
+        dedupedTools.set(key, tool);
+      }
+    }
+
+    return [...dedupedTools.values()];
   }
 
   /**
@@ -846,9 +951,88 @@ async function buildRunStateFromString<
       `Run state schema version ${currentSchemaVersion} is not supported. Please use version ${CURRENT_SCHEMA_VERSION}.`,
     );
   }
-
-  const stateJson = SerializedRunState.parse(JSON.parse(str));
+  const stateJson = SerializedRunState.parse(jsonResult);
+  assertSchemaVersionSupportsToolSearch(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
+}
+
+function assertSchemaVersionSupportsToolSearch(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === '1.8') {
+    return;
+  }
+
+  if (!containsSerializedToolSearchState(stateJson)) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support tool_search items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function containsSerializedToolSearchState(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    containsToolSearchProtocolItems(stateJson.originalInput) ||
+    containsToolSearchInModelResponses(stateJson.modelResponses) ||
+    containsToolSearchInModelResponse(stateJson.lastModelResponse) ||
+    containsToolSearchRunItems(stateJson.generatedItems) ||
+    containsToolSearchInProcessedResponse(stateJson.lastProcessedResponse)
+  );
+}
+
+function containsToolSearchInModelResponses(
+  modelResponses: z.infer<typeof modelResponseSchema>[],
+): boolean {
+  return modelResponses.some(containsToolSearchInModelResponse);
+}
+
+function containsToolSearchInModelResponse(
+  modelResponse: z.infer<typeof modelResponseSchema> | undefined,
+): boolean {
+  return Boolean(
+    modelResponse?.output.some((item) => isToolSearchProtocolType(item.type)),
+  );
+}
+
+function containsToolSearchRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(
+    items?.some(
+      (item) =>
+        item.type === 'tool_search_call_item' ||
+        item.type === 'tool_search_output_item' ||
+        isToolSearchProtocolType(item.rawItem?.type),
+    ),
+  );
+}
+
+function containsToolSearchProtocolItems(
+  items: string | protocol.ModelItem[],
+): boolean {
+  return Array.isArray(items)
+    ? items.some((item) => isToolSearchProtocolType(item.type))
+    : false;
+}
+
+function containsToolSearchInProcessedResponse(
+  processedResponse:
+    | z.infer<typeof serializedProcessedResponseSchema>
+    | undefined,
+): boolean {
+  return containsToolSearchRunItems(processedResponse?.newItems);
+}
+
+function isToolSearchProtocolType(type: unknown): boolean {
+  return type === 'tool_search_call' || type === 'tool_search_output';
 }
 
 async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
@@ -1096,6 +1280,16 @@ export function deserializeItem(
         serializedItem.rawItem,
         agentMap.get(serializedItem.agent.name) as Agent<any, any>,
       );
+    case 'tool_search_call_item':
+      return new RunToolSearchCallItem(
+        serializedItem.rawItem,
+        agentMap.get(serializedItem.agent.name) as Agent<any, any>,
+      );
+    case 'tool_search_output_item':
+      return new RunToolSearchOutputItem(
+        serializedItem.rawItem,
+        agentMap.get(serializedItem.agent.name) as Agent<any, any>,
+      );
     case 'tool_call_item':
       return new RunToolCallItem(
         serializedItem.rawItem,
@@ -1233,7 +1427,7 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   const tools = new Map(
     allTools
       .filter((tool) => tool.type === 'function')
-      .map((tool) => [tool.name, tool]),
+      .map((tool) => [getFunctionToolQualifiedName(tool) ?? tool.name, tool]),
   );
   const computerTools = new Map(
     allTools
@@ -1277,13 +1471,16 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
     }),
     functions: await Promise.all(
       serializedProcessedResponse.functions.map(async (functionCall) => {
-        if (!tools.has(functionCall.tool.name)) {
-          throw new UserError(`Tool ${functionCall.tool.name} not found`);
+        const toolIdentity =
+          resolveFunctionToolCallName(functionCall.toolCall, tools) ??
+          functionCall.tool.name;
+        if (!tools.has(toolIdentity)) {
+          throw new UserError(`Tool ${toolIdentity} not found`);
         }
 
         return {
           toolCall: functionCall.toolCall,
-          tool: tools.get(functionCall.tool.name)!,
+          tool: tools.get(toolIdentity)!,
         };
       }),
     ),

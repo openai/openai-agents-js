@@ -1,5 +1,11 @@
+import { getClientToolSearchExecutor } from '@openai/agents-core';
 import { describe, it, expect } from 'vitest';
-import { fileSearchTool, webSearchTool, imageGenerationTool } from '../src/tools';
+import {
+  fileSearchTool,
+  imageGenerationTool,
+  toolSearchTool,
+  webSearchTool,
+} from '../src/tools';
 
 describe('Tool', () => {
   it('webSearchTool', () => {
@@ -57,5 +63,83 @@ describe('Tool', () => {
     expect(t.name).toBe('image_generation');
     expect(t.providerData!.type).toBe('image_generation');
     expect(t.providerData!.model).toBeUndefined();
+  });
+
+  it('toolSearchTool', () => {
+    const t = toolSearchTool();
+    expect(t).toBeDefined();
+    expect(t.type).toBe('hosted_tool');
+    expect(t.name).toBe('tool_search');
+    expect(t.providerData).toEqual({
+      type: 'tool_search',
+      name: 'tool_search',
+      execution: undefined,
+      description: undefined,
+      parameters: undefined,
+    });
+  });
+
+  it('toolSearchTool supports client execution options', () => {
+    const t = toolSearchTool({
+      execution: 'client',
+      description: 'Search local deferred tools.',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        },
+      },
+    });
+    expect(t).toMatchObject({
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+        description: 'Search local deferred tools.',
+        parameters: {
+          type: 'object',
+          properties: {
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('toolSearchTool attaches client execute handlers', () => {
+    const execute = async () => null;
+    const t = toolSearchTool({
+      execution: 'client',
+      execute,
+    });
+
+    expect(getClientToolSearchExecutor(t)).toBe(execute);
+  });
+
+  it('toolSearchTool rejects execute without client execution', () => {
+    expect(() =>
+      toolSearchTool({
+        execute: async () => null,
+      }),
+    ).toThrow(
+      'toolSearchTool() only supports execute when execution is "client".',
+    );
+  });
+
+  it('toolSearchTool rejects custom names', () => {
+    expect(() =>
+      toolSearchTool({
+        name: 'client_search' as 'tool_search',
+      }),
+    ).toThrow(
+      'toolSearchTool() only supports the canonical built-in name "tool_search".',
+    );
   });
 });

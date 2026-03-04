@@ -456,6 +456,11 @@ export const FunctionCallItem = ItemBase.extend({
   name: z.string().describe('The name of the function'),
 
   /**
+   * Optional namespace used to qualify the function name for tool search.
+   */
+  namespace: z.string().optional(),
+
+  /**
    * The status of the function call.
    */
   status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
@@ -467,6 +472,52 @@ export const FunctionCallItem = ItemBase.extend({
 });
 
 export type FunctionCallItem = z.infer<typeof FunctionCallItem>;
+
+export const ToolReference = z.object({
+  type: z.literal('tool_reference'),
+  functionName: z.string(),
+  namespace: z.string().optional(),
+});
+
+export type ToolReference = z.infer<typeof ToolReference>;
+
+/**
+ * Tool search outputs may contain tool references or concrete tool definitions.
+ * Preserve the payload as returned so stateless continuation can replay it losslessly.
+ */
+export const ToolSearchOutputTool = z.record(z.string(), z.any());
+
+export type ToolSearchOutputTool = z.infer<typeof ToolSearchOutputTool>;
+
+/**
+ * Tool search call arguments are provider-defined. Hosted tool search uses
+ * `{ paths, query }`, while client-executed tool search can use a custom schema.
+ */
+export const ToolSearchCallArguments = z.unknown();
+
+export type ToolSearchCallArguments = z.infer<typeof ToolSearchCallArguments>;
+
+export const ToolSearchCallItem = ItemBase.extend({
+  type: z.literal('tool_search_call'),
+  call_id: z.string().nullable().optional(),
+  callId: z.string().nullable().optional(),
+  execution: z.enum(['client', 'server']).optional(),
+  arguments: ToolSearchCallArguments,
+  status: z.string().optional(),
+});
+
+export type ToolSearchCallItem = z.infer<typeof ToolSearchCallItem>;
+
+export const ToolSearchOutputItem = ItemBase.extend({
+  type: z.literal('tool_search_output'),
+  call_id: z.string().nullable().optional(),
+  callId: z.string().nullable().optional(),
+  execution: z.enum(['client', 'server']).optional(),
+  status: z.string().optional(),
+  tools: z.array(ToolSearchOutputTool),
+});
+
+export type ToolSearchOutputItem = z.infer<typeof ToolSearchOutputItem>;
 
 export const ToolCallOutputContent = z.discriminatedUnion('type', [
   ToolOutputText,
@@ -490,6 +541,11 @@ export const FunctionCallResultItem = ItemBase.extend({
    * The name of the tool that was called
    */
   name: z.string().describe('The name of the tool'),
+
+  /**
+   * Optional namespace preserved from the originating function call.
+   */
+  namespace: z.string().optional(),
 
   /**
    * The ID of the tool call. Required to match up the respective tool call result.
@@ -725,6 +781,8 @@ export type UnknownItem = z.infer<typeof UnknownItem>;
 
 export const OutputModelItem = z.discriminatedUnion('type', [
   AssistantMessageItem,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
@@ -744,6 +802,8 @@ export const ModelItem = z.union([
   UserMessageItem,
   AssistantMessageItem,
   SystemMessageItem,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   HostedToolCallItem,
   FunctionCallItem,
   ComputerUseCallItem,
