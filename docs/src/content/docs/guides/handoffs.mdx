@@ -14,6 +14,8 @@ Handoffs let an agent delegate part of a conversation to another agent. This is 
 
 Handoffs are represented as tools to the LLM. If you hand off to an agent called `Refund Agent`, the tool name would be `transfer_to_refund_agent`.
 
+> Read this page after [Agents](/openai-agents-js/guides/agents#composition-patterns) once you know the specialist should take over the conversation. If the specialist should stay behind the original agent, use [agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools) instead.
+
 ## Creating a handoff
 
 Every agent accepts a `handoffs` option. It can contain other `Agent` instances or `Handoff` objects returned by the `handoff()` helper.
@@ -50,8 +52,7 @@ Sometimes you want the LLM to provide data when invoking a handoff. Define an in
 
 ## Input filters
 
-By default a handoff receives the entire conversation history. To modify what gets passed to the next agent, provide an `inputFilter`.
-Common helpers live in `@openai/agents-core/extensions`.
+By default a handoff receives the entire conversation history. To modify what gets passed to the next agent, provide an `inputFilter`. Common helpers live in `@openai/agents-core/extensions`.
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
@@ -64,3 +65,11 @@ LLMs respond more reliably when your prompts mention handoffs. The SDK exposes a
   code={recommendedPromptExample}
   title="Recommended prompts"
 />
+
+## Related guides
+
+- [Agents](/openai-agents-js/guides/agents#composition-patterns) for choosing between managers and handoffs.
+- [Agent orchestration](/openai-agents-js/guides/multi-agent) for the broader workflow tradeoffs.
+- [Tools](/openai-agents-js/guides/tools#4-agents-as-tools) for the manager-style alternative using `agent.asTool()`.
+- [Running agents](/openai-agents-js/guides/running-agents) for how handoffs behave at run time.
+- [Results](/openai-agents-js/guides/results#final-output) for typed `finalOutput` across handoff graphs.

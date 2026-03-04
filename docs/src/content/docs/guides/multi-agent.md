@@ -1,11 +1,11 @@
 ---
-title: Agent orchestration
+title: Agent Orchestration
 description: Coordinate the flow between several agents
 ---
 
 Orchestration refers to the flow of agents in your app. Which agents run, in what order, and how do they decide what happens next? There are two main ways to orchestrate agents:
 
-> Read this page after the [Quickstart](/openai-agents-js/guides/quickstart) or [Agents](/openai-agents-js/guides/agents) guide. This page is about workflow design across multiple agents, not the `Agent` constructor itself.
+> Read this page after the [Quickstart](/openai-agents-js/guides/quickstart) or the [Agents guide](/openai-agents-js/guides/agents#composition-patterns). This page is about workflow design across multiple agents, not the `Agent` constructor itself.
 
 1. Allowing the LLM to make decisions: this uses the intelligence of an LLM to plan, reason, and decide on what steps to take based on that.
 2. Orchestrating via code: determining the flow of agents via your code.
@@ -26,10 +26,10 @@ An agent is an LLM equipped with instructions, tools and handoffs. This means th
 
 In the Agents SDK, two orchestration patterns come up most often:
 
-| Pattern         | How it works                                                                                                                   | Best when                                                                                                                         |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Agents as tools | A manager agent keeps control of the conversation and calls specialist agents through `agent.asTool()`.                        | You want one agent to own the final answer, combine outputs from multiple specialists, or enforce shared guardrails in one place. |
-| Handoffs        | A triage agent routes the conversation to a specialist, and that specialist becomes the active agent for the rest of the turn. | You want the specialist to speak directly to the user, keep prompts focused, or use different instructions/models per specialist. |
+| Pattern | How it works | Best when |
+| --- | --- | --- |
+| Agents as tools | A manager agent keeps control of the conversation and calls specialist agents through `agent.asTool()`. | You want one agent to own the final answer, combine outputs from multiple specialists, or enforce shared guardrails in one place. |
+| Handoffs | A triage agent routes the conversation to a specialist, and that specialist becomes the active agent for the rest of the turn. | You want the specialist to speak directly to the user, keep prompts focused, or use different instructions/models per specialist. |
 
 Use **agents as tools** when the specialist should help with a subtask but should not take over the user-facing conversation. The manager stays responsible for deciding which tools to call and how to present the final response. See the [tools guide](/openai-agents-js/guides/tools#agents-as-tools) for the API details, and the [agents guide](/openai-agents-js/guides/agents#composition-patterns) for a side-by-side example.
 
@@ -51,7 +51,7 @@ If you want the SDK primitives behind this style of orchestration, start with [t
 
 While orchestrating via LLM is powerful, orchestrating via code makes tasks more deterministic and predictable, in terms of speed, cost and performance. Common patterns here are:
 
-- Using [structured outputs](https://platform.openai.com/docs/guides/structured-outputs) to generate well formed data that you can inspect with your code. For example, you might ask an agent to classify the task into a few categories, and then pick the next agent based on the category.
+- Using [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) to generate well formed data that you can inspect with your code. For example, you might ask an agent to classify the task into a few categories, and then pick the next agent based on the category.
 - Chaining multiple agents by transforming the output of one into the input of the next. You can decompose a task like writing a blog post into a series of steps - do research, write an outline, write the blog post, critique it, and then improve it.
 - Running the agent that performs the task in a `while` loop with an agent that evaluates and provides feedback, until the evaluator says the output passes certain criteria.
 - Running multiple agents in parallel, e.g. via JavaScript primitives like `Promise.all`. This is useful for speed when you have multiple tasks that don't depend on each other.

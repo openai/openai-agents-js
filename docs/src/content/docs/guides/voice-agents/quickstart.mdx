@@ -19,7 +19,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 1. **Create a project**
 
-   In this quickstart we will create a voice agent you can use in the browser. If you want to check out a new project, you can try out [`Next.js`](https://nextjs.org/docs/getting-started/installation) or [`Vite`](https://vite.dev/guide/installation.html).
+   In this quickstart we will create a voice agent you can use in the browser. If you want to scaffold a new project, you can start with [`Next.js`](https://nextjs.org/docs/getting-started/installation) or [`Vite`](https://vite.dev/guide/installation.html).
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -33,7 +33,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 3. **Generate a client ephemeral token**
 
-   As this application will run in the user's browser, we need a secure way to connect to the model through the Realtime API. For this we can use an [ephemeral client key](https://platform.openai.com/docs/guides/realtime#creating-an-ephemeral-token) that should be generated on your backend server. For testing purposes you can also generate a key using `curl` and your regular OpenAI API key.
+   As this application will run in the user's browser, we need a secure way to connect to the model through the Realtime API. The recommended flow matches the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/) guide: your backend creates a short-lived ephemeral client token, then your browser uses that token to establish the WebRTC connection. For testing purposes you can also generate a token using `curl` and your regular OpenAI API key.
 
    ```bash
    export OPENAI_API_KEY="sk-proj-...(your own key here)"
@@ -48,11 +48,16 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
       }'
    ```
 
-   The response contains a top-level `value` field that starts with the `ek_` prefix, plus the
-   effective `session` object. Use `value` as the client secret when establishing the WebRTC
-   connection. This token is short-lived, so your backend should mint a fresh one when needed.
+   The response contains a top-level `value` field that starts with the `ek_` prefix, plus the effective `session` object. Use `value` as the client secret when establishing the WebRTC connection. This token is short-lived, so your backend should mint a fresh one when needed. If your browser session needs hosted MCP tools with `authorization` or custom `headers`, include that hosted MCP configuration in the server-side `session` payload you send to `POST /v1/realtime/client_secrets` instead of exposing those credentials in browser code.
 
 </Steps>
+
+<Aside type="note">
+  Production browser flow: the browser asks your backend for a fresh ephemeral
+  token, your backend calls `POST /v1/realtime/client_secrets` with a server API
+  key, and the browser passes the returned `ek_...` token to
+  `session.connect(...)`.
+</Aside>
 
 ## Create and connect the voice agent
 
@@ -73,7 +78,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 2. **Create a session**
 
-   Unlike a regular agent, a Voice Agent is continuously running and listening inside a `RealtimeSession` that handles the conversation and connection to the model over time. This session will also handle the audio processing, interruptions, and a lot of the other lifecycle functionality we will cover later on.
+   Unlike a regular agent, a voice agent is continuously running inside a `RealtimeSession` that handles the conversation and connection to the model over time. This session also manages audio processing, interruptions, and the broader conversation lifecycle that you will configure later on.
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -83,19 +88,25 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
    });
    ```
 
-   The `RealtimeSession` constructor takes an `agent` as the first argument. This agent will be the first agent that your user will be able to interact with.
+   The `RealtimeSession` constructor takes an `agent` as the first argument. This agent will be the first one your user interacts with.
 
 3. **Connect to the session**
 
-   To connect to the session you need to pass the client ephemeral token you generated earlier on.
+   To connect to the session you need to pass the client ephemeral token you generated earlier.
 
    ```typescript
    await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
-   This will connect to the Realtime API using WebRTC in the browser and automatically configure your microphone and speaker for audio input and output. If you are running your `RealtimeSession` on a backend server (like Node.js) the SDK will automatically use WebSocket as a connection. You can learn more about the different transport layers in the [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) guide.
+   In the browser, this connects to the Realtime API using WebRTC and automatically configures microphone capture and audio playback for you. On that default WebRTC path, the SDK sends the initial session configuration as soon as the data channel opens and tries to wait for the matching `session.updated` acknowledgement before `connect()` resolves, with a timeout fallback if that acknowledgement never arrives. If you run `RealtimeSession` in a server runtime such as Node.js, the SDK automatically falls back to WebSocket instead; on the WebSocket path, `connect()` resolves after the socket opens and the initial config has been sent, so `session.updated` may arrive slightly later. You can learn more about the transport choices in the [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) guide.
 
 </Steps>
+
+<Aside type="note">
+  If you want lower-level control over the peer connection or raw transport
+  events, see the [`/raw-client` example in
+  `examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next).
+</Aside>
 
 ## Run and test the app
 
@@ -105,9 +116,9 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
    <Code lang="typescript" code={helloWorldExample} />
 
-2. **Fire up the engines and start talking**
+2. **Fire up the app and start talking**
 
-   Start up your webserver and navigate to the page that includes your new Realtime Agent code. You should see a request for microphone access. Once you grant access you should be able to start talking to your agent.
+   Start your web server and open the page that includes your new Realtime Agent code. You should see a microphone permission request. Once you grant access, you should be able to start talking to your agent.
 
    ```bash
    npm run dev
@@ -120,5 +131,6 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 From here you can start designing and building your own voice agent:
 
 - Add [tools](/openai-agents-js/guides/voice-agents/build#tools), [handoffs](/openai-agents-js/guides/voice-agents/build#handoffs), and [guardrails](/openai-agents-js/guides/voice-agents/build#guardrails).
-- Learn how to [handle audio interruptions](/openai-agents-js/guides/voice-agents/build#interruptions) and [manage session history](/openai-agents-js/guides/voice-agents/build#conversation-history-management).
-- Choose the right transport for your deployment: [WebRTC](/openai-agents-js/guides/voice-agents/transport#connecting-over-webrtc), [WebSocket](/openai-agents-js/guides/voice-agents/transport#connecting-over-websocket), or [a custom transport](/openai-agents-js/guides/voice-agents/transport#building-your-own-transport-mechanism).
+- Learn how [turn detection and voice activity detection](/openai-agents-js/guides/voice-agents/build#turn-detection-and-voice-activity-detection), [interruptions](/openai-agents-js/guides/voice-agents/build#interruptions), and [manual response control](/openai-agents-js/guides/voice-agents/build#manual-response-control) affect the conversation loop.
+- Add [text input](/openai-agents-js/guides/voice-agents/build#text-input), [image input](/openai-agents-js/guides/voice-agents/build#image-input), and [session history management](/openai-agents-js/guides/voice-agents/build#conversation-history-management).
+- Choose the right transport for your deployment: [WebRTC](/openai-agents-js/guides/voice-agents/transport#webrtc-is-the-default-browser-choice), [WebSocket](/openai-agents-js/guides/voice-agents/transport#websocket-is-the-default-server-choice), or [a custom transport](/openai-agents-js/guides/voice-agents/transport#bring-your-own-transport).

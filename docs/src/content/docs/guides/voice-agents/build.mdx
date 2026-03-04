@@ -1,12 +1,10 @@
 ---
 title: Building Voice Agents
-description: Learn how to build voice agents using the OpenAI Agents SDK, what features are available, how to architecture your application, and more.
+description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 ---
 
-import { Steps, Aside, Code } from '@astrojs/starlight/components';
-import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
+import { Aside, Code } from '@astrojs/starlight/components';
 import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
 import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
 import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
 import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
@@ -15,15 +13,11 @@ import guardrailsExample from '../../../../../../examples/docs/voice-agents/guar
 import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
 import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
 import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
 import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
-import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
 import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import toolHistoryExample from '../../../../../../examples/docs/voice-agents/toolHistory.ts?raw';
 import sendMessageExample from '../../../../../../examples/docs/voice-agents/sendMessage.ts?raw';
+import addImageExample from '../../../../../../examples/docs/voice-agents/addImage.ts?raw';
 import serverAgentExample from '../../../../../../examples/docs/voice-agents/serverAgent.ts?raw';
 import delegationAgentExample from '../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
 import turnDetectionExample from '../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
@@ -35,7 +29,7 @@ Choose your architecture early:
 - `OpenAIRealtimeWebRTC` is the simplest browser path and handles audio input/output for you.
 - `OpenAIRealtimeWebSocket` gives you more control, but you must manage audio capture and playback yourself.
 - Function tools run wherever the `RealtimeSession` runs. If the session runs in the browser, the tool runs in the browser too.
-- Realtime handoffs keep the same voice and model. If you need a different backend model, delegate through a tool instead of a handoff.
+- Realtime handoffs keep the same live session model. Voice changes only work before the session has produced audio output. If you need a different backend model, delegate through a tool instead of a handoff.
 
 </Aside>
 
@@ -43,69 +37,135 @@ Choose your architecture early:
 
 ### Audio handling
 
-Some transport layers like the default `OpenAIRealtimeWebRTC` will handle audio input and output
-automatically for you. For other transport mechanisms like `OpenAIRealtimeWebSocket` you will have to
-handle session audio yourself:
+Some transport layers like the default `OpenAIRealtimeWebRTC` handle audio input and output automatically for you. For other transport mechanisms like `OpenAIRealtimeWebSocket` you have to handle session audio yourself:
 
 <Code lang="typescript" code={handleAudioExample} />
 
-When the underlying transport supports it, `session.muted` reports the current mute state and
-`session.mute(true | false)` toggles microphone capture. `OpenAIRealtimeWebSocket` does not
-implement muting: `session.muted` returns `null` and `session.mute()` throws, so for websocket
-setups you should pause capture on your side and stop calling `sendAudio()` until the microphone
-should be live again.
+When the underlying transport supports it, `session.muted` reports the current mute state and `session.mute(true | false)` toggles microphone capture. `OpenAIRealtimeWebSocket` does not implement muting: `session.muted` returns `null` and `session.mute()` throws, so for websocket setups you should pause capture on your side and stop calling `sendAudio()` until the microphone should be live again.
 
 ### Session configuration
 
-You can configure your session by passing additional options to either the [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/) during construction or
-when you call `connect(...)`.
+Configure the session itself when you create [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/), usually through the `model` option and the `config` object. `connect(...)` is for connection-time concerns such as credentials, endpoint URL, and SIP call attachment rather than arbitrary session fields.
 
 <Code lang="typescript" code={configureSessionExample} />
 
-These transport layers allow you to pass any parameter that matches [session](https://platform.openai.com/docs/api-reference/realtime-client-events/session/update).
+Under the hood, the SDK normalizes this configuration into the Realtime [`session.update`](https://developers.openai.com/api/reference/resources/realtime/client-events/#session.update) shape. If you need a raw session field that does not have a matching property in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), use `providerData` or send a raw `session.update` through `session.transport.sendEvent(...)`.
 
-Prefer the newer config shape with `outputModalities`, `audio.input`, and `audio.output`. Legacy
-top-level fields such as `modalities`, `inputAudioFormat`, `outputAudioFormat`,
-`inputAudioTranscription`, and `turnDetection` are still normalized for backwards compatibility,
-but new code should use the nested `audio` structure shown here.
+Prefer the newer SDK config shape with `outputModalities`, `audio.input`, and `audio.output`. Older SDK aliases such as `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, and `turnDetection` are still normalized for backwards compatibility, but new code should use the nested `audio` structure shown here.
 
-For parameters that are new and don't have a matching parameter in the [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/) you can use `providerData`. Anything passed in `providerData` will be passed directly as part of the `session` object.
+For speech-to-speech sessions, the usual choice is `outputModalities: ['audio']`, which gives you audio output plus transcripts. Switch to `['text']` only when you want text-only responses.
+
+For parameters that are new and do not have a matching parameter in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), you can use `providerData`. Anything passed in `providerData` is forwarded as part of the raw `session` object.
 
 Additional `RealtimeSession` options you can set at construction time:
 
-| Option                                        | Type                              | Purpose                                                                                 |
-| --------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------- |
-| `context`                                     | `TContext`                        | Extra local context merged into the session context.                                    |
-| `historyStoreAudio`                           | `boolean`                         | Store audio data in the local history snapshot (disabled by default).                   |
-| `outputGuardrails`                            | `RealtimeOutputGuardrail[]`       | Output guardrails for the session (see [Guardrails](#guardrails)).                      |
-| `outputGuardrailSettings`                     | `{ debounceTextLength?: number }` | Guardrail cadence. Defaults to `100`; use `-1` to only run once full text is available. |
-| `tracingDisabled`                             | `boolean`                         | Disable tracing for the session.                                                        |
-| `groupId`                                     | `string`                          | Group traces across sessions or backend runs.                                           |
-| `traceMetadata`                               | `Record<string, any>`             | Custom metadata to attach to session traces.                                            |
-| `workflowName`                                | `string`                          | Friendly name for the trace workflow.                                                   |
-| `automaticallyTriggerResponseForMcpToolCalls` | `boolean`                         | Auto-trigger a model response when an MCP tool call completes (default: `true`).        |
-| `toolErrorFormatter`                          | `ToolErrorFormatter`              | Customize tool approval rejection messages returned to the model.                       |
+| Option | Type | Purpose |
+| --- | --- | --- |
+| `context` | `TContext` | Extra local context merged into the session context. |
+| `historyStoreAudio` | `boolean` | Store audio data in the local history snapshot (disabled by default). |
+| `outputGuardrails` | `RealtimeOutputGuardrail[]` | Output guardrails for the session (see [Guardrails](#guardrails)). |
+| `outputGuardrailSettings` | `{ debounceTextLength?: number }` | Guardrail cadence. Defaults to `100`; use `-1` to only run once full text is available. |
+| `tracingDisabled` | `boolean` | Disable tracing for the session. |
+| `groupId` | `string` | Group traces across sessions or backend runs. Requires `workflowName`. |
+| `traceMetadata` | `Record<string, any>` | Custom metadata to attach to session traces. Requires `workflowName`. |
+| `workflowName` | `string` | Friendly name for the trace workflow. |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean` | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
+| `toolErrorFormatter` | `ToolErrorFormatter` | Customize tool approval rejection messages returned to the model. |
 
 `connect(...)` options:
 
-| Option   | Type                                          | Purpose                                               |
-| -------- | --------------------------------------------- | ----------------------------------------------------- |
-| `apiKey` | `string \| (() => string \| Promise<string>)` | API key (or lazy loader) used for this connection.    |
-| `model`  | `OpenAIRealtimeModels \| string`              | Optional model override for the transport connection. |
-| `url`    | `string`                                      | Optional custom Realtime endpoint URL.                |
-| `callId` | `string`                                      | Attach to an existing SIP-initiated call/session.     |
+| Option | Type | Purpose |
+| --- | --- | --- |
+| `apiKey` | `string \| (() => string \| Promise<string>)` | API key (or lazy loader) used for this connection. |
+| `model` | `OpenAIRealtimeModels \| string` | Present in the transport-level options type. For `RealtimeSession`, set the model in the constructor; raw transports can also use a model at connect time. |
+| `url` | `string` | Optional custom Realtime endpoint URL. |
+| `callId` | `string` | Attach to an existing SIP-initiated call/session. |
+
+### Conversation lifecycle
+
+`RealtimeSession` sits on top of a long-lived Realtime connection. It keeps a local copy of conversation history, listens for transport events, runs tools and output guardrails, and keeps the active agent configuration synchronized with the transport.
+
+The underlying API behavior still matters:
+
+- A successful connection starts with a `session.created` event, and later config changes produce `session.updated`.
+- Most session properties can be changed over time, but `model` cannot change mid-conversation, `voice` can only change before the session has produced audio output, and tracing should be decided up front because the Realtime API does not let you modify tracing after it is enabled.
+- The Realtime API currently limits a single session to 60 minutes.
+- Input audio transcription is asynchronous, so the transcript for the latest utterance can arrive after response generation has already started.
+
+At the SDK layer, `await session.connect()` means "the transport is ready enough to start the conversation", but the exact point differs by transport:
+
+- In the default browser WebRTC transport, the SDK sends the initial `session.update` as soon as the data channel opens and tries to wait for the corresponding `session.updated` event before resolving `connect()`. This is there to avoid audio reaching the server before your instructions, tools, and modalities are applied. If that acknowledgement never arrives, `connect()` falls back to resolving after a short timeout.
+- In the default server-side WebSocket transport, `connect()` resolves once the socket is open and the initial config has been sent. The matching `session.updated` event can therefore arrive after `connect()` has already resolved.
+
+If you need the raw event model, read the official [Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations/) alongside this page.
+
+## Interaction flow
+
+### Turn detection and voice activity detection
+
+By default, Realtime sessions use built-in voice activity detection (VAD) so the API can decide when the user has started or stopped speaking and when to create a response. The SDK exposes this through `audio.input.turnDetection`.
+
+<Code lang="typescript" code={turnDetectionExample} />
+
+Two common modes are:
+
+- `semantic_vad`, which aims for more natural turn boundaries and can wait a little longer when the user sounds like they are not finished yet.
+- `server_vad`, which is more threshold-driven and exposes settings such as `threshold`, `prefixPaddingMs`, `silenceDurationMs`, and `idleTimeoutMs`.
+
+Set `audio.input.turnDetection` to `null` if you want to manage turn boundaries yourself. The official [voice activity detection guide](https://developers.openai.com/api/docs/guides/realtime-vad/) and [Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations/#voice-activity-detection) describe the underlying behavior in more detail.
+
+### Interruptions
+
+When VAD is enabled, speaking over the agent can interrupt the current response. On the WebSocket transport, the SDK listens for `input_audio_buffer.speech_started`, truncates the assistant audio to what the user actually heard, and emits an `audio_interrupted` event. That event is especially useful when you manage playback yourself in WebSocket setups.
+
+<Code lang="typescript" code={audioInterruptedExample} />
+
+If you want to expose a manual stop button, call `interrupt()` yourself:
+
+<Code lang="typescript" code={sessionInterruptExample} />
+
+WebRTC and WebSocket both stop the in-progress response, but the low-level mechanics differ by transport. WebRTC clears buffered output audio for you. In WebSocket setups you still need to stop local playback yourself, and the local history updates when the corresponding truncation and conversation events come back from the transport.
+
+### Text input
+
+Use `sendMessage()` when you want to send typed input or additional structured user content into the live conversation.
+
+<Code lang="typescript" code={sendMessageExample} />
+
+This is useful for mixed text and voice UIs, out-of-band context injection, or pairing spoken input with explicit typed clarifications.
+
+### Image input
+
+Realtime speech-to-speech sessions can also include images. In the SDK, use `addImage()` to attach an image to the current conversation.
+
+<Code lang="typescript" code={addImageExample} />
+
+Passing `triggerResponse: false` lets you batch the image with a later text or audio turn before asking the model to respond. This lines up with the official [Realtime conversations image input guidance](https://developers.openai.com/api/docs/guides/realtime-conversations/#image-inputs).
+
+### Manual response control
+
+At the higher SDK layer, `sendMessage()` and `addImage()` trigger a response for you by default. Manual response control matters when you are working with raw transport events, push-to-talk flows, or custom moderation / validation steps.
+
+<Code lang="typescript" code={transportEventsExample} />
+
+There are two common cases:
+
+1. If you disable VAD entirely with `audio.input.turnDetection = null`, you are responsible for committing audio turns and then sending `response.create`.
+2. If you keep VAD enabled but set `turnDetection.interruptResponse = false` and `turnDetection.createResponse = false`, the API still detects turns but leaves response creation up to you.
+
+That second pattern is useful when you want to inspect or moderate user input before the model responds. It matches the official [Realtime conversations guidance on disabling automatic responses](https://developers.openai.com/api/docs/guides/realtime-conversations/#keep-vad-but-disable-automatic-responses).
 
 ## Agent capabilities
 
 ### Handoffs
 
-Similarly to regular agents, you can use handoffs to break your agent into multiple agents and orchestrate between them to improve the performance of your agents and better scope the problem.
+Similarly to regular agents, you can use handoffs to break your agent into multiple agents and orchestrate between them to improve performance and better scope the problem.
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-Unlike regular agents, handoffs behave slightly differently for Realtime Agents. When a handoff is performed, the ongoing session will be updated with the new agent configuration. Because of this, the agent automatically has access to the ongoing conversation history and input filters are currently not applied.
+Unlike regular agents, handoffs behave slightly differently for Realtime Agents. When a handoff is performed, the ongoing session is updated with the new agent configuration in place. Because of this, the new agent automatically has access to the ongoing conversation history and input filters are currently not applied.
 
-Additionally, this means that the `voice` or `model` cannot be changed as part of the handoff. You can also only connect to other Realtime Agents. If you need to use a different model, for example a reasoning model like `gpt-5.2`, you can use [delegation through tools](#delegation-through-tools).
+Because the session stays live, the model for that session does not change during a handoff. Voice changes follow the underlying Realtime API rule: they only work before the session has produced audio output. Realtime handoffs are primarily for swapping between `RealtimeAgent` configurations on the same session; if you need to use a different model, for example a reasoning model like `gpt-5.2`, or delegate to a non-realtime backend agent, use [delegation through tools](#delegation-through-tools).
 
 ### Tools
 
@@ -123,16 +183,19 @@ This lets a browser-side tool act as a thin backchannel to server-side logic. Fo
 
 Hosted MCP tools can be configured with `hostedMcpTool` and are executed remotely. When MCP tool availability changes the session emits `mcp_tools_changed`. To prevent the session from auto-triggering a model response after MCP tool calls complete, set `automaticallyTriggerResponseForMcpToolCalls: false`.
 
-The current filtered MCP tool list is also available as `session.availableMcpTools`. Both that
-property and the `mcp_tools_changed` event reflect only the hosted MCP servers enabled on the
-active agent, after applying any `allowed_tools` filters from the agent configuration.
+The current filtered MCP tool list is also available as `session.availableMcpTools`. Both that property and the `mcp_tools_changed` event reflect only the hosted MCP servers enabled on the active agent, after applying any `allowed_tools` filters from the agent configuration.
+
+Hosted MCP setup is easiest to reason about if you treat secure server selection, headers, and approvals as pre-connect configuration. Before `RealtimeSession.connect()` opens the transport, the SDK resolves the active agent's hosted MCP tool definitions and includes the supported MCP fields in the initial session config it sends to the Realtime API.
+
+That timing matters most in browser WebRTC apps. The ephemeral client secret is always minted on your server, so any hosted MCP credentials or custom `headers` that must stay secret should be attached in that server-side `POST /v1/realtime/client_secrets` request as part of the initial `session` payload. Do not put long-lived credentials in browser code and plan to add them later after `connect()` starts.
+
+At the Realtime API level, later `session.update` calls can still change tools and other mutable session fields, and the SDK itself sends `session.update` when the active agent changes. In browser apps, though, you should treat secure Hosted MCP initialization as a server-side, pre-connect concern and keep the browser-side `RealtimeSession` config aligned with what your server minted.
 
 #### Background results
 
 While the tool is executing the agent will not be able to process new requests from the user. One way to improve the experience is by telling your agent to announce when it is about to execute a tool or say specific phrases to buy the agent some time to execute the tool.
 
-If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`.
-This sends the tool output back to the session while leaving response triggering under your control.
+If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`. This sends the tool output back to the session while leaving response triggering under your control.
 
 #### Timeouts
 
@@ -140,7 +203,7 @@ Function tool timeout options (`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunc
 
 #### Accessing the conversation history
 
-Additionally to the arguments that the agent called a particular tool with, you can also access a snapshot of the current conversation history that is tracked by the Realtime Session. This can be useful if you need to perform a more complex action based on the current state of the conversation or are planning to use [tools for delegation](#delegation-through-tools).
+In addition to the arguments that the agent called a particular tool with, you can also access a snapshot of the current conversation history tracked by the Realtime Session. This can be useful if you need to perform a more complex action based on the current state of the conversation or are planning to use [tools for delegation](#delegation-through-tools).
 
 <Code lang="typescript" code={toolHistoryExample} />
 
@@ -152,28 +215,24 @@ Additionally to the arguments that the agent called a particular tool with, you 
 
 #### Approval before tool execution
 
-If you define your tool with `needsApproval: true` the agent will emit a `tool_approval_requested` event before executing the tool.
+If you define your tool with `needsApproval: true` the agent emits a `tool_approval_requested` event before executing the tool.
 
 By listening to this event you can show a UI to the user to approve or reject the tool call.
 
-Resolve the request with `await session.approve(request.approvalItem)` or
-`await session.reject(request.approvalItem)`. For function tools you can pass
-`{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the same decision for repeated
-calls during the rest of the session. Hosted MCP approvals do not support sticky approve/reject;
-restrict those tools with the hosted MCP `allowedTools` configuration instead.
+Resolve the request with `await session.approve(request.approvalItem)` or `await session.reject(request.approvalItem)`. For function tools you can pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the same decision for repeated calls during the rest of the session. Hosted MCP approvals do not support sticky approve/reject; restrict those tools with the hosted MCP `allowedTools` configuration instead.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
   While the voice agent is waiting for approval for the tool call, the agent
-  won't be able to process new requests from the user.
+  will not be able to process new requests from the user.
 </Aside>
 
 ### Guardrails
 
-Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These guardrail checks will be performed based on the transcript of the agent's response and therefore requires that the text output of your model is enabled (it is enabled by default).
+Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the transcript stream of the agent's response. In audio sessions, the SDK uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
 
-The guardrails that you provide will run asynchronously as a model response is returned, allowing you to cut off the response based a predefined classification trigger, for example "mentions a specific banned word".
+The guardrails you provide run asynchronously as a model response is returned, allowing you to cut off the response based on a predefined classification trigger, for example "mentions a specific banned word".
 
 When a guardrail trips the session emits a `guardrail_tripped` event. The event also provides a `details` object containing the `itemId` that triggered the guardrail.
 
@@ -181,70 +240,28 @@ When a guardrail trips the session emits a `guardrail_tripped` event. The event 
 
 By default guardrails run every 100 characters and again when the final transcript is available. Because speaking the text usually takes longer than generating the transcript, this often lets the guardrail cut off unsafe output before the user hears it.
 
-If you want to modify this behavior you can pass a `outputGuardrailSettings` object to the session.
+If you want to modify this behavior you can pass an `outputGuardrailSettings` object to the session.
 
 Set `debounceTextLength: -1` when you only want to evaluate the fully generated transcript once, at the end of the response.
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
-## Interaction flow
-
-### Turn detection / voice activity detection
-
-The Realtime Session will automatically detect when the user is speaking and trigger new turns using the built-in [voice activity detection modes of the Realtime API](https://platform.openai.com/docs/guides/realtime-vad).
-
-You can change the voice activity detection mode by passing `audio.input.turnDetection` in the
-session config.
-
-<Code lang="typescript" code={turnDetectionExample} />
-
-Modifying the turn detection settings can help calibrate unwanted interruptions and dealing with silence. Check out the [Realtime API documentation for more details on the different settings](https://platform.openai.com/docs/guides/realtime-vad)
-
-### Interruptions
-
-When using the built-in voice activity detection, speaking over the agent automatically triggers
-the agent to detect and update its context based on what was said. It will also emit an
-`audio_interrupted` event. This can be used to immediately stop all audio playback (only applicable to WebSocket connections).
-
-<Code lang="typescript" code={audioInterruptedExample} />
-
-If you want to perform a manual interruption, for example if you want to offer a "stop" button in
-your UI, you can call `interrupt()` manually:
-
-<Code lang="typescript" code={sessionInterruptExample} />
-
-In either way, the Realtime Session will handle both interrupting the generation of the agent, truncate its knowledge of what was said to the user, and update the history.
-
-If you are using WebRTC to connect to your agent, it will also clear the audio output. If you are using WebSocket, you will need to handle this yourself by stopping audio playack of whatever has been queued up to be played.
-
-### Text input
-
-If you want to send text input to your agent, you can use the `sendMessage` method on the `RealtimeSession`.
-
-This can be useful if you want to enable your user to interface in both modalities with the agent, or to
-provide additional context to the conversation.
-
-<Code lang="typescript" code={sendMessageExample} />
-
 ## Conversation state and delegation
 
 ### Conversation history management
 
-The `RealtimeSession` automatically manages the conversation history in a `history` property:
+`RealtimeSession` automatically maintains a local `history` snapshot that tracks user messages, assistant output, tool calls, and truncation state. You can render it in the UI, inspect it inside tools, or update it when you need to correct or remove items.
 
-You can use this to render the history to the customer or perform additional actions on it. As this
-history will constantly change during the course of the conversation you can listen for the `history_updated` event.
-
-If you want to modify the history, like removing a message entirely or updating its transcript,
-you can use the `updateHistory` method.
+As the conversation changes the session emits `history_updated`. If you need to request history changes, use `updateHistory()`. It asks the transport to diff the current history and send the necessary delete/create events; the local `session.history` view updates as the corresponding conversation events come back.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 #### Limitations
 
-1. You can currently not update/change function tool calls after the fact
-2. Text output in the history requires transcripts and text modalities to be enabled
-3. Responses that were truncated due to an interruption do not have a transcript
+1. You cannot currently edit function tool calls after the fact.
+2. Assistant text in history depends on available transcripts, including `output_audio.transcript`.
+3. Responses truncated by interruption do not retain a final transcript.
+4. Input audio transcription is best treated as a rough guide to what the user said, not an exact copy of how the model interpreted the audio.
 
 ### Delegation through tools
 
@@ -254,6 +271,6 @@ By combining the conversation history with a tool call, you can delegate the con
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-The code below will then be executed on the server. In this example through a server actions in Next.js.
+The code below then runs on the server, in this example via a Next.js Server Action.
 
 <Code lang="typescript" code={serverAgentExample} />

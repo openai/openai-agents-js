@@ -3,23 +3,7 @@ title: Realtime Transport Layer
 description: Learn about the different transport layers that can be used with Realtime Agents.
 ---
 
-import { Steps } from '@astrojs/starlight/components';
-import { Code } from '@astrojs/starlight/components';
-
-import createAgentExample from '../../../../../../examples/docs/voice-agents/createAgent.ts?raw';
-import multiAgentsExample from '../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import createSessionExample from '../../../../../../examples/docs/voice-agents/createSession.ts?raw';
-import configureSessionExample from '../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import sessionHistoryExample from '../../../../../../examples/docs/voice-agents/sessionHistory.ts?raw';
-import historyUpdatedExample from '../../../../../../examples/docs/voice-agents/historyUpdated.ts?raw';
-import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import { Aside, Code } from '@astrojs/starlight/components';
 import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
 import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
 import sipTransportExample from '../../../../../../examples/docs/voice-agents/sipTransport.ts?raw';
@@ -27,74 +11,90 @@ import transportEventsExample from '../../../../../../examples/docs/voice-agents
 import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
+Choose the transport based on where the session runs and how much raw media or event control you need.
+
+| Scenario | Recommended transport | Why |
+| --- | --- | --- |
+| Browser speech-to-speech app | `OpenAIRealtimeWebRTC` | Lowest-friction path. The SDK manages microphone capture, playback, and the WebRTC connection for you. |
+| Server-side voice loop or custom audio pipeline | `OpenAIRealtimeWebSocket` | Works well when you already control audio capture/playback and want direct event access. |
+| SIP or telephony bridge | `OpenAIRealtimeSIP` | Attaches a `RealtimeSession` to an existing SIP-initiated Realtime call by `callId`. |
+| Cloudflare Workers / workerd | Cloudflare extension transport | workerd cannot open outbound WebSockets with the global `WebSocket` constructor. |
+| Provider-specific phone flow on Twilio | Twilio extension transport | Handles Twilio audio forwarding and interruption behavior for you. |
+
+<Aside type="note">
+  If you are building a browser product and do not have a reason to manage raw
+  audio yourself, start with WebRTC. If you are running on the server or
+  bridging another media system, start with WebSocket or SIP.
+</Aside>
+
 ## Default transport layers
 
-### Connecting over WebRTC
+### WebRTC is the default browser choice
 
-The default transport layer uses WebRTC. Audio is recorded from the microphone
-and played back automatically.
+The default browser transport uses WebRTC. Audio is captured from the microphone and played back automatically, which is why the [Quickstart](/openai-agents-js/guides/voice-agents/quickstart) can connect with just an ephemeral token and `session.connect(...)`.
 
-To use your own media stream or audio element, provide an
-`OpenAIRealtimeWebRTC` instance when creating the session.
+On this path, `session.connect()` tries to wait until the initial session configuration has been acknowledged with `session.updated` before it resolves, so your instructions and tools are applied before audio starts flowing. There is still a timeout fallback if that acknowledgement never arrives.
+
+To use your own media stream or audio element, provide an `OpenAIRealtimeWebRTC` instance when creating the session.
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which
-lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
+For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
 
-### Connecting over WebSocket
+### WebSocket is the default server choice
 
-Pass `transport: 'websocket'` or an instance of `OpenAIRealtimeWebSocket` when creating the session to use a WebSocket connection instead of WebRTC. This works well for server-side use cases, for example
-building a phone agent with Twilio.
+Pass `transport: 'websocket'` or an instance of `OpenAIRealtimeWebSocket` when creating the session to use a WebSocket connection instead of WebRTC. This works well for server-side use cases, telephony bridges, and custom audio pipelines.
+
+On the WebSocket path, `session.connect()` resolves once the socket is open and the initial config has been sent. The matching `session.updated` event may arrive slightly later, so do not assume `connect()` means that update has already been echoed back.
 
 <Code lang="typescript" code={websocketSessionExample} />
 
 Use any recording/playback library to handle the raw PCM16 audio bytes.
 
-For advanced integrations, `OpenAIRealtimeWebSocket` accepts `createWebSocket()` so you can supply
-your own socket implementation, and `skipOpenEventListeners` when that custom connector is
-responsible for transitioning the socket into the connected state. The Cloudflare transport in
-`@openai/agents-extensions` is built on these hooks.
+For advanced integrations, `OpenAIRealtimeWebSocket` accepts `createWebSocket()` so you can supply your own socket implementation, and `skipOpenEventListeners` when that custom connector is responsible for transitioning the socket into the connected state. The Cloudflare transport in `@openai/agents-extensions` is built on these hooks.
 
-### Connecting over SIP
+### SIP is for call providers and telephony bridges
 
-Bridge SIP calls from providers such as Twilio by using the `OpenAIRealtimeSIP` transport. The transport keeps the Realtime session synchronized with SIP events emitted by your telephony provider.
+Use `OpenAIRealtimeSIP` when you want a `RealtimeSession` to attach to an existing SIP-initiated Realtime call. It is a thin SIP-aware transport: audio is handled by the SIP call itself, and you connect the SDK session by `callId`.
 
-1. Accept the incoming call by generating an initial session configuration with `OpenAIRealtimeSIP.buildInitialConfig()`. This ensures the SIP invitation and Realtime session share identical defaults.
+1. Accept the incoming call by generating an initial session configuration with `OpenAIRealtimeSIP.buildInitialConfig()`. This ensures the SIP invitation and the later SDK session start from the same defaults.
 2. Attach a `RealtimeSession` that uses the `OpenAIRealtimeSIP` transport and connect with the `callId` issued by the provider webhook.
-3. Listen for session events to drive call analytics, transcripts, or escalation logic.
+3. If you need provider-specific media forwarding or event bridging, use an integration transport such as the Twilio extension.
 
 <Code lang="typescript" code={sipTransportExample} />
 
-#### Cloudflare Workers (workerd) note
+### Cloudflare Workers and workerd
 
 Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets using the global `WebSocket` constructor. Use the Cloudflare transport from the extensions package, which performs the `fetch()`-based upgrade internally.
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-### Building your own transport mechanism
+For the full setup, read [Realtime Agents on Cloudflare](/openai-agents-js/extensions/cloudflare).
 
-If you want to use a different speech-to-speech API or have your own custom transport mechanism, you
-can create your own by implementing the `RealtimeTransportLayer` interface and emit the `RealtimeTransportEventTypes` events.
+### Twilio phone calls
 
-## Interacting with the Realtime API more directly
+You can connect a `RealtimeSession` to Twilio using either raw WebSockets or the dedicated Twilio transport in `@openai/agents-extensions`. The dedicated transport is the better default when you want the SDK to handle interruption timing and audio forwarding for Twilio Media Streams.
 
-If you want to use the OpenAI Realtime API but have more direct access to the Realtime API, you have
-two options:
+For the full setup, read [Realtime Agents on Twilio](/openai-agents-js/extensions/twilio).
+
+### Bring your own transport
+
+If you want to use a different speech-to-speech API or have your own custom transport mechanism, you can implement the `RealtimeTransportLayer` interface and emit the `RealtimeTransportEventTypes` events yourself.
+
+## Access raw Realtime events when you need them
+
+If you want more direct access to the underlying Realtime API, you have two options.
 
 ### Option 1 - Accessing the transport layer
 
-If you still want to benefit from all of the capabilities of the `RealtimeSession` you can access
-your transport layer through `session.transport`.
+If you still want to benefit from all of the capabilities of the `RealtimeSession` you can access your transport layer through `session.transport`.
 
-The transport layer will emit every event it receives under the `*` event and you can send raw
-events using the `sendEvent()` method.
+The transport layer emits every event it receives under the `*` event and you can send raw events using `sendEvent()`. This is the escape hatch for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
 
 <Code lang="typescript" code={transportEventsExample} />
 
-### Option 2 — Only using the transport layer
+### Option 2 - Only using the transport layer
 
-If you don't need automatic tool execution, guardrails, etc. you can also use the transport layer
-as a "thin" client that just manages connection and interruptions.
+If you do not need automatic tool execution, guardrails, or local history management, you can also use the transport layer as a "thin" client that just manages connection and interruptions.
 
 <Code lang="typescript" code={thinClientExample} />

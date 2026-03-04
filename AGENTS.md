@@ -35,8 +35,7 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 ### ExecPlans
 
-When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name.
-Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
+When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name. Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
 
 ## Project Structure Guide
 
@@ -159,6 +158,7 @@ See [this README](integration-tests/README.md) for details.
   pnpm lint
   ```
 - Code style follows `eslint.config.mjs` and Prettier defaults.
+- Markdown / MDX prose should not be manually hard-wrapped; keep paragraphs unwrapped and let Prettier formatting decide line breaks.
 - Comments must end with a period.
 
 #### Build Details
@@ -177,8 +177,7 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 
 ### Utilities & Tips
 
-- `pnpm dev`:
-  Runs concurrent watch builds for all packages and starts the docs dev server.
+- `pnpm dev`: Runs concurrent watch builds for all packages and starts the docs dev server.
   ```bash
   pnpm dev
   ```
