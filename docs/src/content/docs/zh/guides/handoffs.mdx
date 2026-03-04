@@ -10,57 +10,58 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-交接让一个智能体将对话的一部分委派给另一个智能体。这在不同智能体专注于特定领域时很有用。比如在客服应用中，您可能有处理预订、退款或常见问题的智能体。
+交接允许一个智能体将对话的一部分委派给另一个智能体。这在不同智能体专注于特定领域时非常有用。比如在客服应用中，您可能会有处理预订、退款或常见问题的智能体。
 
-交接在 LLM 中表示为工具。如果您将会话交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
+交接会作为工具呈现给 LLM。如果您交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
 
-## 创建交接
+> 在您明确应由专家接管对话后，请阅读本页：[智能体](/openai-agents-js/zh/guides/agents#composition-patterns)。如果专家应保留在原始智能体之后，请改用[Agents as tools](/openai-agents-js/zh/guides/tools#4-agents-as-tools)。
 
-每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例，或由 `handoff()` 帮助函数返回的 `Handoff` 对象。
+## 交接的创建
 
-如果传入的是纯 `Agent` 实例，它们的 `handoffDescription`（如果提供）会追加到默认的工具描述中。使用它来澄清模型应在何时选择该交接。
+每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例，或由 `handoff()` 辅助函数返回的 `Handoff` 对象。
+
+如果您传入普通 `Agent` 实例，其 `handoffDescription`（如有提供）会附加到默认工具描述中。可用它来说明模型应在何时选择该交接。
 
 ### 基本用法
 
-<Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
+<Code lang="typescript" code={basicUsageExample} title="基础交接" />
 
 ### 通过 `handoff()` 自定义交接
 
-`handoff()` 函数可让您调整生成的工具。
+`handoff()` 函数允许您调整生成的工具。
 
-- `agent` – 要交接到的智能体。
-- `toolNameOverride` – 覆盖默认的 `transfer_to_<agent_name>` 工具名称。
-- `toolDescriptionOverride` – 覆盖默认的工具描述。
-- `onHandoff` – 发生交接时的回调。接收一个 `RunContext` 以及可选的已解析输入。
-- `inputType` – 该交接期望的输入模式。
-- `inputFilter` – 传递给下一个智能体的历史记录过滤器。
-- `isEnabled` – 布尔值或谓词，仅在匹配的运行中暴露该交接。
+- `agent`：要交接到的智能体。
+- `toolNameOverride`：覆盖默认的 `transfer_to_<agent_name>` 工具名称。
+- `toolDescriptionOverride`：覆盖默认工具描述。
+- `onHandoff`：交接发生时的回调。接收一个 `RunContext`，以及可选的已解析输入。
+- `inputType`：交接的预期输入模式。
+- `inputFilter`：过滤传递给下一个智能体的历史记录。
+- `isEnabled`：布尔值或谓词，仅在匹配的运行中暴露该交接。
 
-<Code
-  lang="typescript"
-  code={customizeHandoffExample}
-  title="Customized handoffs"
-/>
+<Code lang="typescript" code={customizeHandoffExample} title="自定义交接" />
 
 ## 交接输入
 
-有时您希望 LLM 在调用交接时提供数据。定义一个输入模式并在 `handoff()` 中使用它。
+有时您希望 LLM 在调用交接时提供数据。请定义输入模式，并在 `handoff()` 中使用它。
 
-<Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
+<Code lang="typescript" code={handoffInputExample} title="交接输入" />
 
 ## 输入过滤器
 
-默认情况下，交接会接收整个对话历史。若要修改传递给下一个智能体的内容，请提供一个 `inputFilter`。
-常用的辅助函数位于 `@openai/agents-core/extensions`。
+默认情况下，交接会接收完整的对话历史。若要修改传递给下一个智能体的内容，请提供 `inputFilter`。常用辅助函数位于 `@openai/agents-core/extensions` 中。
 
-<Code lang="typescript" code={inputFilterExample} title="Input filters" />
+<Code lang="typescript" code={inputFilterExample} title="输入过滤器" />
 
-## 推荐的提示词
+## 推荐提示词
 
-当提示词提及交接时，LLM 的响应会更可靠。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 暴露了一个推荐前缀。
+当您的提示词提及交接时，LLM 的响应通常更稳定。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供了推荐前缀。
 
-<Code
-  lang="typescript"
-  code={recommendedPromptExample}
-  title="Recommended prompts"
-/>
+<Code lang="typescript" code={recommendedPromptExample} title="推荐提示词" />
+
+## 相关指南
+
+- [智能体](/openai-agents-js/zh/guides/agents#composition-patterns)：用于在管理者与交接之间进行选择。
+- [智能体编排](/openai-agents-js/zh/guides/multi-agent)：了解更广泛工作流中的权衡。
+- [工具](/openai-agents-js/zh/guides/tools#4-agents-as-tools)：了解使用 `agent.asTool()` 的管理者风格替代方案。
+- [运行智能体](/openai-agents-js/zh/guides/running-agents)：了解交接在运行时的行为。
+- [执行结果](/openai-agents-js/zh/guides/results#final-output)：了解交接图中带类型的 `finalOutput`。
