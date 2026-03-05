@@ -642,7 +642,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @param approvalItem - The tool call approval item to approve.
    * @param options - Options for the approval.
-   * @param options.alwaysApprove - Permanently approve this tool for all future calls.
+   * @param options.alwaysApprove - Approve this tool for all future calls in this run.
    */
   approve(
     approvalItem: RunToolApprovalItem,
@@ -667,7 +667,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @param approvalItem - The tool call approval item to reject.
    * @param options - Options for the rejection.
-   * @param options.alwaysReject - Permanently reject this tool for all future calls.
+   * @param options.alwaysReject - Reject this tool for all future calls in this run.
    * @param options.message - The rejection text sent to the model.
    *   If not provided, `toolErrorFormatter` (if configured) or the SDK default is used.
    */
