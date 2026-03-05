@@ -1,10 +1,16 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
+const {
+  CODEX_CI: _codexCi,
+  CODEX_THREAD_ID: _codexThreadId,
+  ...integrationEnv
+} = process.env;
+
 const execa = execaBase({
   cwd: './integration-tests/node',
   env: {
-    ...process.env,
+    ...integrationEnv,
     NODE_OPTIONS: '',
     TS_NODE_PROJECT: '',
     TS_NODE_COMPILER_OPTIONS: '',

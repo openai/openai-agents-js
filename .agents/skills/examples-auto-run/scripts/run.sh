@@ -15,6 +15,35 @@ is_running() {
   [[ -n "$pid" ]] && ps -p "$pid" >/dev/null 2>&1
 }
 
+run_examples_preflight() {
+  pnpm build
+  pnpm -r build-check
+}
+
+run_examples_start() {
+  pnpm examples:start-all --include-interactive "$@"
+}
+
+start_runner() {
+  local log_file="$1"
+  shift
+
+  export EXAMPLES_MAIN_LOG="$log_file"
+  export EXAMPLES_INTERACTIVE_MODE="${EXAMPLES_INTERACTIVE_MODE:-auto}"
+  export AUTO_APPROVE_MCP="${AUTO_APPROVE_MCP:-1}"
+  export APPLY_PATCH_AUTO_APPROVE="${APPLY_PATCH_AUTO_APPROVE:-1}"
+  export AUTO_APPROVE_HITL="${AUTO_APPROVE_HITL:-1}"
+  export EXAMPLES_CONCURRENCY="${EXAMPLES_CONCURRENCY:-4}"
+  export EXAMPLES_EXECA_TIMEOUT_MS="${EXAMPLES_EXECA_TIMEOUT_MS:-300000}"
+  export EXAMPLES_INCLUDE_INTERACTIVE="${EXAMPLES_INCLUDE_INTERACTIVE:-1}"
+  export EXAMPLES_INCLUDE_SERVER="${EXAMPLES_INCLUDE_SERVER:-0}"
+  export EXAMPLES_INCLUDE_AUDIO="${EXAMPLES_INCLUDE_AUDIO:-0}"
+  export EXAMPLES_INCLUDE_EXTERNAL="${EXAMPLES_INCLUDE_EXTERNAL:-0}"
+  cd "$ROOT"
+  run_examples_preflight
+  run_examples_start "$@"
+}
+
 cmd_start() {
   ensure_dirs
   local background=0
@@ -38,19 +67,7 @@ cmd_start() {
     fi
     (
       trap '' HUP
-      export EXAMPLES_MAIN_LOG="$log_file"
-      export EXAMPLES_INTERACTIVE_MODE="${EXAMPLES_INTERACTIVE_MODE:-auto}"
-      export AUTO_APPROVE_MCP="${AUTO_APPROVE_MCP:-1}"
-      export APPLY_PATCH_AUTO_APPROVE="${APPLY_PATCH_AUTO_APPROVE:-1}"
-      export AUTO_APPROVE_HITL="${AUTO_APPROVE_HITL:-1}"
-      export EXAMPLES_CONCURRENCY="${EXAMPLES_CONCURRENCY:-4}"
-      export EXAMPLES_EXECA_TIMEOUT_MS="${EXAMPLES_EXECA_TIMEOUT_MS:-300000}"
-      export EXAMPLES_INCLUDE_INTERACTIVE="${EXAMPLES_INCLUDE_INTERACTIVE:-1}"
-      export EXAMPLES_INCLUDE_SERVER="${EXAMPLES_INCLUDE_SERVER:-0}"
-      export EXAMPLES_INCLUDE_AUDIO="${EXAMPLES_INCLUDE_AUDIO:-0}"
-      export EXAMPLES_INCLUDE_EXTERNAL="${EXAMPLES_INCLUDE_EXTERNAL:-0}"
-      cd "$ROOT"
-      pnpm examples:start-all --include-interactive "$@" 2>&1 | tee "$log_file" >/dev/null
+      start_runner "$log_file" "$@" 2>&1 | tee "$log_file" >/dev/null
     ) &
     local pid=$!
     echo "$pid" >"$PID_FILE"
@@ -59,19 +76,7 @@ cmd_start() {
     return 0
   fi
 
-  export EXAMPLES_MAIN_LOG="$log_file"
-  export EXAMPLES_INTERACTIVE_MODE="${EXAMPLES_INTERACTIVE_MODE:-auto}"
-  export AUTO_APPROVE_MCP="${AUTO_APPROVE_MCP:-1}"
-  export APPLY_PATCH_AUTO_APPROVE="${APPLY_PATCH_AUTO_APPROVE:-1}"
-  export AUTO_APPROVE_HITL="${AUTO_APPROVE_HITL:-1}"
-  export EXAMPLES_CONCURRENCY="${EXAMPLES_CONCURRENCY:-4}"
-  export EXAMPLES_EXECA_TIMEOUT_MS="${EXAMPLES_EXECA_TIMEOUT_MS:-300000}"
-  export EXAMPLES_INCLUDE_INTERACTIVE="${EXAMPLES_INCLUDE_INTERACTIVE:-1}"
-  export EXAMPLES_INCLUDE_SERVER="${EXAMPLES_INCLUDE_SERVER:-0}"
-  export EXAMPLES_INCLUDE_AUDIO="${EXAMPLES_INCLUDE_AUDIO:-0}"
-  export EXAMPLES_INCLUDE_EXTERNAL="${EXAMPLES_INCLUDE_EXTERNAL:-0}"
-  cd "$ROOT"
-  pnpm examples:start-all --include-interactive "$@" 2>&1 | tee "$log_file"
+  start_runner "$log_file" "$@" 2>&1 | tee "$log_file"
   return $?
 }
 

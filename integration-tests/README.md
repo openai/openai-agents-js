@@ -2,8 +2,7 @@
 
 This project hosts packages to test the different environments that the Agents SDK works in.
 
-It is intentionally not part of the `pnpm` workspace and instead installs the packages from a
-local package registry using verdaccio.
+It is intentionally not part of the `pnpm` workspace and instead installs the packages from a local package registry using verdaccio.
 
 ## How to run integration tests
 
@@ -11,9 +10,8 @@ local package registry using verdaccio.
 
 - Have Node.js, Bun, and Deno installed globally
 - Have an `OPENAI_API_KEY` environment variable configured
-- Add into `integration-tests/cloudflare-workers/worker` a file `.dev.vars` with `OPENAI_API_KEY=<your key>`
-- Add into `integration-tests/vite-react` a `.env` file with `VITE_OPENAI_API_KEY=<your key>`
 - Run `pnpm exec playwright install` to install playwright
+- `pnpm test:integration` will create temporary `integration-tests/cloudflare-workers/worker/.dev.vars` and `integration-tests/vite-react/.env` files from `OPENAI_API_KEY` and restore any pre-existing files during cleanup
 
 2. **Local npm registry**
 

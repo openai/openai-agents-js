@@ -100,6 +100,11 @@ const EXPECTED_FAILURE_PATTERNS = [
   },
 ];
 
+const TRANSIENT_PNPM_WORKSPACE_STATE_PATTERNS = [
+  /Unexpected end of JSON input/i,
+  /loadWorkspaceState/i,
+];
+
 const parseArgs = (args) => {
   let dryRun = false;
   let filter = null;
@@ -528,6 +533,24 @@ const validateLog = async ({ start, logFile, exitCode }) => {
   return { status: 'unexpected', reason: 'exit-nonzero-no-match' };
 };
 
+const shouldRetryTransientPnpmFailure = async ({ exitCode, logFile }) => {
+  if (exitCode === 0 || !logFile) {
+    return false;
+  }
+
+  let logText = '';
+  try {
+    logText = await fs.readFile(logFile, 'utf-8');
+  } catch {
+    return false;
+  }
+
+  // pnpm occasionally reads a partially-written workspace state file under parallel example starts.
+  return TRANSIENT_PNPM_WORKSPACE_STATE_PATTERNS.every((pattern) =>
+    pattern.test(logText),
+  );
+};
+
 const shouldSkip = (tags, overrides) => {
   const blocked = new Set(['interactive', 'server', 'audio', 'external']);
   for (const override of overrides) {
@@ -711,48 +734,71 @@ const runStarts = async (
           logsDir,
           `${start.packageName.replace(/[^\w.-]/g, '_')}__${start.scriptName.replace(/[^\w.-]/g, '_')}.log`,
         );
-        // Truncate per-script log on each run so only the latest execution remains.
-        logStream = createWriteStream(logFile, { flags: 'w' });
         console.log(`   log: ${path.relative(rootDir, logFile)}`);
 
-        const child = execa(
-          'pnpm',
-          ['-C', start.dir, 'run', start.scriptName],
-          {
-            stdio: 'pipe',
-            input: autoInput,
-            env: childEnv,
-            timeout,
-          },
-        );
-        if (child.stdout) {
-          child.stdout.pipe(logStream);
-        }
-        if (child.stderr) {
-          child.stderr.pipe(logStream);
-        }
-        running.add(child);
-        try {
-          await child;
-          await flushLogStream();
-          executed += 1;
-          const validation = await validateLog({ start, logFile, exitCode: 0 });
-          if (validation.status === 'unexpected') {
-            unexpected += 1;
-          } else if (validation.status === 'unknown') {
-            validationUnknown += 1;
+        let attempt = 1;
+        while (true) {
+          // Truncate per-script log on each attempt so only the latest execution remains.
+          logStream = createWriteStream(logFile, { flags: 'w' });
+          const child = execa(
+            'pnpm',
+            ['-C', start.dir, 'run', start.scriptName],
+            {
+              stdio: 'pipe',
+              input: autoInput,
+              env: childEnv,
+              timeout,
+            },
+          );
+          if (child.stdout) {
+            child.stdout.pipe(logStream);
           }
-          results.push({
-            start,
-            status: 'passed',
-            logFile,
-            usedAutoInput: Boolean(autoInput),
-            validation,
-          });
-        } finally {
-          running.delete(child);
-          if (logStream && !logStream.closed) {
-            logStream.end();
+          if (child.stderr) {
+            child.stderr.pipe(logStream);
+          }
+          running.add(child);
+          try {
+            await child;
+            await flushLogStream();
+            executed += 1;
+            const validation = await validateLog({
+              start,
+              logFile,
+              exitCode: 0,
+            });
+            if (validation.status === 'unexpected') {
+              unexpected += 1;
+            } else if (validation.status === 'unknown') {
+              validationUnknown += 1;
+            }
+            results.push({
+              start,
+              status: 'passed',
+              logFile,
+              usedAutoInput: Boolean(autoInput),
+              validation,
+            });
+            break;
+          } catch (error) {
+            await flushLogStream();
+            const exitCode =
+              typeof error?.exitCode === 'number' ? error.exitCode : 'unknown';
+            const shouldRetry =
+              attempt < 2 &&
+              (await shouldRetryTransientPnpmFailure({ exitCode, logFile }));
+            if (shouldRetry) {
+              console.warn(
+                `   !! ${start.packageName}:${start.scriptName} hit transient pnpm workspace state parsing; retrying once`,
+              );
+              attempt += 1;
+              continue;
+            }
+            throw error;
+          } finally {
+            running.delete(child);
+            if (logStream && !logStream.closed) {
+              logStream.end();
+            }
           }
         }
       } catch (error) {

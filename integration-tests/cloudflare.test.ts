@@ -1,11 +1,22 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { execa as execaBase, ResultPromise } from 'execa';
+import path from 'node:path';
+
+import { requireEnvVar, withManagedFile } from './_helpers/prereqs';
 
 const execa = execaBase({
   cwd: './integration-tests/cloudflare-workers/worker',
 });
 
 let server: ResultPromise;
+const devVarsPath = path.join(
+  process.cwd(),
+  'integration-tests',
+  'cloudflare-workers',
+  'worker',
+  '.dev.vars',
+);
+let cleanupDevVars: (() => Promise<void>) | undefined;
 
 describe('Cloudflare Workers', () => {
   beforeAll(async () => {
@@ -15,6 +26,14 @@ describe('Cloudflare Workers', () => {
     await execa`rm -rf node_modules`;
     console.log('[cloudflare] Installing dependencies');
     await execa`npm install`;
+    const apiKey = requireEnvVar(
+      'OPENAI_API_KEY',
+      'the Cloudflare Workers integration test',
+    );
+    cleanupDevVars = await withManagedFile(
+      devVarsPath,
+      `OPENAI_API_KEY=${apiKey}\n`,
+    );
     console.log('[cloudflare] Starting server');
     server = execa`npm run start`;
     await new Promise((resolve) => {
@@ -72,6 +91,9 @@ describe('Cloudflare Workers', () => {
   afterAll(async () => {
     if (server) {
       server.kill();
+    }
+    if (cleanupDevVars) {
+      await cleanupDevVars();
     }
   });
 });

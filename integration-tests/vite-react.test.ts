@@ -1,8 +1,13 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { chromium } from 'playwright';
 import { execa as execaBase, ResultPromise } from 'execa';
-import { writeFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
+
+import {
+  assertPathExists,
+  requireEnvVar,
+  withManagedFile,
+} from './_helpers/prereqs';
 
 const execa = execaBase({
   cwd: './integration-tests/vite-react',
@@ -15,7 +20,7 @@ const envPath = path.join(
   'vite-react',
   '.env',
 );
-let wroteEnvFile = false;
+let cleanupEnvFile: (() => Promise<void>) | undefined;
 
 describe('Vite React', () => {
   beforeAll(async () => {
@@ -26,14 +31,18 @@ describe('Vite React', () => {
     console.log('[vite-react] Installing dependencies');
     await execa`npm install`;
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        'OPENAI_API_KEY must be set to run the Vite React integration test.',
-      );
-    }
-    await writeFile(envPath, `VITE_OPENAI_API_KEY=${apiKey}\n`, 'utf8');
-    wroteEnvFile = true;
+    const apiKey = requireEnvVar(
+      'OPENAI_API_KEY',
+      'the Vite React integration test',
+    );
+    cleanupEnvFile = await withManagedFile(
+      envPath,
+      `VITE_OPENAI_API_KEY=${apiKey}\n`,
+    );
+    await assertPathExists(
+      chromium.executablePath(),
+      'Playwright Chromium is not installed. Run `pnpm exec playwright install` before running the Vite React integration test.',
+    );
 
     console.log('[vite-react] Building');
     await execa`npm run build`;
@@ -71,8 +80,8 @@ describe('Vite React', () => {
     if (server) {
       server.kill();
     }
-    if (wroteEnvFile) {
-      await unlink(envPath).catch(() => {});
+    if (cleanupEnvFile) {
+      await cleanupEnvFile();
     }
   });
 });
