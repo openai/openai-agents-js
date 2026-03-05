@@ -985,6 +985,85 @@ describe('RealtimeSession', () => {
     warnSpy.mockRestore();
   });
 
+  it('uses reject message when provided', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-1',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: 'Blocked by admin' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('Blocked by admin');
+  });
+
+  it('reject message takes precedence over toolErrorFormatter', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => 'formatter message',
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-2',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: 'per-call message' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('per-call message');
+  });
+
   it('uses background results without starting a new response', async () => {
     const backgroundTool = tool({
       name: 'background_tool',
