@@ -1,6 +1,6 @@
 ---
-'@openai/agents-core': minor
-'@openai/agents-realtime': minor
+'@openai/agents-core': patch
+'@openai/agents-realtime': patch
 ---
 
 Add `message` parameter to `reject()` on `RunState`
