@@ -19,3 +19,29 @@ export function camelOrSnakeToSnakeCase<
   }
   return result;
 }
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Returns providerData with reserved top-level keys removed.
+ */
+export function getProviderDataWithoutReservedKeys(
+  value: unknown,
+  reservedKeys: readonly string[],
+): Record<string, any> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const reserved = new Set(reservedKeys);
+  const result: Record<string, any> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (reserved.has(key)) {
+      continue;
+    }
+    result[key] = entry;
+  }
+  return result;
+}

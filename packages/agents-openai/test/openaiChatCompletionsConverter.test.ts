@@ -82,6 +82,56 @@ describe('content extraction helpers', () => {
     ]);
   });
 
+  test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_text',
+        text: 'u1',
+        providerData: {
+          type: 'override_type',
+          text: 'override_text',
+          extraText: true,
+        },
+      },
+      {
+        type: 'input_image',
+        image: 'http://img',
+        providerData: {
+          type: 'override_image',
+          image_url: { url: 'http://override', detail: 'high' },
+          extraImage: true,
+        },
+      },
+      {
+        type: 'audio',
+        audio: 'abc',
+        providerData: {
+          type: 'override_audio',
+          input_audio: { data: 'override', foo: 'bar' },
+          extraAudio: true,
+        },
+      },
+    ];
+
+    expect(extractAllUserContent(userContent)).toEqual([
+      {
+        type: 'text',
+        text: 'u1',
+        extraText: true,
+      },
+      {
+        type: 'image_url',
+        image_url: { url: 'http://img', detail: 'high' },
+        extraImage: true,
+      },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', foo: 'bar' },
+        extraAudio: true,
+      },
+    ]);
+  });
+
   test('extractAllUserContent throws on unknown entry', () => {
     const bad: any = [{ type: 'bad' }];
     expect(() => extractAllUserContent(bad)).toThrow();
@@ -459,6 +509,86 @@ describe('itemsToMessages', () => {
     expect((msgs[0] as any).tool_calls).toHaveLength(2);
     expect((msgs[0] as any).from_first).toBe(true);
     expect((msgs[0] as any).from_second).toBe(true);
+  });
+
+  test('preserves extra providerData without letting it overwrite canonical envelopes', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'keep-user',
+        providerData: {
+          role: 'assistant',
+          content: 'override-user',
+          customUser: true,
+        },
+      } as protocol.UserMessageItem,
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+        providerData: {
+          role: 'tool',
+          content: 'override-assistant',
+          tool_calls: [{ id: 'override' }],
+          type: 'function',
+          function: {
+            name: 'override_name',
+            arguments: '{"override":true}',
+            extraNested: true,
+          },
+          customAssistant: true,
+        },
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        name: 'f',
+        callId: 'call1',
+        status: 'completed',
+        output: 'result',
+        providerData: {
+          role: 'assistant',
+          tool_call_id: 'override-call',
+          content: 'override-tool',
+          extraTool: true,
+        },
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'user',
+        content: 'keep-user',
+        customUser: true,
+      },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: {
+              name: 'f',
+              arguments: '{}',
+              extraNested: true,
+            },
+            customAssistant: true,
+          },
+        ],
+        customAssistant: true,
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: 'result',
+        extraTool: true,
+      },
+    ]);
   });
 });
 

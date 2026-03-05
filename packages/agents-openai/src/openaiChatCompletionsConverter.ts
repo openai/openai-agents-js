@@ -1,6 +1,7 @@
 import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionContentPart,
+  ChatCompletionContentPartInputAudio,
   ChatCompletionMessageParam,
   ChatCompletionTool,
   ChatCompletionToolChoiceOption,
@@ -12,6 +13,7 @@ import {
   protocol,
   UserError,
 } from '@openai/agents-core';
+import { getProviderDataWithoutReservedKeys } from './utils/providerData';
 
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
@@ -38,13 +40,16 @@ export function extractAllAssistantContent(
       out.push({
         type: 'text',
         text: c.text,
-        ...c.providerData,
+        ...getProviderDataWithoutReservedKeys(c.providerData, ['type', 'text']),
       });
     } else if (c.type === 'refusal') {
       out.push({
         type: 'refusal',
         refusal: c.refusal,
-        ...c.providerData,
+        ...getProviderDataWithoutReservedKeys(c.providerData, [
+          'type',
+          'refusal',
+        ]),
       });
     } else if (c.type === 'audio' || c.type === 'image') {
       // ignoring audio as it is handled on the assistant message level
@@ -67,7 +72,11 @@ export function extractAllUserContent(
   const out: ChatCompletionContentPart[] = [];
   for (const c of content) {
     if (c.type === 'input_text') {
-      out.push({ type: 'text', text: c.text, ...c.providerData });
+      out.push({
+        type: 'text',
+        text: c.text,
+        ...getProviderDataWithoutReservedKeys(c.providerData, ['type', 'text']),
+      });
     } else if (c.type === 'input_image') {
       // The Chat Completions API only accepts image URLs. If we see a file reference we reject it
       // early so callers get an actionable error instead of a cryptic API response.
@@ -83,12 +92,19 @@ export function extractAllUserContent(
           `Only image URLs are supported for input_image: ${JSON.stringify(c)}`,
         );
       }
-      const { image_url, ...rest } = c.providerData || {};
+      const rest = getProviderDataWithoutReservedKeys(c.providerData, [
+        'type',
+        'image_url',
+      ]);
+      const imageUrl = getProviderDataWithoutReservedKeys(
+        c.providerData?.image_url,
+        ['url'],
+      );
       out.push({
         type: 'image_url',
         image_url: {
           url: imageSource,
-          ...image_url,
+          ...imageUrl,
         },
         ...rest,
       });
@@ -121,20 +137,31 @@ export function extractAllUserContent(
         file.filename = c.providerData.filename;
       }
 
-      const { filename: _filename, ...rest } = c.providerData || {};
+      const rest = getProviderDataWithoutReservedKeys(c.providerData, [
+        'type',
+        'file',
+        'filename',
+      ]);
       out.push({
         type: 'file',
         file,
         ...rest,
       });
     } else if (c.type === 'audio') {
-      const { input_audio, ...rest } = c.providerData || {};
+      const rest = getProviderDataWithoutReservedKeys(c.providerData, [
+        'type',
+        'input_audio',
+      ]);
+      const inputAudio = getProviderDataWithoutReservedKeys(
+        c.providerData?.input_audio,
+        ['data'],
+      );
       out.push({
         type: 'input_audio',
         input_audio: {
-          data: c.audio,
-          ...input_audio,
-        },
+          data: c.audio as string,
+          ...inputAudio,
+        } as ChatCompletionContentPartInputAudio['input_audio'],
         ...rest,
       });
     } else {
@@ -195,7 +222,12 @@ export function itemsToMessages(
         const assistant: ChatCompletionAssistantMessageParam = {
           role: 'assistant',
           content: extractAllAssistantContent(content),
-          ...providerData,
+          ...getProviderDataWithoutReservedKeys(providerData, [
+            'role',
+            'content',
+            'tool_calls',
+            'audio',
+          ]),
         };
 
         if (Array.isArray(content)) {
@@ -213,13 +245,19 @@ export function itemsToMessages(
         result.push({
           role,
           content: extractAllUserContent(content),
-          ...providerData,
+          ...getProviderDataWithoutReservedKeys(providerData, [
+            'role',
+            'content',
+          ]),
         });
       } else if (role === 'system') {
         result.push({
           role: 'system',
           content: content,
-          ...providerData,
+          ...getProviderDataWithoutReservedKeys(providerData, [
+            'role',
+            'content',
+          ]),
         });
       }
     } else if (item.type === 'reasoning') {
@@ -246,11 +284,21 @@ export function itemsToMessages(
             arguments: JSON.stringify({
               queries: fileSearch.providerData?.queries ?? [],
               status: fileSearch.status,
-              ...argumentData,
+              ...getProviderDataWithoutReservedKeys(argumentData, [
+                'queries',
+                'status',
+              ]),
             }),
-            ...remainingFunctionData,
+            ...getProviderDataWithoutReservedKeys(remainingFunctionData, [
+              'name',
+              'arguments',
+            ]),
           },
-          ...rest,
+          ...getProviderDataWithoutReservedKeys(rest, [
+            'id',
+            'type',
+            'function',
+          ]),
         });
         asst.tool_calls = toolCalls;
         continue;
@@ -276,16 +324,37 @@ export function itemsToMessages(
       const asst = ensureAssistantMessage();
       const toolCalls = asst.tool_calls ?? [];
       const funcCall = item;
+      const toolCallProviderData = getProviderDataWithoutReservedKeys(
+        funcCall.providerData,
+        ['id', 'type', 'function', 'role', 'content', 'tool_calls', 'audio'],
+      );
+      const functionProviderData = getProviderDataWithoutReservedKeys(
+        funcCall.providerData?.function,
+        ['name', 'arguments'],
+      );
       toolCalls.push({
         id: funcCall.callId,
         type: 'function',
         function: {
           name: funcCall.name,
           arguments: funcCall.arguments ?? '{}',
+          ...functionProviderData,
         },
+        ...toolCallProviderData,
       });
       asst.tool_calls = toolCalls;
-      Object.assign(asst, funcCall.providerData);
+      Object.assign(
+        asst,
+        getProviderDataWithoutReservedKeys(funcCall.providerData, [
+          'role',
+          'content',
+          'tool_calls',
+          'audio',
+          'id',
+          'type',
+          'function',
+        ]),
+      );
     } else if (item.type === 'function_call_result') {
       flushAssistantMessage();
       const funcOutput = item;
@@ -295,7 +364,11 @@ export function itemsToMessages(
         role: 'tool',
         tool_call_id: funcOutput.callId,
         content: toolContent,
-        ...funcOutput.providerData,
+        ...getProviderDataWithoutReservedKeys(funcOutput.providerData, [
+          'role',
+          'tool_call_id',
+          'content',
+        ]),
       });
     } else if (item.type === 'unknown') {
       result.push({
