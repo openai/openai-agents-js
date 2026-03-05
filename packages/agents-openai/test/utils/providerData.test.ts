@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { camelOrSnakeToSnakeCase } from '../../src/utils/providerData';
+import {
+  camelOrSnakeToSnakeCase,
+  getProviderDataWithoutReservedKeys,
+} from '../../src/utils/providerData';
 
 describe('camelToSnakeCase', () => {
   it('converts flat camelCase keys to snake_case', () => {
@@ -65,6 +68,25 @@ describe('camelToSnakeCase', () => {
     expect(camelOrSnakeToSnakeCase({ fooBar: 1, already_snake: 2 })).toEqual({
       foo_bar: 1,
       already_snake: 2,
+    });
+  });
+});
+
+describe('reserved providerData filtering', () => {
+  it('removes reserved keys without touching other values', () => {
+    expect(
+      getProviderDataWithoutReservedKeys(
+        {
+          role: 'assistant',
+          content: 'override',
+          customFlag: true,
+          nested: { role: 'keep nested values' },
+        },
+        ['role', 'content'],
+      ),
+    ).toEqual({
+      customFlag: true,
+      nested: { role: 'keep nested values' },
     });
   });
 });
