@@ -1,5 +1,13 @@
 # @openai/agents-realtime
 
+## 0.5.4
+
+### Patch Changes
+
+- 7ff108b: feat: add custom rejection messages for approval rejects
+- Updated dependencies [7ff108b]
+  - @openai/agents-core@0.5.4
+
 ## 0.5.3
 
 ### Patch Changes
@@ -95,14 +103,9 @@
 
 - 1228138: fix(agents-realtime): wait for session.updated ack before resolving connect()
 
-  WebRTC `connect()` previously resolved immediately after sending session config,
-  before the server acknowledged it. This caused a race where audio could flow to
-  the server before instructions, tools, and modalities were applied — the server
-  would silently use defaults instead.
+  WebRTC `connect()` previously resolved immediately after sending session config, before the server acknowledged it. This caused a race where audio could flow to the server before instructions, tools, and modalities were applied — the server would silently use defaults instead.
 
-  `connect()` now waits for the `session.updated` event from the server before
-  resolving, with a 5-second hard timeout as a safety net. No consumer code changes
-  required.
+  `connect()` now waits for the `session.updated` event from the server before resolving, with a 5-second hard timeout as a safety net. No consumer code changes required.
 
 - Updated dependencies [4bb2dde]
   - @openai/agents-core@0.4.8
@@ -373,10 +376,8 @@
 ### Patch Changes
 
 - 2dfb4fd: feat: add factory-based Cloudflare support.
-  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
-    custom socket creation and connection state control for specialized runtimes.
-  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
-    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
 
 ## 0.1.4
 
@@ -570,8 +571,7 @@
 
 ### Patch Changes
 
-- 6e2445a: Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception
-  and replacement of the created `RTCPeerConnection` before the offer is made.
+- 6e2445a: Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception and replacement of the created `RTCPeerConnection` before the offer is made.
 - ca5cf8b: fix(realtime): add zod dependency to package.json
 - Updated dependencies [544ed4b]
   - @openai/agents-core@0.0.5
