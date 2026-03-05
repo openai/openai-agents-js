@@ -219,7 +219,9 @@ If you define your tool with `needsApproval: true` the agent emits a `tool_appro
 
 By listening to this event you can show a UI to the user to approve or reject the tool call.
 
-Resolve the request with `await session.approve(request.approvalItem)` or `await session.reject(request.approvalItem)`. For function tools you can pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the same decision for repeated calls during the rest of the session. Hosted MCP approvals do not support sticky approve/reject; restrict those tools with the hosted MCP `allowedTools` configuration instead.
+Resolve the request with `await session.approve(request.approvalItem)` or `await session.reject(request.approvalItem)`. For function tools you can pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the same decision for repeated calls during the rest of the session, and `session.reject(request.approvalItem, { message: '...' })` to send a custom rejection message back to the model for that specific call. Hosted MCP approvals do not support sticky approve/reject; restrict those tools with the hosted MCP `allowedTools` configuration instead.
+
+If you do not pass a per-call rejection `message`, the session falls back to `toolErrorFormatter` (if configured) and then to the SDK default rejection text.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 

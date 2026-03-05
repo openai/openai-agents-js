@@ -175,13 +175,15 @@ Use `toolErrorFormatter` to customize approval-rejection messages that are sent 
 
 The formatter can be set per-run (`runner.run(..., { toolErrorFormatter })`) or globally in `RunConfig` (`toolErrorFormatter` in `new Runner(...)`).
 
+This formatter is the global fallback for approval rejections. If you reject a specific interruption with `result.state.reject(interruption, { message: '...' })`, that per-call `message` takes precedence over `toolErrorFormatter`. If neither is provided, the SDK falls back to the default rejection text: `Tool execution was not approved.`
+
 The formatter currently runs for `approval_rejected` events and receives:
 
 - `kind` (currently always `'approval_rejected'`)
 - `toolType` (`'function'`, `'computer'`, `'shell'`, or `'apply_patch'`)
 - `toolName`
 - `callId`
-- `defaultMessage` (the SDK fallback message)
+- `defaultMessage` (the SDK fallback message, currently `Tool execution was not approved.`)
 - `runContext`
 
 Return a string to override the message, or return `undefined` to keep the SDK default. If the formatter throws (or returns a non-string value), the SDK logs a warning and falls back to the default approval-rejection message.

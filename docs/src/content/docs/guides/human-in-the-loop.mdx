@@ -31,10 +31,12 @@ You can define a tool that requires approval by setting the `needsApproval` opti
 1. When a tool invocation is about to execute, the SDK evaluates its approval rule (`needsApproval` or the hosted MCP equivalent).
 2. If approval is required and no decision is stored yet, the tool call does not execute. Instead, the run records a [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem).
 3. At the end of that turn, the run pauses and returns all pending approvals in the [result](/openai-agents-js/guides/results) `interruptions` array. This includes approvals raised inside nested `agent.asTool()` runs.
-4. Resolve each pending item with `result.state.approve(interruption)` or `result.state.reject(interruption)`. Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` if the same tool should stay approved or rejected for the rest of the run.
+4. Resolve each pending item with `result.state.approve(interruption)` or `result.state.reject(interruption)`. Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` if the same tool should stay approved or rejected for the rest of the run. When rejecting, you can also pass `{ message: '...' }` to control the rejection text that is sent back to the model for that specific tool call.
 5. Resume by passing the updated `result.state` back into `runner.run(agent, state)`, where `agent` is the original top-level agent for the run. The SDK continues from the interrupted point, including nested agent-tool executions.
 
 Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
+
+If you do not provide `message`, the SDK falls back to the configured `toolErrorFormatter` (if any) and then to the default rejection text.
 
 You do not need to resolve every pending approval in the same pass. If you rerun after approving or rejecting only some items, those resolved calls can continue while unresolved ones remain in `interruptions` and pause the run again.
 
