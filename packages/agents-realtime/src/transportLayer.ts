@@ -50,8 +50,7 @@ export type RealtimeTransportLayerConnectOptions = {
  * The transport layer is the layer that handles the connection to the model
  * and the communication with the model.
  */
-export interface RealtimeTransportLayer
-  extends EventEmitter<RealtimeTransportEventTypes> {
+export interface RealtimeTransportLayer extends EventEmitter<RealtimeTransportEventTypes> {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting';
 
   /**
@@ -145,9 +144,11 @@ export interface RealtimeTransportLayer
    * Sends a response for an MCP tool call
    * @param approvalRequest - The approval request to respond to
    * @param approved - Whether the tool call was approved or rejected
+   * @param reason - Optional rejection text for the provider/model.
    */
   sendMcpResponse(
     approvalRequest: RealtimeMcpCallApprovalRequestItem,
     approved: boolean,
+    reason?: string,
   ): void;
 }

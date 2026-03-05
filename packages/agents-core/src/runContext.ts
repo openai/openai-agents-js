@@ -6,6 +6,8 @@ import { Usage } from './usage';
 type ApprovalRecord = {
   approved: boolean | string[];
   rejected: boolean | string[];
+  messages?: Record<string, string>;
+  stickyRejectMessage?: string;
 };
 
 type RunContextJson = {
@@ -96,17 +98,91 @@ export class RunContext<TContext = UnknownContext> {
       return Array.from(new Set([...currentList, ...incomingList]));
     };
 
+    const mergeMessages = (
+      current: ApprovalRecord,
+      incoming: ApprovalRecord,
+    ) => {
+      if (current.rejected === true) {
+        return current.messages;
+      }
+
+      const merged =
+        current.messages || incoming.messages
+          ? { ...incoming.messages, ...current.messages }
+          : undefined;
+      if (!merged) {
+        return undefined;
+      }
+
+      if (Array.isArray(current.rejected)) {
+        for (const callId of current.rejected) {
+          if (
+            !current.messages ||
+            !Object.prototype.hasOwnProperty.call(current.messages, callId)
+          ) {
+            delete merged[callId];
+          }
+        }
+      }
+
+      return Object.keys(merged).length > 0 ? merged : undefined;
+    };
+
+    const mergeStickyRejectMessage = (
+      current: ApprovalRecord,
+      incoming: ApprovalRecord,
+    ) => {
+      if (current.rejected === true) {
+        return current.stickyRejectMessage;
+      }
+      return current.stickyRejectMessage ?? incoming.stickyRejectMessage;
+    };
+
     for (const [toolName, incoming] of Object.entries(approvals)) {
       const existing = this.#approvals.get(toolName);
       if (!existing) {
         this.#approvals.set(toolName, incoming);
         continue;
       }
+      const mergedMessages = mergeMessages(existing, incoming);
+      const stickyRejectMessage = mergeStickyRejectMessage(existing, incoming);
       this.#approvals.set(toolName, {
         approved: mergeApproval(existing.approved, incoming.approved),
         rejected: mergeApproval(existing.rejected, incoming.rejected),
+        ...(mergedMessages ? { messages: mergedMessages } : {}),
+        ...(stickyRejectMessage !== undefined ? { stickyRejectMessage } : {}),
       });
     }
+  }
+
+  /**
+   * Retrieve the caller-provided rejection message for a specific tool call.
+   *
+   * @param toolName - The name of the tool.
+   * @param callId - The call ID of the tool invocation.
+   * @returns The message string if one was provided, `undefined` otherwise.
+   */
+  getRejectionMessage(toolName: string, callId: string): string | undefined {
+    const approvalEntry = this.#approvals.get(toolName);
+    return (
+      approvalEntry?.messages?.[callId] ??
+      (approvalEntry?.rejected === true
+        ? approvalEntry.stickyRejectMessage
+        : undefined)
+    );
+  }
+
+  #getCallId(approvalItem: RunToolApprovalItem): string {
+    if ('callId' in approvalItem.rawItem) {
+      return approvalItem.rawItem.callId;
+    }
+
+    const providerData = approvalItem.rawItem.providerData as
+      | { itemId?: string; id?: string }
+      | undefined;
+    return (
+      approvalItem.rawItem.id ?? providerData?.itemId ?? providerData?.id ?? ''
+    );
   }
 
   /**
@@ -183,12 +259,7 @@ export class RunContext<TContext = UnknownContext> {
       rejected: [],
     };
     if (Array.isArray(approvalEntry.approved)) {
-      // function tool has call_id, hosted tool call has id
-      const callId =
-        'callId' in approvalItem.rawItem
-          ? approvalItem.rawItem.callId // function tools
-          : approvalItem.rawItem.id!; // hosted tools
-      approvalEntry.approved.push(callId);
+      approvalEntry.approved.push(this.#getCallId(approvalItem));
     }
     this.#approvals.set(toolName, approvalEntry);
   }
@@ -200,14 +271,24 @@ export class RunContext<TContext = UnknownContext> {
    */
   rejectTool(
     approvalItem: RunToolApprovalItem,
-    { alwaysReject = false }: { alwaysReject?: boolean } = {},
+    {
+      alwaysReject = false,
+      message,
+    }: { alwaysReject?: boolean; message?: string } = {},
   ) {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     if (alwaysReject) {
+      const callId = this.#getCallId(approvalItem);
       this.#approvals.set(toolName, {
         approved: false,
         rejected: true,
+        ...(message !== undefined
+          ? {
+              messages: { [callId]: message },
+              stickyRejectMessage: message,
+            }
+          : {}),
       });
       return;
     }
@@ -218,12 +299,12 @@ export class RunContext<TContext = UnknownContext> {
     };
 
     if (Array.isArray(approvalEntry.rejected)) {
-      // function tool has call_id, hosted tool call has id
-      const callId =
-        'callId' in approvalItem.rawItem
-          ? approvalItem.rawItem.callId // function tools
-          : approvalItem.rawItem.id!; // hosted tools
+      const callId = this.#getCallId(approvalItem);
       approvalEntry.rejected.push(callId);
+      if (message !== undefined) {
+        approvalEntry.messages = approvalEntry.messages ?? {};
+        approvalEntry.messages[callId] = message;
+      }
     }
     this.#approvals.set(toolName, approvalEntry);
   }

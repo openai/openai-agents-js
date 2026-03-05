@@ -312,6 +312,33 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('sendMcpResponse includes rejection reasons when provided', () => {
+    const base = new TestBase();
+    base.sendMcpResponse(
+      {
+        itemId: 'mcp2',
+        type: 'mcp_approval_request',
+        serverLabel: 'srv',
+        name: 'tool',
+        arguments: { foo: 'bar' },
+        approved: null,
+      },
+      false,
+      'Denied by policy',
+    );
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      previous_item_id: 'mcp2',
+      item: {
+        type: 'mcp_approval_response',
+        approval_request_id: 'mcp2',
+        approve: false,
+        reason: 'Denied by policy',
+      },
+    });
+  });
+
   it('routes response.done usage and turn events', () => {
     const base = new TestBase();
     const usages: any[] = [];

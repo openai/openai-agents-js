@@ -143,7 +143,7 @@ export class FakeTransport
   eventEmitter = new RuntimeEventEmitter<RealtimeTransportEventTypes>();
   muteCalls: boolean[] = [];
   sendFunctionCallOutputCalls: [TransportToolCallEvent, string, boolean][] = [];
-  sendMcpResponseCalls: [any, boolean][] = [];
+  sendMcpResponseCalls: [any, boolean, string | undefined][] = [];
   interruptCalls = 0;
   resetHistoryCalls: [RealtimeItem[], RealtimeItem[]][] = [];
 
@@ -215,8 +215,12 @@ export class FakeTransport
     });
   }
 
-  sendMcpResponse(approvalRequest: any, approved: boolean): void {
-    this.sendMcpResponseCalls.push([approvalRequest, approved]);
+  sendMcpResponse(
+    approvalRequest: any,
+    approved: boolean,
+    reason?: string,
+  ): void {
+    this.sendMcpResponseCalls.push([approvalRequest, approved, reason]);
   }
 
   interrupt(): void {

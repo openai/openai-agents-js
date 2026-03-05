@@ -249,6 +249,95 @@ describe('RunState', () => {
     ).toBe(true);
   });
 
+  it('prefers override-context rejection messages when merge conflicts occur', async () => {
+    const agent = new Agent({ name: 'MergeRejectMessageAgent' });
+    const approvalItem = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'secure_tool',
+        callId: 'call-1',
+        status: 'completed',
+        arguments: '{}',
+      } as any,
+      agent,
+    );
+
+    const serializedContext = new RunContext({ foo: 'serialized' });
+    serializedContext.rejectTool(approvalItem, {
+      alwaysReject: true,
+      message: 'serialized rejection',
+    });
+    const state = new RunState(serializedContext, 'input', agent, 1);
+
+    const overrideContext = new RunContext({ foo: 'fresh' });
+    overrideContext.rejectTool(approvalItem, {
+      alwaysReject: true,
+      message: 'override rejection',
+    });
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+
+    expect(restored._context).toBe(overrideContext);
+    expect(restored._context.getRejectionMessage('secure_tool', 'call-1')).toBe(
+      'override rejection',
+    );
+    expect(
+      restored._context.getRejectionMessage('secure_tool', 'future-call'),
+    ).toBe('override rejection');
+  });
+
+  it('lets merge override contexts clear serialized rejection messages', async () => {
+    const agent = new Agent({ name: 'MergeRejectMessageClearAgent' });
+    const approvalItem = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'secure_tool',
+        callId: 'call-1',
+        status: 'completed',
+        arguments: '{}',
+      } as any,
+      agent,
+    );
+
+    const serializedContext = new RunContext({ foo: 'serialized' });
+    serializedContext.rejectTool(approvalItem, {
+      alwaysReject: true,
+      message: 'serialized rejection',
+    });
+    const state = new RunState(serializedContext, 'input', agent, 1);
+
+    const overrideContext = new RunContext({ foo: 'fresh' });
+    overrideContext.rejectTool(approvalItem, {
+      alwaysReject: true,
+    });
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+
+    expect(restored._context).toBe(overrideContext);
+    expect(restored._context.getRejectionMessage('secure_tool', 'call-1')).toBe(
+      undefined,
+    );
+    expect(
+      restored._context.getRejectionMessage('secure_tool', 'future-call'),
+    ).toBeUndefined();
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'secure_tool',
+        callId: 'future-call',
+      }),
+    ).toBe(false);
+  });
+
   it('keeps override context instance state when replacing agent-tool runs', async () => {
     class ExtendedRunContext extends RunContext<{ foo: string }> {
       marker: string;
@@ -471,6 +560,143 @@ describe('RunState', () => {
     ).toBe(false);
   });
 
+  it('reject with message stores it and includes it in getRejectionMessage', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'MsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolMsg',
+      callId: 'msg-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: 'Not safe to run' });
+
+    expect(
+      state._context.isToolApproved({ toolName: 'toolMsg', callId: 'msg-1' }),
+    ).toBe(false);
+    expect(state._context.getRejectionMessage('toolMsg', 'msg-1')).toBe(
+      'Not safe to run',
+    );
+  });
+
+  it('serialization round-trip preserves rejection messages', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'SerializeMsgAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolSer',
+      callId: 'ser-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: 'Denied for security' });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._context.getRejectionMessage('toolSer', 'ser-1')).toBe(
+      'Denied for security',
+    );
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'toolSer',
+        callId: 'ser-1',
+      }),
+    ).toBe(false);
+  });
+
+  it('restores pre-1.7 run states without rejection messages', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'LegacyMsgAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolLegacy',
+      callId: 'legacy-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: 'Denied for security' });
+
+    const serialized = JSON.parse(state.toString());
+    serialized.$schemaVersion = '1.6';
+    delete serialized.context.approvals.toolLegacy.messages;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'toolLegacy',
+        callId: 'legacy-1',
+      }),
+    ).toBe(false);
+    expect(
+      restored._context.getRejectionMessage('toolLegacy', 'legacy-1'),
+    ).toBeUndefined();
+  });
+
+  it('per-callId messages: two rejections can have different messages', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'PerCallMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+
+    const rawItem1: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'sharedTool',
+      callId: 'call-a',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const rawItem2: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'sharedTool',
+      callId: 'call-b',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    state.reject(new ToolApprovalItem(rawItem1, agent), {
+      message: 'Reason A',
+    });
+    state.reject(new ToolApprovalItem(rawItem2, agent), {
+      message: 'Reason B',
+    });
+
+    expect(state._context.getRejectionMessage('sharedTool', 'call-a')).toBe(
+      'Reason A',
+    );
+    expect(state._context.getRejectionMessage('sharedTool', 'call-b')).toBe(
+      'Reason B',
+    );
+  });
+
+  it('reject with empty message preserves the empty string', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'EmptyMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolEmpty',
+      callId: 'empty-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: '' });
+
+    expect(state._context.getRejectionMessage('toolEmpty', 'empty-1')).toBe('');
+  });
+
   it('reject permanently when alwaysReject option is passed', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent4' });
@@ -492,6 +718,94 @@ describe('RunState', () => {
     const approvals = state._context.toJSON().approvals;
     expect(approvals['toolZ'].approved).toBe(false);
     expect(approvals['toolZ'].rejected).toBe(true);
+  });
+
+  it('alwaysReject with message stores call-specific and sticky rejection messages', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AlwaysRejectMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolAR',
+      callId: 'ar-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, {
+      alwaysReject: true,
+      message: 'Blocked by policy',
+    });
+
+    expect(
+      state._context.isToolApproved({ toolName: 'toolAR', callId: 'ar-1' }),
+    ).toBe(false);
+    expect(state._context.getRejectionMessage('toolAR', 'ar-1')).toBe(
+      'Blocked by policy',
+    );
+    expect(state._context.getRejectionMessage('toolAR', 'ar-2')).toBe(
+      'Blocked by policy',
+    );
+    const approvals = state._context.toJSON().approvals;
+    expect(approvals['toolAR'].rejected).toBe(true);
+    expect(approvals['toolAR'].messages).toEqual({
+      'ar-1': 'Blocked by policy',
+    });
+    expect(approvals['toolAR'].stickyRejectMessage).toBe('Blocked by policy');
+  });
+
+  it('alwaysReject with empty message preserves the empty string', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AlwaysRejectEmptyMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolAREmpty',
+      callId: 'ar-empty-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, {
+      alwaysReject: true,
+      message: '',
+    });
+
+    expect(
+      state._context.getRejectionMessage('toolAREmpty', 'ar-empty-1'),
+    ).toBe('');
+    expect(
+      state._context.getRejectionMessage('toolAREmpty', 'ar-empty-2'),
+    ).toBe('');
+  });
+
+  it('serialization round-trip preserves alwaysReject sticky rejection messages', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AlwaysRejectSerializeMsgAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolSticky',
+      callId: 'sticky-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, {
+      alwaysReject: true,
+      message: 'Blocked everywhere',
+    });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      restored._context.getRejectionMessage('toolSticky', 'sticky-1'),
+    ).toBe('Blocked everywhere');
+    expect(
+      restored._context.getRejectionMessage('toolSticky', 'sticky-2'),
+    ).toBe('Blocked everywhere');
   });
 
   it('fromString reconstructs state for simple agent', async () => {

@@ -117,6 +117,78 @@ describe('handleHostedMcpApprovals', () => {
     expect(result.pendingApprovalIds.size).toBe(0);
   });
 
+  it('forwards explicit reject messages into hosted MCP approval responses', async () => {
+    const approvalRequest = buildApprovalRequest('mcpr_rejected');
+    state.reject(approvalRequest.requestItem, {
+      message: 'Denied by policy',
+    });
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval: (rawItem) =>
+        state._context.isToolApproved({
+          toolName: rawItem.name,
+          callId:
+            rawItem.id ??
+            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
+              ?.id ??
+            '',
+        }),
+    });
+
+    expect(functionResults).toHaveLength(0);
+    expect(newItems).toHaveLength(1);
+    const response = newItems[0] as RunToolCallItem;
+    const providerData = response.rawItem
+      .providerData as HostedMCPApprovalResponse;
+    expect(providerData).toMatchObject({
+      approval_request_id: 'mcpr_rejected',
+      approve: false,
+      reason: 'Denied by policy',
+    });
+    expect(result.pendingApprovals.size).toBe(0);
+    expect(result.pendingApprovalIds.size).toBe(0);
+  });
+
+  it('omits hosted MCP rejection reasons by default', async () => {
+    const approvalRequest = buildApprovalRequest('mcpr_rejected_default');
+    state.reject(approvalRequest.requestItem);
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval: (rawItem) =>
+        state._context.isToolApproved({
+          toolName: rawItem.name,
+          callId:
+            rawItem.id ??
+            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
+              ?.id ??
+            '',
+        }),
+    });
+
+    expect(functionResults).toHaveLength(0);
+    expect(newItems).toHaveLength(1);
+    const response = newItems[0] as RunToolCallItem;
+    const providerData = response.rawItem
+      .providerData as HostedMCPApprovalResponse;
+    expect(providerData).toMatchObject({
+      approval_request_id: 'mcpr_rejected_default',
+      approve: false,
+    });
+    expect(providerData.reason).toBeUndefined();
+    expect(result.pendingApprovals.size).toBe(0);
+    expect(result.pendingApprovalIds.size).toBe(0);
+  });
+
   it('surfaces pending approvals when no decision exists', async () => {
     const approvalRequest = buildApprovalRequest('mcpr_pending');
 

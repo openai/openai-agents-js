@@ -51,8 +51,9 @@ import type { AgentToolInvocation } from './agentToolInvocation';
  * - 1.4: Adds optional toolInput to serialized run context.
  * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
  * - 1.6: Adds optional requestId to serialized model responses.
+ * - 1.7: Adds optional approval rejection messages to serialized run context.
  */
-export const CURRENT_SCHEMA_VERSION = '1.6' as const;
+export const CURRENT_SCHEMA_VERSION = '1.7' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -60,6 +61,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.3',
   '1.4',
   '1.5',
+  '1.6',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -318,6 +320,8 @@ export const SerializedRunState = z.object({
       z.object({
         approved: z.array(z.string()).or(z.boolean()),
         rejected: z.array(z.string()).or(z.boolean()),
+        messages: z.record(z.string(), z.string()).optional(),
+        stickyRejectMessage: z.string().optional(),
       }),
     ),
     context: z.record(z.string(), z.any()),
@@ -641,10 +645,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @param approvalItem - The tool call approval item to approve.
    * @param options - Options for the approval.
+   * @param options.alwaysApprove - Approve this tool for all future calls in this run.
    */
   approve(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysApprove?: boolean } = { alwaysApprove: false },
+    options: { alwaysApprove?: boolean } = {
+      alwaysApprove: false,
+    },
   ) {
     this._context.approveTool(approvalItem, options);
   }
@@ -655,15 +662,23 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * To reject the request use this method and then run the agent again with the same state object
    * to continue the execution.
    *
-   * By default it will only reject the current tool call. To allow the tool to be used multiple
-   * times throughout the run, set the `alwaysReject` option to `true`.
+   * By default it will only reject the current tool call. To reject the tool for all future
+   * calls throughout the run, set the `alwaysReject` option to `true`.
+   *
+   * When `message` is provided, it is used as the rejection text sent to the model.
+   * Otherwise, `toolErrorFormatter` (if configured) or the SDK default is used.
    *
    * @param approvalItem - The tool call approval item to reject.
    * @param options - Options for the rejection.
+   * @param options.alwaysReject - Reject this tool for all future calls in this run.
+   * @param options.message - The rejection text sent to the model.
+   *   If not provided, `toolErrorFormatter` (if configured) or the SDK default is used.
    */
   reject(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysReject?: boolean } = { alwaysReject: false },
+    options: { alwaysReject?: boolean; message?: string } = {
+      alwaysReject: false,
+    },
   ) {
     this._context.rejectTool(approvalItem, options);
   }

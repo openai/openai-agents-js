@@ -132,7 +132,10 @@ describe('Runner.run', () => {
       expect(nestedState._agentToolInvocation).toBeUndefined();
     });
 
-    function buildRejectedToolRunState(agent: Agent<any, any>) {
+    function buildRejectedToolRunState(
+      agent: Agent<any, any>,
+      rejectMessage?: string,
+    ) {
       const rawItem = {
         name: 'toolZ',
         callId: 'c1',
@@ -145,7 +148,10 @@ describe('Runner.run', () => {
         type: 'next_step_interruption',
         data: { interruptions: [approvalItem] },
       };
-      state.reject(approvalItem);
+      state.reject(
+        approvalItem,
+        rejectMessage !== undefined ? { message: rejectMessage } : undefined,
+      );
       state._generatedItems.push(approvalItem);
       state._lastTurnResponse = {
         output: [],
@@ -387,6 +393,56 @@ describe('Runner.run', () => {
       });
 
       expect(result.finalOutput).toBe('per-run rejection');
+    });
+
+    it('uses reject message as final output when provided', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(
+        agent,
+        'Tool execution was dismissed. You may retry this tool later.',
+      );
+
+      const result = await run(agent, state);
+
+      expect(result.finalOutput).toBe(
+        'Tool execution was dismissed. You may retry this tool later.',
+      );
+    });
+
+    it('reject message takes precedence over toolErrorFormatter', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(
+        agent,
+        'per-call rejection message',
+      );
+      const runner = new Runner({
+        toolErrorFormatter: () => 'formatter rejection',
+      });
+
+      const result = await runner.run(agent, state);
+
+      expect(result.finalOutput).toBe('per-call rejection message');
+    });
+
+    it('reject message preserves an empty string', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(agent, '');
+      const runner = new Runner({
+        toolErrorFormatter: () => 'formatter rejection',
+      });
+
+      const result = await runner.run(agent, state);
+
+      expect(result.finalOutput).toBe('');
     });
 
     it('propagates model errors', async () => {
@@ -4384,6 +4440,81 @@ describe('Runner.run', () => {
       expect(secondResult.state._currentStep?.type).toBe(
         'next_step_interruption',
       );
+    });
+
+    it('does not use toolErrorFormatter for hosted MCP rejection responses', async () => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'demo_server',
+        serverUrl: 'https://example.com',
+        requireApproval: {
+          always: { toolNames: ['demo_tool'] },
+        },
+      });
+
+      const mcpApprovalCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'approval-id',
+        name: 'mcp_approval_request',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_approval_request',
+          server_label: 'demo_server',
+          name: 'demo_tool',
+          id: 'approval-id',
+          arguments: '{}',
+        },
+      } as protocol.HostedToolCallItem;
+
+      const model = new TrackingModel([
+        buildResponse([mcpApprovalCall], 'resp-mcp-reject-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-mcp-reject-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'HostedMcpRejectAgent',
+        model,
+        tools: [mcpTool],
+      });
+
+      const formatter = vi.fn(() => 'Formatter denial');
+      const runner = new Runner({
+        toolErrorFormatter: formatter,
+      });
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mcp-reject',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.reject(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mcp-reject',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(formatter).not.toHaveBeenCalled();
+      expect(model.requests).toHaveLength(2);
+
+      const secondRequest = model.requests[1];
+      expect(secondRequest.conversationId).toBe('conv-mcp-reject');
+      expect(Array.isArray(secondRequest.input)).toBe(true);
+      const secondItems = secondRequest.input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'hosted_tool_call',
+        name: 'mcp_approval_response',
+        providerData: {
+          approve: false,
+          approval_request_id: 'approval-id',
+        },
+      });
+      expect(
+        (
+          secondItems[0] as protocol.HostedToolCallItem & {
+            providerData: { reason?: string };
+          }
+        ).providerData.reason,
+      ).toBeUndefined();
     });
 
     it('sends full history when no server-managed state is provided', async () => {

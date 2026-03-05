@@ -985,6 +985,186 @@ describe('RealtimeSession', () => {
     warnSpy.mockRestore();
   });
 
+  it('uses reject message from session.reject when provided', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-1',
+      arguments: '{}',
+    };
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, , payload] = await approvalRequest;
+    await s.reject(payload.approvalItem, { message: 'Blocked by admin' });
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('Blocked by admin');
+  });
+
+  it('reuses alwaysReject messages for later realtime tool calls', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalSpy = vi.fn();
+    s.on('tool_approval_requested', approvalSpy);
+
+    const firstToolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-sticky-1',
+      arguments: '{}',
+    };
+    const firstApprovalRequest = waitForEvent<any[]>(
+      s,
+      'tool_approval_requested',
+    );
+    const firstOutputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', firstToolCall as any);
+
+    const [, , firstPayload] = await firstApprovalRequest;
+    await s.reject(firstPayload.approvalItem, {
+      alwaysReject: true,
+      message: 'Blocked by policy',
+    });
+
+    const [, firstOutput] = await firstOutputPromise;
+    expect(firstOutput).toBe('Blocked by policy');
+
+    const secondOutputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', {
+      ...firstToolCall,
+      callId: 'call-sticky-2',
+    } as any);
+
+    const [, secondOutput] = await secondOutputPromise;
+    expect(secondOutput).toBe('Blocked by policy');
+    expect(approvalSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reject message takes precedence over toolErrorFormatter', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => 'formatter message',
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-2',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: 'per-call message' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('per-call message');
+  });
+
+  it('uses an empty reject message when provided', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => 'formatter message',
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-3',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: '' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('');
+  });
+
   it('uses background results without starting a new response', async () => {
     const backgroundTool = tool({
       name: 'background_tool',
@@ -1096,6 +1276,131 @@ describe('RealtimeSession', () => {
       'Always rejecting MCP tools is not supported. Use the allowed tools configuration instead.',
     );
     warnSpy.mockRestore();
+  });
+
+  it('rejects hosted tool calls without an MCP reason when no message is provided', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-default-1',
+          serverLabel: 'server-default-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBeUndefined();
+  });
+
+  it('does not pass toolErrorFormatter output into hosted MCP reasons', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const formatter = vi.fn(() => 'Formatter denial');
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: formatter,
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-formatter-1',
+          serverLabel: 'server-formatter-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBeUndefined();
+    expect(formatter).not.toHaveBeenCalled();
+  });
+
+  it('passes explicit reject messages through for hosted tool calls', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-msg-1',
+          serverLabel: 'server-msg-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem, { message: 'Denied by policy' });
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBe('Denied by policy');
+    expect(t.sendMcpResponseCalls[0][0]).toMatchObject({
+      type: 'mcp_approval_request',
+      itemId: 'item-msg-1',
+      serverLabel: 'server-msg-1',
+      name: 'hosted_mcp',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+    expect(s.context.getRejectionMessage('hosted_mcp', 'item-msg-1')).toBe(
+      'Denied by policy',
+    );
+  });
+
+  it('reuses stored reject messages for hosted tool calls', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-stored-1',
+          serverLabel: 'server-stored-1',
+        },
+      } as any,
+      agent,
+    );
+
+    s.context.rejectTool(approvalItem, { message: 'Denied by wrapper' });
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBe('Denied by wrapper');
   });
 
   it('emits tool approval requests for MCP approvals', async () => {

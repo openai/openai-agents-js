@@ -942,6 +942,7 @@ export abstract class OpenAIRealtimeBase
   sendMcpResponse(
     approvalRequest: RealtimeMcpCallApprovalRequestItem,
     approved: boolean,
+    reason?: string,
   ): void {
     this.sendEvent({
       type: 'conversation.item.create',
@@ -950,6 +951,7 @@ export abstract class OpenAIRealtimeBase
         type: 'mcp_approval_response',
         approval_request_id: approvalRequest.itemId,
         approve: approved,
+        ...(reason !== undefined ? { reason } : {}),
       },
     });
   }

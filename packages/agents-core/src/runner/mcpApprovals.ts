@@ -85,10 +85,14 @@ export async function handleHostedMcpApprovals<TContext>({
         ? resolveApproval(rawItem)
         : undefined;
     if (typeof approvalDecision !== 'undefined' && approvalRequestId) {
+      const rejectionReason =
+        approvalDecision === false
+          ? state._context.getRejectionMessage(rawItem.name, approvalRequestId)
+          : undefined;
       const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
         approve: approvalDecision,
         approval_request_id: approvalRequestId,
-        reason: undefined,
+        reason: rejectionReason,
       };
       appendIfNew(
         new RunToolCallItem(
