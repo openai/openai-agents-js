@@ -530,7 +530,7 @@ export class RealtimeSession<
     callId: string,
   ): Promise<string> {
     // Per-call message from state.reject(item, { message }) takes precedence.
-    const perCallMessage = this.#context.getApprovalMessage(toolName, callId);
+    const perCallMessage = this.#context.getRejectionMessage(toolName, callId);
     if (typeof perCallMessage === 'string') {
       return perCallMessage;
     }

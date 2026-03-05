@@ -471,7 +471,7 @@ describe('RunState', () => {
     ).toBe(false);
   });
 
-  it('reject with message stores it and includes it in getApprovalMessage', () => {
+  it('reject with message stores it and includes it in getRejectionMessage', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'MsgAgent' });
     const state = new RunState(context, '', agent, 1);
@@ -489,7 +489,7 @@ describe('RunState', () => {
     expect(
       state._context.isToolApproved({ toolName: 'toolMsg', callId: 'msg-1' }),
     ).toBe(false);
-    expect(state._context.getApprovalMessage('toolMsg', 'msg-1')).toBe(
+    expect(state._context.getRejectionMessage('toolMsg', 'msg-1')).toBe(
       'Not safe to run',
     );
   });
@@ -510,7 +510,7 @@ describe('RunState', () => {
     state.reject(approvalItem, { message: 'Denied for security' });
 
     const restored = await RunState.fromString(agent, state.toString());
-    expect(restored._context.getApprovalMessage('toolSer', 'ser-1')).toBe(
+    expect(restored._context.getRejectionMessage('toolSer', 'ser-1')).toBe(
       'Denied for security',
     );
     expect(
@@ -548,10 +548,10 @@ describe('RunState', () => {
       message: 'Reason B',
     });
 
-    expect(state._context.getApprovalMessage('sharedTool', 'call-a')).toBe(
+    expect(state._context.getRejectionMessage('sharedTool', 'call-a')).toBe(
       'Reason A',
     );
-    expect(state._context.getApprovalMessage('sharedTool', 'call-b')).toBe(
+    expect(state._context.getRejectionMessage('sharedTool', 'call-b')).toBe(
       'Reason B',
     );
   });

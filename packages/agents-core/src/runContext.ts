@@ -122,7 +122,7 @@ export class RunContext<TContext = UnknownContext> {
    * @param callId - The call ID of the tool invocation.
    * @returns The message string if one was provided, `undefined` otherwise.
    */
-  getApprovalMessage(toolName: string, callId: string): string | undefined {
+  getRejectionMessage(toolName: string, callId: string): string | undefined {
     return this.#approvals.get(toolName)?.messages?.[callId];
   }
 

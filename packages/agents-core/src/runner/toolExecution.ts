@@ -97,7 +97,7 @@ async function resolveApprovalRejectionMessage({
 }: ApprovalRejectionMessageOptions): Promise<string> {
   // Per-call message from state.reject(item, { message }) takes precedence over
   // the global toolErrorFormatter callback and the SDK default.
-  const perCallMessage = runContext.getApprovalMessage(toolName, callId);
+  const perCallMessage = runContext.getRejectionMessage(toolName, callId);
   if (typeof perCallMessage === 'string') {
     return perCallMessage;
   }
