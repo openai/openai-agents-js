@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.5.4
+
+### Patch Changes
+
+- 7ff108b: feat: add custom rejection messages for approval rejects
+
 ## 0.5.3
 
 ### Patch Changes
@@ -14,11 +20,7 @@
 - 85cdea4: fix: preserve OpenAI Responses request IDs in raw responses
 - 3da9364: fix: include `type` in `buildEnum` fallback schema for enum definitions
 
-  The fallback JSON Schema converter omitted the `type` field from enum schemas,
-  producing `{ enum: [...] }` instead of `{ type: "string", enum: [...] }`.
-  Providers following OpenAPI 3.0 conventions (e.g. Google Gemini) rejected these
-  schemas. The fix infers the type from enum values, matching the behavior of the
-  primary path's vendored zod-to-json-schema parsers.
+  The fallback JSON Schema converter omitted the `type` field from enum schemas, producing `{ enum: [...] }` instead of `{ type: "string", enum: [...] }`. Providers following OpenAPI 3.0 conventions (e.g. Google Gemini) rejected these schemas. The fix infers the type from enum values, matching the behavior of the primary path's vendored zod-to-json-schema parsers.
 
 ## 0.5.1
 
@@ -34,15 +36,9 @@
 
 - 40c1709: fix(agents-core): respect tracingDisabled for function tool calls
 
-  `buildApprovalRejectionResult` and `runApprovedFunctionTool` called
-  `withFunctionSpan()` directly, bypassing the `tracingDisabled` /
-  `getCurrentTrace()` guard that the existing `withToolFunctionSpan` helper
-  provides. This caused span creation even when `tracingDisabled: true` was
-  set in `RunConfig`, and could trigger "No existing trace found" errors.
+  `buildApprovalRejectionResult` and `runApprovedFunctionTool` called `withFunctionSpan()` directly, bypassing the `tracingDisabled` / `getCurrentTrace()` guard that the existing `withToolFunctionSpan` helper provides. This caused span creation even when `tracingDisabled: true` was set in `RunConfig`, and could trigger "No existing trace found" errors.
 
-  Both functions now use `withToolFunctionSpan`, consistent with
-  `executeShellActions`, `executeApplyPatchOperations`, and
-  `executeComputerActions`.
+  Both functions now use `withToolFunctionSpan`, consistent with `executeShellActions`, `executeApplyPatchOperations`, and `executeComputerActions`.
 
 ## 0.4.14
 

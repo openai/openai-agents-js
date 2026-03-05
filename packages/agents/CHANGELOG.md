@@ -1,5 +1,15 @@
 # @openai/agents
 
+## 0.5.4
+
+### Patch Changes
+
+- 7ff108b: feat: add custom rejection messages for approval rejects
+- Updated dependencies [7ff108b]
+  - @openai/agents-core@0.5.4
+  - @openai/agents-realtime@0.5.4
+  - @openai/agents-openai@0.5.4
+
 ## 0.5.3
 
 ### Patch Changes
