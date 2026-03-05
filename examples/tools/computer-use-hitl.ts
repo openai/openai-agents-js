@@ -140,8 +140,8 @@ async function runWithHitl(agent: Agent<unknown, any>, input: string) {
       if (approved) {
         state.approve(interruption);
       } else {
-        // The message replaces the default rejection text entirely.
-        // The agent sees only this string as the tool output.
+        // Optional: provide a custom rejection message for the agent to see.
+        // If not provided, toolErrorFormatter (if configured) or the SDK default is used.
         state.reject(interruption, {
           message: `Tool execution for "${interruption.name}" was dismissed by the user. You may ask to run it again if needed.`,
         });
