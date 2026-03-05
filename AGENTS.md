@@ -33,9 +33,13 @@ When you change anything under `packages/` or touch `.changeset/`, use `$changes
 
 When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
 
+#### `$implementation-strategy`
+
+Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they define durable external state or the user explicitly asks for a migration path.
+
 ### ExecPlans
 
-When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name. Call out potential backward compatibility or public API risks in your plan and confirm the approach when changes could impact package consumers.
+When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or durable external state. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data.
 
 ## Project Structure Guide
 
