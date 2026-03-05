@@ -579,6 +579,34 @@ describe('RunState', () => {
     expect(approvals['toolZ'].rejected).toBe(true);
   });
 
+  it('alwaysReject with message stores the message for the current callId', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'AlwaysRejectMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolAR',
+      callId: 'ar-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, {
+      alwaysReject: true,
+      message: 'Blocked by policy',
+    });
+
+    expect(
+      state._context.isToolApproved({ toolName: 'toolAR', callId: 'ar-1' }),
+    ).toBe(false);
+    expect(state._context.getRejectionMessage('toolAR', 'ar-1')).toBe(
+      'Blocked by policy',
+    );
+    const approvals = state._context.toJSON().approvals;
+    expect(approvals['toolAR'].rejected).toBe(true);
+  });
+
   it('fromString reconstructs state for simple agent', async () => {
     const context = new RunContext({ a: 1 });
     const agent = new Agent({ name: 'Solo' });

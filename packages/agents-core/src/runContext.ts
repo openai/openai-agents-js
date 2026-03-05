@@ -225,9 +225,14 @@ export class RunContext<TContext = UnknownContext> {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     if (alwaysReject) {
+      const callId =
+        'callId' in approvalItem.rawItem
+          ? approvalItem.rawItem.callId
+          : approvalItem.rawItem.id!;
       this.#approvals.set(toolName, {
         approved: false,
         rejected: true,
+        ...(message ? { messages: { [callId]: message } } : {}),
       });
       return;
     }
