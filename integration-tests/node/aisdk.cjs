@@ -1,7 +1,7 @@
 // @ts-check
 
 const { Agent, Runner } = require('@openai/agents');
-const { aisdk } = require('@openai/agents-extensions');
+const { aisdk } = require('@openai/agents-extensions/ai-sdk');
 
 const fakeModel = {
   provider: 'fake',

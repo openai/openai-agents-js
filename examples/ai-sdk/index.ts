@@ -1,5 +1,5 @@
 import { Agent, ModelSettings, Runner, tool } from '@openai/agents';
-import { aisdk, AiSdkModel } from '@openai/agents-extensions';
+import { aisdk, AiSdkModel } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 
 export async function runAgents(

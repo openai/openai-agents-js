@@ -27,7 +27,7 @@ import {
   setTraceProcessors,
   withTrace,
 } from '@openai/agents';
-import { aisdk } from '@openai/agents-extensions';
+import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
