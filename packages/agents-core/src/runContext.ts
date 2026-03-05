@@ -126,6 +126,12 @@ export class RunContext<TContext = UnknownContext> {
     return this.#approvals.get(toolName)?.messages?.[callId];
   }
 
+  #getCallId(approvalItem: RunToolApprovalItem): string {
+    return 'callId' in approvalItem.rawItem
+      ? approvalItem.rawItem.callId // function tools
+      : approvalItem.rawItem.id!; // hosted tools
+  }
+
   /**
    * Check if a tool call has been approved.
    *
@@ -200,12 +206,7 @@ export class RunContext<TContext = UnknownContext> {
       rejected: [],
     };
     if (Array.isArray(approvalEntry.approved)) {
-      // function tool has call_id, hosted tool call has id
-      const callId =
-        'callId' in approvalItem.rawItem
-          ? approvalItem.rawItem.callId // function tools
-          : approvalItem.rawItem.id!; // hosted tools
-      approvalEntry.approved.push(callId);
+      approvalEntry.approved.push(this.#getCallId(approvalItem));
     }
     this.#approvals.set(toolName, approvalEntry);
   }
@@ -225,14 +226,12 @@ export class RunContext<TContext = UnknownContext> {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     if (alwaysReject) {
-      const callId =
-        'callId' in approvalItem.rawItem
-          ? approvalItem.rawItem.callId
-          : approvalItem.rawItem.id!;
       this.#approvals.set(toolName, {
         approved: false,
         rejected: true,
-        ...(message ? { messages: { [callId]: message } } : {}),
+        ...(message
+          ? { messages: { [this.#getCallId(approvalItem)]: message } }
+          : {}),
       });
       return;
     }
@@ -243,11 +242,7 @@ export class RunContext<TContext = UnknownContext> {
     };
 
     if (Array.isArray(approvalEntry.rejected)) {
-      // function tool has call_id, hosted tool call has id
-      const callId =
-        'callId' in approvalItem.rawItem
-          ? approvalItem.rawItem.callId // function tools
-          : approvalItem.rawItem.id!; // hosted tools
+      const callId = this.#getCallId(approvalItem);
       approvalEntry.rejected.push(callId);
       if (message) {
         approvalEntry.messages = approvalEntry.messages ?? {};
