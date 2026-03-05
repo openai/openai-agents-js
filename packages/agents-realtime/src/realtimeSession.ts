@@ -10,6 +10,7 @@ import {
   RunToolApprovalItem,
   invokeFunctionTool,
   type FunctionTool,
+  type ToolErrorFormatter,
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
@@ -136,6 +137,12 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * Whether to automatically trigger a response for MCP tool calls.
    */
   automaticallyTriggerResponseForMcpToolCalls?: boolean;
+
+  /**
+   * Formats tool error messages that are returned to the model.
+   * Returning `undefined` falls back to the SDK default message.
+   */
+  toolErrorFormatter?: ToolErrorFormatter<RealtimeContextData<TContext>>;
 };
 
 export type RealtimeSessionConnectOptions = {
@@ -168,6 +175,10 @@ function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
 }
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * A `RealtimeSession` is the cornerstone of building Voice Agents. It's the equivalent of a
@@ -514,11 +525,46 @@ export class RealtimeSession<
     return newAgent;
   }
 
-  #resolveApprovalRejectionMessage(toolName: string, callId: string): string {
-    return (
-      this.#context.getApprovalMessage(toolName, callId) ??
-      TOOL_APPROVAL_REJECTION_MESSAGE
-    );
+  async #resolveApprovalRejectionMessage(
+    toolName: string,
+    callId: string,
+  ): Promise<string> {
+    // Per-call message from state.reject(item, { message }) takes precedence.
+    const perCallMessage = this.#context.getApprovalMessage(toolName, callId);
+    if (typeof perCallMessage === 'string') {
+      return perCallMessage;
+    }
+
+    const { toolErrorFormatter } = this.options;
+    if (!toolErrorFormatter) {
+      return TOOL_APPROVAL_REJECTION_MESSAGE;
+    }
+
+    try {
+      const formattedMessage = await toolErrorFormatter({
+        kind: 'approval_rejected',
+        toolType: 'function',
+        toolName,
+        callId,
+        defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
+        runContext: this.#context,
+      });
+
+      if (typeof formattedMessage === 'string') {
+        return formattedMessage;
+      }
+      if (typeof formattedMessage !== 'undefined') {
+        logger.warn(
+          'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+      );
+    }
+
+    return TOOL_APPROVAL_REJECTION_MESSAGE;
   }
 
   async #handleFunctionToolCall(
@@ -552,7 +598,7 @@ export class RealtimeSession<
           toolCall,
         });
 
-        const result = this.#resolveApprovalRejectionMessage(
+        const result = await this.#resolveApprovalRejectionMessage(
           tool.name,
           toolCall.callId,
         );

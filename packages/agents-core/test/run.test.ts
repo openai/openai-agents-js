@@ -360,7 +360,42 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('Tool execution was not approved.');
     });
 
-    it('uses reject message as static final output when tool execution is rejected with a message', async () => {
+    it('uses toolErrorFormatter for static final output when tool execution is rejected', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(agent);
+      const runner = new Runner({
+        toolErrorFormatter: () =>
+          'Tool execution was dismissed. You may retry this tool later.',
+      });
+
+      const result = await runner.run(agent, state);
+
+      expect(result.finalOutput).toBe(
+        'Tool execution was dismissed. You may retry this tool later.',
+      );
+    });
+
+    it('prefers per-run toolErrorFormatter over runner config', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(agent);
+      const runner = new Runner({
+        toolErrorFormatter: () => 'runner default rejection',
+      });
+
+      const result = await runner.run(agent, state, {
+        toolErrorFormatter: () => 'per-run rejection',
+      });
+
+      expect(result.finalOutput).toBe('per-run rejection');
+    });
+
+    it('uses reject message as final output when provided', async () => {
       const agent = new Agent({
         name: 'RejectTest',
         toolUseBehavior: 'stop_on_first_tool',
@@ -375,6 +410,24 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe(
         'Tool execution was dismissed. You may retry this tool later.',
       );
+    });
+
+    it('reject message takes precedence over toolErrorFormatter', async () => {
+      const agent = new Agent({
+        name: 'RejectTest',
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const { state } = buildRejectedToolRunState(
+        agent,
+        'per-call rejection message',
+      );
+      const runner = new Runner({
+        toolErrorFormatter: () => 'formatter rejection',
+      });
+
+      const result = await runner.run(agent, state);
+
+      expect(result.finalOutput).toBe('per-call rejection message');
     });
 
     it('propagates model errors', async () => {

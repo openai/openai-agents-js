@@ -42,7 +42,11 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
-import type { Runner } from '../run';
+import type {
+  Runner,
+  ToolErrorFormatter,
+  ToolErrorFormatterArgs,
+} from '../run';
 import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
@@ -60,6 +64,7 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
+  toolErrorFormatter?: ToolErrorFormatter;
 };
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
@@ -73,22 +78,59 @@ type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
 
-/**
- * Returns the rejection message for a tool call that was not approved.
- *
- * When the caller provides a `message` via `state.reject(item, { message })`, that message
- * replaces the default rejection text entirely — it is the full message sent to the model.
- * When no message is provided, the SDK default `TOOL_APPROVAL_REJECTION_MESSAGE` is used.
- */
-function resolveApprovalRejectionMessage(
-  runContext: RunContext,
-  toolName: string,
-  callId: string,
-): string {
-  return (
-    runContext.getApprovalMessage(toolName, callId) ??
-    TOOL_APPROVAL_REJECTION_MESSAGE
-  );
+type ApprovalRejectedToolType = ToolErrorFormatterArgs['toolType'];
+
+type ApprovalRejectionMessageOptions = {
+  runContext: RunContext;
+  toolType: ApprovalRejectedToolType;
+  toolName: string;
+  callId: string;
+  toolErrorFormatter?: ToolErrorFormatter;
+};
+
+async function resolveApprovalRejectionMessage({
+  runContext,
+  toolType,
+  toolName,
+  callId,
+  toolErrorFormatter,
+}: ApprovalRejectionMessageOptions): Promise<string> {
+  // Per-call message from state.reject(item, { message }) takes precedence over
+  // the global toolErrorFormatter callback and the SDK default.
+  const perCallMessage = runContext.getApprovalMessage(toolName, callId);
+  if (typeof perCallMessage === 'string') {
+    return perCallMessage;
+  }
+
+  if (!toolErrorFormatter) {
+    return TOOL_APPROVAL_REJECTION_MESSAGE;
+  }
+
+  try {
+    const formattedMessage = await toolErrorFormatter({
+      kind: 'approval_rejected',
+      toolType,
+      toolName,
+      callId,
+      defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
+      runContext,
+    });
+
+    if (typeof formattedMessage === 'string') {
+      return formattedMessage;
+    }
+    if (typeof formattedMessage !== 'undefined') {
+      logger.warn(
+        'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+    );
+  }
+
+  return TOOL_APPROVAL_REJECTION_MESSAGE;
 }
 
 /**
@@ -138,11 +180,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   toolRuns: ToolRunFunction<TContext>[],
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<FunctionToolResult<TContext>[]> {
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
     runner,
     state,
+    toolErrorFormatter,
   };
 
   try {
@@ -235,13 +279,15 @@ async function buildApprovalRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, runner, state } = deps;
+  const { agent, runner, state, toolErrorFormatter } = deps;
   return withToolFunctionSpan(runner, toolRun.tool.name, async (span) => {
-    const response = resolveApprovalRejectionMessage(
-      state._context,
-      toolRun.tool.name,
-      toolRun.toolCall.callId,
-    );
+    const response = await resolveApprovalRejectionMessage({
+      runContext: state._context,
+      toolType: 'function',
+      toolName: toolRun.tool.name,
+      callId: toolRun.toolCall.callId,
+      toolErrorFormatter,
+    });
     const traceErrorMessage = runner.config.traceIncludeSensitiveData
       ? response
       : TOOL_APPROVAL_REJECTION_MESSAGE;
@@ -666,6 +712,7 @@ export async function executeShellActions(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -696,11 +743,13 @@ export async function executeShellActions(
       ),
       onApproval: shellTool.onApproval,
       buildRejectionItem: async () => {
-        const response = resolveApprovalRejectionMessage(
+        const response = await resolveApprovalRejectionMessage({
           runContext,
-          shellTool.name,
-          toolCall.callId,
-        );
+          toolType: 'shell',
+          toolName: shellTool.name,
+          callId: toolCall.callId,
+          toolErrorFormatter,
+        });
         const rejectionOutput: protocol.ShellCallOutputContent = {
           stdout: '',
           stderr: response,
@@ -809,6 +858,7 @@ export async function executeApplyPatchOperations(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -834,11 +884,13 @@ export async function executeApplyPatchOperations(
       ),
       onApproval: applyPatchTool.onApproval,
       buildRejectionItem: async () => {
-        const response = resolveApprovalRejectionMessage(
+        const response = await resolveApprovalRejectionMessage({
           runContext,
-          applyPatchTool.name,
-          toolCall.callId,
-        );
+          toolType: 'apply_patch',
+          toolName: applyPatchTool.name,
+          callId: toolCall.callId,
+          toolErrorFormatter,
+        });
         return new RunToolCallOutputItem(
           {
             type: 'apply_patch_call_output',
@@ -963,18 +1015,27 @@ export async function executeComputerActions(
   runner: Runner,
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
-    const getRejectionMessage = () =>
-      resolveApprovalRejectionMessage(
+    let cachedRejectionMessage: string | undefined;
+    const getRejectionMessage = async () => {
+      if (typeof cachedRejectionMessage === 'string') {
+        return cachedRejectionMessage;
+      }
+      cachedRejectionMessage = await resolveApprovalRejectionMessage({
         runContext,
-        computerTool.name,
-        toolCall.callId,
-      );
+        toolType: 'computer',
+        toolName: computerTool.name,
+        callId: toolCall.callId,
+        toolErrorFormatter,
+      });
+      return cachedRejectionMessage;
+    };
     const pendingSafetyChecks = getPendingSafetyChecks(toolCall);
     const approvalItem = new RunToolApprovalItem(
       toolCall,

@@ -662,15 +662,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * By default it will only reject the current tool call. To reject the tool for all future
    * calls throughout the run, set the `alwaysReject` option to `true`.
    *
-   * When `message` is provided it **replaces** the default rejection text
-   * (`"Tool execution was not approved."`) entirely — the agent sees only your message.
-   * When `message` is not provided the SDK default rejection text is used.
+   * When `message` is provided, it is used as the rejection text sent to the model.
+   * Otherwise, `toolErrorFormatter` (if configured) or the SDK default is used.
    *
    * @param approvalItem - The tool call approval item to reject.
    * @param options - Options for the rejection.
    * @param options.alwaysReject - Permanently reject this tool for all future calls.
-   * @param options.message - The rejection message sent to the model. Replaces the default
-   *   rejection text when provided; the SDK default is used when omitted.
+   * @param options.message - The rejection text sent to the model.
+   *   If not provided, `toolErrorFormatter` (if configured) or the SDK default is used.
    */
   reject(
     approvalItem: RunToolApprovalItem,

@@ -3,7 +3,7 @@ import { Agent } from '../agent';
 import { ModelBehaviorError } from '../errors';
 import { RunItem, RunMessageOutputItem, RunToolApprovalItem } from '../items';
 import { ModelResponse } from '../model';
-import type { Runner } from '../run';
+import type { Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
 import { getLastTextFromOutputMessage } from '../utils/messages';
 import { getSchemaAndParserFromInputType } from '../utils/tools';
@@ -315,6 +315,7 @@ export async function resolveInterruptedTurn<TContext>(
   processedResponse: ProcessedResponse,
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<SingleStepResult> {
   // call_ids for function tools
   const functionCallIds = originalPreStepItems
@@ -446,6 +447,7 @@ export async function resolveInterruptedTurn<TContext>(
     functionToolRuns,
     runner,
     state,
+    toolErrorFormatter,
   );
 
   // Computer actions may require approval; only pending approved actions are executed on resume.
@@ -456,12 +458,21 @@ export async function resolveInterruptedTurn<TContext>(
           pendingComputerActions,
           runner,
           state._context,
+          undefined,
+          toolErrorFormatter,
         )
       : [];
 
   const shellResults =
     shellRuns.length > 0
-      ? await executeShellActions(agent, shellRuns, runner, state._context)
+      ? await executeShellActions(
+          agent,
+          shellRuns,
+          runner,
+          state._context,
+          undefined,
+          toolErrorFormatter,
+        )
       : [];
 
   const applyPatchResults =
@@ -471,6 +482,8 @@ export async function resolveInterruptedTurn<TContext>(
           applyPatchRuns,
           runner,
           state._context,
+          undefined,
+          toolErrorFormatter,
         )
       : [];
 
@@ -619,6 +632,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
   processedResponse: ProcessedResponse<TContext>,
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
+  toolErrorFormatter?: ToolErrorFormatter,
 ): Promise<SingleStepResult> {
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
@@ -640,24 +654,31 @@ export async function resolveTurnAfterModelResponse<TContext>(
         processedResponse.functions,
         runner,
         state,
+        toolErrorFormatter,
       ),
       executeComputerActions(
         agent,
         processedResponse.computerActions,
         runner,
         state._context,
+        undefined,
+        toolErrorFormatter,
       ),
       executeShellActions(
         agent,
         processedResponse.shellActions,
         runner,
         state._context,
+        undefined,
+        toolErrorFormatter,
       ),
       executeApplyPatchOperations(
         agent,
         processedResponse.applyPatchActions,
         runner,
         state._context,
+        undefined,
+        toolErrorFormatter,
       ),
     ]);
 

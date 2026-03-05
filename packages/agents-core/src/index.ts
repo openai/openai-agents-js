@@ -155,6 +155,8 @@ export type {
   ModelInputData,
   CallModelInputFilter,
   CallModelInputFilterArgs,
+  ToolErrorFormatter,
+  ToolErrorFormatterArgs,
   ReasoningItemIdPolicy,
   RunErrorData,
   RunErrorHandler,
