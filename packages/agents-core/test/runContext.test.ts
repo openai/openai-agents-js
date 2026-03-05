@@ -23,6 +23,26 @@ function createApproval(callId = '123', toolName = 'toolX') {
   );
 }
 
+function createRealtimeHostedApproval(
+  itemId = 'item-1',
+  toolName = 'hostedMcp',
+) {
+  return new ToolApprovalItem(
+    {
+      type: 'hosted_tool_call',
+      name: toolName,
+      arguments: '{}',
+      status: 'in_progress',
+      providerData: {
+        itemId,
+        serverLabel: 'server-1',
+        type: 'mcp_approval_request',
+      },
+    } as any,
+    agent,
+  );
+}
+
 describe('RunContext', () => {
   it('approves and rejects tool calls', () => {
     const ctx = new RunContext();
@@ -43,6 +63,42 @@ describe('RunContext', () => {
     expect(ctx.isToolApproved({ toolName: 'toolX', callId: '456' })).toBe(
       false,
     );
+  });
+
+  it('reuses alwaysReject messages for future call ids', () => {
+    const ctx = new RunContext();
+    const item = createApproval();
+
+    ctx.rejectTool(item, {
+      alwaysReject: true,
+      message: 'Blocked by policy.',
+    });
+
+    expect(ctx.getRejectionMessage('toolX', '123')).toBe('Blocked by policy.');
+    expect(ctx.getRejectionMessage('toolX', '456')).toBe('Blocked by policy.');
+    expect(ctx.toJSON().approvals.toolX.messages).toEqual({
+      '123': 'Blocked by policy.',
+    });
+    expect(ctx.toJSON().approvals.toolX.stickyRejectMessage).toBe(
+      'Blocked by policy.',
+    );
+  });
+
+  it('uses realtime hosted MCP item ids for rejection message lookups', () => {
+    const ctx = new RunContext();
+    const item = createRealtimeHostedApproval();
+
+    ctx.rejectTool(item, { message: 'Denied by policy.' });
+
+    expect(
+      ctx.isToolApproved({ toolName: 'hostedMcp', callId: 'item-1' }),
+    ).toBe(false);
+    expect(ctx.getRejectionMessage('hostedMcp', 'item-1')).toBe(
+      'Denied by policy.',
+    );
+    expect(ctx.toJSON().approvals.hostedMcp.messages).toEqual({
+      'item-1': 'Denied by policy.',
+    });
   });
 
   it('rebuilds approvals map', () => {

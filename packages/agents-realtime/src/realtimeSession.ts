@@ -10,6 +10,7 @@ import {
   RunToolApprovalItem,
   invokeFunctionTool,
   type FunctionTool,
+  type ToolErrorFormatterArgs,
   type ToolErrorFormatter,
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
@@ -528,7 +529,14 @@ export class RealtimeSession<
   async #resolveApprovalRejectionMessage(
     toolName: string,
     callId: string,
+    toolType: ToolErrorFormatterArgs['toolType'] = 'function',
   ): Promise<string> {
+    // Per-call message from state.reject(item, { message }) takes precedence.
+    const perCallMessage = this.#context.getRejectionMessage(toolName, callId);
+    if (typeof perCallMessage === 'string') {
+      return perCallMessage;
+    }
+
     const { toolErrorFormatter } = this.options;
     if (!toolErrorFormatter) {
       return TOOL_APPROVAL_REJECTION_MESSAGE;
@@ -537,7 +545,7 @@ export class RealtimeSession<
     try {
       const formattedMessage = await toolErrorFormatter({
         kind: 'approval_rejected',
-        toolType: 'function',
+        toolType,
         toolName,
         callId,
         defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
@@ -1158,10 +1166,14 @@ export class RealtimeSession<
    * @param approvalItem - The approval item to reject.
    * @param options - Additional options.
    * @param options.alwaysReject - Whether to always reject the tool call.
+   * @param options.message - The rejection text sent to the model.
+   *   If not provided, `toolErrorFormatter` (if configured) or the SDK default is used.
    */
   async reject(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysReject?: boolean } = { alwaysReject: false },
+    options: { alwaysReject?: boolean; message?: string } = {
+      alwaysReject: false,
+    },
   ) {
     this.#context.rejectTool(approvalItem, options);
 
@@ -1185,7 +1197,15 @@ export class RealtimeSession<
       }
       const mcpApprovalRequest =
         approvalItemToRealtimeApprovalItem(approvalItem);
-      this.#transport.sendMcpResponse(mcpApprovalRequest, false);
+      const rejectionReason = this.#context.getRejectionMessage(
+        toolName,
+        mcpApprovalRequest.itemId,
+      );
+      this.#transport.sendMcpResponse(
+        mcpApprovalRequest,
+        false,
+        rejectionReason,
+      );
     } else {
       throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }

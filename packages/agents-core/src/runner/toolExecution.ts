@@ -42,15 +42,15 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
-import type {
-  Runner,
-  ToolErrorFormatter,
-  ToolErrorFormatterArgs,
-} from '../run';
+import type { Runner, ToolErrorFormatter } from '../run';
 import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
+import {
+  resolveApprovalRejectionMessage,
+  TOOL_APPROVAL_REJECTION_MESSAGE,
+} from './approvalRejection';
 import type {
   ToolRunApplyPatch,
   ToolRunComputer,
@@ -67,7 +67,6 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   toolErrorFormatter?: ToolErrorFormatter;
 };
 
-const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
 const REDACTED_TOOL_ERROR_MESSAGE =
   'Tool execution failed. Error details are redacted.';
 // 1x1 transparent PNG data URL used for rejected computer actions.
@@ -77,54 +76,6 @@ const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
 type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
-
-type ApprovalRejectedToolType = ToolErrorFormatterArgs['toolType'];
-
-type ApprovalRejectionMessageOptions = {
-  runContext: RunContext;
-  toolType: ApprovalRejectedToolType;
-  toolName: string;
-  callId: string;
-  toolErrorFormatter?: ToolErrorFormatter;
-};
-
-async function resolveApprovalRejectionMessage({
-  runContext,
-  toolType,
-  toolName,
-  callId,
-  toolErrorFormatter,
-}: ApprovalRejectionMessageOptions): Promise<string> {
-  if (!toolErrorFormatter) {
-    return TOOL_APPROVAL_REJECTION_MESSAGE;
-  }
-
-  try {
-    const formattedMessage = await toolErrorFormatter({
-      kind: 'approval_rejected',
-      toolType,
-      toolName,
-      callId,
-      defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
-      runContext,
-    });
-
-    if (typeof formattedMessage === 'string') {
-      return formattedMessage;
-    }
-    if (typeof formattedMessage !== 'undefined') {
-      logger.warn(
-        'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
-      );
-    }
-  } catch (error) {
-    logger.warn(
-      `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
-    );
-  }
-
-  return TOOL_APPROVAL_REJECTION_MESSAGE;
-}
 
 /**
  * @internal
