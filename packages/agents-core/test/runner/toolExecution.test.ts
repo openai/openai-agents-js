@@ -72,7 +72,6 @@ import {
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { z } from 'zod';
-import logger from '../../src/logger';
 import {
   defaultProcessor,
   TracingProcessor,
@@ -950,7 +949,7 @@ describe('executeComputerActions', () => {
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
-  it('uses toolErrorFormatter message when computer action is rejected', async () => {
+  it('uses reject message when computer action is rejected with a message', async () => {
     const fakeComputer = {
       environment: 'mac',
       dimensions: [1, 1] as [number, number],
@@ -973,18 +972,16 @@ describe('executeComputerActions', () => {
     };
     const agent = new Agent({ name: 'Comp' });
     const runContext = new RunContext();
-    runContext.rejectTool(new ToolApprovalItem(call, agent, tool.name));
-    const runner = new Runner({
-      toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+    runContext.rejectTool(new ToolApprovalItem(call, agent, tool.name), {
+      message: CUSTOM_REJECTION_MESSAGE,
     });
+    const runner = new Runner();
 
     const items = await executeComputerActions(
       agent,
       [{ toolCall: call, computer: tool }],
       runner,
       runContext,
-      undefined,
-      runner.config.toolErrorFormatter,
     );
 
     expect(items).toHaveLength(2);
@@ -1794,7 +1791,7 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(0);
     });
 
-    it('uses toolErrorFormatter message for rejected apply_patch operations', async () => {
+    it('uses reject message for rejected apply_patch operations', async () => {
       const editor = new FakeEditor();
       const applyPatch = applyPatchTool({
         editor,
@@ -1802,10 +1799,7 @@ describe('executeShellActions', () => {
       });
       const agent = new Agent({ name: 'EditorAgent' });
       const runContext = new RunContext();
-      const runner = new Runner({
-        tracingDisabled: true,
-        toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
-      });
+      const runner = new Runner({ tracingDisabled: true });
       const toolCall: protocol.ApplyPatchCallItem = {
         type: 'apply_patch_call',
         callId: 'call_patch_custom',
@@ -1818,6 +1812,7 @@ describe('executeShellActions', () => {
 
       runContext.rejectTool(
         new ToolApprovalItem(toolCall, agent, applyPatch.name),
+        { message: CUSTOM_REJECTION_MESSAGE },
       );
 
       const results = await executeApplyPatchOperations(
@@ -1825,8 +1820,6 @@ describe('executeShellActions', () => {
         [{ toolCall, applyPatch } as any],
         runner,
         runContext,
-        undefined,
-        runner.config.toolErrorFormatter,
       );
 
       const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
@@ -1899,22 +1892,22 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
     });
 
-    it('uses toolErrorFormatter message when approval is false', async () => {
+    it('uses reject message when approval is false and message is provided', async () => {
       const t = makeTool(true);
-      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
-
-      const customRunner = new Runner({
-        tracingDisabled: true,
-        toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+      const approvalItem = new ToolApprovalItem(
+        toolCall as any,
+        state._currentAgent,
+      );
+      state._context.rejectTool(approvalItem, {
+        message: CUSTOM_REJECTION_MESSAGE,
       });
 
       const res = await withTrace('test', () =>
         executeFunctionToolCalls(
           state._currentAgent,
           [{ toolCall, tool: t }],
-          customRunner,
+          runner,
           state,
-          customRunner.config.toolErrorFormatter,
         ),
       );
 
@@ -1930,16 +1923,21 @@ describe('executeShellActions', () => {
       }
     });
 
-    it('does not trace formatted rejection text when sensitive data is disabled', async () => {
+    it('does not trace custom rejection message when sensitive data is disabled', async () => {
       const t = makeTool(true);
-      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
-      const sensitiveMessage = 'sensitive secret from formatter';
+      const sensitiveMessage = 'sensitive secret in reject message';
       const processor = new RecordingProcessor();
+      const approvalItem = new ToolApprovalItem(
+        toolCall as any,
+        state._currentAgent,
+      );
+      state._context.rejectTool(approvalItem, {
+        message: sensitiveMessage,
+      });
 
       const customRunner = new Runner({
         tracingDisabled: false,
         traceIncludeSensitiveData: false,
-        toolErrorFormatter: () => sensitiveMessage,
       });
 
       setTracingDisabled(false);
@@ -1952,7 +1950,6 @@ describe('executeShellActions', () => {
             [{ toolCall, tool: t }],
             customRunner,
             state,
-            customRunner.config.toolErrorFormatter,
           ),
         );
 
@@ -1977,38 +1974,6 @@ describe('executeShellActions', () => {
         setTraceProcessors([defaultProcessor()]);
         setTracingDisabled(true);
       }
-    });
-
-    it('falls back to default rejection message when toolErrorFormatter throws', async () => {
-      const t = makeTool(true);
-      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
-      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-
-      const customRunner = new Runner({
-        tracingDisabled: true,
-        toolErrorFormatter: () => {
-          throw new Error('formatter failed');
-        },
-      });
-
-      const res = await withTrace('test', () =>
-        executeFunctionToolCalls(
-          state._currentAgent,
-          [{ toolCall, tool: t }],
-          customRunner,
-          state,
-          customRunner.config.toolErrorFormatter,
-        ),
-      );
-
-      expect(res[0].type).toBe('function_output');
-      if (res[0].type === 'function_output') {
-        expect(res[0].output).toBe('Tool execution was not approved.');
-      }
-      expect(warnSpy).toHaveBeenCalledWith(
-        'toolErrorFormatter threw while formatting approval rejection: formatter failed',
-      );
-      warnSpy.mockRestore();
     });
 
     it('clears pending nested agent run when approval is rejected', async () => {
@@ -2814,15 +2779,12 @@ describe('executeShellActions', () => {
     ]);
   });
 
-  it('uses toolErrorFormatter message when shell approval is rejected', async () => {
+  it('uses reject message when shell approval is rejected with a message', async () => {
     const shell = new FakeShell();
     const shellToolDef = shellTool({ shell, needsApproval: async () => true });
     const agent = new Agent({ name: 'ShellAgent' });
     const runContext = new RunContext();
-    const runner = new Runner({
-      tracingDisabled: true,
-      toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
-    });
+    const runner = new Runner({ tracingDisabled: true });
     const toolCall: protocol.ShellCallItem = {
       type: 'shell_call',
       callId: 'call_shell_custom',
@@ -2832,6 +2794,7 @@ describe('executeShellActions', () => {
 
     runContext.rejectTool(
       new ToolApprovalItem(toolCall, agent, shellToolDef.name),
+      { message: CUSTOM_REJECTION_MESSAGE },
     );
 
     const results = await executeShellActions(
@@ -2839,8 +2802,6 @@ describe('executeShellActions', () => {
       [{ toolCall, shell: shellToolDef } as any],
       runner,
       runContext,
-      undefined,
-      runner.config.toolErrorFormatter,
     );
 
     const rawItem = results[0].rawItem as protocol.ShellCallResultItem;

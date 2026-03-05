@@ -318,6 +318,7 @@ export const SerializedRunState = z.object({
       z.object({
         approved: z.array(z.string()).or(z.boolean()),
         rejected: z.array(z.string()).or(z.boolean()),
+        messages: z.record(z.string(), z.string()).optional(),
       }),
     ),
     context: z.record(z.string(), z.any()),
@@ -641,10 +642,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * @param approvalItem - The tool call approval item to approve.
    * @param options - Options for the approval.
+   * @param options.alwaysApprove - Permanently approve this tool for all future calls.
    */
   approve(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysApprove?: boolean } = { alwaysApprove: false },
+    options: { alwaysApprove?: boolean } = {
+      alwaysApprove: false,
+    },
   ) {
     this._context.approveTool(approvalItem, options);
   }
@@ -655,15 +659,24 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * To reject the request use this method and then run the agent again with the same state object
    * to continue the execution.
    *
-   * By default it will only reject the current tool call. To allow the tool to be used multiple
-   * times throughout the run, set the `alwaysReject` option to `true`.
+   * By default it will only reject the current tool call. To reject the tool for all future
+   * calls throughout the run, set the `alwaysReject` option to `true`.
+   *
+   * When `message` is provided it **replaces** the default rejection text
+   * (`"Tool execution was not approved."`) entirely — the agent sees only your message.
+   * When `message` is not provided the SDK default rejection text is used.
    *
    * @param approvalItem - The tool call approval item to reject.
    * @param options - Options for the rejection.
+   * @param options.alwaysReject - Permanently reject this tool for all future calls.
+   * @param options.message - The rejection message sent to the model. Replaces the default
+   *   rejection text when provided; the SDK default is used when omitted.
    */
   reject(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysReject?: boolean } = { alwaysReject: false },
+    options: { alwaysReject?: boolean; message?: string } = {
+      alwaysReject: false,
+    },
   ) {
     this._context.rejectTool(approvalItem, options);
   }

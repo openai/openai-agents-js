@@ -104,40 +104,6 @@ export type { ReasoningItemIdPolicy } from './runner/items';
 //  Configuration
 // --------------------------------------------------------------
 
-export type ToolErrorFormatterArgs<
-  TContext = unknown,
-  TKind extends 'approval_rejected' = 'approval_rejected',
-> = {
-  /**
-   * The category of tool error being formatted.
-   */
-  kind: TKind;
-  /**
-   * The tool runtime that produced the error.
-   */
-  toolType: 'function' | 'computer' | 'shell' | 'apply_patch';
-  /**
-   * The name of the tool that produced the error.
-   */
-  toolName: string;
-  /**
-   * The unique tool call identifier.
-   */
-  callId: string;
-  /**
-   * The SDK's default message for this error kind.
-   */
-  defaultMessage: string;
-  /**
-   * The active run context for the current execution.
-   */
-  runContext: RunContext<TContext>;
-};
-
-export type ToolErrorFormatter<TContext = unknown> = (
-  args: ToolErrorFormatterArgs<TContext>,
-) => Promise<string | undefined> | string | undefined;
-
 /**
  * Configures settings for the entire agent run.
  */
@@ -228,12 +194,6 @@ export type RunConfig = {
   callModelInputFilter?: CallModelInputFilter;
 
   /**
-   * Formats tool error messages that are returned to the model.
-   * Returning `undefined` falls back to the SDK default message.
-   */
-  toolErrorFormatter?: ToolErrorFormatter;
-
-  /**
    * Controls how run items are converted into model input for subsequent turns.
    */
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
@@ -254,7 +214,6 @@ type SharedRunOptions<
   session?: Session;
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
-  toolErrorFormatter?: ToolErrorFormatter;
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   /**
@@ -371,7 +330,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
-      toolErrorFormatter: config.toolErrorFormatter,
       reasoningItemIdPolicy: config.reasoningItemIdPolicy,
     };
     this.traceOverrides = {
@@ -444,9 +402,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Likewise allow callers to override callModelInputFilter on individual runs.
     const callModelInputFilter =
       resolvedOptions.callModelInputFilter ?? this.config.callModelInputFilter;
-    // Per-run callback can override runner-level tool error formatting defaults.
-    const toolErrorFormatter =
-      resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const reasoningItemIdPolicy = resolvedOptions.reasoningItemIdPolicy;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
@@ -460,7 +415,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...resolvedOptions,
       sessionInputCallback,
       callModelInputFilter,
-      toolErrorFormatter,
       reasoningItemIdPolicy,
     };
     const resumingFromState = input instanceof RunState;
@@ -686,9 +640,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           serverConversationTracker.previousResponseId,
         );
       }
-      const toolErrorFormatter =
-        options.toolErrorFormatter ?? this.config.toolErrorFormatter;
-
       // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
 
@@ -711,7 +662,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
               runner: this,
-              toolErrorFormatter,
             });
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -846,7 +796,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._lastProcessedResponse!,
               this,
               state,
-              toolErrorFormatter,
             );
 
             applyTurnResult({
@@ -1028,9 +977,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         serverConversationTracker.previousResponseId,
       );
     }
-    const toolErrorFormatter =
-      options.toolErrorFormatter ?? this.config.toolErrorFormatter;
-
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
 
@@ -1057,7 +1003,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
             runner: this,
-            toolErrorFormatter,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -1273,7 +1218,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._lastProcessedResponse!,
             this,
             result.state,
-            toolErrorFormatter,
           );
 
           applyTurnResult({

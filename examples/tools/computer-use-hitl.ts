@@ -1,28 +1,8 @@
 import { chromium, Browser, Page } from 'playwright';
 import { createInterface } from 'node:readline/promises';
-import {
-  Agent,
-  run,
-  withTrace,
-  computerTool,
-  Computer,
-  type ToolErrorFormatter,
-} from '@openai/agents';
+import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
-
-// This is optional
-const hitlToolErrorFormatter: ToolErrorFormatter = ({
-  kind,
-  toolType,
-  toolName,
-  defaultMessage,
-}) => {
-  if (kind !== 'approval_rejected') {
-    return defaultMessage;
-  }
-  return `Tool execution for ${toolType} tool "${toolName}" was dismissed by the user. You may ask to run it again if needed.`;
-};
 
 async function confirm(question: string): Promise<boolean> {
   if (AUTO_APPROVE_HITL) {
@@ -149,11 +129,7 @@ async function computerPerRequest() {
 }
 
 async function runWithHitl(agent: Agent<unknown, any>, input: string) {
-  let result = await run(agent, input, {
-    // this is optional: when you want to customize the error response from a tool,
-    // you can use this toolErrorFormatter option for it
-    toolErrorFormatter: hitlToolErrorFormatter,
-  });
+  let result = await run(agent, input);
   while (result.interruptions?.length) {
     const state = result.state;
     for (const interruption of result.interruptions) {
@@ -164,14 +140,14 @@ async function runWithHitl(agent: Agent<unknown, any>, input: string) {
       if (approved) {
         state.approve(interruption);
       } else {
-        state.reject(interruption);
+        // The message replaces the default rejection text entirely.
+        // The agent sees only this string as the tool output.
+        state.reject(interruption, {
+          message: `Tool execution for "${interruption.name}" was dismissed by the user. You may ask to run it again if needed.`,
+        });
       }
     }
-    result = await run(agent, state, {
-      // this is optional: when you want to customize the error response from a tool,
-      // you can use this toolErrorFormatter option for it
-      toolErrorFormatter: hitlToolErrorFormatter,
-    });
+    result = await run(agent, state);
   }
   return result;
 }

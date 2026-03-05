@@ -6,6 +6,7 @@ import { Usage } from './usage';
 type ApprovalRecord = {
   approved: boolean | string[];
   rejected: boolean | string[];
+  messages?: Record<string, string>;
 };
 
 type RunContextJson = {
@@ -102,11 +103,27 @@ export class RunContext<TContext = UnknownContext> {
         this.#approvals.set(toolName, incoming);
         continue;
       }
+      const mergedMessages =
+        existing.messages || incoming.messages
+          ? { ...existing.messages, ...incoming.messages }
+          : undefined;
       this.#approvals.set(toolName, {
         approved: mergeApproval(existing.approved, incoming.approved),
         rejected: mergeApproval(existing.rejected, incoming.rejected),
+        ...(mergedMessages ? { messages: mergedMessages } : {}),
       });
     }
+  }
+
+  /**
+   * Retrieve the caller-provided rejection message for a specific tool call.
+   *
+   * @param toolName - The name of the tool.
+   * @param callId - The call ID of the tool invocation.
+   * @returns The message string if one was provided, `undefined` otherwise.
+   */
+  getApprovalMessage(toolName: string, callId: string): string | undefined {
+    return this.#approvals.get(toolName)?.messages?.[callId];
   }
 
   /**
@@ -200,7 +217,10 @@ export class RunContext<TContext = UnknownContext> {
    */
   rejectTool(
     approvalItem: RunToolApprovalItem,
-    { alwaysReject = false }: { alwaysReject?: boolean } = {},
+    {
+      alwaysReject = false,
+      message,
+    }: { alwaysReject?: boolean; message?: string } = {},
   ) {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
@@ -224,6 +244,10 @@ export class RunContext<TContext = UnknownContext> {
           ? approvalItem.rawItem.callId // function tools
           : approvalItem.rawItem.id!; // hosted tools
       approvalEntry.rejected.push(callId);
+      if (message) {
+        approvalEntry.messages = approvalEntry.messages ?? {};
+        approvalEntry.messages[callId] = message;
+      }
     }
     this.#approvals.set(toolName, approvalEntry);
   }

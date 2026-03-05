@@ -1522,7 +1522,7 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
-    it('uses runner-level toolErrorFormatter when resuming a rejected approval', async () => {
+    it('uses reject message when resuming a rejected approval in stream', async () => {
       const approvalTool = tool({
         name: 'test',
         description: 'approval tool',
@@ -1539,15 +1539,13 @@ describe('Runner.run (streaming)', () => {
       ]);
 
       const agent = new Agent({
-        name: 'StreamRejectFormatter',
+        name: 'StreamRejectMessage',
         model,
         tools: [approvalTool],
         toolUseBehavior: 'stop_on_first_tool',
       });
 
-      const runner = new Runner({
-        toolErrorFormatter: () => 'stream runner rejection',
-      });
+      const runner = new Runner();
 
       const firstResult = await runner.run(agent, 'user_message', {
         stream: true,
@@ -1556,7 +1554,9 @@ describe('Runner.run (streaming)', () => {
       await drain(firstResult);
 
       expect(firstResult.interruptions).toHaveLength(1);
-      firstResult.state.reject(firstResult.interruptions[0]);
+      firstResult.state.reject(firstResult.interruptions[0], {
+        message: 'stream rejection with message',
+      });
 
       const resumed = await runner.run(agent, firstResult.state, {
         stream: true,
@@ -1564,7 +1564,7 @@ describe('Runner.run (streaming)', () => {
 
       await drain(resumed);
 
-      expect(resumed.finalOutput).toBe('stream runner rejection');
+      expect(resumed.finalOutput).toBe('stream rejection with message');
       expect(model.requests).toHaveLength(1);
     });
 

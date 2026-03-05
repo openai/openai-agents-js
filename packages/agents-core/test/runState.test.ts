@@ -471,6 +471,91 @@ describe('RunState', () => {
     ).toBe(false);
   });
 
+  it('reject with message stores it and includes it in getApprovalMessage', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'MsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolMsg',
+      callId: 'msg-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: 'Not safe to run' });
+
+    expect(
+      state._context.isToolApproved({ toolName: 'toolMsg', callId: 'msg-1' }),
+    ).toBe(false);
+    expect(state._context.getApprovalMessage('toolMsg', 'msg-1')).toBe(
+      'Not safe to run',
+    );
+  });
+
+  it('serialization round-trip preserves rejection messages', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'SerializeMsgAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const rawItem: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'toolSer',
+      callId: 'ser-1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+
+    state.reject(approvalItem, { message: 'Denied for security' });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._context.getApprovalMessage('toolSer', 'ser-1')).toBe(
+      'Denied for security',
+    );
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'toolSer',
+        callId: 'ser-1',
+      }),
+    ).toBe(false);
+  });
+
+  it('per-callId messages: two rejections can have different messages', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'PerCallMsgAgent' });
+    const state = new RunState(context, '', agent, 1);
+
+    const rawItem1: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'sharedTool',
+      callId: 'call-a',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const rawItem2: protocol.ToolCallItem = {
+      type: 'function_call',
+      name: 'sharedTool',
+      callId: 'call-b',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    state.reject(new ToolApprovalItem(rawItem1, agent), {
+      message: 'Reason A',
+    });
+    state.reject(new ToolApprovalItem(rawItem2, agent), {
+      message: 'Reason B',
+    });
+
+    expect(state._context.getApprovalMessage('sharedTool', 'call-a')).toBe(
+      'Reason A',
+    );
+    expect(state._context.getApprovalMessage('sharedTool', 'call-b')).toBe(
+      'Reason B',
+    );
+  });
+
   it('reject permanently when alwaysReject option is passed', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent4' });
