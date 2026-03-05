@@ -1,7 +1,7 @@
 // @ts-check
 
 import { Agent, Runner } from '@openai/agents';
-import { aisdk } from '@openai/agents-extensions';
+import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 const fakeModel = {
   provider: 'fake',
