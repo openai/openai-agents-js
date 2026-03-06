@@ -15,9 +15,21 @@ const lookupCustomerProfile = createLookupCustomerProfileTool({
   transientErrorMessage:
     'Simulated transient CRM outage. Please retry the tool call.',
 });
+const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
+
+async function runWithOptionalTrace(
+  name: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (autoMode) {
+    await fn();
+    return;
+  }
+  await withTrace(name, fn);
+}
 
 async function main() {
-  await withTrace('memory:file:main', async () => {
+  await runWithOptionalTrace('memory:file:main', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions,
@@ -41,7 +53,7 @@ async function main() {
 }
 
 async function mainStream() {
-  await withTrace('memory:file:mainStream', async () => {
+  await runWithOptionalTrace('memory:file:mainStream', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions,

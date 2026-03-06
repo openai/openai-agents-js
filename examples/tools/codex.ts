@@ -146,11 +146,11 @@ async function main(): Promise<void> {
       log(String(result1.finalOutput ?? ''));
 
       log(
-        'Using $test-coverage-improver skill to analyze the test coverage of the project and improve it...',
+        'Using the codex tool to inspect the workspace and find the Agent implementation...',
       );
       const result2 = await run(
         agent,
-        'You must use `$test-coverage-improver` skill to analyze the test coverage of the project and improve it.',
+        'Use the codex tool to inspect this workspace. Find the main source file that defines the Agent class and summarize its location in one sentence.',
       );
       log(String(result2.finalOutput ?? ''));
     },

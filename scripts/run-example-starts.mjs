@@ -71,6 +71,14 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
 export const EXCLUDED_STARTS = new Set([
   // The documented entrypoint for this example is `dev`; `next start` is only for a built app server.
   'realtime-next:start',
+  // This server is intended for manual browser-driven demo flows, not unattended batch validation.
+  'ai-sdk-ui:start',
+  // This example binds the default Next.js production port and conflicts with other `next start` demos in parallel auto-runs.
+  'nextjs:start',
+  // This example is a long-lived webhook server used for manual telephony demo flows.
+  'realtime-twilio:start',
+  // This example needs external webhook wiring and a Twilio-compatible webhook secret, so it is not suitable for batch auto-runs.
+  'realtime-twilio-sip:start',
 ]);
 
 const CONDITIONAL_AUTO_SKIP_RULES = [
@@ -855,14 +863,11 @@ const runStarts = async (
           }
         }
       } catch (error) {
-        failed += 1;
         const exitCode =
           typeof error?.exitCode === 'number' ? error.exitCode : 'unknown';
-        console.error(
-          `   !! ${start.packageName}:${start.scriptName} exited with ${exitCode}`,
-        );
         await flushLogStream();
         if (exitCode === 0) {
+          executed += 1;
           const validation = await validateLog({ start, logFile, exitCode: 0 });
           if (validation.status === 'unexpected') {
             unexpected += 1;
@@ -884,6 +889,10 @@ const runStarts = async (
           });
           continue;
         }
+        failed += 1;
+        console.error(
+          `   !! ${start.packageName}:${start.scriptName} exited with ${exitCode}`,
+        );
 
         const validation = await validateLog({ start, logFile, exitCode });
         if (validation.status === 'expected-failure') {

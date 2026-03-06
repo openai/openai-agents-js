@@ -1,5 +1,6 @@
 import {
   Agent,
+  RunContext,
   run,
   MCPServerStdio,
   getAllMcpTools,
@@ -77,18 +78,21 @@ async function main() {
         '\n=== Demonstrating tool filtering with getAllMcpTools ===\n',
       );
 
-      // Add tool filter to one of the servers
+      // Add tool filter to one of the servers.
+      // getAllMcpTools applies filters when it has the same runtime context the agent would use.
       filesystemServer.toolFilter = {
         allowedToolNames: ['read_file'], // Only allow read_file tool
       };
+      const filterContext = new RunContext({});
+      const filterAgent = new Agent({
+        name: 'MCP Tool Filter Inspector',
+      });
 
-      // Note: For callable filters to work, you need to pass runContext and agent
-      // This is typically done internally when the agent runs
       const filteredTools = await getAllMcpTools({
         mcpServers: servers,
         convertSchemasToStrict: false,
-        // runContext and agent would normally be provided by the agent runtime
-        // For demo purposes, we're showing the structure
+        runContext: filterContext,
+        agent: filterAgent,
       });
 
       console.log(`After filtering, found ${filteredTools.length} tools:`);

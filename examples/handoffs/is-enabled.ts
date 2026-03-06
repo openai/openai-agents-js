@@ -120,7 +120,7 @@ async function main() {
 
     const userRequest = await ask(
       '\nAsk a question and see which specialist handles the conversation:\n',
-      'How do you say good night?',
+      'Please answer in French: How do you say good night?',
     );
 
     if (!userRequest.trim()) {

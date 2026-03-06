@@ -7,6 +7,19 @@ import {
 } from '@openai/agents';
 import * as path from 'node:path';
 
+const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
+
+async function runWithOptionalTrace(
+  name: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (autoMode) {
+    await fn();
+    return;
+  }
+  await withTrace(name, fn);
+}
+
 async function main() {
   const samplesDir = path.join(__dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
@@ -21,7 +34,7 @@ async function main() {
   await mcpServer.connect();
 
   try {
-    await withTrace('MCP Tool Filter Example', async () => {
+    await runWithOptionalTrace('MCP Tool Filter Example', async () => {
       const agent = new Agent({
         name: 'MCP Assistant',
         instructions: 'Use the filesystem tools to answer questions.',
