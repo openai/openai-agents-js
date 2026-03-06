@@ -684,6 +684,59 @@ describe('RunState', () => {
     });
   });
 
+  it('skips rehydration for server tool_search outputs with concrete tool payloads', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'Agent18ServerSearchConcrete' });
+    const state = new RunState(context, 'input1', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_server_concrete',
+          call_id: 'call_ts_server_concrete',
+          execution: 'server',
+          status: 'completed',
+          arguments: { query: 'profile' },
+        } as any,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_server_concrete',
+          call_id: 'call_ts_server_concrete',
+          execution: 'server',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerId: {
+                    type: 'string',
+                  },
+                },
+                required: ['customerId'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        } as any,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._generatedItems[0]).toBeInstanceOf(RunToolSearchCallItem);
+    expect(restored._generatedItems[1]).toBeInstanceOf(RunToolSearchOutputItem);
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
   it('accepts schema version 1.7 payloads when non-item context data mentions tool_search types', async () => {
     const context = new RunContext({
       custom: {

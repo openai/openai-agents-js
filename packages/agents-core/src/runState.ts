@@ -1225,6 +1225,10 @@ async function rehydrateToolSearchRuntimeTools<
       continue;
     }
 
+    if (getToolSearchExecution(item.rawItem) === 'server') {
+      continue;
+    }
+
     const configuredTools = await getConfiguredAgentTools({
       agent: item.agent as Agent<TContext, any>,
       context: state._context,
