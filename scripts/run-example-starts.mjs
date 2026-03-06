@@ -64,8 +64,22 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
   ['memory:start:file', 'n\n'],
   ['memory:start:memory', 'n\n'],
   ['memory:start:oai', 'n\n'],
+  ['memory:start:prisma', 'n\n'],
   ['mcp:start:tool-filter', 'n\n'],
 ]);
+
+export const EXCLUDED_STARTS = new Set([
+  // The documented entrypoint for this example is `dev`; `next start` is only for a built app server.
+  'realtime-next:start',
+]);
+
+const CONDITIONAL_AUTO_SKIP_RULES = [
+  {
+    name: 'connectors:start',
+    requiredEnv: ['GOOGLE_CALENDAR_AUTHORIZATION'],
+    reason: 'missing GOOGLE_CALENDAR_AUTHORIZATION',
+  },
+];
 
 export const DEFAULT_AUTO_SKIP = [
   // Tends to loop multiple times and produce very long output; skip in auto runs.
@@ -307,6 +321,29 @@ export const loadAutoSkip = () => {
   return new Set(DEFAULT_AUTO_SKIP);
 };
 
+const getStartName = (startOrName) =>
+  typeof startOrName === 'string'
+    ? startOrName
+    : `${startOrName.packageName}:${startOrName.scriptName}`;
+
+const isExcludedStart = (startOrName) =>
+  EXCLUDED_STARTS.has(getStartName(startOrName));
+
+const getConditionalAutoSkipReason = (startOrName) => {
+  const name = getStartName(startOrName);
+  const rule = CONDITIONAL_AUTO_SKIP_RULES.find((entry) => entry.name === name);
+  if (!rule) {
+    return null;
+  }
+
+  const missingEnv = rule.requiredEnv.find((key) => {
+    const value = process.env[key];
+    return typeof value !== 'string' || value.trim().length === 0;
+  });
+
+  return missingEnv ? rule.reason : null;
+};
+
 const detectTagsFromName = (name) => {
   const lower = name.toLowerCase();
   const tags = new Set();
@@ -379,9 +416,11 @@ export const collectRerunFromLog = ({
   return [...Object.entries(entries)]
     .filter(
       ([name, status]) =>
+        !isExcludedStart(name) &&
         status !== 'passed' &&
         status !== 'pending' &&
         !autoSkipSet.has(name) &&
+        !getConditionalAutoSkipReason(name) &&
         (!status.startsWith('skipped') || allowedByFlags(name)),
     )
     .map(([name]) => name)
@@ -485,6 +524,10 @@ const collectStartScripts = async (filter) => {
         dir: path.dirname(packageJsonPath),
         command: String(command),
       };
+
+      if (isExcludedStart(start)) {
+        continue;
+      }
 
       if (matchesFilter(start, filter)) {
         starts.push({ ...start, tags: detectTags(start) });
@@ -630,9 +673,12 @@ const runStarts = async (
       const tagLabel =
         verbose && start.tags.size ? ` ${formatTags(start.tags)}` : '';
 
+      const conditionalAutoSkipReason =
+        interactiveMode === 'auto' ? getConditionalAutoSkipReason(start) : null;
       const autoSkip =
         interactiveMode === 'auto' &&
-        autoSkipSet.has(`${start.packageName}:${start.scriptName}`);
+        (autoSkipSet.has(`${start.packageName}:${start.scriptName}`) ||
+          conditionalAutoSkipReason !== null);
 
       if (skip) {
         const reasonLabel = reasons.size
@@ -649,11 +695,18 @@ const runStarts = async (
 
       if (autoSkip) {
         const relativeDir = path.relative(rootDir, start.dir) || '.';
+        const reasonLabel = conditionalAutoSkipReason
+          ? ` (${conditionalAutoSkipReason})`
+          : ' (auto-skip list)';
         console.log(
-          `\n↷ Skipping ${start.packageName}:${start.scriptName}${tagLabel} (auto-skip list). pnpm -C ${relativeDir} run ${start.scriptName}`,
+          `\n↷ Skipping ${start.packageName}:${start.scriptName}${tagLabel}${reasonLabel}. pnpm -C ${relativeDir} run ${start.scriptName}`,
         );
         skipped += 1;
-        results.push({ start, status: 'skipped', reason: 'auto-skip' });
+        results.push({
+          start,
+          status: 'skipped',
+          reason: conditionalAutoSkipReason ?? 'auto-skip',
+        });
         continue;
       }
 

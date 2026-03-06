@@ -24,17 +24,15 @@ async function main() {
       role: 'user',
       content: [
         {
+          type: 'input_text',
+          text: 'What is the first sentence of the introduction?',
+        },
+        {
           type: 'input_file',
           file: `data:application/pdf;base64,${b64File}`,
-          providerData: {
-            filename: 'partial_o3-and-o4-mini-system-card.pdf',
-          },
+          filename: 'partial_o3-and-o4-mini-system-card.pdf',
         },
       ],
-    },
-    {
-      role: 'user',
-      content: 'What is the first sentence of the introduction?',
     },
   ]);
 

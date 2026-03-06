@@ -4,7 +4,12 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 1. Visit https://developers.google.com/oauthplayground/
   // 2. Input https://www.googleapis.com/auth/calendar.events as the required scope
   // 3. Grab the acccess token starting with "ya29."
-  const authorization = process.env.GOOGLE_CALENDAR_AUTHORIZATION!;
+  const authorization = process.env.GOOGLE_CALENDAR_AUTHORIZATION;
+  if (!authorization) {
+    throw new Error(
+      'Set GOOGLE_CALENDAR_AUTHORIZATION before running this example.',
+    );
+  }
 
   const agent = new Agent({
     name: 'My Calendar Assistant',

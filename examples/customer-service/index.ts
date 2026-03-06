@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import readline from 'node:readline';
+import readline from 'node:readline/promises';
 import { Agent, withTrace, tool, run, RunContext } from '@openai/agents';
 import { RECOMMENDED_PROMPT_PREFIX } from '@openai/agents-core/extensions';
 
@@ -123,60 +123,80 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
-async function promptUser(query: string): Promise<string> {
-  return new Promise((resolve) => rl.question(query, resolve));
+async function promptUser(query: string): Promise<string | null> {
+  try {
+    return await rl.question(query);
+  } catch (error: any) {
+    if (error?.code === 'ERR_USE_AFTER_CLOSE') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function isExitCommand(input: string): boolean {
+  const normalized = input.trim().toLowerCase();
+  return normalized === 'exit' || normalized === 'quit';
 }
 
 async function main() {
-  let currentAgent = triageAgent;
-  const context: AirlineAgentContext = {};
-  let inputItems: any[] = [];
-  while (true) {
-    const userInput = await promptUser('Enter your message: ');
-    await withTrace('Customer service', async () => {
-      inputItems.push({ content: userInput, role: 'user' });
-      const result = await run(currentAgent, inputItems, { context });
+  try {
+    let currentAgent = triageAgent;
+    const context: AirlineAgentContext = {};
+    let inputItems: any[] = [];
+    while (true) {
+      const userInput = await promptUser('Enter your message: ');
+      if (userInput === null || isExitCommand(userInput)) {
+        return;
+      }
 
-      console.log(
-        '-----------------------------------------------------------',
-      );
-      console.log(`result.output: ${JSON.stringify(result.output, null, 2)}`);
-      console.log(`context: ${JSON.stringify(context, null, 2)}`);
-      console.log(
-        '-----------------------------------------------------------',
-      );
+      await withTrace('Customer service', async () => {
+        inputItems.push({ content: userInput, role: 'user' });
+        const result = await run(currentAgent, inputItems, { context });
 
-      for (const newItem of result.newItems) {
-        // Type guards for RunItem discriminated union
-        if (newItem.type === 'message_output_item') {
-          const agentName = (newItem as any).agent?.name || 'Agent';
-          console.log(`${agentName}: ${newItem.content}`);
-        } else if (newItem.type === 'handoff_output_item') {
-          const handoffItem = newItem as any;
-          console.log(
-            `Handed off from ${handoffItem.sourceAgent.name} to ${handoffItem.targetAgent.name}`,
-          );
-        } else if (newItem.type === 'tool_call_item') {
-          const agentName = (newItem as any).agent?.name || 'Agent';
-          console.log(`${agentName}: Calling a tool`);
-        } else if (newItem.type === 'tool_call_output_item') {
-          const agentName = (newItem as any).agent?.name || 'Agent';
-          console.log(
-            `${agentName}: Tool call output: ${(newItem as any).output}`,
-          );
-        } else {
-          const agentName = (newItem as any).agent?.name || 'Agent';
-          console.log(`${agentName}: Skipping item: ${newItem.type}`);
+        console.log(
+          '-----------------------------------------------------------',
+        );
+        console.log(`result.output: ${JSON.stringify(result.output, null, 2)}`);
+        console.log(`context: ${JSON.stringify(context, null, 2)}`);
+        console.log(
+          '-----------------------------------------------------------',
+        );
+
+        for (const newItem of result.newItems) {
+          // Type guards for RunItem discriminated union
+          if (newItem.type === 'message_output_item') {
+            const agentName = (newItem as any).agent?.name || 'Agent';
+            console.log(`${agentName}: ${newItem.content}`);
+          } else if (newItem.type === 'handoff_output_item') {
+            const handoffItem = newItem as any;
+            console.log(
+              `Handed off from ${handoffItem.sourceAgent.name} to ${handoffItem.targetAgent.name}`,
+            );
+          } else if (newItem.type === 'tool_call_item') {
+            const agentName = (newItem as any).agent?.name || 'Agent';
+            console.log(`${agentName}: Calling a tool`);
+          } else if (newItem.type === 'tool_call_output_item') {
+            const agentName = (newItem as any).agent?.name || 'Agent';
+            console.log(
+              `${agentName}: Tool call output: ${(newItem as any).output}`,
+            );
+          } else {
+            const agentName = (newItem as any).agent?.name || 'Agent';
+            console.log(`${agentName}: Skipping item: ${newItem.type}`);
+          }
         }
-      }
-      // Defensive: check if history and lastAgent exist
-      if ((result as any).history) {
-        inputItems = (result as any).history;
-      }
-      if ((result as any).lastAgent) {
-        currentAgent = (result as any).lastAgent;
-      }
-    });
+        // Defensive: check if history and lastAgent exist
+        if ((result as any).history) {
+          inputItems = (result as any).history;
+        }
+        if ((result as any).lastAgent) {
+          currentAgent = (result as any).lastAgent;
+        }
+      });
+    }
+  } finally {
+    rl.close();
   }
 }
 

@@ -9,6 +9,22 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
+function isExitCommand(input: string): boolean {
+  const normalized = input.trim().toLowerCase();
+  return normalized === 'exit' || normalized === 'quit';
+}
+
+async function promptUser(question: string): Promise<string | null> {
+  try {
+    return await rl.question(question);
+  } catch (error: any) {
+    if (error?.code === 'ERR_USE_AFTER_CLOSE') {
+      return null;
+    }
+    throw error;
+  }
+}
+
 const frenchAgent = new Agent({
   name: 'french_agent',
   instructions: 'You only speak French',
@@ -32,41 +48,52 @@ const triageAgent = new Agent({
 });
 
 async function main() {
-  const conversationId = randomUUID().replace(/-/g, '').slice(0, 16);
+  try {
+    const conversationId = randomUUID().replace(/-/g, '').slice(0, 16);
 
-  let userMsg = await rl.question(
-    'Hi! We speak French, Spanish and English. How can I help?\n',
-  );
-
-  let agent: Agent<any, any> = triageAgent;
-  let inputs: AgentInputItem[] = [{ role: 'user', content: userMsg }];
-
-  while (true) {
-    let result: StreamedRunResult<any, Agent<any, any>> | undefined;
-    await withTrace(
-      'Routing example',
-      async () => {
-        result = await run(agent, inputs, { stream: true });
-
-        result
-          .toTextStream({ compatibleWithNodeStreams: true })
-          .pipe(process.stdout);
-
-        await result.completed;
-      },
-      { groupId: conversationId },
+    let userMsg = await promptUser(
+      'Hi! We speak French, Spanish and English. How can I help?\n',
     );
-
-    if (!result) {
-      throw new Error('No result');
+    if (userMsg === null || isExitCommand(userMsg)) {
+      return;
     }
 
-    inputs = result.history;
-    process.stdout.write('\n');
+    let agent: Agent<any, any> = triageAgent;
+    let inputs: AgentInputItem[] = [{ role: 'user', content: userMsg }];
 
-    userMsg = await rl.question('Enter a message:\n');
-    inputs.push({ role: 'user', content: userMsg });
-    agent = result.currentAgent ?? agent;
+    while (true) {
+      let result: StreamedRunResult<any, Agent<any, any>> | undefined;
+      await withTrace(
+        'Routing example',
+        async () => {
+          result = await run(agent, inputs, { stream: true });
+
+          result
+            .toTextStream({ compatibleWithNodeStreams: true })
+            .pipe(process.stdout);
+
+          await result.completed;
+        },
+        { groupId: conversationId },
+      );
+
+      if (!result) {
+        throw new Error('No result');
+      }
+
+      inputs = result.history;
+      process.stdout.write('\n');
+
+      userMsg = await promptUser('Enter a message:\n');
+      if (userMsg === null || isExitCommand(userMsg)) {
+        return;
+      }
+
+      inputs.push({ role: 'user', content: userMsg });
+      agent = result.currentAgent ?? agent;
+    }
+  } finally {
+    rl.close();
   }
 }
 

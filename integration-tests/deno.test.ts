@@ -1,25 +1,46 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { execa as execaBase } from 'execa';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-const execa = execaBase({ cwd: './integration-tests/deno' });
+const denoCwd = './integration-tests/deno';
+const denoNpmrcPath = path.resolve(denoCwd, '.npmrc');
+let denoCacheDir = '';
+let execa = execaBase({ cwd: denoCwd });
 
 describe('Deno', () => {
   beforeAll(async () => {
-    // Remove lock file to avoid errors
-    await execa`rm -f deno.lock`;
+    // Use an isolated Deno cache so scoped registry resolution does not reuse stale global npm metadata.
+    denoCacheDir = await mkdtemp(path.join(tmpdir(), 'openai-agents-js-deno-'));
+    execa = execaBase({
+      cwd: denoCwd,
+      env: {
+        ...process.env,
+        DENO_DIR: denoCacheDir,
+        NPM_CONFIG_USERCONFIG: denoNpmrcPath,
+      },
+    });
+
+    await rm(path.join(denoCwd, 'deno.lock'), { force: true });
     console.log('[deno] Removing node_modules');
-    await execa`rm -rf node_modules`;
+    await rm(path.join(denoCwd, 'node_modules'), {
+      recursive: true,
+      force: true,
+    });
     console.log('[deno] Installing dependencies');
-    await execa`deno install`;
+    await execa`deno install --reload=npm:`;
   }, 60000);
 
   test('should be able to run', { timeout: 60000 }, async () => {
-    const { stdout } = await execa`deno --allow-net --allow-env main.ts`;
+    const { stdout } =
+      await execa`deno --allow-net --allow-env --reload=npm: main.ts`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
   test('should be able to run with zod', { timeout: 60000 }, async () => {
-    const { stdout } = await execa`deno --allow-net --allow-env zod.ts`;
+    const { stdout } =
+      await execa`deno --allow-net --allow-env --reload=npm: zod.ts`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
@@ -27,7 +48,7 @@ describe('Deno', () => {
     'aisdk runner should not lose tracing context',
     { timeout: 60000 },
     async () => {
-      const { stdout } = await execa`deno --allow-all aisdk.ts`;
+      const { stdout } = await execa`deno --allow-all --reload=npm: aisdk.ts`;
       expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
     },
   );
@@ -36,7 +57,8 @@ describe('Deno', () => {
     'AsyncLocalStorage propagation preserves tracing context',
     { timeout: 60000 },
     async () => {
-      const { stdout } = await execa`deno --allow-env als-propagation.ts`;
+      const { stdout } =
+        await execa`deno --allow-env --reload=npm: als-propagation.ts`;
       const match = stdout.match(/\[ALS_REPORT\](.*)\[\/ALS_REPORT\]/s);
       expect(match).not.toBeNull();
 
@@ -57,6 +79,7 @@ describe('Deno', () => {
   );
 
   afterAll(async () => {
-    await execa`rm -f deno.lock`;
+    await rm(path.join(denoCwd, 'deno.lock'), { force: true });
+    await rm(denoCacheDir, { recursive: true, force: true });
   });
 });
