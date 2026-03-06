@@ -22,7 +22,7 @@ async function main() {
   await withTrace('container-shell-tool-example', async () => {
     const agent1 = new Agent({
       name: 'Container Shell Agent',
-      model: 'gpt-5.2',
+      model: 'gpt-5.4',
       modelSettings: { reasoning: { effort: 'low' } },
       instructions: 'Use the available container to answer user requests.',
       tools: [
@@ -52,7 +52,7 @@ async function main() {
 
     const agent2 = new Agent({
       name: 'Container Reference Shell Agent',
-      model: 'gpt-5.2-codex',
+      model: 'gpt-5.4',
       modelSettings: { reasoning: { effort: 'low' } },
       instructions: 'Reuse the existing shell container and answer concisely.',
       tools: [
@@ -196,7 +196,7 @@ async function assertSkillUsableInResponses(
   reference: ShellToolSkillReference,
 ): Promise<void> {
   await client.responses.create({
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     reasoning: { effort: 'none' },
     input: 'Reply with exactly "ready".',
     max_output_tokens: 16,

@@ -9,7 +9,7 @@ import { FileSession } from './sessions';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     // This compaction decorator handles only compaction logic.
     // The underlying session is responsible for storing the history.
     underlyingSession: new FileSession(),
@@ -24,7 +24,7 @@ async function main() {
 
   const agent = new Agent({
     name: 'Assistant',
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     instructions:
       'Keep answers short. This example demonstrates responses.compact with a custom session. For every user turn, call fetch_image_data with the provided label. Do not include raw image bytes or data URLs in your final answer.',
     modelSettings: { toolChoice: 'required' },

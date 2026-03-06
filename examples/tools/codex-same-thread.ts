@@ -87,7 +87,7 @@ async function main(): Promise<void> {
             name: 'codex_engineer',
             sandboxMode: 'workspace-write',
             defaultThreadOptions: {
-              model: 'gpt-5.2-codex',
+              model: 'gpt-5.4',
               modelReasoningEffort: 'low',
               networkAccessEnabled: true,
               webSearchEnabled: false,

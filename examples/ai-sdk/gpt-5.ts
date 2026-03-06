@@ -15,7 +15,7 @@ export async function main() {
     instructions:
       'You are a helpful assistant. When you need to get the weather, you must use tools.',
     tools: [getWeatherTool],
-    model: aisdk(openai('gpt-5.2')),
+    model: aisdk(openai('gpt-5.4')),
     modelSettings: {
       providerData: {
         providerOptions: {

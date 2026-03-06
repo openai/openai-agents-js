@@ -46,7 +46,7 @@ export type FinancialSearchPlan = z.infer<typeof FinancialSearchPlan>;
 export const plannerAgent = new Agent({
   name: 'FinancialPlannerAgent',
   instructions: plannerPrompt,
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   outputType: FinancialSearchPlan,
 });
 
@@ -69,7 +69,7 @@ Focus on key numbers, events, or quotes that will be useful to a financial analy
 export const searchAgent = new Agent({
   name: 'FinancialSearchAgent',
   instructions: searchAgentPrompt,
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   tools: [webSearchTool()],
 });
 
@@ -92,7 +92,7 @@ export type VerificationResult = z.infer<typeof VerificationResult>;
 export const verifierAgent = new Agent({
   name: 'VerificationAgent',
   instructions: verifierPrompt,
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   outputType: VerificationResult,
 });
 
@@ -115,6 +115,6 @@ export type FinancialReportData = z.infer<typeof FinancialReportData>;
 export const writerAgent = new Agent({
   name: 'FinancialWriterAgent',
   instructions: writerPrompt,
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   outputType: FinancialReportData,
 });

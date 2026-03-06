@@ -9,7 +9,7 @@ import { fetchImageData } from './tools';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     // If store: false in modelSettings, auto switches to input mode.
     // compactionMode: 'input',
     // Use a local session store because the server is stateless when store is false.
@@ -22,7 +22,7 @@ async function main() {
 
   const agent = new Agent({
     name: 'Assistant',
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     instructions:
       'Keep answers short. This example demonstrates responses.compact with input mode and store=false. For every user turn, call fetch_image_data with the provided label. Do not include raw image bytes or data URLs in your final answer.',
     modelSettings: {

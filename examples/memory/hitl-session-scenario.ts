@@ -430,7 +430,7 @@ async function main() {
     process.exit(1);
   }
 
-  const modelOverride = process.env.HITL_MODEL ?? 'gpt-5.2';
+  const modelOverride = process.env.HITL_MODEL ?? 'gpt-5.4';
   await runFileSessionScenario(modelOverride);
   await runOpenAISessionScenario(modelOverride);
 }

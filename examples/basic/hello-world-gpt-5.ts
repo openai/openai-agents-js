@@ -13,13 +13,13 @@ const output = z.object({
 });
 
 async function main() {
-  withTrace('GPT-5.2 Assistant', async () => {
+  withTrace('GPT-5.4 Assistant', async () => {
     const prompt =
       'Tell me about recursion in programming in a few sentences. Quickly responding with a single answer is fine.';
 
     const agent = new Agent({
-      name: 'GPT-5.2 Assistant',
-      model: 'gpt-5.2',
+      name: 'GPT-5.4 Assistant',
+      model: 'gpt-5.4',
       instructions: "You're a helpful assistant.",
       modelSettings: {
         reasoning: { effort: 'none' },
@@ -44,8 +44,8 @@ async function main() {
     // console.log(result2.finalOutput);
 
     const completionsAgent = new Agent({
-      name: 'GPT-5.2 Assistant',
-      model: new OpenAIChatCompletionsModel(new OpenAI(), 'gpt-5.2'),
+      name: 'GPT-5.4 Assistant',
+      model: new OpenAIChatCompletionsModel(new OpenAI(), 'gpt-5.4'),
       instructions: "You're a helpful assistant.",
       modelSettings: {
         reasoning: { effort: 'none' },

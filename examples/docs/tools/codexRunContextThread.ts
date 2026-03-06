@@ -19,7 +19,7 @@ const agent = new Agent<ExampleContext>({
       sandboxMode: 'workspace-write',
       workingDirectory: '/path/to/repo',
       defaultThreadOptions: {
-        model: 'gpt-5.2-codex',
+        model: 'gpt-5.4',
         approvalPolicy: 'never',
       },
     }),

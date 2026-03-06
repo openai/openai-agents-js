@@ -15,7 +15,7 @@ export const getWeather = tool({
 export const customerSupportAgent = new Agent({
   name: 'Customer Support Agent',
   handoffDescription: 'Handles billing, refunds, and account access issues.',
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   modelSettings: {
     reasoning: { effort: 'low', summary: 'concise' },
     text: { verbosity: 'low' },
@@ -27,7 +27,7 @@ export const customerSupportAgent = new Agent({
 
 export const agent = new Agent({
   name: 'Sky Guide',
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   modelSettings: {
     reasoning: { effort: 'none' },
     text: { verbosity: 'low' },

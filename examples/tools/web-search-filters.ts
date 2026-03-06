@@ -3,7 +3,7 @@ import { Agent, run, webSearchTool, withTrace } from '@openai/agents';
 async function main() {
   const agent = new Agent({
     name: 'OAI website searcher',
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
     instructions:
       'You are a helpful agent that can search openai.com resources.',
     tools: [
