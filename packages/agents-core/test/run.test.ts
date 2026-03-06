@@ -38,6 +38,8 @@ import {
   RunMessageOutputItem as MessageOutputItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallOutputItem as ToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '../src/items';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
@@ -286,7 +288,6 @@ describe('Runner.run', () => {
               },
               providerData: {
                 call_id: 'call_tool_search_lookup',
-                execution: 'client',
               },
             } as protocol.ToolSearchCallItem,
           ],
@@ -334,6 +335,259 @@ describe('Runner.run', () => {
       expect(executeArgs?.loadDefault).toEqual(expect.any(Function));
       expect(state.getToolSearchRuntimeTools(agent)).toEqual([lookupAccount]);
       expect(executeArgs?.loadDefault(['missing_tool'])).toEqual([]);
+    });
+
+    it('rehydrates custom client tool_search runtime tools after RunState serialization', async () => {
+      const lookupAccount = tool({
+        name: 'lookup_account',
+        description: 'Look up an account in CRM.',
+        parameters: z.object({
+          accountId: z.string(),
+        }),
+        execute: async ({ accountId }) => `account:${accountId}`,
+      });
+      const execute = vi.fn().mockResolvedValue(lookupAccount);
+      const toolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+            parameters: {
+              type: 'object',
+              properties: {
+                namespaceHints: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+              },
+              required: ['namespaceHints'],
+              additionalProperties: false,
+            },
+          },
+        },
+        execute,
+      );
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_lookup',
+              status: 'completed',
+              arguments: {
+                namespaceHints: ['crm'],
+              },
+              providerData: {
+                call_id: 'call_tool_search_lookup',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_lookup_account',
+              callId: 'call_lookup_account',
+              name: 'lookup_account',
+              status: 'completed',
+              arguments: JSON.stringify({ accountId: 'acct_42' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('Account loaded.')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'SerializedCustomClientToolSearchAgent',
+        model,
+        tools: [toolSearch],
+      });
+      const initialError = await run(agent, 'hello', { maxTurns: 1 }).catch(
+        (error) => error,
+      );
+
+      expect(initialError).toBeInstanceOf(MaxTurnsExceededError);
+      const state = (initialError as MaxTurnsExceededError).state as RunState<
+        unknown,
+        Agent<any, any>
+      >;
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual([lookupAccount]);
+
+      const restored = await RunState.fromString(agent, state.toString());
+      restored._maxTurns = 10;
+
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(restored.getToolSearchRuntimeTools(agent)).toEqual([
+        lookupAccount,
+      ]);
+
+      const resumedResult = await run(agent, restored);
+
+      expect(resumedResult.finalOutput).toBe('Account loaded.');
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(resumedResult.history).toContainEqual(
+        expect.objectContaining({
+          type: 'function_call',
+          name: 'lookup_account',
+        }),
+      );
+    });
+
+    it('fails early when custom client tool_search runtime tools are resumed without an executor', async () => {
+      const toolSearch = {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespaceHints: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['namespaceHints'],
+            additionalProperties: false,
+          },
+        },
+      } as const;
+      const agent = new Agent({
+        name: 'MissingExecutorToolSearchAgent',
+        model: new FakeModel(),
+        tools: [toolSearch as any],
+      });
+      const state = new RunState(new RunContext(), 'hello', agent, 10);
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_lookup',
+            status: 'completed',
+            arguments: {
+              namespaceHints: ['crm'],
+            },
+            providerData: {
+              call_id: 'call_tool_search_lookup',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'lookup_account',
+                description: 'Look up an account in CRM.',
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    accountId: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['accountId'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: {
+              call_id: 'call_tool_search_lookup',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      await expect(() =>
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        /no longer provides toolSearchTool\(\{ execution: "client", execute \}\)/,
+      );
+    });
+
+    it('does not require rehydration for built-in client tool_search outputs that match configured deferred tools', async () => {
+      const getShippingEta = tool({
+        name: 'get_shipping_eta',
+        description: 'Look up a shipping ETA.',
+        parameters: z.object({
+          trackingNumber: z.string(),
+        }),
+        deferLoading: true,
+        execute: async () => 'tomorrow',
+      });
+      const agent = new Agent({
+        name: 'BuiltInClientToolSearchResumeAgent',
+        model: new FakeModel(),
+        tools: [getShippingEta],
+      });
+      const state = new RunState(new RunContext(), 'hello', agent, 10);
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_shipping',
+            status: 'completed',
+            arguments: {
+              paths: ['get_shipping_eta'],
+            },
+            providerData: {
+              call_id: 'call_tool_search_shipping',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'get_shipping_eta',
+                description: 'Look up a shipping ETA.',
+                strict: true,
+                deferLoading: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    trackingNumber: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['trackingNumber'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: {
+              call_id: 'call_tool_search_shipping',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(restored.getToolSearchRuntimeTools(agent)).toEqual([]);
     });
 
     it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
