@@ -36,6 +36,7 @@ import type {
 } from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
 import {
+  getClientToolSearchExecutor,
   getToolSearchRuntimeToolKey,
   HostedMCPTool,
   ShellTool,
@@ -45,9 +46,18 @@ import {
 import type { AgentToolInvocation } from './agentToolInvocation';
 import {
   getFunctionToolQualifiedName,
+  toolQualifiedName,
   resolveFunctionToolCallName,
 } from './toolIdentity';
-import { getToolSearchOutputReplacementKey } from './utils/toolSearch';
+import {
+  getToolSearchExecution,
+  getToolSearchOutputReplacementKey,
+  resolveToolSearchCallId,
+} from './utils/toolSearch';
+import {
+  executeCustomClientToolSearch,
+  getClientToolSearchHelper,
+} from './runner/toolSearch';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -1035,6 +1045,247 @@ function isToolSearchProtocolType(type: unknown): boolean {
   return type === 'tool_search_call' || type === 'tool_search_output';
 }
 
+function collectSerializedRuntimeToolKeys(
+  value: unknown,
+  runtimeToolKeys: Set<string>,
+  namespace?: string,
+): void {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  const candidate = value as {
+    type?: unknown;
+    name?: unknown;
+    namespace?: unknown;
+    tools?: unknown;
+    server_label?: unknown;
+    providerData?: unknown;
+  };
+
+  if (candidate.type === 'namespace' && Array.isArray(candidate.tools)) {
+    const nestedNamespace =
+      typeof candidate.name === 'string' && candidate.name.length > 0
+        ? candidate.name
+        : namespace;
+    for (const nestedTool of candidate.tools) {
+      collectSerializedRuntimeToolKeys(
+        nestedTool,
+        runtimeToolKeys,
+        nestedNamespace,
+      );
+    }
+    return;
+  }
+
+  const explicitNamespace =
+    typeof candidate.namespace === 'string' && candidate.namespace.length > 0
+      ? candidate.namespace
+      : namespace;
+  if (candidate.type === 'function') {
+    if (typeof candidate.name !== 'string' || candidate.name.length === 0) {
+      return;
+    }
+
+    runtimeToolKeys.add(
+      toolQualifiedName(candidate.name, explicitNamespace) ?? candidate.name,
+    );
+    return;
+  }
+
+  if (
+    candidate.type === 'mcp' &&
+    typeof candidate.server_label === 'string' &&
+    candidate.server_label.length > 0
+  ) {
+    runtimeToolKeys.add(`mcp:${candidate.server_label}`);
+    return;
+  }
+
+  if (!candidate.providerData || typeof candidate.providerData !== 'object') {
+    return;
+  }
+
+  collectSerializedRuntimeToolKeys(
+    candidate.providerData,
+    runtimeToolKeys,
+    explicitNamespace,
+  );
+}
+
+function getSerializedRuntimeToolKeys(
+  toolSearchOutput: protocol.ToolSearchOutputItem,
+): Set<string> {
+  const runtimeToolKeys = new Set<string>();
+  for (const tool of toolSearchOutput.tools) {
+    collectSerializedRuntimeToolKeys(tool, runtimeToolKeys);
+  }
+  return runtimeToolKeys;
+}
+
+function getRuntimeToolKeys<TContext>(
+  runtimeTools: Tool<TContext>[],
+): Set<string> {
+  const runtimeToolKeys = new Set<string>();
+  for (const tool of runtimeTools) {
+    const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
+    if (!runtimeToolKey) {
+      throw new UserError(
+        'Client tool_search execute() returned an unsupported runtime tool during RunState rehydration.',
+      );
+    }
+    runtimeToolKeys.add(runtimeToolKey);
+  }
+  return runtimeToolKeys;
+}
+
+function formatRuntimeToolKeys(runtimeToolKeys: Set<string>): string {
+  return [...runtimeToolKeys].sort().join(', ');
+}
+
+function assertRuntimeToolKeysMatch<TContext>(args: {
+  agent: Agent<any, any>;
+  toolSearchCall: protocol.ToolSearchCallItem;
+  toolSearchOutput: protocol.ToolSearchOutputItem;
+  runtimeTools: Tool<TContext>[];
+}): void {
+  const { agent, toolSearchCall, toolSearchOutput, runtimeTools } = args;
+  const expectedRuntimeToolKeys =
+    getSerializedRuntimeToolKeys(toolSearchOutput);
+  if (expectedRuntimeToolKeys.size === 0) {
+    return;
+  }
+
+  const actualRuntimeToolKeys = getRuntimeToolKeys(runtimeTools);
+  const hasExpectedKeys = [...expectedRuntimeToolKeys].every((runtimeToolKey) =>
+    actualRuntimeToolKeys.has(runtimeToolKey),
+  );
+  const hasActualKeys = [...actualRuntimeToolKeys].every((runtimeToolKey) =>
+    expectedRuntimeToolKeys.has(runtimeToolKey),
+  );
+  if (hasExpectedKeys && hasActualKeys) {
+    return;
+  }
+
+  const callId = resolveToolSearchCallId(toolSearchCall);
+  throw new UserError(
+    `RunState cannot resume custom client tool_search call ${callId} for agent ${agent.name} because the registered execute callback returned runtime tools [${formatRuntimeToolKeys(actualRuntimeToolKeys)}] but the serialized state expects [${formatRuntimeToolKeys(expectedRuntimeToolKeys)}].`,
+  );
+}
+
+async function getConfiguredAgentTools<TContext>(args: {
+  agent: Agent<TContext, any>;
+  context: RunContext<TContext>;
+  configuredToolsByAgentName: Map<string, Tool<TContext>[]>;
+}): Promise<Tool<TContext>[]> {
+  const { agent, context, configuredToolsByAgentName } = args;
+  const existing = configuredToolsByAgentName.get(agent.name);
+  if (existing) {
+    return existing;
+  }
+
+  const configuredTools = (await agent.getAllTools(
+    context,
+  )) as Tool<TContext>[];
+  configuredToolsByAgentName.set(agent.name, configuredTools);
+  return configuredTools;
+}
+
+async function rehydrateToolSearchRuntimeTools<
+  TContext,
+  TAgent extends Agent<any, any>,
+>(state: RunState<TContext, TAgent>): Promise<void> {
+  const configuredToolsByAgentName = new Map<string, Tool<TContext>[]>();
+  const pendingToolSearchCalls = new Map<
+    string,
+    {
+      agent: Agent<TContext, any>;
+      toolSearchCall: protocol.ToolSearchCallItem;
+      runtimeTools?: Tool<TContext>[];
+    }
+  >();
+
+  for (const item of state._generatedItems) {
+    if (item instanceof RunToolSearchCallItem) {
+      if (getToolSearchExecution(item.rawItem) !== 'client') {
+        continue;
+      }
+
+      const callId = resolveToolSearchCallId(item.rawItem);
+      pendingToolSearchCalls.set(`${item.agent.name}:${callId}`, {
+        agent: item.agent as Agent<TContext, any>,
+        toolSearchCall: item.rawItem,
+      });
+      continue;
+    }
+
+    if (!(item instanceof RunToolSearchOutputItem)) {
+      continue;
+    }
+
+    const runtimeToolKeys = getSerializedRuntimeToolKeys(item.rawItem);
+    if (runtimeToolKeys.size === 0) {
+      continue;
+    }
+
+    const callId = resolveToolSearchCallId(item.rawItem);
+    const pendingCall = pendingToolSearchCalls.get(
+      `${item.agent.name}:${callId}`,
+    );
+    if (!pendingCall) {
+      throw new UserError(
+        `RunState cannot resume custom client tool_search output ${callId} for agent ${item.agent.name} because the serialized state is missing the matching tool_search call item.`,
+      );
+    }
+
+    if (!pendingCall.runtimeTools) {
+      const configuredTools = await getConfiguredAgentTools({
+        agent: pendingCall.agent,
+        context: state._context,
+        configuredToolsByAgentName,
+      });
+      const availableTools = [
+        ...configuredTools,
+        ...state.getToolSearchRuntimeTools(pendingCall.agent),
+      ];
+      const toolSearchTool = getClientToolSearchHelper(configuredTools);
+      if (!toolSearchTool || !getClientToolSearchExecutor(toolSearchTool)) {
+        throw new UserError(
+          `RunState cannot resume custom client tool_search call ${callId} for agent ${pendingCall.agent.name} because the agent no longer provides toolSearchTool({ execution: "client", execute }).`,
+        );
+      }
+
+      const { runtimeTools } = await executeCustomClientToolSearch({
+        agent: pendingCall.agent,
+        runContext: state._context,
+        toolSearchCall: pendingCall.toolSearchCall,
+        toolSearchTool,
+        tools: availableTools,
+      });
+      assertRuntimeToolKeysMatch({
+        agent: pendingCall.agent,
+        toolSearchCall: pendingCall.toolSearchCall,
+        toolSearchOutput: item.rawItem,
+        runtimeTools,
+      });
+      pendingCall.runtimeTools = runtimeTools;
+    }
+
+    const runtimeTools = pendingCall.runtimeTools;
+    if (!runtimeTools) {
+      throw new UserError(
+        `RunState cannot resume custom client tool_search call ${callId} for agent ${pendingCall.agent.name} because no runtime tools were rehydrated.`,
+      );
+    }
+
+    state.recordToolSearchRuntimeTools(
+      pendingCall.agent,
+      item.rawItem,
+      runtimeTools,
+    );
+  }
+}
+
 async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   initialAgent: TAgent,
   stateJson: z.infer<typeof SerializedRunState>,
@@ -1151,11 +1402,11 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  await rehydrateToolSearchRuntimeTools(state);
   state._lastProcessedResponse = stateJson.lastProcessedResponse
     ? await deserializeProcessedResponse(
         agentMap,
-        state._currentAgent,
-        state._context,
+        state,
         stateJson.lastProcessedResponse,
       )
     : undefined;
@@ -1417,13 +1668,17 @@ function deserializeInterruptions(
  */
 async function deserializeProcessedResponse<TContext = UnknownContext>(
   agentMap: Map<string, Agent<any, any>>,
-  currentAgent: Agent<TContext, any>,
-  context: RunContext<TContext>,
+  state: RunState<TContext, Agent<any, any>>,
   serializedProcessedResponse: z.infer<
     typeof serializedProcessedResponseSchema
   >,
 ): Promise<ProcessedResponse<TContext>> {
-  const allTools = await currentAgent.getAllTools(context);
+  const currentAgent = state._currentAgent;
+  const configuredTools = await currentAgent.getAllTools(state._context);
+  const allTools = [
+    ...(configuredTools as Tool<TContext>[]),
+    ...state.getToolSearchRuntimeTools(currentAgent),
+  ];
   const tools = new Map(
     allTools
       .filter((tool) => tool.type === 'function')
