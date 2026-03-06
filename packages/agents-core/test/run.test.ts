@@ -288,7 +288,6 @@ describe('Runner.run', () => {
               },
               providerData: {
                 call_id: 'call_tool_search_lookup',
-                execution: 'client',
               },
             } as protocol.ToolSearchCallItem,
           ],
@@ -382,7 +381,6 @@ describe('Runner.run', () => {
               },
               providerData: {
                 call_id: 'call_tool_search_lookup',
-                execution: 'client',
               },
             } as protocol.ToolSearchCallItem,
           ],
@@ -521,6 +519,75 @@ describe('Runner.run', () => {
       ).rejects.toThrow(
         /no longer provides toolSearchTool\(\{ execution: "client", execute \}\)/,
       );
+    });
+
+    it('does not require rehydration for built-in client tool_search outputs that match configured deferred tools', async () => {
+      const getShippingEta = tool({
+        name: 'get_shipping_eta',
+        description: 'Look up a shipping ETA.',
+        parameters: z.object({
+          trackingNumber: z.string(),
+        }),
+        deferLoading: true,
+        execute: async () => 'tomorrow',
+      });
+      const agent = new Agent({
+        name: 'BuiltInClientToolSearchResumeAgent',
+        model: new FakeModel(),
+        tools: [getShippingEta],
+      });
+      const state = new RunState(new RunContext(), 'hello', agent, 10);
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_shipping',
+            status: 'completed',
+            arguments: {
+              paths: ['get_shipping_eta'],
+            },
+            providerData: {
+              call_id: 'call_tool_search_shipping',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'get_shipping_eta',
+                description: 'Look up a shipping ETA.',
+                strict: true,
+                deferLoading: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    trackingNumber: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['trackingNumber'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: {
+              call_id: 'call_tool_search_shipping',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(restored.getToolSearchRuntimeTools(agent)).toEqual([]);
     });
 
     it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {

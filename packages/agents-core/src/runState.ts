@@ -1125,11 +1125,15 @@ function getSerializedRuntimeToolKeys(
 
 function getRuntimeToolKeys<TContext>(
   runtimeTools: Tool<TContext>[],
+  options: { allowUnsupported?: boolean } = {},
 ): Set<string> {
   const runtimeToolKeys = new Set<string>();
   for (const tool of runtimeTools) {
     const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
     if (!runtimeToolKey) {
+      if (options.allowUnsupported) {
+        continue;
+      }
       throw new UserError(
         'Client tool_search execute() returned an unsupported runtime tool during RunState rehydration.',
       );
@@ -1146,12 +1150,10 @@ function formatRuntimeToolKeys(runtimeToolKeys: Set<string>): string {
 function assertRuntimeToolKeysMatch<TContext>(args: {
   agent: Agent<any, any>;
   toolSearchCall: protocol.ToolSearchCallItem;
-  toolSearchOutput: protocol.ToolSearchOutputItem;
+  expectedRuntimeToolKeys: Set<string>;
   runtimeTools: Tool<TContext>[];
 }): void {
-  const { agent, toolSearchCall, toolSearchOutput, runtimeTools } = args;
-  const expectedRuntimeToolKeys =
-    getSerializedRuntimeToolKeys(toolSearchOutput);
+  const { agent, toolSearchCall, expectedRuntimeToolKeys, runtimeTools } = args;
   if (expectedRuntimeToolKeys.size === 0) {
     return;
   }
@@ -1207,7 +1209,7 @@ async function rehydrateToolSearchRuntimeTools<
 
   for (const item of state._generatedItems) {
     if (item instanceof RunToolSearchCallItem) {
-      if (getToolSearchExecution(item.rawItem) !== 'client') {
+      if (getToolSearchExecution(item.rawItem) === 'server') {
         continue;
       }
 
@@ -1223,8 +1225,20 @@ async function rehydrateToolSearchRuntimeTools<
       continue;
     }
 
-    const runtimeToolKeys = getSerializedRuntimeToolKeys(item.rawItem);
-    if (runtimeToolKeys.size === 0) {
+    const configuredTools = await getConfiguredAgentTools({
+      agent: item.agent as Agent<TContext, any>,
+      context: state._context,
+      configuredToolsByAgentName,
+    });
+    const configuredToolKeys = getRuntimeToolKeys(configuredTools, {
+      allowUnsupported: true,
+    });
+    const expectedRuntimeToolKeys = new Set(
+      [...getSerializedRuntimeToolKeys(item.rawItem)].filter(
+        (runtimeToolKey) => !configuredToolKeys.has(runtimeToolKey),
+      ),
+    );
+    if (expectedRuntimeToolKeys.size === 0) {
       continue;
     }
 
@@ -1239,11 +1253,6 @@ async function rehydrateToolSearchRuntimeTools<
     }
 
     if (!pendingCall.runtimeTools) {
-      const configuredTools = await getConfiguredAgentTools({
-        agent: pendingCall.agent,
-        context: state._context,
-        configuredToolsByAgentName,
-      });
       const availableTools = [
         ...configuredTools,
         ...state.getToolSearchRuntimeTools(pendingCall.agent),
@@ -1262,13 +1271,22 @@ async function rehydrateToolSearchRuntimeTools<
         toolSearchTool,
         tools: availableTools,
       });
+      const rehydratedRuntimeTools = runtimeTools.filter((tool) => {
+        const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
+        if (!runtimeToolKey) {
+          throw new UserError(
+            'Client tool_search execute() returned an unsupported runtime tool during RunState rehydration.',
+          );
+        }
+        return !configuredToolKeys.has(runtimeToolKey);
+      });
       assertRuntimeToolKeysMatch({
         agent: pendingCall.agent,
         toolSearchCall: pendingCall.toolSearchCall,
-        toolSearchOutput: item.rawItem,
-        runtimeTools,
+        expectedRuntimeToolKeys,
+        runtimeTools: rehydratedRuntimeTools,
       });
-      pendingCall.runtimeTools = runtimeTools;
+      pendingCall.runtimeTools = rehydratedRuntimeTools;
     }
 
     const runtimeTools = pendingCall.runtimeTools;
