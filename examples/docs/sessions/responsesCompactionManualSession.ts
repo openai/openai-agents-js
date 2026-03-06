@@ -8,7 +8,7 @@ import {
 const agent = new Agent({
   name: 'Support',
   instructions: 'Answer briefly and keep track of prior context.',
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
 });
 
 // Disable auto-compaction to avoid delaying stream completion.

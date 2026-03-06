@@ -26,7 +26,7 @@ async function main() {
   await withTrace('container-shell-inline-skill-example', async () => {
     const agent1 = new Agent({
       name: 'Container Shell Agent (Inline Skill)',
-      model: 'gpt-5.2',
+      model: 'gpt-5.4',
       modelSettings: { reasoning: { effort: 'low' } },
       instructions:
         'Use the available container skill to answer user requests.',
@@ -52,7 +52,7 @@ async function main() {
 
     const agent2 = new Agent({
       name: 'Container Reference Shell Agent',
-      model: 'gpt-5.2-codex',
+      model: 'gpt-5.4',
       modelSettings: { reasoning: { effort: 'low' } },
       instructions: 'Reuse the existing shell container and answer concisely.',
       tools: [

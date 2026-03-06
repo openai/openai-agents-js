@@ -17,7 +17,7 @@ import setTracingExportApiKeyExample from '../../../../../examples/docs/config/s
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a specific API.
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt‑5.2'`) to `Model` instances.
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt‑5.4'`) to `Model` instances.
 
 In day‑to‑day work you normally only interact with model **names** and occasionally `ModelSettings`.
 
@@ -31,14 +31,14 @@ In day‑to‑day work you normally only interact with model **names** and occas
 
 ### Default model
 
-When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-4.1`](https://platform.openai.com/docs/models/gpt-4.1) for compatibility and low latency. If you have access, we recommend setting your agents to [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) for higher quality while keeping explicit `modelSettings`.
+When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-4.1`](https://developers.openai.com/api/docs/models/gpt-4.1) for compatibility and low latency. If you have access, we recommend setting your agents to [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) for higher quality while keeping explicit `modelSettings`.
 
-If you want to switch to other models like [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2), there are two ways to configure your agents.
+If you want to switch to other models like [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4), there are two ways to configure your agents.
 
 First, if you want to consistently use a specific model for all agents that do not set a custom model, set the `OPENAI_DEFAULT_MODEL` environment variable before running your agents.
 
 ```bash
-export OPENAI_DEFAULT_MODEL=gpt-5.2
+export OPENAI_DEFAULT_MODEL=gpt-5.4
 node my-awesome-agent.js
 ```
 
@@ -52,7 +52,7 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
 
 #### GPT-5.x models
 
-When you use any GPT-5.x model such as [`gpt-5.2`](https://platform.openai.com/docs/models/gpt-5.2) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
+When you use any GPT-5.x model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
 <Code
   lang="typescript"
@@ -60,7 +60,7 @@ When you use any GPT-5.x model such as [`gpt-5.2`](https://platform.openai.com/d
   title="Customize GPT-5 default settings"
 />
 
-For lower latency, using `reasoning.effort: "none"` with `gpt-5.2` is recommended. The gpt-4.1 family (including mini and nano variants) also remains a solid choice for building interactive agent apps.
+If latency matters, start with `reasoning.effort: "none"` on `gpt-5.4` and increase it only if your task needs more deliberate reasoning. The gpt-4.1 family (including mini and nano variants) also remains a solid choice for building interactive agent apps.
 
 #### Non-GPT-5 models
 
@@ -72,13 +72,12 @@ If you pass a non–GPT-5 model name without custom `modelSettings`, the SDK rev
 
 ### The OpenAI provider
 
-The default `ModelProvider` resolves names using the OpenAI APIs. It supports two distinct
-endpoints:
+The default `ModelProvider` resolves names using the OpenAI APIs. It supports two distinct endpoints:
 
-| API              | Usage                                                             | Call `setOpenAIAPI()`                   |
-| ---------------- | ----------------------------------------------------------------- | --------------------------------------- |
-| Chat Completions | Standard chat & function calls                                    | `setOpenAIAPI('chat_completions')`      |
-| Responses        | New streaming‑first generative API (tool calls, flexible outputs) | `setOpenAIAPI('responses')` _(default)_ |
+| API | Usage | Call `setOpenAIAPI()` |
+| --- | --- | --- |
+| Chat Completions | Standard chat & function calls | `setOpenAIAPI('chat_completions')` |
+| Responses | New streaming‑first generative API (tool calls, flexible outputs) | `setOpenAIAPI('responses')` _(default)_ |
 
 #### Authentication
 
@@ -88,8 +87,7 @@ endpoints:
   title="Set default OpenAI key"
 />
 
-You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need
-custom networking settings.
+You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need custom networking settings.
 
 #### Responses WebSocket transport
 
@@ -127,22 +125,22 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 
 `ModelSettings` mirrors the OpenAI parameters but is provider‑agnostic.
 
-| Field                  | Type                                                            | Notes                                                                     |
-| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `temperature`          | `number`                                                        | Creativity vs. determinism.                                               |
-| `topP`                 | `number`                                                        | Nucleus sampling.                                                         |
-| `frequencyPenalty`     | `number`                                                        | Penalise repeated tokens.                                                 |
-| `presencePenalty`      | `number`                                                        | Encourage new tokens.                                                     |
-| `toolChoice`           | `'auto' \| 'required' \| 'none' \| string`                      | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
-| `parallelToolCalls`    | `boolean`                                                       | Allow parallel function calls where supported.                            |
-| `truncation`           | `'auto' \| 'disabled'`                                          | Token truncation strategy.                                                |
-| `maxTokens`            | `number`                                                        | Maximum tokens in the response.                                           |
-| `store`                | `boolean`                                                       | Persist the response for retrieval / RAG workflows.                       |
-| `promptCacheRetention` | `'in-memory' \| '24h' \| null`                                  | Controls provider prompt-cache retention when supported.                  |
-| `reasoning.effort`     | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models.                                      |
-| `reasoning.summary`    | `'auto' \| 'concise' \| 'detailed'`                             | Controls how much reasoning summary the model returns.                    |
-| `text.verbosity`       | `'low' \| 'medium' \| 'high'`                                   | Text verbosity for gpt-5.x etc.                                           |
-| `providerData`         | `Record<string, any>`                                           | Provider-specific passthrough options forwarded to the underlying model.  |
+| Field | Type | Notes |
+| --- | --- | --- |
+| `temperature` | `number` | Creativity vs. determinism. |
+| `topP` | `number` | Nucleus sampling. |
+| `frequencyPenalty` | `number` | Penalise repeated tokens. |
+| `presencePenalty` | `number` | Encourage new tokens. |
+| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
+| `parallelToolCalls` | `boolean` | Allow parallel function calls where supported. |
+| `truncation` | `'auto' \| 'disabled'` | Token truncation strategy. |
+| `maxTokens` | `number` | Maximum tokens in the response. |
+| `store` | `boolean` | Persist the response for retrieval / RAG workflows. |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls provider prompt-cache retention when supported. |
+| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models. |
+| `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
+| `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
+| `providerData` | `Record<string, any>` | Provider-specific passthrough options forwarded to the underlying model. |
 
 Attach settings at either level:
 
@@ -154,24 +152,19 @@ Attach settings at either level:
 
 ### Prompt
 
-Agents can be configured with a `prompt` parameter, indicating a server-stored
-prompt configuration that should be used to control the Agent's behavior. Currently,
-this option is only supported when you use the OpenAI
-[Responses API](https://platform.openai.com/docs/api-reference/responses).
+Agents can be configured with a `prompt` parameter, indicating a server-stored prompt configuration that should be used to control the Agent's behavior. Currently, this option is only supported when you use the OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses).
 
-`prompt` can be either a static object or a function that returns one at runtime. For the callback
-shape, see [Dynamic prompts](/openai-agents-js/guides/agents#dynamic-prompts).
+`prompt` can be either a static object or a function that returns one at runtime. For the callback shape, see [Dynamic prompts](/openai-agents-js/guides/agents#dynamic-prompts).
 
-| Field       | Type     | Notes                                                                                                                                  |
-| ----------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `promptId`  | `string` | Unique identifier for a prompt.                                                                                                        |
-| `version`   | `string` | Version of the prompt you wish to use.                                                                                                 |
+| Field | Type | Notes |
+| --- | --- | --- |
+| `promptId` | `string` | Unique identifier for a prompt. |
+| `version` | `string` | Version of the prompt you wish to use. |
 | `variables` | `object` | A key/value pair of variables to substitute into the prompt. Values can be strings or content input types like text, images, or files. |
 
 <Code lang="typescript" code={promptIdExample} title="Agent with prompt" />
 
-Any additional agent configuration, like tools or instructions, will override the
-values you may have configured in your stored prompt.
+Any additional agent configuration, like tools or instructions, will override the values you may have configured in your stored prompt.
 
 ---
 
@@ -179,8 +172,7 @@ values you may have configured in your stored prompt.
 
 ### Custom model providers
 
-Implementing your own provider is straightforward – implement `ModelProvider` and `Model` and
-pass the provider to the `Runner` constructor:
+Implementing your own provider is straightforward – implement `ModelProvider` and `Model` and pass the provider to the `Runner` constructor:
 
 <Code
   lang="typescript"
@@ -188,8 +180,7 @@ pass the provider to the `Runner` constructor:
   title="Minimal custom provider"
 />
 
-If you want every `run()` call and every newly constructed `Runner` to use the same provider by
-default, set it once during app startup:
+If you want every `run()` call and every newly constructed `Runner` to use the same provider by default, set it once during app startup:
 
 <Code
   lang="typescript"
@@ -197,25 +188,17 @@ default, set it once during app startup:
   title="Set a default model provider"
 />
 
-This is useful when your app standardizes on a non-OpenAI provider and you do not want to pass a
-custom `Runner` everywhere.
+This is useful when your app standardizes on a non-OpenAI provider and you do not want to pass a custom `Runner` everywhere.
 
 #### AI SDK integration
 
-If you want to use non-OpenAI models without implementing `ModelProvider` yourself, see [Using any
-model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk). That adapter lets you plug an AI
-SDK model into the Agents runtime directly, which is useful when your app already standardizes on
-AI SDK providers or you want access to the wider provider ecosystem. It also documents how Agents
-SDK `providerData` maps to AI SDK `providerMetadata`, plus the stream helpers available for AI SDK
-UI routes.
+If you want to use non-OpenAI models without implementing `ModelProvider` yourself, see [Using any model with Vercel's AI SDK](/openai-agents-js/extensions/ai-sdk). That adapter lets you plug an AI SDK model into the Agents runtime directly, which is useful when your app already standardizes on AI SDK providers or you want access to the wider provider ecosystem. It also documents how Agents SDK `providerData` maps to AI SDK `providerMetadata`, plus the stream helpers available for AI SDK UI routes.
 
 ---
 
 ### Tracing credentials
 
-Tracing is already enabled by default in supported server runtimes. Use
-`setTracingExportApiKey()` only when trace export should use a different credential than the
-default OpenAI API key:
+Tracing is already enabled by default in supported server runtimes. Use `setTracingExportApiKey()` only when trace export should use a different credential than the default OpenAI API key:
 
 <Code
   lang="typescript"
@@ -223,9 +206,7 @@ default OpenAI API key:
   title="Set tracing export API key"
 />
 
-This sends traces to the [OpenAI dashboard](https://platform.openai.com/traces) using that
-credential. For exporter customization such as custom ingest endpoints or retry tuning, see the
-[Tracing guide](/openai-agents-js/guides/tracing#openai-tracing-exporter).
+This sends traces to the [OpenAI dashboard](https://platform.openai.com/traces) using that credential. For exporter customization such as custom ingest endpoints or retry tuning, see the [Tracing guide](/openai-agents-js/guides/tracing#openai-tracing-exporter).
 
 ---
 

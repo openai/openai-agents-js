@@ -8,7 +8,7 @@ import {
 const agent = new Agent({
   name: 'Support',
   instructions: 'Answer briefly and keep track of prior context.',
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
 });
 
 // Wrap any Session to trigger responses.compact once history grows beyond your threshold.
@@ -16,7 +16,7 @@ const session = new OpenAIResponsesCompactionSession({
   // You can pass any Session implementation except OpenAIConversationsSession
   underlyingSession: new MemorySession(),
   // (optional) The model used for calling responses.compact API
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   // (optional) your custom logic here
   shouldTriggerCompaction: ({ compactionCandidateItems }) => {
     return compactionCandidateItems.length >= 12;

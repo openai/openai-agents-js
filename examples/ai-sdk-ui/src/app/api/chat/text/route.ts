@@ -7,7 +7,7 @@ import { findOrCreateSession } from '@/app/lib/session';
 
 const textAgent = new Agent({
   name: 'Sky Guide',
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   modelSettings: {
     reasoning: { effort: 'high', summary: 'auto' },
     text: { verbosity: 'medium' },

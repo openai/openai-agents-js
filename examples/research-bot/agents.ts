@@ -27,7 +27,7 @@ export type WebSearchPlan = z.infer<typeof webSearchPlan>;
 export const plannerAgent = new Agent({
   name: 'PlannerAgent',
   instructions: plannerPrompt,
-  model: 'gpt-5.2',
+  model: 'gpt-5.4',
   outputType: webSearchPlan,
 });
 

@@ -7,7 +7,7 @@ const THINKING_PREFIX = styleText(['bgGray', 'black'], 'Thought');
 async function main() {
   const agent = new Agent({
     name: 'Agent',
-    model: process.env.REASONING_MODEL_NAME || 'gpt-5.2',
+    model: process.env.REASONING_MODEL_NAME || 'gpt-5.4',
     modelSettings: {
       reasoning: { effort: 'high', summary: 'auto' },
       text: { verbosity: 'high' },

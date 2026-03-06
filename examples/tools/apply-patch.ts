@@ -112,7 +112,10 @@ async function main() {
 
   const agent = new Agent({
     name: 'Patch Assistant',
-    model: 'gpt-5.2',
+    model: 'gpt-5.4',
+    modelSettings: {
+      reasoning: { effort: 'low' },
+    },
     instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool.`,
     tools: [
       applyPatchTool({
@@ -150,7 +153,7 @@ async function main() {
       );
       const result2 = await run(
         agent,
-        `<BEGIN_FILES>\n===== tasks.md\n${updatedNotes}\n\n<END_FILES>\nCheck off the last two items from the file.`,
+        `<BEGIN_FILES>\n===== tasks.md\n${updatedNotes}\n\n<END_FILES>\nUse the apply_patch tool to update tasks.md in place. Preserve the existing Markdown structure exactly, keep the \`- [ ]\` checklist prefix style consistent, and check off only the last two items.`,
       );
       console.log(`${chalk.bold('Agent:')} ${chalk.cyan(result2.finalOutput)}`);
     });

@@ -61,7 +61,7 @@ import { google } from '@ai-sdk/google';
     apiKey: process.env.OPENROUTER_API_KEY,
   });
   const _gptOSS = aisdk(openRouter('openai/gpt-oss-120b'));
-  const _gpt = aisdk(openai('gpt-5.2'));
+  const _gpt = aisdk(openai('gpt-5.4'));
   const _claude = aisdk(anthropic('claude-sonnet-4-5'));
   const _gemini = aisdk(google('gemini-3-flash-preview'));
   void _gptOSS;

@@ -12,7 +12,7 @@
  * - `OPENAI_API_KEY`.
  *
  * Optional environment variables:
- * - `OPENAI_MODEL` (defaults to `gpt-5.2-codex`).
+ * - `OPENAI_MODEL` (defaults to `gpt-5.4`).
  * - `OPENAI_BASE_URL`.
  * - `OPENAI_WEBSOCKET_BASE_URL`.
  * - `EXAMPLES_INTERACTIVE_MODE=auto` (auto-approve HITL prompts for scripted runs).
@@ -213,7 +213,7 @@ async function runStreamedTurn(
 }
 
 async function main() {
-  const model = process.env.OPENAI_MODEL ?? 'gpt-5.2-codex';
+  const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
 
   const policyAgent = new Agent({
     name: 'RefundPolicySpecialist',
