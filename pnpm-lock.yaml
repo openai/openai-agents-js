@@ -497,8 +497,8 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       openai:
-        specifier: ^6.20.0
-        version: 6.20.0(ws@8.18.2)(zod@4.3.5)
+        specifier: ^6.26.0
+        version: 6.26.0(ws@8.18.2)(zod@4.3.5)
 
   examples/research-bot:
     dependencies:
@@ -542,8 +542,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.20.0
-        version: 6.20.0(ws@8.18.2)(zod@4.3.5)
+        specifier: ^6.26.0
+        version: 6.26.0(ws@8.18.2)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -558,8 +558,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.20.0
-        version: 6.20.0(ws@8.18.2)(zod@4.3.5)
+        specifier: ^6.26.0
+        version: 6.26.0(ws@8.18.2)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -615,8 +615,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.20.0
-        version: 6.20.0(ws@8.18.2)(zod@4.3.5)
+        specifier: ^6.26.0
+        version: 6.26.0(ws@8.18.2)(zod@4.3.5)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -5081,20 +5081,8 @@ packages:
   oniguruma-to-es@4.3.4:
     resolution: {integrity: sha512-3VhUGN3w2eYxnTzHn+ikMI+fp/96KoRSVK9/kMTcFqj1NRDh2IhQCKvYxDnWePKRXY/AqH+Fuiyb7VHSzBjHfA==}
 
-  openai@6.10.0:
-    resolution: {integrity: sha512-ITxOGo7rO3XRMiKA5l7tQ43iNNu+iXGFAcf2t+aWVzzqRaS0i7m1K2BhxNdaveB+5eENhO0VY1FkiZzhBk4v3A==}
-    hasBin: true
-    peerDependencies:
-      ws: ^8.18.0
-      zod: ^3.25 || ^4.0
-    peerDependenciesMeta:
-      ws:
-        optional: true
-      zod:
-        optional: true
-
-  openai@6.20.0:
-    resolution: {integrity: sha512-BD3FbcTeQiFE41sCVsGSrY68wjDrcynw0f0g6VjCm0bvhRqUxzKgQGtFZMiSOoazxsN2Tk4NWlzVnjGA8R2QrQ==}
+  openai@6.26.0:
+    resolution: {integrity: sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==}
     hasBin: true
     peerDependencies:
       ws: ^8.18.0
@@ -7740,7 +7728,7 @@ snapshots:
   '@openai/agents-core@0.3.9(ws@8.18.2)(zod@3.25.76)':
     dependencies:
       debug: 4.4.3
-      openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.26.0(ws@8.18.2)(zod@3.25.76)
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
       zod: 3.25.76
@@ -7768,7 +7756,7 @@ snapshots:
     dependencies:
       '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.26.0(ws@8.18.2)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -7794,7 +7782,7 @@ snapshots:
       '@openai/agents-openai': 0.3.9(ws@8.18.2)(zod@3.25.76)
       '@openai/agents-realtime': 0.3.9(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.10.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.26.0(ws@8.18.2)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -11643,12 +11631,12 @@ snapshots:
       regex: 6.1.0
       regex-recursion: 6.0.2
 
-  openai@6.10.0(ws@8.18.2)(zod@3.25.76):
+  openai@6.26.0(ws@8.18.2)(zod@3.25.76):
     optionalDependencies:
       ws: 8.18.2
       zod: 3.25.76
 
-  openai@6.20.0(ws@8.18.2)(zod@4.3.5):
+  openai@6.26.0(ws@8.18.2)(zod@4.3.5):
     optionalDependencies:
       ws: 8.18.2
       zod: 4.3.5

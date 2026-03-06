@@ -508,8 +508,7 @@ function stripTransientCallIds(value: unknown): unknown {
   const result: Record<string, unknown> = {};
   const isProtocolItem =
     typeof record.type === 'string' && record.type.length > 0;
-  const shouldStripId =
-    isProtocolItem && shouldStripIdForType(record.type as string);
+  const shouldStripId = isProtocolItem && shouldStripIdForProtocolItem(record);
   for (const [key, entry] of Object.entries(record)) {
     if (shouldStripId && key === 'id') {
       continue;
@@ -519,14 +518,32 @@ function stripTransientCallIds(value: unknown): unknown {
   return result;
 }
 
-function shouldStripIdForType(type: string): boolean {
-  switch (type) {
+function shouldStripIdForProtocolItem(
+  record: Record<string, unknown>,
+): boolean {
+  switch (record.type) {
     case 'function_call':
     case 'function_call_result':
       return true;
+    case 'tool_search_call':
+    case 'tool_search_output':
+      return hasToolSearchCallId(record);
     default:
       return false;
   }
+}
+
+function hasToolSearchCallId(record: Record<string, unknown>): boolean {
+  const topLevelCallId = record.call_id ?? record.callId;
+  if (typeof topLevelCallId === 'string' && topLevelCallId.length > 0) {
+    return true;
+  }
+
+  const providerData = isPlainObject(record.providerData)
+    ? (record.providerData as Record<string, unknown>)
+    : undefined;
+  const providerCallId = providerData?.call_id ?? providerData?.callId;
+  return typeof providerCallId === 'string' && providerCallId.length > 0;
 }
 
 async function persistRunItemsToSession(options: {

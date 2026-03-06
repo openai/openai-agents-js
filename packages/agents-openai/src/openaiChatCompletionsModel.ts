@@ -1,6 +1,7 @@
 import {
   Model,
   Usage,
+  UserError,
   withGenerationSpan,
   resetCurrentSpan,
   createGenerationSpan,
@@ -26,7 +27,7 @@ import { Span } from '@openai/agents-core/dist/tracing/spans';
 import { GenerationSpanData } from '@openai/agents-core/dist/tracing/spans';
 import { convertChatCompletionsStreamToResponses } from './openaiChatCompletionsStreaming';
 import {
-  convertToolChoice,
+  getCompatibleToolChoice,
   toolToOpenAI,
   convertHandoffTool,
   itemsToMessages,
@@ -290,6 +291,21 @@ export class OpenAIChatCompletionsModel implements Model {
     const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
     if (request.tools) {
       for (const tool of request.tools) {
+        if (tool.type === 'function') {
+          if (
+            typeof tool.namespace === 'string' &&
+            tool.namespace.trim().length > 0
+          ) {
+            throw new UserError(
+              'Namespaced function tools created with toolNamespace() are only supported with the Responses API.',
+            );
+          }
+          if (tool.deferLoading === true) {
+            throw new UserError(
+              'Function tools with deferLoading: true are only supported with the Responses API.',
+            );
+          }
+        }
         tools.push(toolToOpenAI(tool));
       }
     }
@@ -349,7 +365,10 @@ export class OpenAIChatCompletionsModel implements Model {
       frequency_penalty: request.modelSettings.frequencyPenalty,
       presence_penalty: request.modelSettings.presencePenalty,
       max_tokens: request.modelSettings.maxTokens,
-      tool_choice: convertToolChoice(request.modelSettings.toolChoice),
+      tool_choice: getCompatibleToolChoice(
+        request.modelSettings.toolChoice,
+        tools,
+      ),
       parallel_tool_calls: parallelToolCalls,
       stream: stream ? true : false,
       stream_options: stream ? { include_usage: true } : undefined,

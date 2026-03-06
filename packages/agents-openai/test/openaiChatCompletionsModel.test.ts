@@ -395,6 +395,114 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('rejects namespaced function tools before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up CRM accounts.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          namespace: 'crm',
+          namespaceDescription: 'CRM tools',
+        },
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up billing accounts.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          namespace: 'billing',
+          namespaceDescription: 'Billing tools',
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Namespaced function tools created with toolNamespace() are only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects deferred function tools before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          deferLoading: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Function tools with deferLoading: true are only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects required toolChoice when no tools are available', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: { toolChoice: 'required' },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'modelSettings.toolChoice="required" requires at least one available tool in Chat Completions mode.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects named toolChoice when the tool is unavailable', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: { toolChoice: 'missing_tool' },
+      tools: [
+        {
+          type: 'function',
+          name: 'available_tool',
+          description: 'Available tool.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'modelSettings.toolChoice="missing_tool" does not match any available tool or handoff in Chat Completions mode.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
   it('handles content and tool calls in the same message', async () => {
     const client = new FakeClient();
     const response = {

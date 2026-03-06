@@ -94,6 +94,94 @@ describe('Runner.run (streaming)', () => {
     expect((result.error as Error).message).toBe('Not implemented');
   });
 
+  it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
+    class QueueStreamingModel implements Model {
+      constructor(private readonly responses: ModelResponse[]) {}
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        return response;
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(request);
+        const output = response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        );
+        yield {
+          type: 'response_done',
+          response: {
+            id: response.responseId ?? 'resp-stream-tool-search',
+            usage: {
+              requests: response.usage.requests,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output,
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const getShippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const agent = new Agent({
+      name: 'StreamingShippingAgent',
+      model: new QueueStreamingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_shipping_eta',
+              callId: 'call_shipping_eta',
+              name: 'get_shipping_eta',
+              status: 'completed',
+              arguments: JSON.stringify({ trackingNumber: 'ZX-123' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('The package arrives tomorrow.')],
+          usage: new Usage(),
+        },
+      ]),
+      tools: [getShippingEta],
+      toolUseBehavior: 'run_llm_again',
+    });
+    const inputHistory: AgentInputItem[] = [
+      user('Load shipping tools first.'),
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      } as any,
+    ];
+
+    const result = await run(agent, inputHistory, { stream: true });
+
+    await result.completed;
+    expect(result.finalOutput).toBe('The package arrives tomorrow.');
+  });
+
   it('detaches abort listeners after streaming completion when signal is retained', async () => {
     const agent = new Agent({
       name: 'AbortDetach',

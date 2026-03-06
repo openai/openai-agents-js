@@ -18,6 +18,8 @@ import {
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
   RunToolCallOutputItem as ToolCallOutputItem,
+  RunToolSearchCallItem as ToolSearchCallItem,
+  RunToolSearchOutputItem as ToolSearchOutputItem,
 } from '../../src/items';
 import {
   addStepToRunResult,
@@ -58,6 +60,7 @@ import {
   computerTool,
   shellTool,
   tool,
+  toolNamespace,
 } from '../../src/tool';
 import {
   TEST_AGENT,
@@ -159,6 +162,28 @@ describe('getToolCallOutputItem', () => {
     expect(output).toEqual({
       type: 'function_call_result',
       name: TEST_MODEL_FUNCTION_CALL.name,
+      callId: TEST_MODEL_FUNCTION_CALL.callId,
+      status: 'completed',
+      output: {
+        type: 'text',
+        text: 'hi',
+      },
+    });
+  });
+
+  it('preserves namespace on function_call_result items', () => {
+    const output = getToolCallOutputItem(
+      {
+        ...TEST_MODEL_FUNCTION_CALL,
+        namespace: 'crm',
+      },
+      'hi',
+    );
+
+    expect(output).toEqual({
+      type: 'function_call_result',
+      name: TEST_MODEL_FUNCTION_CALL.name,
+      namespace: 'crm',
       callId: TEST_MODEL_FUNCTION_CALL.callId,
       status: 'completed',
       output: {
@@ -355,6 +380,76 @@ describe('checkForFinalOutputFromTools', () => {
     expect(res.isFinalOutput).toBe(false);
   });
 
+  it('matches stopAtToolNames against namespaced tool identities', async () => {
+    const [crmLookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account in CRM.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          execute: async () => 'crm result',
+        }),
+      ],
+    });
+    const agent = new Agent({
+      name: 'NamespacedStop',
+      toolUseBehavior: { stopAtToolNames: ['crm.lookup_account'] },
+    });
+    const toolResult: FunctionToolResult = {
+      type: 'function_output',
+      tool: crmLookup,
+      output: 'crm result',
+      runItem: {} as any,
+    };
+
+    const res = await checkForFinalOutputFromTools(agent, [toolResult], state);
+
+    expect(res).toEqual({
+      isFinalOutput: true,
+      isInterrupted: undefined,
+      finalOutput: 'crm result',
+    });
+  });
+
+  it('matches namespaced tools by bare stopAtToolNames entries', async () => {
+    const [crmLookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account in CRM.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          execute: async () => 'crm result',
+        }),
+      ],
+    });
+    const agent = new Agent({
+      name: 'NamespacedStopNoMatch',
+      toolUseBehavior: { stopAtToolNames: ['lookup_account'] },
+    });
+    const toolResult: FunctionToolResult = {
+      type: 'function_output',
+      tool: crmLookup,
+      output: 'crm result',
+      runItem: {} as any,
+    };
+
+    const res = await checkForFinalOutputFromTools(agent, [toolResult], state);
+
+    expect(res).toEqual({
+      isFinalOutput: true,
+      isInterrupted: undefined,
+      finalOutput: 'crm result',
+    });
+  });
+
   it('Function based toolUseBehavior delegates decision', async () => {
     const agent = new Agent({
       name: 'Func',
@@ -396,6 +491,33 @@ describe('addStepToRunResult', () => {
       agent,
     );
     const toolCallItem = new ToolCallItem(TEST_MODEL_FUNCTION_CALL, agent);
+    const toolSearchCallItem = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          paths: ['crm'],
+          query: 'profile',
+        },
+      },
+      agent,
+    );
+    const toolSearchOutputItem = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'lookup_account',
+            namespace: 'crm',
+          },
+        ],
+      },
+      agent,
+    );
     const toolOutputItem = new ToolCallOutputItem(
       getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, 'hi'),
       agent,
@@ -416,6 +538,8 @@ describe('addStepToRunResult', () => {
         messageItem,
         handoffCallItem,
         handoffOutputItem,
+        toolSearchCallItem,
+        toolSearchOutputItem,
         toolCallItem,
         toolOutputItem,
         reasoningItem,
@@ -435,6 +559,8 @@ describe('addStepToRunResult', () => {
       'message_output_created',
       'handoff_requested',
       'handoff_occurred',
+      'tool_search_called',
+      'tool_search_output_created',
       'tool_called',
       'tool_output',
       'reasoning_item_created',
@@ -1977,6 +2103,98 @@ describe('executeShellActions', () => {
         setTraceProcessors([defaultProcessor()]);
         setTracingDisabled(true);
       }
+    });
+
+    it('uses the bare tool name for top-level deferred tool trace spans', async () => {
+      const t = tool({
+        name: 'get_shipping_eta',
+        description: 'Look up a shipping ETA.',
+        parameters: z.object({
+          tracking_number: z.string(),
+        }),
+        deferLoading: true,
+        needsApproval: true,
+        execute: vi.fn(async () => 'Tomorrow'),
+      }) as unknown as FunctionTool;
+      const deferredToolCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: 'fc_shipping_eta',
+        callId: 'call_shipping_eta',
+        name: 'get_shipping_eta',
+        namespace: 'get_shipping_eta',
+        status: 'completed',
+        arguments: '{"tracking_number":"ZX-123"}',
+      };
+      const approvalSpy = vi
+        .spyOn(state._context, 'isToolApproved')
+        .mockReturnValue(false as any);
+      const customRunner = new Runner({ tracingDisabled: false });
+
+      await withRecordingTrace(async (processor) => {
+        const res = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: deferredToolCall, tool: t }],
+            customRunner,
+            state,
+          ),
+        );
+
+        expect(res[0].type).toBe('function_output');
+        expect(approvalSpy).toHaveBeenCalledWith({
+          toolName: 'get_shipping_eta',
+          callId: 'call_shipping_eta',
+        });
+        getEndedFunctionSpan(processor, 'get_shipping_eta');
+        expect(
+          processor.spansEnded.some(
+            (span) =>
+              span.spanData.type === 'function' &&
+              span.spanData.name === 'get_shipping_eta.get_shipping_eta',
+          ),
+        ).toBe(false);
+      });
+    });
+
+    it('keeps explicit namespaces in function trace span names', async () => {
+      const [crmLookup] = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools',
+        tools: [
+          tool({
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: z.object({
+              accountId: z.string(),
+            }),
+            execute: vi.fn(async () => 'crm'),
+          }),
+        ],
+      }) as unknown as FunctionTool[];
+      const namespacedToolCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: 'fc_lookup_account',
+        callId: 'call_lookup_account',
+        name: 'lookup_account',
+        namespace: 'crm',
+        status: 'completed',
+        arguments: '{"accountId":"acct_42"}',
+      };
+      const customRunner = new Runner({ tracingDisabled: false });
+
+      await withRecordingTrace(async (processor) => {
+        const res = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: namespacedToolCall, tool: crmLookup }],
+            customRunner,
+            state,
+          ),
+        );
+
+        expect(res[0].type).toBe('function_output');
+        getEndedFunctionSpan(processor, 'crm.lookup_account');
+      });
     });
 
     it('falls back to default rejection message when toolErrorFormatter throws', async () => {

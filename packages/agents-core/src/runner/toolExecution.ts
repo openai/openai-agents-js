@@ -44,6 +44,10 @@ import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
 import type { Runner, ToolErrorFormatter } from '../run';
 import {
+  getFunctionToolQualifiedName,
+  matchesFunctionToolName,
+} from '../toolIdentity';
+import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
@@ -77,6 +81,18 @@ type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
 
+function getFunctionToolIdentity<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string {
+  return getFunctionToolQualifiedName(toolRun.tool) ?? toolRun.tool.name;
+}
+
+function getFunctionToolTraceName<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string {
+  return getFunctionToolIdentity(toolRun);
+}
+
 /**
  * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
@@ -96,6 +112,9 @@ export function getToolCallOutputItem(
     return {
       type: 'function_call_result',
       name: toolCall.name,
+      ...(typeof toolCall.namespace === 'string'
+        ? { namespace: toolCall.namespace }
+        : {}),
       callId: toolCall.callId,
       status: 'completed',
       output: structuredItems,
@@ -105,6 +124,9 @@ export function getToolCallOutputItem(
   return {
     type: 'function_call_result',
     name: toolCall.name,
+    ...(typeof toolCall.namespace === 'string'
+      ? { namespace: toolCall.namespace }
+      : {}),
     callId: toolCall.callId,
     status: 'completed',
     output: {
@@ -172,6 +194,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
 function parseToolArguments<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): ParseToolArgumentsResult {
+  const toolName = getFunctionToolIdentity(toolRun);
   try {
     let parsedArgs: any = toolRun.toolCall.arguments;
     if (toolRun.tool.parameters) {
@@ -183,9 +206,7 @@ function parseToolArguments<TContext>(
     }
     return { success: true, args: parsedArgs };
   } catch (error) {
-    logger.debug(
-      `Failed to parse tool arguments for ${toolRun.tool.name}: ${error}`,
-    );
+    logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
     return { success: false, error: error as Error };
   }
 }
@@ -197,7 +218,11 @@ function buildApprovalRequestResult<TContext>(
   return {
     type: 'function_approval' as const,
     tool: toolRun.tool,
-    runItem: new RunToolApprovalItem(toolRun.toolCall, deps.agent),
+    runItem: new RunToolApprovalItem(
+      toolRun.toolCall,
+      deps.agent,
+      getFunctionToolIdentity(toolRun),
+    ),
   };
 }
 
@@ -224,11 +249,13 @@ async function buildApprovalRejectionResult<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, toolErrorFormatter } = deps;
-  return withToolFunctionSpan(runner, toolRun.tool.name, async (span) => {
+  const toolName = getFunctionToolIdentity(toolRun);
+  const traceToolName = getFunctionToolTraceName(toolRun);
+  return withToolFunctionSpan(runner, traceToolName, async (span) => {
     const response = await resolveApprovalRejectionMessage({
       runContext: state._context,
       toolType: 'function',
-      toolName: toolRun.tool.name,
+      toolName,
       callId: toolRun.toolCall.callId,
       toolErrorFormatter,
     });
@@ -239,7 +266,7 @@ async function buildApprovalRejectionResult<TContext>(
     span?.setError({
       message: traceErrorMessage,
       data: {
-        tool_name: toolRun.tool.name,
+        tool_name: traceToolName,
         error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
       },
     });
@@ -266,6 +293,7 @@ async function handleFunctionApproval<TContext>(
   parsedArgs: any,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { state } = deps;
+  const toolName = getFunctionToolIdentity(toolRun);
   const needsApproval = await toolRun.tool.needsApproval(
     state._context,
     parsedArgs,
@@ -277,12 +305,12 @@ async function handleFunctionApproval<TContext>(
   }
 
   const approval = state._context.isToolApproved({
-    toolName: toolRun.tool.name,
+    toolName,
     callId: toolRun.toolCall.callId,
   });
 
   if (approval === false) {
-    state.clearPendingAgentToolRun(toolRun.tool.name, toolRun.toolCall.callId);
+    state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
     return await buildApprovalRejectionResult(deps, toolRun);
   }
 
@@ -298,7 +326,9 @@ async function runApprovedFunctionTool<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state } = deps;
-  return withToolFunctionSpan(runner, toolRun.tool.name, async (span) => {
+  const toolName = getFunctionToolIdentity(toolRun);
+  const traceToolName = getFunctionToolTraceName(toolRun);
+  return withToolFunctionSpan(runner, traceToolName, async (span) => {
     if (span && runner.config.traceIncludeSensitiveData) {
       span.spanData.input = toolRun.toolCall.arguments;
     }
@@ -327,7 +357,7 @@ async function runApprovedFunctionTool<TContext>(
         toolOutput = inputGuardrailResult.message;
       } else {
         const resumeState = state.getPendingAgentToolRun(
-          toolRun.tool.name,
+          toolName,
           toolRun.toolCall.callId,
         );
         const toolDetails = {
@@ -388,15 +418,12 @@ async function runApprovedFunctionTool<TContext>(
           functionResult.interruptions = nestedInterruptions;
           const nestedRunStateJson = nestedRunResult.state.toJSON();
           state.setPendingAgentToolRun(
-            toolRun.tool.name,
+            toolName,
             toolRun.toolCall.callId,
             JSON.stringify(nestedRunStateJson),
           );
         } else {
-          state.clearPendingAgentToolRun(
-            toolRun.tool.name,
-            toolRun.toolCall.callId,
-          );
+          state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
         }
       }
 
@@ -405,7 +432,7 @@ async function runApprovedFunctionTool<TContext>(
       span?.setError({
         message: 'Error running tool',
         data: {
-          tool_name: toolRun.tool.name,
+          tool_name: traceToolName,
           error: String(error),
         },
       });
@@ -1341,9 +1368,11 @@ export async function checkForFinalOutputFromTools<
 
   const toolUseBehavior = agent.toolUseBehavior;
   if (typeof toolUseBehavior === 'object') {
-    const stoppingTool = toolResults.find((r) =>
-      toolUseBehavior.stopAtToolNames.includes(r.tool.name),
-    );
+    const stoppingTool = toolResults.find((r) => {
+      return toolUseBehavior.stopAtToolNames.some((toolName) =>
+        matchesFunctionToolName(r.tool, toolName),
+      );
+    });
     if (stoppingTool?.type === 'function_output') {
       const stringOutput = toSmartString(stoppingTool.output);
       return {

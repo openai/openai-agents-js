@@ -6,7 +6,17 @@ import type {
   RunToolCallOutputItem,
   RunReasoningItem,
   RunToolApprovalItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '@openai/agents';
+import {
+  getToolCallDisplayName,
+  getToolSearchExecution,
+  getToolSearchProviderCallId,
+  resolveToolSearchCallId,
+  shouldQueuePendingToolSearchCall,
+  takePendingToolSearchCallId,
+} from '@openai/agents-core/utils';
 import type { UIMessageChunk } from 'ai';
 import { createUIMessageStreamResponse } from 'ai';
 
@@ -39,7 +49,7 @@ type ToolOutputPayload = {
 };
 
 function resolveToolName(raw: any): string {
-  return typeof raw.name === 'string' ? raw.name : String(raw.type ?? 'tool');
+  return getToolCallDisplayName(raw) ?? String(raw.type ?? 'tool');
 }
 
 function resolveToolCallId(raw: any, toolName: string): string {
@@ -112,6 +122,22 @@ function extractToolInput(item: RunToolCallItem): ToolInputPayload | null {
   return null;
 }
 
+function extractToolSearchInput(
+  item: RunToolSearchCallItem,
+): ToolInputPayload | null {
+  const raw = item.rawItem as any;
+  const toolName = 'tool_search';
+  const toolCallId = resolveToolSearchCallId(
+    raw,
+    () => `tool_search-${createId('call')}`,
+  );
+  return {
+    toolCallId,
+    toolName,
+    input: raw.arguments ?? {},
+  };
+}
+
 function extractHostedToolOutput(
   item: RunToolCallItem,
   toolCallId?: string,
@@ -140,6 +166,42 @@ function extractToolOutput(
   return { toolCallId, output };
 }
 
+function extractToolSearchOutput(
+  item: RunToolSearchOutputItem,
+  toolCallId: string,
+): ToolOutputPayload {
+  const raw = item.rawItem as any;
+  return {
+    toolCallId,
+    output: Array.isArray(raw.tools) ? raw.tools : [],
+  };
+}
+
+function takeQueuedToolSearchResultCallId(
+  rawItem: {
+    providerData?: unknown;
+    call_id?: unknown;
+    callId?: unknown;
+    id?: unknown;
+  },
+  pendingCallIds: string[],
+  generateFallbackId?: () => string,
+): string {
+  const explicitCallId = getToolSearchProviderCallId(rawItem);
+  if (explicitCallId) {
+    const pendingIndex = pendingCallIds.indexOf(explicitCallId);
+    if (pendingIndex >= 0) {
+      pendingCallIds.splice(pendingIndex, 1);
+    }
+    return explicitCallId;
+  }
+
+  return (
+    pendingCallIds.shift() ??
+    resolveToolSearchCallId(rawItem, generateFallbackId)
+  );
+}
+
 function extractReasoningText(item: RunReasoningItem): string {
   return item.rawItem.content
     .map((entry) => (entry.type === 'input_text' ? entry.text : ''))
@@ -158,6 +220,9 @@ async function* buildUiMessageStream(
   let currentTextId = '';
   const startedToolCalls = new Set<string>();
   const emittedToolOutputs = new Set<string>();
+  // FIFO fallback for tool_search outputs that do not carry an explicit call_id.
+  const pendingToolSearchCallIds: string[] = [];
+  const pendingServerToolSearchCallIds: string[] = [];
 
   const ensureMessageStart = function* (): Generator<
     UIMessageChunk,
@@ -285,6 +350,77 @@ async function* buildUiMessageStream(
             dynamic: true,
           };
         }
+      }
+
+      if (event.name === 'tool_search_called') {
+        yield* ensureMessageStart();
+        const payload = extractToolSearchInput(
+          event.item as RunToolSearchCallItem,
+        );
+        if (payload) {
+          if (
+            shouldQueuePendingToolSearchCall(
+              (event.item as RunToolSearchCallItem).rawItem,
+            )
+          ) {
+            pendingToolSearchCallIds.push(payload.toolCallId);
+          } else {
+            pendingServerToolSearchCallIds.push(payload.toolCallId);
+          }
+          if (!startedToolCalls.has(payload.toolCallId)) {
+            startedToolCalls.add(payload.toolCallId);
+            yield {
+              type: 'tool-input-start',
+              toolCallId: payload.toolCallId,
+              toolName: payload.toolName,
+              dynamic: true,
+            };
+          }
+          yield {
+            type: 'tool-input-available',
+            toolCallId: payload.toolCallId,
+            toolName: payload.toolName,
+            input: payload.input,
+            dynamic: true,
+          };
+        }
+      }
+
+      if (event.name === 'tool_search_output_created') {
+        yield* ensureMessageStart();
+        const item = event.item as RunToolSearchOutputItem;
+        const rawItem = (item.rawItem as any) ?? {};
+        const explicitToolCallId = getToolSearchProviderCallId(rawItem);
+        if (explicitToolCallId) {
+          const pendingIndex =
+            pendingToolSearchCallIds.indexOf(explicitToolCallId);
+          if (pendingIndex >= 0) {
+            pendingToolSearchCallIds.splice(pendingIndex, 1);
+          }
+        }
+        const toolCallId =
+          getToolSearchExecution(rawItem) === 'server'
+            ? takeQueuedToolSearchResultCallId(
+                rawItem,
+                pendingServerToolSearchCallIds,
+                () => `tool_search-${createId('call')}`,
+              )
+            : takePendingToolSearchCallId(
+                rawItem,
+                pendingToolSearchCallIds,
+                () => `tool_search-${createId('call')}`,
+              );
+        // Prefer explicit call_id matching first; the queue only covers older
+        // payloads that omit call_id metadata.
+        const payload = extractToolSearchOutput(item, toolCallId);
+        // tool_search outputs can legitimately update the same call_id more than
+        // once, so emit every event instead of suppressing later replacements.
+        yield {
+          type: 'tool-output-available',
+          toolCallId: payload.toolCallId,
+          output: payload.output,
+          dynamic: true,
+        };
       }
 
       if (event.name === 'tool_output') {

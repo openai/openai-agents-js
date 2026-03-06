@@ -4,6 +4,8 @@ import {
   SystemMessageItem,
   HostedToolCallItem,
   FunctionCallItem,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   ComputerUseCallItem,
   ShellCallItem,
   FunctionCallResultItem,
@@ -33,6 +35,8 @@ export type AgentOutputItem =
   | UserMessageItem
   | AssistantMessageItem
   | SystemMessageItem
+  | ToolSearchCallItem
+  | ToolSearchOutputItem
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem
@@ -53,6 +57,8 @@ export type AgentInputItem =
   | UserMessageItem
   | AssistantMessageItem
   | SystemMessageItem
+  | ToolSearchCallItem
+  | ToolSearchOutputItem
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem

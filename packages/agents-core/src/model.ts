@@ -175,6 +175,21 @@ export type SerializedFunctionTool = {
    * (might result in slower response times).
    */
   strict: FunctionTool['strict'];
+
+  /**
+   * Responses API only. Whether a top-level function tool stays hidden until tool search loads it.
+   */
+  deferLoading?: FunctionTool['deferLoading'];
+
+  /**
+   * Responses API only. Explicit namespace used to group related function tools.
+   */
+  namespace?: string;
+
+  /**
+   * Responses API only. Description shared by all tools in the namespace. Required when namespace is set.
+   */
+  namespaceDescription?: string;
 };
 
 export type SerializedComputerTool = {

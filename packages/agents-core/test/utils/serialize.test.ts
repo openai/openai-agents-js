@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { serializeTool, serializeHandoff } from '../../src/utils/serialize';
+import { tool, toolNamespace } from '../../src/tool';
+import { z } from 'zod';
 
 describe('serialize utilities', () => {
   it('serializes function tools', () => {
@@ -82,6 +84,49 @@ describe('serialize utilities', () => {
       type: 'hosted_tool',
       name: 'bt',
       providerData: { a: 1 },
+    });
+  });
+
+  it('serializes deferred and namespaced function tools', () => {
+    const deferredLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'ok',
+    });
+    const namespacedLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'ok',
+    });
+    const [crmLookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [namespacedLookup],
+    });
+
+    expect(serializeTool(deferredLookup)).toMatchObject({
+      type: 'function',
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      deferLoading: true,
+    });
+    expect(serializeTool(deferredLookup)).not.toHaveProperty('namespace');
+
+    expect(serializeTool(crmLookup)).toMatchObject({
+      type: 'function',
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      deferLoading: true,
+      namespace: 'crm',
+      namespaceDescription: 'CRM tools',
     });
   });
 

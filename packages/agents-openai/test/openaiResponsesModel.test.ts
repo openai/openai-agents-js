@@ -111,6 +111,164 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('ignores providerData reserved fields when building replay input items', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-provider-data', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      const request = {
+        systemInstructions: undefined,
+        input: [
+          {
+            type: 'message',
+            id: 'sys_1',
+            role: 'system',
+            content: 'keep-system',
+            providerData: {
+              role: 'user',
+              content: 'override',
+              customFlag: 'keep-system-metadata',
+            },
+          },
+          {
+            type: 'message',
+            id: 'user_1',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'keep-text',
+                providerData: {
+                  type: 'bad_text',
+                  text: 'override-text',
+                  customText: 'keep-text-metadata',
+                },
+              },
+              {
+                type: 'input_image',
+                image: 'https://example.com/image.png',
+                providerData: {
+                  type: 'bad_image',
+                  imageUrl: 'https://example.com/override.png',
+                  detail: 'low',
+                  customImage: 'keep-image-metadata',
+                },
+              },
+            ],
+          },
+          {
+            type: 'tool_search_call',
+            id: 'search_1',
+            status: 'completed',
+            arguments: {
+              paths: ['crm'],
+              query: 'profile',
+            },
+            providerData: {
+              type: 'function_call',
+              arguments: { paths: ['billing'] },
+              customSearch: 'keep-search-metadata',
+            },
+          },
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            callId: 'call_1',
+            name: 'lookup_account',
+            namespace: 'crm',
+            arguments: '{"accountId":"acct_1"}',
+            status: 'completed',
+            providerData: {
+              name: 'override_name',
+              namespace: 'override_namespace',
+              arguments: '{"accountId":"override"}',
+              customFunction: 'keep-function-metadata',
+            },
+          },
+          {
+            type: 'function_call_result',
+            id: 'fco_1',
+            callId: 'call_1',
+            output: 'tool output',
+            status: 'completed',
+            providerData: {
+              type: 'message',
+              output: 'override-output',
+              customResult: 'keep-result-metadata',
+            },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.input).toEqual([
+        {
+          id: 'sys_1',
+          role: 'system',
+          content: 'keep-system',
+          custom_flag: 'keep-system-metadata',
+        },
+        {
+          id: 'user_1',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'keep-text',
+              custom_text: 'keep-text-metadata',
+            },
+            {
+              type: 'input_image',
+              detail: 'auto',
+              image_url: 'https://example.com/image.png',
+              custom_image: 'keep-image-metadata',
+            },
+          ],
+        },
+        {
+          type: 'tool_search_call',
+          id: 'search_1',
+          status: 'completed',
+          arguments: {
+            paths: ['crm'],
+            query: 'profile',
+          },
+          custom_search: 'keep-search-metadata',
+        },
+        {
+          id: 'fc_1',
+          type: 'function_call',
+          name: 'lookup_account',
+          call_id: 'call_1',
+          arguments: '{"accountId":"acct_1"}',
+          status: 'completed',
+          namespace: 'crm',
+          custom_function: 'keep-function-metadata',
+        },
+        {
+          type: 'function_call_output',
+          id: 'fco_1',
+          call_id: 'call_1',
+          output: 'tool output',
+          status: 'completed',
+          custom_result: 'keep-result-metadata',
+        },
+      ]);
+    });
+  });
+
   it('omits previous_response_id when conversation is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-conv', usage: {}, output: [] };
@@ -327,6 +485,1609 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('allows deferred namespace members in requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-tool-search', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42 and list their open orders',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'function',
+            name: 'list_open_orders',
+            description: 'List open orders for a customer.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for customer profile and order lookup.',
+          tools: [
+            {
+              type: 'function',
+              name: 'get_customer_profile',
+              description: 'Fetch customer profile data.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders for a customer.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+          ],
+        },
+        {
+          type: 'tool_search',
+          execution: undefined,
+          description: undefined,
+          parameters: undefined,
+        },
+      ]);
+    });
+  });
+
+  it('rejects namespaced tools without a namespace description', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-namespace-description',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'All tools in namespace "crm" must provide a non-empty description.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows namespace tools that mix immediate and deferred members', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-mixed-namespace-members',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_customer_profile',
+            description: 'Fetch customer profile data.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'function',
+            name: 'list_recent_support_tickets',
+            description: 'List recent support tickets.',
+            parameters: {
+              type: 'object',
+              properties: {
+                customer_id: { type: 'string' },
+              },
+              required: ['customer_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription:
+              'CRM tools for customer profile and order lookup.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for customer profile and order lookup.',
+          tools: [
+            {
+              type: 'function',
+              name: 'get_customer_profile',
+              description: 'Fetch customer profile data.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+            {
+              type: 'function',
+              name: 'list_recent_support_tickets',
+              description: 'List recent support tickets.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customer_id: { type: 'string' },
+                },
+                required: ['customer_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+              defer_loading: true,
+            },
+          ],
+        },
+        {
+          type: 'tool_search',
+          execution: undefined,
+          description: undefined,
+          parameters: undefined,
+        },
+      ]);
+    });
+  });
+
+  it('rejects duplicate function tool names within a namespace', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-duplicate-namespace-function',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up a premium account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Namespace "crm" cannot contain duplicate function tool name "lookup_account".',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps top-level deferred function tools flat in requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-top-level-deferred',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+          defer_loading: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('rejects deferLoading without toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('includes deferred hosted MCP tools when paired with toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-deferred-mcp',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'find the latest order',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'hosted_mcp',
+            providerData: {
+              type: 'mcp',
+              server_label: 'shopify',
+              server_url: 'https://mcp.example.com/shopify',
+              server_description: 'Orders and customer records.',
+              defer_loading: true,
+              require_approval: 'never',
+            },
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          server_description: 'Orders and customer records.',
+          defer_loading: true,
+          require_approval: 'never',
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('rejects deferred hosted MCP tools without toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-tool-search-mcp',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'find the latest order',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'hosted_mcp',
+            providerData: {
+              type: 'mcp',
+              server_label: 'shopify',
+              server_url: 'https://mcp.example.com/shopify',
+              defer_loading: true,
+              require_approval: 'never',
+            },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects deferred function tools when a prompt is present without explicit toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects deferred function tools from explicit prompt-backed tool config without explicit toolSearchTool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search-explicit-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+        ],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Deferred function tools and hosted MCP tools with deferLoading: true require toolSearchTool() in the same request.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows deferred function tools with explicit toolSearchTool when a prompt is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-tool-search-explicit-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.prompt).toMatchObject({ id: 'pmpt_tool_search_support' });
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+          defer_loading: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it.each([false, true])(
+    'preserves explicit tool_search for prompt-backed requests when toolsExplicitlyProvided=%s',
+    async (toolsExplicitlyProvided) => {
+      await withTrace('test', async () => {
+        const fakeResponse = {
+          id: 'res-prompt-tool-search-helper',
+          usage: {},
+          output: [],
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        const fakeClient = {
+          responses: { create: createMock },
+        } as unknown as OpenAI;
+        const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+        const request = {
+          systemInstructions: undefined,
+          prompt: { promptId: 'pmpt_tool_search_support' },
+          input: 'look up the shipment eta',
+          modelSettings: {},
+          tools: [
+            {
+              type: 'hosted_tool',
+              name: 'tool_search',
+              providerData: { type: 'tool_search' },
+            },
+          ],
+          toolsExplicitlyProvided,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        };
+
+        await model.getResponse(request as any);
+
+        expect(createMock).toHaveBeenCalledTimes(1);
+        const [args] = createMock.mock.calls[0];
+        expect(args.tools).toEqual([
+          {
+            type: 'tool_search',
+          },
+        ]);
+      });
+    },
+  );
+
+  it('rejects deferred namespaced function tools before toolChoice validation', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-namespaced-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'crm.lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'modelSettings.toolChoice="crm.lookup_account" cannot force a deferred function tool in Responses. Use "auto" so tool_search can load it.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects forced toolChoice for top-level deferred function tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-top-level-deferred-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up shipment ZX-123',
+        modelSettings: { toolChoice: 'get_shipping_eta' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'modelSettings.toolChoice="get_shipping_eta" cannot force a deferred function tool in Responses. Use "auto" so tool_search can load it.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows namespaced function tool_choice values for immediate namespace tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-immediate-namespaced-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'crm.lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            description: 'Look up an account in CRM.',
+            parameters: {
+              type: 'object',
+              properties: {
+                account_id: { type: 'string' },
+              },
+              required: ['account_id'],
+              additionalProperties: false,
+            },
+            strict: true,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account in CRM.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  account_id: { type: 'string' },
+                },
+                required: ['account_id'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          ],
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'crm.lookup_account',
+      });
+    });
+  });
+
+  it('preserves explicit server toolSearchTool when no deferred function tools remain', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-orphan-tool-search',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA by tracking number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              tracking_number: { type: 'string' },
+            },
+            required: ['tracking_number'],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit toolSearchTool when a prompt is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-deferred-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_deferred_tool_support' },
+        input: 'look up the shipment eta',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit client toolSearchTool even without deferred local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-client-tool-search-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'load deferred tools from the client runtime',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: {
+              type: 'tool_search',
+              execution: 'client',
+              description: 'Search local deferred tools.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  namespace: { type: 'string' },
+                },
+              },
+            },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+          execution: 'client',
+          description: 'Search local deferred tools.',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespace: { type: 'string' },
+            },
+          },
+        },
+      ]);
+    });
+  });
+
+  it('keeps explicit server toolSearchTool without deferred local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-server-tool-search-helper',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { parallelToolCalls: true },
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'tool_search',
+        },
+      ]);
+      expect(args.parallel_tool_calls).toBe(true);
+    });
+  });
+
+  it('treats tool_search toolChoice as a custom function name even when the hosted tool is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-function-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'tool_search',
+            description: 'Force a custom tool named tool_search.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'tool_search',
+      });
+    });
+  });
+
+  it('treats tool_search toolChoice as a custom function name when no hosted tool is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-function-tool-search-choice-no-hosted-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'tool_search',
+            description: 'Force a custom tool named tool_search.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'tool_search',
+      });
+    });
+  });
+
+  it('rejects tool_search toolChoice when only the built-in tool_search tool is available', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-hosted-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+            deferLoading: true,
+          },
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="tool_search" is only supported for a custom function named "tool_search"/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects tool_search toolChoice when only a prompt may supply the built-in tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-hosted-tool-search-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_search_support' },
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'tool_search' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="tool_search" is only supported for a custom function named "tool_search"/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects a named function tool choice when no matching tool remains', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-missing-function-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: { toolChoice: 'lookup_account' },
+        tools: [
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA by tracking number.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tracking_number: { type: 'string' },
+              },
+              required: ['tracking_number'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="lookup_account" does not match any available tool/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects required tool choice when the outgoing tool list is empty', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-empty-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up the shipment eta',
+        modelSettings: { toolChoice: 'required' },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="required" requires at least one available tool/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('accepts named tool choice when extra_body supplies the selected tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {
+          toolChoice: 'prompt_lookup',
+          providerData: {
+            extra_body: {
+              tools: [
+                {
+                  type: 'function',
+                  name: 'prompt_lookup',
+                  description:
+                    'Look up a customer from a prompt-supplied tool.',
+                  parameters: {
+                    type: 'object',
+                    properties: {},
+                    additionalProperties: false,
+                  },
+                  strict: true,
+                },
+              ],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'prompt_lookup',
+          description: 'Look up a customer from a prompt-supplied tool.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'prompt_lookup',
+      });
+    });
+  });
+
+  it('accepts required tool choice when extra_body supplies tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-required-tool-choice',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'look up customer_42',
+        modelSettings: {
+          toolChoice: 'required',
+          providerData: {
+            extra_body: {
+              tools: [
+                {
+                  type: 'function',
+                  name: 'prompt_lookup',
+                  description:
+                    'Look up a customer from a prompt-supplied tool.',
+                  parameters: {
+                    type: 'object',
+                    properties: {},
+                    additionalProperties: false,
+                  },
+                  strict: true,
+                },
+              ],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'prompt_lookup',
+          description: 'Look up a customer from a prompt-supplied tool.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toBe('required');
+    });
+  });
+
   it('omits model when a prompt is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-prompt', usage: {}, output: [] };
@@ -500,10 +2261,10 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
-  it('omits named tool_choice when prompt should supply tools', async () => {
+  it('keeps named tool_choice when a prompt may supply the selected tool', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {
-        id: 'res-tool-choice-omit',
+        id: 'res-tool-choice-prompt-only',
         usage: {},
         output: [],
       };
@@ -531,11 +2292,137 @@ describe('OpenAIResponsesModel', () => {
       expect(createMock).toHaveBeenCalledTimes(1);
       const [args] = createMock.mock.calls[0];
       expect('tools' in args).toBe(false);
-      expect('tool_choice' in args).toBe(false);
+      expect(args.tool_choice).toEqual({
+        type: 'web_search_preview',
+      });
     });
   });
 
-  it('keeps literal tool_choice when prompt should supply tools', async () => {
+  it('keeps named tool_choice when a prompt may supply the selected function alongside local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-prompt-plus-local-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_prompt_plus_local_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'prompt_lookup' },
+        tools: [
+          {
+            type: 'function',
+            name: 'local_lookup',
+            description: 'Available locally but not selected by toolChoice.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'local_lookup',
+          description: 'Available locally but not selected by toolChoice.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'prompt_lookup',
+      });
+    });
+  });
+
+  it('keeps named tool_choice when a prompt may supply the selected function alongside explicitly provided local tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-explicit-prompt-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_explicit_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'missing_tool' },
+        tools: [
+          {
+            type: 'function',
+            name: 'available_tool',
+            description: 'Available locally.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'available_tool',
+          description: 'Available locally.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+      expect(args.tool_choice).toEqual({
+        type: 'function',
+        name: 'missing_tool',
+      });
+    });
+  });
+
+  it('keeps tool_choice="none" when prompt omits outgoing tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {
         id: 'res-tool-choice-literal',
@@ -547,30 +2434,92 @@ describe('OpenAIResponsesModel', () => {
         responses: { create: createMock },
       } as unknown as OpenAI;
       const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
-      const toolChoices = ['none', 'required'] as const;
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'none' as const },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+      await model.getResponse(request as any);
 
-      for (const toolChoice of toolChoices) {
-        const request = {
-          systemInstructions: undefined,
-          prompt: { promptId: 'pmpt_tool_choice_literal' },
-          input: 'hello',
-          modelSettings: { toolChoice },
-          tools: [],
-          toolsExplicitlyProvided: false,
-          outputType: 'text',
-          handoffs: [],
-          tracing: false,
-          signal: undefined,
-        };
-        await model.getResponse(request as any);
-      }
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toBe('none');
+    });
+  });
 
-      expect(createMock).toHaveBeenCalledTimes(toolChoices.length);
-      for (const [index, toolChoice] of toolChoices.entries()) {
-        const [args] = createMock.mock.calls[index];
-        expect('tools' in args).toBe(false);
-        expect(args.tool_choice).toBe(toolChoice);
-      }
+  it('keeps tool_choice="required" when a prompt may supply tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal-required',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'required' as const },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toBe('required');
+    });
+  });
+
+  it('rejects tool_choice="required" when prompt-backed tools were explicitly disabled', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-tool-choice-literal-required-disabled',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-default');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_tool_choice_literal' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'required' as const },
+        tools: [],
+        toolsExplicitlyProvided: true,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        /modelSettings\.toolChoice="required" requires at least one available tool in the outgoing Responses request/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
     });
   });
 

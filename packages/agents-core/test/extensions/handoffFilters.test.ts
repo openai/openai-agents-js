@@ -6,6 +6,8 @@ import {
   RunMessageOutputItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '../../src/items';
 import type { AgentInputItem } from '../../src/types';
 import type * as protocol from '../../src/types/protocol';
@@ -73,6 +75,29 @@ const applyPatchCallResult: protocol.ApplyPatchCallResultItem = {
   output: 'done',
 };
 
+const toolSearchCall: protocol.ToolSearchCallItem = {
+  type: 'tool_search_call',
+  id: 'tool-search-call',
+  status: 'completed',
+  arguments: {
+    paths: ['crm'],
+    query: 'lookup account',
+  },
+};
+
+const toolSearchOutput: protocol.ToolSearchOutputItem = {
+  type: 'tool_search_output',
+  id: 'tool-search-output',
+  status: 'completed',
+  tools: [
+    {
+      type: 'tool_reference',
+      functionName: 'lookup_account',
+      namespace: 'crm',
+    },
+  ],
+};
+
 describe('removeAllTools', () => {
   test('should be available', () => {
     const result = removeAllTools({
@@ -102,9 +127,11 @@ describe('removeAllTools', () => {
       preHandoffItems: [
         new RunHandoffCallItem(TEST_MODEL_FUNCTION_CALL, TEST_AGENT),
         message,
+        new RunToolSearchCallItem(toolSearchCall, TEST_AGENT),
         new RunToolCallItem(TEST_MODEL_FUNCTION_CALL, TEST_AGENT),
       ],
       newItems: [
+        new RunToolSearchOutputItem(toolSearchOutput, TEST_AGENT),
         new RunToolCallOutputItem(functionCallResult, TEST_AGENT, 'ok'),
         new RunHandoffOutputItem(functionCallResult, TEST_AGENT, TEST_AGENT),
         anotherMessage,
@@ -126,6 +153,8 @@ describe('removeAllTools', () => {
       userMessage,
       TEST_MODEL_FUNCTION_CALL,
       functionCallResult,
+      toolSearchCall,
+      toolSearchOutput,
       computerCall,
       computerCallResult,
       hostedToolCall,
@@ -142,7 +171,7 @@ describe('removeAllTools', () => {
     });
 
     expect(result.inputHistory).toStrictEqual([userMessage]);
-    expect(history).toHaveLength(10);
+    expect(history).toHaveLength(12);
     expect((result.inputHistory as AgentInputItem[])[0]).toBe(userMessage);
   });
 });

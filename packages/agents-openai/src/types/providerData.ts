@@ -19,6 +19,11 @@ export type CodeInterpreterTool = Omit<
   name: 'code_interpreter' | (string & {});
 };
 
+export type ToolSearchTool = Omit<OpenAI.Responses.ToolSearchTool, 'type'> & {
+  type: 'tool_search';
+  name: 'tool_search';
+};
+
 export type ImageGenerationTool = Omit<
   OpenAI.Responses.Tool.ImageGeneration,
   | 'type'

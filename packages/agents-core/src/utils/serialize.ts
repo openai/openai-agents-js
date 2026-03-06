@@ -5,6 +5,10 @@ import { AgentOutputType } from '../agent';
 import { SerializedHandoff, SerializedTool } from '../model';
 import { UserError } from '../errors';
 import type { Computer } from '../computer';
+import {
+  getExplicitFunctionToolNamespace,
+  getFunctionToolNamespaceDescription,
+} from '../toolIdentity';
 
 function isComputerInstance(value: unknown): value is Computer {
   return (
@@ -17,12 +21,20 @@ function isComputerInstance(value: unknown): value is Computer {
 
 export function serializeTool(tool: Tool<any>): SerializedTool {
   if (tool.type === 'function') {
+    const namespace = getExplicitFunctionToolNamespace(tool);
     return {
       type: 'function',
       name: tool.name,
       description: tool.description,
       parameters: tool.parameters as JsonObjectSchema<any>,
       strict: tool.strict,
+      deferLoading: tool.deferLoading,
+      ...(namespace ? { namespace } : {}),
+      ...(namespace
+        ? {
+            namespaceDescription: getFunctionToolNamespaceDescription(tool),
+          }
+        : {}),
     };
   }
   if (tool.type === 'computer') {

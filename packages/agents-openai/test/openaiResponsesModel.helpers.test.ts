@@ -36,6 +36,10 @@ describe('getToolChoice', () => {
       type: 'function',
       name: 'my_func',
     });
+    expect(getToolChoice('tool_search')).toEqual({
+      type: 'function',
+      name: 'tool_search',
+    });
   });
 
   it('returns undefined when omitted', () => {
@@ -57,6 +61,24 @@ describe('converTool', () => {
       description: 'd',
       parameters: {},
       strict: undefined,
+    });
+  });
+
+  it('converts deferred function tools', () => {
+    const t = converTool({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+      deferLoading: true,
+    } as any);
+    expect(t.tool).toEqual({
+      type: 'function',
+      name: 'f',
+      description: 'd',
+      parameters: {},
+      strict: undefined,
+      defer_loading: true,
     });
   });
 
@@ -311,6 +333,46 @@ describe('converTool', () => {
       container: 'python',
     });
 
+    const toolSearch = converTool({
+      type: 'hosted_tool',
+      providerData: { type: 'tool_search' },
+    } as any);
+    expect(toolSearch.tool).toEqual({
+      type: 'tool_search',
+    });
+
+    const clientToolSearch = converTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+        description: 'Search deferred tools locally.',
+        parameters: {
+          type: 'object',
+          properties: {
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+        },
+      },
+    } as any);
+    expect(clientToolSearch.tool).toEqual({
+      type: 'tool_search',
+      execution: 'client',
+      description: 'Search deferred tools locally.',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        },
+      },
+    });
+
     const img = converTool({
       type: 'hosted_tool',
       providerData: { type: 'image_generation', background: 'auto' },
@@ -334,6 +396,8 @@ describe('converTool', () => {
         type: 'mcp',
         server_label: 'deepwiki',
         server_url: 'https://mcp.deepwiki.com/mcp',
+        server_description: 'Repository knowledge',
+        defer_loading: true,
         require_approval: 'never',
       },
     } as any);
@@ -342,6 +406,8 @@ describe('converTool', () => {
       type: 'mcp',
       server_label: 'deepwiki',
       server_url: 'https://mcp.deepwiki.com/mcp',
+      server_description: 'Repository knowledge',
+      defer_loading: true,
       require_approval: 'never',
     });
 
@@ -519,11 +585,323 @@ describe('getInputItems', () => {
     expect(items.some((entry) => entry.type === 'reasoning')).toBe(true);
   });
 
+  it('preserves replay-only Responses fields when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'message',
+        id: 'assistant-1',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'done',
+            providerData: {
+              annotations: [
+                { type: 'url_citation', url: 'https://example.com' },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        type: 'reasoning',
+        id: 'reasoning-1',
+        content: [{ type: 'input_text', text: 'thinking' }],
+        providerData: {
+          encrypted_content: 'enc_reasoning',
+        },
+      },
+      {
+        type: 'computer_call',
+        id: 'computer-1',
+        callId: 'computer-call-1',
+        action: 'open',
+        status: 'in_progress',
+        providerData: {
+          pending_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-result-1',
+        callId: 'computer-call-1',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'message',
+      id: 'assistant-1',
+      role: 'assistant',
+      content: [
+        {
+          type: 'output_text',
+          text: 'done',
+          annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'reasoning',
+      id: 'reasoning-1',
+      encrypted_content: 'enc_reasoning',
+    });
+    expect(items[2]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-1',
+      call_id: 'computer-call-1',
+      pending_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+    });
+    expect(items[3]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-result-1',
+      call_id: 'computer-call-1',
+      acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+    });
+  });
+
+  it('converts tool search items and namespaced function calls', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          namespaceHints: ['crm'],
+          terms: ['orders'],
+          maxResults: 3,
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'list_open_orders',
+            namespace: 'crm',
+          },
+        ],
+      },
+      {
+        type: 'function_call',
+        id: 'fc1',
+        callId: 'call_1',
+        name: 'list_open_orders',
+        namespace: 'crm',
+        arguments: '{"customer_id":"customer_42"}',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      status: 'completed',
+      arguments: {
+        namespaceHints: ['crm'],
+        terms: ['orders'],
+        maxResults: 3,
+      },
+    });
+    expect(items[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          function_name: 'list_open_orders',
+          namespace: 'crm',
+        },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call',
+      id: 'fc1',
+      call_id: 'call_1',
+      name: 'list_open_orders',
+      namespace: 'crm',
+      arguments: '{"customer_id":"customer_42"}',
+      status: 'completed',
+    });
+  });
+
+  it('converts top-level tool search references without a namespace', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          function_name: 'get_shipping_eta',
+        },
+      ],
+    });
+  });
+
+  it('preserves concrete tool payloads in tool search outputs', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'namespace',
+            name: 'crm',
+            description: 'CRM tools.',
+            tools: [
+              {
+                type: 'function',
+                name: 'list_open_orders',
+                description: 'List open orders.',
+                deferLoading: true,
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    customerId: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['customerId'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders.',
+              defer_loading: true,
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerId: {
+                    type: 'string',
+                  },
+                },
+                required: ['customerId'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('preserves official tool search metadata when replaying tool search outputs', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [],
+        providerData: {
+          call_id: 'call_ts_1',
+          execution: 'client',
+          created_by: 'assistant',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [],
+      call_id: 'call_ts_1',
+      execution: 'client',
+      created_by: 'assistant',
+    });
+  });
+
+  it('preserves raw tool search call_id and execution fields when replaying raw Responses items', () => {
+    const items = getInputItems([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        status: 'completed',
+        arguments: {
+          paths: ['crm.lookup_account'],
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        status: 'completed',
+        tools: [],
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      call_id: 'call_ts_1',
+      execution: 'client',
+      status: 'completed',
+      arguments: {
+        paths: ['crm.lookup_account'],
+      },
+    });
+    expect(items[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      call_id: 'call_ts_1',
+      execution: 'client',
+      status: 'completed',
+      tools: [],
+    });
+  });
+
   it('converts structured tool outputs into input items', () => {
     const items = getInputItems([
       {
         type: 'function_call_result',
         callId: 'c2',
+        namespace: 'crm',
         output: [
           { type: 'input_text', text: 'hello' },
           {
@@ -1473,6 +1851,234 @@ describe('convertToOutputItem', () => {
     });
   });
 
+  it('converts tool search outputs and preserves function namespaces', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_call',
+        id: 'ts_call',
+        status: 'completed',
+        arguments: {
+          namespaceHints: ['crm'],
+          terms: ['orders'],
+          maxResults: 3,
+        },
+      },
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            function_name: 'list_open_orders',
+            namespace: 'crm',
+          },
+        ],
+      },
+      {
+        type: 'function_call',
+        id: 'fc1',
+        call_id: 'call_1',
+        name: 'list_open_orders',
+        namespace: 'crm',
+        arguments: '{"customer_id":"customer_42"}',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_call',
+      id: 'ts_call',
+      status: 'completed',
+      arguments: {
+        namespaceHints: ['crm'],
+        terms: ['orders'],
+        maxResults: 3,
+      },
+      providerData: {},
+    });
+    expect(out[1]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          functionName: 'list_open_orders',
+          namespace: 'crm',
+        },
+      ],
+      providerData: {},
+    });
+    expect(out[2]).toMatchObject({
+      type: 'function_call',
+      id: 'fc1',
+      callId: 'call_1',
+      name: 'list_open_orders',
+      namespace: 'crm',
+      arguments: '{"customer_id":"customer_42"}',
+      status: 'completed',
+    });
+  });
+
+  it('converts top-level tool search outputs without a namespace', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            function_name: 'get_shipping_eta',
+          },
+        ],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          functionName: 'get_shipping_eta',
+        },
+      ],
+      providerData: {},
+    });
+  });
+
+  it('preserves concrete tool payloads from tool search outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'namespace',
+            name: 'crm',
+            description: 'CRM tools.',
+            tools: [
+              {
+                type: 'function',
+                name: 'list_open_orders',
+                description: 'List open orders.',
+                defer_loading: true,
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    customerId: {
+                      type: 'string',
+                    },
+                  },
+                  required: ['customerId'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+          {
+            type: 'function',
+            name: 'get_shipping_eta',
+            description: 'Look up a shipment ETA.',
+            defer_loading: true,
+            strict: true,
+            parameters: {
+              type: 'object',
+              properties: {
+                trackingNumber: {
+                  type: 'string',
+                },
+              },
+              required: ['trackingNumber'],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'list_open_orders',
+              description: 'List open orders.',
+              deferLoading: true,
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerId: {
+                    type: 'string',
+                  },
+                },
+                required: ['customerId'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+        {
+          type: 'function',
+          name: 'get_shipping_eta',
+          description: 'Look up a shipment ETA.',
+          deferLoading: true,
+          strict: true,
+          parameters: {
+            type: 'object',
+            properties: {
+              trackingNumber: {
+                type: 'string',
+              },
+            },
+            required: ['trackingNumber'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      providerData: {},
+    });
+  });
+
+  it('preserves official tool search metadata when converting outputs', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        call_id: 'call_ts_1',
+        execution: 'client',
+        created_by: 'assistant',
+        tools: [],
+      },
+    ] as any);
+
+    expect(out[0]).toEqual({
+      type: 'tool_search_output',
+      id: 'ts_output',
+      status: 'completed',
+      tools: [],
+      providerData: {
+        call_id: 'call_ts_1',
+        execution: 'client',
+        created_by: 'assistant',
+      },
+    });
+  });
+
   it('rejects unknown message content', () => {
     expect(() =>
       convertToOutputItem([
@@ -1494,6 +2100,7 @@ describe('convertToOutputItem', () => {
         id: 'out-1',
         call_id: 'call-1',
         name: 'lookup',
+        namespace: 'crm',
         output: 'done',
       } as any,
     ]);
@@ -1503,6 +2110,7 @@ describe('convertToOutputItem', () => {
       id: 'out-1',
       callId: 'call-1',
       name: 'lookup',
+      namespace: 'crm',
       output: 'done',
       status: 'completed',
     });

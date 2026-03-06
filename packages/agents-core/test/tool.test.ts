@@ -6,6 +6,7 @@ import {
   invokeFunctionTool,
   shellTool,
   tool,
+  toolNamespace,
   resolveComputer,
   disposeResolvedComputers,
 } from '../src/tool';
@@ -14,6 +15,7 @@ import { z } from 'zod';
 import { Computer } from '../src';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
+import { serializeTool } from '../src/utils/serialize';
 import { FakeEditor, FakeShell } from './stubs';
 import { ToolTimeoutError } from '../src/errors';
 
@@ -36,6 +38,161 @@ describe('Tool', () => {
     });
     expect(Object.keys(t.parameters.properties).length).toEqual(1);
     expect(t.parameters.required.length).toEqual(1);
+  });
+
+  it('records deferLoading when requested', () => {
+    const t = tool({
+      name: 'deferred_lookup',
+      description: 'Deferred lookup tool.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(t.deferLoading).toBe(true);
+  });
+
+  it('toolNamespace returns shallow-cloned function tools', () => {
+    const t = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    const [namespacedTool] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [t],
+    });
+
+    expect(namespacedTool).not.toBe(t);
+    expect(namespacedTool.name).toBe(t.name);
+    expect(namespacedTool.description).toBe(t.description);
+    expect(namespacedTool.invoke).toBe(t.invoke);
+  });
+
+  it('toolNamespace supports immediate-loading function tools', () => {
+    const immediate = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    const namespacedTools = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [immediate],
+    });
+
+    expect(namespacedTools).toHaveLength(1);
+    for (const namespacedTool of namespacedTools) {
+      expect(serializeTool(namespacedTool)).toMatchObject({
+        namespace: 'crm',
+        namespaceDescription: 'CRM tools',
+      });
+    }
+  });
+
+  it('toolNamespace supports deferred-loading function tools', () => {
+    const deferred = tool({
+      name: 'list_recent_tickets',
+      description: 'List recent tickets.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    const [namespacedTool] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [deferred],
+    });
+
+    expect(serializeTool(namespacedTool)).toMatchObject({
+      namespace: 'crm',
+      namespaceDescription: 'CRM tools',
+      deferLoading: true,
+    });
+  });
+
+  it('toolNamespace requires a namespace config object', () => {
+    expect(() => toolNamespace(undefined as any)).toThrow(
+      'toolNamespace() requires a namespace config object.',
+    );
+  });
+
+  it('toolNamespace requires a non-empty description', () => {
+    const t = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(() =>
+      toolNamespace({
+        name: 'crm',
+        description: '',
+        tools: [t],
+      }),
+    ).toThrow(
+      'toolNamespace() requires a non-empty description because the Responses API requires namespace descriptions.',
+    );
+  });
+
+  it('toolNamespace normalizes namespace names to tool-safe identifiers', () => {
+    const t = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    const [namespacedTool] = toolNamespace({
+      name: 'CRM tools',
+      description: 'CRM tools',
+      tools: [t],
+    });
+
+    expect(serializeTool(namespacedTool)).toMatchObject({
+      namespace: 'CRM_tools',
+      namespaceDescription: 'CRM tools',
+    });
+  });
+
+  it('toolNamespace rejects members whose name matches the namespace', () => {
+    const t = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        foo: z.string(),
+      }),
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(() =>
+      toolNamespace({
+        name: 'lookup_account',
+        description: 'Lookup account tools',
+        tools: [t],
+      }),
+    ).toThrow(
+      'toolNamespace() does not allow a tool named "lookup_account" inside namespace "lookup_account" because Responses self-namespaced calls would be ambiguous.',
+    );
   });
 
   it('computerTool', () => {
@@ -410,6 +567,19 @@ describe('create a tool using hostedMcpTool utility', () => {
     });
 
     expect(t.providerData.authorization).toBe('secret-token');
+  });
+
+  it('propagates tool_search metadata for hosted MCP servers', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      serverDescription: 'Repository operations',
+      deferLoading: true,
+      requireApproval: 'never',
+    });
+
+    expect(t.providerData.server_description).toBe('Repository operations');
+    expect(t.providerData.defer_loading).toBe(true);
   });
 });
 

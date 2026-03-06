@@ -17,6 +17,7 @@ import {
   ModelResponse,
   OutputGuardrailTripwireTriggered,
   Session,
+  UserError,
   ModelInputData,
   type OutputGuardrailFunctionArgs,
   type AgentInputItem,
@@ -43,7 +44,12 @@ import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
-import { tool, hostedMcpTool, computerTool } from '../src/tool';
+import {
+  attachClientToolSearchExecutor,
+  tool,
+  hostedMcpTool,
+  computerTool,
+} from '../src/tool';
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
@@ -191,6 +197,204 @@ describe('Runner.run', () => {
 
       expect(result.finalOutput).toBe('Hello World');
       expectTypeOf(result.finalOutput).toEqualTypeOf<string | undefined>();
+    });
+
+    it('rejects custom client tool_search parameters without execute before calling the model', async () => {
+      const getResponse = vi.fn().mockResolvedValue(TEST_MODEL_RESPONSE_BASIC);
+      const model: Model = {
+        getResponse,
+        async *getStreamedResponse() {
+          yield* [];
+        },
+      };
+      const agent = new Agent({
+        name: 'ClientToolSearchValidationAgent',
+        model,
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: {
+              type: 'tool_search',
+              execution: 'client',
+              parameters: {
+                type: 'object',
+                properties: {
+                  namespaceHints: {
+                    type: 'array',
+                    items: { type: 'string' },
+                  },
+                },
+                required: ['namespaceHints'],
+                additionalProperties: false,
+              },
+            },
+          } as any,
+        ],
+      });
+
+      const runPromise = new Runner().run(agent, 'hello');
+
+      await expect(runPromise).rejects.toThrow(UserError);
+      await expect(runPromise).rejects.toThrow(
+        /require toolSearchTool\(\{ execution: "client", execute \}\)/,
+      );
+      expect(getResponse).not.toHaveBeenCalled();
+    });
+
+    it('loads runtime tools from custom client tool_search execute callbacks across turns', async () => {
+      const lookupAccount = tool({
+        name: 'lookup_account',
+        description: 'Look up an account in CRM.',
+        parameters: z.object({
+          accountId: z.string(),
+        }),
+        execute: async ({ accountId }) => `account:${accountId}`,
+      });
+      const execute = vi.fn().mockResolvedValue(lookupAccount);
+      const toolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+            parameters: {
+              type: 'object',
+              properties: {
+                namespaceHints: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+              },
+              required: ['namespaceHints'],
+              additionalProperties: false,
+            },
+          },
+        },
+        execute,
+      );
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_lookup',
+              status: 'completed',
+              arguments: {
+                namespaceHints: ['crm'],
+              },
+              providerData: {
+                call_id: 'call_tool_search_lookup',
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_lookup_account',
+              callId: 'call_lookup_account',
+              name: 'lookup_account',
+              status: 'completed',
+              arguments: JSON.stringify({ accountId: 'acct_42' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('Account loaded.')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'CustomClientToolSearchAgent',
+        model,
+        tools: [toolSearch],
+      });
+      const state = new RunState(new RunContext(), 'hello', agent, 10);
+
+      const result = await new Runner().run(agent, state);
+
+      expect(result.finalOutput).toBe('Account loaded.');
+      expect(execute).toHaveBeenCalledTimes(1);
+      const executeArgs = execute.mock.calls[0]?.[0];
+      expect(executeArgs?.agent).toBe(agent);
+      expect(executeArgs?.availableTools).toEqual([toolSearch]);
+      expect(executeArgs?.runContext).toBe(state._context);
+      expect(executeArgs?.toolCall).toMatchObject({
+        type: 'tool_search_call',
+        arguments: {
+          namespaceHints: ['crm'],
+        },
+      });
+      expect(executeArgs?.loadDefault).toEqual(expect.any(Function));
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual([lookupAccount]);
+      expect(executeArgs?.loadDefault(['missing_tool'])).toEqual([]);
+    });
+
+    it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
+      const getShippingEta = tool({
+        name: 'get_shipping_eta',
+        description: 'Look up a shipping ETA.',
+        parameters: z.object({
+          trackingNumber: z.string(),
+        }),
+        deferLoading: true,
+        execute: async () => 'tomorrow',
+      });
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_shipping_eta',
+              callId: 'call_shipping_eta',
+              name: 'get_shipping_eta',
+              status: 'completed',
+              arguments: JSON.stringify({ trackingNumber: 'ZX-123' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('The package arrives tomorrow.')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'ShippingAgent',
+        instructions: 'Use the tool when it is available.',
+        model,
+        tools: [getShippingEta],
+        toolUseBehavior: 'run_llm_again',
+      });
+      const inputHistory: AgentInputItem[] = [
+        user('Load shipping tools first.'),
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'get_shipping_eta',
+            },
+          ],
+        } as any,
+      ];
+
+      const result = await run(agent, inputHistory);
+
+      expect(result.finalOutput).toBe('The package arrives tomorrow.');
+      expect(result.history).toContainEqual(
+        expect.objectContaining({
+          type: 'function_call',
+          name: 'get_shipping_eta',
+        }),
+      );
     });
 
     it('exposes aggregated usage on run results', async () => {

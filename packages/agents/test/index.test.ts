@@ -1,4 +1,4 @@
-import { Agent } from '../src/index';
+import { Agent, toolNamespace, toolSearchTool } from '../src/index';
 import { RealtimeAgent } from '../src/realtime';
 import { isZodObject } from '../src/utils';
 import { describe, test, expect } from 'vitest';
@@ -20,5 +20,26 @@ describe('RealtimeAgent', () => {
 describe('isZodObject', () => {
   test('should be available', () => {
     expect(isZodObject({})).toBe(false);
+  });
+});
+
+describe('Tool search exports', () => {
+  test('toolNamespace and toolSearchTool should be available', () => {
+    expect(typeof toolNamespace).toBe('function');
+    expect(toolSearchTool()).toMatchObject({
+      type: 'hosted_tool',
+      name: 'tool_search',
+      providerData: { type: 'tool_search' },
+    });
+    expect(
+      toolSearchTool({
+        execution: 'client',
+      }),
+    ).toMatchObject({
+      providerData: {
+        type: 'tool_search',
+        execution: 'client',
+      },
+    });
   });
 });

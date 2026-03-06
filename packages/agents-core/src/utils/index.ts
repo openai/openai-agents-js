@@ -4,3 +4,19 @@ export { toFunctionToolName } from './tools';
 export { EventEmitterDelegate } from '../lifecycle';
 export { encodeUint8ArrayToBase64 } from './base64';
 export { applyDiff } from './applyDiff';
+export {
+  getToolSearchProviderCallId,
+  getToolSearchMatchKey,
+  getToolSearchOutputReplacementKey,
+  getToolSearchExecution,
+  isClientToolSearchCall,
+  resolveToolSearchCallId,
+  shouldQueuePendingToolSearchCall,
+  takePendingToolSearchCallId,
+} from './toolSearch';
+export {
+  matchesFunctionToolName,
+  toolQualifiedName,
+  getToolCallDisplayName,
+  getFunctionToolDisplayName,
+} from '../toolIdentity';

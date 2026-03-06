@@ -6,4 +6,3 @@
   },
   "exclude": ["dist/**", "test/**"]
 }
-

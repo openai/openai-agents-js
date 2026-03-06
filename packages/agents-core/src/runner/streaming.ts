@@ -9,6 +9,8 @@ import {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '../items';
 import { StreamedRunResult } from '../result';
 
@@ -42,6 +44,14 @@ function getRunItemStreamEventName(
   }
   if (item instanceof RunHandoffOutputItem) {
     return 'handoff_occurred';
+  }
+  // tool_search uses dedicated run items because its payload shape and
+  // downstream UI correlation differ from generic tool call/output events.
+  if (item instanceof RunToolSearchCallItem) {
+    return 'tool_search_called';
+  }
+  if (item instanceof RunToolSearchOutputItem) {
+    return 'tool_search_output_created';
   }
   if (item instanceof RunToolCallItem) {
     return 'tool_called';
