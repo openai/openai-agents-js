@@ -1711,22 +1711,24 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   const computerTools = new Map(
     allTools
       .filter((tool) => tool.type === 'computer')
-      .flatMap((tool) => {
-        if (tool.name === 'computer') {
-          return [
-            ['computer', tool] as const,
-            ['computer_use_preview', tool] as const,
-          ];
-        }
-        if (tool.name === 'computer_use_preview') {
-          return [
-            ['computer_use_preview', tool] as const,
-            ['computer', tool] as const,
-          ];
-        }
-        return [[tool.name, tool] as const];
-      }),
+      .map((tool) => [tool.name, tool] as const),
   );
+  const resolveComputerTool = (toolName: string) => {
+    const exactMatch = computerTools.get(toolName);
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    if (toolName === 'computer') {
+      return computerTools.get('computer_use_preview');
+    }
+
+    if (toolName === 'computer_use_preview') {
+      return computerTools.get('computer');
+    }
+
+    return undefined;
+  };
   const shellTools = new Map(
     allTools
       .filter((tool): tool is ShellTool => tool.type === 'shell')
@@ -1780,13 +1782,14 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
     computerActions: serializedProcessedResponse.computerActions.map(
       (computerAction) => {
         const toolName = computerAction.computer.name;
-        if (!computerTools.has(toolName)) {
+        const computerTool = resolveComputerTool(toolName);
+        if (!computerTool) {
           throw new UserError(`Computer tool ${toolName} not found`);
         }
 
         return {
           toolCall: computerAction.toolCall,
-          computer: computerTools.get(toolName)!,
+          computer: computerTool,
         };
       },
     ),

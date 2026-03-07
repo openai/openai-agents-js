@@ -1756,6 +1756,44 @@ describe('deserialize helpers', () => {
     );
   });
 
+  it('deserializeProcessedResponse prefers exact computer tool names', async () => {
+    const gaTool = computerTool({
+      name: 'computer',
+      computer: new FakeComputer(),
+    });
+    const previewTool = computerTool({ computer: new FakeComputer() });
+    const agent = new Agent({
+      name: 'Comp',
+      tools: [gaTool, previewTool],
+    });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1-exact-name',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [{ toolCall: call, computer: gaTool }],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._lastProcessedResponse?.computerActions[0]?.computer).toBe(
+      gaTool,
+    );
+    expect(
+      restored._lastProcessedResponse?.computerActions[0]?.computer,
+    ).not.toBe(previewTool);
+  });
+
   it('deserializeProcessedResponse restores shell actions', async () => {
     const shell = shellTool({ shell: new FakeShell() });
     const agent = new Agent({ name: 'Shell', tools: [shell] });
