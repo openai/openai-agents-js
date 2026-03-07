@@ -79,8 +79,7 @@ The review must be stable and actionable: avoid variance between runs by using e
 
 All output must be in English.
 
-Use the following report structure in every response produced by this skill. Be proactive and decisive: make a clear ship/block call near the top, and assign an explicit risk level (LOW/MODERATE/HIGH) to each finding with a short impact statement. Avoid overly cautious hedging when the risk is low and tests passed.
-Always use the fixed repository URL in the Diff section (`https://github.com/openai/openai-agents-js/compare/...`). Do not use `${GITHUB_REPOSITORY}` or any other template variable. Format risk levels as bold emoji labels: **🟢 LOW**, **🟡 MODERATE**, **🔴 HIGH**.
+Use the following report structure in every response produced by this skill. Be proactive and decisive: make a clear ship/block call near the top, and assign an explicit risk level (LOW/MODERATE/HIGH) to each finding with a short impact statement. Avoid overly cautious hedging when the risk is low and tests passed. Always use the fixed repository URL in the Diff section (`https://github.com/openai/openai-agents-js/compare/...`). Do not use `${GITHUB_REPOSITORY}` or any other template variable. Format risk levels as bold emoji labels: **🟢 LOW**, **🟡 MODERATE**, **🔴 HIGH**. Do not use Markdown links in the report. Keep the Diff URL as plain text, and cite repository files as plain text paths with optional line numbers.
 
 Every risk finding must contain an actionable next step. If the report uses `**🔴 BLOCKED**`, include an `Unblock checklist` section with at least one concrete command/task and a pass condition.
 
@@ -116,8 +115,7 @@ https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 - <working tree status, tag/target assumptions, or re-run guidance>
 ```
 
-If no risks are found, include a “No material risks identified” line under Risk assessment and still provide a ship call. If you did not run local verification, do not add a verification status section or use it as a release blocker; note any assumptions briefly in Notes.
-If the report is not blocked, omit the `Unblock checklist` section.
+If no risks are found, include a “No material risks identified” line under Risk assessment and still provide a ship call. If you did not run local verification, do not add a verification status section or use it as a release blocker; note any assumptions briefly in Notes. If the report is not blocked, omit the `Unblock checklist` section.
 
 ## Resources
 
