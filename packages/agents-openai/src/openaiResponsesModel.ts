@@ -963,6 +963,9 @@ function formatInlineData(
   data: string | Uint8Array,
   mediaType?: string,
 ): string {
+  if (typeof data === 'string' && data.startsWith('data:')) {
+    return data;
+  }
   const base64 =
     typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
   return mediaType ? `data:${mediaType};base64,${base64}` : base64;

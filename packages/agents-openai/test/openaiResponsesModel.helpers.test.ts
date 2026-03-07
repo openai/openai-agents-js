@@ -1232,6 +1232,54 @@ describe('getInputItems', () => {
     });
   });
 
+  it('preserves existing data URLs when ToolOutputImage mimeType aliases are present', () => {
+    const base64 = Buffer.from('existing-data-url').toString('base64');
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c8',
+        output: {
+          type: 'image',
+          image: {
+            data: dataUrl,
+            mimeType: 'image/jpeg',
+          },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'c9',
+        output: {
+          type: 'image',
+          data: dataUrl,
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c8',
+      output: [
+        {
+          type: 'input_image',
+          image_url: dataUrl,
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c9',
+      output: [
+        {
+          type: 'input_image',
+          image_url: dataUrl,
+        },
+      ],
+    });
+  });
+
   it('preserves filenames for inline input_file data', () => {
     const base64 = Buffer.from('file-payload').toString('base64');
     const items = getInputItems([
