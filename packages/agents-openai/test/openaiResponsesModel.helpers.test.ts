@@ -1280,6 +1280,34 @@ describe('getInputItems', () => {
     });
   });
 
+  it('falls back to top-level mimeType for nested image data', () => {
+    const base64 = Buffer.from('top-level-mimetype').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c10',
+        output: {
+          type: 'image',
+          image: {
+            data: base64,
+          },
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c10',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+  });
+
   it('preserves filenames for inline input_file data', () => {
     const base64 = Buffer.from('file-payload').toString('base64');
     const items = getInputItems([

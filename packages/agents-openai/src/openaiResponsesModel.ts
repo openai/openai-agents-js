@@ -586,7 +586,8 @@ function convertLegacyToolOutputContent(
       structured.image = output.image;
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
-      const inlineMediaType = getImageInlineMediaType(imageObj);
+      const inlineMediaType =
+        getImageInlineMediaType(imageObj) ?? topLevelInlineMediaType;
       if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
         structured.image = imageObj.url;
       } else if (
