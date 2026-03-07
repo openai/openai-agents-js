@@ -8,13 +8,16 @@ async function singletonComputer() {
   try {
     const agent = new Agent({
       name: 'Browser user',
-      model: 'computer-use-preview',
-      instructions: 'You are a helpful agent.',
+      model: 'gpt-5.4',
+      instructions:
+        'You are a helpful agent. Find the current weather in Tokyo.',
       tools: [computerTool({ computer })],
-      modelSettings: { truncation: 'auto' },
     });
     await withTrace('CUA Example', async () => {
-      const result = await run(agent, "What's the weather in Tokyo?");
+      const result = await run(
+        agent,
+        'What is the weather in Tokyo right now?',
+      );
       console.log(`\nFinal response:\n${result.finalOutput}`);
     });
   } finally {
@@ -27,8 +30,8 @@ async function computerPerRequest() {
   // you can create a computer per request.
   const agent = new Agent({
     name: 'Browser user',
-    model: 'computer-use-preview',
-    instructions: 'You are a helpful agent.',
+    model: 'gpt-5.4',
+    instructions: 'You are a helpful agent. Find the current weather in Tokyo.',
     tools: [
       computerTool({
         // initialize a new computer for each run and dispose it after the run is complete
@@ -44,10 +47,9 @@ async function computerPerRequest() {
         },
       }),
     ],
-    modelSettings: { truncation: 'auto' },
   });
   await withTrace('CUA Example', async () => {
-    const result = await run(agent, "What's the weather in Tokyo?");
+    const result = await run(agent, 'What is the weather in Tokyo right now?');
     console.log(`\nFinal response:\n${result.finalOutput}`);
   });
 }

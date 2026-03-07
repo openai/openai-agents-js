@@ -2298,6 +2298,253 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('defaults prompt-managed computer tools to the preview wire shape', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-preview-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_preview_default' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.tools).toEqual([
+        {
+          type: 'computer_use_preview',
+          environment: 'browser',
+          display_width: 1024,
+          display_height: 768,
+        },
+      ]);
+    });
+  });
+
+  it('uses the GA computer tool when the request model is explicit', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.model).toBe('gpt-5.4');
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+    });
+  });
+
+  it('lets prompt-managed requests opt into the GA computer tool via tool_choice', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_ga_opt_in' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer' },
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('model' in args).toBe(false);
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
+  it('keeps the built-in computer tool_choice when a prompt manages the computer tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-prompt-ga-computer-tool-no-local-tools',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_ga_opt_in_no_local_tools' },
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer' },
+        tools: [],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect('tools' in args).toBe(false);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
+  it('keeps the built-in computer tool_choice when extraBody.tools provides the computer tool', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-extra-body-ga-computer-tool',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          toolChoice: 'computer',
+          providerData: {
+            extraBody: {
+              tools: [{ type: 'computer' }],
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+    });
+  });
+
+  it('normalizes preview computer tool_choice aliases to the GA selector on GA models', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-ga-computer-tool-choice-alias',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: { toolChoice: 'computer_use_preview' },
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+            environment: 'browser',
+            dimensions: [1024, 768],
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([{ type: 'computer' }]);
+      expect(args.tool_choice).toEqual({ type: 'computer' });
+    });
+  });
+
   it('keeps named tool_choice when a prompt may supply the selected function alongside local tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

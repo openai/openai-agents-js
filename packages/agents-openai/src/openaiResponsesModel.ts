@@ -248,15 +248,24 @@ const HostedToolChoice = z.enum([
   'image_generation',
   'mcp',
   // Specialized local tools
-  'computer_use_preview',
   'shell',
   'apply_patch',
 ]);
 
 const DefaultToolChoice = z.enum(['auto', 'required', 'none']);
+const BuiltinComputerToolChoice = z.enum([
+  'computer',
+  'computer_use',
+  'computer_use_preview',
+]);
 
 function getToolChoice(
   toolChoice?: ModelSettingsToolChoice,
+  options?: {
+    tools?: Array<{ type?: unknown }>;
+    model?: string;
+    allowPromptSuppliedComputerTool?: boolean;
+  },
 ): ToolChoice | undefined {
   if (typeof toolChoice === 'undefined') {
     return undefined;
@@ -265,6 +274,25 @@ function getToolChoice(
   const resultDefaultCheck = DefaultToolChoice.safeParse(toolChoice);
   if (resultDefaultCheck.success) {
     return resultDefaultCheck.data;
+  }
+
+  const builtinComputerToolChoice =
+    BuiltinComputerToolChoice.safeParse(toolChoice);
+  if (builtinComputerToolChoice.success) {
+    if (
+      hasBuiltinComputerTool(options?.tools) ||
+      options?.allowPromptSuppliedComputerTool === true
+    ) {
+      return getBuiltinComputerToolChoice(builtinComputerToolChoice.data, {
+        model: options?.model,
+      });
+    }
+
+    if (builtinComputerToolChoice.data === 'computer_use_preview') {
+      return { type: 'computer_use_preview' };
+    }
+
+    return { type: 'function', name: builtinComputerToolChoice.data };
   }
 
   const result = HostedToolChoice.safeParse(toolChoice);
@@ -285,6 +313,86 @@ function normalizeToolSearchStatus(
     : null;
 }
 
+function hasBuiltinComputerTool(tools?: Array<{ type?: unknown }>): boolean {
+  return (tools ?? []).some(
+    (tool) =>
+      tool.type === 'computer' ||
+      tool.type === 'computer_use' ||
+      tool.type === 'computer_use_preview',
+  );
+}
+
+function isPreviewComputerModel(model?: string): boolean {
+  return typeof model === 'string' && model.startsWith('computer-use-preview');
+}
+
+function shouldUsePreviewComputerTool(options?: {
+  model?: string;
+  toolChoice?: ModelSettingsToolChoice;
+}): boolean {
+  if (isPreviewComputerModel(options?.model)) {
+    return true;
+  }
+
+  if (typeof options?.model === 'string') {
+    return false;
+  }
+
+  if (
+    options?.toolChoice === 'computer' ||
+    options?.toolChoice === 'computer_use'
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function getBuiltinComputerToolChoice(
+  toolChoice: z.infer<typeof BuiltinComputerToolChoice>,
+  options?: {
+    model?: string;
+  },
+): ToolChoice {
+  if (
+    shouldUsePreviewComputerTool({
+      model: options?.model,
+      toolChoice,
+    })
+  ) {
+    return { type: 'computer_use_preview' };
+  }
+
+  if (toolChoice === 'computer_use') {
+    return { type: 'computer_use' };
+  }
+
+  return { type: 'computer' };
+}
+
+function isBuiltinComputerToolType(type: string): boolean {
+  return (
+    type === 'computer' ||
+    type === 'computer_use' ||
+    type === 'computer_use_preview'
+  );
+}
+
+function isCompatibleBuiltinComputerToolChoice(
+  toolChoiceType: string,
+  toolType: string,
+): boolean {
+  if (!isBuiltinComputerToolType(toolChoiceType)) {
+    return false;
+  }
+
+  if (toolChoiceType === 'computer_use_preview') {
+    return toolType === 'computer_use_preview';
+  }
+
+  return toolType === 'computer';
+}
+
 function isToolChoiceAvailable(
   toolChoice: ToolChoice,
   tools: ResponsesTool[],
@@ -301,7 +409,11 @@ function isToolChoiceAvailable(
     return hasFunctionToolChoiceName(toolChoice.name, tools);
   }
 
-  return tools.some((tool) => tool.type === toolChoice.type);
+  return tools.some((tool) =>
+    isCompatibleBuiltinComputerToolChoice(toolChoice.type, tool.type)
+      ? true
+      : tool.type === toolChoice.type,
+  );
 }
 
 function hasFunctionToolChoiceName(
@@ -1143,6 +1255,10 @@ function toOpenAIShellEnvironment(
 function getTools<_TContext = unknown>(
   tools: SerializedTool[],
   handoffs: SerializedHandoff[],
+  options?: {
+    model?: string;
+    toolChoice?: ModelSettingsToolChoice;
+  },
 ): {
   tools: ResponsesTool[];
   include: OpenAI.Responses.ResponseIncludable[];
@@ -1160,6 +1276,10 @@ function getTools<_TContext = unknown>(
   >();
   let hasDeferredSearchableTool = false;
   let hasToolSearch = false;
+  const usePreviewComputerTool = shouldUsePreviewComputerTool({
+    model: options?.model,
+    toolChoice: options?.toolChoice,
+  });
   for (const tool of tools) {
     if (tool.type === 'function') {
       const isDeferredFunction = tool.deferLoading === true;
@@ -1194,7 +1314,9 @@ function getTools<_TContext = unknown>(
           );
         }
 
-        const { tool: openaiTool, include: openaiIncludes } = converTool(tool);
+        const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
+          usePreviewComputerTool,
+        });
         if (namespaceState.functionNames.has(tool.name)) {
           throw new UserError(
             `Namespace "${namespaceName}" cannot contain duplicate function tool name "${tool.name}".`,
@@ -1226,7 +1348,9 @@ function getTools<_TContext = unknown>(
       hasDeferredSearchableTool = true;
     }
 
-    const { tool: openaiTool, include: openaiIncludes } = converTool(tool);
+    const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
+      usePreviewComputerTool,
+    });
     openaiTools.push(openaiTool);
     if (openaiIncludes && openaiIncludes.length > 0) {
       for (const item of openaiIncludes) {
@@ -1261,6 +1385,9 @@ function getTools<_TContext = unknown>(
 
 function converTool<_TContext = unknown>(
   tool: SerializedTool,
+  options?: {
+    usePreviewComputerTool?: boolean;
+  },
 ): {
   tool: ResponsesTool;
   include?: OpenAI.Responses.ResponseIncludable[];
@@ -1281,12 +1408,21 @@ function converTool<_TContext = unknown>(
       include: undefined,
     };
   } else if (tool.type === 'computer') {
+    if (options?.usePreviewComputerTool) {
+      return {
+        tool: {
+          type: 'computer_use_preview',
+          environment: tool.environment,
+          display_width: tool.dimensions[0],
+          display_height: tool.dimensions[1],
+        },
+        include: undefined,
+      };
+    }
+
     return {
       tool: {
-        type: 'computer_use_preview',
-        environment: tool.environment,
-        display_width: tool.dimensions[0],
-        display_height: tool.dimensions[1],
+        type: 'computer',
       },
       include: undefined,
     };
@@ -1852,18 +1988,34 @@ function getInputItems(
       >(item.providerData, ['pendingSafetyChecks', 'pending_safety_checks']);
       const normalizedPendingSafetyChecks: OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks'] =
         Array.isArray(pendingSafetyChecks) ? pendingSafetyChecks : [];
+      const batchedActions = Array.isArray(
+        (item as { actions?: unknown }).actions,
+      )
+        ? ((item as { actions?: OpenAI.Responses.ComputerActionList })
+            .actions ?? [])
+        : [];
+      const actionPayload =
+        batchedActions.length > 0
+          ? {
+              action: item.action ?? batchedActions[0],
+              actions: batchedActions,
+            }
+          : item.action
+            ? { action: item.action }
+            : {};
       const entry: OpenAI.Responses.ResponseComputerToolCall = {
         type: 'computer_call',
         call_id: item.callId,
         id: item.id!,
-        action: item.action,
         status: item.status,
         pending_safety_checks: normalizedPendingSafetyChecks,
+        ...actionPayload,
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'call_id',
           'id',
           'action',
+          'actions',
           'status',
           'pending_safety_checks',
         ]),
@@ -2312,11 +2464,12 @@ function convertToOutputItem(
       };
       return output;
     } else if (item.type === 'computer_call') {
-      const { call_id, status, action, ...providerData } = item;
-      const resolvedAction = action ?? item.actions?.[0];
-      if (!resolvedAction) {
+      const { call_id, status, action, actions, ...providerData } = item;
+      const normalizedActions =
+        Array.isArray(actions) && actions.length > 0 ? actions : undefined;
+      if (!normalizedActions && !action) {
         throw new UserError(
-          `Unsupported computer call item without an action: ${JSON.stringify(item)}`,
+          `Unsupported computer call item without an action or actions: ${JSON.stringify(item)}`,
         );
       }
       const output: protocol.ComputerUseCallItem = {
@@ -2324,7 +2477,8 @@ function convertToOutputItem(
         id: item.id!,
         callId: call_id,
         status,
-        action: resolvedAction,
+        action: action ?? normalizedActions?.[0],
+        ...(normalizedActions ? { actions: normalizedActions } : {}),
         providerData,
       };
       return output;
@@ -2676,12 +2830,20 @@ export class OpenAIResponsesModel implements Model {
     stream: boolean,
   ): BuiltResponsesCreateRequest {
     const input = getInputItems(request.input);
-    const { tools, include } = getTools(request.tools, request.handoffs);
-    const toolChoice = getToolChoice(request.modelSettings.toolChoice);
+    const prompt = getPrompt(request.prompt);
+    // When a prompt template already declares a model, skip sending the agent's default model.
+    // If the caller explicitly requests an override, include the resolved model name in the request.
+    const shouldSendModel =
+      !request.prompt || request.overridePromptModel === true;
+    const effectiveRequestModel = shouldSendModel ? this._model : undefined;
     const {
       providerData: providerDataWithoutTransport,
       overrides: transportOverrides,
     } = splitResponsesTransportOverrides(request.modelSettings.providerData);
+    const { tools, include } = getTools(request.tools, request.handoffs, {
+      model: effectiveRequestModel,
+      toolChoice: request.modelSettings.toolChoice,
+    });
     const toolChoiceValidationTools = [
       ...tools,
       ...getExtraBodyToolsForToolChoiceValidation(transportOverrides.extraBody),
@@ -2689,6 +2851,11 @@ export class OpenAIResponsesModel implements Model {
     const allowPromptSuppliedTools =
       Boolean(request.prompt) &&
       !(request.toolsExplicitlyProvided === true && tools.length === 0);
+    const toolChoice = getToolChoice(request.modelSettings.toolChoice, {
+      tools: toolChoiceValidationTools,
+      model: effectiveRequestModel,
+      allowPromptSuppliedComputerTool: allowPromptSuppliedTools,
+    });
     assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
       allowPromptSuppliedTools,
     });
@@ -2708,17 +2875,11 @@ export class OpenAIResponsesModel implements Model {
       mergedText = { ...request.modelSettings.text, ...text };
     }
     const responseFormat = getResponseFormat(request.outputType, mergedText);
-    const prompt = getPrompt(request.prompt);
 
     let parallelToolCalls: boolean | undefined = undefined;
     if (typeof request.modelSettings.parallelToolCalls === 'boolean') {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
-
-    // When a prompt template already declares a model, skip sending the agent's default model.
-    // If the caller explicitly requests an override, include the resolved model name in the request.
-    const shouldSendModel =
-      !request.prompt || request.overridePromptModel === true;
 
     const shouldSendTools =
       tools.length > 0 ||
@@ -2734,7 +2895,7 @@ export class OpenAIResponsesModel implements Model {
     const shouldOmitToolChoice = typeof compatibleToolChoice === 'undefined';
 
     let requestData = {
-      ...(shouldSendModel ? { model: this._model } : {}),
+      ...(effectiveRequestModel ? { model: effectiveRequestModel } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
       include,

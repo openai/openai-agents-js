@@ -36,9 +36,45 @@ describe('getToolChoice', () => {
       type: 'function',
       name: 'my_func',
     });
+    expect(getToolChoice('computer')).toEqual({
+      type: 'function',
+      name: 'computer',
+    });
+    expect(getToolChoice('computer_use')).toEqual({
+      type: 'function',
+      name: 'computer_use',
+    });
     expect(getToolChoice('tool_search')).toEqual({
       type: 'function',
       name: 'tool_search',
+    });
+  });
+
+  it('normalizes built-in computer tool choices when a local computer tool exists', () => {
+    const tools = [
+      {
+        type: 'computer',
+        name: 'computer_use_preview',
+        environment: 'browser',
+        dimensions: [1024, 768],
+      },
+    ] as any;
+
+    expect(
+      getToolChoice('computer_use_preview', { tools, model: 'gpt-5.4' }),
+    ).toEqual({
+      type: 'computer',
+    });
+    expect(getToolChoice('computer_use', { tools, model: 'gpt-5.4' })).toEqual({
+      type: 'computer_use',
+    });
+    expect(
+      getToolChoice('computer', {
+        tools,
+        model: 'computer-use-preview',
+      }),
+    ).toEqual({
+      type: 'computer_use_preview',
     });
   });
 
@@ -88,6 +124,22 @@ describe('converTool', () => {
       environment: 'mac',
       dimensions: [100, 200],
     } as any);
+    expect(t.tool).toEqual({
+      type: 'computer',
+    });
+  });
+
+  it('converts preview computer tools when requested', () => {
+    const t = converTool(
+      {
+        type: 'computer',
+        environment: 'mac',
+        dimensions: [100, 200],
+      } as any,
+      {
+        usePreviewComputerTool: true,
+      },
+    );
     expect(t.tool).toEqual({
       type: 'computer_use_preview',
       environment: 'mac',
@@ -661,6 +713,32 @@ describe('getInputItems', () => {
       id: 'computer-result-1',
       call_id: 'computer-call-1',
       acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
+    });
+  });
+
+  it('preserves batched computer actions when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-2',
+        callId: 'computer-call-2',
+        status: 'completed',
+        actions: [
+          { type: 'move', x: 1, y: 2 },
+          { type: 'click', x: 1, y: 2, button: 'left' },
+        ],
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-2',
+      call_id: 'computer-call-2',
+      action: { type: 'move', x: 1, y: 2 },
+      actions: [
+        { type: 'move', x: 1, y: 2 },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
     });
   });
 
@@ -1953,7 +2031,7 @@ describe('convertToOutputItem', () => {
         type: 'computer_call',
         id: 'cc',
         call_id: 'x',
-        action: 'open',
+        action: { type: 'wait' },
         status: 'completed',
         pending_safety_checks: [],
       },
@@ -1971,6 +2049,32 @@ describe('convertToOutputItem', () => {
       providerData: {
         annotations: [{ type: 'url_citation', url: 'https://example.com' }],
       },
+    });
+  });
+
+  it('preserves batched computer actions in output items', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'computer_call',
+        id: 'cc-actions',
+        call_id: 'x-actions',
+        actions: [
+          { type: 'move', x: 10, y: 20 },
+          { type: 'click', x: 10, y: 20, button: 'left' },
+        ],
+        status: 'completed',
+        pending_safety_checks: [],
+      },
+    ] as any);
+
+    expect(out[0]).toMatchObject({
+      type: 'computer_call',
+      callId: 'x-actions',
+      action: { type: 'move', x: 10, y: 20 },
+      actions: [
+        { type: 'move', x: 10, y: 20 },
+        { type: 'click', x: 10, y: 20, button: 'left' },
+      ],
     });
   });
 
