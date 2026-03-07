@@ -765,7 +765,7 @@ describe('resolveInterruptedTurn', () => {
     expect(
       (toolOutputs[0].rawItem as protocol.ComputerCallResultItem).callId,
     ).toBe(computerCall.callId);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
   });
 
   it('skips rerunning already completed computer actions when resuming an interruption', async () => {

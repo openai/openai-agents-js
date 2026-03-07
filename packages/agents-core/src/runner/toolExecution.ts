@@ -93,6 +93,30 @@ function getFunctionToolTraceName<TContext>(
   return getFunctionToolIdentity(toolRun);
 }
 
+const COMPUTER_TRACE_NAME = 'computer';
+
+function getComputerToolActions(
+  toolCall: protocol.ComputerUseCallItem,
+): protocol.ComputerAction[] {
+  if (Array.isArray(toolCall.actions) && toolCall.actions.length > 0) {
+    return toolCall.actions;
+  }
+
+  return toolCall.action ? [toolCall.action] : [];
+}
+
+function getComputerTraceInputPayload(
+  toolCall: protocol.ComputerUseCallItem,
+): protocol.ComputerAction[] | protocol.ComputerAction | undefined {
+  const actions = getComputerToolActions(toolCall);
+
+  if (Array.isArray(toolCall.actions) && toolCall.actions.length > 0) {
+    return actions;
+  }
+
+  return actions[0];
+}
+
 /**
  * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
@@ -461,61 +485,57 @@ async function _runComputerActionAndScreenshot(
   toolCall: protocol.ComputerUseCallItem,
   runContext: RunContext,
 ): Promise<string> {
-  const action = toolCall.action;
-  let screenshot: string | undefined;
-  // Dispatch based on action type string (assume action.type exists)
-  switch (action.type) {
-    case 'click':
-      await computer.click(action.x, action.y, action.button, runContext);
-      break;
-    case 'double_click':
-      await computer.doubleClick(action.x, action.y, runContext);
-      break;
-    case 'drag':
-      await computer.drag(
-        action.path.map((p: any) => [p.x, p.y]),
-        runContext,
-      );
-      break;
-    case 'keypress':
-      await computer.keypress(action.keys, runContext);
-      break;
-    case 'move':
-      await computer.move(action.x, action.y, runContext);
-      break;
-    case 'screenshot':
-      screenshot = await computer.screenshot(runContext);
-      break;
-    case 'scroll':
-      await computer.scroll(
-        action.x,
-        action.y,
-        action.scroll_x,
-        action.scroll_y,
-        runContext,
-      );
-      break;
-    case 'type':
-      await computer.type(action.text, runContext);
-      break;
-    case 'wait':
-      await computer.wait(runContext);
-      break;
-    default:
-      action satisfies never; // ensures that we handle every action we know of
-      // Unknown action, just take screenshot
-      break;
+  for (const action of getComputerToolActions(toolCall)) {
+    switch (action.type) {
+      case 'click':
+        await computer.click(action.x, action.y, action.button, runContext);
+        break;
+      case 'double_click':
+        await computer.doubleClick(action.x, action.y, runContext);
+        break;
+      case 'drag':
+        await computer.drag(
+          action.path.map((p: any) => [p.x, p.y]),
+          runContext,
+        );
+        break;
+      case 'keypress':
+        await computer.keypress(action.keys, runContext);
+        break;
+      case 'move':
+        await computer.move(action.x, action.y, runContext);
+        break;
+      case 'screenshot':
+        await computer.screenshot(runContext);
+        break;
+      case 'scroll':
+        await computer.scroll(
+          action.x,
+          action.y,
+          action.scroll_x,
+          action.scroll_y,
+          runContext,
+        );
+        break;
+      case 'type':
+        await computer.type(action.text, runContext);
+        break;
+      case 'wait':
+        await computer.wait(runContext);
+        break;
+      default:
+        action satisfies never;
+        break;
+    }
   }
-  if (typeof screenshot !== 'undefined') {
-    return screenshot;
-  }
-  // Always return screenshot as base64 string
+
   if (typeof computer.screenshot === 'function') {
-    screenshot = await computer.screenshot(runContext);
+    const screenshot = await computer.screenshot(runContext);
     if (typeof screenshot !== 'undefined') {
       return screenshot;
     }
   }
+
   throw new Error('Computer does not implement screenshot()');
 }
 
@@ -993,6 +1013,7 @@ export async function executeComputerActions(
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
+    const computerActions = getComputerToolActions(toolCall);
     let cachedRejectionMessage: string | undefined;
     const getRejectionMessage = async () => {
       if (typeof cachedRejectionMessage === 'string') {
@@ -1017,13 +1038,19 @@ export async function executeComputerActions(
       .needsApproval;
     const needsApproval =
       typeof needsApprovalCandidate === 'function'
-        ? await (
-            needsApprovalCandidate as (
-              runContext: RunContext,
-              action: protocol.ComputerAction,
-              callId?: string,
-            ) => Promise<boolean>
-          )(runContext, toolCall.action, toolCall.callId)
+        ? (
+            await Promise.all(
+              computerActions.map((computerAction) =>
+                (
+                  needsApprovalCandidate as (
+                    runContext: RunContext,
+                    action: protocol.ComputerAction,
+                    callId?: string,
+                  ) => Promise<boolean>
+                )(runContext, computerAction, toolCall.callId),
+              ),
+            )
+          ).some(Boolean)
         : typeof needsApprovalCandidate === 'boolean'
           ? needsApprovalCandidate
           : false;
@@ -1072,10 +1099,12 @@ export async function executeComputerActions(
 
     const computerItem = await withToolFunctionSpan(
       runner,
-      computerTool.name,
+      COMPUTER_TRACE_NAME,
       async (span) => {
         if (span && runner.config.traceIncludeSensitiveData) {
-          span.spanData.input = JSON.stringify(toolCall.action);
+          const traceInput = getComputerTraceInputPayload(toolCall);
+          span.spanData.input =
+            typeof traceInput === 'undefined' ? '' : JSON.stringify(traceInput);
         }
 
         // Hooks: on_tool_start (global + agent)
@@ -1114,7 +1143,7 @@ export async function executeComputerActions(
           span?.setError({
             message: 'Error running tool',
             data: {
-              tool_name: computerTool.name,
+              tool_name: COMPUTER_TRACE_NAME,
               error: traceError,
             },
           });

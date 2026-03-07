@@ -76,8 +76,9 @@ import {
  * - 1.6: Adds optional requestId to serialized model responses.
  * - 1.7: Adds optional approval rejection messages.
  * - 1.8: Adds tool search item variants to serialized run state payloads.
+ * - 1.9: Adds batched computer actions and GA computer tool aliasing.
  */
-export const CURRENT_SCHEMA_VERSION = '1.8' as const;
+export const CURRENT_SCHEMA_VERSION = '1.9' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -87,6 +88,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.5',
   '1.6',
   '1.7',
+  '1.8',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -973,7 +975,7 @@ function assertSchemaVersionSupportsToolSearch(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.8') {
+  if (schemaVersion === '1.8' || schemaVersion === '1.9') {
     return;
   }
 
@@ -1709,7 +1711,21 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   const computerTools = new Map(
     allTools
       .filter((tool) => tool.type === 'computer')
-      .map((tool) => [tool.name, tool]),
+      .flatMap((tool) => {
+        if (tool.name === 'computer') {
+          return [
+            ['computer', tool] as const,
+            ['computer_use_preview', tool] as const,
+          ];
+        }
+        if (tool.name === 'computer_use_preview') {
+          return [
+            ['computer_use_preview', tool] as const,
+            ['computer', tool] as const,
+          ];
+        }
+        return [[tool.name, tool] as const];
+      }),
   );
   const shellTools = new Map(
     allTools

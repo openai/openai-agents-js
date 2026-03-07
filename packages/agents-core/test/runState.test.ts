@@ -1691,6 +1691,71 @@ describe('deserialize helpers', () => {
     );
   });
 
+  it('deserializeProcessedResponse restores batched computer actions', async () => {
+    const tool = computerTool({ computer: new FakeComputer() });
+    const agent = new Agent({ name: 'Comp', tools: [tool] });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1-batched',
+      status: 'completed',
+      actions: [
+        { type: 'move', x: 1, y: 2 },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [{ toolCall: call, computer: tool }],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      restored._lastProcessedResponse?.computerActions[0]?.toolCall.actions,
+    ).toEqual(call.actions);
+    expect(restored._lastProcessedResponse?.computerActions[0]?.computer).toBe(
+      tool,
+    );
+  });
+
+  it('deserializeProcessedResponse restores GA computer tool aliases', async () => {
+    const tool = computerTool({ computer: new FakeComputer() });
+    const agent = new Agent({ name: 'Comp', tools: [tool] });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1-alias',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [{ toolCall: call, computer: tool }],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const json = state.toJSON();
+    json.lastProcessedResponse!.computerActions[0]!.computer.name = 'computer';
+
+    const restored = await RunState.fromString(agent, JSON.stringify(json));
+    expect(restored._lastProcessedResponse?.computerActions[0]?.computer).toBe(
+      tool,
+    );
+  });
+
   it('deserializeProcessedResponse restores shell actions', async () => {
     const shell = shellTool({ shell: new FakeShell() });
     const agent = new Agent({ name: 'Shell', tools: [shell] });

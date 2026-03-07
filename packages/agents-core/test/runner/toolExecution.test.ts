@@ -731,7 +731,7 @@ describe('executeComputerActions', () => {
         ),
       );
 
-      getEndedFunctionSpan(processor, computer.name);
+      getEndedFunctionSpan(processor, 'computer');
     });
   });
 
@@ -769,11 +769,11 @@ describe('executeComputerActions', () => {
         ),
       );
 
-      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      const functionSpan = getEndedFunctionSpan(processor, 'computer');
       expect(functionSpan.error).toEqual({
         message: 'Error running tool',
         data: {
-          tool_name: computer.name,
+          tool_name: 'computer',
           error: 'computer boom',
         },
       });
@@ -818,11 +818,11 @@ describe('executeComputerActions', () => {
         ),
       );
 
-      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      const functionSpan = getEndedFunctionSpan(processor, 'computer');
       expect(functionSpan.error).toEqual({
         message: 'Error running tool',
         data: {
-          tool_name: computer.name,
+          tool_name: 'computer',
           error: REDACTED_TOOL_ERROR_MESSAGE,
         },
       });
@@ -921,12 +921,104 @@ describe('executeComputerActions', () => {
         ),
       );
 
-      const functionSpan = getEndedFunctionSpan(processor, computer.name);
+      const functionSpan = getEndedFunctionSpan(processor, 'computer');
       expect(functionSpan.spanData.input).toBe('');
       expect(functionSpan.spanData.output).toBe('');
       expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretInput);
       expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secretOutput);
     });
+  });
+
+  it('runs batched computer actions in order and captures a final screenshot', async () => {
+    const invocations: string[] = [];
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockImplementation(async () => {
+        invocations.push('screenshot');
+        return 'img';
+      }),
+      click: vi.fn().mockImplementation(async () => {
+        invocations.push('click');
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn().mockImplementation(async () => {
+        invocations.push('move');
+      }),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-batched',
+      status: 'completed',
+      actions: [
+        { type: 'move', x: 1, y: 2 },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(invocations).toEqual(['move', 'click', 'screenshot']);
+    expect(items).toHaveLength(1);
+    expect((items[0] as any).output).toBe('data:image/png;base64,img');
+  });
+
+  it('checks approval against each batched computer action', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const needsApproval = vi.fn(
+      async (_ctx, action: protocol.ComputerAction) => {
+        return action.type === 'click';
+      },
+    );
+    const tool = computerTool({ computer: fakeComputer, needsApproval });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-batched-approval',
+      status: 'completed',
+      actions: [
+        { type: 'move', x: 1, y: 2 },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(ToolApprovalItem);
+    expect(needsApproval).toHaveBeenCalledTimes(2);
+    expect(needsApproval.mock.calls.map((entry) => entry[1].type)).toEqual([
+      'move',
+      'click',
+    ]);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
   it('defaults missing needsApproval to false for computer tools', async () => {
@@ -964,7 +1056,7 @@ describe('executeComputerActions', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
   });
 
   it('passes RunContext to computer actions', async () => {
@@ -1174,7 +1266,7 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
   });
 });
 
