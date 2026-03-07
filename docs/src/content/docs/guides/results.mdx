@@ -83,11 +83,12 @@ In practice:
 
 - [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
 - [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
+- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
 - [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
 - [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) for tool calls that paused for approval.
 - [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) and [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) for handoff requests and completed transfers.
 
-Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, handoff, or approval boundary.
+Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
 ## Continue or resume the conversation
 
