@@ -1445,18 +1445,15 @@ function normalizeStructuredToolOutput(
 
     let imageString: string | undefined;
     let imageFileId: string | undefined;
-    const fallbackImageMediaType = isNonEmptyString((value as any).mediaType)
-      ? (value as any).mediaType
-      : undefined;
+    const fallbackImageMediaType = getImageInlineMediaType(value);
 
     const imageField = value.image;
     if (typeof imageField === 'string' && imageField.length > 0) {
       imageString = imageField;
     } else if (isRecord(imageField)) {
       const imageObj = imageField as Record<string, any>;
-      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
-        ? imageObj.mediaType
-        : fallbackImageMediaType;
+      const inlineMediaType =
+        getImageInlineMediaType(imageObj) ?? fallbackImageMediaType;
       if (isNonEmptyString(imageObj.url)) {
         imageString = imageObj.url;
       } else if (isNonEmptyString(imageObj.data)) {
@@ -1571,9 +1568,7 @@ function convertStructuredToolOutputToInputItem(
       result.image = output.image;
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
-      const inlineMediaType = isNonEmptyString(imageObj.mediaType)
-        ? imageObj.mediaType
-        : undefined;
+      const inlineMediaType = getImageInlineMediaType(imageObj);
       if (isNonEmptyString(imageObj.url)) {
         result.image = imageObj.url;
       } else if (isNonEmptyString(imageObj.data)) {
@@ -1864,6 +1859,18 @@ function isRecord(value: unknown): value is Record<string, any> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function getImageInlineMediaType(
+  value: Record<string, any>,
+): string | undefined {
+  if (isNonEmptyString(value.mediaType)) {
+    return value.mediaType;
+  }
+  if (isNonEmptyString((value as any).mimeType)) {
+    return (value as any).mimeType;
+  }
+  return undefined;
 }
 
 function toInlineImageString(

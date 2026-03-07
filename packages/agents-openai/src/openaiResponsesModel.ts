@@ -578,12 +578,16 @@ function convertLegacyToolOutputContent(
     const legacyImageUrl = (output as any).imageUrl;
     const legacyFileId = (output as any).fileId;
     const dataValue = (output as any).data;
+    const topLevelInlineMediaType = getImageInlineMediaType(
+      output as Record<string, any>,
+    );
 
     if (typeof output.image === 'string' && output.image.length > 0) {
       structured.image = output.image;
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
-      const inlineMediaType = getImageInlineMediaType(imageObj);
+      const inlineMediaType =
+        getImageInlineMediaType(imageObj) ?? topLevelInlineMediaType;
       if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
         structured.image = imageObj.url;
       } else if (
@@ -624,7 +628,10 @@ function convertLegacyToolOutputContent(
       }
 
       if (base64Data) {
-        structured.image = base64Data;
+        structured.image = formatInlineData(
+          base64Data,
+          topLevelInlineMediaType,
+        );
       }
     }
 
@@ -944,6 +951,12 @@ function getImageInlineMediaType(
   if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
     return source.mediaType;
   }
+  if (
+    typeof (source as any).mimeType === 'string' &&
+    (source as any).mimeType.length > 0
+  ) {
+    return (source as any).mimeType;
+  }
   return undefined;
 }
 
@@ -951,6 +964,9 @@ function formatInlineData(
   data: string | Uint8Array,
   mediaType?: string,
 ): string {
+  if (typeof data === 'string' && data.startsWith('data:')) {
+    return data;
+  }
   const base64 =
     typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
   return mediaType ? `data:${mediaType};base64,${base64}` : base64;
