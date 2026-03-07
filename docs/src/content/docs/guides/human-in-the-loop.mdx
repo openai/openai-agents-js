@@ -36,6 +36,10 @@ You can define a tool that requires approval by setting the `needsApproval` opti
 
 Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
 
+Computer tool interruptions can represent a batch of actions in one `computer_call` on GA models. The SDK evaluates `needsApproval` per action before execution, so one pending approval can cover a sequence such as move + click. If you inspect `interruption.rawItem` to render a UI, handle both the GA `actions` array and the legacy single `action` field.
+
+Serialized `RunState` also preserves computer approvals across both the current `computer` tool name and the legacy `computer_use_preview` name, so paused runs can resume cleanly during preview-to-GA migrations.
+
 If you do not provide `message`, the SDK falls back to the configured `toolErrorFormatter` (if any) and then to the default rejection text.
 
 You do not need to resolve every pending approval in the same pass. If you rerun after approving or rejecting only some items, those resolved calls can continue while unresolved ones remain in `interruptions` and pause the run again.
