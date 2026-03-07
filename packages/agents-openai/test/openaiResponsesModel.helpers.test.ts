@@ -1185,6 +1185,53 @@ describe('getInputItems', () => {
     });
   });
 
+  it('converts ToolOutputImage mimeType aliases into data URLs', () => {
+    const base64 = Buffer.from('ai-image').toString('base64');
+    const items = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'c6',
+        output: {
+          type: 'image',
+          image: {
+            data: base64,
+            mimeType: 'image/jpeg',
+          },
+        },
+      },
+      {
+        type: 'function_call_result',
+        callId: 'c7',
+        output: {
+          type: 'image',
+          data: base64,
+          mimeType: 'image/jpeg',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c6',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+    expect(items[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'c7',
+      output: [
+        {
+          type: 'input_image',
+          image_url: `data:image/jpeg;base64,${base64}`,
+        },
+      ],
+    });
+  });
+
   it('preserves filenames for inline input_file data', () => {
     const base64 = Buffer.from('file-payload').toString('base64');
     const items = getInputItems([

@@ -241,6 +241,22 @@ describe('getToolCallOutputItem', () => {
     ]);
   });
 
+  it('converts MCP image outputs with mimeType into data URLs', () => {
+    const base64 = Buffer.from('hi').toString('base64');
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
+      type: 'image',
+      data: base64,
+      mimeType: 'image/jpeg',
+    });
+
+    expect(result.output).toEqual([
+      {
+        type: 'input_image',
+        image: `data:image/jpeg;base64,${base64}`,
+      },
+    ]);
+  });
+
   it('converts file outputs with base64 data', () => {
     const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
       type: 'file',

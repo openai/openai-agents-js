@@ -578,6 +578,9 @@ function convertLegacyToolOutputContent(
     const legacyImageUrl = (output as any).imageUrl;
     const legacyFileId = (output as any).fileId;
     const dataValue = (output as any).data;
+    const topLevelInlineMediaType = getImageInlineMediaType(
+      output as Record<string, any>,
+    );
 
     if (typeof output.image === 'string' && output.image.length > 0) {
       structured.image = output.image;
@@ -624,7 +627,10 @@ function convertLegacyToolOutputContent(
       }
 
       if (base64Data) {
-        structured.image = base64Data;
+        structured.image = formatInlineData(
+          base64Data,
+          topLevelInlineMediaType,
+        );
       }
     }
 
@@ -943,6 +949,12 @@ function getImageInlineMediaType(
 ): string | undefined {
   if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
     return source.mediaType;
+  }
+  if (
+    typeof (source as any).mimeType === 'string' &&
+    (source as any).mimeType.length > 0
+  ) {
+    return (source as any).mimeType;
   }
   return undefined;
 }
