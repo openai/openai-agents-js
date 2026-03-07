@@ -768,6 +768,94 @@ describe('resolveInterruptedTurn', () => {
     expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
   });
 
+  it('resumes approved computer actions after restoring legacy approval aliases', async () => {
+    const fakeComputer: Computer = {
+      environment: 'mac',
+      dimensions: [1, 1],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(async () => {}),
+      doubleClick: vi.fn(async () => {}),
+      drag: vi.fn(async () => {}),
+      keypress: vi.fn(async () => {}),
+      move: vi.fn(async () => {}),
+      scroll: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      wait: vi.fn(async () => {}),
+    };
+    const computer = computerTool({ name: 'computer', computer: fakeComputer });
+    const agent = new Agent({ name: 'ComputerAgent', tools: [computer] });
+    const computerCall: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      id: 'comp-alias',
+      callId: 'comp-alias',
+      status: 'in_progress',
+      action: { type: 'screenshot' } as any,
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [new ToolCallItem(computerCall, agent)],
+      handoffs: [],
+      functions: [],
+      computerActions: [{ toolCall: computerCall, computer }],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [computer.name],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+    const legacyApprovalItem = new ToolApprovalItem(
+      computerCall,
+      agent,
+      'computer_use_preview',
+    );
+    state.approve(legacyApprovalItem);
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [legacyApprovalItem],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      restored._context.isToolApproved({
+        toolName: computer.name,
+        callId: computerCall.callId,
+      }),
+    ).toBe(true);
+
+    const resumedResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      [new ToolCallItem(computerCall, agent), ...restored.getInterruptions()],
+      resumedResponse,
+      processedResponse,
+      runner,
+      restored,
+    );
+
+    const toolOutputs = result.newStepItems.filter(
+      (item): item is ToolCallOutputItem => item instanceof ToolCallOutputItem,
+    );
+
+    expect(toolOutputs).toHaveLength(1);
+    expect(
+      (toolOutputs[0].rawItem as protocol.ComputerCallResultItem).callId,
+    ).toBe(computerCall.callId);
+    expect(result.newStepItems).not.toContainEqual(
+      expect.objectContaining({ type: 'tool_approval_item' }),
+    );
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+  });
+
   it('skips rerunning already completed computer actions when resuming an interruption', async () => {
     const fakeComputer: Computer = {
       environment: 'mac',

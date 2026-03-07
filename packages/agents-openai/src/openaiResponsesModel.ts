@@ -262,8 +262,9 @@ const BuiltinComputerToolChoice = z.enum([
 function getToolChoice(
   toolChoice?: ModelSettingsToolChoice,
   options?: {
-    tools?: SerializedTool[];
+    tools?: Array<{ type?: unknown }>;
     model?: string;
+    allowPromptSuppliedComputerTool?: boolean;
   },
 ): ToolChoice | undefined {
   if (typeof toolChoice === 'undefined') {
@@ -278,7 +279,10 @@ function getToolChoice(
   const builtinComputerToolChoice =
     BuiltinComputerToolChoice.safeParse(toolChoice);
   if (builtinComputerToolChoice.success) {
-    if (hasComputerTool(options?.tools)) {
+    if (
+      hasBuiltinComputerTool(options?.tools) ||
+      options?.allowPromptSuppliedComputerTool === true
+    ) {
       return getBuiltinComputerToolChoice(builtinComputerToolChoice.data, {
         model: options?.model,
       });
@@ -309,8 +313,13 @@ function normalizeToolSearchStatus(
     : null;
 }
 
-function hasComputerTool(tools?: SerializedTool[]): boolean {
-  return (tools ?? []).some((tool) => tool.type === 'computer');
+function hasBuiltinComputerTool(tools?: Array<{ type?: unknown }>): boolean {
+  return (tools ?? []).some(
+    (tool) =>
+      tool.type === 'computer' ||
+      tool.type === 'computer_use' ||
+      tool.type === 'computer_use_preview',
+  );
 }
 
 function isPreviewComputerModel(model?: string): boolean {
@@ -2827,18 +2836,14 @@ export class OpenAIResponsesModel implements Model {
     const shouldSendModel =
       !request.prompt || request.overridePromptModel === true;
     const effectiveRequestModel = shouldSendModel ? this._model : undefined;
-    const { tools, include } = getTools(request.tools, request.handoffs, {
-      model: effectiveRequestModel,
-      toolChoice: request.modelSettings.toolChoice,
-    });
-    const toolChoice = getToolChoice(request.modelSettings.toolChoice, {
-      tools: request.tools,
-      model: effectiveRequestModel,
-    });
     const {
       providerData: providerDataWithoutTransport,
       overrides: transportOverrides,
     } = splitResponsesTransportOverrides(request.modelSettings.providerData);
+    const { tools, include } = getTools(request.tools, request.handoffs, {
+      model: effectiveRequestModel,
+      toolChoice: request.modelSettings.toolChoice,
+    });
     const toolChoiceValidationTools = [
       ...tools,
       ...getExtraBodyToolsForToolChoiceValidation(transportOverrides.extraBody),
@@ -2846,6 +2851,11 @@ export class OpenAIResponsesModel implements Model {
     const allowPromptSuppliedTools =
       Boolean(request.prompt) &&
       !(request.toolsExplicitlyProvided === true && tools.length === 0);
+    const toolChoice = getToolChoice(request.modelSettings.toolChoice, {
+      tools: toolChoiceValidationTools,
+      model: effectiveRequestModel,
+      allowPromptSuppliedComputerTool: allowPromptSuppliedTools,
+    });
     assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
       allowPromptSuppliedTools,
     });
