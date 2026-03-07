@@ -587,9 +587,22 @@ export const ComputerUseCallItem = ItemBase.extend({
   status: z.enum(['in_progress', 'completed', 'incomplete']),
 
   /**
-   * The action to be performed by the computer.
+   * The legacy single action to be performed by the computer.
    */
-  action: computerActions,
+  action: computerActions.optional(),
+
+  /**
+   * Batched actions returned by the GA computer tool.
+   */
+  actions: z.array(computerActions).min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.action && (!value.actions || value.actions.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'computer_call items must include action or actions.',
+      path: ['action'],
+    });
+  }
 });
 
 export type ComputerUseCallItem = z.infer<typeof ComputerUseCallItem>;

@@ -10,6 +10,87 @@ type ApprovalRecord = {
   stickyRejectMessage?: string;
 };
 
+const COMPUTER_APPROVAL_TOOL_NAMES = new Set([
+  'computer',
+  'computer_use_preview',
+]);
+
+function getApprovalToolNameCandidates(toolName: string): string[] {
+  if (!COMPUTER_APPROVAL_TOOL_NAMES.has(toolName)) {
+    return [toolName];
+  }
+
+  return toolName === 'computer'
+    ? ['computer', 'computer_use_preview']
+    : ['computer_use_preview', 'computer'];
+}
+
+function mergeApprovalList(
+  current: ApprovalRecord['approved'],
+  incoming: ApprovalRecord['approved'],
+) {
+  if (current === true || incoming === true) {
+    return true;
+  }
+  const currentList = Array.isArray(current) ? current : [];
+  const incomingList = Array.isArray(incoming) ? incoming : [];
+  return Array.from(new Set([...currentList, ...incomingList]));
+}
+
+function mergeApprovalMessages(
+  current: ApprovalRecord,
+  incoming: ApprovalRecord,
+) {
+  if (current.rejected === true) {
+    return current.messages;
+  }
+
+  const merged =
+    current.messages || incoming.messages
+      ? { ...incoming.messages, ...current.messages }
+      : undefined;
+  if (!merged) {
+    return undefined;
+  }
+
+  if (Array.isArray(current.rejected)) {
+    for (const callId of current.rejected) {
+      if (
+        !current.messages ||
+        !Object.prototype.hasOwnProperty.call(current.messages, callId)
+      ) {
+        delete merged[callId];
+      }
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergeStickyRejectMessage(
+  current: ApprovalRecord,
+  incoming: ApprovalRecord,
+) {
+  if (current.rejected === true) {
+    return current.stickyRejectMessage;
+  }
+  return current.stickyRejectMessage ?? incoming.stickyRejectMessage;
+}
+
+function mergeApprovalRecords(
+  current: ApprovalRecord,
+  incoming: ApprovalRecord,
+): ApprovalRecord {
+  const mergedMessages = mergeApprovalMessages(current, incoming);
+  const stickyRejectMessage = mergeStickyRejectMessage(current, incoming);
+  return {
+    approved: mergeApprovalList(current.approved, incoming.approved),
+    rejected: mergeApprovalList(current.rejected, incoming.rejected),
+    ...(mergedMessages ? { messages: mergedMessages } : {}),
+    ...(stickyRejectMessage !== undefined ? { stickyRejectMessage } : {}),
+  };
+}
+
 type RunContextJson = {
   context: any;
   usage: Usage;
@@ -76,7 +157,10 @@ export class RunContext<TContext = UnknownContext> {
    * @param approvals - The approvals map to rebuild.
    */
   _rebuildApprovals(approvals: Record<string, ApprovalRecord>) {
-    this.#approvals = new Map(Object.entries(approvals));
+    this.#approvals = new Map();
+    for (const [toolName, approval] of Object.entries(approvals)) {
+      this.#setApprovalRecord(toolName, approval);
+    }
   }
 
   /**
@@ -86,72 +170,8 @@ export class RunContext<TContext = UnknownContext> {
    * @param approvals - The approvals map to merge.
    */
   _mergeApprovals(approvals: Record<string, ApprovalRecord>) {
-    const mergeApproval = (
-      current: ApprovalRecord['approved'],
-      incoming: ApprovalRecord['approved'],
-    ) => {
-      if (current === true || incoming === true) {
-        return true;
-      }
-      const currentList = Array.isArray(current) ? current : [];
-      const incomingList = Array.isArray(incoming) ? incoming : [];
-      return Array.from(new Set([...currentList, ...incomingList]));
-    };
-
-    const mergeMessages = (
-      current: ApprovalRecord,
-      incoming: ApprovalRecord,
-    ) => {
-      if (current.rejected === true) {
-        return current.messages;
-      }
-
-      const merged =
-        current.messages || incoming.messages
-          ? { ...incoming.messages, ...current.messages }
-          : undefined;
-      if (!merged) {
-        return undefined;
-      }
-
-      if (Array.isArray(current.rejected)) {
-        for (const callId of current.rejected) {
-          if (
-            !current.messages ||
-            !Object.prototype.hasOwnProperty.call(current.messages, callId)
-          ) {
-            delete merged[callId];
-          }
-        }
-      }
-
-      return Object.keys(merged).length > 0 ? merged : undefined;
-    };
-
-    const mergeStickyRejectMessage = (
-      current: ApprovalRecord,
-      incoming: ApprovalRecord,
-    ) => {
-      if (current.rejected === true) {
-        return current.stickyRejectMessage;
-      }
-      return current.stickyRejectMessage ?? incoming.stickyRejectMessage;
-    };
-
     for (const [toolName, incoming] of Object.entries(approvals)) {
-      const existing = this.#approvals.get(toolName);
-      if (!existing) {
-        this.#approvals.set(toolName, incoming);
-        continue;
-      }
-      const mergedMessages = mergeMessages(existing, incoming);
-      const stickyRejectMessage = mergeStickyRejectMessage(existing, incoming);
-      this.#approvals.set(toolName, {
-        approved: mergeApproval(existing.approved, incoming.approved),
-        rejected: mergeApproval(existing.rejected, incoming.rejected),
-        ...(mergedMessages ? { messages: mergedMessages } : {}),
-        ...(stickyRejectMessage !== undefined ? { stickyRejectMessage } : {}),
-      });
+      this.#setApprovalRecord(toolName, incoming);
     }
   }
 
@@ -163,13 +183,19 @@ export class RunContext<TContext = UnknownContext> {
    * @returns The message string if one was provided, `undefined` otherwise.
    */
   getRejectionMessage(toolName: string, callId: string): string | undefined {
-    const approvalEntry = this.#approvals.get(toolName);
-    return (
-      approvalEntry?.messages?.[callId] ??
-      (approvalEntry?.rejected === true
-        ? approvalEntry.stickyRejectMessage
-        : undefined)
-    );
+    for (const approvalEntry of this.#getApprovalEntries(toolName)) {
+      if (typeof approvalEntry.messages?.[callId] === 'string') {
+        return approvalEntry.messages[callId];
+      }
+    }
+
+    for (const approvalEntry of this.#getApprovalEntries(toolName)) {
+      if (approvalEntry.rejected === true) {
+        return approvalEntry.stickyRejectMessage;
+      }
+    }
+
+    return undefined;
   }
 
   #getCallId(approvalItem: RunToolApprovalItem): string {
@@ -193,28 +219,39 @@ export class RunContext<TContext = UnknownContext> {
    */
   isToolApproved(approval: { toolName: string; callId: string }) {
     const { toolName, callId } = approval;
-    const approvalEntry = this.#approvals.get(toolName);
-    if (approvalEntry?.approved === true && approvalEntry.rejected === true) {
+    const approvalEntries = this.#getApprovalEntries(toolName);
+    const hasPermanentApproval = approvalEntries.some(
+      (approvalEntry) => approvalEntry.approved === true,
+    );
+    const hasPermanentRejection = approvalEntries.some(
+      (approvalEntry) => approvalEntry.rejected === true,
+    );
+
+    if (hasPermanentApproval && hasPermanentRejection) {
       logger.warn(
         'Tool is permanently approved and rejected at the same time. Approval takes precedence',
       );
       return true;
     }
 
-    if (approvalEntry?.approved === true) {
+    if (hasPermanentApproval) {
       return true;
     }
 
-    if (approvalEntry?.rejected === true) {
+    if (hasPermanentRejection) {
       return false;
     }
 
-    const individualCallApproval = Array.isArray(approvalEntry?.approved)
-      ? approvalEntry.approved.includes(callId)
-      : false;
-    const individualCallRejection = Array.isArray(approvalEntry?.rejected)
-      ? approvalEntry.rejected.includes(callId)
-      : false;
+    const individualCallApproval = approvalEntries.some((approvalEntry) =>
+      Array.isArray(approvalEntry.approved)
+        ? approvalEntry.approved.includes(callId)
+        : false,
+    );
+    const individualCallRejection = approvalEntries.some((approvalEntry) =>
+      Array.isArray(approvalEntry.rejected)
+        ? approvalEntry.rejected.includes(callId)
+        : false,
+    );
 
     if (individualCallApproval && individualCallRejection) {
       logger.warn(
@@ -246,22 +283,23 @@ export class RunContext<TContext = UnknownContext> {
   ) {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
+    const approvalKey = this.#getApprovalStorageKey(toolName);
     if (alwaysApprove) {
-      this.#approvals.set(toolName, {
+      this.#approvals.set(approvalKey, {
         approved: true,
         rejected: [],
       });
       return;
     }
 
-    const approvalEntry = this.#approvals.get(toolName) ?? {
+    const approvalEntry = this.#approvals.get(approvalKey) ?? {
       approved: [],
       rejected: [],
     };
     if (Array.isArray(approvalEntry.approved)) {
       approvalEntry.approved.push(this.#getCallId(approvalItem));
     }
-    this.#approvals.set(toolName, approvalEntry);
+    this.#approvals.set(approvalKey, approvalEntry);
   }
 
   /**
@@ -278,9 +316,10 @@ export class RunContext<TContext = UnknownContext> {
   ) {
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
+    const approvalKey = this.#getApprovalStorageKey(toolName);
     if (alwaysReject) {
       const callId = this.#getCallId(approvalItem);
-      this.#approvals.set(toolName, {
+      this.#approvals.set(approvalKey, {
         approved: false,
         rejected: true,
         ...(message !== undefined
@@ -293,7 +332,7 @@ export class RunContext<TContext = UnknownContext> {
       return;
     }
 
-    const approvalEntry = this.#approvals.get(toolName) ?? {
+    const approvalEntry = this.#approvals.get(approvalKey) ?? {
       approved: [] as string[],
       rejected: [] as string[],
     };
@@ -306,7 +345,7 @@ export class RunContext<TContext = UnknownContext> {
         approvalEntry.messages[callId] = message;
       }
     }
-    this.#approvals.set(toolName, approvalEntry);
+    this.#approvals.set(approvalKey, approvalEntry);
   }
 
   /**
@@ -339,5 +378,44 @@ export class RunContext<TContext = UnknownContext> {
       json.toolInput = this.toolInput;
     }
     return json;
+  }
+
+  #getApprovalEntries(toolName: string): ApprovalRecord[] {
+    return getApprovalToolNameCandidates(toolName)
+      .map((candidate) => this.#approvals.get(candidate))
+      .filter((approval): approval is ApprovalRecord => approval !== undefined);
+  }
+
+  #getApprovalStorageKey(toolName: string): string {
+    return (
+      getApprovalToolNameCandidates(toolName).find((candidate) =>
+        this.#approvals.has(candidate),
+      ) ?? toolName
+    );
+  }
+
+  #setApprovalRecord(toolName: string, incoming: ApprovalRecord): void {
+    const candidates = getApprovalToolNameCandidates(toolName);
+    const existingEntries = candidates
+      .map((candidate) => this.#approvals.get(candidate))
+      .filter((approval): approval is ApprovalRecord => approval !== undefined);
+    const mergedExisting = existingEntries.reduce<ApprovalRecord | undefined>(
+      (current, approval) =>
+        current ? mergeApprovalRecords(current, approval) : approval,
+      undefined,
+    );
+    const merged = mergedExisting
+      ? mergeApprovalRecords(mergedExisting, incoming)
+      : incoming;
+    const targetKey =
+      candidates.find((candidate) => this.#approvals.has(candidate)) ??
+      toolName;
+
+    this.#approvals.set(targetKey, merged);
+    for (const candidate of candidates) {
+      if (candidate !== targetKey) {
+        this.#approvals.delete(candidate);
+      }
+    }
   }
 }

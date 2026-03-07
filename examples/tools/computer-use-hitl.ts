@@ -24,7 +24,23 @@ function describeInterruption(interruption: { rawItem?: unknown }): string {
   if (rawItem && typeof rawItem === 'object') {
     const itemType = (rawItem as { type?: string }).type;
     if (itemType === 'computer_call') {
-      const action = (rawItem as { action?: { type?: string } }).action;
+      const candidate = rawItem as {
+        action?: { type?: string };
+        actions?: Array<{ type?: string }>;
+      };
+      const actions =
+        Array.isArray(candidate.actions) && candidate.actions.length > 0
+          ? candidate.actions
+          : candidate.action
+            ? [candidate.action]
+            : [];
+      const action = actions[0];
+      if (actions.length > 1) {
+        const summary = actions
+          .map((entry) => entry?.type ?? 'unknown')
+          .join(', ');
+        return `computer actions [${summary}]`;
+      }
       if (action?.type === 'type') {
         const text = (action as { text?: string }).text ?? '';
         const trimmed = text.length > 120 ? `${text.slice(0, 117)}...` : text;
@@ -70,8 +86,9 @@ async function singletonComputer() {
   try {
     const agent = new Agent({
       name: 'Browser user',
-      model: 'computer-use-preview',
-      instructions: 'You are a helpful agent.',
+      model: 'gpt-5.4',
+      instructions:
+        'You are a helpful agent. Find the current weather in Tokyo.',
       tools: [
         computerTool({
           computer,
@@ -79,10 +96,12 @@ async function singletonComputer() {
             ['click', 'type', 'keypress'].includes(action.type),
         }),
       ],
-      modelSettings: { truncation: 'auto' },
     });
     await withTrace('CUA Example', async () => {
-      const result = await runWithHitl(agent, "What's the weather in Tokyo?");
+      const result = await runWithHitl(
+        agent,
+        'What is the weather in Tokyo right now?',
+      );
       console.log(`\nFinal response:\n${result.finalOutput}`);
     });
   } finally {
@@ -95,8 +114,8 @@ async function computerPerRequest() {
   // you can create a computer per request.
   const agent = new Agent({
     name: 'Browser user',
-    model: 'computer-use-preview',
-    instructions: 'You are a helpful agent.',
+    model: 'gpt-5.4',
+    instructions: 'You are a helpful agent. Find the current weather in Tokyo.',
     tools: [
       computerTool({
         // initialize a new computer for each run and dispose it after the run is complete
@@ -120,10 +139,12 @@ async function computerPerRequest() {
           ['click', 'type', 'keypress'].includes(action.type),
       }),
     ],
-    modelSettings: { truncation: 'auto' },
   });
   await withTrace('CUA Example', async () => {
-    const result = await runWithHitl(agent, "What's the weather in Tokyo?");
+    const result = await runWithHitl(
+      agent,
+      'What is the weather in Tokyo right now?',
+    );
     console.log(`\nFinal response:\n${result.finalOutput}`);
   });
 }
