@@ -214,6 +214,8 @@ Supplying tools doesn’t guarantee the LLM will call one. You can **force** too
 
 <Code lang="typescript" code={agentForcingToolUse} title="Forcing tool use" />
 
+When you use deferred Responses tools such as `toolNamespace()`, function tools with `deferLoading: true`, or hosted MCP tools with `deferLoading: true`, keep `modelSettings.toolChoice` on `'auto'`. The SDK rejects forcing a deferred tool or the built-in `tool_search` helper by name because the model needs to decide when to load those definitions. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) for the full tool-search setup.
+
 #### Preventing infinite loops
 
 After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents the model from entering an infinite loop where it repeatedly tries to call the tool. You can override this behavior via the `resetToolChoice` flag or by configuring `toolUseBehavior`:

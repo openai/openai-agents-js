@@ -3,7 +3,7 @@ title: AI SDK Integration
 description: Connect your Agents SDK agents to any model through Vercel's AI SDK
 ---
 
-import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import { Steps, Code } from '@astrojs/starlight/components';
 import aiSdkImportsExample from '../../../../../examples/docs/extensions/ai-sdk-imports.ts?raw';
 import aiSdkModelExample from '../../../../../examples/docs/extensions/ai-sdk-model.ts?raw';
 import aiSdkProviderDataExample from '../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
@@ -12,13 +12,6 @@ import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-se
 import aiSdkTransformOutputTextExample from '../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
 import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
-
-<Aside type="caution">
-  This adapter is still in beta. You may run into issues with some model
-  providers, especially smaller ones. Please report any issues via [GitHub
-  issues](https://github.com/openai/openai-agents-js/issues) and we'll fix
-  quickly.
-</Aside>
 
 Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
 
@@ -51,14 +44,6 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
    <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
 
 </Steps>
-
-<Aside type="caution">
-  We support AI SDK providers that expose `specificationVersion` `v2` or `v3`.
-  If you have a specific reason to continue using the older v1 provider style,
-  you can copy the module from
-  [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)
-  and include it in your project.
-</Aside>
 
 ## Code examples
 
@@ -102,6 +87,13 @@ There are two related integrations in `@openai/agents-extensions`:
 
 - `@openai/agents-extensions/ai-sdk` adapts an AI SDK model so an `Agent` can run on it.
 - `@openai/agents-extensions/ai-sdk-ui` adapts a streamed Agents SDK run so AI SDK UI routes can return a standard streaming `Response`.
+
+### Notes for AI SDK models
+
+- The `@openai/agents-extensions/ai-sdk` adapter is still in beta, so it is worth testing carefully with your chosen provider, especially smaller ones.
+- If you are using OpenAI models, prefer the default OpenAI model provider instead of this adapter.
+- Supported AI SDK providers must expose `specificationVersion` `v2` or `v3`. If you need the older v1 provider style, copy the module from [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) into your project.
+- Deferred Responses tool-loading flows are not supported here. That includes `toolNamespace()`, function tools with `deferLoading: true`, and `toolSearchTool()`. If you need tool search, use an OpenAI Responses model directly. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and [Models guide](/openai-agents-js/guides/models#responses-only-deferred-tool-loading).
 
 ## AI SDK UI stream helpers
 

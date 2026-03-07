@@ -28,13 +28,13 @@ There are three types of MCP servers this SDK supports:
 
 Choose a server type based on your use‑case:
 
-| What you need                                                                    | Recommended option      |
-| -------------------------------------------------------------------------------- | ----------------------- |
-| Call publicly accessible remote servers with default OpenAI responses models     | **1. Hosted MCP tools** |
-| Use publicly accessible remote servers but have the tool calls triggered locally | **2. Streamable HTTP**  |
-| Use locally running Streamable HTTP servers                                      | **2. Streamable HTTP**  |
-| Use any Streamable HTTP servers with non-OpenAI-Responses models                 | **2. Streamable HTTP**  |
-| Work with local MCP servers that only support the standard-I/O protocol          | **3. Stdio**            |
+| What you need | Recommended option |
+| --- | --- |
+| Call publicly accessible remote servers with default OpenAI responses models | **1. Hosted MCP tools** |
+| Use publicly accessible remote servers but have the tool calls triggered locally | **2. Streamable HTTP** |
+| Use locally running Streamable HTTP servers | **2. Streamable HTTP** |
+| Use any Streamable HTTP servers with non-OpenAI-Responses models | **2. Streamable HTTP** |
+| Work with local MCP servers that only support the standard-I/O protocol | **3. Stdio** |
 
 ## 1. Hosted MCP server tools
 
@@ -76,16 +76,19 @@ If you can programmatically determine whether a tool call is safe, you can use t
 
 `hostedMcpTool(...)` supports both MCP server URLs and connector-backed servers:
 
-| Option            | Type                            | Notes                                                                                                         |
-| ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `serverLabel`     | `string`                        | Required label that identifies the hosted MCP server in events and traces.                                    |
-| `serverUrl`       | `string`                        | Remote MCP server URL (use this for regular hosted MCP servers).                                              |
-| `connectorId`     | `string`                        | OpenAI connector id (use this instead of `serverUrl` for connector-backed hosted servers).                    |
-| `authorization`   | `string`                        | Optional authorization token sent to the hosted MCP backend.                                                  |
-| `headers`         | `Record<string, string>`        | Optional extra request headers.                                                                               |
-| `allowedTools`    | `string[] \| object`            | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`.                  |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `serverLabel` | `string` | Required label that identifies the hosted MCP server in events and traces. |
+| `serverUrl` | `string` | Remote MCP server URL (use this for regular hosted MCP servers). |
+| `connectorId` | `string` | OpenAI connector id (use this instead of `serverUrl` for connector-backed hosted servers). |
+| `authorization` | `string` | Optional authorization token sent to the hosted MCP backend. |
+| `headers` | `Record<string, string>` | Optional extra request headers. |
+| `allowedTools` | `string[] \| object` | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`. |
+| `deferLoading` | `boolean` | Responses-only deferred loading for hosted MCP tools. Requires `toolSearchTool()` in the same agent. |
 | `requireApproval` | `'never' \| 'always' \| object` | Approval policy for hosted MCP tool calls. Use the object form for per-tool overrides. Defaults to `'never'`. |
-| `onApproval`      | Approval callback               | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling.      |
+| `onApproval` | Approval callback | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling. |
+
+Set `deferLoading: true` when you want the model to load a hosted MCP server's tool definitions on demand via tool search instead of exposing them up front. This only works with the OpenAI Responses API, requires `toolSearchTool()` in the same request, and should be used with GPT-5.4 and newer supported model releases. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) for the full deferred-loading setup.
 
 `requireApproval` object form:
 
@@ -134,22 +137,22 @@ When your Agent talks directly to a Streamable HTTP MCP server—local or remote
 
 Constructor options:
 
-| Option                        | Type                                           | Notes                                        |
-| ----------------------------- | ---------------------------------------------- | -------------------------------------------- |
-| `url`                         | `string`                                       | Streamable HTTP server URL.                  |
-| `name`                        | `string`                                       | Optional label for the server.               |
-| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.          |
-| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.             |
-| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                      |
-| `toolMetaResolver`            | `MCPToolMetaResolver`                          | Inject per-call MCP `_meta` request fields.  |
-| `errorFunction`               | `MCPToolErrorFunction \| null`                 | Map MCP call failures to model-visible text. |
-| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).          |
-| `logger`                      | `Logger`                                       | Custom logger.                               |
-| `authProvider`                | `OAuthClientProvider`                          | OAuth provider from the MCP TypeScript SDK.  |
-| `requestInit`                 | `RequestInit`                                  | Fetch init options for requests.             |
-| `fetch`                       | `FetchLike`                                    | Custom fetch implementation.                 |
-| `reconnectionOptions`         | `StreamableHTTPReconnectionOptions`            | Reconnection tuning options.                 |
-| `sessionId`                   | `string`                                       | Explicit session id for MCP connections.     |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `url` | `string` | Streamable HTTP server URL. |
+| `name` | `string` | Optional label for the server. |
+| `cacheToolsList` | `boolean` | Cache tools list to reduce latency. |
+| `clientSessionTimeoutSeconds` | `number` | Timeout for MCP client sessions. |
+| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
+| `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
+| `timeout` | `number` | Per-request timeout (milliseconds). |
+| `logger` | `Logger` | Custom logger. |
+| `authProvider` | `OAuthClientProvider` | OAuth provider from the MCP TypeScript SDK. |
+| `requestInit` | `RequestInit` | Fetch init options for requests. |
+| `fetch` | `FetchLike` | Custom fetch implementation. |
+| `reconnectionOptions` | `StreamableHTTPReconnectionOptions` | Reconnection tuning options. |
+| `sessionId` | `string` | Explicit session id for MCP connections. |
 
 The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
 
@@ -165,27 +168,26 @@ For servers that expose only standard I/O, instantiate `MCPServerStdio` with a `
 
 Constructor options:
 
-| Option                        | Type                                           | Notes                                                  |
-| ----------------------------- | ---------------------------------------------- | ------------------------------------------------------ |
-| `command` / `args`            | `string` / `string[]`                          | Command + args for stdio servers.                      |
-| `fullCommand`                 | `string`                                       | Full command string alternative to `command` + `args`. |
-| `env`                         | `Record<string, string>`                       | Environment variables for the server process.          |
-| `cwd`                         | `string`                                       | Working directory for the server process.              |
-| `cacheToolsList`              | `boolean`                                      | Cache tools list to reduce latency.                    |
-| `clientSessionTimeoutSeconds` | `number`                                       | Timeout for MCP client sessions.                       |
-| `name`                        | `string`                                       | Optional label for the server.                         |
-| `encoding`                    | `string`                                       | Encoding for stdio streams.                            |
-| `encodingErrorHandler`        | `'strict' \| 'ignore' \| 'replace'`            | Encoding error strategy.                               |
-| `toolFilter`                  | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools.                                |
-| `toolMetaResolver`            | `MCPToolMetaResolver`                          | Inject per-call MCP `_meta` request fields.            |
-| `errorFunction`               | `MCPToolErrorFunction \| null`                 | Map MCP call failures to model-visible text.           |
-| `timeout`                     | `number`                                       | Per-request timeout (milliseconds).                    |
-| `logger`                      | `Logger`                                       | Custom logger.                                         |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `command` / `args` | `string` / `string[]` | Command + args for stdio servers. |
+| `fullCommand` | `string` | Full command string alternative to `command` + `args`. |
+| `env` | `Record<string, string>` | Environment variables for the server process. |
+| `cwd` | `string` | Working directory for the server process. |
+| `cacheToolsList` | `boolean` | Cache tools list to reduce latency. |
+| `clientSessionTimeoutSeconds` | `number` | Timeout for MCP client sessions. |
+| `name` | `string` | Optional label for the server. |
+| `encoding` | `string` | Encoding for stdio streams. |
+| `encodingErrorHandler` | `'strict' \| 'ignore' \| 'replace'` | Encoding error strategy. |
+| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
+| `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
+| `timeout` | `number` | Per-request timeout (milliseconds). |
+| `logger` | `Logger` | Custom logger. |
 
 ## Managing MCP server lifecycle
 
-When you work with multiple MCP servers, you can use `connectMcpServers` to connect them together, track failures, and close them in one place.
-The helper returns an `MCPServers` instance with `active`, `failed`, and `errors` collections so you can pass only healthy servers to your agent.
+When you work with multiple MCP servers, you can use `connectMcpServers` to connect them together, track failures, and close them in one place. The helper returns an `MCPServers` instance with `active`, `failed`, and `errors` collections so you can pass only healthy servers to your agent.
 
 <Code
   lang="typescript"
@@ -203,25 +205,24 @@ If you want a strict “all or nothing” connection or different timeouts, use 
 
 `connectMcpServers` options:
 
-| Option               | Type             | Default | Notes                                                         |
-| -------------------- | ---------------- | ------- | ------------------------------------------------------------- |
-| `connectTimeoutMs`   | `number \| null` | `10000` | Timeout for each server `connect()`. Use `null` to disable.   |
-| `closeTimeoutMs`     | `number \| null` | `10000` | Timeout for each server `close()`. Use `null` to disable.     |
-| `dropFailed`         | `boolean`        | `true`  | Exclude failed servers from `active`.                         |
-| `strict`             | `boolean`        | `false` | Throw if any server fails to connect.                         |
-| `suppressAbortError` | `boolean`        | `true`  | Ignore abort-like errors while still tracking failed servers. |
-| `connectInParallel`  | `boolean`        | `false` | Connect all servers concurrently instead of sequentially.     |
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `connectTimeoutMs` | `number \| null` | `10000` | Timeout for each server `connect()`. Use `null` to disable. |
+| `closeTimeoutMs` | `number \| null` | `10000` | Timeout for each server `close()`. Use `null` to disable. |
+| `dropFailed` | `boolean` | `true` | Exclude failed servers from `active`. |
+| `strict` | `boolean` | `false` | Throw if any server fails to connect. |
+| `suppressAbortError` | `boolean` | `true` | Ignore abort-like errors while still tracking failed servers. |
+| `connectInParallel` | `boolean` | `false` | Connect all servers concurrently instead of sequentially. |
 
 `mcpServers.reconnect(options)` supports:
 
-| Option       | Type      | Default | Notes                                                                  |
-| ------------ | --------- | ------- | ---------------------------------------------------------------------- |
-| `failedOnly` | `boolean` | `true`  | Retry only failed servers (`true`) or reconnect all servers (`false`). |
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `failedOnly` | `boolean` | `true` | Retry only failed servers (`true`) or reconnect all servers (`false`). |
 
 ### Async disposal (optional)
 
-If your runtime supports `Symbol.asyncDispose`, `MCPServers` also supports the `await using` pattern.
-In TypeScript, enable `esnext.disposable` in `tsconfig.json`:
+If your runtime supports `Symbol.asyncDispose`, `MCPServers` also supports the `await using` pattern. In TypeScript, enable `esnext.disposable` in `tsconfig.json`:
 
 ```json
 {
@@ -241,8 +242,7 @@ await using mcpServers = await connectMcpServers(servers);
 
 For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may call `list_tools()` to discover available tools. Because that round‑trip can add latency—especially to remote servers—you can cache the results in memory by passing `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
 
-Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance.
-If you are using shared MCP tool caching via `getAllMcpTools(...)`, you can also invalidate by server name with `invalidateServerToolsCache(serverName)`.
+Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance. If you are using shared MCP tool caching via `getAllMcpTools(...)`, you can also invalidate by server name with `invalidateServerToolsCache(serverName)`.
 
 For advanced cases, `getAllMcpTools({ generateMCPToolCacheKey })` lets you customize cache partitioning (for example, by server + agent + run context).
 
@@ -255,5 +255,4 @@ You can restrict which tools are exposed from each server by passing either a st
 ## Further reading
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – official specification.
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – runnable
-  demos referenced above.
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – runnable demos referenced above.
