@@ -75,10 +75,10 @@ import {
  * - 1.5: Adds optional reasoningItemIdPolicy to preserve reasoning input policy across resume.
  * - 1.6: Adds optional requestId to serialized model responses.
  * - 1.7: Adds optional approval rejection messages.
- * - 1.8: Adds tool search item variants to serialized run state payloads.
- * - 1.9: Adds batched computer actions and GA computer tool aliasing.
+ * - 1.8: Adds tool search item variants, batched computer actions, and GA computer tool
+ *   aliasing to serialized run state payloads.
  */
-export const CURRENT_SCHEMA_VERSION = '1.9' as const;
+export const CURRENT_SCHEMA_VERSION = '1.8' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -88,7 +88,6 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.5',
   '1.6',
   '1.7',
-  '1.8',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -975,7 +974,7 @@ function assertSchemaVersionSupportsToolSearch(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.8' || schemaVersion === '1.9') {
+  if (schemaVersion === '1.8') {
     return;
   }
 
