@@ -7,7 +7,7 @@ description: Decide how to implement runtime and API changes in openai-agents-js
 
 ## Overview
 
-Use this skill before editing code when the task changes runtime behavior or anything that might look like a compatibility concern. The goal is to keep implementations simple while protecting real released contracts.
+Use this skill before editing code when the task changes runtime behavior or anything that might look like a compatibility concern. The goal is to keep implementations simple while protecting real released contracts and genuinely supported external state.
 
 ## Quick start
 
@@ -18,14 +18,14 @@ Use this skill before editing code when the task changes runtime behavior or any
    ```
 3. Judge breaking-change risk against that latest release tag, not against unreleased branch churn or post-tag changes already on `main`.
 4. Prefer the simplest implementation that satisfies the current task. Update callers, tests, docs, and examples directly instead of preserving superseded unreleased interfaces.
-5. Add a compatibility layer only when there is a concrete released consumer or durable external state that requires it, or when the user explicitly asks for a migration path.
+5. Add a compatibility layer only when there is a concrete released consumer, an otherwise supported durable external state that requires it, or when the user explicitly asks for a migration path.
 
 ## Compatibility boundary rules
 
 - Released public API or documented external behavior: preserve compatibility or provide an explicit migration path.
-- Persisted schema, serialized state, wire protocol, CLI flags, environment variables, and externally consumed config: treat as compatibility-sensitive even if the implementation is local.
+- Persisted schema, serialized state, wire protocol, CLI flags, environment variables, and externally consumed config: treat as compatibility-sensitive once they are released or otherwise have a supported external consumer. Unreleased post-tag formats that only exist on the current branch can still be rewritten directly.
 - Interface changes introduced only on the current branch: not a compatibility target. Rewrite them directly.
-- Interface changes present on `main` but added after the latest release tag: not a semver breaking change by themselves. Rewrite them directly unless they already define durable external state.
+- Interface changes present on `main` but added after the latest release tag: not a semver breaking change by themselves. Rewrite them directly unless they already back a released or otherwise supported durable format.
 - Internal helpers, private types, same-branch tests, fixtures, and examples: update them directly instead of adding adapters.
 
 ## Default implementation stance
@@ -38,7 +38,7 @@ Use this skill before editing code when the task changes runtime behavior or any
 ## When to stop and confirm
 
 - The change would alter behavior shipped in the latest release tag.
-- The change would modify durable external data or protocol formats.
+- The change would modify durable external data or protocol formats that are already released or otherwise supported.
 - The user explicitly asked for backward compatibility, deprecation, or migration support.
 
 ## Output expectations
@@ -46,4 +46,5 @@ Use this skill before editing code when the task changes runtime behavior or any
 When this skill materially affects the implementation approach, state the decision briefly in your reasoning or handoff, for example:
 
 - `Compatibility boundary: latest release tag v0.x.y; branch-local interface rewrite, no shim needed.`
+- `Compatibility boundary: latest release tag v0.x.y; unreleased RunState snapshot rewrite, no shim needed.`
 - `Compatibility boundary: released RunState schema; preserve compatibility and add migration coverage.`

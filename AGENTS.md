@@ -35,11 +35,11 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 #### `$implementation-strategy`
 
-Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they define durable external state or the user explicitly asks for a migration path.
+Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
 
 ### ExecPlans
 
-When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or durable external state. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data.
+When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file in the repository root (top level) with a descriptive name. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or a released/otherwise supported durable format. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data that is already supported outside the current branch.
 
 ## Project Structure Guide
 
@@ -83,7 +83,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - Input guardrails run only on the first turn; interruption resumes should not increment the turn counter.
 - When `conversationId`/`previousResponseId` is provided, only deltas are sent; `callModelInputFilter` must return an input array and keep session persistence in sync.
 - Adding new tool/output/approval item types requires coordinated updates across model output processing, tool execution, turn resolution, streaming events, run item extraction, and RunState serialization.
-- If serialized RunState shape changes, bump the schema version and update serialization/deserialization.
+- If serialized RunState shape changes in a released or otherwise supported snapshot format, bump the schema version and update serialization/deserialization. Unreleased post-tag RunState changes on `main` may fold into the same next schema version when no supported snapshot consumer exists yet.
 
 ## Operation Guide
 
