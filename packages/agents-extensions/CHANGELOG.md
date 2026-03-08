@@ -1,5 +1,25 @@
 # @openai/agents-extensions
 
+## 0.6.0
+
+### Minor Changes
+
+- 09ab47e: fix: remove deprecated top-level AI SDK exports from agents-extensions
+
+  Import `aisdk` and `AiSdkModel` from `@openai/agents-extensions/ai-sdk` instead of `@openai/agents-extensions`.
+
+### Patch Changes
+
+- ddd97d5: feat: add Responses tool search support
+- Updated dependencies [8a5135a]
+- Updated dependencies [b2e5236]
+- Updated dependencies [94c18cd]
+- Updated dependencies [98a62a2]
+- Updated dependencies [4e6b3fb]
+- Updated dependencies [ddd97d5]
+  - @openai/agents-core@0.6.0
+  - @openai/agents@0.6.0
+
 ## 0.5.4
 
 ### Patch Changes
