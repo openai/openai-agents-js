@@ -30,7 +30,7 @@ jobs:
           version: 10.30.3
           run_install: true
       - name: Run build
-        run: pnpm build
+        run: pnpm build:ci
       - name: Install, build, and upload your site
         uses: withastro/action@15aa0a5a1e067940253e3b259413ab2ae882a740
         with:
