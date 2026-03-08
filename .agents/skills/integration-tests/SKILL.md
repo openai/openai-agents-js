@@ -22,8 +22,10 @@ Run integration tests that require a local npm registry by starting `pnpm local-
 Run this exact sequence in the main process and capture the output:
 
 ```bash
-pnpm i && pnpm build && pnpm local-npm:reset && pnpm local-npm:publish && pnpm test:integration
+pnpm i && pnpm build:ci && pnpm local-npm:reset && pnpm local-npm:publish && pnpm test:integration
 ```
+
+- Use `pnpm build:ci` here so the skill validates the same serialized build path that GitHub Actions now uses, while still running the normal `prebuild` and `postbuild` lifecycle steps.
 
 - Return the full success/failure outcome and a concise summary of the results.
 - Always capture the stdout/stderr from `pnpm test:integration` and include it in the final response (trim obvious noise if extremely long) inside a fenced code block.
