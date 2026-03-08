@@ -215,4 +215,92 @@ describe('handleHostedMcpApprovals', () => {
     expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
     expect(result.pendingApprovalIds.has('mcpr_pending')).toBe(true);
   });
+
+  it('ignores non-hosted raw items', async () => {
+    const result = await handleHostedMcpApprovals({
+      requests: [
+        {
+          requestItem: {
+            rawItem: {
+              type: 'function_call',
+              name: 'list_files',
+            },
+          },
+          mcpTool: hostedMcpTool({
+            serverLabel: 'stub',
+            requireApproval: 'always',
+          }),
+        } as any,
+      ],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+    });
+
+    expect(functionResults).toHaveLength(0);
+    expect(newItems).toHaveLength(0);
+    expect(result.pendingApprovals.size).toBe(0);
+    expect(result.pendingApprovalIds.size).toBe(0);
+  });
+
+  it('ignores hosted approval items that are missing provider data', async () => {
+    const approvalRequest = buildApprovalRequest('mcpr_missing_provider_data');
+    (
+      approvalRequest.requestItem.rawItem as protocol.HostedToolCallItem
+    ).providerData = undefined as any;
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+    });
+
+    expect(functionResults).toHaveLength(0);
+    expect(newItems).toHaveLength(0);
+    expect(result.pendingApprovals.size).toBe(0);
+    expect(result.pendingApprovalIds.size).toBe(0);
+  });
+
+  it('treats approval requests without ids as pending without tracking an id', async () => {
+    const approvalRequest = buildApprovalRequest('mcpr_missing_id');
+    const rawItem = approvalRequest.requestItem
+      .rawItem as protocol.HostedToolCallItem;
+
+    rawItem.id = undefined as any;
+    (rawItem.providerData as HostedMCPApprovalRequest).id = undefined as any;
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval: () => false,
+    });
+
+    expect(functionResults).toHaveLength(1);
+    expect(newItems).toContain(approvalRequest.requestItem);
+    expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
+    expect(result.pendingApprovalIds.size).toBe(0);
+  });
+
+  it('surfaces pending approvals when no resolver is provided', async () => {
+    const approvalRequest = buildApprovalRequest('mcpr_no_resolver');
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+    });
+
+    expect(functionResults).toHaveLength(1);
+    expect(newItems).toContain(approvalRequest.requestItem);
+    expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
+    expect(result.pendingApprovalIds.has('mcpr_no_resolver')).toBe(true);
+  });
 });

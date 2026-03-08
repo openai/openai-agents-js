@@ -513,6 +513,211 @@ describe('OpenAIConversationsSession', () => {
     });
   });
 
+  it('returns an empty array for non-positive limits without listing items', async () => {
+    const list = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await expect(session.getItems(0)).resolves.toEqual([]);
+    await expect(session.getItems(-1)).resolves.toEqual([]);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('skips addItems when no items are provided', async () => {
+    const createItems = vi.fn();
+    const createConversation = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createItems,
+            delete: vi.fn(),
+          },
+          create: createConversation,
+          delete: vi.fn(),
+        },
+      } as any,
+    });
+
+    await session.addItems([]);
+
+    expect(createItems).not.toHaveBeenCalled();
+    expect(createConversation).not.toHaveBeenCalled();
+    expect(getInputItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('popItem returns undefined when no items are available', async () => {
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {},
+    }));
+    const deleteMock = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: deleteMock,
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await expect(session.popItem()).resolves.toBeUndefined();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('popItem returns the newest item even when it has no id', async () => {
+    convertToOutputItemMock.mockReturnValue([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ] as any);
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: 'resp-1',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+        } as any;
+      },
+    }));
+    const deleteMock = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: deleteMock,
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const popped = await session.popItem();
+
+    expect(popped).toEqual({
+      type: 'message',
+      role: 'assistant',
+      content: [],
+    });
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('clearSession is a no-op before a conversation is created', async () => {
+    const deleteConversation = vi.fn();
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: deleteConversation,
+        },
+      } as any,
+    });
+
+    await session.clearSession();
+
+    expect(deleteConversation).not.toHaveBeenCalled();
+  });
+
+  it('treats input_* output arrays as raw items instead of response output arrays', async () => {
+    const convertedItems = [
+      {
+        id: 'converted-raw-item',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ];
+
+    convertToOutputItemMock.mockReturnValue(convertedItems as any);
+
+    const items = [
+      {
+        type: 'response',
+        id: 'resp-input-content',
+        output: [
+          {
+            type: 'input_text',
+            text: 'raw input payload',
+          },
+        ],
+      },
+    ];
+
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(convertToOutputItemMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'resp-input-content',
+        output: [
+          {
+            type: 'input_text',
+            text: 'raw input payload',
+          },
+        ],
+      }),
+    ]);
+    expect(result).toEqual(convertedItems);
+  });
+
   it('handles a conversation lifecycle across list, add, pop, and clear', async () => {
     convertToOutputItemMock.mockReturnValueOnce([
       {

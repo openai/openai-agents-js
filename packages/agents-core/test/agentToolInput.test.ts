@@ -140,4 +140,95 @@ describe('agentToolInput', () => {
     expect(result).toContain('"name": "Ada"');
     expect(result).toContain('"type": "object"');
   });
+
+  it('buildStructuredInputSchemaInfo unwraps decorated Zod fields and inner descriptions', () => {
+    const schema = z.object({
+      createdAt: z
+        .string()
+        .default('now')
+        .nullable()
+        .describe('Creation timestamp.'),
+      enabled: z
+        .boolean()
+        .catch(false)
+        .describe('Whether the flag is enabled.'),
+    });
+
+    const info = buildStructuredInputSchemaInfo(schema, 'tool', false);
+
+    expect(info.summary).toContain(
+      '- createdAt (string | null, required) - Creation timestamp.',
+    );
+    expect(info.summary).toContain(
+      '- enabled (boolean, required) - Whether the flag is enabled.',
+    );
+  });
+
+  it('buildStructuredInputSchemaInfo summarizes native enums and truncates long enum previews', () => {
+    enum Status {
+      Draft = 'draft',
+      Queued = 'queued',
+      Running = 'running',
+      Done = 'done',
+      Failed = 'failed',
+      Canceled = 'canceled',
+    }
+
+    const schema = z.object({
+      status: z.nativeEnum(Status).describe('Execution status.'),
+      mode: z.enum(['a', 'b', 'c', 'd', 'e', 'f']).describe('Preview mode.'),
+    });
+
+    const info = buildStructuredInputSchemaInfo(schema, 'tool', false);
+
+    expect(info.summary).toContain(
+      '- status (enum("draft" | "queued" | "running" | "done" | "failed" | ...), required) - Execution status.',
+    );
+    expect(info.summary).toContain(
+      '- mode (enum("a" | "b" | "c" | "d" | "e" | ...), required) - Preview mode.',
+    );
+  });
+
+  it('buildStructuredInputSchemaInfo omits summaries for unsupported Zod field shapes', () => {
+    const schema = z.object({
+      nested: z
+        .object({
+          value: z.string(),
+        })
+        .describe('Nested payload.'),
+    });
+
+    const info = buildStructuredInputSchemaInfo(schema, 'tool', false);
+
+    expect(info.summary).toBeUndefined();
+  });
+
+  it('buildStructuredInputSchemaInfo omits summaries for unsupported JSON schema fields', () => {
+    const schema: ToolInputParametersStrict = {
+      type: 'object',
+      description: 'Payload.',
+      properties: {
+        nested: {
+          type: 'object',
+          properties: {
+            value: { type: 'string' },
+          },
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    };
+
+    const info = buildStructuredInputSchemaInfo(schema, 'tool', false);
+
+    expect(info.summary).toBeUndefined();
+  });
+
+  it('resolveAgentToolInput returns null when params are undefined without schema info', async () => {
+    const result = await resolveAgentToolInput({
+      params: undefined,
+    });
+
+    expect(result).toBe('null');
+  });
 });
