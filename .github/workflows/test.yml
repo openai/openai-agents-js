@@ -122,7 +122,7 @@ jobs:
         run: pnpm install
       - name: Build all packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm build
+        run: pnpm build:ci
       - name: Check generated declarations
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm -r -F "@openai/*" dist:check
@@ -170,7 +170,7 @@ jobs:
         run: pnpm install
       - name: Build all packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm build
+        run: pnpm build:ci
       - name: Run tests with coverage
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test:coverage

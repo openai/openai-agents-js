@@ -6,6 +6,7 @@
     "clean": "tsc-multi --clean",
     "prebuild": "pnpm -F @openai/* -r prebuild",
     "build": "tsc-multi",
+    "build:ci": "pnpm run prebuild && tsc-multi --maxWorkers 1 && pnpm run postbuild",
     "postbuild": "pnpm -r -F @openai/* bundle",
     "packages:dev": "tsc-multi --watch",
     "docs:dev": "pnpm -F docs dev",
