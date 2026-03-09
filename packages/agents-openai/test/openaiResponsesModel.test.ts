@@ -3324,3 +3324,34 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
   });
 });
+
+it('retries once when responses.create fails with a transient terminated error', async () => {
+  await withTrace('test', async () => {
+    const fakeResponse = { id: 'res-retry', usage: {}, output: [] };
+    const terminated = new TypeError('terminated');
+    const createMock = vi
+      .fn()
+      .mockRejectedValueOnce(terminated)
+      .mockResolvedValueOnce(fakeResponse);
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    const request = {
+      systemInstructions: undefined,
+      input: 'hello',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const result = await model.getResponse(request as any);
+
+    expect(result.responseId).toBe('res-retry');
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+});

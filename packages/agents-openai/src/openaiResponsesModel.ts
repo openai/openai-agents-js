@@ -2778,6 +2778,20 @@ async function* withAttachedResponseRequestId(
 /**
  * Model implementation that uses OpenAI's Responses API to generate responses.
  */
+function shouldRetryResponseCreateError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  if (signal?.aborted) {
+    return false;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message === 'terminated' || message.includes('socket hang up');
+}
+
 export class OpenAIResponsesModel implements Model {
   protected readonly _client: OpenAI;
   protected readonly _model: string;
@@ -2805,45 +2819,65 @@ export class OpenAIResponsesModel implements Model {
     | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
     | OpenAI.Responses.Response
   > {
-    const builtRequest = this._buildResponsesCreateRequest(request, stream);
-    const responsePromise = this._client.responses.create(
-      builtRequest.requestData,
-      {
-        headers: builtRequest.sdkRequestHeaders as any,
-        signal: builtRequest.signal,
-        ...(builtRequest.transportExtraQuery
-          ? { query: builtRequest.transportExtraQuery }
-          : {}),
-      },
-    ) as ResponseStreamWithRequestID | Promise<OpenAI.Responses.Response>;
+    const maxAttempts = 2;
 
-    let response:
-      | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
-      | OpenAI.Responses.Response;
-    if (stream) {
-      const withResponse = (responsePromise as ResponseStreamWithRequestID)
-        .withResponse;
-      if (typeof withResponse === 'function') {
-        const streamedResponse = await withResponse.call(responsePromise);
-        response = withAttachedResponseRequestId(
-          streamedResponse.data,
-          streamedResponse.request_id ?? undefined,
-        );
-      } else {
-        response =
-          (await responsePromise) as AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const builtRequest = this._buildResponsesCreateRequest(request, stream);
+      const responsePromise = this._client.responses.create(
+        builtRequest.requestData,
+        {
+          headers: builtRequest.sdkRequestHeaders as any,
+          signal: builtRequest.signal,
+          ...(builtRequest.transportExtraQuery
+            ? { query: builtRequest.transportExtraQuery }
+            : {}),
+        },
+      ) as ResponseStreamWithRequestID | Promise<OpenAI.Responses.Response>;
+
+      try {
+        let response:
+          | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
+          | OpenAI.Responses.Response;
+        if (stream) {
+          const withResponse = (responsePromise as ResponseStreamWithRequestID)
+            .withResponse;
+          if (typeof withResponse === 'function') {
+            const streamedResponse = await withResponse.call(responsePromise);
+            response = withAttachedResponseRequestId(
+              streamedResponse.data,
+              streamedResponse.request_id ?? undefined,
+            );
+          } else {
+            response =
+              (await responsePromise) as AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
+          }
+        } else {
+          response = (await responsePromise) as OpenAI.Responses.Response;
+        }
+
+        if (logger.dontLogModelData) {
+          logger.debug('Response received');
+        } else {
+          logger.debug(`Response received: ${JSON.stringify(response, null, 2)}`);
+        }
+
+        return response;
+      } catch (error) {
+        if (
+          attempt < maxAttempts &&
+          shouldRetryResponseCreateError(error, builtRequest.signal)
+        ) {
+          logger.warn(
+            `Retrying OpenAI Responses create after transient termination (attempt ${attempt + 1}/${maxAttempts})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+          continue;
+        }
+        throw error;
       }
-    } else {
-      response = (await responsePromise) as OpenAI.Responses.Response;
     }
 
-    if (logger.dontLogModelData) {
-      logger.debug('Response received');
-    } else {
-      logger.debug(`Response received: ${JSON.stringify(response, null, 2)}`);
-    }
-
-    return response;
+    throw new Error('unreachable');
   }
 
   protected _buildResponsesCreateRequest(
