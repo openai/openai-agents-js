@@ -8,6 +8,7 @@ import toolsFunctionExample from '../../../../../examples/docs/tools/functionToo
 import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
 import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
+import toolSearchExample from '../../../../../examples/docs/tools/toolSearch.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import agentToolRunContextExample from '../../../../../examples/docs/tools/agentToolRunContext.ts?raw';
@@ -19,7 +20,7 @@ Tools let an Agent **take actions** – fetch data, call external APIs, execute 
 
 > Read this page after [Agents](/openai-agents-js/guides/agents) once you know which agent should own the task and you want to give it capabilities. If you are still deciding between delegation patterns, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
-1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation)_
+1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation, tool search)_
 2. **Built-in execution tools** – SDK-provided tools that execute outside the model. _(computer use and apply_patch run locally; shell can run locally or in hosted containers)_
 3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 4. **Agents as tools** – expose an entire Agent as a callable tool.
@@ -42,6 +43,7 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 | File / retrieval search | `'file_search'` | Query vector stores hosted on OpenAI. |
 | Code Interpreter | `'code_interpreter'` | Run code in a sandboxed environment. |
 | Image generation | `'image_generation'` | Generate images based on text. |
+| Tool search | `'tool_search'` | Load deferred function tools, namespaces, or searchable MCP tools at runtime. |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
@@ -53,8 +55,9 @@ The SDK provides helper functions that return hosted tool definitions:
 | `fileSearchTool(ids, options?)` | Accepts one or more vector store IDs as the first argument, plus options like `maxNumResults`, `includeSearchResults`, `rankingOptions`, and filters. |
 | `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided. |
 | `imageGenerationTool(options?)` | Supports image generation configuration such as `model`, `size`, `quality`, `background`, `inputFidelity`, `inputImageMask`, `moderation`, `outputCompression`, `partialImages`, and output format. |
+| `toolSearchTool(options?)` | Adds the built-in `tool_search` helper. Pair it with deferred function tools or hosted MCP tools that set `deferLoading: true`. Supports hosted execution by default or client execution with `execution: 'client'` plus `execute`. |
 
-These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters.
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, and the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability.
 
 ---
 
@@ -163,6 +166,35 @@ If you need the model to _guess_ invalid or partial input you can disable strict
   code={nonStrictSchemaTools}
   title="Non-strict JSON schema tools"
 />
+
+#### Deferred tool loading with tool search
+
+Tool search lets the model load only the tool definitions it needs at runtime instead of sending every schema up front. In the SDK, this is how you work with deferred top-level function tools, `toolNamespace()` groups, and hosted MCP tools configured with `deferLoading: true`.
+
+Use Tool search only with GPT-5.4 and newer model releases that support it in the Responses API.
+
+<Code
+  lang="typescript"
+  code={toolSearchExample}
+  title="Deferred tool loading with tool search"
+/>
+
+The example intentionally mixes both styles:
+
+- `shippingLookup` stays top-level because it is one standalone searchable capability.
+- `crmTools` uses `toolNamespace()` because related CRM tools share one high-level label and description.
+- Mixing namespaced and top-level deferred tools in the same request is supported; tool search can load both namespace paths such as `crm` and top-level paths such as `get_shipping_eta`.
+
+When you use tool search:
+
+- Mark each deferred function tool with `deferLoading: true`.
+- Use `toolNamespace({ name, description, tools })` when multiple related tools should share one domain description and be loaded as a group.
+- Keep a tool top-level when it is a single independent capability and the tool name itself is a good search target.
+- Add `toolSearchTool()` to the same `tools` array whenever any deferred function tool or hosted MCP tool uses `deferLoading: true`.
+- Leave `modelSettings.toolChoice` on `'auto'`. The SDK rejects forcing the built-in `tool_search` tool or a deferred function tool by name.
+- Hosted execution is the default. If you set `toolSearchTool({ execution: 'client', execute })`, the standard `run()` loop only supports the built-in `{ paths: string[] }` client query shape; custom client-side schemas require your own Responses loop.
+- A namespace can mix immediate and deferred members. Immediate members stay callable without tool search, while deferred members in the same namespace are loaded on demand.
+- Deferred function tools and `toolNamespace()` are Responses-only. Chat Completions rejects them, and the AI SDK adapter does not support deferred Responses tool-loading flows.
 
 ---
 

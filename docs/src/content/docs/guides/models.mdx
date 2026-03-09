@@ -117,6 +117,14 @@ If you instantiate `OpenAIProvider` yourself, remember that websocket-backed Res
 
 See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) for a full streaming + HITL example using the Responses WebSocket transport.
 
+#### Responses-only deferred tool loading
+
+`toolSearchTool()`, `toolNamespace()`, and function tools or hosted MCP tools that set `deferLoading: true` require the OpenAI Responses API. The Chat Completions provider rejects namespaced or deferred function tools, and the AI SDK adapter does not support deferred Responses tool-loading flows. Use a Responses model directly when you need tool search.
+
+Tool search is supported only on GPT-5.4 and newer model releases that support it in the Responses API.
+
+When a run includes deferred tools, add `toolSearchTool()` to the same agent and keep `modelSettings.toolChoice` on `'auto'`. The SDK does not let you force the built-in `tool_search` tool or a deferred function tool by name because the model needs to decide when to load those definitions. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and the official [OpenAI tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the full setup.
+
 ---
 
 ## Model behavior and prompts
