@@ -217,6 +217,7 @@ type ResponseShellCallOutputContent =
   OpenAI.Responses.ResponseFunctionShellCallOutputContent;
 type ResponseApplyPatchCallOutput =
   OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput;
+type SerializedComputerTool = Extract<SerializedTool, { type: 'computer' }>;
 type SerializedShellTool = Extract<SerializedTool, { type: 'shell' }>;
 type SerializedShellEnvironment = NonNullable<
   SerializedShellTool['environment']
@@ -239,6 +240,20 @@ type SerializedShellContainerSkill = NonNullable<
 >[number];
 type SerializedShellContainerNetworkPolicy =
   SerializedShellContainerAutoEnvironment['networkPolicy'];
+
+function hasSerializedComputerDisplayMetadata(
+  tool: SerializedComputerTool,
+): tool is SerializedComputerTool & {
+  environment: NonNullable<SerializedComputerTool['environment']>;
+  dimensions: NonNullable<SerializedComputerTool['dimensions']>;
+} {
+  return (
+    typeof tool.environment === 'string' &&
+    Array.isArray(tool.dimensions) &&
+    tool.dimensions.length === 2 &&
+    tool.dimensions.every((value) => typeof value === 'number')
+  );
+}
 
 const HostedToolChoice = z.enum([
   'file_search',
@@ -1409,6 +1424,12 @@ function converTool<_TContext = unknown>(
     };
   } else if (tool.type === 'computer') {
     if (options?.usePreviewComputerTool) {
+      if (!hasSerializedComputerDisplayMetadata(tool)) {
+        throw new UserError(
+          'Preview computer tools require environment and dimensions. Provide them on your Computer implementation or target a GA computer model such as gpt-5.4.',
+        );
+      }
+
       return {
         tool: {
           type: 'computer_use_preview',

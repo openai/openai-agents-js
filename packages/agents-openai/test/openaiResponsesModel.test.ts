@@ -2368,8 +2368,6 @@ describe('OpenAIResponsesModel', () => {
           {
             type: 'computer',
             name: 'computer_use_preview',
-            environment: 'browser',
-            dimensions: [1024, 768],
           },
         ],
         outputType: 'text',
@@ -2384,6 +2382,39 @@ describe('OpenAIResponsesModel', () => {
       const [args] = createMock.mock.calls[0];
       expect(args.model).toBe('gpt-5.4');
       expect(args.tools).toEqual([{ type: 'computer' }]);
+    });
+  });
+
+  it('rejects preview computer fallback without display metadata before sending the request', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.4');
+
+      const request = {
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_computer_preview_missing_display' },
+        input: 'hello',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'computer',
+            name: 'computer_use_preview',
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await expect(model.getResponse(request as any)).rejects.toThrow(
+        'Preview computer tools require environment and dimensions.',
+      );
+      expect(createMock).not.toHaveBeenCalled();
     });
   });
 

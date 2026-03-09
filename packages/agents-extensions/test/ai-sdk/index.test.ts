@@ -1465,6 +1465,16 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
+  test('rejects computer tools without display metadata', () => {
+    const tool = {
+      type: 'computer',
+      name: 'comp',
+    } as any;
+    expect(() => toolToLanguageV2Tool(model, tool)).toThrow(
+      'The AI SDK adapter requires computer tools to include environment and dimensions metadata.',
+    );
+  });
+
   test('throws on unknown type', () => {
     const tool = { type: 'x', name: 'u' } as any;
     expect(() => toolToLanguageV2Tool(model, tool)).toThrow();

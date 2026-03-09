@@ -102,6 +102,22 @@ type LanguageModelCompatible =
   | LanguageModelV2Compat
   | LanguageModelV3Compatible;
 
+type SerializedComputerTool = Extract<SerializedTool, { type: 'computer' }>;
+
+function hasComputerDisplayMetadata(
+  tool: SerializedComputerTool,
+): tool is SerializedComputerTool & {
+  environment: NonNullable<SerializedComputerTool['environment']>;
+  dimensions: NonNullable<SerializedComputerTool['dimensions']>;
+} {
+  return (
+    typeof tool.environment === 'string' &&
+    Array.isArray(tool.dimensions) &&
+    tool.dimensions.length === 2 &&
+    tool.dimensions.every((value) => typeof value === 'number')
+  );
+}
+
 function getSpecVersion(
   model: LanguageModelCompatible,
 ): 'v2' | 'v3' | 'unknown' {
@@ -1241,6 +1257,12 @@ export function toolToLanguageV2Tool(
   }
 
   if (tool.type === 'computer') {
+    if (!hasComputerDisplayMetadata(tool)) {
+      throw new UserError(
+        'The AI SDK adapter requires computer tools to include environment and dimensions metadata.',
+      );
+    }
+
     return {
       type: providerToolType,
       id: `${providerToolPrefix}.${tool.name}`,

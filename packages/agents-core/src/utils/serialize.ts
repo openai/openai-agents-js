@@ -10,12 +10,40 @@ import {
   getFunctionToolNamespaceDescription,
 } from '../toolIdentity';
 
+const REQUIRED_COMPUTER_METHODS = [
+  'screenshot',
+  'click',
+  'doubleClick',
+  'drag',
+  'keypress',
+  'move',
+  'scroll',
+  'type',
+  'wait',
+] as const;
+
 function isComputerInstance(value: unknown): value is Computer {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return REQUIRED_COMPUTER_METHODS.every(
+    (methodName) => typeof record[methodName] === 'function',
+  );
+}
+
+function hasComputerDisplayMetadata(
+  computer: Computer,
+): computer is Computer & {
+  environment: NonNullable<Computer['environment']>;
+  dimensions: NonNullable<Computer['dimensions']>;
+} {
   return (
-    !!value &&
-    typeof value === 'object' &&
-    'environment' in (value as Record<string, unknown>) &&
-    'dimensions' in (value as Record<string, unknown>)
+    typeof computer.environment === 'string' &&
+    Array.isArray(computer.dimensions) &&
+    computer.dimensions.length === 2 &&
+    computer.dimensions.every((value) => typeof value === 'number')
   );
 }
 
@@ -47,8 +75,12 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
     return {
       type: 'computer',
       name: tool.name,
-      environment: tool.computer.environment,
-      dimensions: tool.computer.dimensions,
+      ...(hasComputerDisplayMetadata(tool.computer)
+        ? {
+            environment: tool.computer.environment,
+            dimensions: tool.computer.dimensions,
+          }
+        : {}),
     };
   }
   if (tool.type === 'shell') {

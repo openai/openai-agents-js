@@ -195,8 +195,8 @@ export type SerializedFunctionTool = {
 export type SerializedComputerTool = {
   type: ComputerTool['type'];
   name: ComputerTool['name'];
-  environment: Computer['environment'];
-  dimensions: Computer['dimensions'];
+  environment?: Computer['environment'];
+  dimensions?: Computer['dimensions'];
 };
 
 export type SerializedShellTool = {

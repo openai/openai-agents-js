@@ -30,13 +30,47 @@ describe('serialize utilities', () => {
     const t: any = {
       type: 'computer',
       name: 'comp',
-      computer: { environment: 'node', dimensions: { width: 1, height: 2 } },
+      computer: {
+        environment: 'browser',
+        dimensions: [1, 2],
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+      },
     };
     expect(serializeTool(t)).toEqual({
       type: 'computer',
       name: 'comp',
-      environment: 'node',
-      dimensions: { width: 1, height: 2 },
+      environment: 'browser',
+      dimensions: [1, 2],
+    });
+  });
+
+  it('serializes GA computer tools without display metadata', () => {
+    const t: any = {
+      type: 'computer',
+      name: 'comp',
+      computer: {
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+      },
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'computer',
+      name: 'comp',
     });
   });
 
@@ -45,8 +79,8 @@ describe('serialize utilities', () => {
       type: 'computer',
       name: 'comp',
       computer: async () => ({
-        environment: 'node',
-        dimensions: { width: 1, height: 2 },
+        environment: 'browser',
+        dimensions: [1, 2],
       }),
     };
     expect(() => serializeTool(t)).toThrow(
