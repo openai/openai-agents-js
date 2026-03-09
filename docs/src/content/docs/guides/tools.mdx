@@ -85,7 +85,11 @@ The tool calls are still requested by the model, but your application or configu
 - An initializer function that creates a `Computer` per run.
 - A provider object with `{ create, dispose }` when you need run-scoped setup and teardown.
 
-Use `needsApproval` when computer actions should pause for user review, and `onSafetyCheck` when you want to acknowledge or reject pending safety checks raised during a computer action.
+To use OpenAI's current computer-use path, set a computer-capable model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4). When the request model is explicit, the SDK sends the GA built-in `computer` tool shape. If the effective model still comes from a stored prompt or another older integration, the SDK keeps the legacy `computer_use_preview` wire shape for compatibility unless you explicitly opt into the GA path with `modelSettings.toolChoice: 'computer'`.
+
+GA computer calls can contain batched `actions[]` in a single `computer_call`. The SDK executes them in order, evaluates `needsApproval` against each action, and returns the final screenshot as the tool output. If you build an approval UI from `interruption.rawItem`, read `actions` when present and fall back to `action` for legacy preview items.
+
+Use `needsApproval` when high-impact computer actions should pause for user review, and `onSafetyCheck` when you want to acknowledge or reject the pending safety checks reported for a computer call. For model-side guidance and migration details, see the official [OpenAI computer use guide](https://developers.openai.com/api/docs/guides/tools-computer-use/) and its [migration note](https://developers.openai.com/api/docs/guides/tools-computer-use/#migration-from-computer-use-preview).
 
 #### Shell tool specifics
 

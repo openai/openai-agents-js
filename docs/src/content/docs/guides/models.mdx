@@ -139,7 +139,7 @@ When a run includes deferred tools, add `toolSearchTool()` to the same agent and
 | `topP` | `number` | Nucleus sampling. |
 | `frequencyPenalty` | `number` | Penalise repeated tokens. |
 | `presencePenalty` | `number` | Encourage new tokens. |
-| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). |
+| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | See [forcing tool use](/openai-agents-js/guides/agents#forcing-tool-use). On OpenAI Responses, `toolChoice: 'computer'` forces the GA built-in computer tool when available. |
 | `parallelToolCalls` | `boolean` | Allow parallel function calls where supported. |
 | `truncation` | `'auto' \| 'disabled'` | Token truncation strategy. |
 | `maxTokens` | `number` | Maximum tokens in the response. |
@@ -173,6 +173,8 @@ Agents can be configured with a `prompt` parameter, indicating a server-stored p
 <Code lang="typescript" code={promptIdExample} title="Agent with prompt" />
 
 Any additional agent configuration, like tools or instructions, will override the values you may have configured in your stored prompt.
+
+When a stored prompt already defines the model, the SDK does not send the agent's default model unless you explicitly override it. That matters for `computerTool()`: prompt-managed runs keep the legacy preview wire shape by default for compatibility. To opt into the GA Responses computer tool on a prompt-managed run, explicitly set `modelSettings.toolChoice: 'computer'` or send an explicit model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4). See [Tools](/openai-agents-js/guides/tools#computer-tool-specifics) for the surrounding computer-use details.
 
 ---
 

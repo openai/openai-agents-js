@@ -212,6 +212,8 @@ Supplying tools doesn’t guarantee the LLM will call one. You can **force** too
 3. `'none'` – the LLM must **not** call a tool.
 4. A specific tool name, e.g. `'calculator'` – the LLM must call that particular tool.
 
+When the available tool is `computerTool()` on OpenAI Responses, `toolChoice: 'computer'` is special: it forces the GA built-in computer tool instead of treating `'computer'` as a plain function name. The SDK also accepts preview-compatible computer selectors for older integrations, but new code should prefer `'computer'`. If no computer tool is available, the string behaves like any other function tool name.
+
 <Code lang="typescript" code={agentForcingToolUse} title="Forcing tool use" />
 
 When you use deferred Responses tools such as `toolNamespace()`, function tools with `deferLoading: true`, or hosted MCP tools with `deferLoading: true`, keep `modelSettings.toolChoice` on `'auto'`. The SDK rejects forcing a deferred tool or the built-in `tool_search` helper by name because the model needs to decide when to load those definitions. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) for the full tool-search setup.

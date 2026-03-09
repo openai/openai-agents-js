@@ -42,6 +42,7 @@ const editor: Editor = {
 
 const agent = new Agent({
   name: 'Local tools agent',
+  model: 'gpt-5.4',
   tools: [
     computerTool({ computer }),
     shellTool({ shell, needsApproval: true }),
