@@ -8,12 +8,12 @@ import handoffFinalOutputTypes from '../../../../../../examples/docs/results/han
 import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?raw';
 import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
 
-[에이전트 실행](/openai-agents-js/ko/guides/running-agents) 시, 다음 중 하나를 받게 됩니다:
+[에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 하면 다음 중 하나를 받습니다:
 
 - `stream: true` 없이 `run`을 호출하면 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- `stream: true`와 함께 `run`을 호출하면 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult). 스트리밍에 대한 자세한 내용은 [스트리밍 가이드](/openai-agents-js/ko/guides/streaming)도 확인하세요
+- `stream: true`로 `run`을 호출하면 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult). 스트리밍에 대한 자세한 내용은 [스트리밍 가이드](/openai-agents-js/ko/guides/streaming)도 확인하세요
 
-두 결과 타입 모두 `finalOutput`, `newItems`, `interruptions`, `state` 같은 동일한 핵심 결과 표면을 제공합니다. `StreamedRunResult`는 `completed`, `toStream()`, `toTextStream()`, `currentAgent` 같은 스트리밍 제어 기능을 추가로 제공합니다.
+두 결과 타입 모두 `finalOutput`, `newItems`, `interruptions`, `state` 같은 동일한 핵심 결과 표면을 제공합니다. `StreamedRunResult`는 `completed`, `toStream()`, `toTextStream()`, `currentAgent` 같은 스트리밍 제어를 추가로 제공합니다.
 
 ## 적절한 결과 표면 선택
 
@@ -22,98 +22,99 @@ import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
 | 다음이 필요하다면... | 사용 |
 | --- | --- |
 | 사용자에게 보여줄 최종 답변 | `finalOutput` |
-| 전체 로컬 transcript를 포함한 재생 가능한 다음 턴 입력 | `history` |
-| 이번 실행에서 새로 생성된 모델 형식 항목만 | `output` |
+| 전체 로컬 트랜스크립트를 포함한 재생 가능한 다음 턴 입력 | `history` |
+| 이번 실행에서 새로 생성된 모델 형태의 항목만 | `output` |
 | 에이전트/도구/핸드오프 메타데이터가 포함된 풍부한 실행 항목 | `newItems` |
 | 일반적으로 다음 사용자 턴을 처리해야 하는 에이전트 | `lastAgent` 또는 `activeAgent` |
-| `previousResponseId`를 사용하는 OpenAI Responses API 체이닝 | `lastResponseId` |
+| OpenAI Responses API 체이닝의 `previousResponseId` | `lastResponseId` |
 | 대기 중인 승인과 재개 가능한 스냅샷 | `interruptions` 및 `state` |
-| 앱 컨텍스트, 승인, 사용량, 중첩된 agent-tool 입력 | `runContext` |
-| 현재 중첩된 `Agent.asTool()` 호출의 메타데이터(예: `customOutputExtractor` 내부) | `agentToolInvocation` |
-| 원문 모델 호출 또는 가드레일 진단 | `rawResponses` 및 가드레일 결과 배열 |
+| 앱 컨텍스트, 승인, 사용량, 중첩 에이전트-도구 입력 | `runContext` |
+| 현재 중첩 `Agent.asTool()` 호출의 메타데이터(예: `customOutputExtractor` 내부) | `agentToolInvocation` |
+| 원시 모델 호출 또는 가드레일 진단 | `rawResponses` 및 가드레일 결과 배열 |
 
 ## 최종 출력
 
-`finalOutput` 속성에는 마지막으로 실행된 에이전트의 최종 출력이 들어 있습니다. 이 결과는 다음 중 하나입니다:
+`finalOutput` 속성은 마지막으로 실행된 에이전트의 최종 출력을 담고 있습니다. 이 결과는 다음 중 하나입니다:
 
 - `string` — `outputType`이 정의되지 않은 모든 에이전트의 기본값
-- `unknown` — 에이전트의 출력 타입이 JSON 스키마로 정의된 경우. 이 경우 JSON은 파싱되지만 타입은 여전히 수동으로 검증해야 합니다
-- `z.infer<outputType>` — 에이전트의 출력 타입이 Zod 스키마로 정의된 경우. 출력은 이 스키마 기준으로 자동 파싱됩니다
-- `undefined` — 에이전트가 출력을 생성하지 못한 경우(예: 출력 생성 전에 중단됨)
+- `unknown` — 에이전트에 출력 타입으로 JSON 스키마가 정의된 경우. 이때 JSON은 파싱되지만 타입은 수동으로 검증해야 합니다
+- `z.infer<outputType>` — 에이전트에 출력 타입으로 Zod 스키마가 정의된 경우. 출력은 이 스키마에 맞춰 자동으로 파싱됩니다
+- `undefined` — 에이전트가 출력을 생성하지 않은 경우(예: 출력을 만들기 전에 중지된 경우)
 
-스트리밍 실행이 아직 진행 중이거나, 최종 출력에 도달하기 전에 승인 인터럽션(중단 처리)으로 실행이 일시 중지된 경우에도 `finalOutput`은 `undefined`입니다.
+스트리밍 실행이 아직 진행 중이거나 최종 출력에 도달하기 전에 승인 인터럽션(중단 처리)으로 일시 정지된 경우에도 `finalOutput`은 `undefined`입니다.
 
-서로 다른 출력 타입으로 핸드오프를 사용하는 경우, 에이전트를 생성할 때 `new Agent()` 생성자 대신 `Agent.create()` 메서드를 사용해야 합니다.
+서로 다른 출력 타입으로 핸드오프를 사용한다면, 에이전트를 만들 때 `new Agent()` 생성자 대신 `Agent.create()` 메서드를 사용해야 합니다.
 
-이렇게 하면 SDK가 가능한 모든 핸드오프 전반에서 출력 타입을 추론해 `finalOutput` 속성에 union 타입을 제공합니다.
+이렇게 하면 SDK가 가능한 모든 핸드오프 전반의 출력 타입을 추론하고 `finalOutput` 속성에 유니온 타입을 제공합니다.
 
 예시:
 
 <Code
   lang="typescript"
   code={handoffFinalOutputTypes}
-  title="핸드오프 최종 출력 타입"
+  title="Handoff final output types"
 />
 
 ## 입력 및 출력 표면
 
 이 속성들은 서로 다른 질문에 답합니다:
 
-| 속성 | 포함 내용 | 적합한 용도 |
+| 속성 | 포함 내용 | 가장 적합한 용도 |
 | --- | --- | --- |
-| `input` | 이번 실행의 기본 입력. 핸드오프 입력 필터가 히스토리를 재작성했다면, 실행이 이어진 필터링된 입력을 반영합니다 | 이 실행이 실제로 입력으로 무엇을 사용했는지 감사 |
-| `output` | 에이전트 메타데이터 없이, 이번 실행에서 생성된 모델 형식 항목만 | 새 모델 델타만 저장하거나 재생 |
+| `input` | 이번 실행의 기본 입력. 핸드오프 입력 필터가 히스토리를 다시 썼다면, 실행이 계속된 필터링된 입력이 반영됩니다 | 이번 실행이 실제로 입력으로 사용한 내용 감사 |
+| `output` | 에이전트 메타데이터 없이, 이번 실행에서 생성된 모델 형태의 항목만 | 새 모델 델타만 저장하거나 재생 |
 | `newItems` | 에이전트/도구/핸드오프 메타데이터가 포함된 풍부한 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) 래퍼 | 로그, UI, 감사, 디버깅 |
 | `history` | `input + newItems`로 구성된 재생 가능한 다음 턴 입력 | 수동 채팅 루프 및 클라이언트 관리 대화 상태 |
 
-실무에서는 다음과 같습니다:
+실무에서는:
 
-- 애플리케이션에서 전체 대화를 수동으로 유지한다면 `history`를 사용하세요
-- 이전 히스토리를 이미 다른 곳에 저장하고 이번 실행의 새 생성 항목만 원한다면 `output`을 사용하세요
-- 에이전트 연관, 도구 출력, 핸드오프 경계, 승인 항목이 필요하면 `newItems`를 사용하세요
-- `conversationId` 또는 `previousResponseId`를 사용 중이라면 보통 `history`를 `run()`에 다시 전달하지 않습니다. 대신 새 사용자 입력만 전달하고 서버 관리 ID를 재사용하세요. 전체 비교는 [에이전트 실행](/openai-agents-js/ko/guides/running-agents#state-and-conversation-management)을 참고하세요
+- 애플리케이션에서 전체 대화를 수동으로 유지할 때 `history`를 사용하세요
+- 이전 히스토리를 이미 다른 곳에 저장하고 있고 이번 실행의 새 생성 항목만 원할 때 `output`을 사용하세요
+- 에이전트 연관, 도구 출력, 핸드오프 경계, 승인 항목이 필요할 때 `newItems`를 사용하세요
+- `conversationId` 또는 `previousResponseId`를 사용 중이라면, 보통 `history`를 `run()`에 다시 전달하지 않습니다. 대신 새 사용자 입력만 전달하고 서버 관리 ID를 재사용하세요. 전체 비교는 [에이전트 실행](/openai-agents-js/ko/guides/running-agents#state-and-conversation-management)을 참고하세요
 
-`history`는 채팅 유사 사용 사례에서 전체 히스토리를 유지하는 편리한 방법입니다:
+`history`는 채팅과 유사한 사용 사례에서 전체 히스토리를 유지하는 편리한 방법입니다:
 
-<Code lang="typescript" code={historyLoop} title="히스토리 루프" />
+<Code lang="typescript" code={historyLoop} title="History loop" />
 
 ## 새 항목
 
-`newItems`는 실행 중 발생한 일을 가장 풍부하게 보여줍니다. 일반적인 항목 타입은 다음과 같습니다:
+`newItems`는 실행 중 무슨 일이 있었는지 가장 풍부하게 보여줍니다. 일반적인 항목 타입은 다음과 같습니다:
 
 - 어시스턴트 메시지용 [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)
 - 추론 항목용 [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)
+- Responses 도구 검색 요청 및 반환된 로드된 도구 정의용 [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem), [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem)
 - 도구 호출 및 결과용 [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem), [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)
-- 승인 때문에 일시 중지된 도구 호출용 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)
-- 핸드오프 요청 및 완료된 전송용 [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem), [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)
+- 승인 때문에 일시 정지된 도구 호출용 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)
+- 핸드오프 요청 및 완료된 전환용 [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem), [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)
 
-어떤 에이전트가 항목을 생성했는지, 또는 도구/핸드오프/승인 경계를 표시하는지 알아야 한다면 `output`보다 `newItems`를 선택하세요.
+어떤 에이전트가 항목을 생성했는지, 또는 그것이 도구/도구 검색/핸드오프/승인 경계를 나타내는지 알아야 한다면 `output` 대신 `newItems`를 선택하세요. `toolSearchTool()`을 사용할 때, 이런 도구 검색 항목은 일반 도구 호출이 일어나기 전에 어떤 지연 도구나 네임스페이스가 로드됐는지 확인하는 가장 쉬운 방법입니다.
 
 ## 대화 계속 또는 재개
 
 ### 활성 에이전트
 
-`lastAgent` 속성에는 마지막으로 실행된 에이전트가 들어 있습니다. 핸드오프 이후 다음 사용자 턴에서 재사용할 최적의 에이전트인 경우가 많습니다. `activeAgent`는 동일 값의 별칭입니다.
+`lastAgent` 속성에는 마지막으로 실행된 에이전트가 들어 있습니다. 이는 핸드오프 후 다음 사용자 턴에서 재사용할 최적의 에이전트인 경우가 많습니다. `activeAgent`는 같은 값의 별칭입니다.
 
-스트리밍 모드에서는 실행이 진행 중인 동안 `currentAgent`가 현재 활성 에이전트를 알려줍니다.
+스트리밍 모드에서는 실행이 진행 중일 때 `currentAgent`가 현재 활성 에이전트를 알려줍니다.
 
-### 인터럽션(중단 처리) 및 재개 가능한 상태
+### 인터럽션(중단 처리)과 재개 가능한 상태
 
-도구에 승인이 필요하면 실행이 일시 중지되고 `interruptions`에 대기 중인 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)들이 들어 있습니다. 여기에는 직접 도구, 핸드오프 후 도달한 도구, 중첩된 `agent.asTool()` 실행에서 발생한 승인이 포함될 수 있습니다.
+도구에 승인이 필요하면 실행이 일시 정지되고 `interruptions`에는 대기 중인 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)이 포함됩니다. 여기에는 직접 도구, 핸드오프 이후 도달한 도구, 중첩 `agent.asTool()` 실행에서 발생한 승인도 포함될 수 있습니다.
 
-`result.state.approve(...)` / `result.state.reject(...)`로 승인을 처리한 뒤, 동일한 `state`를 `run()`에 다시 전달해 재개하세요. 모든 인터럽션(중단 처리)을 한 번에 처리할 필요는 없습니다. 일부 항목만 처리한 뒤 다시 실행하면, 해결된 호출은 계속 진행되고 미해결 항목은 대기 상태로 남아 실행을 다시 일시 중지합니다.
+`result.state.approve(...)` / `result.state.reject(...)`로 승인을 처리한 다음, 같은 `state`를 `run()`에 다시 전달해 재개하세요. 모든 인터럽션(중단 처리)을 한 번에 해결할 필요는 없습니다. 일부 항목만 처리한 뒤 다시 실행하면 해결된 호출은 계속 진행되고, 미해결 항목은 대기 상태로 남아 실행을 다시 일시 정지시킵니다.
 
-`state` 속성은 결과를 뒷받침하는 직렬화 가능한 스냅샷입니다. [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop), 재시도 흐름, 또는 나중에 일시 중지된 실행을 재개해야 하는 모든 경우에 사용하세요.
+`state` 속성은 결과 뒤에 있는 직렬화 가능한 스냅샷입니다. [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop), 재시도 흐름, 또는 나중에 일시 정지된 실행을 재개해야 하는 모든 경우에 사용하세요.
 
-### 서버 관리형 이어가기
+### 서버 관리형 이어서 실행
 
-`lastResponseId`는 OpenAI Responses API 체이닝을 사용할 때 다음 턴에서 `previousResponseId`로 전달할 값입니다.
+OpenAI Responses API 체이닝을 사용할 때 `lastResponseId`는 다음 턴에서 `previousResponseId`로 전달할 값입니다.
 
-이미 `history`, `session`, `conversationId`로 대화를 이어가고 있다면 보통 `lastResponseId`는 필요하지 않습니다. 다단계 실행의 모든 원문 모델 응답이 필요하면 대신 `rawResponses`를 확인하세요.
+이미 `history`, `session`, `conversationId`로 대화를 이어가고 있다면 보통 `lastResponseId`는 필요하지 않습니다. 다단계 실행의 모든 원시 모델 응답이 필요하다면 대신 `rawResponses`를 확인하세요.
 
-## 중첩된 agent-tool 메타데이터
+## 중첩 에이전트-도구 메타데이터
 
-`agentToolInvocation`은 중첩된 `Agent.asTool()` 결과용이며, 특히 `customOutputExtractor` 내부에서 현재 도구 호출 메타데이터가 필요할 때 사용합니다. 일반적인 "전체 실행 완료 요약" 필드는 아닙니다.
+`agentToolInvocation`은 중첩 `Agent.asTool()` 결과를 위한 것으로, 특히 `customOutputExtractor` 내부에서 현재 도구 호출의 메타데이터가 필요할 때 유용합니다. 일반적인 "전체 실행 완료" 요약 필드는 아닙니다.
 
 이 중첩 컨텍스트에서 `agentToolInvocation`은 다음을 제공합니다:
 
@@ -121,40 +122,40 @@ import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
 - `toolCallId`
 - `toolArguments`
 
-중첩 agent-tool 실행에 전달된 구조화된 입력도 필요하다면 `result.runContext.toolInput`과 함께 사용하세요.
+중첩 에이전트-도구 실행에 전달된 구조화 입력도 필요하다면 `result.runContext.toolInput`과 함께 사용하세요.
 
 일반적인 최상위 `run()` 결과에서는 보통 `undefined`입니다. 이 메타데이터는 런타임 전용이며 `RunState`로 직렬화되지 않습니다. 주변 패턴은 [Agents as tools](/openai-agents-js/ko/guides/tools#4-agents-as-tools)를 참고하세요.
 
-## 스트리밍된 결과
+## 스트리밍 결과
 
-`StreamedRunResult`는 위와 동일한 결과 표면을 상속하지만, 스트리밍 전용 제어 기능을 추가합니다:
+`StreamedRunResult`는 위의 동일한 결과 표면을 상속하지만, 스트리밍 전용 제어를 추가합니다:
 
 - 어시스턴트 텍스트 전용 `toTextStream()`
 - 전체 이벤트 스트림용 `toStream()` 또는 `for await ... of stream`
-- 실행과 모든 후처리 콜백 완료까지 대기하는 `completed`
-- 최종 스트리밍 상태를 확인하는 `error`, `cancelled`
+- 실행 및 모든 후처리 콜백이 끝날 때까지 대기하는 `completed`
+- 종료된 스트리밍 상태를 확인하는 `error`, `cancelled`
 - 실행 중 활성 에이전트를 추적하는 `currentAgent`
 
-스트리밍 실행의 최종 확정 상태가 필요하면 `finalOutput`, `history`, `interruptions`, 기타 요약 속성을 읽기 전에 `completed`를 기다리세요. 이벤트 단위 처리는 [스트리밍 가이드](/openai-agents-js/ko/guides/streaming)를 참고하세요.
+스트리밍 실행의 확정된 최종 상태가 필요하다면 `finalOutput`, `history`, `interruptions`, 기타 요약 속성을 읽기 전에 `completed`를 기다리세요. 이벤트 단위 처리 방식은 [스트리밍 가이드](/openai-agents-js/ko/guides/streaming)를 참고하세요.
 
 ## 진단 및 고급 필드
 
 ### 실행 컨텍스트
 
-`runContext` 속성은 결과에서 지원되는 공개 실행 컨텍스트 뷰입니다. `result.runContext.context`는 앱 컨텍스트이며, 같은 객체에 승인, 사용량, 중첩 `toolInput` 같은 SDK 관리 런타임 메타데이터도 포함됩니다. 전체 형태는 [컨텍스트 관리](/openai-agents-js/ko/guides/context)를 참고하세요.
+`runContext` 속성은 결과의 실행 컨텍스트를 보여주는 지원되는 공개 뷰입니다. `result.runContext.context`는 앱 컨텍스트이며, 같은 객체는 승인, 사용량, 중첩 `toolInput` 같은 SDK 관리 런타임 메타데이터도 담고 있습니다. 전체 형태는 [컨텍스트 관리](/openai-agents-js/ko/guides/context)를 참고하세요.
 
-### 원문 응답
+### 원시 응답
 
-`rawResponses`에는 실행 중 수집된 원문 모델 응답이 포함됩니다. 다단계 실행에서는 핸드오프나 반복 도구/모델 사이클처럼 둘 이상의 응답이 생성될 수 있습니다.
+`rawResponses`에는 실행 중 수집된 원시 모델 응답이 포함됩니다. 다단계 실행에서는 핸드오프나 반복 도구/모델 사이클 등으로 인해 응답이 여러 개 생성될 수 있습니다.
 
 ### 가드레일 결과
 
 `inputGuardrailResults`와 `outputGuardrailResults` 속성에는 에이전트 수준 가드레일 결과가 포함됩니다. 도구 가드레일 결과는 `toolInputGuardrailResults`와 `toolOutputGuardrailResults`로 별도 제공됩니다.
 
-가드레일 결정 로깅, 가드레일 함수가 반환한 추가 메타데이터 확인, 실행이 차단된 이유 디버깅이 필요할 때 이 배열들을 사용하세요.
+가드레일 결정 로깅, 가드레일 함수가 반환한 추가 메타데이터 확인, 실행이 차단된 이유 디버깅이 필요할 때 이 배열을 사용하세요.
 
 ### 사용량
 
-토큰 사용량은 `result.state.usage`에 집계되며, 실행의 요청 수와 토큰 총계를 추적합니다. 동일한 usage 객체는 `result.runContext.usage`로도 사용할 수 있습니다. 스트리밍 실행에서는 응답이 도착함에 따라 이 데이터가 업데이트됩니다.
+토큰 사용량은 `result.state.usage`에 집계되며, 실행의 요청 수와 총 토큰 수를 추적합니다. 같은 사용량 객체는 `result.runContext.usage`에서도 사용할 수 있습니다. 스트리밍 실행에서는 응답이 도착할 때마다 이 데이터가 업데이트됩니다.
 
-<Code lang="typescript" code={usageExample} title="RunState에서 usage 읽기" />
+<Code lang="typescript" code={usageExample} title="Read usage from RunState" />
