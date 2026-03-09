@@ -11,8 +11,16 @@ type Promisable<T> = T | Promise<T>;
  * Interface to implement for a computer environment to be used by the agent.
  */
 interface ComputerBase {
-  environment: Environment;
-  dimensions: [number, number];
+  /**
+   * Optional display environment metadata.
+   * Required when targeting preview computer tool wire formats.
+   */
+  environment?: Environment;
+  /**
+   * Optional display dimensions metadata.
+   * Required when targeting preview computer tool wire formats.
+   */
+  dimensions?: [number, number];
 
   initRun?(runContext?: RunContext): Promisable<void>;
 

@@ -55,8 +55,6 @@ describe('getToolChoice', () => {
       {
         type: 'computer',
         name: 'computer_use_preview',
-        environment: 'browser',
-        dimensions: [1024, 768],
       },
     ] as any;
 
@@ -121,8 +119,6 @@ describe('converTool', () => {
   it('converts computer tools', () => {
     const t = converTool({
       type: 'computer',
-      environment: 'mac',
-      dimensions: [100, 200],
     } as any);
     expect(t.tool).toEqual({
       type: 'computer',
@@ -146,6 +142,19 @@ describe('converTool', () => {
       display_width: 100,
       display_height: 200,
     });
+  });
+
+  it('rejects preview computer tools without display metadata', () => {
+    expect(() =>
+      converTool(
+        {
+          type: 'computer',
+        } as any,
+        {
+          usePreviewComputerTool: true,
+        },
+      ),
+    ).toThrow('Preview computer tools require environment and dimensions.');
   });
 
   it('converts shell tools', () => {

@@ -942,6 +942,58 @@ describe('Runner.run', () => {
       expect(capturingModel.lastRequest?.overridePromptModel).toBe(true);
     });
 
+    it('serializes GA computer tools without requiring display metadata', async () => {
+      class CapturingModel implements Model {
+        lastRequest?: ModelRequest;
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.lastRequest = request;
+          return {
+            output: [fakeModelMessage('computer ok')],
+            usage: new Usage(),
+          };
+        }
+
+        async *getStreamedResponse(
+          _request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const capturingModel = new CapturingModel();
+      const agent = new Agent({
+        name: 'ComputerPrompted',
+        model: capturingModel,
+        tools: [
+          computerTool({
+            computer: {
+              screenshot: async () => 'img',
+              click: async () => {},
+              doubleClick: async () => {},
+              drag: async () => {},
+              keypress: async () => {},
+              move: async () => {},
+              scroll: async () => {},
+              type: async () => {},
+              wait: async () => {},
+            } as any,
+          }),
+        ],
+      });
+
+      const result = await run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('computer ok');
+      expect(capturingModel.lastRequest?.tools).toEqual([
+        {
+          type: 'computer',
+          name: 'computer_use_preview',
+        },
+      ]);
+    });
+
     it('emits agent_end lifecycle event for non-streaming agents', async () => {
       const agent = new Agent({
         name: 'TestAgent',
