@@ -1,5 +1,24 @@
 # @openai/agents-openai
 
+## 0.6.0
+
+### Patch Changes
+
+- a5bce45: fix: preserve canonical chat completions providerData fields
+- 8a5135a: fix: #1070 preserve MCP image mimeType in tool outputs
+- 98a62a2: test: add coverage for helper edge cases and conversation session branches
+- 559f3d8: fix: allow GA computer tools without display metadata
+- 4e6b3fb: fix: migrate ComputerTool to the GA computer tool
+- ddd97d5: feat: add Responses tool search support
+- Updated dependencies [8a5135a]
+- Updated dependencies [b2e5236]
+- Updated dependencies [94c18cd]
+- Updated dependencies [98a62a2]
+- Updated dependencies [559f3d8]
+- Updated dependencies [4e6b3fb]
+- Updated dependencies [ddd97d5]
+  - @openai/agents-core@0.6.0
+
 ## 0.5.4
 
 ### Patch Changes

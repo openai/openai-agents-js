@@ -1,5 +1,17 @@
 # @openai/agents-core
 
+## 0.6.0
+
+### Patch Changes
+
+- 8a5135a: fix: #1070 preserve MCP image mimeType in tool outputs
+- b2e5236: fix: rehydrate custom client tool_search runtime tools on RunState resume
+- 94c18cd: fix: fold unreleased run state schema changes into 1.8
+- 98a62a2: test: add coverage for helper edge cases and conversation session branches
+- 559f3d8: fix: allow GA computer tools without display metadata
+- 4e6b3fb: fix: migrate ComputerTool to the GA computer tool
+- ddd97d5: feat: add Responses tool search support
+
 ## 0.5.4
 
 ### Patch Changes
