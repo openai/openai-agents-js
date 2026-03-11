@@ -152,7 +152,7 @@ describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
 });
 
 describe('mergeModelSettings', () => {
-  it('treats retry settings as a shallow override block', () => {
+  it('deep merges retry settings and nested backoff overrides', () => {
     const policy = () => true;
 
     expect(
@@ -182,14 +182,16 @@ describe('mergeModelSettings', () => {
       topP: 0.9,
       retry: {
         maxRetries: 0,
+        policy,
         backoff: {
+          initialDelayMs: 100,
           maxDelayMs: 500,
         },
       },
     });
   });
 
-  it('replaces inherited retry policy when an override supplies only retry backoff', () => {
+  it('preserves inherited retry policy when an override supplies only retry backoff', () => {
     const policy = () => true;
 
     expect(
@@ -213,9 +215,43 @@ describe('mergeModelSettings', () => {
       ),
     ).toEqual({
       retry: {
+        maxRetries: 3,
+        policy,
         backoff: {
+          initialDelayMs: 100,
           maxDelayMs: 500,
         },
+      },
+    });
+  });
+
+  it('allows explicitly clearing inherited retry fields with undefined overrides', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+              maxDelayMs: 500,
+            },
+          },
+        },
+        {
+          retry: {
+            policy: undefined,
+            backoff: undefined,
+          },
+        },
+      ),
+    ).toEqual({
+      retry: {
+        maxRetries: 3,
+        policy: undefined,
+        backoff: undefined,
       },
     });
   });

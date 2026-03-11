@@ -2,29 +2,7 @@ import { Agent } from '../agent';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from '../defaultModel';
 import { Model, ModelSettings } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
-
-const NESTED_MODEL_SETTINGS_MERGE_KEYS = ['reasoning', 'text'] as const;
-
-function isPlainObjectLike(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function mergeNestedObjectMap(
-  targetRecord: Record<string, unknown>,
-  inheritedRecord: Record<string, unknown>,
-  overrideRecord: Record<string, unknown>,
-  key: string,
-): void {
-  if (
-    isPlainObjectLike(inheritedRecord[key]) &&
-    isPlainObjectLike(overrideRecord[key])
-  ) {
-    targetRecord[key] = {
-      ...inheritedRecord[key],
-      ...overrideRecord[key],
-    };
-  }
-}
+export { mergeModelSettings } from './modelSettingsMerge';
 
 const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
   const providerData = settings?.providerData as
@@ -77,44 +55,6 @@ export function maybeResetToolChoice(
     return { ...modelSettings, toolChoice: undefined };
   }
   return modelSettings;
-}
-
-export function mergeModelSettings(
-  inheritedModelSettings?: ModelSettings,
-  overrideModelSettings?: ModelSettings,
-): ModelSettings {
-  const mergedModelSettings: ModelSettings = {
-    ...inheritedModelSettings,
-    ...overrideModelSettings,
-  };
-
-  if (!inheritedModelSettings || !overrideModelSettings) {
-    return mergedModelSettings;
-  }
-
-  const inheritedModelSettingsRecord = inheritedModelSettings as Record<
-    string,
-    unknown
-  >;
-  const overrideModelSettingsRecord = overrideModelSettings as Record<
-    string,
-    unknown
-  >;
-  const mergedModelSettingsRecord = mergedModelSettings as Record<
-    string,
-    unknown
-  >;
-
-  for (const key of NESTED_MODEL_SETTINGS_MERGE_KEYS) {
-    mergeNestedObjectMap(
-      mergedModelSettingsRecord,
-      inheritedModelSettingsRecord,
-      overrideModelSettingsRecord,
-      key,
-    );
-  }
-
-  return mergedModelSettings;
 }
 
 /**

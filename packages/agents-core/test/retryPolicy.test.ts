@@ -1344,7 +1344,7 @@ describe('retry policies', () => {
     expect(attempts).toBe(1);
   });
 
-  it('treats inherited agent tool retry settings as a shallow override block', () => {
+  it('deep merges inherited agent tool retry settings', () => {
     const policy = () => true;
     const merged = mergeAgentToolRunConfig(
       {
@@ -1372,13 +1372,15 @@ describe('retry policies', () => {
 
     expect(merged.modelSettings?.retry).toEqual({
       maxRetries: 0,
+      policy,
       backoff: {
+        initialDelayMs: 100,
         maxDelayMs: 500,
       },
     });
   });
 
-  it('does not inherit retry policy into Agent.asTool when only backoff is overridden', () => {
+  it('inherits retry policy into Agent.asTool when only backoff is overridden', () => {
     const policy = () => true;
     const merged = mergeAgentToolRunConfig(
       {
@@ -1404,13 +1406,16 @@ describe('retry policies', () => {
     );
 
     expect(merged.modelSettings?.retry).toEqual({
+      maxRetries: 3,
+      policy,
       backoff: {
+        initialDelayMs: 100,
         maxDelayMs: 500,
       },
     });
   });
 
-  it('treats retry settings as a shallow override between runner and agent configs', async () => {
+  it('deep merges retry settings between runner and agent configs', async () => {
     const policy = () => true;
     let capturedRetrySettings:
       | ModelRequest['modelSettings']['retry']
@@ -1458,13 +1463,15 @@ describe('retry policies', () => {
     expect(result.finalOutput).toBe('Merged retry settings');
     expect(capturedRetrySettings).toEqual({
       maxRetries: 0,
+      policy,
       backoff: {
+        initialDelayMs: 100,
         maxDelayMs: 500,
       },
     });
   });
 
-  it('does not inherit runner retry policy when an agent overrides only backoff', async () => {
+  it('inherits runner retry policy when an agent overrides only backoff', async () => {
     const policy = () => true;
     let capturedRetrySettings:
       | ModelRequest['modelSettings']['retry']
@@ -1510,7 +1517,10 @@ describe('retry policies', () => {
 
     expect(result.finalOutput).toBe('Merged retry settings');
     expect(capturedRetrySettings).toEqual({
+      maxRetries: 3,
+      policy,
       backoff: {
+        initialDelayMs: 100,
         maxDelayMs: 500,
       },
     });

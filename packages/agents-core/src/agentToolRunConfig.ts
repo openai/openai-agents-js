@@ -1,11 +1,11 @@
 import type { RunConfig } from './run';
+import { mergeModelSettings } from './runner/modelSettingsMerge';
 
 const TRANSPORT_OVERRIDE_PROVIDER_DATA_ALIAS_KEYS = [
   ['extra_headers', 'extraHeaders'],
   ['extra_query', 'extraQuery'],
   ['extra_body', 'extraBody'],
 ] as const;
-const NESTED_MODEL_SETTINGS_MERGE_KEYS = ['reasoning', 'text'] as const;
 const AGENT_TOOL_PARENT_RUN_CONFIG_SYMBOL = Symbol(
   'openai.agents.agentToolParentRunConfig',
 );
@@ -223,24 +223,10 @@ function mergeAgentToolModelSettings(
     return undefined;
   }
 
-  const mergedModelSettings: Record<string, unknown> = {
-    ...inheritedModelSettings,
-    ...toolModelSettings,
-  };
-  const inheritedModelSettingsRecord = inheritedModelSettings as Record<
-    string,
-    unknown
-  >;
-  const toolModelSettingsRecord = toolModelSettings as Record<string, unknown>;
-
-  for (const key of NESTED_MODEL_SETTINGS_MERGE_KEYS) {
-    mergeNestedObjectMap(
-      mergedModelSettings,
-      inheritedModelSettingsRecord,
-      toolModelSettingsRecord,
-      key,
-    );
-  }
+  const mergedModelSettings = mergeModelSettings(
+    inheritedModelSettings,
+    toolModelSettings,
+  ) as Record<string, unknown>;
 
   const inheritedProviderData = inheritedModelSettings.providerData;
   const toolProviderData = toolModelSettings.providerData;
