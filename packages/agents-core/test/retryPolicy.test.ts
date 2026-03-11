@@ -117,7 +117,7 @@ describe('retry policies', () => {
     expect(seenRunnerManagedRetry).toEqual([undefined, true]);
   });
 
-  it('disables provider-managed retries on the first stateful attempt', async () => {
+  it('preserves provider-managed retries on the first stateful attempt', async () => {
     const seenRunnerManagedRetry: Array<boolean | undefined> = [];
 
     const model: Model = {
@@ -152,7 +152,7 @@ describe('retry policies', () => {
     );
 
     expect(result.finalOutput).toBe('ok');
-    expect(seenRunnerManagedRetry).toEqual([true]);
+    expect(seenRunnerManagedRetry).toEqual([undefined]);
   });
 
   it('does not retry without a retry policy even when maxRetries is configured', async () => {

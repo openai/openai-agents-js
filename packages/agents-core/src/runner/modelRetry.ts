@@ -106,7 +106,7 @@ function shouldDisableProviderManagedRetry(
     return false;
   }
 
-  return attempt > 1 || isStatefulConversationRequest(request);
+  return attempt > 1;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
