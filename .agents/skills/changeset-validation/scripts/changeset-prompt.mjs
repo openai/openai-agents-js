@@ -171,6 +171,7 @@ function renderPrompt(template, data) {
     .replaceAll('{{CHANGED_FILES}}', data.changedFiles)
     .replaceAll('{{CHANGESET_FILES}}', data.changesetFiles)
     .replaceAll('{{PR_BODY}}', data.prBody)
+    .replaceAll('{{PR_LABELS}}', data.prLabels)
     .replaceAll('{{PACKAGE_DIFF}}', data.packageDiff)
     .replaceAll('{{UNKNOWN_PACKAGE_DIRS}}', data.unknownPackageDirs);
 }
@@ -344,6 +345,15 @@ async function main() {
   const prBody = options.ci
     ? eventPayload?.pull_request?.body || '(none)'
     : '(not provided)';
+  const prLabels = options.ci
+    ? eventPayload?.pull_request?.labels
+        ?.map((label) =>
+          typeof label === 'string' ? label : label?.name || '',
+        )
+        .filter(Boolean)
+        .sort()
+        .join(', ') || '(none)'
+    : '(not provided)';
 
   const promptTemplate = readFileSafe(PROMPT_PATH);
   if (!promptTemplate) {
@@ -357,6 +367,7 @@ async function main() {
     changedFiles: [...changes.keys()].sort().join('\n') || '(none)',
     changesetFiles: formatChangesetFiles(changesetEntries),
     prBody,
+    prLabels,
     packageDiff,
     unknownPackageDirs: [...unknownPackageDirs].sort().join(', ') || '(none)',
   });

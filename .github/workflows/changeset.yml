@@ -3,7 +3,7 @@ name: Changeset
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, reopened, synchronize, edited]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
 
 jobs:
   changeset-validation:
