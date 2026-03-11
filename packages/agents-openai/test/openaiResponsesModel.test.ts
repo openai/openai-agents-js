@@ -8,6 +8,7 @@ import {
   type ResponseStreamEvent,
   Span,
 } from '@openai/agents-core';
+import { allowConsole } from '../../../helpers/tests/console-guard';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
 describe('OpenAIResponsesModel', () => {
@@ -3326,6 +3327,7 @@ describe('OpenAIResponsesModel', () => {
 });
 
 it('retries once when responses.create fails with a transient terminated error', async () => {
+  allowConsole(['warn']);
   await withTrace('test', async () => {
     const fakeResponse = { id: 'res-retry', usage: {}, output: [] };
     const terminated = new TypeError('terminated');
