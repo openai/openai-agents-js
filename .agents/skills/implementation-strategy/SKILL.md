@@ -12,11 +12,20 @@ Use this skill before editing code when the task changes runtime behavior or any
 ## Quick start
 
 1. Identify the surface you are changing: released public API, unreleased branch-local API, internal helper, persisted schema, wire protocol, CLI/config/env surface, or docs/examples only.
-2. Determine the latest release boundary:
+2. Determine the latest release boundary from `origin` first, and only fall back to local tags when remote tags are unavailable:
    ```bash
-   git tag -l 'v*' --sort=-v:refname | head -n1
+   LATEST_RELEASE_TAG="$(
+     git ls-remote --tags --refs origin 'v*' 2>/dev/null |
+       awk -F/ '{print $3}' |
+       sort -V -r |
+       head -n1
+   )"
+   if [ -z "$LATEST_RELEASE_TAG" ]; then
+     LATEST_RELEASE_TAG="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+   fi
+   printf '%s\n' "$LATEST_RELEASE_TAG"
    ```
-3. Judge breaking-change risk against that latest release tag, not against unreleased branch churn or post-tag changes already on `main`.
+3. Judge breaking-change risk against that latest release tag, not against unreleased branch churn or post-tag changes already on `main`. If the command fell back to local tags, treat the result as potentially stale and say so.
 4. Prefer the simplest implementation that satisfies the current task. Update callers, tests, docs, and examples directly instead of preserving superseded unreleased interfaces.
 5. Add a compatibility layer only when there is a concrete released consumer, an otherwise supported durable external state that requires it, or when the user explicitly asks for a migration path.
 
