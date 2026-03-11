@@ -4,4 +4,4 @@
 '@openai/agents-extensions': minor
 ---
 
-feat: add opt-in model retry policies across models
+feat: #855 add opt-in model retry policies across models
