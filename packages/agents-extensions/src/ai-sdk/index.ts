@@ -14,6 +14,8 @@ import type {
 import {
   createGenerationSpan,
   Model,
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
   ModelRequest,
   ModelResponse,
   ModelSettings,
@@ -1366,6 +1368,30 @@ export class AiSdkModel implements Model {
     ensureSupportedModel(model);
     this.#model = model;
     this.#options = options;
+  }
+
+  getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+    const error = args.error;
+    const isRetryable =
+      typeof (error as any)?.isRetryable === 'boolean'
+        ? (error as any).isRetryable
+        : undefined;
+
+    if (isRetryable === false) {
+      return {
+        suggested: false,
+        reason: error instanceof Error ? error.message : undefined,
+      };
+    }
+
+    if (isRetryable === true) {
+      return {
+        suggested: true,
+        reason: error instanceof Error ? error.message : undefined,
+      };
+    }
+
+    return undefined;
   }
 
   async #transformOutputText(

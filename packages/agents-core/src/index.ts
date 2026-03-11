@@ -128,10 +128,18 @@ export {
 export {
   Model,
   ModelProvider,
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
+  ModelRetryBackoffSettings,
+  ModelRetryNormalizedError,
+  ModelRetrySettings,
   ModelRequest,
   ModelResponse,
   ModelSettings,
   ModelSettingsToolChoice,
+  RetryDecision,
+  RetryPolicy,
+  RetryPolicyContext,
   SerializedHandoff,
   SerializedTool,
   SerializedOutputType,
@@ -144,6 +152,7 @@ export {
   isGpt5Default,
 } from './defaultModel';
 export { setDefaultModelProvider } from './providers';
+export { retryPolicies } from './runner/modelRetry';
 export { RunResult, StreamedRunResult } from './result';
 export {
   IndividualRunOptions,

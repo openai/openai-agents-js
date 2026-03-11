@@ -10,7 +10,11 @@ import {
 } from '../../src/ai-sdk/index';
 import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
-import type { JSONSchema7, LanguageModelV2 } from '@ai-sdk/provider';
+import {
+  APICallError,
+  type JSONSchema7,
+  type LanguageModelV2,
+} from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 import { allowConsole } from '../../../../helpers/tests/console-guard';
 import { z } from 'zod';
@@ -3795,6 +3799,95 @@ describe('AiSdkModel', () => {
   });
 
   describe('Error handling with tracing', () => {
+    test('getRetryAdvice ignores status-only AI SDK errors without provider guidance', () => {
+      const aiSdkError = new Error('API call failed');
+      (aiSdkError as any).statusCode = 429;
+
+      const model = new AiSdkModel(stubModel({}));
+
+      expect(
+        model.getRetryAdvice({
+          error: aiSdkError,
+          request: {
+            input: 'test input',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any,
+          stream: false,
+          attempt: 1,
+        }),
+      ).toBeUndefined();
+    });
+
+    test('getRetryAdvice honors explicit retryable AI SDK errors', () => {
+      const aiSdkError = new APICallError({
+        isRetryable: true,
+        message: 'Provider requested retry',
+        requestBodyValues: {},
+        responseBody: '{}',
+        responseHeaders: {},
+        statusCode: 429,
+        url: 'https://example.com',
+      });
+
+      const model = new AiSdkModel(stubModel({}));
+
+      expect(
+        model.getRetryAdvice({
+          error: aiSdkError,
+          request: {
+            input: 'test input',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any,
+          stream: false,
+          attempt: 1,
+        }),
+      ).toEqual({
+        suggested: true,
+        reason: 'Provider requested retry',
+      });
+    });
+
+    test('getRetryAdvice honors explicit non-retryable AI SDK errors', () => {
+      const aiSdkError = new APICallError({
+        isRetryable: false,
+        message: 'Provider vetoed retry',
+        requestBodyValues: {},
+        responseBody: '{}',
+        responseHeaders: {},
+        statusCode: 429,
+        url: 'https://example.com',
+      });
+
+      const model = new AiSdkModel(stubModel({}));
+
+      expect(
+        model.getRetryAdvice({
+          error: aiSdkError,
+          request: {
+            input: 'test input',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any,
+          stream: false,
+          attempt: 1,
+        }),
+      ).toEqual({
+        suggested: false,
+        reason: 'Provider vetoed retry',
+      });
+    });
+
     test('captures comprehensive AI SDK error details when tracing enabled', async () => {
       // Simulate an AI SDK error with responseBody and other fields.
       const aiSdkError = new Error('API call failed');

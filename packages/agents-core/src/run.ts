@@ -47,9 +47,14 @@ import {
 } from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
+  mergeModelSettings,
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
+import {
+  getResponseWithRetry,
+  getStreamedResponseWithRetry,
+} from './runner/modelRetry';
 import { processModelResponseAsync } from './runner/modelOutputs';
 import {
   addStepToRunResult,
@@ -779,29 +784,32 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             guardrailTracker.throwIfError();
 
-            state._lastTurnResponse = await preparedCall.model.getResponse({
-              systemInstructions: preparedCall.modelInput.instructions,
-              prompt: preparedCall.prompt,
-              // Explicit agent/run config models should take precedence over prompt defaults.
-              ...(preparedCall.explictlyModelSet
-                ? { overridePromptModel: true }
-                : {}),
-              input: preparedCall.modelInput.input,
-              previousResponseId: preparedCall.previousResponseId,
-              conversationId: preparedCall.conversationId,
-              modelSettings: preparedCall.modelSettings,
-              tools: preparedCall.serializedTools,
-              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-              outputType: convertAgentOutputTypeToSerializable(
-                state._currentAgent.outputType,
-              ),
-              handoffs: preparedCall.serializedHandoffs,
-              tracing: getTracing(
-                this.config.tracingDisabled,
-                this.config.traceIncludeSensitiveData,
-              ),
-              signal: options.signal,
-            });
+            state._lastTurnResponse = await getResponseWithRetry(
+              preparedCall.model,
+              {
+                systemInstructions: preparedCall.modelInput.instructions,
+                prompt: preparedCall.prompt,
+                // Explicit agent/run config models should take precedence over prompt defaults.
+                ...(preparedCall.explictlyModelSet
+                  ? { overridePromptModel: true }
+                  : {}),
+                input: preparedCall.modelInput.input,
+                previousResponseId: preparedCall.previousResponseId,
+                conversationId: preparedCall.conversationId,
+                modelSettings: preparedCall.modelSettings,
+                tools: preparedCall.serializedTools,
+                toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+                outputType: convertAgentOutputTypeToSerializable(
+                  state._currentAgent.outputType,
+                ),
+                handoffs: preparedCall.serializedHandoffs,
+                tracing: getTracing(
+                  this.config.tracingDisabled,
+                  this.config.traceIncludeSensitiveData,
+                ),
+                signal: options.signal,
+              },
+            );
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(
                 preparedCall.sourceItems,
@@ -1167,29 +1175,32 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           try {
-            for await (const event of preparedCall.model.getStreamedResponse({
-              systemInstructions: preparedCall.modelInput.instructions,
-              prompt: preparedCall.prompt,
-              // Streaming requests should also honor explicitly chosen models.
-              ...(preparedCall.explictlyModelSet
-                ? { overridePromptModel: true }
-                : {}),
-              input: preparedCall.modelInput.input,
-              previousResponseId: preparedCall.previousResponseId,
-              conversationId: preparedCall.conversationId,
-              modelSettings: preparedCall.modelSettings,
-              tools: preparedCall.serializedTools,
-              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-              handoffs: preparedCall.serializedHandoffs,
-              outputType: convertAgentOutputTypeToSerializable(
-                currentAgent.outputType,
-              ),
-              tracing: getTracing(
-                this.config.tracingDisabled,
-                this.config.traceIncludeSensitiveData,
-              ),
-              signal: options.signal,
-            })) {
+            for await (const event of getStreamedResponseWithRetry(
+              preparedCall.model,
+              {
+                systemInstructions: preparedCall.modelInput.instructions,
+                prompt: preparedCall.prompt,
+                // Streaming requests should also honor explicitly chosen models.
+                ...(preparedCall.explictlyModelSet
+                  ? { overridePromptModel: true }
+                  : {}),
+                input: preparedCall.modelInput.input,
+                previousResponseId: preparedCall.previousResponseId,
+                conversationId: preparedCall.conversationId,
+                modelSettings: preparedCall.modelSettings,
+                tools: preparedCall.serializedTools,
+                toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+                handoffs: preparedCall.serializedHandoffs,
+                outputType: convertAgentOutputTypeToSerializable(
+                  currentAgent.outputType,
+                ),
+                tracing: getTracing(
+                  this.config.tracingDisabled,
+                  this.config.traceIncludeSensitiveData,
+                ),
+                signal: options.signal,
+              },
+            )) {
               guardrailTracker.throwIfError();
               markInputOnce();
               if (event.type === 'response_done') {
@@ -1521,10 +1532,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const { model, explictlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(state._currentAgent);
 
-    let modelSettings = {
-      ...this.config.modelSettings,
-      ...state._currentAgent.modelSettings,
-    };
+    let modelSettings = mergeModelSettings(
+      this.config.modelSettings,
+      state._currentAgent.modelSettings,
+    );
     modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
       explictlyModelSet,
       state._currentAgent.modelSettings,

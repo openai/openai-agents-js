@@ -8,6 +8,7 @@ These examples show how to wrap models from the [AI SDK](https://www.npmjs.com/p
 | --- | --- | --- | --- |
 | [index.ts](./index.ts) | `pnpm -F ai-sdk start` | OpenRouter (`OPENROUTER_API_KEY`) | Runs a parent agent that hands off a weather question to a child agent equipped with a `get_weather` tool. |
 | [gpt-5.ts](./gpt-5.ts) | `pnpm -F ai-sdk start:gpt-5` | OpenAI (`OPENAI_API_KEY`) | Shows a single agent that must call the `get_weather` tool using `gpt-5.4` with custom provider options. |
+| [retry.ts](./retry.ts) | `pnpm -F ai-sdk start:retry` | OpenAI (`OPENAI_API_KEY`) | Configures opt-in model retries for an AI SDK-backed agent and logs retry decisions when transient failures occur. |
 | [stream.ts](./stream.ts) | `pnpm -F ai-sdk start:stream` | OpenAI (`OPENAI_API_KEY`) | Demonstrates streaming text output from an AI SDK model wrapped with `aisdk()`. |
 | [image-tool-output.ts](./image-tool-output.ts) | `pnpm -F ai-sdk start:image-tool-output` | OpenRouter (`OPENROUTER_API_KEY`) | Returns a `ToolOutputImage` from a tool call and asks the model to describe the image. |
 

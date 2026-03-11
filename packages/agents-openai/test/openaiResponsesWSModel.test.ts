@@ -835,6 +835,44 @@ describe('OpenAIResponsesWSModel', () => {
     expect(error.message).not.toContain('feature may not be enabled');
   });
 
+  it('marks non-streaming websocket failures as unsafe to replay after any response event', async () => {
+    const fakeClient = createFakeClient();
+
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        socket.queueJSON({
+          type: 'response.created',
+          response: { id: 'resp_init' },
+          sequence_number: 0,
+        } as any);
+        void Promise.resolve().then(() => {
+          socket.close();
+        });
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch((err: unknown) => err as Error & { unsafeToReplay?: boolean });
+
+    expect(error.message).toBe(
+      'Responses websocket connection closed before a terminal response event.',
+    );
+    expect(error.unsafeToReplay).toBe(true);
+  });
+
   it('preserves local websocket setup errors before first event', async () => {
     const fakeClient = createFakeClient();
     const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {

@@ -19,6 +19,7 @@
     "start:file-tool-output": "tsx file-tool-output.ts",
     "start:previous-response-id": "tsx previous-response-id.ts",
     "start:prompt": "tsx prompt-id.ts",
+    "start:retry": "tsx retry.ts",
     "start:remote-image": "tsx remote-image.ts",
     "start:remote-pdf": "tsx remote-pdf.ts",
     "start:stream-items": "tsx stream-items.ts",

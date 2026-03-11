@@ -10,6 +10,8 @@ import {
   UserError,
 } from '@openai/agents-core';
 import type {
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
   SerializedHandoff,
   SerializedTool,
   ModelRequest,
@@ -20,6 +22,7 @@ import type {
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import logger from './logger';
+import { getOpenAIRetryAdvice } from './retryAdvice';
 import {
   ToolChoiceFunction,
   ToolChoiceOptions,
@@ -240,6 +243,52 @@ type SerializedShellContainerSkill = NonNullable<
 >[number];
 type SerializedShellContainerNetworkPolicy =
   SerializedShellContainerAutoEnvironment['networkPolicy'];
+
+function isNeverSentWebSocketError(error: unknown): boolean {
+  if (isWebSocketNotOpenError(error)) {
+    return true;
+  }
+
+  const errorCause =
+    error instanceof Error
+      ? (error as Error & { cause?: unknown }).cause
+      : undefined;
+
+  if (
+    error instanceof ResponsesWebSocketInternalError &&
+    error.code === 'connection_closed_before_opening'
+  ) {
+    return true;
+  }
+
+  if (
+    errorCause instanceof ResponsesWebSocketInternalError &&
+    errorCause.code === 'connection_closed_before_opening'
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isAmbiguousWebSocketReplayError(error: unknown): boolean {
+  if (
+    error instanceof ResponsesWebSocketInternalError &&
+    error.code === 'connection_closed_before_terminal_response_event'
+  ) {
+    return true;
+  }
+
+  const errorCause =
+    error instanceof Error
+      ? (error as Error & { cause?: unknown }).cause
+      : undefined;
+
+  return (
+    errorCause instanceof ResponsesWebSocketInternalError &&
+    errorCause.code === 'connection_closed_before_terminal_response_event'
+  );
+}
 
 function hasSerializedComputerDisplayMetadata(
   tool: SerializedComputerTool,
@@ -2787,6 +2836,10 @@ export class OpenAIResponsesModel implements Model {
     this._model = model;
   }
 
+  getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+    return getOpenAIRetryAdvice(args);
+  }
+
   /**
    * @internal
    */
@@ -2806,15 +2859,30 @@ export class OpenAIResponsesModel implements Model {
     | OpenAI.Responses.Response
   > {
     const builtRequest = this._buildResponsesCreateRequest(request, stream);
+    const requestOptions: {
+      headers: any;
+      signal: AbortSignal | undefined;
+      maxRetries?: number;
+      query?: Record<string, unknown>;
+    } = {
+      headers: builtRequest.sdkRequestHeaders as any,
+      signal: builtRequest.signal,
+      ...(builtRequest.transportExtraQuery
+        ? { query: builtRequest.transportExtraQuery }
+        : {}),
+    };
+    if (
+      (
+        request as ModelRequest & {
+          _internal?: { runnerManagedRetry?: boolean };
+        }
+      )._internal?.runnerManagedRetry === true
+    ) {
+      requestOptions.maxRetries = 0;
+    }
     const responsePromise = this._client.responses.create(
       builtRequest.requestData,
-      {
-        headers: builtRequest.sdkRequestHeaders as any,
-        signal: builtRequest.signal,
-        ...(builtRequest.transportExtraQuery
-          ? { query: builtRequest.transportExtraQuery }
-          : {}),
-      },
+      requestOptions,
     ) as ResponseStreamWithRequestID | Promise<OpenAI.Responses.Response>;
 
     let response:
@@ -3164,6 +3232,28 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     this.#reuseConnection = options.reuseConnection ?? true;
   }
 
+  override getRetryAdvice(
+    args: ModelRetryAdviceRequest,
+  ): ModelRetryAdvice | undefined {
+    if (isNeverSentWebSocketError(args.error)) {
+      return {
+        suggested: true,
+        replaySafety: 'safe',
+        reason: args.error instanceof Error ? args.error.message : undefined,
+      };
+    }
+
+    if (isAmbiguousWebSocketReplayError(args.error)) {
+      return {
+        suggested: false,
+        replaySafety: 'unsafe',
+        reason: args.error instanceof Error ? args.error.message : undefined,
+      };
+    }
+
+    return super.getRetryAdvice(args);
+  }
+
   /**
    * @internal
    */
@@ -3191,12 +3281,27 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     }
 
     let finalResponse: OpenAI.Responses.Response | undefined;
-    for await (const event of this.#iterWebSocketResponseEvents(builtRequest)) {
-      const eventType = (event as { type?: string }).type;
-      if (isTerminalResponsesStreamEventType(eventType)) {
-        finalResponse = (event as { response: OpenAI.Responses.Response })
-          .response;
+    let receivedAnyEvent = false;
+    try {
+      for await (const event of this.#iterWebSocketResponseEvents(
+        builtRequest,
+      )) {
+        receivedAnyEvent = true;
+        const eventType = (event as { type?: string }).type;
+        if (isTerminalResponsesStreamEventType(eventType)) {
+          finalResponse = (event as { response: OpenAI.Responses.Response })
+            .response;
+        }
       }
+    } catch (error) {
+      if (receivedAnyEvent && error instanceof Error) {
+        (
+          error as Error & {
+            unsafeToReplay?: boolean;
+          }
+        ).unsafeToReplay = true;
+      }
+      throw error;
     }
 
     if (!finalResponse) {

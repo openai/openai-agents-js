@@ -6,6 +6,7 @@ import * as defaultModelModule from '../../src/defaultModel';
 import type { Model, ModelSettings } from '../../src/model';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
+  mergeModelSettings,
   maybeResetToolChoice,
 } from '../../src/runner/modelSettings';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
@@ -147,5 +148,75 @@ describe('adjustModelSettingsForNonGPT5RunnerModel', () => {
     expect(modelSettings.providerData?.text?.verbosity).toBe('low');
     expect(modelSettings.text?.verbosity).toBe('low');
     spy.mockRestore();
+  });
+});
+
+describe('mergeModelSettings', () => {
+  it('treats retry settings as a shallow override block', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          temperature: 0.1,
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+            },
+          },
+        },
+        {
+          topP: 0.9,
+          retry: {
+            maxRetries: 0,
+            backoff: {
+              maxDelayMs: 500,
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      temperature: 0.1,
+      topP: 0.9,
+      retry: {
+        maxRetries: 0,
+        backoff: {
+          maxDelayMs: 500,
+        },
+      },
+    });
+  });
+
+  it('replaces inherited retry policy when an override supplies only retry backoff', () => {
+    const policy = () => true;
+
+    expect(
+      mergeModelSettings(
+        {
+          retry: {
+            maxRetries: 3,
+            policy,
+            backoff: {
+              initialDelayMs: 100,
+            },
+          },
+        },
+        {
+          retry: {
+            backoff: {
+              maxDelayMs: 500,
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      retry: {
+        backoff: {
+          maxDelayMs: 500,
+        },
+      },
+    });
   });
 });

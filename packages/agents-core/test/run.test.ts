@@ -2567,6 +2567,77 @@ describe('Runner.run', () => {
         });
       });
 
+      it('does not persist duplicate user input when a model retry succeeds in the same run', async () => {
+        class RetryRecordingModel extends FakeModel {
+          requests: ModelRequest[] = [];
+          attempts = 0;
+
+          override async getResponse(
+            request: ModelRequest,
+          ): Promise<ModelResponse> {
+            this.requests.push({
+              ...request,
+              input: Array.isArray(request.input)
+                ? (JSON.parse(
+                    JSON.stringify(request.input),
+                  ) as AgentInputItem[])
+                : request.input,
+            });
+            this.attempts += 1;
+
+            if (this.attempts === 1) {
+              const error = new Error('temporary failure');
+              (error as Error & { statusCode?: number }).statusCode = 503;
+              throw error;
+            }
+
+            return await super.getResponse(request);
+          }
+        }
+
+        const model = new RetryRecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('retry response')],
+            usage: new Usage({ requests: 1 }),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'RetrySessionAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: ({ normalized }) => normalized.statusCode === 503,
+            },
+          },
+        });
+        const session = new MemorySession();
+        const runner = new Runner();
+
+        const result = await runner.run(agent, 'Retry me once', { session });
+
+        expect(result.finalOutput).toBe('retry response');
+        expect(model.attempts).toBe(2);
+        expect(model.requests).toHaveLength(2);
+        expect(
+          getFirstTextContent(getRequestInputItems(model.requests[0])[0]!),
+        ).toBe('Retry me once');
+        expect(
+          getFirstTextContent(getRequestInputItems(model.requests[1])[0]!),
+        ).toBe('Retry me once');
+
+        expect(session.added).toHaveLength(1);
+        const persistedTexts = session.added[0]
+          .map((item) => getFirstTextContent(item))
+          .filter((text): text is string => typeof text === 'string');
+        expect(
+          persistedTexts.filter((text) => text === 'Retry me once'),
+        ).toHaveLength(1);
+        expect(result.state.usage.requests).toBe(2);
+      });
+
       it('does not duplicate history when callback clones entries', async () => {
         const model = new RecordingModel([
           {
@@ -4626,6 +4697,62 @@ describe('Runner.run', () => {
       });
     });
 
+    it('does not retry a failed server-managed request before the server ack is recorded', async () => {
+      class RetryTrackingModel extends TrackingModel {
+        attempts = 0;
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.attempts += 1;
+          if (this.attempts === 1) {
+            this['recordRequest'](request);
+            const error = new Error('temporary conversation failure');
+            (error as Error & { statusCode?: number }).statusCode = 503;
+            throw error;
+          }
+          return await super.getResponse(request);
+        }
+      }
+
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const model = new RetryTrackingModel([
+        buildResponse([buildToolCall('call-retry', 'foo')], 'resp-retry-1'),
+        buildResponse([fakeModelMessage('done')], 'resp-retry-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'RetryConversationAgent',
+        model,
+        tools: [serverTool],
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: ({ normalized }) => normalized.statusCode === 503,
+          },
+        },
+      });
+
+      await expect(
+        new Runner().run(agent, 'user_message', {
+          conversationId: 'conv-retry-managed',
+        }),
+      ).rejects.toThrow('temporary conversation failure');
+
+      expect(model.requests).toHaveLength(1);
+      expect(markSpy).not.toHaveBeenCalled();
+
+      const firstAttemptItems = model.requests[0].input as AgentInputItem[];
+      expect(firstAttemptItems).toHaveLength(1);
+      expect(getFirstTextContent(firstAttemptItems[0]!)).toBe('user_message');
+
+      markSpy.mockRestore();
+    });
+
     it('only sends new items and updates previousResponseId across turns', async () => {
       const model = new TrackingModel([
         buildResponse(
@@ -4660,6 +4787,126 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-1',
       });
+    });
+
+    it('does not retry a failed previousResponseId request before the server ack is recorded', async () => {
+      class RetryTrackingModel extends TrackingModel {
+        attempts = 0;
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.attempts += 1;
+          if (this.attempts === 1) {
+            this['recordRequest'](request);
+            const error = new Error('temporary previousResponseId failure');
+            (error as Error & { statusCode?: number }).statusCode = 503;
+            throw error;
+          }
+          return await super.getResponse(request);
+        }
+      }
+
+      const model = new RetryTrackingModel([
+        buildResponse(
+          [buildToolCall('call-prev-retry', 'foo')],
+          'resp-prev-retry-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-prev-retry-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'RetryPreviousResponseAgent',
+        model,
+        tools: [serverTool],
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: ({ normalized }) => normalized.statusCode === 503,
+          },
+        },
+      });
+
+      await expect(
+        new Runner().run(agent, 'user_message', {
+          previousResponseId: 'initial-response-123',
+        }),
+      ).rejects.toThrow('temporary previousResponseId failure');
+
+      expect(model.requests).toHaveLength(1);
+      expect(model.requests[0].previousResponseId).toBe('initial-response-123');
+
+      const firstAttemptItems = model.requests[0].input as AgentInputItem[];
+      expect(firstAttemptItems).toHaveLength(1);
+      expect(getFirstTextContent(firstAttemptItems[0]!)).toBe('user_message');
+    });
+
+    it('does not retry a streamed server-managed request before the server ack is recorded', async () => {
+      /* eslint-disable require-yield */
+      class RetryStreamingTrackingModel implements Model {
+        public requests: ModelRequest[] = [];
+        attempts = 0;
+
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('not used');
+        }
+
+        async *getStreamedResponse(
+          request: ModelRequest,
+        ): AsyncIterable<protocol.StreamEvent> {
+          this.requests.push({
+            ...request,
+            input:
+              typeof request.input === 'string'
+                ? request.input
+                : (JSON.parse(
+                    JSON.stringify(request.input),
+                  ) as AgentInputItem[]),
+          });
+          this.attempts += 1;
+          const error = new Error('temporary streamed conversation failure');
+          (error as Error & { statusCode?: number }).statusCode = 503;
+          throw error;
+        }
+      }
+      /* eslint-enable require-yield */
+
+      const model = new RetryStreamingTrackingModel();
+      const markSpy = vi.spyOn(
+        ServerConversationTracker.prototype,
+        'markInputAsSent',
+      );
+      const agent = new Agent({
+        name: 'RetryStreamingConversationAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: ({ normalized }) => normalized.statusCode === 503,
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'user_message', {
+        stream: true,
+        conversationId: 'conv-stream-retry-managed',
+      });
+
+      const consume = async () => {
+        for await (const _event of result) {
+          // Consume until the stream throws.
+        }
+      };
+
+      await expect(consume()).rejects.toThrow(
+        'temporary streamed conversation failure',
+      );
+      expect(model.attempts).toBe(1);
+      expect(model.requests).toHaveLength(1);
+      expect(markSpy).not.toHaveBeenCalled();
+      markSpy.mockRestore();
     });
 
     it('does not resend prior items when resuming with conversationId', async () => {
