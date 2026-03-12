@@ -2,6 +2,7 @@ import { Agent } from '../agent';
 import { gpt5ReasoningSettingsRequired, isGpt5Default } from '../defaultModel';
 import { Model, ModelSettings } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
+export { mergeModelSettings } from './modelSettingsMerge';
 
 const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
   const providerData = settings?.providerData as
@@ -115,6 +116,12 @@ function stripGpt5OnlySettings(modelSettings: ModelSettings): ModelSettings {
     ...modelSettings,
     providerData: copiedProviderData,
   };
+  if (modelSettings.retry) {
+    copiedModelSettings.retry = { ...modelSettings.retry };
+    if (modelSettings.retry.backoff) {
+      copiedModelSettings.retry.backoff = { ...modelSettings.retry.backoff };
+    }
+  }
   if (modelSettings.reasoning) {
     copiedModelSettings.reasoning = { ...modelSettings.reasoning };
   }

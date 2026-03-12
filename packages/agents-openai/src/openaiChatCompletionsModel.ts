@@ -8,6 +8,8 @@ import {
   setCurrentSpan,
 } from '@openai/agents-core';
 import type {
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
   ModelRequest,
   ModelResponse,
   ResponseStreamEvent,
@@ -33,6 +35,7 @@ import {
   itemsToMessages,
 } from './openaiChatCompletionsConverter';
 import { protocol } from '@openai/agents-core';
+import { getOpenAIRetryAdvice } from './retryAdvice';
 
 export const FAKE_ID = 'FAKE_ID';
 
@@ -62,6 +65,10 @@ export class OpenAIChatCompletionsModel implements Model {
   constructor(client: OpenAI, model: string) {
     this.#client = client;
     this.#model = model;
+  }
+
+  getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+    return getOpenAIRetryAdvice(args);
   }
 
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
@@ -389,10 +396,28 @@ export class OpenAIChatCompletionsModel implements Model {
       );
     }
 
-    const completion = await this.#client.chat.completions.create(requestData, {
+    const requestOptions: {
+      headers: typeof HEADERS;
+      signal: AbortSignal | undefined;
+      maxRetries?: number;
+    } = {
       headers: HEADERS,
       signal: request.signal,
-    });
+    };
+    if (
+      (
+        request as ModelRequest & {
+          _internal?: { runnerManagedRetry?: boolean };
+        }
+      )._internal?.runnerManagedRetry === true
+    ) {
+      requestOptions.maxRetries = 0;
+    }
+
+    const completion = await this.#client.chat.completions.create(
+      requestData,
+      requestOptions,
+    );
 
     if (logger.dontLogModelData) {
       logger.debug('Response received');

@@ -67,6 +67,157 @@ export interface ModelSettingsText {
   verbosity?: 'low' | 'medium' | 'high' | null;
 }
 
+export type RetryDecision =
+  | boolean
+  | {
+      /**
+       * Whether the failed request should be retried.
+       */
+      retry: boolean;
+
+      /**
+       * Optional delay override in milliseconds before the next retry attempt.
+       */
+      delayMs?: number;
+
+      /**
+       * Optional explanation for logging or debugging.
+       */
+      reason?: string;
+    };
+
+export type ModelRetryNormalizedError = {
+  /**
+   * HTTP status code when the provider exposes one.
+   */
+  statusCode?: number;
+
+  /**
+   * Suggested delay in milliseconds derived from retry-after style headers.
+   */
+  retryAfterMs?: number;
+
+  /**
+   * Provider or transport-specific error code when exposed.
+   */
+  errorCode?: string;
+
+  /**
+   * Whether the error appears to come from a transient transport or connectivity problem.
+   */
+  isNetworkError: boolean;
+
+  /**
+   * Whether the error was caused by an abort signal or abort exception.
+   */
+  isAbort: boolean;
+};
+
+export type ModelRetryAdvice = {
+  /**
+   * Optional provider recommendation for whether this error is retryable.
+   * The runner still applies safety vetoes first and user policy remains the final authority.
+   */
+  suggested?: boolean;
+
+  /**
+   * Optional delay hint in milliseconds from the provider or transport layer.
+   */
+  retryAfterMs?: number;
+
+  /**
+   * Optional explanation for why the provider suggested or vetoed a retry.
+   */
+  reason?: string;
+
+  /**
+   * Provider confidence about whether replaying the request is safe.
+   * Omit this field when replay safety is unknown.
+   */
+  replaySafety?: 'unsafe' | 'safe';
+
+  /**
+   * Provider-supplied normalized facts that should override generic extraction when present.
+   */
+  normalized?: Partial<ModelRetryNormalizedError>;
+};
+
+export type RetryPolicyContext = {
+  /**
+   * The error thrown by the failed model attempt.
+   */
+  error: unknown;
+
+  /**
+   * The 1-based number of the failed attempt.
+   */
+  attempt: number;
+
+  /**
+   * The configured number of retries allowed after the initial attempt.
+   */
+  maxRetries: number;
+
+  /**
+   * Whether the failed request was streaming.
+   */
+  stream: boolean;
+
+  /**
+   * Optional provider guidance for the failure.
+   */
+  providerAdvice?: ModelRetryAdvice;
+
+  /**
+   * Generic normalized facts extracted from the error and provider advice.
+   */
+  normalized: ModelRetryNormalizedError;
+};
+
+export type RetryPolicy = (
+  context: RetryPolicyContext,
+) => RetryDecision | Promise<RetryDecision>;
+
+export type ModelRetryBackoffSettings = {
+  /**
+   * Delay for the first retry in milliseconds.
+   */
+  initialDelayMs?: number;
+
+  /**
+   * Maximum delay between retries in milliseconds.
+   */
+  maxDelayMs?: number;
+
+  /**
+   * Multiplier applied after each retry attempt.
+   */
+  multiplier?: number;
+
+  /**
+   * Whether to apply jitter to the computed backoff delay.
+   */
+  jitter?: boolean;
+};
+
+export type ModelRetrySettings = {
+  /**
+   * Number of retries allowed after the initial model request.
+   * Retries remain opt-in; no retries occur unless `policy` returns `true`.
+   */
+  maxRetries?: number;
+
+  /**
+   * Backoff configuration used when the retry policy requests a retry without returning an explicit delay.
+   */
+  backoff?: ModelRetryBackoffSettings;
+
+  /**
+   * Runtime-only retry policy. This callback is not serialized into persisted run state.
+   */
+  policy?: RetryPolicy;
+};
+
 /**
  * Settings to use when calling an LLM.
  *
@@ -145,6 +296,11 @@ export type ModelSettings = {
    * request.
    */
   providerData?: Record<string, any>;
+
+  /**
+   * Runtime-only retry configuration for the model request.
+   */
+  retry?: ModelRetrySettings;
 };
 
 export type ModelTracing = boolean | 'enabled_without_data';
@@ -326,6 +482,35 @@ export type ModelRequest = {
    * even when a prompt is supplied.
    */
   overridePromptModel?: boolean;
+
+  /**
+   * @internal
+   */
+  _internal?: {
+    runnerManagedRetry?: boolean;
+  };
+};
+
+export type ModelRetryAdviceRequest = {
+  /**
+   * The failed request that is being evaluated for replay.
+   */
+  request: ModelRequest;
+
+  /**
+   * The error thrown by the failed attempt.
+   */
+  error: unknown;
+
+  /**
+   * Whether the failed request used streaming.
+   */
+  stream: boolean;
+
+  /**
+   * The 1-based number of the failed attempt.
+   */
+  attempt: number;
 };
 
 export type ModelResponse = {
@@ -372,6 +557,13 @@ export interface Model {
    *
    */
   getStreamedResponse(request: ModelRequest): AsyncIterable<StreamEvent>;
+
+  /**
+   * Provide optional retry advice for a failed request.
+   */
+  getRetryAdvice?(
+    args: ModelRetryAdviceRequest,
+  ): Promise<ModelRetryAdvice | undefined> | ModelRetryAdvice | undefined;
 }
 
 /**

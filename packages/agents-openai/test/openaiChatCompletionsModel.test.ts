@@ -79,6 +79,135 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('preserves SDK retries for direct callers when no runner retry policy is configured', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r-default-retries',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(client.chat.completions.create.mock.calls[0]?.[1]).toEqual({
+      headers: HEADERS,
+      signal: undefined,
+    });
+  });
+
+  it('preserves SDK retries for direct callers when a retry policy is present', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r-policy-no-runner-retries',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        retry: {
+          policy: () => true,
+        },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(client.chat.completions.create.mock.calls[0]?.[1]).toEqual({
+      headers: HEADERS,
+      signal: undefined,
+    });
+  });
+
+  it('preserves SDK retries for direct callers when maxRetries is configured', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r-max-retries-no-policy',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        retry: {
+          maxRetries: 2,
+        },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(client.chat.completions.create.mock.calls[0]?.[1]).toEqual({
+      headers: HEADERS,
+      signal: undefined,
+    });
+  });
+
+  it('disables SDK retries when runner retries are enabled', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r-runner-retries',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        retry: {
+          maxRetries: 2,
+          policy: () => true,
+        },
+      },
+      _internal: {
+        runnerManagedRetry: true,
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(client.chat.completions.create.mock.calls[0]?.[1]).toEqual({
+      headers: HEADERS,
+      maxRetries: 0,
+      signal: undefined,
+    });
+  });
+
   it('parses usage tokens from snake_case fields', async () => {
     const client = new FakeClient();
     const response = {
@@ -311,7 +440,10 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(args.reasoning_effort).toBe('high');
     expect(args.verbosity).toBe('medium');
     expect(args.customOption).toBe('keep');
-    expect(options).toEqual({ headers: HEADERS, signal: undefined });
+    expect(options).toEqual({
+      headers: HEADERS,
+      signal: undefined,
+    });
   });
 
   it('passes none reasoning effort through to chat completions payloads', async () => {
@@ -340,7 +472,10 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
     const [args, options] = client.chat.completions.create.mock.calls[0];
     expect(args.reasoning_effort).toBe('none');
-    expect(options).toEqual({ headers: HEADERS, signal: undefined });
+    expect(options).toEqual({
+      headers: HEADERS,
+      signal: undefined,
+    });
   });
 
   it('handles function tool calls', async () => {

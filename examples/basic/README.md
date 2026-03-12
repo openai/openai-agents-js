@@ -1,7 +1,6 @@
 # Basic Examples
 
-This directory contains small scripts that demonstrate features of the Agents SDK.
-Run them with `pnpm` using the commands shown below.
+This directory contains small scripts that demonstrate features of the Agents SDK. Run them with `pnpm` using the commands shown below.
 
 - `hello-world.ts` – Basic agent that responds in haiku.
   ```bash
@@ -51,10 +50,13 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F basic start:remote-image
   ```
-- `previous-response-id.ts` – Continue a conversation using
-  `previousResponseId`.
+- `previous-response-id.ts` – Continue a conversation using `previousResponseId`.
   ```bash
   pnpm -F basic start:previous-response-id
+  ```
+- `retry.ts` – Configure retries for transient model failures and log each retry decision.
+  ```bash
+  pnpm -F basic start:retry
   ```
 - `json-schema-output-type.ts` – Structured output with JSON Schema.
   ```bash

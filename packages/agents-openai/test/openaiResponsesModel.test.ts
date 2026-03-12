@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
-import { OpenAIResponsesModel } from '../src/openaiResponsesModel';
+import {
+  OpenAIResponsesModel,
+  OpenAIResponsesWSModel,
+} from '../src/openaiResponsesModel';
 import { HEADERS } from '../src/defaults';
+import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
 import OpenAI from 'openai';
 import {
+  Agent,
+  retryPolicies,
+  Runner,
+  setDefaultModelProvider,
   setTracingDisabled,
   withTrace,
   type ResponseStreamEvent,
@@ -13,6 +21,11 @@ import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/re
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
     setTracingDisabled(true);
+    setDefaultModelProvider({
+      async getModel() {
+        throw new Error('not used');
+      },
+    });
   });
   it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
     await withTrace('test', async () => {
@@ -56,7 +69,10 @@ describe('OpenAIResponsesModel', () => {
       expect(args.instructions).toBe('inst');
       expect(args.model).toBe('gpt-test');
       expect(args.input).toEqual([{ role: 'user', content: 'hello' }]);
-      expect(opts).toEqual({ headers: HEADERS, signal: undefined });
+      expect(opts).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
 
       expect(result.usage.requests).toBe(1);
       expect(result.usage.inputTokens).toBe(3);
@@ -108,6 +124,717 @@ describe('OpenAIResponsesModel', () => {
 
       expect(result.responseId).toBe('res-request-id');
       expect(result.requestId).toBe('req_nonstream_123');
+    });
+  });
+
+  it('getRetryAdvice does not suggest retries from transport heuristics alone', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = new Error('terminated');
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('preserves SDK retries for direct callers when no runner retry policy is configured', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-default-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('preserves SDK retries for direct callers when a retry policy is present', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-policy-no-runner-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            policy: () => true,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('preserves SDK retries for direct callers when maxRetries is configured', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-max-retries-no-policy',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            maxRetries: 2,
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('disables SDK retries when runner retries are enabled', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-runner-retries',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          retry: {
+            maxRetries: 2,
+            policy: () => true,
+          },
+        },
+        _internal: {
+          runnerManagedRetry: true,
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        maxRetries: 0,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('getRetryAdvice honors x-should-retry=false', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('internal error'), {
+      headers: new Headers([['x-should-retry', 'false']]),
+      status: 500,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      reason: 'internal error',
+    });
+  });
+
+  it('getRetryAdvice honors x-should-retry=true', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('provider requested retry'), {
+      headers: new Headers([['x-should-retry', 'true']]),
+      status: 418,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'provider requested retry',
+    });
+  });
+
+  it('getRetryAdvice treats x-should-retry=true as safe replay advice for stateful requests', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('provider requested retry'), {
+      headers: new Headers([['x-should-retry', 'true']]),
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          previousResponseId: 'resp_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'provider requested retry',
+    });
+  });
+
+  it('getRetryAdvice falls back to OpenAI retryable statuses when header is absent', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('rate limited'), {
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      reason: 'rate limited',
+    });
+  });
+
+  it('getRetryAdvice does not treat generic retryable statuses as safe replay advice for stateful requests', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('rate limited'), {
+      status: 429,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          conversationId: 'conv_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          previousResponseId: 'resp_123',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('retries end-to-end when provider advice opts in', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('provider requested retry'), {
+        headers: new Headers([
+          ['x-should-retry', 'true'],
+          ['retry-after-ms', '0'],
+        ]),
+        status: 429,
+      });
+      const fakeResponse = {
+        id: 'res-retried',
+        usage: {
+          input_tokens: 2,
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+        output: [
+          {
+            id: 'retry_msg',
+            type: 'message',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'retried ok' }],
+            role: 'assistant',
+          },
+        ],
+      };
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('retried ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('retries end-to-end when provider advice falls back to retryable status codes', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('rate limited'), {
+        status: 429,
+      });
+      const fakeResponse = {
+        id: 'res-retried-from-status',
+        usage: {
+          input_tokens: 2,
+          output_tokens: 3,
+          total_tokens: 5,
+        },
+        output: [
+          {
+            id: 'retry_msg',
+            type: 'message',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'retried from status ok' }],
+            role: 'assistant',
+          },
+        ],
+      };
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceStatusAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('retried from status ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('retries streamed requests end-to-end when provider advice opts in before any events', async () => {
+    await withTrace('test', async () => {
+      const retryError = Object.assign(new Error('provider requested retry'), {
+        headers: new Headers([
+          ['x-should-retry', 'true'],
+          ['retry-after-ms', '0'],
+        ]),
+        status: 429,
+      });
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-final',
+          output: [
+            {
+              id: 'stream_msg',
+              type: 'message',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'stream retried ok' }],
+              role: 'assistant',
+            },
+          ],
+          usage: {
+            input_tokens: 2,
+            output_tokens: 4,
+            total_tokens: 6,
+          },
+        } as any,
+        sequence_number: 1,
+      };
+      async function* fakeStream() {
+        yield createdEvent;
+        yield completedEvent;
+      }
+      const createMock = vi
+        .fn()
+        .mockRejectedValueOnce(retryError)
+        .mockResolvedValueOnce(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'RetryProviderAdviceStreamingAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello', { stream: true });
+      for await (const _event of result) {
+        // Consume the stream to completion.
+      }
+
+      expect(result.finalOutput).toBe('stream retried ok');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    });
+  });
+
+  it('does not retry streamed websocket requests when provider advice marks replay as unsafe', async () => {
+    await withTrace('test', async () => {
+      class UnsafeStreamingWSModel extends OpenAIResponsesWSModel {
+        attempts = 0;
+
+        /* eslint-disable require-yield */
+        override async *getStreamedResponse(): AsyncIterable<ResponseStreamEvent> {
+          this.attempts += 1;
+          throw new Error(
+            'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+          );
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const fakeClient = {
+        responses: { create: vi.fn() },
+      } as unknown as OpenAI;
+      const model = new UnsafeStreamingWSModel(fakeClient, 'gpt-test');
+      const agent = new Agent({
+        name: 'UnsafeStreamingProviderAdviceAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicies.providerSuggested(),
+          },
+        },
+      });
+
+      const result = await new Runner().run(agent, 'hello', { stream: true });
+      const consume = async () => {
+        for await (const _event of result) {
+          // Consume until the stream throws.
+        }
+      };
+
+      await expect(consume()).rejects.toThrow(
+        'The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+      );
+      expect(model.attempts).toBe(1);
+    });
+  });
+
+  it('getRetryAdvice allows streamed websocket retries when the request never left the client', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_opening',
+          'Responses websocket connection closed before opening.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'Responses websocket connection closed before opening.',
+    });
+  });
+
+  it('getRetryAdvice marks ambiguous websocket replay cases as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+    const error = new Error(
+      'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+    );
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+    });
+  });
+
+  it('getRetryAdvice marks no-event websocket closes after send as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_terminal_response_event',
+          'Responses websocket connection closed before a terminal response event.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed before a terminal response event.',
+    });
+  });
+
+  it('getRetryAdvice allows non-streaming websocket retries when the request never left the client', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'connection_closed_before_opening',
+          'Responses websocket connection closed before opening.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: 'Responses websocket connection closed before opening.',
+    });
+  });
+
+  it('getRetryAdvice marks non-streaming websocket errors as unsafe when collapse consumed events', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+    const error = Object.assign(
+      new Error(
+        'Responses websocket connection closed before a terminal response event.',
+      ),
+      {
+        unsafeToReplay: true,
+      },
+    );
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason:
+        'Responses websocket connection closed before a terminal response event.',
     });
   });
 
@@ -3035,7 +3762,10 @@ describe('OpenAIResponsesModel', () => {
       expect(createMock).toHaveBeenCalledTimes(1);
       const [args, opts] = createMock.mock.calls[0];
       expect(args.model).toBe('model2');
-      expect(opts).toEqual({ headers: HEADERS, signal: abort.signal });
+      expect(opts).toEqual({
+        headers: HEADERS,
+        signal: abort.signal,
+      });
       expect(received).toEqual([
         {
           type: 'response_started',
