@@ -81,6 +81,18 @@ Some providers return structured output as plain text with extra wrapping, such 
 
 `transformOutputText` runs on finalized assistant text for non-streamed responses and on the final `response_done` event for streamed responses. It does not modify incremental `output_text_delta` events.
 
+## Retries
+
+`modelSettings.retry` works with AI SDK-backed models too, because retries are implemented by the Agents runtime rather than only by the default OpenAI provider.
+
+That means you can attach the same retry configuration you would use elsewhere:
+
+- Set `modelSettings.retry` on the `Agent`, `Runner`, or both.
+- Compose `retryPolicies` such as `networkError()`, `httpStatus([...])`, or `providerSuggested()`.
+- Keep in mind that `providerSuggested()` only helps when the wrapped AI SDK model can surface retry advice through the adapter.
+
+For a complete example using `aisdk(openai(...))`, see [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts). For the retry API itself, including safety boundaries for streaming and stateful follow-up requests, see the [Models guide](/openai-agents-js/guides/models#model-retries).
+
 ## Picking the right integration
 
 There are two related integrations in `@openai/agents-extensions`:

@@ -13,6 +13,7 @@ import runnerWithModelExample from '../../../../../examples/docs/models/runnerWi
 import gpt5DefaultModelSettingsExample from '../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
 import setDefaultModelProviderExample from '../../../../../examples/docs/models/setDefaultModelProvider.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
+import retryExample from '../../../../../examples/docs/models/retry.ts?raw';
 
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
@@ -149,12 +150,74 @@ When a run includes deferred tools, add `toolSearchTool()` to the same agent and
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
 | `providerData` | `Record<string, any>` | Provider-specific passthrough options forwarded to the underlying model. |
+| `retry` | `ModelRetrySettings` | Runtime-only opt-in retry config. See [Model retries](#model-retries). |
 
 Attach settings at either level:
 
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
-`Runner`‑level settings override any conflicting per‑agent settings.
+`Runner`‑level settings override any conflicting per‑agent settings. `retry` is the notable exception: its nested fields are merged across runner and agent settings unless you explicitly clear inherited values with `undefined`.
+
+### Model retries
+
+Retries are runtime-only and opt-in. The SDK does not retry model requests unless you configure `modelSettings.retry` and your policy returns a retry decision.
+
+<Code lang="typescript" code={retryExample} title="Opt in to model retries" />
+
+`ModelRetrySettings` has three fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `maxRetries` | `number` | Number of retry attempts allowed after the initial request. |
+| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | Default delay strategy when the policy retries without returning `delayMs`. |
+| `policy` | `RetryPolicy` | Callback that decides whether to retry. This function is runtime-only and is not serialized into persisted run state. |
+
+A retry policy receives a `RetryPolicyContext` with:
+
+- `attempt` and `maxRetries` so you can make attempt-aware decisions.
+- `stream` so you can branch between streamed and non-streamed behavior.
+- `error` for raw inspection.
+- `normalized` facts such as `statusCode`, `retryAfterMs`, `errorCode`, `isNetworkError`, and `isAbort`.
+- `providerAdvice` when the underlying model/provider can supply retry guidance.
+
+The policy can return either:
+
+- `true` / `false` for a simple retry decision.
+- `{ retry, delayMs?, reason? }` when you want to override the delay or attach a diagnostic reason for logging.
+
+The SDK exports ready-made helpers on `retryPolicies`:
+
+| Helper | Behavior |
+| --- | --- |
+| `retryPolicies.never()` | Always opts out. |
+| `retryPolicies.providerSuggested()` | Follows provider retry advice when available. |
+| `retryPolicies.networkError()` | Matches transient transport/connectivity failures. |
+| `retryPolicies.httpStatus([..])` | Matches selected HTTP status codes. |
+| `retryPolicies.retryAfter()` | Retries only when a retry-after hint is available, using that delay. |
+| `retryPolicies.any(...)` | Retries when any nested policy opts in. |
+| `retryPolicies.all(...)` | Retries only when every nested policy opts in. |
+
+When you compose policies, `providerSuggested()` is the safest first building block because it preserves provider vetoes and replay-safety approvals when the provider can distinguish them.
+
+#### Safety boundaries
+
+Some failures are never retried automatically:
+
+- Abort errors.
+- Streamed runs after any visible event or raw model event has already been emitted.
+- Provider advice that marks replay as unsafe.
+
+Stateful follow-up requests using `previousResponseId` or `conversationId` are also treated more conservatively. For those requests, non-provider predicates such as `networkError()` or `httpStatus([500])` are not enough by themselves. The retry policy must include a replay-safe approval from the provider, typically via `retryPolicies.providerSuggested()`.
+
+#### Runner and agent merge behavior
+
+`retry` is deep-merged between runner-level and agent-level `modelSettings`:
+
+- An agent can override only `retry.maxRetries` and still inherit the runner's `policy`.
+- An agent can override only part of `retry.backoff` and keep sibling backoff fields from the runner.
+- If you need to remove an inherited `policy` or `backoff`, set that field to `undefined` explicitly.
+
+See [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) and [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts) for fuller examples with logging.
 
 ---
 
