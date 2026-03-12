@@ -10,6 +10,7 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
   Agent,
   InputGuardrailTripwireTriggered,
@@ -91,6 +92,12 @@ function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
 }
 
 describe('Runner.run', () => {
+  it('types raw model stream events with the OpenAI response stream union', () => {
+    expectTypeOf<
+      protocol.StreamEventGenericItem['event']
+    >().toEqualTypeOf<OpenAIResponseStreamEvent>();
+  });
+
   beforeAll(() => {
     setTracingDisabled(true);
     setDefaultModelProvider(new FakeModelProvider());

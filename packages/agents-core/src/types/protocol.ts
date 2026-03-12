@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
 // ----------------------------
 // Shared base types
@@ -941,7 +942,10 @@ export const StreamEventGenericItem = SharedBase.extend({
   type: z.literal('model'),
   event: z.any().describe('The event from the model'),
 });
-export type StreamEventGenericItem = z.infer<typeof StreamEventGenericItem>;
+export type StreamEventGenericItem = SharedBase & {
+  type: 'model';
+  event: OpenAIResponseStreamEvent;
+};
 
 export const StreamEvent = z.discriminatedUnion('type', [
   StreamEventTextStream,
