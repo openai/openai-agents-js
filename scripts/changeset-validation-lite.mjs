@@ -82,6 +82,78 @@ function readFileFromGit(ref, filePath) {
   return result.stdout;
 }
 
+function parseJsonSafe(contents) {
+  if (!contents) return null;
+  try {
+    return JSON.parse(contents);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function cloneJsonValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function stripReleaseOnlyPackageJsonFields(packageJson) {
+  if (!packageJson || typeof packageJson !== 'object') return packageJson;
+  const normalized = cloneJsonValue(packageJson);
+  delete normalized.version;
+  return normalized;
+}
+
+function isReleaseManagedPackageFile(filePath, dir) {
+  return (
+    filePath === `packages/${dir}/CHANGELOG.md` ||
+    filePath === `packages/${dir}/package.json` ||
+    filePath === `packages/${dir}/src/metadata.ts`
+  );
+}
+
+function hasMeaningfulPackageJsonChanges(dir, baseSha, headSha) {
+  const filePath = `packages/${dir}/package.json`;
+  const basePackageJson = parseJsonSafe(readFileFromGit(baseSha, filePath));
+  const headPackageJson = parseJsonSafe(readFileFromGit(headSha, filePath));
+
+  if (!basePackageJson || !headPackageJson) {
+    return true;
+  }
+
+  return (
+    JSON.stringify(stripReleaseOnlyPackageJsonFields(basePackageJson)) !==
+    JSON.stringify(stripReleaseOnlyPackageJsonFields(headPackageJson))
+  );
+}
+
+function collectRelevantPackageDirs({
+  changedPackageDirs,
+  packageFilesByDir,
+  baseSha,
+  headSha,
+}) {
+  const relevantDirs = new Set();
+
+  for (const dir of changedPackageDirs) {
+    const files = packageFilesByDir.get(dir) || [];
+    const onlyReleaseManagedFiles =
+      files.length > 0 &&
+      files.every((filePath) => isReleaseManagedPackageFile(filePath, dir));
+    const meaningfulPackageJsonChanges = files.includes(
+      `packages/${dir}/package.json`,
+    )
+      ? hasMeaningfulPackageJsonChanges(dir, baseSha, headSha)
+      : false;
+
+    if (onlyReleaseManagedFiles && !meaningfulPackageJsonChanges) {
+      continue;
+    }
+
+    relevantDirs.add(dir);
+  }
+
+  return relevantDirs;
+}
+
 function readEventPayload() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return null;
@@ -101,12 +173,14 @@ function listChangedFiles(baseSha, headSha) {
 
 function listChangesetFiles(baseSha, headSha) {
   const diff = runOptional(
-    `git diff --name-only ${baseSha} ${headSha} -- .changeset`,
+    `git diff --name-status ${baseSha} ${headSha} -- .changeset`,
   );
   const files = diff ? diff.split(/\r?\n/).filter(Boolean) : [];
-  return files.filter(
-    (file) => file.endsWith('.md') && !file.endsWith('README.md'),
-  );
+  return files
+    .map((line) => line.split('\t'))
+    .filter((parts) => parts[0] && !parts[0].startsWith('D'))
+    .map((parts) => parts[parts.length - 1])
+    .filter((file) => file.endsWith('.md') && !file.endsWith('README.md'));
 }
 
 function parseChangesetPackages(content) {
@@ -205,13 +279,34 @@ async function main() {
     process.exit(1);
   }
 
-  const changedPackageNames = new Set();
+  const changedPackageDirs = new Set();
+  const packageFilesByDir = new Map();
   for (const filePath of packageChanges) {
     const dir = filePath.split('/')[1];
-    const packageName = dir ? packageNameByDir.get(dir) : null;
-    if (packageName) {
-      changedPackageNames.add(packageName);
-    }
+    if (!dir) continue;
+    changedPackageDirs.add(dir);
+    const files = packageFilesByDir.get(dir) || [];
+    files.push(filePath);
+    packageFilesByDir.set(dir, files);
+  }
+
+  const relevantPackageDirs = collectRelevantPackageDirs({
+    changedPackageDirs,
+    packageFilesByDir,
+    baseSha,
+    headSha,
+  });
+  const changedPackageNames = new Set(
+    [...relevantPackageDirs]
+      .map((dir) => packageNameByDir.get(dir))
+      .filter(Boolean),
+  );
+
+  if (changedPackageNames.size === 0) {
+    console.log(
+      'Only release-generated package updates detected; changeset is not required.',
+    );
+    return;
   }
 
   const changesetFiles = listChangesetFiles(baseSha, headSha);

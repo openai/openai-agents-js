@@ -152,6 +152,99 @@ function readFileFromGit(ref, filePath) {
   return result.stdout;
 }
 
+function readFileAtRefOrWorktree(ref, filePath, preferWorkingTree = false) {
+  if (preferWorkingTree) {
+    const contents = readFileSafe(filePath);
+    if (contents !== null) return contents;
+  }
+  return readFileFromGit(ref, filePath);
+}
+
+function parseJsonSafe(contents) {
+  if (!contents) return null;
+  try {
+    return JSON.parse(contents);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function cloneJsonValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function stripReleaseOnlyPackageJsonFields(packageJson) {
+  if (!packageJson || typeof packageJson !== 'object') return packageJson;
+  const normalized = cloneJsonValue(packageJson);
+  delete normalized.version;
+  return normalized;
+}
+
+function isReleaseManagedPackageFile(filePath, dir) {
+  return (
+    filePath === `packages/${dir}/CHANGELOG.md` ||
+    filePath === `packages/${dir}/package.json` ||
+    filePath === `packages/${dir}/src/metadata.ts`
+  );
+}
+
+function hasMeaningfulPackageJsonChanges({
+  dir,
+  baseSha,
+  headSha,
+  includeWorkingTree,
+}) {
+  const filePath = `packages/${dir}/package.json`;
+  const basePackageJson = parseJsonSafe(readFileFromGit(baseSha, filePath));
+  const headPackageJson = parseJsonSafe(
+    readFileAtRefOrWorktree(headSha, filePath, includeWorkingTree),
+  );
+
+  if (!basePackageJson || !headPackageJson) {
+    return true;
+  }
+
+  return (
+    JSON.stringify(stripReleaseOnlyPackageJsonFields(basePackageJson)) !==
+    JSON.stringify(stripReleaseOnlyPackageJsonFields(headPackageJson))
+  );
+}
+
+function collectRelevantPackageDirs({
+  changedPackageDirs,
+  packageFilesByDir,
+  baseSha,
+  headSha,
+  includeWorkingTree,
+}) {
+  const relevantDirs = new Set();
+
+  for (const dir of changedPackageDirs) {
+    const files = packageFilesByDir.get(dir) || [];
+    const onlyReleaseManagedFiles =
+      files.length > 0 &&
+      files.every((filePath) => isReleaseManagedPackageFile(filePath, dir));
+    const meaningfulPackageJsonChanges = files.includes(
+      `packages/${dir}/package.json`,
+    )
+      ? hasMeaningfulPackageJsonChanges({
+          dir,
+          baseSha,
+          headSha,
+          includeWorkingTree,
+        })
+      : false;
+
+    if (onlyReleaseManagedFiles && !meaningfulPackageJsonChanges) {
+      continue;
+    }
+
+    relevantDirs.add(dir);
+  }
+
+  return relevantDirs;
+}
+
 function readEventPayload() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return null;
@@ -271,20 +364,36 @@ async function main() {
     }
   }
 
-  const changedPackages = new Set();
+  const changedPackageDirs = new Set();
+  const packageFilesByDir = new Map();
   const unknownPackageDirs = new Set();
   for (const filePath of changes.keys()) {
     if (!filePath.startsWith('packages/')) continue;
     const parts = filePath.split('/');
     const dir = parts[1];
     if (!dir) continue;
+    changedPackageDirs.add(dir);
+    const files = packageFilesByDir.get(dir) || [];
+    files.push(filePath);
+    packageFilesByDir.set(dir, files);
     const packageName = packageNameByDir.get(dir);
-    if (packageName) {
-      changedPackages.add(packageName);
-    } else {
+    if (!packageName) {
       unknownPackageDirs.add(dir);
     }
   }
+
+  const relevantPackageDirs = collectRelevantPackageDirs({
+    changedPackageDirs,
+    packageFilesByDir,
+    baseSha,
+    headSha,
+    includeWorkingTree,
+  });
+  const changedPackages = new Set(
+    [...relevantPackageDirs]
+      .map((dir) => packageNameByDir.get(dir))
+      .filter(Boolean),
+  );
 
   const changesetPaths = [...changes.keys()].filter((filePath) =>
     isChangesetFile(filePath),
@@ -292,10 +401,10 @@ async function main() {
   const changesetEntries = changesetPaths
     .map((filePath) => {
       const status = changes.get(filePath) || 'unknown';
+      if (status.startsWith('D')) return null;
       const content =
         readFileSafe(filePath) || readFileFromGit(headSha, filePath);
       if (!content) {
-        if (status.startsWith('D')) return null;
         if (status.startsWith('R') || status.startsWith('C')) return null;
       }
       return { path: filePath, status, content };
@@ -303,26 +412,40 @@ async function main() {
     .filter(Boolean);
 
   const diffSections = [];
-  const committedPackageDiff = runOptional(
-    `git diff ${baseSha} ${headSha} -- packages`,
+  const relevantPackagePaths = [...relevantPackageDirs].map(
+    (dir) => `packages/${dir}`,
   );
+  const committedPackageDiff =
+    relevantPackagePaths.length > 0
+      ? runOptional(
+          `git diff ${baseSha} ${headSha} -- ${relevantPackagePaths.join(' ')}`,
+        )
+      : '';
   if (committedPackageDiff) {
     diffSections.push(`Committed diff (packages):\n${committedPackageDiff}`);
   }
 
   if (includeWorkingTree) {
-    const stagedPackageDiff = runOptional('git diff --cached -- packages');
-    if (stagedPackageDiff) {
+    const stagedPackageDiff =
+      relevantPackagePaths.length > 0
+        ? runOptional(`git diff --cached -- ${relevantPackagePaths.join(' ')}`)
+        : '';
+    if (stagedPackageDiff && relevantPackageDirs.size > 0) {
       diffSections.push(`Staged diff (packages):\n${stagedPackageDiff}`);
     }
-    const unstagedPackageDiff = runOptional('git diff -- packages');
-    if (unstagedPackageDiff) {
+    const unstagedPackageDiff =
+      relevantPackagePaths.length > 0
+        ? runOptional(`git diff -- ${relevantPackagePaths.join(' ')}`)
+        : '';
+    if (unstagedPackageDiff && relevantPackageDirs.size > 0) {
       diffSections.push(`Unstaged diff (packages):\n${unstagedPackageDiff}`);
     }
 
     const untrackedPackageDiffs = [];
     for (const filePath of changes.keys()) {
       if (!filePath.startsWith('packages/')) continue;
+      const dir = filePath.split('/')[1];
+      if (!dir || !relevantPackageDirs.has(dir)) continue;
       if (!fs.existsSync(filePath)) continue;
       if (
         !runOptional(`git ls-files --others --exclude-standard -- ${filePath}`)
@@ -364,7 +487,15 @@ async function main() {
   const prompt = renderPrompt(promptTemplate, {
     allowedPackages: ALLOWED_PACKAGES.join(', '),
     changedPackages: [...changedPackages].sort().join(', ') || '(none)',
-    changedFiles: [...changes.keys()].sort().join('\n') || '(none)',
+    changedFiles:
+      [...changes.keys()]
+        .filter((filePath) => {
+          if (!filePath.startsWith('packages/')) return true;
+          const dir = filePath.split('/')[1];
+          return Boolean(dir && relevantPackageDirs.has(dir));
+        })
+        .sort()
+        .join('\n') || '(none)',
     changesetFiles: formatChangesetFiles(changesetEntries),
     prBody,
     prLabels,
