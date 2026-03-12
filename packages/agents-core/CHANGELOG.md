@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.7.0
+
+### Minor Changes
+
+- 9bcc3f3: feat: #855 add opt-in model retry policies across models
+
 ## 0.6.0
 
 ### Patch Changes
