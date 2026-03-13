@@ -3774,6 +3774,9 @@ describe('OpenAIResponsesModel', () => {
         {
           type: 'model',
           event: events[0],
+          providerData: {
+            rawModelEventSource: 'openai-responses',
+          },
         },
         {
           type: 'output_text_delta',
@@ -3790,6 +3793,9 @@ describe('OpenAIResponsesModel', () => {
         {
           type: 'model',
           event: events[1],
+          providerData: {
+            rawModelEventSource: 'openai-responses',
+          },
         },
       ]);
     });

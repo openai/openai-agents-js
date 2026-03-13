@@ -22,6 +22,7 @@ import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import {
   Agent,
+  isOpenAIResponsesRawModelStreamEvent,
   Runner,
   tool,
   withResponsesWebSocketSession,
@@ -132,18 +133,14 @@ async function runStreamedTurn(
     let printedOutput = false;
 
     for await (const event of streamedResult.toStream()) {
-      if (event.type === 'raw_model_stream_event') {
-        if (event.data.type !== 'model') {
-          continue;
-        }
-
-        const raw = event.data.event as { type?: string; delta?: string };
+      if (isOpenAIResponsesRawModelStreamEvent(event)) {
+        const raw = event.data.event;
         if (raw.type === 'response.reasoning_summary_text.delta') {
           if (!printedReasoning) {
             console.log('Reasoning:');
             printedReasoning = true;
           }
-          process.stdout.write(raw.delta ?? '');
+          process.stdout.write(raw.delta);
         } else if (raw.type === 'response.output_text.delta') {
           if (printedReasoning && !printedOutput) {
             process.stdout.write('\n\n');
@@ -152,7 +149,7 @@ async function runStreamedTurn(
             console.log('Assistant:');
             printedOutput = true;
           }
-          process.stdout.write(raw.delta ?? '');
+          process.stdout.write(raw.delta);
         }
         continue;
       }
