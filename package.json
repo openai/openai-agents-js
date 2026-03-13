@@ -85,5 +85,10 @@
     "verdaccio": "^6.2.9",
     "vitest": "^3.2.4"
   },
+  "pnpm": {
+    "overrides": {
+      "@types/node": "22.19.13"
+    }
+  },
   "packageManager": "pnpm@10.30.3"
 }
