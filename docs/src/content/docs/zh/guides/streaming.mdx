@@ -13,58 +13,66 @@ import openaiResponsesRawModelStreamEventExample from '../../../../../../example
 import runItemStreamEventExample from '../../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
 import runAgentUpdatedStreamEventExample from '../../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
-Agents SDK 可以逐步输出模型结果和其他执行步骤的结果。流式传输可让您的 UI 保持响应，无需等到完整最终结果生成后再更新用户界面。
+Agents SDK 可以按增量方式交付来自模型及其他执行步骤的输出。流式传输可让您的 UI 保持响应，并避免在更新用户前等待完整最终结果。
 
 ## 流式传输启用
 
-向 `Runner.run()` 传入 `{ stream: true }` 选项，即可获得流对象而不是完整结果：
+向 `Runner.run()` 传入 `{ stream: true }` 选项，即可获得流式对象而非完整结果：
 
-<Code lang="typescript" code={basicStreamingExample} title="启用流式传输" />
+<Code
+  lang="typescript"
+  code={basicStreamingExample}
+  title="Enabling streaming"
+/>
 
-启用流式传输后，返回的 `stream` 实现了 `AsyncIterable` 接口。每次产出的事件对象都描述了本次运行中发生的情况。该流会产出三种事件类型，分别对应智能体执行的不同部分。不过大多数应用只关心模型文本输出，因此该流也提供了辅助方法。
+启用流式传输后，返回的 `stream` 实现了 `AsyncIterable` 接口。每个产出的事件都是一个对象，用于描述本次运行中发生的内容。该流会产出三类事件，分别对应智能体执行的不同部分。不过大多数应用只关心模型文本，因此该流也提供了辅助方法。
 
 ### 文本输出获取
 
-调用 `stream.toTextStream()` 可获得已发出的文本流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是标准的 Node.js `Readable`。我们可以将其直接管道到 `process.stdout` 或其他目标。
+调用 `stream.toTextStream()` 可获得已发出文本的流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是标准的 Node.js `Readable`。我们可以将其直接管道到 `process.stdout` 或其他目标。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="在文本到达时输出日志"
+  title="Logging out the text as it arrives"
   meta={`{13-17}`}
 />
 
-当运行及所有待处理回调完成后，`stream.completed` 这个 promise 会被解析。如果您想确保后续不会再有输出，请务必等待它。这也包括在最后一个文本 token 到达后才完成的后处理工作，例如会话持久化或历史压缩钩子。
+当运行及所有待处理回调都完成后，`stream.completed` 这个 Promise 会 resolve。如果您想确保不再有输出，请始终等待它。这里也包括在最后一个文本 token 到达后才完成的后处理工作，例如会话持久化或历史压缩钩子。
 
-`toTextStream()` 只会发出助手文本。工具调用、交接、审批及其他运行时事件可通过完整事件流获取。
+`toTextStream()` 只会发出助手文本。函数调用、交接、审批及其他运行时事件可从完整事件流中获取。
 
-### 全量事件监听
+### 全部事件监听
 
-您可以使用 `for await` 循环在事件到达时逐个检查。可获取的信息包括底层模型事件、智能体切换以及 SDK 特定的运行信息：
+您可以使用 `for await` 循环在每个事件到达时进行检查。有用的信息包括底层模型事件、任何智能体切换以及 SDK 特有的运行信息：
 
-<Code lang="typescript" code={handleAllEventsExample} title="监听所有事件" />
+<Code
+  lang="typescript"
+  code={handleAllEventsExample}
+  title="Listening to all events"
+/>
 
-参见[流式示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)，这是一个完整脚本，会同时打印纯文本流和原始事件流。
+请参阅[流式示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)，其中包含一个完整脚本，会同时打印纯文本流和原始事件流。
 
 ### Responses WebSocket 传输（可选）
 
-本页的流式 API 也支持 OpenAI Responses WebSocket 传输。
+本页的流式传输 API 也支持 OpenAI Responses WebSocket 传输。
 
-可通过 `setOpenAIResponsesTransport('websocket')` 全局启用，或使用设置了 `useResponsesWebSocket: true` 的自定义 `OpenAIProvider`。
+可通过 `setOpenAIResponsesTransport('websocket')` 全局启用，或使用您自己的 `OpenAIProvider` 并设置 `useResponsesWebSocket: true`。
 
-如果只是要通过 WebSocket 进行流式传输，您不需要 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。若可接受运行间重连，在启用该传输后，`run()` / `Runner.run(..., { stream: true })` 仍可正常工作。
+如果只是通过 WebSocket 进行流式传输，不需要 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。如果可接受运行之间重连，那么启用该传输后，`run()` / `Runner.run(..., { stream: true })` 仍可正常工作。
 
-当您需要复用连接并更明确地控制 provider 生命周期时，请使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider` / `Runner`。
+当您希望复用连接并更明确地控制 provider 生命周期时，请使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider` / `Runner`。
 
-使用 `previousResponseId` 续接时，语义与 HTTP 传输一致。差异仅在于传输方式和连接生命周期。
+使用 `previousResponseId` 的续接语义与 HTTP 传输相同。区别仅在于传输方式和连接生命周期。
 
-如果您自行构建 provider，请在关闭时调用 `await provider.close()`。基于 Websocket 的模型包装器默认会缓存以便复用，关闭 provider 会释放这些连接。`withResponsesWebSocketSession(...)` 也提供同样的复用能力，但会自动将清理范围限定在单个回调内。
+如果您自行构建 provider，请记得在关闭时调用 `await provider.close()`。默认情况下，基于 Websocket 的模型包装器会缓存复用，关闭 provider 会释放这些连接。`withResponsesWebSocketSession(...)` 也提供同样的复用能力，但会自动将清理范围限定在单个回调内。
 
-完整示例见 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)，其中包含流式传输、工具调用、审批和 `previousResponseId`。
+完整示例（包含流式传输、函数调用、审批和 `previousResponseId`）请参阅 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)。
 
 ## 事件类型
 
-该流会产出三种不同的事件类型：
+该流会产出三种不同事件类型：
 
 ### raw_model_stream_event
 
@@ -86,13 +94,26 @@ Agents SDK 可以逐步输出模型结果和其他执行步骤的结果。流式
 }
 ```
 
-如果您使用的是 OpenAI provider，`@openai/agents-openai` 和 `@openai/agents` 都导出了辅助方法，可在不改变 `agents-core` 中通用 `RunRawModelStreamEvent` 契约的前提下，对原始 OpenAI 负载进行类型收窄。
+如果您使用 OpenAI provider，`@openai/agents-openai` 和 `@openai/agents` 都会导出辅助方法，可在不改变 `agents-core` 中通用 `RunRawModelStreamEvent` 契约的前提下缩小 OpenAI 原始载荷类型。
 
 <Code
   lang="typescript"
   code={openaiResponsesRawModelStreamEventExample}
-  title="收窄 OpenAI 原始模型事件"
+  title="Narrow OpenAI raw model events"
 />
+
+当您只需要与传输无关的流式传输代码时，检查 `event.type === 'raw_model_stream_event'` 仍然足够。
+
+如果您使用 OpenAI 模型，并希望在不手动类型断言的情况下检查 provider 特定载荷，SDK 还导出了类型收窄辅助方法：
+
+- `isOpenAIResponsesRawModelStreamEvent(event)`：用于 Responses 原始事件。
+- `isOpenAIChatCompletionsRawModelStreamEvent(event)`：用于 Chat Completions 分块事件。
+
+对于这些 OpenAI 模型事件，`RunRawModelStreamEvent.source` 也会被填充为 `'openai-responses'` 或 `'openai-chat-completions'`。
+
+当您希望检查仅 Responses 才有的事件（如 `response.reasoning_summary_text.delta`、`response.output_item.done` 或 MCP 参数增量），同时让 TypeScript 感知底层事件形状时，这尤其有用。
+
+更完整的 OpenAI 特定流式传输模式，请参阅 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)、[`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts) 和 [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
 
 ### run_item_stream_event
 
@@ -106,19 +127,19 @@ Agents SDK 可以逐步输出模型结果和其他执行步骤的结果。流式
 
 | `name` | 含义 |
 | --- | --- |
-| `message_output_created` | 已创建一条消息输出项。 |
-| `handoff_requested` | 模型请求了一次交接。 |
-| `handoff_occurred` | 运行时已完成向另一个智能体的交接。 |
-| `tool_search_called` | 已发出一个 `tool_search_call` 条目。 |
-| `tool_search_output_created` | 已发出一个包含已加载工具定义的 `tool_search_output` 条目。 |
-| `tool_called` | 已发出一个工具调用条目。 |
-| `tool_output` | 已发出一个工具结果条目。 |
-| `reasoning_item_created` | 已发出一个推理条目。 |
-| `tool_approval_requested` | 某个工具调用已暂停，等待人工审批。 |
+| `message_output_created` | 已创建消息输出条目。 |
+| `handoff_requested` | 模型请求了交接。 |
+| `handoff_occurred` | 运行时已完成向另一智能体的交接。 |
+| `tool_search_called` | 已发出 `tool_search_call` 条目。 |
+| `tool_search_output_created` | 已发出包含已加载工具定义的 `tool_search_output` 条目。 |
+| `tool_called` | 已发出工具调用条目。 |
+| `tool_output` | 已发出工具结果条目。 |
+| `reasoning_item_created` | 已发出推理条目。 |
+| `tool_approval_requested` | 工具调用已暂停，等待人工审批。 |
 
-`tool_search_*` 事件只会出现在使用 `toolSearchTool()` 于运行期间加载延迟工具的 Responses 运行中。
+`tool_search_*` 事件仅出现在使用 `toolSearchTool()`、并在运行期间加载延迟工具的 Responses 运行中。
 
-交接负载示例：
+交接载荷示例：
 
 ```json
 {
@@ -154,20 +175,20 @@ Agents SDK 可以逐步输出模型结果和其他执行步骤的结果。流式
 
 ## 流式传输中的人工干预
 
-流式传输与会暂停执行的交接兼容（例如工具需要审批时）。流对象上的 `interruptions` 字段会暴露待处理的审批项，您可以对每一项调用 `state.approve()` 或 `state.reject()` 继续执行。流暂停后，`stream.completed` 会被解析，且 `stream.interruptions` 包含需要处理的审批。再次以 `{ stream: true }` 执行即可恢复流式输出。
+流式传输与会暂停执行的交接兼容（例如工具需要审批时）。流对象上的 `interruptions` 字段会暴露待审批项，您可对每一项调用 `state.approve()` 或 `state.reject()` 以继续执行。流暂停后，`stream.completed` 会 resolve，且 `stream.interruptions` 包含待处理审批。再次以 `{ stream: true }` 执行即可恢复流式输出。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="流式传输中的人工审批处理"
+  title="Handling human approval while streaming"
 />
 
-一个与用户交互的更完整示例见 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)。
+一个会与用户交互的更完整示例见 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)。
 
 ## 提示
 
-- 退出前请记得等待 `stream.completed`，以确保所有输出都已刷新。
-- 初始的 `{ stream: true }` 选项仅对传入该选项的调用生效。如果您使用 `RunState` 重新运行，必须再次指定该选项。
-- 如果您的应用只关心文本结果，优先使用 `toTextStream()`，以避免处理单个事件对象。
+- 退出前请记得等待 `stream.completed`，以确保所有输出都已刷出。
+- 初始 `{ stream: true }` 选项仅对提供它的那次调用生效。如果您使用 `RunState` 重新运行，必须再次指定该选项。
+- 如果您的应用只关心文本结果，优先使用 `toTextStream()`，可避免处理单个事件对象。
 
-借助流式传输和事件系统，您可以将智能体集成到聊天界面、终端应用或任何用户能从增量更新中受益的场景中。
+借助流式传输和事件系统，您可以将智能体集成到聊天界面、终端应用或任何能从增量更新中受益的场景中。
