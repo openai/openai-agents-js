@@ -1,4 +1,4 @@
-import { run } from '@openai/agents';
+import { isOpenAIResponsesRawModelStreamEvent, run } from '@openai/agents';
 import { agent } from './hostedAgent';
 
 async function main() {
@@ -10,8 +10,7 @@ async function main() {
 
   for await (const event of result) {
     if (
-      event.type === 'raw_model_stream_event' &&
-      event.data.type === 'model' &&
+      isOpenAIResponsesRawModelStreamEvent(event) &&
       event.data.event.type !== 'response.mcp_call_arguments.delta' &&
       event.data.event.type !== 'response.output_text.delta'
     ) {
