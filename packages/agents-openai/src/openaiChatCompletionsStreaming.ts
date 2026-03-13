@@ -3,6 +3,7 @@ import type { CompletionUsage } from 'openai/resources/completions';
 import { protocol } from '@openai/agents-core';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiChatCompletionsModel';
+import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 
 type StreamingState = {
   started: boolean;
@@ -46,6 +47,9 @@ export async function* convertChatCompletionsStreamToResponses(
     yield {
       type: 'model',
       event: chunk,
+      providerData: {
+        rawModelEventSource: OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE,
+      },
     };
 
     // This is always set by the OpenAI API, but not by others e.g. LiteLLM

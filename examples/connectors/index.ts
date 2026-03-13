@@ -1,4 +1,9 @@
-import { Agent, run, hostedMcpTool } from '@openai/agents';
+import {
+  Agent,
+  hostedMcpTool,
+  isOpenAIResponsesRawModelStreamEvent,
+  run,
+} from '@openai/agents';
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 1. Visit https://developers.google.com/oauthplayground/
@@ -31,8 +36,7 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
     const result = await run(agent, input, { stream: true });
     for await (const event of result) {
       if (
-        event.type === 'raw_model_stream_event' &&
-        event.data.type === 'model' &&
+        isOpenAIResponsesRawModelStreamEvent(event) &&
         event.data.event.type !== 'response.mcp_call_arguments.delta' &&
         event.data.event.type !== 'response.output_text.delta'
       ) {
