@@ -94,14 +94,26 @@ describe('convertChatCompletionsStreamToResponses', () => {
       type: 'response_started',
       providerData: { ...chunk1 },
     });
-    expect(events[1]).toEqual({ type: 'model', event: chunk1 });
+    expect(events[1]).toEqual({
+      type: 'model',
+      event: chunk1,
+      providerData: { rawModelEventSource: 'openai-chat-completions' },
+    });
     expect(events[2]).toEqual({
       type: 'output_text_delta',
       delta: 'hello',
       providerData: { ...chunk1 },
     });
-    expect(events[3]).toEqual({ type: 'model', event: chunk2 });
-    expect(events[4]).toEqual({ type: 'model', event: chunk3 });
+    expect(events[3]).toEqual({
+      type: 'model',
+      event: chunk2,
+      providerData: { rawModelEventSource: 'openai-chat-completions' },
+    });
+    expect(events[4]).toEqual({
+      type: 'model',
+      event: chunk3,
+      providerData: { rawModelEventSource: 'openai-chat-completions' },
+    });
 
     expect(events[5]).toEqual({
       type: 'response_done',

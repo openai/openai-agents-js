@@ -2,6 +2,15 @@ import { Agent } from './agent';
 import { RunItem } from './items';
 import { ResponseStreamEvent } from './types';
 
+function getRawModelEventSource(data: ResponseStreamEvent): string | undefined {
+  if (data.type !== 'model') {
+    return undefined;
+  }
+
+  const source = data.providerData?.rawModelEventSource;
+  return typeof source === 'string' ? source : undefined;
+}
+
 /**
  * Streaming event from the LLM. These are `raw` events, i.e. they are directly passed through from
  * the LLM.
@@ -15,7 +24,10 @@ export class RunRawModelStreamEvent {
   /**
    * @param data The raw responses stream events from the LLM.
    */
-  constructor(public data: ResponseStreamEvent) {}
+  constructor(
+    public data: ResponseStreamEvent,
+    public readonly source: string | undefined = getRawModelEventSource(data),
+  ) {}
 }
 
 /**

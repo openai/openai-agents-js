@@ -1,5 +1,10 @@
-import { Agent, run, codeInterpreterTool, withTrace } from '@openai/agents';
-import OpenAI from 'openai';
+import {
+  Agent,
+  codeInterpreterTool,
+  isOpenAIResponsesRawModelStreamEvent,
+  run,
+  withTrace,
+} from '@openai/agents';
 
 async function main() {
   const agent = new Agent({
@@ -18,20 +23,12 @@ async function main() {
     );
     for await (const event of result) {
       if (
-        event.type === 'raw_model_stream_event' &&
-        event.data.type === 'model'
+        isOpenAIResponsesRawModelStreamEvent(event) &&
+        event.data.event.type === 'response.output_item.done' &&
+        event.data.event.item.type === 'code_interpreter_call'
       ) {
-        const modelEvent = event.data.event as
-          | OpenAI.Responses.ResponseStreamEvent
-          | undefined;
-        if (
-          modelEvent &&
-          modelEvent.type === 'response.output_item.done' &&
-          modelEvent.item.type === 'code_interpreter_call'
-        ) {
-          const code = modelEvent.item.code;
-          console.log(`Code interpreter code:\n\`\`\`\n${code}\n\`\`\``);
-        }
+        const code = event.data.event.item.code;
+        console.log(`Code interpreter code:\n\`\`\`\n${code}\n\`\`\``);
       }
     }
     console.log(`Final output: ${result.finalOutput}`);

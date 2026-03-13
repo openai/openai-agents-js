@@ -22,6 +22,7 @@ import type {
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import logger from './logger';
+import { OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import {
   ToolChoiceFunction,
@@ -3159,6 +3160,9 @@ export class OpenAIResponsesModel implements Model {
             yield {
               type: 'model',
               event: event,
+              providerData: {
+                rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+              },
             };
           }
         } else if (eventType === 'response.output_text.delta') {
@@ -3175,6 +3179,9 @@ export class OpenAIResponsesModel implements Model {
         yield {
           type: 'model',
           event: event,
+          providerData: {
+            rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+          },
         };
       }
 

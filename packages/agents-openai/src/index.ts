@@ -10,6 +10,17 @@ export {
 } from './openaiResponsesModel';
 export { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
 export {
+  isOpenAIResponsesRawModelStreamEvent,
+  isOpenAIChatCompletionsRawModelStreamEvent,
+  OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+  OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE,
+} from './rawModelEvents';
+export type {
+  OpenAIRawModelEventSource,
+  OpenAIResponsesRawModelStreamEvent,
+  OpenAIChatCompletionsRawModelStreamEvent,
+} from './rawModelEvents';
+export {
   setDefaultOpenAIClient,
   setOpenAIAPI,
   setOpenAIResponsesTransport,
