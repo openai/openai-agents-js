@@ -1,7 +1,18 @@
-import type { RunRawModelStreamEvent, RunStreamEvent } from '@openai/agents';
+import {
+  isOpenAIChatCompletionsRawModelStreamEvent,
+  isOpenAIResponsesRawModelStreamEvent,
+  type RunStreamEvent,
+} from '@openai/agents';
 
-export function isRunRawModelStreamEvent(
-  event: RunStreamEvent,
-): event is RunRawModelStreamEvent {
-  return event.type === 'raw_model_stream_event';
+export function logOpenAIRawModelEvent(event: RunStreamEvent) {
+  if (isOpenAIResponsesRawModelStreamEvent(event)) {
+    console.log(event.source);
+    console.log(event.data.event.type);
+    return;
+  }
+
+  if (isOpenAIChatCompletionsRawModelStreamEvent(event)) {
+    console.log(event.source);
+    console.log(event.data.event.object);
+  }
 }

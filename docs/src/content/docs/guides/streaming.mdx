@@ -102,6 +102,19 @@ If you are using the OpenAI provider, `@openai/agents-openai` and `@openai/agent
   title="Narrow OpenAI raw model events"
 />
 
+When you only need transport-agnostic streaming code, checking `event.type === 'raw_model_stream_event'` is still enough.
+
+If you are using OpenAI models and want to inspect provider-specific payloads without manual casts, the SDK also exports narrowing helpers:
+
+- `isOpenAIResponsesRawModelStreamEvent(event)` for Responses raw events.
+- `isOpenAIChatCompletionsRawModelStreamEvent(event)` for Chat Completions chunks.
+
+For these OpenAI model events, `RunRawModelStreamEvent.source` is also populated with either `'openai-responses'` or `'openai-chat-completions'`.
+
+This is especially useful when you want to inspect Responses-only events such as `response.reasoning_summary_text.delta`, `response.output_item.done`, or MCP argument deltas while keeping TypeScript aware of the underlying event shape.
+
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts), and [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors) for fuller OpenAI-specific streaming patterns.
+
 ### run_item_stream_event
 
 <Code
