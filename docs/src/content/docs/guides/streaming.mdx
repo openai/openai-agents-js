@@ -9,6 +9,7 @@ import nodeTextStreamExample from '../../../../../examples/docs/streaming/nodeTe
 import handleAllEventsExample from '../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
 import streamedHITLExample from '../../../../../examples/docs/streaming/streamedHITL.ts?raw';
 import runRawModelStreamEventExample from '../../../../../examples/docs/streaming/runRawModelStreamEvent.ts?raw';
+import openaiResponsesRawModelStreamEventExample from '../../../../../examples/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
 import runItemStreamEventExample from '../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
 import runAgentUpdatedStreamEventExample from '../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
@@ -92,6 +93,14 @@ Example:
   }
 }
 ```
+
+If you are using the OpenAI provider, `@openai/agents-openai` and `@openai/agents` both export helpers that narrow raw OpenAI payloads without changing the generic `RunRawModelStreamEvent` contract in `agents-core`.
+
+<Code
+  lang="typescript"
+  code={openaiResponsesRawModelStreamEventExample}
+  title="Narrow OpenAI raw model events"
+/>
 
 ### run_item_stream_event
 
