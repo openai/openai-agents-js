@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.7.1
+
+### Patch Changes
+
+- 7fc871a: feat: #279 add OpenAI raw model stream event narrowing helpers
+
 ## 0.7.0
 
 ### Minor Changes
