@@ -1,5 +1,13 @@
 # @openai/agents-extensions
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [7fc871a]
+  - @openai/agents@0.7.1
+  - @openai/agents-core@0.7.1
+
 ## 0.7.0
 
 ### Minor Changes
