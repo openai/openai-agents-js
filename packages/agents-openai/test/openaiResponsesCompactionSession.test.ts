@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
-import { MemorySession } from '@openai/agents-core';
+import {
+  Agent,
+  MemorySession,
+  type Model,
+  type ModelRequest,
+  type ModelResponse,
+  protocol,
+  Runner,
+  type ResponseStreamEvent,
+  tool,
+  Usage,
+} from '@openai/agents-core';
 import { UserError } from '@openai/agents-core';
+import type { AgentInputItem, Session } from '@openai/agents-core';
 
 import { OpenAIResponsesCompactionSession } from '../src';
 import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
@@ -251,6 +264,79 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(secondRequest.input).toHaveLength(1);
   });
 
+  it('forces input compaction after local history rewrites even when a stored response id exists', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'auto',
+      underlyingSession: new MemorySession(),
+    });
+
+    await session.addItems([
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '1' }),
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        output: {
+          type: 'text',
+          text: 'Customer 1 details.',
+        },
+      },
+    ] as AgentInputItem[]);
+
+    await session.applyHistoryMutations({
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call_override',
+          replacement: {
+            type: 'function_call',
+            callId: 'call_override',
+            name: 'lookup_customer_profile',
+            status: 'completed',
+            arguments: JSON.stringify({ id: '2' }),
+          },
+        },
+      ],
+    });
+
+    await session.runCompaction({
+      responseId: 'resp_store',
+      store: true,
+      force: true,
+    });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request.previous_response_id).toBeUndefined();
+    expect(request.input).toHaveLength(2);
+    expect(request.input[0]).toMatchObject({
+      type: 'function_call',
+      call_id: 'call_override',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '2' }),
+    });
+    expect(request.input[1]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'call_override',
+      output: 'Customer 1 details.',
+    });
+  });
+
   it('allows custom compaction decisions using the stored history', async () => {
     const compact = vi.fn().mockResolvedValue({
       output: [
@@ -460,4 +546,298 @@ describe('OpenAIResponsesCompactionSession', () => {
       UserError,
     );
   });
+
+  it('fails fast before compaction when input mode sees an unresolved function_call', async () => {
+    const compact = vi.fn();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+      shouldTriggerCompaction: () => true,
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'Needs approval.',
+      },
+      {
+        type: 'function_call',
+        callId: 'call_pending',
+        name: 'approved_echo',
+        status: 'completed',
+        arguments: JSON.stringify({ query: 'Needs approval.' }),
+      },
+    ] as AgentInputItem[]);
+
+    await expect(session.runCompaction({ force: true })).rejects.toThrow(
+      'cannot compact history with unresolved function_call items',
+    );
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it('fails fast before compaction when previous_response_id mode sees an unresolved function_call', async () => {
+    const compact = vi.fn();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'previous_response_id',
+      shouldTriggerCompaction: () => true,
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'Needs approval.',
+      },
+      {
+        type: 'function_call',
+        callId: 'call_pending',
+        name: 'approved_echo',
+        status: 'completed',
+        arguments: JSON.stringify({ query: 'Needs approval.' }),
+      },
+    ] as AgentInputItem[]);
+
+    await expect(
+      session.runCompaction({ responseId: 'resp_pending', force: true }),
+    ).rejects.toThrow(
+      'cannot compact history with unresolved function_call items',
+    );
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it('fails fast on interrupted HITL turns before calling responses.compact', async () => {
+    const compact = vi.fn();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+      shouldTriggerCompaction: () => true,
+    });
+    const approvalEchoTool = tool({
+      name: 'approved_echo',
+      description: 'Echoes back the approved query.',
+      parameters: z.object({ query: z.string() }),
+      async execute({ query }: { query: string }) {
+        return `approved:${query}`;
+      },
+    });
+    approvalEchoTool.needsApproval = async () => true;
+    const model = new ApprovalScenarioModel();
+    const agent = new Agent({
+      name: 'Compaction interruption repro',
+      instructions: 'Always call approved_echo before responding.',
+      model: 'test-model',
+      tools: [approvalEchoTool],
+      modelSettings: { toolChoice: 'approved_echo' },
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const runner = new Runner({
+      modelProvider: {
+        getModel: vi.fn(async () => model),
+      },
+    });
+
+    await expect(
+      runner.run(agent, 'Needs approval.', {
+        session,
+      }),
+    ).rejects.toThrow(
+      'cannot compact history with unresolved function_call items',
+    );
+    expect(compact).not.toHaveBeenCalled();
+    await expect(session.getItems()).resolves.toMatchObject([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'Needs approval.',
+      },
+      {
+        type: 'function_call',
+        name: 'approved_echo',
+      },
+    ]);
+  });
+
+  it('rewrites history before compaction when the underlying session is not rewrite-aware', async () => {
+    class PlainSession implements Session {
+      items: AgentInputItem[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+    }
+
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession: new PlainSession(),
+      compactionMode: 'input',
+    });
+
+    await session.addItems([
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '1' }),
+      },
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '2' }),
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        output: {
+          type: 'text',
+          text: 'Customer 2 details.',
+        },
+      },
+    ] as AgentInputItem[]);
+
+    await session.applyHistoryMutations({
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call_override',
+          replacement: {
+            type: 'function_call',
+            callId: 'call_override',
+            name: 'lookup_customer_profile',
+            status: 'completed',
+            arguments: JSON.stringify({ id: '2' }),
+          },
+        },
+      ],
+    });
+
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '2' }),
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        output: {
+          type: 'text',
+          text: 'Customer 2 details.',
+        },
+      },
+    ]);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledWith({
+      input: [
+        {
+          type: 'function_call',
+          call_id: 'call_override',
+          name: 'lookup_customer_profile',
+          status: 'completed',
+          arguments: JSON.stringify({ id: '2' }),
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_override',
+          output: 'Customer 2 details.',
+        },
+      ],
+      model: 'gpt-4.1',
+    });
+  });
 });
+
+class ApprovalScenarioModel implements Model {
+  #counter = 0;
+
+  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    const toolName =
+      typeof request.modelSettings.toolChoice === 'string'
+        ? request.modelSettings.toolChoice
+        : 'approved_echo';
+    const callId = `call_${(this.#counter += 1)}`;
+    const toolCall: protocol.FunctionCallItem = {
+      id: `fc_${callId}`,
+      type: 'function_call',
+      name: toolName,
+      callId,
+      status: 'completed',
+      arguments: JSON.stringify({
+        query: extractLastUserMessage(request.input),
+      }),
+      providerData: {},
+    };
+
+    return {
+      usage: new Usage(),
+      output: [toolCall],
+    };
+  }
+
+  // eslint-disable-next-line require-yield -- this scenario does not stream.
+  async *getStreamedResponse(
+    _request: ModelRequest,
+  ): AsyncIterable<ResponseStreamEvent> {
+    throw new Error('Streaming is not supported in this scenario.');
+  }
+}
+
+function extractLastUserMessage(input: ModelRequest['input']): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (item.type !== 'message' || item.role !== 'user') {
+      continue;
+    }
+
+    if (typeof item.content === 'string') {
+      return item.content;
+    }
+
+    for (const contentItem of item.content) {
+      if (
+        contentItem.type === 'input_text' &&
+        typeof contentItem.text === 'string'
+      ) {
+        return contentItem.text;
+      }
+    }
+  }
+
+  return '';
+}

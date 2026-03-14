@@ -5,6 +5,7 @@ import {
   Agent,
   type AgentInputItem,
   type Model,
+  OpenAIResponsesHistoryRewriteSession,
   type Session,
   OpenAIConversationsSession,
   run,
@@ -22,6 +23,8 @@ const USER_MESSAGES = [
   'Update note for customer 104.',
   'Delete note for customer 104.',
 ];
+const OVERRIDE_QUERY =
+  'Update note for customer 104. Mark the callback as manually rescheduled for Tuesday at 10 AM.';
 
 const TOOL_OUTPUTS: Record<string, (message: string) => string> = {
   [TOOL_ECHO]: (message) => `approved:${message}`,
@@ -57,6 +60,11 @@ type ScenarioStep = {
   toolName: string;
   approval: ApprovalAction;
   expectedOutput: string;
+  overrideArguments?: { query: string };
+  saveOverrideArguments?: boolean;
+  expectedFunctionCallCountForApprovedCall?: number;
+  expectedCorrectedFunctionCallCountForApprovedCall?: number;
+  expectedError?: string;
 };
 
 async function runScenario(
@@ -76,88 +84,139 @@ async function runScenario(
     toolUseBehavior: 'stop_on_first_tool',
   });
 
-  let result = await run(agent, step.message, { session });
-  if (result.interruptions.length === 0) {
-    throw new Error(`[${label}] expected at least one tool approval.`);
-  }
-
-  while (result.interruptions.length > 0) {
-    for (const interruption of result.interruptions) {
-      if (step.approval === 'reject') {
-        result.state.reject(interruption);
-      } else {
-        result.state.approve(interruption);
-      }
+  try {
+    let result = await run(agent, step.message, { session });
+    if (result.interruptions.length === 0) {
+      throw new Error(`[${label}] expected at least one tool approval.`);
     }
-    result = await run(agent, result.state, { session });
-  }
 
-  if (!result.finalOutput) {
-    throw new Error(`[${label}] expected a final output after approval.`);
-  }
-  if (result.finalOutput !== step.expectedOutput) {
-    throw new Error(
-      `[${label}] expected final output "${step.expectedOutput}" but got "${result.finalOutput}".`,
-    );
-  }
+    let approvedCallId: string | undefined;
+    while (result.interruptions.length > 0) {
+      for (const interruption of result.interruptions) {
+        if (step.approval === 'reject') {
+          result.state.reject(interruption);
+        } else {
+          approvedCallId =
+            interruption.rawItem.type === 'function_call'
+              ? interruption.rawItem.callId
+              : approvedCallId;
+          if (
+            step.overrideArguments &&
+            interruption.rawItem.type === 'function_call'
+          ) {
+            result.state.approve(interruption, {
+              overrideArguments: step.overrideArguments,
+              ...(typeof step.saveOverrideArguments === 'boolean'
+                ? { saveOverrideArguments: step.saveOverrideArguments }
+                : {}),
+            });
+          } else {
+            result.state.approve(interruption);
+          }
+        }
+      }
+      result = await run(agent, result.state, { session });
+    }
 
-  const items = await session.getItems();
-  const toolResults = items.filter(
-    (item) => item.type === 'function_call_result',
-  );
-  const userMessages = items.filter(
-    (item) => getUserText(item) === step.message,
-  );
-  const lastToolCall = findLastItem(items, isFunctionCall);
-  const lastToolResult = findLastItem(items, isFunctionCallResult);
+    if (step.expectedError) {
+      throw new Error(
+        `[${label}] expected an error containing "${step.expectedError}" but the run completed successfully.`,
+      );
+    }
 
-  if (toolResults.length === 0) {
-    throw new Error(`[${label}] expected tool outputs in session history.`);
-  }
-  if (userMessages.length === 0) {
-    throw new Error(`[${label}] expected user input in session history.`);
-  }
-  if (!lastToolCall) {
-    throw new Error(`[${label}] expected a tool call in session history.`);
-  }
-  if (lastToolCall.name !== step.toolName) {
-    throw new Error(
-      `[${label}] expected tool call "${step.toolName}" but got "${lastToolCall.name}".`,
-    );
-  }
-  if (!lastToolResult) {
-    throw new Error(`[${label}] expected a tool result in session history.`);
-  }
-  const allowedResultNames = new Set([step.toolName, lastToolCall.callId]);
-  if (!allowedResultNames.has(lastToolResult.name)) {
-    throw new Error(
-      `[${label}] expected tool result "${step.toolName}" but got "${lastToolResult.name}".`,
-    );
-  }
-  if (lastToolResult.callId !== lastToolCall.callId) {
-    throw new Error(
-      `[${label}] expected tool result callId "${lastToolCall.callId}" but got "${lastToolResult.callId}".`,
-    );
-  }
+    if (!result.finalOutput) {
+      throw new Error(`[${label}] expected a final output after approval.`);
+    }
+    if (result.finalOutput !== step.expectedOutput) {
+      throw new Error(
+        `[${label}] expected final output "${step.expectedOutput}" but got "${result.finalOutput}".`,
+      );
+    }
 
-  logSessionSummary(items, label);
-  console.log(
-    `[${label}] final output: ${result.finalOutput} (items: ${items.length})`,
-  );
+    const items = await session.getItems();
+    const toolResults = items.filter(
+      (item) => item.type === 'function_call_result',
+    );
+    const userMessages = items.filter(
+      (item) => getUserText(item) === step.message,
+    );
+    const lastToolCall = findLastItem(items, isFunctionCall);
+    const lastToolResult = findLastItem(items, isFunctionCallResult);
+
+    if (toolResults.length === 0) {
+      throw new Error(`[${label}] expected tool outputs in session history.`);
+    }
+    if (userMessages.length === 0) {
+      throw new Error(`[${label}] expected user input in session history.`);
+    }
+    if (!lastToolCall) {
+      throw new Error(`[${label}] expected a tool call in session history.`);
+    }
+    if (lastToolCall.name !== step.toolName) {
+      throw new Error(
+        `[${label}] expected tool call "${step.toolName}" but got "${lastToolCall.name}".`,
+      );
+    }
+    if (!lastToolResult) {
+      throw new Error(`[${label}] expected a tool result in session history.`);
+    }
+    const allowedResultNames = new Set([step.toolName, lastToolCall.callId]);
+    if (!allowedResultNames.has(lastToolResult.name)) {
+      throw new Error(
+        `[${label}] expected tool result "${step.toolName}" but got "${lastToolResult.name}".`,
+      );
+    }
+    if (lastToolResult.callId !== lastToolCall.callId) {
+      throw new Error(
+        `[${label}] expected tool result callId "${lastToolCall.callId}" but got "${lastToolResult.callId}".`,
+      );
+    }
+    if (step.overrideArguments) {
+      if (!approvedCallId) {
+        throw new Error(`[${label}] expected an approved function call id.`);
+      }
+      validateOverridePersistence(items, label, {
+        callId: approvedCallId,
+        overrideArguments: step.overrideArguments,
+        expectedCorrectedFunctionCallCount:
+          step.expectedCorrectedFunctionCallCountForApprovedCall ?? 1,
+        expectedFunctionCallCount:
+          step.expectedFunctionCallCountForApprovedCall ?? 1,
+        expectedOutput: step.expectedOutput,
+      });
+    }
+
+    logSessionSummary(items, label);
+    console.log(
+      `[${label}] final output: ${result.finalOutput} (items: ${items.length})`,
+    );
+  } catch (error) {
+    if (!step.expectedError) {
+      throw error;
+    }
+    const message = String(error);
+    if (!message.includes(step.expectedError)) {
+      throw new Error(
+        `[${label}] expected an error containing "${step.expectedError}" but got "${message}".`,
+      );
+    }
+    console.log(`[${label}] expected error: ${step.expectedError}`);
+  }
 }
 
 async function runFileSessionScenario(model?: string | Model): Promise<void> {
   const tmpRoot = path.resolve(process.cwd(), 'tmp');
   await mkdir(tmpRoot, { recursive: true });
   const tempDir = await mkdtemp(path.join(tmpRoot, 'hitl-scenario-'));
-  const session = new FileSession({ dir: tempDir });
+  const labelPrefix = 'FileSession+HistoryRewrite';
+  const session = createRewriteCapableFileSession(tempDir);
   const sessionId = await session.getSessionId();
   const sessionFile = path.join(tempDir, `${sessionId}.json`);
-  let rehydratedSession: FileSession | undefined;
+  let rehydratedSession: Session | undefined;
 
-  console.log(`[FileSession] session id: ${sessionId}`);
-  console.log(`[FileSession] file: ${sessionFile}`);
-  console.log('[FileSession] cleanup: always');
+  console.log(`[${labelPrefix}] session id: ${sessionId}`);
+  console.log(`[${labelPrefix}] file: ${sessionFile}`);
+  console.log(`[${labelPrefix}] cleanup: always`);
 
   const steps: ScenarioStep[] = [
     {
@@ -168,11 +227,14 @@ async function runFileSessionScenario(model?: string | Model): Promise<void> {
       expectedOutput: TOOL_OUTPUTS[TOOL_ECHO](USER_MESSAGES[0]),
     },
     {
-      name: 'turn 2 (rehydrated)',
+      name: 'turn 2 (rehydrated override)',
       message: USER_MESSAGES[1],
       toolName: TOOL_NOTE,
       approval: 'approve',
-      expectedOutput: TOOL_OUTPUTS[TOOL_NOTE](USER_MESSAGES[1]),
+      expectedOutput: TOOL_OUTPUTS[TOOL_NOTE](OVERRIDE_QUERY),
+      overrideArguments: { query: OVERRIDE_QUERY },
+      expectedFunctionCallCountForApprovedCall: 1,
+      expectedCorrectedFunctionCallCountForApprovedCall: 1,
     },
     {
       name: 'turn 3 (rejected)',
@@ -184,20 +246,20 @@ async function runFileSessionScenario(model?: string | Model): Promise<void> {
   ];
 
   try {
-    await runScenario(session, `FileSession ${steps[0].name}`, steps[0], {
+    await runScenario(session, `${labelPrefix} ${steps[0].name}`, steps[0], {
       model,
     });
-    rehydratedSession = new FileSession({ dir: tempDir, sessionId });
-    console.log(`[FileSession] rehydrated session id: ${sessionId}`);
+    rehydratedSession = createRewriteCapableFileSession(tempDir, sessionId);
+    console.log(`[${labelPrefix}] rehydrated session id: ${sessionId}`);
     await runScenario(
       rehydratedSession,
-      `FileSession ${steps[1].name}`,
+      `${labelPrefix} ${steps[1].name}`,
       steps[1],
       { model },
     );
     await runScenario(
       rehydratedSession,
-      `FileSession ${steps[2].name}`,
+      `${labelPrefix} ${steps[2].name}`,
       steps[2],
       { model },
     );
@@ -235,18 +297,17 @@ async function runOpenAISessionScenario(model?: string | Model): Promise<void> {
       expectedOutput: TOOL_OUTPUTS[TOOL_ECHO](USER_MESSAGES[0]),
     },
     {
-      name: 'turn 2 (rehydrated)',
+      name: 'turn 2 (rehydrated override)',
       message: USER_MESSAGES[1],
       toolName: TOOL_NOTE,
       approval: 'approve',
-      expectedOutput: TOOL_OUTPUTS[TOOL_NOTE](USER_MESSAGES[1]),
-    },
-    {
-      name: 'turn 3 (rejected)',
-      message: USER_MESSAGES[2],
-      toolName: TOOL_ECHO,
-      approval: 'reject',
-      expectedOutput: REJECTION_OUTPUT,
+      expectedOutput: TOOL_OUTPUTS[TOOL_NOTE](OVERRIDE_QUERY),
+      overrideArguments: { query: OVERRIDE_QUERY },
+      saveOverrideArguments: false,
+      expectedFunctionCallCountForApprovedCall: 0,
+      expectedCorrectedFunctionCallCountForApprovedCall: 0,
+      expectedError:
+        'saveOverrideArguments: false is only supported when using conversationId or previousResponseId.',
     },
   ];
 
@@ -269,12 +330,6 @@ async function runOpenAISessionScenario(model?: string | Model): Promise<void> {
     steps[1],
     { model },
   );
-  await runScenario(
-    rehydratedSession,
-    `OpenAIConversationsSession ${steps[2].name}`,
-    steps[2],
-    { model },
-  );
   if (shouldKeep) {
     console.log(`[OpenAIConversationsSession] kept session id: ${sessionId}`);
     return;
@@ -284,6 +339,15 @@ async function runOpenAISessionScenario(model?: string | Model): Promise<void> {
   if (!process.env.KEEP_OPENAI_SESSION) {
     await rehydratedSession.clearSession();
   }
+}
+
+function createRewriteCapableFileSession(
+  dir: string,
+  sessionId?: string,
+): OpenAIResponsesHistoryRewriteSession {
+  return new OpenAIResponsesHistoryRewriteSession({
+    underlyingSession: new FileSession({ dir, sessionId }),
+  });
 }
 
 function getUserText(item: AgentInputItem): string | undefined {
@@ -356,6 +420,91 @@ function logSessionSummary(items: AgentInputItem[], label: string): void {
       }`,
     );
   }
+}
+
+function validateOverridePersistence(
+  items: AgentInputItem[],
+  label: string,
+  args: {
+    callId: string;
+    overrideArguments: { query: string };
+    expectedFunctionCallCount: number;
+    expectedCorrectedFunctionCallCount: number;
+    expectedOutput: string;
+  },
+): void {
+  const persistedCalls = items.filter(
+    (item): item is AgentInputItem & { type: 'function_call' } =>
+      item.type === 'function_call' && item.callId === args.callId,
+  );
+  const persistedResults = items.filter(
+    (item): item is AgentInputItem & { type: 'function_call_result' } =>
+      item.type === 'function_call_result' && item.callId === args.callId,
+  );
+  const expectedArguments = JSON.stringify(args.overrideArguments);
+  const correctedCalls = persistedCalls.filter(
+    (item) => item.arguments === expectedArguments,
+  );
+  const observedArguments = persistedCalls
+    .map((item) => item.arguments ?? '')
+    .join(' | ');
+
+  console.log(
+    `[${label}] override history: callId=${args.callId} function_calls=${persistedCalls.length} expected=${args.expectedFunctionCallCount}`,
+  );
+  console.log(
+    `[${label}] override corrected calls: ${correctedCalls.length} expected=${args.expectedCorrectedFunctionCallCount}`,
+  );
+  console.log(
+    `[${label}] override persisted args: ${truncateText(
+      observedArguments,
+      240,
+    )}`,
+  );
+
+  if (persistedCalls.length !== args.expectedFunctionCallCount) {
+    throw new Error(
+      `[${label}] expected ${args.expectedFunctionCallCount} persisted function_call items for callId "${args.callId}" but found ${persistedCalls.length}.`,
+    );
+  }
+  if (correctedCalls.length !== args.expectedCorrectedFunctionCallCount) {
+    throw new Error(
+      `[${label}] expected ${args.expectedCorrectedFunctionCallCount} corrected function_call items for callId "${args.callId}" but found ${correctedCalls.length}.`,
+    );
+  }
+  if (persistedResults.length === 0) {
+    throw new Error(
+      `[${label}] expected at least one persisted function_call_result for callId "${args.callId}".`,
+    );
+  }
+
+  const lastResult = persistedResults[persistedResults.length - 1];
+  const resultOutput = extractOutputText(lastResult.output);
+  console.log(
+    `[${label}] override persisted output: ${truncateText(resultOutput, 240)}`,
+  );
+  if (resultOutput !== args.expectedOutput) {
+    throw new Error(
+      `[${label}] expected persisted tool result "${args.expectedOutput}" but found "${resultOutput}".`,
+    );
+  }
+}
+
+function extractOutputText(output: unknown): string {
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  if (
+    output &&
+    typeof output === 'object' &&
+    'text' in output &&
+    typeof output.text === 'string'
+  ) {
+    return output.text;
+  }
+
+  return formatOutput(output);
 }
 
 function isFunctionCall(

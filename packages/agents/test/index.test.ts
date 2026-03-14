@@ -1,4 +1,11 @@
-import { Agent, toolNamespace, toolSearchTool } from '../src/index';
+import {
+  Agent,
+  OpenAIResponsesHistoryRewriteSession,
+  SessionHistoryRewriteArgs,
+  isSessionHistoryRewriteAwareSession,
+  toolNamespace,
+  toolSearchTool,
+} from '../src/index';
 import { RealtimeAgent } from '../src/realtime';
 import { isZodObject } from '../src/utils';
 import { describe, test, expect } from 'vitest';
@@ -41,5 +48,31 @@ describe('Tool search exports', () => {
         execution: 'client',
       },
     });
+  });
+});
+
+describe('Session history rewrite exports', () => {
+  test('history rewrite helpers should be available from the umbrella package', () => {
+    const session = new OpenAIResponsesHistoryRewriteSession();
+    expect(typeof session.applyHistoryMutations).toBe('function');
+    expect(isSessionHistoryRewriteAwareSession(session)).toBe(true);
+
+    const args: SessionHistoryRewriteArgs = {
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call_test',
+          replacement: {
+            type: 'function_call',
+            callId: 'call_test',
+            name: 'lookup_customer_profile',
+            status: 'completed',
+            arguments: JSON.stringify({ id: '1' }),
+          },
+        },
+      ],
+    };
+
+    expect(args.mutations).toHaveLength(1);
   });
 });

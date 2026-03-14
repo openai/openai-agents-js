@@ -1707,6 +1707,58 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('preserves restored trace redaction when a streamed run interrupts again', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-stream-trace-1', 'foo')], 'resp-1'),
+        buildTurn([buildToolCall('call-stream-trace-2', 'bar')], 'resp-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamApprovalTraceResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const firstRunner = new Runner({
+        traceIncludeSensitiveData: false,
+      });
+      const firstResult = await firstRunner.run(agent, 'user_message', {
+        stream: true,
+      });
+
+      await drain(firstResult);
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      expect(firstResult.state._traceIncludeSensitiveData).toBe(false);
+
+      const restored = await RunState.fromString(
+        agent,
+        firstResult.state.toString(),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await new Runner().run(agent, restored, {
+        stream: true,
+      });
+
+      await drain(resumed);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.state._traceIncludeSensitiveData).toBe(false);
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].tracing).toBe('enabled_without_data');
+    });
+
     it('uses runner-level toolErrorFormatter when resuming a rejected approval', async () => {
       const approvalTool = tool({
         name: 'test',

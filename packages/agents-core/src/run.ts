@@ -35,7 +35,11 @@ import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
-import type { Session, SessionInputCallback } from './memory/session';
+import {
+  isSessionHistoryRewriteAwareSession,
+  type Session,
+  type SessionInputCallback,
+} from './memory/session';
 import type { AgentInputItem } from './types';
 import {
   ServerConversationTracker,
@@ -302,6 +306,49 @@ export type IndividualRunOptions<
   TAgent extends Agent<any, any> = Agent<any, any>,
 > = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
 
+function assertOverrideHistoryPersistenceSupport(options: {
+  input: string | AgentInputItem[] | RunState<any, any>;
+  session?: Session;
+  serverManagesConversation: boolean;
+}): void {
+  const { input, session, serverManagesConversation } = options;
+  if (!(input instanceof RunState)) {
+    return;
+  }
+
+  if (hasPendingExecutionOnlyOverride(input) && !serverManagesConversation) {
+    throw new UserError(
+      'saveOverrideArguments: false is only supported when using conversationId or previousResponseId.',
+      input,
+    );
+  }
+
+  const mutations = input.getSessionHistoryMutations();
+  if (mutations.length === 0) {
+    return;
+  }
+
+  if (serverManagesConversation) {
+    throw new UserError(
+      'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
+      input,
+    );
+  }
+
+  if (!session || isSessionHistoryRewriteAwareSession(session)) {
+    return;
+  }
+
+  throw new UserError(
+    'saveOverrideArguments requires a session that supports persisted-history rewrites. Use MemorySession, OpenAIResponsesHistoryRewriteSession, or another SessionHistoryRewriteAwareSession, or pass saveOverrideArguments: false to apply the override only to the current execution.',
+    input,
+  );
+}
+
+function hasPendingExecutionOnlyOverride(state: RunState<any, any>): boolean {
+  return state.hasPendingExecutionOnlyApprovalOverrides();
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -484,6 +531,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    assertOverrideHistoryPersistenceSupport({
+      input,
+      session,
+      serverManagesConversation,
+    });
     const sessionPersistence = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter,
@@ -656,6 +708,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
         this.config.reasoningItemIdPolicy;
       state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
+      if (!isResumedState) {
+        state.setTraceIncludeSensitiveData(
+          this.config.traceIncludeSensitiveData,
+        );
+      }
 
       const resolvedConversationId =
         options.conversationId ??
@@ -805,7 +862,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 handoffs: preparedCall.serializedHandoffs,
                 tracing: getTracing(
                   this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
+                  state._traceIncludeSensitiveData,
                 ),
                 signal: options.signal,
               },
@@ -1196,7 +1253,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 ),
                 tracing: getTracing(
                   this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
+                  result.state._traceIncludeSensitiveData,
                 ),
                 signal: options.signal,
               },
@@ -1459,6 +1516,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
       if (isResumedState) {
         state._agentToolInvocation = undefined;
+      }
+      if (!isResumedState) {
+        state.setTraceIncludeSensitiveData(
+          this.config.traceIncludeSensitiveData,
+        );
       }
       const resolvedConversationId =
         options.conversationId ??

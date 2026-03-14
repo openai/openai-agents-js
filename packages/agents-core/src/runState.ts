@@ -44,6 +44,10 @@ import {
   Tool,
 } from './tool';
 import type { AgentToolInvocation } from './agentToolInvocation';
+import type {
+  SessionFunctionCallItem,
+  SessionHistoryMutation,
+} from './memory/session';
 import {
   getFunctionToolQualifiedName,
   toolQualifiedName,
@@ -77,8 +81,11 @@ import {
  * - 1.7: Adds optional approval rejection messages.
  * - 1.8: Adds tool search item variants, batched computer actions, and GA computer tool
  *   aliasing to serialized run state payloads.
+ * - 1.9: Adds pending session history mutations for canonical local session rewrites.
+ * - 1.10: Adds pending execution-only approval override metadata for resume-time validation,
+ *   plus traceIncludeSensitiveData persistence for approval override tracing.
  */
-export const CURRENT_SCHEMA_VERSION = '1.8' as const;
+export const CURRENT_SCHEMA_VERSION = '1.10' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -88,10 +95,20 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.5',
   '1.6',
   '1.7',
+  '1.8',
+  '1.9',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
 const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
+
+const sessionHistoryMutationSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('replace_function_call'),
+    callId: z.string(),
+    replacement: protocol.FunctionCallItem,
+  }),
+]);
 
 type ContextOverrideStrategy = 'merge' | 'replace';
 
@@ -387,6 +404,15 @@ export const SerializedRunState = z.object({
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
+  executionOnlyApprovalOverrideCallIds: z
+    .array(z.string())
+    .optional()
+    .default([]),
+  sessionHistoryMutations: z
+    .array(sessionHistoryMutationSchema)
+    .optional()
+    .default([]),
+  traceIncludeSensitiveData: z.boolean().optional(),
   trace: serializedTraceSchema.nullable(),
 });
 
@@ -402,6 +428,51 @@ type ToolSearchRuntimeToolState<TContext = UnknownContext> = {
   keyedEntries: Map<string, ToolSearchRuntimeToolEntry<TContext>>;
   nextOrder: number;
 };
+
+type ApproveRunToolOptions = {
+  alwaysApprove?: boolean;
+  overrideArguments?: Record<string, unknown>;
+  saveOverrideArguments?: boolean;
+};
+
+function isFunctionCallItem(
+  item: RunItem['rawItem'] | AgentInputItem | undefined,
+): item is protocol.FunctionCallItem {
+  return Boolean(
+    item && typeof item === 'object' && item.type === 'function_call',
+  );
+}
+
+function createFunctionCallOverride(
+  toolCall: protocol.FunctionCallItem,
+  serializedArguments: string,
+  options: { omitId?: boolean } = {},
+): protocol.FunctionCallItem {
+  const nextItem: protocol.FunctionCallItem = {
+    ...toolCall,
+    arguments: serializedArguments,
+  };
+
+  if (options.omitId) {
+    delete nextItem.id;
+  }
+
+  return nextItem;
+}
+
+function deserializeFunctionCallArgumentsForTrace(
+  serializedArguments: string | undefined,
+): unknown {
+  if (typeof serializedArguments !== 'string') {
+    return serializedArguments ?? null;
+  }
+
+  try {
+    return JSON.parse(serializedArguments);
+  } catch {
+    return serializedArguments;
+  }
+}
 
 /**
  * Serializable snapshot of an agent's run, including context, usage and trace.
@@ -538,6 +609,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _trace: Trace | null = null;
   /**
+   * Whether approval override tracing may include sensitive payload data.
+   */
+  public _traceIncludeSensitiveData = true;
+  /**
    * Runtime-only tool_search-loaded tools, scoped by agent name and preserved across turns for
    * the lifetime of this in-memory run.
    */
@@ -545,6 +620,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     string,
     ToolSearchRuntimeToolState<TContext>
   >();
+  /**
+   * Pending persisted-history rewrites to apply after the current turn is written to a local session.
+   */
+  public _sessionHistoryMutations: SessionHistoryMutation[];
+  /**
+   * Call IDs whose approval overrides apply only to the immediate resumed execution.
+   */
+  public _executionOnlyApprovalOverrideCallIds: string[];
 
   constructor(
     context: RunContext<TContext>,
@@ -568,6 +651,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._outputGuardrailResults = [];
     this._toolInputGuardrailResults = [];
     this._toolOutputGuardrailResults = [];
+    this._executionOnlyApprovalOverrideCallIds = [];
+    this._sessionHistoryMutations = [];
     this._trace = getCurrentTrace();
   }
 
@@ -594,6 +679,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public setCurrentAgentSpan(span?: Span<AgentSpanData>): void {
     this._currentAgentSpan = span;
+  }
+
+  /**
+   * Updates whether tracing may include potentially sensitive payload data.
+   */
+  public setTraceIncludeSensitiveData(includeSensitiveData: boolean): void {
+    this._traceIncludeSensitiveData = includeSensitiveData;
   }
 
   private getOrCreateToolSearchRuntimeToolState(
@@ -762,14 +854,319 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * @param approvalItem - The tool call approval item to approve.
    * @param options - Options for the approval.
    * @param options.alwaysApprove - Approve this tool for all future calls in this run.
+   * @param options.overrideArguments - Replace the approved function-call arguments for this tool call.
+   * @param options.saveOverrideArguments - Whether the corrected function-call arguments must also be
+   * saved into replay/session history. Defaults to `true`; set to `false` for execution-only overrides.
    */
   approve(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysApprove?: boolean } = {
+    options: ApproveRunToolOptions = {
       alwaysApprove: false,
     },
   ) {
-    this._context.approveTool(approvalItem, options);
+    const {
+      overrideArguments,
+      saveOverrideArguments,
+      alwaysApprove = false,
+    } = options;
+
+    if (
+      typeof saveOverrideArguments !== 'undefined' &&
+      typeof overrideArguments === 'undefined'
+    ) {
+      throw new UserError(
+        'saveOverrideArguments can only be used together with overrideArguments.',
+        this,
+      );
+    }
+
+    if (typeof overrideArguments !== 'undefined') {
+      this.applyApprovalArgumentOverride(approvalItem, overrideArguments, {
+        alwaysApprove,
+        saveOverrideArguments,
+      });
+    }
+
+    this._context.approveTool(approvalItem, { alwaysApprove });
+  }
+
+  private applyApprovalArgumentOverride(
+    approvalItem: RunToolApprovalItem,
+    overrideArguments: Record<string, unknown>,
+    options: {
+      alwaysApprove?: boolean;
+      saveOverrideArguments?: boolean;
+    },
+  ): void {
+    if (options.alwaysApprove) {
+      throw new UserError(
+        'overrideArguments cannot be used together with alwaysApprove.',
+        this,
+      );
+    }
+
+    if (approvalItem.rawItem.type !== 'function_call') {
+      throw new UserError(
+        'overrideArguments is only supported for function_call approvals.',
+        this,
+      );
+    }
+
+    if (
+      !overrideArguments ||
+      typeof overrideArguments !== 'object' ||
+      Array.isArray(overrideArguments)
+    ) {
+      throw new UserError(
+        'overrideArguments must be a plain JSON object.',
+        this,
+      );
+    }
+
+    let serializedArguments: string;
+    try {
+      serializedArguments = JSON.stringify(overrideArguments);
+    } catch (error) {
+      throw new UserError(
+        `overrideArguments must be JSON serializable. ${String(error)}`,
+        this,
+      );
+    }
+
+    if (typeof serializedArguments !== 'string') {
+      throw new UserError(
+        'overrideArguments could not be serialized to JSON.',
+        this,
+      );
+    }
+
+    const originalArguments = approvalItem.rawItem.arguments;
+    const callId = approvalItem.rawItem.callId;
+    const shouldSaveOverrideArguments = options.saveOverrideArguments !== false;
+    const hasServerManagedConversation = Boolean(
+      this._conversationId || this._previousResponseId,
+    );
+    if (shouldSaveOverrideArguments && hasServerManagedConversation) {
+      throw new UserError(
+        'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
+        this,
+      );
+    }
+
+    const updatedToolCall = createFunctionCallOverride(
+      approvalItem.rawItem,
+      serializedArguments,
+    );
+
+    approvalItem.rawItem = updatedToolCall;
+    this.replaceFunctionCallInInterruptions(callId, updatedToolCall);
+    if (shouldSaveOverrideArguments) {
+      this.clearExecutionOnlyApprovalOverrideCallId(callId);
+    } else {
+      this.recordExecutionOnlyApprovalOverride(callId);
+    }
+
+    if (this._lastProcessedResponse) {
+      for (const functionRun of this._lastProcessedResponse.functions) {
+        if (functionRun.toolCall.callId !== callId) {
+          continue;
+        }
+        functionRun.toolCall = updatedToolCall;
+      }
+
+      if (shouldSaveOverrideArguments) {
+        this.replaceFunctionCallInRunItems(
+          this._lastProcessedResponse.newItems,
+          callId,
+          updatedToolCall,
+          updatedToolCall,
+        );
+      }
+    }
+
+    if (shouldSaveOverrideArguments) {
+      this.replaceFunctionCallInRunItems(
+        this._generatedItems,
+        callId,
+        updatedToolCall,
+        updatedToolCall,
+      );
+
+      this.replaceFunctionCallInModelResponses(callId, updatedToolCall);
+      this.recordSessionHistoryMutation({
+        type: 'replace_function_call',
+        callId,
+        replacement: updatedToolCall as SessionFunctionCallItem,
+      });
+    }
+
+    this.recordApprovalArgumentOverrideTrace(
+      approvalItem.name ?? approvalItem.rawItem.name,
+      callId,
+      originalArguments,
+      serializedArguments,
+    );
+  }
+
+  private recordApprovalArgumentOverrideTrace(
+    toolName: string,
+    callId: string,
+    originalArguments: string | undefined,
+    serializedArguments: string,
+  ): void {
+    if (!this._traceIncludeSensitiveData) {
+      return;
+    }
+
+    const parent = this._currentAgentSpan ?? this._trace;
+    if (!parent) {
+      return;
+    }
+
+    try {
+      const span = getGlobalTraceProvider().createSpan(
+        {
+          data: {
+            type: 'custom',
+            name: `approval override: ${toolName}`,
+            data: {
+              tool_name: toolName,
+              call_id: callId,
+              original_arguments:
+                deserializeFunctionCallArgumentsForTrace(originalArguments),
+              override_arguments:
+                deserializeFunctionCallArgumentsForTrace(serializedArguments),
+            },
+          },
+        },
+        parent,
+      );
+      span.start();
+      span.end();
+    } catch (error) {
+      logger.warn(
+        `Failed to record approval override trace for ${toolName}: ${String(error)}`,
+      );
+    }
+  }
+
+  private replaceFunctionCallInInterruptions(
+    callId: string,
+    toolCall: protocol.FunctionCallItem,
+  ): void {
+    if (this._currentStep?.type !== 'next_step_interruption') {
+      return;
+    }
+
+    for (const interruption of this.getInterruptions()) {
+      if (
+        interruption.rawItem.type === 'function_call' &&
+        interruption.rawItem.callId === callId
+      ) {
+        interruption.rawItem = toolCall;
+      }
+    }
+  }
+
+  private replaceFunctionCallInRunItems(
+    items: RunItem[],
+    callId: string,
+    storedToolCall: protocol.FunctionCallItem,
+    replayToolCall: protocol.FunctionCallItem,
+  ): void {
+    for (const item of items) {
+      if (!isFunctionCallItem(item.rawItem) || item.rawItem.callId !== callId) {
+        continue;
+      }
+
+      if (item instanceof RunToolCallItem) {
+        item.rawItem = replayToolCall;
+        continue;
+      }
+
+      if (item instanceof RunToolApprovalItem) {
+        item.rawItem = storedToolCall;
+      }
+    }
+  }
+
+  private replaceFunctionCallInModelResponses(
+    callId: string,
+    toolCall: protocol.FunctionCallItem,
+  ): void {
+    for (const response of this._modelResponses) {
+      for (let index = 0; index < response.output.length; index += 1) {
+        const item = response.output[index];
+        if (!isFunctionCallItem(item) || item.callId !== callId) {
+          continue;
+        }
+        response.output[index] = toolCall;
+      }
+    }
+
+    if (!this._lastTurnResponse) {
+      return;
+    }
+
+    for (
+      let index = 0;
+      index < this._lastTurnResponse.output.length;
+      index += 1
+    ) {
+      const item = this._lastTurnResponse.output[index];
+      if (!isFunctionCallItem(item) || item.callId !== callId) {
+        continue;
+      }
+      this._lastTurnResponse.output[index] = toolCall;
+    }
+  }
+
+  public getSessionHistoryMutations(): SessionHistoryMutation[] {
+    return this._sessionHistoryMutations.map((mutation) =>
+      structuredClone(mutation),
+    );
+  }
+
+  public hasPendingExecutionOnlyApprovalOverrides(): boolean {
+    return this._executionOnlyApprovalOverrideCallIds.length > 0;
+  }
+
+  public clearExecutionOnlyApprovalOverrides(): void {
+    this._executionOnlyApprovalOverrideCallIds = [];
+  }
+
+  public clearSessionHistoryMutations(): void {
+    this._sessionHistoryMutations = [];
+  }
+
+  private recordSessionHistoryMutation(mutation: SessionHistoryMutation): void {
+    const replacementIndex = this._sessionHistoryMutations.findIndex(
+      (existing) =>
+        existing.type === mutation.type && existing.callId === mutation.callId,
+    );
+
+    if (replacementIndex >= 0) {
+      this._sessionHistoryMutations[replacementIndex] =
+        structuredClone(mutation);
+      return;
+    }
+
+    this._sessionHistoryMutations.push(structuredClone(mutation));
+  }
+
+  private recordExecutionOnlyApprovalOverride(callId: string): void {
+    if (this._executionOnlyApprovalOverrideCallIds.includes(callId)) {
+      return;
+    }
+
+    this._executionOnlyApprovalOverrideCallIds.push(callId);
+  }
+
+  private clearExecutionOnlyApprovalOverrideCallId(callId: string): void {
+    this._executionOnlyApprovalOverrideCallIds =
+      this._executionOnlyApprovalOverrideCallIds.filter(
+        (existingCallId) => existingCallId !== callId,
+      );
   }
 
   /**
@@ -880,6 +1277,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       conversationId: this._conversationId,
       previousResponseId: this._previousResponseId,
       reasoningItemIdPolicy: this._reasoningItemIdPolicy,
+      executionOnlyApprovalOverrideCallIds:
+        this._executionOnlyApprovalOverrideCallIds,
+      sessionHistoryMutations: this._sessionHistoryMutations,
+      traceIncludeSensitiveData: this._traceIncludeSensitiveData,
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
@@ -974,7 +1375,11 @@ function assertSchemaVersionSupportsToolSearch(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.8') {
+  if (
+    schemaVersion === '1.8' ||
+    schemaVersion === '1.9' ||
+    schemaVersion === '1.10'
+  ) {
     return;
   }
 
@@ -1360,6 +1765,12 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._conversationId = stateJson.conversationId ?? undefined;
   state._previousResponseId = stateJson.previousResponseId ?? undefined;
   state._reasoningItemIdPolicy = stateJson.reasoningItemIdPolicy ?? undefined;
+  state._executionOnlyApprovalOverrideCallIds =
+    stateJson.executionOnlyApprovalOverrideCallIds ?? [];
+  state._sessionHistoryMutations = (stateJson.sessionHistoryMutations ??
+    []) as SessionHistoryMutation[];
+  state._traceIncludeSensitiveData =
+    stateJson.traceIncludeSensitiveData ?? true;
 
   // rebuild tool use tracker
   state._toolUseTracker = new AgentToolUseTracker();

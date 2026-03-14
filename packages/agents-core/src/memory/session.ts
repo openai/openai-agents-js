@@ -45,6 +45,56 @@ export interface Session {
   clearSession(): Promise<void>;
 }
 
+export type SessionFunctionCallItem = Extract<
+  AgentInputItem,
+  { type: 'function_call' }
+>;
+
+export type ReplaceFunctionCallSessionHistoryMutation = {
+  /**
+   * Replace the canonical persisted function call for this call id and drop any later duplicate
+   * function-call items with the same call id.
+   */
+  type: 'replace_function_call';
+  /**
+   * Stable tool call identifier shared by the function call and its output.
+   */
+  callId: string;
+  /**
+   * Canonical function-call item to keep in persisted history.
+   */
+  replacement: SessionFunctionCallItem;
+};
+
+export type SessionHistoryMutation = ReplaceFunctionCallSessionHistoryMutation;
+
+export type SessionHistoryRewriteArgs = {
+  /**
+   * Ordered history mutations to apply to the persisted session items.
+   */
+  mutations: SessionHistoryMutation[];
+};
+
+/**
+ * Session subtype that can rewrite previously persisted history items after a turn finishes.
+ */
+export interface SessionHistoryRewriteAwareSession extends Session {
+  /**
+   * Apply the provided history mutations to the persisted session items.
+   */
+  applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
+}
+
+export function isSessionHistoryRewriteAwareSession(
+  session: Session | undefined,
+): session is SessionHistoryRewriteAwareSession {
+  return (
+    !!session &&
+    typeof (session as SessionHistoryRewriteAwareSession)
+      .applyHistoryMutations === 'function'
+  );
+}
+
 /**
  * Session subtype that can run compaction logic after a completed turn is persisted.
  */

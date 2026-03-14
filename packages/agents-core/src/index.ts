@@ -279,12 +279,19 @@ export type {
 export { RequestUsage, Usage } from './usage';
 export type {
   Session,
+  SessionFunctionCallItem,
+  SessionHistoryMutation,
+  SessionHistoryRewriteArgs,
+  SessionHistoryRewriteAwareSession,
   SessionInputCallback,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
   OpenAIResponsesCompactionResult,
 } from './memory/session';
-export { isOpenAIResponsesCompactionAwareSession } from './memory/session';
+export {
+  isOpenAIResponsesCompactionAwareSession,
+  isSessionHistoryRewriteAwareSession,
+} from './memory/session';
 export { MemorySession } from './memory/memorySession';
 
 /**
