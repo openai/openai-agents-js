@@ -705,6 +705,46 @@ describe('prepareInputItemsWithSession', () => {
     expect(firstCallArgs[0]).toContain('server-managed conversation');
     warnSpy.mockRestore();
   });
+
+  it('drops orphan hosted shell calls from session history when no callback is provided', async () => {
+    const historyShell: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'shell_1',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const session = new StubSession([historyShell]);
+
+    const result = await prepareInputItemsWithSession('fresh input', session);
+
+    expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('preserves caller pending shell calls when callbacks also surface orphan history', async () => {
+    const historyShell: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'history_shell',
+      status: 'completed',
+      action: { commands: ['echo old'] },
+    };
+    const pendingShell: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'pending_shell',
+      status: 'completed',
+      action: { commands: ['echo new'] },
+    };
+    const session = new StubSession([historyShell]);
+
+    const result = await prepareInputItemsWithSession(
+      [pendingShell],
+      session,
+      (history, newItems) => [...history, ...newItems],
+    );
+
+    expect(result.preparedInput).toEqual([pendingShell]);
+    expect(result.sessionItems).toEqual([pendingShell]);
+  });
 });
 
 describe('saveToSession', () => {

@@ -14,7 +14,7 @@ import {
   runInputGuardrails,
   splitInputGuardrails,
 } from './guardrails';
-import { getTurnInput } from './items';
+import { prepareModelInputItems } from './items';
 import { prepareAgentArtifacts } from './modelPreparation';
 import type { AgentArtifacts } from './types';
 
@@ -100,7 +100,11 @@ export async function prepareTurn<
 
   const turnInput = serverConversationTracker
     ? serverConversationTracker.prepareInput(input, generatedItems)
-    : getTurnInput(input, generatedItems, state._reasoningItemIdPolicy);
+    : prepareModelInputItems(
+        input,
+        generatedItems,
+        state._reasoningItemIdPolicy,
+      );
 
   if (state._noActiveAgentRun) {
     state._currentAgent.emit(
