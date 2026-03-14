@@ -426,7 +426,7 @@ export function itemsToLanguageV2Messages(
         type: 'tool-result',
         toolCallId: item.callId,
         toolName,
-        output: convertToAiSdkOutput(item.output),
+        output: convertToAiSdkOutput(item.output, getSpecVersion(model)),
         providerOptions: toProviderOptions(item.providerData, model),
       };
       messages.push({
@@ -631,12 +631,13 @@ function handoffToLanguageV2Tool(
 
 function convertToAiSdkOutput(
   output: protocol.FunctionCallResultItem['output'],
+  specVersion: 'v2' | 'v3' | 'unknown',
 ): LanguageModelV2ToolResultPart['output'] {
   if (typeof output === 'string') {
     return { type: 'text', value: output };
   }
   if (Array.isArray(output)) {
-    return convertStructuredOutputsToAiSdkOutput(output);
+    return convertStructuredOutputsToAiSdkOutput(output, specVersion);
   }
   if (isRecord(output) && typeof output.type === 'string') {
     if (output.type === 'text' && typeof output.text === 'string') {
@@ -646,7 +647,10 @@ function convertToAiSdkOutput(
       const structuredOutputs = convertLegacyToolOutputContent(
         output as protocol.ToolCallOutputContent,
       );
-      return convertStructuredOutputsToAiSdkOutput(structuredOutputs);
+      return convertStructuredOutputsToAiSdkOutput(
+        structuredOutputs,
+        specVersion,
+      );
     }
   }
   return { type: 'text', value: String(output) };
@@ -927,16 +931,42 @@ function createProtocolToolCallItem(args: {
 }
 
 /**
- * Maps the protocol-level structured outputs into the Language Model V2 result primitives.
- * The AI SDK expects either plain text or content parts (text + media), so we merge multiple
- * items accordingly.
+ * Maps the protocol-level structured outputs into AI SDK result primitives,
+ * using the appropriate content part format for the model's spec version.
  */
 function convertStructuredOutputsToAiSdkOutput(
   outputs: protocol.ToolCallStructuredOutput[],
+  specVersion: 'v2' | 'v3' | 'unknown',
 ): LanguageModelV2ToolResultPart['output'] {
+  const isV3 = specVersion === 'v3';
+
+  type MediaPart =
+    | { type: 'media'; data: string; mediaType: string }
+    | { type: 'file-data'; data: string; mediaType: string }
+    | { type: 'file-url'; url: string };
+
+  const makeDataPart = isV3
+    ? (data: string, mediaType: string): MediaPart => ({
+        type: 'file-data',
+        data,
+        mediaType,
+      })
+    : (data: string, mediaType: string): MediaPart => ({
+        type: 'media',
+        data,
+        mediaType,
+      });
+
+  const makeUrlPart = isV3
+    ? (url: string): MediaPart => ({ type: 'file-url', url })
+    : (url: string): MediaPart => ({
+        type: 'media',
+        data: url,
+        mediaType: 'image/*',
+      });
+
   const textParts: string[] = [];
-  const mediaParts: Array<{ type: 'media'; data: string; mediaType: string }> =
-    [];
+  const mediaParts: MediaPart[] = [];
 
   for (const item of outputs) {
     if (item.type === 'input_text') {
@@ -964,20 +994,12 @@ function convertStructuredOutputsToAiSdkOutput(
       }
       const inlineImage = parseBase64ImageDataUrl(imageValue);
       if (inlineImage) {
-        mediaParts.push({
-          type: 'media',
-          data: inlineImage.data,
-          mediaType: inlineImage.mediaType,
-        });
+        mediaParts.push(makeDataPart(inlineImage.data, inlineImage.mediaType));
         continue;
       }
       try {
         const url = new URL(imageValue);
-        mediaParts.push({
-          type: 'media',
-          data: url.toString(),
-          mediaType: 'image/*',
-        });
+        mediaParts.push(makeUrlPart(url.toString()));
       } catch {
         textParts.push(imageValue);
       }
@@ -994,16 +1016,13 @@ function convertStructuredOutputsToAiSdkOutput(
     return { type: 'text', value: textParts.join('') };
   }
 
-  const value: Array<
-    | { type: 'text'; text: string }
-    | { type: 'media'; data: string; mediaType: string }
-  > = [];
+  const value: Array<{ type: 'text'; text: string } | MediaPart> = [];
 
   if (textParts.length > 0) {
     value.push({ type: 'text', text: textParts.join('') });
   }
   value.push(...mediaParts);
-  return { type: 'content', value };
+  return { type: 'content', value } as LanguageModelV2ToolResultPart['output'];
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

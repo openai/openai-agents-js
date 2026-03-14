@@ -1265,6 +1265,80 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts structured tool output lists using V3 file-data/file-url format', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v3' }),
+      items,
+    );
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            output: {
+              type: 'content',
+              value: [
+                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'file-url',
+                  url: 'https://example.com/image.png',
+                },
+                {
+                  type: 'file-data',
+                  data: 'aGVsbG8=',
+                  mediaType: 'image/png',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('handles undefined providerData without throwing', () => {
     const items: protocol.ModelItem[] = [
       {
