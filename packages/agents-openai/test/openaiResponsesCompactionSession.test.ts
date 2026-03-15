@@ -127,7 +127,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       },
     ] as any);
 
-    await session.runCompaction({ force: true });
+    await session.runCompaction({ responseId: 'resp_pending', force: true });
 
     expect(compact).toHaveBeenCalledTimes(1);
     const [request] = compact.mock.calls[0] ?? [];
@@ -443,7 +443,7 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
-  it('replaces history after compaction and reuses the stored response id', async () => {
+  it('replaces history after compaction and falls back to input when later turns only add local items', async () => {
     const compact = vi
       .fn()
       .mockResolvedValueOnce({
@@ -521,10 +521,23 @@ describe('OpenAIResponsesCompactionSession', () => {
     await session.runCompaction({ force: true });
 
     expect(compact).toHaveBeenCalledTimes(2);
-    expect(compact).toHaveBeenLastCalledWith({
-      previous_response_id: 'resp_store',
-      model: 'gpt-4.1',
-    });
+    const [secondRequest] = compact.mock.calls[1] ?? [];
+    expect(secondRequest.previous_response_id).toBeUndefined();
+    expect(secondRequest.model).toBe('gpt-4.1');
+    expect(secondRequest.input).toMatchObject([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'compacted output' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'follow up' }],
+      },
+    ]);
     expect(await session.getItems()).toEqual([
       {
         type: 'message',
@@ -547,7 +560,7 @@ describe('OpenAIResponsesCompactionSession', () => {
     );
   });
 
-  it('fails fast before compaction when input mode sees an unresolved function_call', async () => {
+  it('skips compaction when input mode sees an unresolved function_call', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({
       client: { responses: { compact } } as any,
@@ -570,13 +583,11 @@ describe('OpenAIResponsesCompactionSession', () => {
       },
     ] as AgentInputItem[]);
 
-    await expect(session.runCompaction({ force: true })).rejects.toThrow(
-      'cannot compact history with unresolved function_call items',
-    );
+    await expect(session.runCompaction({ force: true })).resolves.toBeNull();
     expect(compact).not.toHaveBeenCalled();
   });
 
-  it('fails fast before compaction when previous_response_id mode sees an unresolved function_call', async () => {
+  it('skips compaction when previous_response_id mode sees an unresolved function_call', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({
       client: { responses: { compact } } as any,
@@ -601,14 +612,91 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     await expect(
       session.runCompaction({ responseId: 'resp_pending', force: true }),
-    ).rejects.toThrow(
-      'cannot compact history with unresolved function_call items',
-    );
+    ).resolves.toBeNull();
     expect(compact).not.toHaveBeenCalled();
   });
 
-  it('fails fast on interrupted HITL turns before calling responses.compact', async () => {
-    const compact = vi.fn();
+  it('forces input compaction after local-only tool outputs without a newer response id', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'previous_response_id',
+      shouldTriggerCompaction: () => true,
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'Needs approval.',
+      },
+      {
+        type: 'function_call',
+        callId: 'call_pending',
+        name: 'approved_echo',
+        status: 'completed',
+        arguments: JSON.stringify({ query: 'Needs approval.' }),
+      },
+    ] as AgentInputItem[]);
+
+    await expect(
+      session.runCompaction({ responseId: 'resp_pending', force: true }),
+    ).resolves.toBeNull();
+    expect(compact).not.toHaveBeenCalled();
+
+    await session.addItems([
+      {
+        type: 'function_call_result',
+        callId: 'call_pending',
+        output: {
+          type: 'text',
+          text: 'approved:Needs approval.',
+        },
+      },
+    ] as AgentInputItem[]);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compact).toHaveBeenCalledWith({
+      input: [
+        {
+          role: 'user',
+          content: 'Needs approval.',
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_pending',
+          name: 'approved_echo',
+          status: 'completed',
+          arguments: JSON.stringify({ query: 'Needs approval.' }),
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_pending',
+          output: 'approved:Needs approval.',
+        },
+      ],
+      model: 'gpt-4.1',
+    });
+  });
+
+  it('skips compaction on interrupted HITL turns until the tool result exists', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
     const session = new OpenAIResponsesCompactionSession({
       client: { responses: { compact } } as any,
       compactionMode: 'input',
@@ -638,13 +726,11 @@ describe('OpenAIResponsesCompactionSession', () => {
       },
     });
 
-    await expect(
-      runner.run(agent, 'Needs approval.', {
-        session,
-      }),
-    ).rejects.toThrow(
-      'cannot compact history with unresolved function_call items',
-    );
+    const firstResult = await runner.run(agent, 'Needs approval.', {
+      session,
+    });
+
+    expect(firstResult.interruptions).toHaveLength(1);
     expect(compact).not.toHaveBeenCalled();
     await expect(session.getItems()).resolves.toMatchObject([
       {
@@ -657,6 +743,12 @@ describe('OpenAIResponsesCompactionSession', () => {
         name: 'approved_echo',
       },
     ]);
+
+    firstResult.state.approve(firstResult.interruptions[0]);
+
+    const resumed = await runner.run(agent, firstResult.state, { session });
+    expect(resumed.finalOutput).toBe('approved:Needs approval.');
+    expect(compact).toHaveBeenCalledTimes(1);
   });
 
   it('rewrites history before compaction when the underlying session is not rewrite-aware', async () => {

@@ -304,10 +304,8 @@ async function runOpenAISessionScenario(model?: string | Model): Promise<void> {
       expectedOutput: TOOL_OUTPUTS[TOOL_NOTE](OVERRIDE_QUERY),
       overrideArguments: { query: OVERRIDE_QUERY },
       saveOverrideArguments: false,
-      expectedFunctionCallCountForApprovedCall: 0,
+      expectedFunctionCallCountForApprovedCall: 1,
       expectedCorrectedFunctionCallCountForApprovedCall: 0,
-      expectedError:
-        'saveOverrideArguments: false is only supported when using conversationId or previousResponseId.',
     },
   ];
 

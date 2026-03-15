@@ -37,6 +37,7 @@ import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import {
   isSessionHistoryRewriteAwareSession,
+  isServerManagedConversationSession,
   type Session,
   type SessionInputCallback,
 } from './memory/session';
@@ -309,16 +310,16 @@ export type IndividualRunOptions<
 function assertOverrideHistoryPersistenceSupport(options: {
   input: string | AgentInputItem[] | RunState<any, any>;
   session?: Session;
-  serverManagesConversation: boolean;
+  historyIsServerManaged: boolean;
 }): void {
-  const { input, session, serverManagesConversation } = options;
+  const { input, session, historyIsServerManaged } = options;
   if (!(input instanceof RunState)) {
     return;
   }
 
-  if (hasPendingExecutionOnlyOverride(input) && !serverManagesConversation) {
+  if (hasPendingExecutionOnlyOverride(input) && !historyIsServerManaged) {
     throw new UserError(
-      'saveOverrideArguments: false is only supported when using conversationId or previousResponseId.',
+      'saveOverrideArguments: false is only supported when using conversationId, previousResponseId, or a server-managed session.',
       input,
     );
   }
@@ -328,7 +329,7 @@ function assertOverrideHistoryPersistenceSupport(options: {
     return;
   }
 
-  if (serverManagesConversation) {
+  if (historyIsServerManaged) {
     throw new UserError(
       'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
       input,
@@ -525,16 +526,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const resumedPreviousResponseId = resumingFromState
       ? (input as RunState<TContext, TAgent>)._previousResponseId
       : undefined;
+    const session = effectiveOptions.session;
     const serverManagesConversation =
       Boolean(effectiveOptions.conversationId ?? resumedConversationId) ||
       Boolean(effectiveOptions.previousResponseId ?? resumedPreviousResponseId);
+    const historyIsServerManaged =
+      serverManagesConversation || isServerManagedConversationSession(session);
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
-    const session = effectiveOptions.session;
     assertOverrideHistoryPersistenceSupport({
       input,
       session,
-      serverManagesConversation,
+      historyIsServerManaged,
     });
     const sessionPersistence = createSessionPersistenceTracker({
       session,

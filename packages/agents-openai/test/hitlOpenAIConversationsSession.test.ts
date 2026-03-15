@@ -184,7 +184,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
     expect(executeCounts.get(TOOL_NOTE)).toBe(1);
   });
 
-  it('rejects execution-only overrides for conversations-backed sessions', async () => {
+  it('supports execution-only overrides for conversations-backed sessions', async () => {
     const storedItems: Array<Record<string, any>> = [];
     const createItems = vi.fn(
       async (_conversationId: string, payload: { items: any[] }) => {
@@ -228,17 +228,35 @@ describe('OpenAIConversationsSession HITL scenario', () => {
     expect(firstRun.interruptions).toHaveLength(1);
 
     const approval = firstRun.interruptions[0];
+    expect(approval.rawItem.type).toBe('function_call');
+    const approvalCallId =
+      approval.rawItem.type === 'function_call'
+        ? approval.rawItem.callId
+        : undefined;
     firstRun.state.approve(approval, {
       overrideArguments: { query: 'Overridden query' },
       saveOverrideArguments: false,
     });
-    expect(firstRun.state.hasPendingExecutionOnlyApprovalOverrides()).toBe(
-      true,
+
+    const resumed = await run(agent, firstRun.state, { session });
+    expect(resumed.interruptions).toHaveLength(0);
+    expect(resumed.finalOutput).toMatch(/^approved:/);
+
+    const functionCalls = storedItems.filter(
+      (item) => item.type === 'function_call',
+    );
+    const functionOutputs = storedItems.filter(
+      (item) => item.type === 'function_call_output',
     );
 
-    await expect(run(agent, firstRun.state, { session })).rejects.toThrow(
-      'saveOverrideArguments: false is only supported when using conversationId or previousResponseId',
+    expect(functionCalls).toHaveLength(1);
+    expect(functionOutputs).toHaveLength(1);
+    expect(functionCalls[0]?.call_id).toBe(approvalCallId);
+    expect(functionCalls[0]?.arguments).toBe(
+      JSON.stringify({ query: USER_MESSAGES[0] }),
     );
+    expect(functionOutputs[0]?.call_id).toBe(approvalCallId);
+    expect(extractOutputText(functionOutputs[0])).toBe(resumed.finalOutput);
   });
 });
 

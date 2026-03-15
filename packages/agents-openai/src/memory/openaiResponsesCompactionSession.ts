@@ -86,9 +86,10 @@ export type OpenAIResponsesCompactionSessionOptions = {
    * - `previous_response_id`: Uses the server-managed response chain.
    * - `input`: Sends the locally stored session items as input and does not require a response id.
    *
-   * Local history rewrites (for example, approval override argument corrections) temporarily force
-   * compaction through `input` until a newer response id is observed, because the stored
-   * `previous_response_id` chain no longer matches the canonical local transcript.
+   * Local history rewrites (for example, approval override argument corrections) and local-only
+   * persisted tool outputs without a newer response id temporarily force compaction through
+   * `input` until a newer response id is observed, because the stored `previous_response_id`
+   * chain no longer matches the canonical local transcript.
    */
   compactionMode?: OpenAIResponsesCompactionMode;
   /**
@@ -135,6 +136,7 @@ export class OpenAIResponsesCompactionSession
   private sessionItems: AgentInputItem[] | undefined;
   private hasPendingLocalHistoryRewrite: boolean;
   private localHistoryRewriteResponseId?: string;
+  private hasUnacknowledgedLocalSessionAdds: boolean;
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -157,20 +159,33 @@ export class OpenAIResponsesCompactionSession
     this.lastStore = undefined;
     this.hasPendingLocalHistoryRewrite = false;
     this.localHistoryRewriteResponseId = undefined;
+    this.hasUnacknowledgedLocalSessionAdds = false;
   }
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
   ): Promise<OpenAIResponsesCompactionResult | null> {
+    const previousResponseId = this.responseId;
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
       this.lastStore = args.store;
+    }
+    const turnHasLocalAddsWithoutNewResponseId =
+      this.hasUnacknowledgedLocalSessionAdds &&
+      (typeof args.responseId === 'undefined' ||
+        args.responseId === previousResponseId);
+    if (
+      typeof args.responseId !== 'undefined' &&
+      args.responseId !== previousResponseId
+    ) {
+      this.hasUnacknowledgedLocalSessionAdds = false;
     }
     const requestedMode = args.compactionMode ?? this.compactionMode;
     const resolvedMode = this.resolveCompactionMode({
       requestedMode,
       responseId: this.responseId,
       store: args.store ?? this.lastStore,
+      turnHasLocalAddsWithoutResponseId: turnHasLocalAddsWithoutNewResponseId,
     });
 
     if (resolvedMode === 'previous_response_id' && !this.responseId) {
@@ -206,9 +221,7 @@ export class OpenAIResponsesCompactionSession
         compactionMode: resolvedMode,
         unresolvedCallIds: unresolvedFunctionCalls.map((item) => item.callId),
       });
-      throw new UserError(
-        'OpenAIResponsesCompactionSession cannot compact history with unresolved function_call items. responses.compact requires each function_call to have a matching function_call_result. Resume or reject the interruption before compaction runs.',
-      );
+      return null;
     }
 
     logger.debug('compact: start %o', {
@@ -288,6 +301,7 @@ export class OpenAIResponsesCompactionSession
     }
 
     await this.underlyingSession.addItems(items);
+    this.hasUnacknowledgedLocalSessionAdds = true;
     if (this.compactionCandidateItems) {
       const candidates = selectCompactionCandidateItems(items);
       if (candidates.length > 0) {
@@ -338,6 +352,7 @@ export class OpenAIResponsesCompactionSession
     this.sessionItems = [];
     this.hasPendingLocalHistoryRewrite = false;
     this.localHistoryRewriteResponseId = undefined;
+    this.hasUnacknowledgedLocalSessionAdds = false;
   }
 
   private async refreshCachesFromUnderlyingSession(): Promise<void> {
@@ -382,8 +397,25 @@ export class OpenAIResponsesCompactionSession
     requestedMode: OpenAIResponsesCompactionMode;
     responseId: string | undefined;
     store: boolean | undefined;
+    turnHasLocalAddsWithoutResponseId: boolean;
   }): ResolvedCompactionMode {
     const resolvedMode = resolveCompactionMode(options);
+
+    if (
+      options.turnHasLocalAddsWithoutResponseId &&
+      resolvedMode === 'previous_response_id'
+    ) {
+      this.hasUnacknowledgedLocalSessionAdds = false;
+      this.markLocalHistoryRewrite();
+      logger.debug(
+        'compact: forcing input mode after local session delta without new response id %o',
+        {
+          responseId: this.responseId,
+          requestedMode: options.requestedMode,
+        },
+      );
+      return 'input';
+    }
 
     if (!this.hasPendingLocalHistoryRewrite) {
       return resolvedMode;

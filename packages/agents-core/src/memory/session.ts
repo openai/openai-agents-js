@@ -45,6 +45,33 @@ export interface Session {
   clearSession(): Promise<void>;
 }
 
+/**
+ * Marker for session implementations whose conversation history is owned by a server-side system
+ * and therefore cannot be rewritten in place by the SDK.
+ */
+export const SERVER_MANAGED_CONVERSATION_SESSION: unique symbol = Symbol(
+  'SERVER_MANAGED_CONVERSATION_SESSION',
+);
+
+/**
+ * Session subtype whose persisted history is managed by a remote conversation service.
+ */
+export interface ServerManagedConversationSession extends Session {
+  readonly [SERVER_MANAGED_CONVERSATION_SESSION]: true;
+}
+
+export function isServerManagedConversationSession(
+  session: Session | undefined,
+): session is ServerManagedConversationSession {
+  return (
+    !!session &&
+    typeof session === 'object' &&
+    (session as ServerManagedConversationSession)[
+      SERVER_MANAGED_CONVERSATION_SESSION
+    ] === true
+  );
+}
+
 export type SessionFunctionCallItem = Extract<
   AgentInputItem,
   { type: 'function_call' }

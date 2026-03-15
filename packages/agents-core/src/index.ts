@@ -279,6 +279,7 @@ export type {
 export { RequestUsage, Usage } from './usage';
 export type {
   Session,
+  ServerManagedConversationSession,
   SessionFunctionCallItem,
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
@@ -290,7 +291,9 @@ export type {
 } from './memory/session';
 export {
   isOpenAIResponsesCompactionAwareSession,
+  isServerManagedConversationSession,
   isSessionHistoryRewriteAwareSession,
+  SERVER_MANAGED_CONVERSATION_SESSION,
 } from './memory/session';
 export { MemorySession } from './memory/memorySession';
 
