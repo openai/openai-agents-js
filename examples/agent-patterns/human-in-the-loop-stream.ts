@@ -20,6 +20,12 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 async function main() {
+  const APPROVER_NAME = 'Kaz';
+  const temperatureParams = z.object({
+    city: z.string(),
+    approver: z.string().nullable().optional(),
+  });
+
   // Define a tool that requires approval for certain inputs
   const getWeatherTool = tool({
     name: 'get_weather',
@@ -40,12 +46,11 @@ async function main() {
   const getTemperatureTool = tool({
     name: 'get_temperature',
     description: 'Get the temperature for a given city',
-    parameters: z.object({
-      city: z.string(),
-    }),
+    parameters: temperatureParams,
     needsApproval: async (_ctx, { city }) => city.includes('Oakland'),
-    execute: async ({ city }) => {
-      return `The temperature in ${city} is 20° Celsius`;
+    execute: async ({ city, approver }) => {
+      const approvedBy = approver ? ` Approved by ${approver}.` : '';
+      return `The temperature in ${city} is 20° Celsius.${approvedBy}`;
     },
   });
 
@@ -68,7 +73,7 @@ async function main() {
 
   let stream = await run(
     mainAgent,
-    'What is the weather and temperature in San Francisco and Oakland? Use available tools as needed.',
+    'Please check both San Francisco and Oakland, and do not consider the task complete until you have provided the weather and temperature for both cities.',
     { stream: true },
   );
   stream.toTextStream({ compatibleWithNodeStreams: true }).pipe(process.stdout);
@@ -89,7 +94,18 @@ async function main() {
         `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
       );
       if (ok) {
-        state.approve(interruption);
+        if (interruption.name === 'get_temperature') {
+          const parsedArgs = temperatureParams.parse(
+            JSON.parse(interruption.rawItem.arguments),
+          );
+          const overrideArguments = { ...parsedArgs, approver: APPROVER_NAME };
+          console.log(
+            `Injecting approver="${APPROVER_NAME}" into the approved tool call.`,
+          );
+          state.approve(interruption, { overrideArguments });
+        } else {
+          state.approve(interruption);
+        }
       } else {
         state.reject(interruption);
       }

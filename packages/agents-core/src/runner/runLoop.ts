@@ -76,6 +76,7 @@ export async function resumeInterruptedTurn<
     state,
     toolErrorFormatter,
   );
+  state.clearExecutionOnlyApprovalOverrides();
 
   applyTurnResult({
     state,

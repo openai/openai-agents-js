@@ -10,6 +10,9 @@ import type {
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
   Session,
+  SessionHistoryMutation,
+  SessionHistoryRewriteArgs,
+  SessionHistoryRewriteAwareSession,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
@@ -82,6 +85,11 @@ export type OpenAIResponsesCompactionSessionOptions = {
    * - `auto` (default): Uses `input` when the last response was not stored or no response id is available.
    * - `previous_response_id`: Uses the server-managed response chain.
    * - `input`: Sends the locally stored session items as input and does not require a response id.
+   *
+   * Local history rewrites (for example, approval override argument corrections) and local-only
+   * persisted tool outputs without a newer response id temporarily force compaction through
+   * `input` until a newer response id is observed, because the stored `previous_response_id`
+   * chain no longer matches the canonical local transcript.
    */
   compactionMode?: OpenAIResponsesCompactionMode;
   /**
@@ -110,6 +118,7 @@ export type OpenAIResponsesCompactionSessionOptions = {
 export class OpenAIResponsesCompactionSession
   implements
     OpenAIResponsesCompactionSessionLike,
+    SessionHistoryRewriteAwareSession,
     OpenAISessionApiTagged<'responses'>
 {
   readonly [OPENAI_SESSION_API] = 'responses' as const;
@@ -125,6 +134,9 @@ export class OpenAIResponsesCompactionSession
   ) => boolean | Promise<boolean>;
   private compactionCandidateItems: AgentInputItem[] | undefined;
   private sessionItems: AgentInputItem[] | undefined;
+  private hasPendingLocalHistoryRewrite: boolean;
+  private localHistoryRewriteResponseId?: string;
+  private hasUnacknowledgedLocalSessionAdds: boolean;
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -145,20 +157,35 @@ export class OpenAIResponsesCompactionSession
     this.compactionCandidateItems = undefined;
     this.sessionItems = undefined;
     this.lastStore = undefined;
+    this.hasPendingLocalHistoryRewrite = false;
+    this.localHistoryRewriteResponseId = undefined;
+    this.hasUnacknowledgedLocalSessionAdds = false;
   }
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
   ): Promise<OpenAIResponsesCompactionResult | null> {
+    const previousResponseId = this.responseId;
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
       this.lastStore = args.store;
     }
+    const turnHasLocalAddsWithoutNewResponseId =
+      this.hasUnacknowledgedLocalSessionAdds &&
+      (typeof args.responseId === 'undefined' ||
+        args.responseId === previousResponseId);
+    if (
+      typeof args.responseId !== 'undefined' &&
+      args.responseId !== previousResponseId
+    ) {
+      this.hasUnacknowledgedLocalSessionAdds = false;
+    }
     const requestedMode = args.compactionMode ?? this.compactionMode;
-    const resolvedMode = resolveCompactionMode({
+    const resolvedMode = this.resolveCompactionMode({
       requestedMode,
       responseId: this.responseId,
       store: args.store ?? this.lastStore,
+      turnHasLocalAddsWithoutResponseId: turnHasLocalAddsWithoutNewResponseId,
     });
 
     if (resolvedMode === 'previous_response_id' && !this.responseId) {
@@ -182,6 +209,17 @@ export class OpenAIResponsesCompactionSession
       logger.debug('skip: decision hook %o', {
         responseId: this.responseId,
         compactionMode: resolvedMode,
+      });
+      return null;
+    }
+
+    const unresolvedFunctionCalls =
+      findUnresolvedFunctionCallsWithoutResults(sessionItems);
+    if (unresolvedFunctionCalls.length > 0) {
+      logger.debug('compact: blocked unresolved function calls %o', {
+        responseId: this.responseId,
+        compactionMode: resolvedMode,
+        unresolvedCallIds: unresolvedFunctionCalls.map((item) => item.callId),
       });
       return null;
     }
@@ -231,12 +269,39 @@ export class OpenAIResponsesCompactionSession
     return this.underlyingSession.getItems(limit);
   }
 
+  async applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> {
+    if (args.mutations.length === 0) {
+      return;
+    }
+
+    if (isSessionHistoryRewriteDelegate(this.underlyingSession)) {
+      await this.underlyingSession.applyHistoryMutations(args);
+      await this.refreshCachesFromUnderlyingSession();
+      this.markLocalHistoryRewrite();
+      return;
+    }
+
+    const rewrittenItems = applySessionHistoryMutations(
+      await this.underlyingSession.getItems(),
+      args.mutations,
+    );
+    await this.underlyingSession.clearSession();
+    if (rewrittenItems.length > 0) {
+      await this.underlyingSession.addItems(rewrittenItems);
+    }
+    this.sessionItems = rewrittenItems;
+    this.compactionCandidateItems =
+      selectCompactionCandidateItems(rewrittenItems);
+    this.markLocalHistoryRewrite();
+  }
+
   async addItems(items: AgentInputItem[]) {
     if (items.length === 0) {
       return;
     }
 
     await this.underlyingSession.addItems(items);
+    this.hasUnacknowledgedLocalSessionAdds = true;
     if (this.compactionCandidateItems) {
       const candidates = selectCompactionCandidateItems(items);
       if (candidates.length > 0) {
@@ -285,6 +350,15 @@ export class OpenAIResponsesCompactionSession
     await this.underlyingSession.clearSession();
     this.compactionCandidateItems = [];
     this.sessionItems = [];
+    this.hasPendingLocalHistoryRewrite = false;
+    this.localHistoryRewriteResponseId = undefined;
+    this.hasUnacknowledgedLocalSessionAdds = false;
+  }
+
+  private async refreshCachesFromUnderlyingSession(): Promise<void> {
+    const history = await this.underlyingSession.getItems();
+    this.sessionItems = history;
+    this.compactionCandidateItems = selectCompactionCandidateItems(history);
   }
 
   private async ensureCompactionCandidates(): Promise<{
@@ -312,6 +386,72 @@ export class OpenAIResponsesCompactionSession
       compactionCandidateItems: [...compactionCandidates],
       sessionItems: [...history],
     };
+  }
+
+  private markLocalHistoryRewrite(): void {
+    this.hasPendingLocalHistoryRewrite = true;
+    this.localHistoryRewriteResponseId = this.responseId;
+  }
+
+  private resolveCompactionMode(options: {
+    requestedMode: OpenAIResponsesCompactionMode;
+    responseId: string | undefined;
+    store: boolean | undefined;
+    turnHasLocalAddsWithoutResponseId: boolean;
+  }): ResolvedCompactionMode {
+    const resolvedMode = resolveCompactionMode(options);
+
+    if (
+      options.turnHasLocalAddsWithoutResponseId &&
+      resolvedMode === 'previous_response_id'
+    ) {
+      this.hasUnacknowledgedLocalSessionAdds = false;
+      this.markLocalHistoryRewrite();
+      logger.debug(
+        'compact: forcing input mode after local session delta without new response id %o',
+        {
+          responseId: this.responseId,
+          requestedMode: options.requestedMode,
+        },
+      );
+      return 'input';
+    }
+
+    if (!this.hasPendingLocalHistoryRewrite) {
+      return resolvedMode;
+    }
+
+    if (
+      typeof this.localHistoryRewriteResponseId !== 'undefined' &&
+      typeof options.responseId !== 'undefined' &&
+      options.responseId !== this.localHistoryRewriteResponseId
+    ) {
+      this.hasPendingLocalHistoryRewrite = false;
+      this.localHistoryRewriteResponseId = undefined;
+      return resolvedMode;
+    }
+
+    if (
+      this.hasPendingLocalHistoryRewrite &&
+      resolvedMode === 'previous_response_id'
+    ) {
+      if (
+        typeof this.localHistoryRewriteResponseId === 'undefined' &&
+        typeof options.responseId !== 'undefined'
+      ) {
+        this.localHistoryRewriteResponseId = options.responseId;
+      }
+      logger.debug(
+        'compact: forcing input mode after local history rewrite %o',
+        {
+          responseId: options.responseId,
+          requestedMode: options.requestedMode,
+        },
+      );
+      return 'input';
+    }
+
+    return resolvedMode;
   }
 }
 
@@ -365,6 +505,31 @@ function selectCompactionCandidateItems(
     }
     return !(item.type === 'message' && item.role === 'user');
   });
+}
+
+function findUnresolvedFunctionCallsWithoutResults(
+  items: AgentInputItem[],
+): Extract<AgentInputItem, { type: 'function_call' }>[] {
+  const functionCalls = new Map<
+    string,
+    Extract<AgentInputItem, { type: 'function_call' }>
+  >();
+  const resolvedCallIds = new Set<string>();
+
+  for (const item of items) {
+    if (item.type === 'function_call') {
+      functionCalls.set(item.callId, item);
+      continue;
+    }
+
+    if (item.type === 'function_call_result') {
+      resolvedCallIds.add(item.callId);
+    }
+  }
+
+  return [...functionCalls.values()].filter(
+    (item) => !resolvedCallIds.has(item.callId),
+  );
 }
 
 function assertSupportedOpenAIResponsesCompactionModel(model: string): void {
@@ -424,4 +589,52 @@ function isOpenAIConversationsSessionDelegate(
       OPENAI_SESSION_API
     ] === 'conversations'
   );
+}
+
+function isSessionHistoryRewriteDelegate(
+  session: Session | undefined,
+): session is SessionHistoryRewriteAwareSession {
+  return (
+    !!session &&
+    typeof (session as SessionHistoryRewriteAwareSession)
+      .applyHistoryMutations === 'function'
+  );
+}
+
+function applySessionHistoryMutations(
+  items: AgentInputItem[],
+  mutations: SessionHistoryMutation[],
+): AgentInputItem[] {
+  let nextItems = items.map((item) => structuredClone(item));
+
+  for (const mutation of mutations) {
+    if (mutation.type === 'replace_function_call') {
+      nextItems = applyReplaceFunctionCallMutation(nextItems, mutation);
+    }
+  }
+
+  return nextItems;
+}
+
+function applyReplaceFunctionCallMutation(
+  items: AgentInputItem[],
+  mutation: Extract<SessionHistoryMutation, { type: 'replace_function_call' }>,
+): AgentInputItem[] {
+  const replacement = structuredClone(mutation.replacement);
+  const nextItems: AgentInputItem[] = [];
+  let keptReplacement = false;
+
+  for (const item of items) {
+    if (item.type === 'function_call' && item.callId === mutation.callId) {
+      if (!keptReplacement) {
+        nextItems.push(replacement);
+        keptReplacement = true;
+      }
+      continue;
+    }
+
+    nextItems.push(item);
+  }
+
+  return nextItems;
 }

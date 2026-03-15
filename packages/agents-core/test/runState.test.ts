@@ -33,12 +33,124 @@ import {
   FakeEditor,
 } from './stubs';
 import { RunResult } from '../src/result';
-import { createAgentSpan } from '../src/tracing';
+import { createAgentSpan, type Span, type Trace } from '../src/tracing';
+import {
+  defaultProcessor,
+  type TracingProcessor,
+} from '../src/tracing/processor';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import type { MCPServer, MCPTool } from '../src/mcp';
 import { z } from 'zod';
 
+class TestTracingProcessor implements TracingProcessor {
+  public spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {
+    /* noop */
+  }
+
+  async onTraceEnd(_trace: Trace): Promise<void> {
+    /* noop */
+  }
+
+  async onSpanStart(_span: Span<any>): Promise<void> {
+    /* noop */
+  }
+
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+
+  async shutdown(): Promise<void> {
+    /* noop */
+  }
+
+  async forceFlush(): Promise<void> {
+    /* noop */
+  }
+}
+
 describe('RunState', () => {
+  function buildOverrideableApprovalState(options?: {
+    conversationId?: string;
+    previousResponseId?: string;
+  }) {
+    const context = new RunContext();
+    const sendEmailTool = tool({
+      name: 'send_email',
+      description: 'Send an email.',
+      parameters: z.object({ recipient: z.string() }),
+      execute: async ({ recipient }) => recipient,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({
+      name: 'OverrideAgent',
+      tools: [sendEmailTool],
+    });
+    const state = new RunState(context, 'input', agent, 2);
+    if (options?.conversationId || options?.previousResponseId) {
+      state.setConversationContext(
+        options.conversationId,
+        options.previousResponseId,
+      );
+    }
+
+    const rawItem: protocol.FunctionCallItem = {
+      id: 'fc_override',
+      type: 'function_call',
+      name: 'send_email',
+      callId: 'call-override',
+      status: 'completed',
+      arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+    };
+    const approvalItem = new ToolApprovalItem(rawItem, agent);
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [approvalItem],
+      },
+    };
+    state._generatedItems.push(
+      new RunToolCallItem(rawItem, agent),
+      approvalItem,
+    );
+    state._modelResponses = [
+      {
+        usage: new Usage(),
+        output: [structuredClone(rawItem)],
+        responseId: 'resp-override',
+      },
+    ];
+    state._lastTurnResponse = {
+      usage: new Usage(),
+      output: [structuredClone(rawItem)],
+      responseId: 'resp-override',
+    };
+    state._lastProcessedResponse = {
+      newItems: [
+        new RunToolCallItem(structuredClone(rawItem), agent),
+        new ToolApprovalItem(structuredClone(rawItem), agent),
+      ],
+      toolsUsed: ['send_email'],
+      handoffs: [],
+      functions: [
+        {
+          toolCall: structuredClone(rawItem),
+          tool: sendEmailTool as any,
+        },
+      ],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      hasToolsOrApprovalsToRun() {
+        return this.functions.length > 0;
+      },
+    };
+
+    return { agent, state, approvalItem, rawItem };
+  }
+
   it('initializes with default values', () => {
     const context = new RunContext({ foo: 'bar' });
     const agent = new Agent({ name: 'TestAgent' });
@@ -799,6 +911,315 @@ describe('RunState', () => {
     expect(
       state._context.isToolApproved({ toolName: 'toolX', callId: 'cid123' }),
     ).toBe(true);
+  });
+
+  it('approve with overrideArguments updates function-call execution state', () => {
+    const { state, approvalItem } = buildOverrideableApprovalState();
+
+    state.approve(approvalItem, {
+      overrideArguments: { recipient: 'bob@example.com' },
+    });
+
+    expect(approvalItem.arguments).toBe(
+      JSON.stringify({ recipient: 'bob@example.com' }),
+    );
+    expect(
+      state._context.isToolApproved({
+        toolName: 'send_email',
+        callId: 'call-override',
+      }),
+    ).toBe(true);
+    expect((state._generatedItems[0] as RunToolCallItem).rawItem).toMatchObject(
+      {
+        id: 'fc_override',
+        arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+      },
+    );
+    expect(state._lastProcessedResponse?.functions[0]?.toolCall).toMatchObject({
+      id: 'fc_override',
+      arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+    });
+    expect(state._modelResponses[0].output[0]).toMatchObject({
+      id: 'fc_override',
+      arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+    });
+    expect(state._lastTurnResponse?.output[0]).toMatchObject({
+      id: 'fc_override',
+      arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+    });
+    expect(state.getSessionHistoryMutations()).toEqual([
+      {
+        type: 'replace_function_call',
+        callId: 'call-override',
+        replacement: expect.objectContaining({
+          id: 'fc_override',
+          arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+        }),
+      },
+    ]);
+  });
+
+  it('approve with overrideArguments and saveOverrideArguments=false keeps replay history unchanged', () => {
+    const { state, approvalItem, rawItem } = buildOverrideableApprovalState();
+
+    state.approve(approvalItem, {
+      overrideArguments: { recipient: 'bob@example.com' },
+      saveOverrideArguments: false,
+    });
+
+    expect(approvalItem.arguments).toBe(
+      JSON.stringify({ recipient: 'bob@example.com' }),
+    );
+    expect((state._generatedItems[0] as RunToolCallItem).rawItem).toMatchObject(
+      {
+        id: 'fc_override',
+        arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+      },
+    );
+    expect(state._lastProcessedResponse?.functions[0]?.toolCall).toMatchObject({
+      id: 'fc_override',
+      arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+    });
+    expect(state._modelResponses[0].output[0]).toEqual(rawItem);
+    expect(state._lastTurnResponse?.output[0]).toEqual(rawItem);
+    expect(state.getSessionHistoryMutations()).toEqual([]);
+    expect(state.hasPendingExecutionOnlyApprovalOverrides()).toBe(true);
+  });
+
+  it('approve with overrideArguments records a custom trace span', async () => {
+    const traceProvider = getGlobalTraceProvider();
+    const processor = new TestTracingProcessor();
+    traceProvider.setProcessors([processor]);
+    traceProvider.setDisabled(false);
+
+    try {
+      const { agent, state, approvalItem } = buildOverrideableApprovalState();
+      const trace = traceProvider.createTrace({
+        name: 'approval-override-trace',
+      });
+      await trace.start();
+      state._trace = trace;
+      state._currentAgentSpan = createAgentSpan(
+        { data: { name: agent.name } },
+        trace,
+      );
+      state._currentAgentSpan.start();
+
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      state._currentAgentSpan.end();
+      await trace.end();
+
+      const overrideSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          'name' in span.spanData &&
+          span.spanData.name === 'approval override: send_email',
+      );
+      expect(overrideSpan).toBeDefined();
+      expect(overrideSpan?.parentId).toBe(state._currentAgentSpan.spanId);
+      expect((overrideSpan?.spanData as any).data).toEqual({
+        tool_name: 'send_email',
+        call_id: 'call-override',
+        original_arguments: { recipient: 'alice@example.com' },
+        override_arguments: { recipient: 'bob@example.com' },
+      });
+    } finally {
+      traceProvider.setProcessors([defaultProcessor()]);
+      traceProvider.setDisabled(true);
+    }
+  });
+
+  it('approve with overrideArguments does not record a custom trace span when sensitive data is disabled after restore', async () => {
+    const traceProvider = getGlobalTraceProvider();
+    const processor = new TestTracingProcessor();
+    traceProvider.setProcessors([processor]);
+    traceProvider.setDisabled(false);
+
+    try {
+      const { agent, state } = buildOverrideableApprovalState();
+      state.setTraceIncludeSensitiveData(false);
+
+      const restored = await RunState.fromString(agent, state.toString());
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+
+      const [approvalItem] = restored.getInterruptions();
+      expect(approvalItem).toBeDefined();
+
+      const trace = traceProvider.createTrace({
+        name: 'approval-override-redacted-trace',
+      });
+      await trace.start();
+      restored._trace = trace;
+      restored._currentAgentSpan = createAgentSpan(
+        { data: { name: agent.name } },
+        trace,
+      );
+      restored._currentAgentSpan.start();
+
+      restored.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      restored._currentAgentSpan.end();
+      await trace.end();
+
+      const overrideSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          'name' in span.spanData &&
+          span.spanData.name === 'approval override: send_email',
+      );
+      expect(overrideSpan).toBeUndefined();
+    } finally {
+      traceProvider.setProcessors([defaultProcessor()]);
+      traceProvider.setDisabled(true);
+    }
+  });
+
+  it('approve rejects saveOverrideArguments defaults for server-managed conversations', () => {
+    const { state, approvalItem } = buildOverrideableApprovalState({
+      previousResponseId: 'resp-existing',
+    });
+
+    expect(() =>
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      }),
+    ).toThrow('saveOverrideArguments requires local canonical history');
+  });
+
+  it('approve with overrideArguments and saveOverrideArguments=false keeps server-managed replay history unchanged', () => {
+    const { state, approvalItem, rawItem } = buildOverrideableApprovalState({
+      previousResponseId: 'resp-existing',
+    });
+
+    state.approve(approvalItem, {
+      overrideArguments: { recipient: 'bob@example.com' },
+      saveOverrideArguments: false,
+    });
+
+    expect(approvalItem.arguments).toBe(
+      JSON.stringify({ recipient: 'bob@example.com' }),
+    );
+    expect((state._generatedItems[0] as RunToolCallItem).rawItem).toMatchObject(
+      {
+        type: 'function_call',
+        id: 'fc_override',
+        callId: 'call-override',
+        arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+      },
+    );
+    expect(state._lastProcessedResponse?.functions[0]?.toolCall).toMatchObject({
+      id: 'fc_override',
+      arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+    });
+    expect(state._modelResponses[0].output[0]).toEqual(rawItem);
+    expect(state._lastTurnResponse?.output[0]).toEqual(rawItem);
+    expect(state.getSessionHistoryMutations()).toEqual([]);
+    expect(state.hasPendingExecutionOnlyApprovalOverrides()).toBe(true);
+  });
+
+  it('approve rejects saveOverrideArguments without overrideArguments', () => {
+    const { state, approvalItem } = buildOverrideableApprovalState();
+
+    expect(() =>
+      state.approve(approvalItem, {
+        saveOverrideArguments: false,
+      }),
+    ).toThrow(
+      'saveOverrideArguments can only be used together with overrideArguments',
+    );
+  });
+
+  it('approve rejects overrideArguments when alwaysApprove is also set', () => {
+    const { state, approvalItem } = buildOverrideableApprovalState();
+
+    expect(() =>
+      state.approve(approvalItem, {
+        alwaysApprove: true,
+        overrideArguments: { recipient: 'bob@example.com' },
+      }),
+    ).toThrow('overrideArguments cannot be used together with alwaysApprove');
+  });
+
+  it('approve rejects overrideArguments for non-function approvals', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'NonFunctionOverrideAgent' });
+    const state = new RunState(context, '', agent, 1);
+    const approvalItem = new ToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'approval-1',
+        name: 'search',
+        status: 'completed',
+        arguments: '{}',
+      },
+      agent,
+    );
+
+    expect(() =>
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      }),
+    ).toThrow(
+      'overrideArguments is only supported for function_call approvals',
+    );
+  });
+
+  it('serialization round-trip preserves overrideArguments execution state', async () => {
+    const { agent, state, approvalItem } = buildOverrideableApprovalState();
+
+    state.approve(approvalItem, {
+      overrideArguments: { recipient: 'bob@example.com' },
+    });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      (
+        (restored._generatedItems[0] as RunToolCallItem)
+          .rawItem as protocol.FunctionCallItem
+      ).arguments,
+    ).toBe(JSON.stringify({ recipient: 'bob@example.com' }));
+    expect(
+      restored._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+    ).toBe(JSON.stringify({ recipient: 'bob@example.com' }));
+    expect(restored.getSessionHistoryMutations()).toEqual([
+      {
+        type: 'replace_function_call',
+        callId: 'call-override',
+        replacement: expect.objectContaining({
+          id: 'fc_override',
+          arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+        }),
+      },
+    ]);
+  });
+
+  it('serialization round-trip preserves server-managed execution-only override state', async () => {
+    const { agent, state, approvalItem } = buildOverrideableApprovalState({
+      previousResponseId: 'resp-existing',
+    });
+
+    state.approve(approvalItem, {
+      overrideArguments: { recipient: 'bob@example.com' },
+      saveOverrideArguments: false,
+    });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      (
+        (restored._generatedItems[0] as RunToolCallItem)
+          .rawItem as protocol.FunctionCallItem
+      ).arguments,
+    ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+    expect(
+      restored._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+    ).toBe(JSON.stringify({ recipient: 'bob@example.com' }));
+    expect(restored.getSessionHistoryMutations()).toEqual([]);
+    expect(restored.hasPendingExecutionOnlyApprovalOverrides()).toBe(true);
   });
 
   it('returns undefined when approval status is unknown', () => {
