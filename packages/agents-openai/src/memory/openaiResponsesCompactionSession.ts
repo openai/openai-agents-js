@@ -636,9 +636,5 @@ function applyReplaceFunctionCallMutation(
     nextItems.push(item);
   }
 
-  if (!keptReplacement) {
-    nextItems.push(replacement);
-  }
-
   return nextItems;
 }

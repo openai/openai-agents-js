@@ -869,6 +869,111 @@ describe('OpenAIResponsesCompactionSession', () => {
       model: 'gpt-4.1',
     });
   });
+
+  it('does not append a replacement when the underlying session already trimmed the original call', async () => {
+    class PlainSession implements Session {
+      items: AgentInputItem[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+    }
+
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession: new PlainSession(),
+      compactionMode: 'input',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        output: {
+          type: 'text',
+          text: 'Customer 2 details.',
+        },
+      },
+    ] as AgentInputItem[]);
+
+    await session.applyHistoryMutations({
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call_override',
+          replacement: {
+            type: 'function_call',
+            callId: 'call_override',
+            name: 'lookup_customer_profile',
+            status: 'completed',
+            arguments: JSON.stringify({ id: '2' }),
+          },
+        },
+      ],
+    });
+
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        output: {
+          type: 'text',
+          text: 'Customer 2 details.',
+        },
+      },
+    ]);
+
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request.model).toBe('gpt-4.1');
+    expect(request.input).toMatchObject([
+      {
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_override',
+        output: 'Customer 2 details.',
+      },
+    ]);
+  });
 });
 
 class ApprovalScenarioModel implements Model {
