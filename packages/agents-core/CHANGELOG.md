@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.7.2
+
+### Patch Changes
+
+- 5f86461: fix: avoid replaying orphan hosted shell calls across turns
+- dc97919: fix: prune orphan hosted shell calls from public history
+
 ## 0.7.1
 
 ### Patch Changes
