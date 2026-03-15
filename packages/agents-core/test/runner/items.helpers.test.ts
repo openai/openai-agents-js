@@ -33,12 +33,36 @@ describe('prepareModelInputItems', () => {
     ]);
   });
 
+  it('keeps generated pending hosted shell calls without outputs', () => {
+    const agent = new Agent({ name: 'HelperAgent' });
+    const shellCall = new RunToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell_1',
+        status: 'in_progress',
+        action: { commands: ['echo hi'] },
+      } satisfies protocol.ShellCallItem,
+      agent,
+    );
+
+    const prepared = prepareModelInputItems('hello', [shellCall]);
+
+    expect(prepared).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      shellCall.rawItem,
+    ]);
+  });
+
   it('preserves caller-provided pending shell calls while pruning generated orphans', () => {
     const agent = new Agent({ name: 'HelperAgent' });
     const callerPendingShell: AgentInputItem = {
       type: 'shell_call',
       callId: 'manual_shell',
-      status: 'completed',
+      status: 'in_progress',
       action: { commands: ['echo hi'] },
     };
     const orphanGeneratedShell = new RunToolCallItem(
@@ -120,5 +144,20 @@ describe('dropOrphanToolCalls', () => {
     });
 
     expect(prepared).toEqual([callerShell]);
+  });
+
+  it('preserves pending hosted shell calls at pruned indexes', () => {
+    const pendingShell: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'pending_shell',
+      status: 'in_progress',
+      action: { commands: ['echo wait'] },
+    };
+
+    const prepared = dropOrphanToolCalls([pendingShell], {
+      pruningIndexes: new Set([0]),
+    });
+
+    expect(prepared).toEqual([pendingShell]);
   });
 });

@@ -731,7 +731,7 @@ describe('prepareInputItemsWithSession', () => {
     const pendingShell: AgentInputItem = {
       type: 'shell_call',
       callId: 'pending_shell',
-      status: 'completed',
+      status: 'in_progress',
       action: { commands: ['echo new'] },
     };
     const session = new StubSession([historyShell]);
@@ -744,6 +744,24 @@ describe('prepareInputItemsWithSession', () => {
 
     expect(result.preparedInput).toEqual([pendingShell]);
     expect(result.sessionItems).toEqual([pendingShell]);
+  });
+
+  it('preserves pending hosted shell calls from session history when no callback is provided', async () => {
+    const historyShell: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'shell_pending',
+      status: 'in_progress',
+      action: { commands: ['echo hi'] },
+    };
+    const session = new StubSession([historyShell]);
+
+    const result = await prepareInputItemsWithSession('fresh input', session);
+
+    expect(result.preparedInput).toEqual([
+      historyShell,
+      ...toAgentInputList('fresh input'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
   });
 });
 

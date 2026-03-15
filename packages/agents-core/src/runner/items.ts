@@ -152,6 +152,15 @@ function collectCompletedCallIdsByResultType(
   return completed;
 }
 
+function isPendingHostedShellCall(item: AgentInputItem): boolean {
+  if (!item || typeof item !== 'object' || item.type !== 'shell_call') {
+    return false;
+  }
+
+  const status = (item as { status?: unknown }).status;
+  return status === undefined || status === 'in_progress';
+}
+
 export function dropOrphanToolCalls(
   items: AgentInputItem[],
   options?: { pruningIndexes?: Set<number> },
@@ -176,6 +185,9 @@ export function dropOrphanToolCalls(
         type as keyof typeof TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE
       ];
     if (!resultType) {
+      return true;
+    }
+    if (isPendingHostedShellCall(item)) {
       return true;
     }
     return completedByResultType.get(resultType)?.has(callId) ?? false;
