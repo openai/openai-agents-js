@@ -26,6 +26,7 @@ import {
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
   RunState,
+  shellTool,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -1546,6 +1547,102 @@ describe('Runner.run (streaming)', () => {
       expect(secondItems[0]).toMatchObject({
         type: 'function_call_result',
         callId: 'call-1',
+      });
+    });
+
+    it('does not replay orphan hosted shell calls in default streamed multi-turn runs', async () => {
+      const hostedShell = shellTool({
+        environment: { type: 'container_auto' },
+      });
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [
+            {
+              type: 'shell_call',
+              callId: 'call-shell-1',
+              status: 'completed',
+              action: { commands: ['echo hi'] },
+            } satisfies protocol.ShellCallItem,
+          ],
+          'resp-shell-1',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-shell-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'HostedShellStreamAgent',
+        model,
+        tools: [hostedShell],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        stream: true,
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toHaveLength(1);
+      expect(secondInput[0]).toMatchObject({
+        type: 'message',
+        role: 'user',
+        content: 'user_message',
+      });
+      expect(secondInput.some((item) => item.type === 'shell_call')).toBe(
+        false,
+      );
+    });
+
+    it('replays pending hosted shell calls in default streamed multi-turn runs', async () => {
+      const hostedShell = shellTool({
+        environment: { type: 'container_auto' },
+      });
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [
+            {
+              type: 'shell_call',
+              callId: 'call-shell-pending',
+              status: 'in_progress',
+              action: { commands: ['echo hi'] },
+            } satisfies protocol.ShellCallItem,
+          ],
+          'resp-shell-pending-1',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-shell-pending-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'HostedShellStreamAgent',
+        model,
+        tools: [hostedShell],
+      });
+
+      const runner = new Runner();
+      const result = await runner.run(agent, 'user_message', {
+        stream: true,
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toHaveLength(2);
+      expect(secondInput[0]).toMatchObject({
+        type: 'message',
+        role: 'user',
+        content: 'user_message',
+      });
+      expect(secondInput[1]).toMatchObject({
+        type: 'shell_call',
+        callId: 'call-shell-pending',
+        status: 'in_progress',
       });
     });
 

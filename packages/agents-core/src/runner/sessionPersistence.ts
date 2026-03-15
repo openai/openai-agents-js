@@ -13,6 +13,7 @@ import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   buildAgentInputPool,
+  dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
   toAgentInputList,
   getAgentInputItemKey,
@@ -341,10 +342,13 @@ export async function prepareInputItemsWithSession(
   const newInputItems = toAgentInputList(input);
 
   if (!sessionInputCallback) {
+    const preparedInput = includeHistoryInPreparedInput
+      ? dropOrphanToolCalls([...history, ...newInputItems], {
+          pruningIndexes: new Set(history.map((_, index) => index)),
+        })
+      : newInputItems;
     return {
-      preparedInput: includeHistoryInPreparedInput
-        ? [...history, ...newInputItems]
-        : newInputItems,
+      preparedInput,
       sessionItems: newInputItems,
     };
   }
@@ -363,9 +367,10 @@ export async function prepareInputItemsWithSession(
   const newInputCounts = buildItemFrequencyMap(newInputSnapshot);
   const historyRefs = buildAgentInputPool(historySnapshot);
   const newInputRefs = buildAgentInputPool(newInputSnapshot);
+  const historyIndexes = new Set<number>();
 
   const appended: AgentInputItem[] = [];
-  for (const item of combined) {
+  for (const [index, item] of combined.entries()) {
     const key = getAgentInputItemKey(item);
     if (removeAgentInputFromPool(newInputRefs, item)) {
       decrementCount(newInputCounts, key);
@@ -375,12 +380,14 @@ export async function prepareInputItemsWithSession(
 
     if (removeAgentInputFromPool(historyRefs, item)) {
       decrementCount(historyCounts, key);
+      historyIndexes.add(index);
       continue;
     }
 
     const historyRemaining = historyCounts.get(key) ?? 0;
     if (historyRemaining > 0) {
       historyCounts.set(key, historyRemaining - 1);
+      historyIndexes.add(index);
       continue;
     }
 
@@ -413,8 +420,12 @@ export async function prepareInputItemsWithSession(
     );
   }
 
+  const prunedPreparedItems = includeHistoryInPreparedInput
+    ? dropOrphanToolCalls(preparedItems, { pruningIndexes: historyIndexes })
+    : preparedItems;
+
   return {
-    preparedInput: preparedItems,
+    preparedInput: prunedPreparedItems,
     sessionItems: appended,
   };
 }

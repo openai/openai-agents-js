@@ -4,6 +4,13 @@ import { serializeBinary } from '../utils/binary';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
 
+const TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE = {
+  function_call: 'function_call_result',
+  computer_call: 'computer_call_result',
+  shell_call: 'shell_call_output',
+  apply_patch_call: 'apply_patch_call_output',
+} as const;
+
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
 export function toAgentInputList(
@@ -113,6 +120,92 @@ export function extractOutputItemsFromRunItems(
       const { id: _id, ...withoutId } = rawItem as Record<string, unknown>;
       return withoutId as AgentInputItem;
     });
+}
+
+function collectCompletedCallIdsByResultType(
+  items: AgentInputItem[],
+): Map<string, Set<string>> {
+  const completed = new Map<string, Set<string>>();
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const type = (item as { type?: unknown }).type;
+    const callId = (item as { callId?: unknown }).callId;
+    if (typeof type !== 'string' || typeof callId !== 'string') {
+      continue;
+    }
+    if (
+      !Object.values(TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE).includes(type as any)
+    ) {
+      continue;
+    }
+    const existing = completed.get(type);
+    if (existing) {
+      existing.add(callId);
+    } else {
+      completed.set(type, new Set([callId]));
+    }
+  }
+
+  return completed;
+}
+
+function isPendingHostedShellCall(item: AgentInputItem): boolean {
+  if (!item || typeof item !== 'object' || item.type !== 'shell_call') {
+    return false;
+  }
+
+  const status = (item as { status?: unknown }).status;
+  return status === undefined || status === 'in_progress';
+}
+
+export function dropOrphanToolCalls(
+  items: AgentInputItem[],
+  options?: { pruningIndexes?: Set<number> },
+): AgentInputItem[] {
+  const pruningIndexes = options?.pruningIndexes;
+  const completedByResultType = collectCompletedCallIdsByResultType(items);
+
+  return items.filter((item, index) => {
+    if (pruningIndexes && !pruningIndexes.has(index)) {
+      return true;
+    }
+    if (!item || typeof item !== 'object') {
+      return true;
+    }
+    const type = (item as { type?: unknown }).type;
+    const callId = (item as { callId?: unknown }).callId;
+    if (typeof type !== 'string' || typeof callId !== 'string') {
+      return true;
+    }
+    const resultType =
+      TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE[
+        type as keyof typeof TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE
+      ];
+    if (!resultType) {
+      return true;
+    }
+    if (isPendingHostedShellCall(item)) {
+      return true;
+    }
+    return completedByResultType.get(resultType)?.has(callId) ?? false;
+  });
+}
+
+export function prepareModelInputItems(
+  originalInput: string | AgentInputItem[],
+  generatedItems: RunItem[],
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
+): AgentInputItem[] {
+  const callerItems = toAgentInputList(originalInput);
+  const generatedOutputItems = extractOutputItemsFromRunItems(
+    generatedItems,
+    reasoningItemIdPolicy,
+  );
+  const preparedGeneratedItems = dropOrphanToolCalls(generatedOutputItems);
+  return [...callerItems, ...preparedGeneratedItems];
 }
 
 /**
