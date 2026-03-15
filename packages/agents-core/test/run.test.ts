@@ -4832,6 +4832,65 @@ describe('Runner.run', () => {
       );
     });
 
+    it('does not reintroduce orphan hosted shell calls when continuing from public history', async () => {
+      const hostedShell = shellTool({
+        environment: { type: 'container_auto' },
+      });
+      const model = new TrackingModel([
+        buildResponse(
+          [
+            {
+              type: 'shell_call',
+              callId: 'call-shell-1',
+              status: 'completed',
+              action: { commands: ['echo hi'] },
+            } satisfies protocol.ShellCallItem,
+          ],
+          'resp-shell-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-shell-2'),
+        buildResponse(
+          [fakeModelMessage('continued from result')],
+          'resp-shell-3',
+        ),
+        buildResponse(
+          [fakeModelMessage('continued from state')],
+          'resp-shell-4',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'HostedShellAgent',
+        model,
+        tools: [hostedShell],
+      });
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message');
+
+      expect(
+        firstResult.history.some((item) => item.type === 'shell_call'),
+      ).toBe(false);
+      expect(
+        firstResult.state.history.some((item) => item.type === 'shell_call'),
+      ).toBe(false);
+
+      await runner.run(agent, firstResult.history);
+      await runner.run(agent, firstResult.state.history);
+
+      expect(model.requests).toHaveLength(4);
+      const continuedFromResult = getRequestInputItems(model.requests[2]);
+      const continuedFromState = getRequestInputItems(model.requests[3]);
+
+      expect(
+        continuedFromResult.some((item) => item.type === 'shell_call'),
+      ).toBe(false);
+      expect(
+        continuedFromState.some((item) => item.type === 'shell_call'),
+      ).toBe(false);
+      expect(continuedFromResult).toEqual(firstResult.history);
+      expect(continuedFromState).toEqual(firstResult.state.history);
+    });
+
     it('replays pending hosted shell calls in default multi-turn runs', async () => {
       const hostedShell = shellTool({
         environment: { type: 'container_auto' },

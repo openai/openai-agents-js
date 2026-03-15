@@ -13,6 +13,7 @@ import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
   RunReasoningItem,
+  RunToolCallItem,
   RunToolCallOutputItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
@@ -76,6 +77,27 @@ describe('RunState', () => {
     expect(state.history).toEqual([
       { type: 'message', role: 'user', content: 'input' },
       TEST_MODEL_MESSAGE,
+    ]);
+  });
+
+  it('drops orphan hosted shell calls from history', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'HistAgentShell' });
+    const state = new RunState(context, 'input', agent, 1);
+    state._generatedItems.push(
+      new RunToolCallItem(
+        {
+          type: 'shell_call',
+          callId: 'shell_orphan',
+          status: 'completed',
+          action: { commands: ['echo hi'] },
+        },
+        agent,
+      ),
+    );
+
+    expect(state.history).toEqual([
+      { type: 'message', role: 'user', content: 'input' },
     ]);
   });
 

@@ -200,12 +200,22 @@ export function prepareModelInputItems(
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
   const callerItems = toAgentInputList(originalInput);
+  const preparedGeneratedItems = getContinuationOutputItems(
+    generatedItems,
+    reasoningItemIdPolicy,
+  );
+  return [...callerItems, ...preparedGeneratedItems];
+}
+
+function getContinuationOutputItems(
+  generatedItems: RunItem[],
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
+): AgentInputItem[] {
   const generatedOutputItems = extractOutputItemsFromRunItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  const preparedGeneratedItems = dropOrphanToolCalls(generatedOutputItems);
-  return [...callerItems, ...preparedGeneratedItems];
+  return dropOrphanToolCalls(generatedOutputItems);
 }
 
 /**
@@ -220,7 +230,7 @@ export function getTurnInput(
   generatedItems: RunItem[],
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const outputItems = extractOutputItemsFromRunItems(
+  const outputItems = getContinuationOutputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
