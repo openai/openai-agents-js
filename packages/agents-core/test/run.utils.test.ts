@@ -3,9 +3,11 @@ import { getTurnInput } from '../src/run';
 import {
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
+  RunToolCallItem,
 } from '../src/items';
 import { Agent } from '../src/agent';
 import { TEST_MODEL_MESSAGE } from './stubs';
+import * as protocol from '../src/types/protocol';
 
 describe('getTurnInput', () => {
   it('combines original string input with generated items', () => {
@@ -52,5 +54,28 @@ describe('getTurnInput', () => {
       content: [{ type: 'input_text', text: 'thinking' }],
     });
     expect(result[1]).not.toHaveProperty('id');
+  });
+
+  it('drops orphan hosted shell calls from generated history', () => {
+    const agent = new Agent({ name: 'A' });
+    const orphanShellCall = new RunToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell_123',
+        status: 'completed',
+        action: { commands: ['echo hi'] },
+      } satisfies protocol.ShellCallItem,
+      agent,
+    );
+
+    const result = getTurnInput('hello', [orphanShellCall]);
+
+    expect(result).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+    ]);
   });
 });
