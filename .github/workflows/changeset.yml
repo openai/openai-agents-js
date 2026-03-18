@@ -91,7 +91,9 @@ jobs:
           prompt-file: .github/codex/prompts/changeset-validation.generated.md
           output-file: .github/codex/outputs/changeset-validation.json
           output-schema-file: .github/codex/schemas/changeset-validation.json
-          codex-args: '["--full-auto"]'
+          # Keep the legacy Linux sandbox path until the default bubblewrap path
+          # works reliably on GitHub-hosted Ubuntu runners.
+          codex-args: '["--full-auto","--enable","use_legacy_landlock"]'
           sandbox: read-only
           safety-strategy: drop-sudo
 
