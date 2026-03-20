@@ -128,7 +128,14 @@ export class FakeTransport
 {
   #functionCallOutputWaiters: Array<{
     count: number;
-    resolve: (call: [TransportToolCallEvent, string, boolean]) => void;
+    resolve: (
+      call: [
+        TransportToolCallEvent,
+        string,
+        boolean,
+        ('completed' | 'incomplete' | 'in_progress') | undefined,
+      ],
+    ) => void;
   }> = [];
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'disconnected';
@@ -142,7 +149,12 @@ export class FakeTransport
   closeCalls = 0;
   eventEmitter = new RuntimeEventEmitter<RealtimeTransportEventTypes>();
   muteCalls: boolean[] = [];
-  sendFunctionCallOutputCalls: [TransportToolCallEvent, string, boolean][] = [];
+  sendFunctionCallOutputCalls: [
+    TransportToolCallEvent,
+    string,
+    boolean,
+    ('completed' | 'incomplete' | 'in_progress') | undefined,
+  ][] = [];
   sendMcpResponseCalls: [any, boolean, string | undefined][] = [];
   interruptCalls = 0;
   resetHistoryCalls: [RealtimeItem[], RealtimeItem[]][] = [];
@@ -188,12 +200,14 @@ export class FakeTransport
     toolCall: TransportToolCallEvent,
     output: string,
     startResponse: boolean,
+    status?: 'completed' | 'incomplete' | 'in_progress',
   ): void {
-    const call: [TransportToolCallEvent, string, boolean] = [
-      toolCall,
-      output,
-      startResponse,
-    ];
+    const call: [
+      TransportToolCallEvent,
+      string,
+      boolean,
+      ('completed' | 'incomplete' | 'in_progress') | undefined,
+    ] = [toolCall, output, startResponse, status];
     this.sendFunctionCallOutputCalls.push(call);
     const ready = this.#functionCallOutputWaiters.filter(
       (waiter) => this.sendFunctionCallOutputCalls.length >= waiter.count,
@@ -207,7 +221,12 @@ export class FakeTransport
   }
 
   waitForNextFunctionCallOutput(): Promise<
-    [TransportToolCallEvent, string, boolean]
+    [
+      TransportToolCallEvent,
+      string,
+      boolean,
+      ('completed' | 'incomplete' | 'in_progress') | undefined,
+    ]
   > {
     const count = this.sendFunctionCallOutputCalls.length + 1;
     return new Promise((resolve) => {

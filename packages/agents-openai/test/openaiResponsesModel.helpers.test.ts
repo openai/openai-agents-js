@@ -1072,6 +1072,33 @@ describe('getInputItems', () => {
     });
   });
 
+  it('preserves incomplete status for function output round-trips', () => {
+    const serialized = getInputItems([
+      {
+        type: 'function_call_result',
+        callId: 'rejected',
+        status: 'incomplete',
+        output: 'Tool execution was not approved.',
+      },
+    ] as any);
+
+    expect(serialized[0]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'rejected',
+      status: 'incomplete',
+      output: 'Tool execution was not approved.',
+    });
+
+    const roundTripped = convertToOutputItem(serialized as any);
+    expect(roundTripped[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'rejected',
+      name: 'rejected',
+      status: 'incomplete',
+      output: 'Tool execution was not approved.',
+    });
+  });
+
   it('converts message content arrays for user and assistant roles', () => {
     const items = getInputItems([
       {

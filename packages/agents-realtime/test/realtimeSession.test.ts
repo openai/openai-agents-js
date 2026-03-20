@@ -883,9 +883,10 @@ describe('RealtimeSession', () => {
     const outputPromise = t.waitForNextFunctionCallOutput();
     t.emit('function_call', toolCall as any);
 
-    const [, output, startResponse] = await outputPromise;
+    const [, output, startResponse, status] = await outputPromise;
     expect(output).toBe('Tool execution was not approved.');
     expect(startResponse).toBe(true);
+    expect(status).toBe('incomplete');
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 

@@ -125,6 +125,7 @@ function getComputerTraceInputPayload(
 export function getToolCallOutputItem(
   toolCall: protocol.FunctionCallItem,
   output: string | unknown,
+  status: FunctionCallResultItem['status'] = 'completed',
 ): FunctionCallResultItem {
   const maybeStructuredOutputs = normalizeStructuredToolOutputs(output);
 
@@ -140,7 +141,7 @@ export function getToolCallOutputItem(
         ? { namespace: toolCall.namespace }
         : {}),
       callId: toolCall.callId,
-      status: 'completed',
+      status,
       output: structuredItems,
     };
   }
@@ -152,7 +153,7 @@ export function getToolCallOutputItem(
       ? { namespace: toolCall.namespace }
       : {}),
     callId: toolCall.callId,
-    status: 'completed',
+    status,
     output: {
       type: 'text',
       text: toSmartString(output),
@@ -303,7 +304,7 @@ async function buildApprovalRejectionResult<TContext>(
       tool: toolRun.tool,
       output: response,
       runItem: new RunToolCallOutputItem(
-        getToolCallOutputItem(toolRun.toolCall, response),
+        getToolCallOutputItem(toolRun.toolCall, response, 'incomplete'),
         agent,
         response,
       ),
