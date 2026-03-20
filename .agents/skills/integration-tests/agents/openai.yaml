@@ -1,0 +1,4 @@
+interface:
+  display_name: "Integration Tests"
+  short_description: "Run the Verdaccio-backed integration test pipeline"
+  default_prompt: "Use $integration-tests to run the local Verdaccio-backed integration test pipeline and summarize any failures."
