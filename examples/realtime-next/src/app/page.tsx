@@ -109,7 +109,6 @@ export default function Home() {
 
   useEffect(() => {
     session.current = new RealtimeSession(agent, {
-      model: 'gpt-realtime',
       outputGuardrails: guardrails,
       outputGuardrailSettings: {
         debounceTextLength: 200,

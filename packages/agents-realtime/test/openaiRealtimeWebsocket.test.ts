@@ -494,13 +494,13 @@ describe('OpenAIRealtimeWebSocket', () => {
     const payload = await OpenAIRealtimeSIP.buildInitialConfig(
       agent,
       {
-        model: 'gpt-realtime',
+        model: 'gpt-realtime-1.5',
         config: { audio: { output: { speed: 1.5 } } },
       },
       { audio: { output: { speed: 2 } } },
     );
     expect(payload.type).toBe('realtime');
-    expect(payload.model).toBe('gpt-realtime');
+    expect(payload.model).toBe('gpt-realtime-1.5');
     expect(payload.instructions).toBe('Respond politely.');
     expect(payload.audio?.output?.speed).toBe(2);
   });
