@@ -40,7 +40,7 @@ import { EventEmitterDelegate } from '@openai/agents-core/utils';
  * The models that are supported by the OpenAI Realtime API.
  */
 export type OpenAIRealtimeModels =
-  | 'gpt-realtime'
+  | 'gpt-realtime-1.5'
   | 'gpt-realtime-1.5'
   | 'gpt-realtime-2025-08-28'
   | 'gpt-4o-realtime-preview'
@@ -58,7 +58,7 @@ export type OpenAIRealtimeModels =
  * The default model that is used during the connection if no model is provided.
  */
 export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
-  'gpt-realtime';
+  'gpt-realtime-1.5';
 
 /**
  * The default session config that gets send over during session connection unless overridden

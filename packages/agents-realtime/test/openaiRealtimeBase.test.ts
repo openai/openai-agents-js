@@ -127,7 +127,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     const base = new TestBase();
     const payload = (base as any)._getMergedSessionConfig({
       instructions: 'hi',
-      model: 'gpt-realtime',
+      model: 'gpt-realtime-1.5',
       tools: [
         {
           type: 'function',
@@ -156,7 +156,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     const base = new TestBase();
     const payload = (base as any)._getMergedSessionConfig({
       instructions: 'hi',
-      model: 'gpt-realtime',
+      model: 'gpt-realtime-1.5',
       tools: [
         {
           type: 'mcp',
