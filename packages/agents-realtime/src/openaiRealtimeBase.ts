@@ -40,7 +40,7 @@ import { EventEmitterDelegate } from '@openai/agents-core/utils';
  * The models that are supported by the OpenAI Realtime API.
  */
 export type OpenAIRealtimeModels =
-  | 'gpt-realtime-1.5'
+  | 'gpt-realtime'
   | 'gpt-realtime-1.5'
   | 'gpt-realtime-2025-08-28'
   | 'gpt-4o-realtime-preview'
