@@ -3,6 +3,8 @@ import {
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
+  RunReasoningItem,
+  RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
   RunToolSearchCallItem,
@@ -22,6 +24,7 @@ const TOOL_TYPES = new Set([
   'apply_patch_call',
   'apply_patch_call_output',
   'hosted_tool_call',
+  'reasoning',
 ]);
 
 /**
@@ -59,7 +62,9 @@ function removeToolsFromItems(items: RunItem[]): RunItem[] {
       !(item instanceof RunToolSearchCallItem) &&
       !(item instanceof RunToolSearchOutputItem) &&
       !(item instanceof RunToolCallItem) &&
-      !(item instanceof RunToolCallOutputItem),
+      !(item instanceof RunToolCallOutputItem) &&
+      !(item instanceof RunReasoningItem) &&
+      !(item instanceof RunToolApprovalItem),
   );
 }
 
