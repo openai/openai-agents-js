@@ -1,5 +1,6 @@
 ---
 '@openai/agents-core': patch
+'@openai/agents-realtime': patch
 ---
 
-fix: harden streamable HTTP MCP session recovery
+fix(mcp): resolve MCP server wrapper issues
