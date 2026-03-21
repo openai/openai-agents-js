@@ -69,6 +69,104 @@ export interface MCPServer {
   invalidateToolsCache(): Promise<void>;
 }
 
+/**
+ * Minimal params accepted by MCP resource-listing methods.
+ */
+export interface MCPListResourcesParams {
+  cursor?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Minimal MCP resource definition used by this SDK.
+ */
+export interface MCPResource {
+  uri: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+  annotations?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Minimal MCP resource template definition used by this SDK.
+ */
+export interface MCPResourceTemplate {
+  uriTemplate: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Text resource content returned by `readResource`.
+ */
+export interface MCPTextResourceContent {
+  uri: string;
+  mimeType?: string;
+  text: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Binary resource content returned by `readResource`.
+ */
+export interface MCPBlobResourceContent {
+  uri: string;
+  mimeType?: string;
+  blob: string;
+  [key: string]: unknown;
+}
+
+export type MCPResourceContent =
+  | MCPTextResourceContent
+  | MCPBlobResourceContent;
+
+/**
+ * Result returned by `listResources`.
+ */
+export interface MCPListResourcesResult {
+  resources: MCPResource[];
+  nextCursor?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Result returned by `listResourceTemplates`.
+ */
+export interface MCPListResourceTemplatesResult {
+  resourceTemplates: MCPResourceTemplate[];
+  nextCursor?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Result returned by `readResource`.
+ */
+export interface MCPReadResourceResult {
+  contents: MCPResourceContent[];
+  [key: string]: unknown;
+}
+
+/**
+ * Extended MCP server surface for servers that expose resources.
+ */
+export interface MCPServerWithResources extends MCPServer {
+  listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult>;
+  listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult>;
+  readResource(uri: string): Promise<MCPReadResourceResult>;
+}
+
 export abstract class BaseMCPServerStdio implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
@@ -95,6 +193,13 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract listResources(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult>;
+  abstract listResourceTemplates(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult>;
+  abstract readResource(_uri: string): Promise<MCPReadResourceResult>;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -136,6 +241,14 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract listResources(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult>;
+  abstract listResourceTemplates(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult>;
+  abstract readResource(_uri: string): Promise<MCPReadResourceResult>;
+  abstract get sessionId(): string | undefined;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -176,6 +289,13 @@ export abstract class BaseMCPServerSSE implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract listResources(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult>;
+  abstract listResourceTemplates(
+    _params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult>;
+  abstract readResource(_uri: string): Promise<MCPReadResourceResult>;
   abstract invalidateToolsCache(): Promise<void>;
 
   /**
@@ -211,7 +331,10 @@ export type MCPTool = z.infer<typeof MCPTool>;
  * Public interface of an MCP server that provides tools.
  * You can use this class to pass MCP server settings to your agent.
  */
-export class MCPServerStdio extends BaseMCPServerStdio {
+export class MCPServerStdio
+  extends BaseMCPServerStdio
+  implements MCPServerWithResources
+{
   private underlying: UnderlyingMCPServerStdio;
   constructor(options: MCPServerStdioOptions) {
     super(options);
@@ -243,12 +366,28 @@ export class MCPServerStdio extends BaseMCPServerStdio {
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args, meta);
   }
+  listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    return this.underlying.listResources(params);
+  }
+  listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    return this.underlying.listResourceTemplates(params);
+  }
+  readResource(uri: string): Promise<MCPReadResourceResult> {
+    return this.underlying.readResource(uri);
+  }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();
   }
 }
 
-export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
+export class MCPServerStreamableHttp
+  extends BaseMCPServerStreamableHttp
+  implements MCPServerWithResources
+{
   private underlying: UnderlyingMCPServerStreamableHttp;
   constructor(options: MCPServerStreamableHttpOptions) {
     super(options);
@@ -256,6 +395,9 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
   get name(): string {
     return this.underlying.name;
+  }
+  get sessionId(): string | undefined {
+    return this.underlying.sessionId;
   }
   connect(): Promise<void> {
     return this.underlying.connect();
@@ -280,12 +422,28 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args, meta);
   }
+  listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    return this.underlying.listResources(params);
+  }
+  listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    return this.underlying.listResourceTemplates(params);
+  }
+  readResource(uri: string): Promise<MCPReadResourceResult> {
+    return this.underlying.readResource(uri);
+  }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();
   }
 }
 
-export class MCPServerSSE extends BaseMCPServerSSE {
+export class MCPServerSSE
+  extends BaseMCPServerSSE
+  implements MCPServerWithResources
+{
   private underlying: UnderlyingMCPServerSSE;
   constructor(options: MCPServerSSEOptions) {
     super(options);
@@ -316,6 +474,19 @@ export class MCPServerSSE extends BaseMCPServerSSE {
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     return this.underlying.callTool(toolName, args, meta);
+  }
+  listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    return this.underlying.listResources(params);
+  }
+  listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    return this.underlying.listResourceTemplates(params);
+  }
+  readResource(uri: string): Promise<MCPReadResourceResult> {
+    return this.underlying.readResource(uri);
   }
   invalidateToolsCache(): Promise<void> {
     return this.underlying.invalidateToolsCache();

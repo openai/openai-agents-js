@@ -10,6 +10,10 @@ import {
   CallToolResultContent,
   DefaultMCPServerStdioOptions,
   InitializeResult,
+  MCPListResourcesParams,
+  MCPListResourcesResult,
+  MCPListResourceTemplatesResult,
+  MCPReadResourceResult,
   MCPServerStdioOptions,
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
@@ -193,6 +197,65 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     return result as CallToolResultContent;
   }
 
+  async listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    const { ListResourcesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResources(params, requestOptions);
+    this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
+    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+  }
+
+  async listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    const { ListResourceTemplatesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResourceTemplates(
+      params,
+      requestOptions,
+    );
+    this.debugLog(
+      () => `Listed resource templates: ${JSON.stringify(response)}`,
+    );
+    return ListResourceTemplatesResultSchema.parse(
+      response,
+    ) as MCPListResourceTemplatesResult;
+  }
+
+  async readResource(uri: string): Promise<MCPReadResourceResult> {
+    const { ReadResourceResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.readResource({ uri }, requestOptions);
+    this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
+    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
+  }
+
   get name() {
     return this._name;
   }
@@ -335,6 +398,65 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
     );
     return result as CallToolResultContent;
+  }
+
+  async listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    const { ListResourcesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResources(params, requestOptions);
+    this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
+    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+  }
+
+  async listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    const { ListResourceTemplatesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResourceTemplates(
+      params,
+      requestOptions,
+    );
+    this.debugLog(
+      () => `Listed resource templates: ${JSON.stringify(response)}`,
+    );
+    return ListResourceTemplatesResultSchema.parse(
+      response,
+    ) as MCPListResourceTemplatesResult;
+  }
+
+  async readResource(uri: string): Promise<MCPReadResourceResult> {
+    const { ReadResourceResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.readResource({ uri }, requestOptions);
+    this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
+    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
   }
 
   get name() {
@@ -490,8 +612,72 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     return result as CallToolResultContent;
   }
 
+  async listResources(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourcesResult> {
+    const { ListResourcesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResources(params, requestOptions);
+    this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
+    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+  }
+
+  async listResourceTemplates(
+    params?: MCPListResourcesParams,
+  ): Promise<MCPListResourceTemplatesResult> {
+    const { ListResourceTemplatesResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listResourceTemplates(
+      params,
+      requestOptions,
+    );
+    this.debugLog(
+      () => `Listed resource templates: ${JSON.stringify(response)}`,
+    );
+    return ListResourceTemplatesResultSchema.parse(
+      response,
+    ) as MCPListResourceTemplatesResult;
+  }
+
+  async readResource(uri: string): Promise<MCPReadResourceResult> {
+    const { ReadResourceResultSchema } =
+      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+    if (!this.session) {
+      throw new Error(
+        'Server not initialized. Make sure you call connect() first.',
+      );
+    }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.readResource({ uri }, requestOptions);
+    this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
+    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
+  }
+
   get name() {
     return this._name;
+  }
+
+  get sessionId(): string | undefined {
+    const transport = this.transport;
+    return hasSessionTransport(transport) ? transport.sessionId : undefined;
   }
 
   async close(): Promise<void> {
