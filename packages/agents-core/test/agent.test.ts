@@ -1303,6 +1303,83 @@ describe('Agent', () => {
     expect(runSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('returns the full concatenated assistant text from nested agent tools', async () => {
+    setDefaultModelProvider(new FakeModelProvider());
+    const agent = new Agent({
+      name: 'Segmented Streamer',
+      instructions: 'Return segmented output.',
+    });
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: 'first ' },
+                { type: 'output_text', text: 'second' },
+              ],
+            },
+          ],
+        },
+      ],
+      finalOutput: 'first second',
+    } as any);
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+
+    expect(output).toBe('first second');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the full concatenated structured output text from nested agent tools', async () => {
+    setDefaultModelProvider(new FakeModelProvider());
+    const agent = new Agent({
+      name: 'Structured Streamer',
+      instructions: 'Return segmented structured output.',
+      outputType: z.object({
+        answer: z.string(),
+      }),
+    });
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: '{"answer":"str' },
+                { type: 'output_text', text: 'uctured"}' },
+              ],
+            },
+          ],
+        },
+      ],
+      finalOutput: {
+        answer: 'structured',
+      },
+    } as any);
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+
+    expect(output).toBe('{"answer":"structured"}');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('streams nested agent events when onStream is provided and still returns final text', async () => {
     const agent = new Agent({
       name: 'Streamer Agent',
