@@ -18,14 +18,26 @@ import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/p
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
+let lastListResourcesOptions: any;
+let lastListResourcesParams: any;
+let lastListResourceTemplatesOptions: any;
+let lastListResourceTemplatesParams: any;
 let lastCallToolOptions: any;
 let lastCallToolParams: any;
+let lastReadResourceOptions: any;
+let lastReadResourceParams: any;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
   lastListToolsOptions = undefined;
+  lastListResourcesOptions = undefined;
+  lastListResourcesParams = undefined;
+  lastListResourceTemplatesOptions = undefined;
+  lastListResourceTemplatesParams = undefined;
   lastCallToolOptions = undefined;
   lastCallToolParams = undefined;
+  lastReadResourceOptions = undefined;
+  lastReadResourceParams = undefined;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -115,6 +127,42 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should forward resource requests to session methods', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'resource-test',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 7,
+    });
+
+    await server.connect();
+    const resources = await server.listResources({ cursor: 'resource-cursor' });
+    const templates = await server.listResourceTemplates({
+      cursor: 'template-cursor',
+    });
+    const resource = await server.readResource('file:///mock-resource.txt');
+
+    expect(resources.resources[0].uri).toBe('file:///mock-resource.txt');
+    expect(templates.resourceTemplates[0].uriTemplate).toBe(
+      'file:///mock/{name}.txt',
+    );
+    expect(resource.contents[0]).toMatchObject({
+      uri: 'file:///mock-resource.txt',
+      text: 'resource-body',
+    });
+    expect(lastListResourcesParams).toEqual({ cursor: 'resource-cursor' });
+    expect(lastListResourcesOptions?.timeout).toBe(7000);
+    expect(lastListResourceTemplatesParams).toEqual({
+      cursor: 'template-cursor',
+    });
+    expect(lastListResourceTemplatesOptions?.timeout).toBe(7000);
+    expect(lastReadResourceParams).toEqual({
+      uri: 'file:///mock-resource.txt',
+    });
+    expect(lastReadResourceOptions?.timeout).toBe(7000);
+
+    await server.close();
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
   });
@@ -180,6 +228,44 @@ class MockClient {
     lastCallToolOptions = options;
     return Promise.resolve({
       content: [{ type: 'text', text: 'ok' }],
+    });
+  }
+  listResources(params?: any, options?: any): Promise<any> {
+    lastListResourcesParams = params;
+    lastListResourcesOptions = options;
+    return Promise.resolve({
+      resources: [
+        {
+          uri: 'file:///mock-resource.txt',
+          name: 'Mock resource',
+        },
+      ],
+      nextCursor: 'next-resource-cursor',
+    });
+  }
+  listResourceTemplates(params?: any, options?: any): Promise<any> {
+    lastListResourceTemplatesParams = params;
+    lastListResourceTemplatesOptions = options;
+    return Promise.resolve({
+      resourceTemplates: [
+        {
+          uriTemplate: 'file:///mock/{name}.txt',
+          name: 'Mock template',
+        },
+      ],
+      nextCursor: 'next-template-cursor',
+    });
+  }
+  readResource(params: any, options?: any): Promise<any> {
+    lastReadResourceParams = params;
+    lastReadResourceOptions = options;
+    return Promise.resolve({
+      contents: [
+        {
+          uri: params.uri,
+          text: 'resource-body',
+        },
+      ],
     });
   }
   close(): Promise<void> {
@@ -302,6 +388,32 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
+  test('should forward resource requests to session methods', async () => {
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-resources',
+      clientSessionTimeoutSeconds: 4,
+    });
+
+    await server.connect();
+    await server.listResources({ cursor: 'resource-cursor' });
+    await server.listResourceTemplates({ cursor: 'template-cursor' });
+    await server.readResource('file:///mock-resource.txt');
+
+    expect(lastListResourcesParams).toEqual({ cursor: 'resource-cursor' });
+    expect(lastListResourcesOptions?.timeout).toBe(4000);
+    expect(lastListResourceTemplatesParams).toEqual({
+      cursor: 'template-cursor',
+    });
+    expect(lastListResourceTemplatesOptions?.timeout).toBe(4000);
+    expect(lastReadResourceParams).toEqual({
+      uri: 'file:///mock-resource.txt',
+    });
+    expect(lastReadResourceOptions?.timeout).toBe(4000);
+
+    await server.close();
+  });
+
   afterAll(() => {
     vi.clearAllMocks();
     capturedFetch = undefined;
@@ -310,6 +422,7 @@ describe('NodeMCPServerSSE', () => {
 
 class MockStreamableHTTPClientTransport {
   url: URL;
+  sessionId: string | undefined;
   options: {
     authProvider?: any;
     requestInit?: any;
@@ -330,6 +443,7 @@ class MockStreamableHTTPClientTransport {
   ) {
     this.url = url;
     this.options = options;
+    this.sessionId = options.sessionId ?? 'generated-session-id';
   }
 
   start(): Promise<void> {
@@ -398,6 +512,49 @@ describe('NodeMCPServerStreamableHttp', () => {
     expect(lastConnectOptions?.timeout).toBe(9000);
     expect(lastListToolsOptions?.timeout).toBe(9000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
+  test('should expose the active session id after connect', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-session',
+    });
+
+    expect(server.sessionId).toBeUndefined();
+
+    await server.connect();
+
+    expect(server.sessionId).toBe('generated-session-id');
+
+    await server.close();
+
+    expect(server.sessionId).toBeUndefined();
+  });
+
+  test('should forward resource requests to session methods', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-resources',
+      clientSessionTimeoutSeconds: 9,
+    });
+
+    await server.connect();
+    await server.listResources({ cursor: 'resource-cursor' });
+    await server.listResourceTemplates({ cursor: 'template-cursor' });
+    await server.readResource('file:///mock-resource.txt');
+
+    expect(lastListResourcesParams).toEqual({ cursor: 'resource-cursor' });
+    expect(lastListResourcesOptions?.timeout).toBe(9000);
+    expect(lastListResourceTemplatesParams).toEqual({
+      cursor: 'template-cursor',
+    });
+    expect(lastListResourceTemplatesOptions?.timeout).toBe(9000);
+    expect(lastReadResourceParams).toEqual({
+      uri: 'file:///mock-resource.txt',
+    });
+    expect(lastReadResourceOptions?.timeout).toBe(9000);
 
     await server.close();
   });
