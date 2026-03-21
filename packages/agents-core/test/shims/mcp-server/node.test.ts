@@ -421,6 +421,8 @@ describe('NodeMCPServerSSE', () => {
 });
 
 class MockStreamableHTTPClientTransport {
+  static instances: MockStreamableHTTPClientTransport[] = [];
+
   url: URL;
   sessionId: string | undefined;
   options: {
@@ -430,6 +432,7 @@ class MockStreamableHTTPClientTransport {
     reconnectionOptions?: any;
     sessionId?: string;
   };
+  terminateSessionMock = vi.fn().mockResolvedValue(undefined);
 
   constructor(
     url: URL,
@@ -444,6 +447,7 @@ class MockStreamableHTTPClientTransport {
     this.url = url;
     this.options = options;
     this.sessionId = options.sessionId ?? 'generated-session-id';
+    MockStreamableHTTPClientTransport.instances.push(this);
   }
 
   start(): Promise<void> {
@@ -459,6 +463,10 @@ class MockStreamableHTTPClientTransport {
 
   close(): Promise<void> {
     return Promise.resolve();
+  }
+
+  terminateSession(): Promise<void> {
+    return this.terminateSessionMock();
   }
 }
 
@@ -482,6 +490,10 @@ describe('NodeMCPServerStreamableHttp', () => {
         };
       },
     );
+  });
+
+  beforeEach(() => {
+    MockStreamableHTTPClientTransport.instances = [];
   });
 
   test('should apply session timeout when connecting', async () => {
@@ -559,32 +571,33 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.close();
   });
 
-  test('should terminate session before closing transport', async () => {
+  test('should terminate session during close with a detached transport', async () => {
     const server = new NodeMCPServerStreamableHttp({
       url: 'https://example.com/stream',
       name: 'terminate-session',
     });
 
-    const terminateSession = vi.fn().mockResolvedValue(undefined);
     const closeTransport = vi.fn().mockResolvedValue(undefined);
     const closeSession = vi.fn().mockResolvedValue(undefined);
 
     (server as any).transport = {
       getSessionId: vi.fn(() => 'session-123'),
       sessionId: 'session-123',
-      terminateSession,
       close: closeTransport,
     };
     (server as any).session = { close: closeSession };
 
     await server.close();
 
-    expect(terminateSession).toHaveBeenCalledTimes(1);
     expect(closeTransport).toHaveBeenCalledTimes(1);
     expect(closeSession).toHaveBeenCalledTimes(1);
-    expect(terminateSession.mock.invocationCallOrder[0]).toBeLessThan(
-      closeTransport.mock.invocationCallOrder[0],
-    );
+    expect(MockStreamableHTTPClientTransport.instances).toHaveLength(1);
+    expect(
+      MockStreamableHTTPClientTransport.instances[0].options.sessionId,
+    ).toBe('session-123');
+    expect(
+      MockStreamableHTTPClientTransport.instances[0].terminateSessionMock,
+    ).toHaveBeenCalledTimes(1);
   });
 
   test('should still close cleanly when transport lacks terminateSession', async () => {

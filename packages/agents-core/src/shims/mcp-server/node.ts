@@ -97,8 +97,12 @@ function getTransportProtocolVersion(transport: unknown): string | undefined {
   return undefined;
 }
 
-function isNotConnectedError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Not connected';
+function isNotConnectedError(error: unknown, client: Client): boolean {
+  return (
+    error instanceof Error &&
+    error.message === 'Not connected' &&
+    client.transport == null
+  );
 }
 
 function attachCause(error: unknown, cause: unknown): unknown {
@@ -137,6 +141,29 @@ function shouldTerminateTransportSession(
 
   const activeSessionId = getSessionId(activeTransport);
   return activeSessionId === undefined || activeSessionId !== closingSessionId;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(onTimeout());
+    }, timeoutMs);
+
+    void promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -691,6 +718,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
   }
 
+  private getClientSessionTimeoutMs(): number {
+    return Math.max(1, (this.clientSessionTimeoutSeconds ?? 5) * 1000);
+  }
+
   private resetClientToolMetadataCache(client: Client): void {
     (client as unknown as ClientWithToolMetadataCacheReset).cacheToolMetadata?.(
       [],
@@ -719,6 +750,120 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
 
     await invalidateServerToolsCache(this.name);
+  }
+
+  private async clearPublishedStreamableHttpClientIfCurrent(args: {
+    client: Client;
+    transport: MaybeSessionTransport;
+    stateVersion: number;
+  }): Promise<void> {
+    if (
+      this.connectionStateVersion !== args.stateVersion ||
+      this.session !== args.client ||
+      this.transport !== args.transport
+    ) {
+      return;
+    }
+
+    this.session = null;
+    this.transport = null;
+    this._cacheDirty = true;
+    this._toolsList = [];
+    await invalidateServerToolsCache(this.name);
+  }
+
+  private async reopenSharedStreamableHttpSession(
+    client: Client,
+  ): Promise<void> {
+    await withTimeout(
+      client.notification({ method: 'notifications/initialized' }),
+      this.getClientSessionTimeoutMs(),
+      () =>
+        new Error('Timed out reopening shared streamable HTTP MCP session.'),
+    );
+  }
+
+  private async terminateDetachedStreamableHttpSession(
+    transport: MaybeSessionTransport,
+    warningMessage: string,
+  ): Promise<void> {
+    const sessionId = getSessionId(transport);
+    if (sessionId === undefined) {
+      return;
+    }
+
+    try {
+      const { transportModule } = await this.loadStreamableHttpRuntime();
+      const detachedTransport = this.createStreamableHttpTransport(
+        transportModule.StreamableHTTPClientTransport,
+        {
+          protocolVersion: getTransportProtocolVersion(transport),
+          sessionId,
+        },
+      );
+
+      try {
+        if (typeof detachedTransport.terminateSession === 'function') {
+          await detachedTransport.terminateSession();
+        }
+      } finally {
+        await detachedTransport.close().catch(() => {});
+      }
+    } catch (error) {
+      this.logger.warn(warningMessage, error);
+    }
+  }
+
+  private async closeCloseOwnedStreamableHttpState(args: {
+    client: Client | null;
+    transport: MaybeSessionTransport | null;
+    closeStateVersion: number;
+    closeWarningMessage: string;
+    terminateWarningMessage: string;
+  }): Promise<void> {
+    const {
+      client,
+      transport,
+      closeStateVersion,
+      closeWarningMessage,
+      terminateWarningMessage,
+    } = args;
+
+    if (client && transport) {
+      await this.closeStreamableHttpClient(
+        {
+          client,
+          transport,
+        },
+        {
+          terminateSession: false,
+          closeWarningMessage,
+          terminateWarningMessage,
+        },
+      );
+    } else if (transport) {
+      await transport.close().catch((error) => {
+        this.logger.warn(closeWarningMessage, error);
+      });
+    } else if (client) {
+      await client.close().catch((error) => {
+        this.logger.warn(closeWarningMessage, error);
+      });
+    }
+
+    if (
+      !transport ||
+      this.connectionStateVersion !== closeStateVersion ||
+      !this.isClosed ||
+      !shouldTerminateTransportSession(transport, this.transport)
+    ) {
+      return;
+    }
+
+    await this.terminateDetachedStreamableHttpSession(
+      transport,
+      terminateWarningMessage,
+    );
   }
 
   private async callToolWithClient(
@@ -758,16 +903,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   ): Promise<void> {
     const { client, transport } = args;
 
-    if (
-      options.terminateSession &&
-      transport.sessionId &&
-      typeof transport.terminateSession === 'function'
-    ) {
-      try {
-        await transport.terminateSession();
-      } catch (error) {
-        this.logger.warn(options.terminateWarningMessage, error);
-      }
+    if (options.terminateSession && transport.sessionId) {
+      await this.terminateDetachedStreamableHttpSession(
+        transport,
+        options.terminateWarningMessage,
+      );
     }
 
     if (client.transport === transport) {
@@ -813,7 +953,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       if (args.sessionId !== undefined) {
         // Reconnecting with an existing session skips initialize(), so resend
         // initialized to reopen the shared SSE stream for async responses.
-        await args.client.notification({ method: 'notifications/initialized' });
+        await this.reopenSharedStreamableHttpSession(args.client);
       }
       return { client: args.client, transport };
     } catch (error) {
@@ -879,9 +1019,9 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
 
     const reconnectStateVersion = this.connectionStateVersion;
+    const previousClient = this.session;
+    const previousTransport = this.transport;
     const reconnectPromise = (async () => {
-      const previousClient = this.session;
-      const previousTransport = this.transport;
       const sessionId =
         previousTransport && hasSessionTransport(previousTransport)
           ? previousTransport.sessionId
@@ -894,60 +1034,71 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         );
       }
 
-      await this.closeStreamableHttpClient(
-        {
-          client: previousClient,
-          transport: previousTransport,
-        },
-        {
-          terminateSession: false,
-          closeWarningMessage: 'Failed to close stale MCP client:',
-          terminateWarningMessage: 'Failed to terminate stale MCP session:',
-        },
-      );
-
-      const recovered = await this.reconnectExistingStreamableHttpClient({
-        client: previousClient,
-        protocolVersion,
-        sessionId,
-      });
-
-      if (
-        this.connectionStateVersion !== reconnectStateVersion ||
-        this.isClosed
-      ) {
+      try {
         await this.closeStreamableHttpClient(
           {
-            client: recovered.client,
-            transport: recovered.transport,
+            client: previousClient,
+            transport: previousTransport,
           },
           {
             terminateSession: false,
-            closeWarningMessage: 'Failed to close discarded MCP client:',
-            terminateWarningMessage:
-              'Failed to terminate discarded MCP session:',
+            closeWarningMessage: 'Failed to close stale MCP client:',
+            terminateWarningMessage: 'Failed to terminate stale MCP session:',
           },
         );
-        if (this.isClosed) {
+
+        const recovered = await this.reconnectExistingStreamableHttpClient({
+          client: previousClient,
+          protocolVersion,
+          sessionId,
+        });
+
+        if (
+          this.connectionStateVersion !== reconnectStateVersion ||
+          this.isClosed
+        ) {
+          await this.closeStreamableHttpClient(
+            {
+              client: recovered.client,
+              transport: recovered.transport,
+            },
+            {
+              terminateSession: false,
+              closeWarningMessage: 'Failed to close discarded MCP client:',
+              terminateWarningMessage:
+                'Failed to terminate discarded MCP session:',
+            },
+          );
+          if (this.isClosed) {
+            throw new Error(
+              'Streamable HTTP MCP server was closed during reconnect.',
+            );
+          }
+
+          if (this.session) {
+            return this.session;
+          }
+
           throw new Error(
-            'Streamable HTTP MCP server was closed during reconnect.',
+            'Streamable HTTP MCP server changed during reconnect.',
           );
         }
 
-        if (this.session) {
-          return this.session;
-        }
+        await this.publishConnectedStreamableHttpClient({
+          client: recovered.client,
+          transport: recovered.transport,
+          previousTransport,
+        });
 
-        throw new Error('Streamable HTTP MCP server changed during reconnect.');
+        return recovered.client;
+      } catch (error) {
+        await this.clearPublishedStreamableHttpClientIfCurrent({
+          client: previousClient,
+          transport: previousTransport,
+          stateVersion: reconnectStateVersion,
+        });
+        throw error;
       }
-
-      await this.publishConnectedStreamableHttpClient({
-        client: recovered.client,
-        transport: recovered.transport,
-        previousTransport,
-      });
-
-      return recovered.client;
     })();
 
     this.reconnectingClientPromise = reconnectPromise;
@@ -970,6 +1121,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
   private async shouldReconnectClosedStreamableHttpClient(
     error: unknown,
+    client: Client,
   ): Promise<StreamableHttpToolRecoveryStrategy> {
     // Explicit session ids are a released contract, so keep callers pinned to the
     // session they selected instead of silently switching them to a fresh one.
@@ -977,7 +1129,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       return 'none';
     }
 
-    if (isNotConnectedError(error)) {
+    if (isNotConnectedError(error, client)) {
       return 'reconnect-and-retry';
     }
 
@@ -1113,7 +1265,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       result = await this.callToolWithClient(client, toolName, args, meta);
     } catch (error) {
       const recoveryStrategy =
-        await this.shouldReconnectClosedStreamableHttpClient(error);
+        await this.shouldReconnectClosedStreamableHttpClient(error, client);
       if (recoveryStrategy === 'none') {
         throw error;
       }
@@ -1231,39 +1383,18 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.session = null;
     this.transport = null;
 
-    if (client && transport) {
-      await this.closeStreamableHttpClient(
-        {
-          client,
-          transport,
-        },
-        {
-          terminateSession: true,
-          closeWarningMessage: 'Failed to close MCP client:',
-          terminateWarningMessage: 'Failed to terminate MCP session:',
-        },
-      );
-    } else if (transport) {
-      if (
-        hasSessionTransport(transport) &&
-        transport.sessionId &&
-        typeof transport.terminateSession === 'function'
-      ) {
-        try {
-          await transport.terminateSession();
-        } catch (error) {
-          this.logger.warn('Failed to terminate MCP session:', error);
-        }
-      }
-
-      await transport.close().catch((error: unknown) => {
-        this.logger.warn('Failed to close MCP transport:', error);
-      });
-    } else if (client) {
-      await client.close().catch((error) => {
-        this.logger.warn('Failed to close MCP client:', error);
-      });
-    }
+    await this.closeCloseOwnedStreamableHttpState({
+      client,
+      transport,
+      closeStateVersion,
+      closeWarningMessage:
+        client && transport
+          ? 'Failed to close MCP client:'
+          : transport
+            ? 'Failed to close MCP transport:'
+            : 'Failed to close MCP client:',
+      terminateWarningMessage: 'Failed to terminate MCP session:',
+    });
 
     if (reconnectPromise) {
       await reconnectPromise.catch(() => {});
@@ -1279,20 +1410,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       this.session = null;
       this.transport = null;
 
-      if (recoveredClient && recoveredTransport) {
-        await this.closeStreamableHttpClient(
-          {
-            client: recoveredClient,
-            transport: recoveredTransport,
-          },
-          {
-            terminateSession: true,
-            closeWarningMessage: 'Failed to close reconnected MCP client:',
-            terminateWarningMessage:
-              'Failed to terminate reconnected MCP session:',
-          },
-        );
-      }
+      await this.closeCloseOwnedStreamableHttpState({
+        client: recoveredClient,
+        transport: recoveredTransport,
+        closeStateVersion,
+        closeWarningMessage: 'Failed to close reconnected MCP client:',
+        terminateWarningMessage: 'Failed to terminate reconnected MCP session:',
+      });
     }
   }
 }

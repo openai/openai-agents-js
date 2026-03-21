@@ -443,7 +443,7 @@ export class MCPServerStreamableHttp
     try {
       return await this.underlying.callTool(toolName, args, meta);
     } finally {
-      if (previousSessionId === undefined || this.sessionId === undefined) {
+      if (previousSessionId !== this.sessionId) {
         this.clearLocalToolsCache();
       }
     }

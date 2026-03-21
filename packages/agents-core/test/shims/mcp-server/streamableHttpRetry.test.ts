@@ -8,12 +8,20 @@ import {
   vi,
 } from 'vitest';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types';
-import { allowConsole } from '../../../../../helpers/tests/console-guard';
 import { MCPServerStreamableHttp } from '../../../src/mcp';
+import type { Logger } from '../../../src/logger';
 import { NodeMCPServerStreamableHttp } from '../../../src/shims/mcp-server/node';
 
 const TEST_URL = 'https://example.invalid/mcp';
 const TEST_PROTOCOL_VERSION = '2025-06-18';
+const silentLogger: Logger = {
+  namespace: 'openai-agents:test:mcp-streamable-http-retry',
+  debug: () => {},
+  error: () => {},
+  warn: () => {},
+  dontLogModelData: false,
+  dontLogToolData: false,
+};
 
 type MockTool = {
   description?: string;
@@ -53,6 +61,7 @@ class MockStreamableHTTPClientTransport {
   };
   sessionId: string | undefined;
   protocolVersion: string | undefined;
+  aborted = false;
   closeMock = vi.fn().mockResolvedValue(undefined);
   terminateSessionMock = vi.fn().mockResolvedValue(undefined);
 
@@ -82,32 +91,44 @@ class MockStreamableHTTPClientTransport {
   async send(): Promise<void> {}
 
   async close(): Promise<void> {
+    this.aborted = true;
     await this.closeMock();
   }
 
   async terminateSession(): Promise<void> {
+    if (this.aborted) {
+      throw new Error('Transport aborted');
+    }
     await this.terminateSessionMock();
   }
 }
 
 class MockClient {
   static instances: MockClient[] = [];
-  static connectHandlers: Array<(() => Promise<void>) | undefined> = [];
+  static connectHandlers: Array<
+    ((this: MockClient) => Promise<void>) | undefined
+  > = [];
   static listToolsResults: Array<MockTool[] | undefined> = [];
   static sessionIdAssignments: Array<string | null | undefined> = [];
   static notificationHandlers: Array<
-    | ((notification: {
-        method: string;
-        params?: Record<string, unknown>;
-      }) => Promise<void>)
+    | ((
+        this: MockClient,
+        notification: {
+          method: string;
+          params?: Record<string, unknown>;
+        },
+      ) => Promise<void>)
     | undefined
   > = [];
   static callToolHandlers: Array<
-    | ((params: {
-        name: string;
-        arguments: Record<string, unknown>;
-        _meta?: Record<string, unknown>;
-      }) => Promise<any>)
+    | ((
+        this: MockClient,
+        params: {
+          name: string;
+          arguments: Record<string, unknown>;
+          _meta?: Record<string, unknown>;
+        },
+      ) => Promise<any>)
     | undefined
   > = [];
 
@@ -161,7 +182,7 @@ class MockClient {
     }
     const handler = MockClient.connectHandlers[transport.instanceIndex];
     if (handler) {
-      await handler();
+      await handler.call(this);
     } else {
       await this.connectMock();
     }
@@ -187,7 +208,7 @@ class MockClient {
   }): Promise<void> {
     const handler = MockClient.notificationHandlers[this.transportIndex];
     if (handler) {
-      await handler(notification);
+      await handler.call(this, notification);
       return;
     }
 
@@ -208,7 +229,7 @@ class MockClient {
 
     const handler = MockClient.callToolHandlers[this.transportIndex];
     const result = handler
-      ? await handler(params)
+      ? await handler.call(this, params)
       : {
           content: [
             {
@@ -314,6 +335,7 @@ function createServer(
   return new NodeMCPServerStreamableHttp({
     url: TEST_URL,
     name,
+    logger: silentLogger,
     fetch: vi.fn(async () => {
       throw new Error(
         'Unexpected network request in streamableHttpRetry.test.',
@@ -330,6 +352,7 @@ function createPublicServer(
   return new MCPServerStreamableHttp({
     url: TEST_URL,
     name,
+    logger: silentLogger,
     fetch: vi.fn(async () => {
       throw new Error(
         'Unexpected network request in streamableHttpRetry.test.',
@@ -337,6 +360,11 @@ function createPublicServer(
     }),
     ...overrides,
   });
+}
+
+function throwProtocolNotConnected(this: MockClient): never {
+  this.transport = null;
+  throw new Error('Not connected');
 }
 
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
@@ -503,8 +531,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   it('reconnects when the shared client is already disconnected', async () => {
     MockClient.callToolHandlers = [
-      async () => {
-        throw new Error('Not connected');
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
       },
       async () => ({
         content: [{ type: 'text', text: 'reconnected-after-disconnect' }],
@@ -524,6 +552,41 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       expect(
         MockStreamableHTTPClientTransport.instances[1].options.sessionId,
       ).toBe('generated-session-0');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('does not reconnect when a healthy client hook throws Error("Not connected")', async () => {
+    let firstFailure = true;
+    MockClient.callToolHandlers = [
+      async () => {
+        if (firstFailure) {
+          firstFailure = false;
+          throw new Error('Not connected');
+        }
+
+        return {
+          content: [{ type: 'text', text: 'healthy-session-follow-up' }],
+        };
+      },
+    ];
+
+    const server = createServer('not-connected-hook-error-server');
+    await server.connect();
+
+    try {
+      await expect(server.callTool('mock-tool', null)).rejects.toThrow(
+        'Not connected',
+      );
+      expect(MockClient.instances).toHaveLength(1);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(1);
+      expect(server.sessionId).toBe('generated-session-0');
+
+      await expect(server.callTool('follow-up-tool', null)).resolves.toEqual([
+        { type: 'text', text: 'healthy-session-follow-up' },
+      ]);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(1);
     } finally {
       await server.close();
     }
@@ -561,7 +624,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
         'second-tool',
       ]);
       expect(MockClient.instances).toHaveLength(2);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
     } finally {
       await server.close();
     }
@@ -586,8 +649,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ],
     ];
     MockClient.callToolHandlers = [
-      async () => {
-        throw new Error('Not connected');
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
       },
       async ({ name }) => ({
         content: [{ type: 'text', text: `recovered:${name}` }],
@@ -631,8 +694,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ],
     ];
     MockClient.callToolHandlers = [
-      async () => {
-        throw new Error('Not connected');
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
       },
       async () => ({
         content: [{ type: 'text', text: 'reconnected-after-disconnect' }],
@@ -681,8 +744,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ],
     ];
     MockClient.callToolHandlers = [
-      async () => {
-        throw new Error('Not connected');
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
       },
       async () => ({
         content: [{ type: 'text', text: 'reconnected-after-disconnect' }],
@@ -715,10 +778,67 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     }
   });
 
+  it('refreshes the public tools cache after a sessionful reconnect changes the session id', async () => {
+    MockClient.sessionIdAssignments = ['session-a', 'session-b'];
+    MockClient.listToolsResults = [
+      [
+        {
+          name: 'first-tool',
+          description: 'First tool',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      [
+        {
+          name: 'second-tool',
+          description: 'Second tool',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    ];
+    MockClient.callToolHandlers = [
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
+      },
+      async () => ({
+        content: [{ type: 'text', text: 'reconnected-after-session-change' }],
+      }),
+    ];
+
+    const server = createPublicServer(
+      'public-sessionful-tool-cache-reset-server',
+      {
+        cacheToolsList: true,
+      },
+    );
+    await server.connect();
+
+    try {
+      expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+        'first-tool',
+      ]);
+
+      await expect(server.callTool('mock-tool', null)).resolves.toEqual([
+        { type: 'text', text: 'reconnected-after-session-change' },
+      ]);
+
+      expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+        'second-tool',
+      ]);
+      expect(server.sessionId).toBe('session-b');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('coalesces concurrent reconnects onto one recovered client', async () => {
     let secondCallPromise: Promise<unknown> | undefined;
     let sharedFailureCallCount = 0;
+    let reconnectStarted!: () => void;
     let releaseSharedFailures!: () => void;
+    const reconnectStartedPromise = new Promise<void>((resolve) => {
+      reconnectStarted = resolve;
+    });
     const sharedFailuresReleased = new Promise<void>((resolve) => {
       releaseSharedFailures = resolve;
     });
@@ -726,6 +846,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     MockClient.connectHandlers = [
       undefined,
       async () => {
+        reconnectStarted();
         await new Promise((resolve) => setTimeout(resolve, 20));
       },
     ];
@@ -756,6 +877,10 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
       await vi.waitFor(() => {
         expect(sharedFailureCallCount).toBe(2);
+      });
+      await reconnectStartedPromise;
+      await vi.waitFor(() => {
+        expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
       });
 
       await Promise.all([
@@ -811,6 +936,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     await server.connect();
 
     const pendingCall = server.callTool('mock-tool', null);
+    void pendingCall.catch(() => {});
 
     await vi.waitFor(() => {
       expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
@@ -945,7 +1071,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
         { type: 'text', text: 'fresh-connect-client' },
       ]);
       expect(MockClient.instances).toHaveLength(2);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(4);
       expect(MockClient.instances[1].closeMock).not.toHaveBeenCalled();
     } finally {
       await server.close();
@@ -953,8 +1079,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   });
 
   it('does not let a reconnect get overwritten by an older in-flight connect', async () => {
-    allowConsole(['error']);
-
     let releaseStaleConnect!: () => void;
     const staleConnectBlocked = new Promise<void>((resolve) => {
       releaseStaleConnect = resolve;
@@ -1016,7 +1140,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ]);
       expect(server.sessionId).toBe('generated-session-0');
       expect(MockClient.instances).toHaveLength(2);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(4);
       expect(MockClient.instances[1].closeMock).toHaveBeenCalledTimes(1);
       expect(
         MockStreamableHTTPClientTransport.instances[1].closeMock,
@@ -1064,9 +1188,12 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ]);
       expect(server.sessionId).toBe('generated-session-1');
       expect(MockClient.instances).toHaveLength(2);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
       expect(
         MockStreamableHTTPClientTransport.instances[0].terminateSessionMock,
+      ).not.toHaveBeenCalled();
+      expect(
+        MockStreamableHTTPClientTransport.instances[2].terminateSessionMock,
       ).toHaveBeenCalledTimes(1);
       expect(
         MockStreamableHTTPClientTransport.instances[0].closeMock,
@@ -1110,6 +1237,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
           'new shared session closed',
         );
       },
+      undefined,
       async () => ({
         content: [{ type: 'text', text: 'reconnected-new-session-client' }],
       }),
@@ -1150,15 +1278,13 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ]);
       expect(server.sessionId).toBe('generated-session-2');
       expect(MockClient.instances).toHaveLength(2);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(4);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(5);
     } finally {
       await server.close();
     }
   });
 
   it('does not let connect resurrect a server that was closed in flight', async () => {
-    allowConsole(['error']);
-
     let releaseConnect!: () => void;
     const connectBlocked = new Promise<void>((resolve) => {
       releaseConnect = resolve;
@@ -1196,8 +1322,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   });
 
   it('does not let a stale overlapping connect close the newer session', async () => {
-    allowConsole(['error']);
-
     let releaseFirstConnect!: () => void;
     const firstConnectBlocked = new Promise<void>((resolve) => {
       releaseFirstConnect = resolve;
@@ -1241,6 +1365,13 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     expect(MockClient.instances[0].closeMock).toHaveBeenCalledTimes(1);
     expect(
       MockStreamableHTTPClientTransport.instances[0].terminateSessionMock,
+    ).not.toHaveBeenCalled();
+    expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
+    expect(
+      MockStreamableHTTPClientTransport.instances[2].options.sessionId,
+    ).toBe('generated-session-0');
+    expect(
+      MockStreamableHTTPClientTransport.instances[2].terminateSessionMock,
     ).toHaveBeenCalledTimes(1);
     expect(
       MockStreamableHTTPClientTransport.instances[0].closeMock,
@@ -1251,8 +1382,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   });
 
   it('does not terminate the winning shared session when a stale pinned connect loses the race', async () => {
-    allowConsole(['error']);
-
     let sharedSessionTerminated = false;
     let releaseFirstConnect!: () => void;
     const firstConnectBlocked = new Promise<void>((resolve) => {
@@ -1358,12 +1487,76 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     }
   });
 
-  it('terminates partially created sessions when connect() fails after session allocation', async () => {
-    allowConsole(['error']);
+  it('does not terminate a pinned shared session when close() loses to a newer connect', async () => {
+    let releaseOldClose!: () => void;
+    const oldCloseBlocked = new Promise<void>((resolve) => {
+      releaseOldClose = resolve;
+    });
+    let sharedSessionTerminated = false;
 
+    MockClient.callToolHandlers = [
+      async () => {
+        throw new Error('unexpected-stale-client-call');
+      },
+      async () => {
+        if (sharedSessionTerminated) {
+          throw new McpError(
+            ErrorCode.ConnectionClosed,
+            'shared pinned session terminated',
+          );
+        }
+
+        return {
+          content: [{ type: 'text', text: 'winning-pinned-session-client' }],
+        };
+      },
+    ];
+
+    const server = createServer('close-loses-to-pinned-connect-server', {
+      sessionId: 'pinned-shared-session',
+    });
+    await server.connect();
+
+    try {
+      MockClient.instances[0].closeMock.mockImplementation(async () => {
+        await oldCloseBlocked;
+      });
+      MockStreamableHTTPClientTransport.instances[0].terminateSessionMock.mockImplementation(
+        async () => {
+          sharedSessionTerminated = true;
+        },
+      );
+
+      const closePromise = server.close();
+
+      await vi.waitFor(() => {
+        expect(MockClient.instances[0].closeMock).toHaveBeenCalledTimes(1);
+      });
+
+      await server.connect();
+      releaseOldClose();
+      await closePromise;
+
+      await expect(server.callTool('follow-up-tool', null)).resolves.toEqual([
+        { type: 'text', text: 'winning-pinned-session-client' },
+      ]);
+      expect(server.sessionId).toBe('pinned-shared-session');
+      expect(MockClient.instances).toHaveLength(2);
+      expect(
+        MockStreamableHTTPClientTransport.instances[0].terminateSessionMock,
+      ).not.toHaveBeenCalled();
+      expect(MockClient.instances[1].closeMock).not.toHaveBeenCalled();
+    } finally {
+      releaseOldClose();
+      await server.close();
+    }
+  });
+
+  it('terminates partially created sessions when connect() fails after session allocation', async () => {
     MockClient.sessionIdAssignments = ['partially-created-session'];
     MockClient.connectHandlers = [
-      async () => {
+      async function (this: MockClient) {
+        await this.close();
         throw new Error('connect failed after session allocation');
       },
     ];
@@ -1374,13 +1567,69 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       'connect failed after session allocation',
     );
     expect(MockClient.instances).toHaveLength(1);
-    expect(MockStreamableHTTPClientTransport.instances).toHaveLength(1);
+    expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
     expect(
       MockStreamableHTTPClientTransport.instances[0].terminateSessionMock,
+    ).not.toHaveBeenCalled();
+    expect(
+      MockStreamableHTTPClientTransport.instances[1].options.sessionId,
+    ).toBe('partially-created-session');
+    expect(
+      MockStreamableHTTPClientTransport.instances[1].terminateSessionMock,
     ).toHaveBeenCalledTimes(1);
     expect(
-      MockStreamableHTTPClientTransport.instances[0].closeMock,
+      MockStreamableHTTPClientTransport.instances[0].closeMock.mock.calls
+        .length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      MockStreamableHTTPClientTransport.instances[1].closeMock,
     ).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates partially created sessions when reconnect() fails after session allocation', async () => {
+    MockClient.sessionIdAssignments = [null, 'replacement-session'];
+    MockClient.connectHandlers = [
+      undefined,
+      async function (this: MockClient) {
+        await this.close();
+        throw new Error('reconnect failed after session allocation');
+      },
+    ];
+    MockClient.callToolHandlers = [
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
+      },
+    ];
+
+    const server = createServer('failed-reconnect-session-cleanup-server');
+    await server.connect();
+
+    try {
+      await expect(server.callTool('mock-tool', null)).rejects.toThrow(
+        'reconnect failed after session allocation',
+      );
+      expect(server.sessionId).toBeUndefined();
+      expect(MockClient.instances).toHaveLength(1);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(3);
+      expect(
+        MockStreamableHTTPClientTransport.instances[1].terminateSessionMock,
+      ).not.toHaveBeenCalled();
+      expect(
+        MockStreamableHTTPClientTransport.instances[2].options.sessionId,
+      ).toBe('replacement-session');
+      expect(
+        MockStreamableHTTPClientTransport.instances[2].terminateSessionMock,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        MockStreamableHTTPClientTransport.instances[1].closeMock.mock.calls
+          .length,
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        MockStreamableHTTPClientTransport.instances[2].closeMock,
+      ).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
   });
 
   it('does not replay ambiguous 5xx failures', async () => {
@@ -1480,10 +1729,49 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
           code: ErrorCode.ConnectionClosed,
         }),
       });
+      expect(server.sessionId).toBeUndefined();
+      await expect(server.listTools()).rejects.toThrow(
+        'Server not initialized. Make sure you call connect() first.',
+      );
       expect(MockClient.instances).toHaveLength(1);
       expect(
         MockStreamableHTTPClientTransport.instances[1].options.sessionId,
       ).toBe('generated-session-0');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('times out stalled shared-session reopen notifications', async () => {
+    MockClient.notificationHandlers = [
+      undefined,
+      async () => {
+        await new Promise(() => {});
+      },
+    ];
+    MockClient.callToolHandlers = [
+      async () => {
+        throw new McpError(ErrorCode.ConnectionClosed, 'shared session closed');
+      },
+    ];
+
+    const server = createServer('timed-out-reopen-server', {
+      clientSessionTimeoutSeconds: 0.01,
+    });
+    await server.connect();
+
+    try {
+      await expect(server.callTool('mock-tool', null)).rejects.toMatchObject({
+        message: 'Timed out reopening shared streamable HTTP MCP session.',
+        cause: expect.objectContaining({
+          name: 'McpError',
+          code: ErrorCode.ConnectionClosed,
+        }),
+      });
+      expect(server.sessionId).toBeUndefined();
+      await expect(server.listTools()).rejects.toThrow(
+        'Server not initialized. Make sure you call connect() first.',
+      );
     } finally {
       await server.close();
     }
