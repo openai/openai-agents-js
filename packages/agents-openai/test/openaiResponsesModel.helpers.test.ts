@@ -751,6 +751,66 @@ describe('getInputItems', () => {
     });
   });
 
+  it('omits empty safety check fields when rebuilding computer items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-empty-checks',
+        callId: 'computer-call-empty-checks',
+        status: 'completed',
+        action: { type: 'wait' },
+        providerData: {
+          pending_safety_checks: [],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-result-empty-checks',
+        callId: 'computer-call-empty-checks',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-empty-checks',
+      call_id: 'computer-call-empty-checks',
+      action: { type: 'wait' },
+    });
+    expect(items[0]).not.toHaveProperty('pending_safety_checks');
+
+    expect(items[1]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-result-empty-checks',
+      call_id: 'computer-call-empty-checks',
+    });
+    expect(items[1]).not.toHaveProperty('acknowledged_safety_checks');
+  });
+
+  it('omits unspecified safety check fields when rebuilding computer items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-no-checks',
+        callId: 'computer-call-no-checks',
+        status: 'completed',
+        action: { type: 'wait' },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-result-no-checks',
+        callId: 'computer-call-no-checks',
+        output: { data: 'https://example.com/screenshot.png' },
+      },
+    ] as any);
+
+    expect(items[0]).not.toHaveProperty('pending_safety_checks');
+    expect(items[1]).not.toHaveProperty('acknowledged_safety_checks');
+  });
+
   it('converts tool search items and namespaced function calls', () => {
     const items = getInputItems([
       {

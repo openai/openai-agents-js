@@ -2057,8 +2057,12 @@ function getInputItems(
       const pendingSafetyChecks = getProviderDataField<
         OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks']
       >(item.providerData, ['pendingSafetyChecks', 'pending_safety_checks']);
-      const normalizedPendingSafetyChecks: OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks'] =
-        Array.isArray(pendingSafetyChecks) ? pendingSafetyChecks : [];
+      const normalizedPendingSafetyChecks:
+        | OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks']
+        | undefined =
+        Array.isArray(pendingSafetyChecks) && pendingSafetyChecks.length > 0
+          ? pendingSafetyChecks
+          : undefined;
       const batchedActions = Array.isArray(
         (item as { actions?: unknown }).actions,
       )
@@ -2074,12 +2078,18 @@ function getInputItems(
           : item.action
             ? { action: item.action }
             : {};
-      const entry: OpenAI.Responses.ResponseComputerToolCall = {
+      // GA computer requests reject empty pending safety-check payloads, so we
+      // intentionally omit the field when there is nothing to acknowledge. The
+      // cast is only here to bridge the current OpenAI SDK type, which still
+      // models pending_safety_checks as required on ResponseComputerToolCall.
+      const entry = {
         type: 'computer_call',
         call_id: item.callId,
         id: item.id!,
         status: item.status,
-        pending_safety_checks: normalizedPendingSafetyChecks,
+        ...(normalizedPendingSafetyChecks
+          ? { pending_safety_checks: normalizedPendingSafetyChecks }
+          : {}),
         ...actionPayload,
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
@@ -2090,7 +2100,7 @@ function getInputItems(
           'status',
           'pending_safety_checks',
         ]),
-      };
+      } as OpenAI.Responses.ResponseComputerToolCall;
 
       return entry;
     }
@@ -2102,15 +2112,24 @@ function getInputItems(
         'acknowledgedSafetyChecks',
         'acknowledged_safety_checks',
       ]);
+      const normalizedAcknowledgedSafetyChecks:
+        | OpenAI.Responses.ResponseInputItem.ComputerCallOutput['acknowledged_safety_checks']
+        | undefined =
+        Array.isArray(acknowledgedSafetyChecks) &&
+        acknowledgedSafetyChecks.length > 0
+          ? acknowledgedSafetyChecks
+          : undefined;
       const entry: OpenAI.Responses.ResponseInputItem.ComputerCallOutput = {
         type: 'computer_call_output',
         id: item.id,
         call_id: item.callId,
         output: buildResponseOutput(item),
         status: item.providerData?.status,
-        acknowledged_safety_checks: Array.isArray(acknowledgedSafetyChecks)
-          ? acknowledgedSafetyChecks
-          : [],
+        ...(normalizedAcknowledgedSafetyChecks
+          ? {
+              acknowledged_safety_checks: normalizedAcknowledgedSafetyChecks,
+            }
+          : {}),
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'id',
