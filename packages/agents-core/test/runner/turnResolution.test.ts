@@ -431,6 +431,44 @@ describe('resolveTurnAfterModelResponse', () => {
     }
   });
 
+  it('returns concatenated final output when the last assistant message is segmented', async () => {
+    const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
+    const segmentedMessage: protocol.AssistantMessageItem = {
+      id: 'msg-segmented',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'output_text', text: 'first ' },
+        { type: 'output_text', text: 'second' },
+      ],
+    };
+    const response: ModelResponse = {
+      output: [segmentedMessage],
+      usage: new Usage(),
+    } as any;
+    const processedResponse = processModelResponse(response, textAgent, [], []);
+
+    expect(processedResponse.hasToolsOrApprovalsToRun()).toBe(false);
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        textAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('first second');
+    }
+  });
+
   it('returns final output when final message text is empty', async () => {
     const textAgent = new Agent({ name: 'TextAgent', outputType: 'text' });
     const imageCall: protocol.HostedToolCallItem = {
@@ -471,6 +509,52 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.nextStep.type).toBe('next_step_final_output');
     if (result.nextStep.type === 'next_step_final_output') {
       expect(result.nextStep.output).toBe('');
+    }
+  });
+
+  it('validates concatenated structured output types', async () => {
+    const structuredAgent = new Agent({
+      name: 'StructuredAgent',
+      outputType: z.object({
+        foo: z.string(),
+      }),
+    });
+    const segmentedStructuredMessage: protocol.AssistantMessageItem = {
+      id: 'msg-structured',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'output_text', text: '{"foo":"ba' },
+        { type: 'output_text', text: 'r"}' },
+      ],
+    };
+    const response: ModelResponse = {
+      output: [segmentedStructuredMessage],
+      usage: new Usage(),
+    } as any;
+    const processedResponse = processModelResponse(
+      response,
+      structuredAgent,
+      [],
+      [],
+    );
+
+    const result = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        structuredAgent,
+        'test input',
+        [],
+        response,
+        processedResponse,
+        runner,
+        state,
+      ),
+    );
+
+    expect(result.nextStep.type).toBe('next_step_final_output');
+    if (result.nextStep.type === 'next_step_final_output') {
+      expect(result.nextStep.output).toBe('{"foo":"bar"}');
     }
   });
 
