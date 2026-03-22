@@ -19,16 +19,18 @@ Ensure work is only marked complete after installing dependencies, building, lin
 
 ## Manual workflow
 
-- Run from the repository root in this order: `pnpm i`, `pnpm build`, `pnpm -r build-check`, `pnpm -r -F "@openai/*" dist:check`, `pnpm lint`, `pnpm test`.
-- Do not skip steps; stop and fix issues immediately when a command fails.
-- Re-run the full stack after applying fixes so the commands execute in the required order.
+- Run from the repository root in these phases: `pnpm i`, `pnpm build`, then `pnpm -r build-check`, `pnpm -r -F "@openai/*" dist:check`, `pnpm lint`, and `pnpm test`.
+- The skill may execute the final validation phase in parallel, but every step above must still pass.
+- Do not skip steps; stop and fix issues immediately when any step fails.
+- Re-run the full stack after applying fixes so the commands execute with the same barriers and coverage.
 
 ## Resources
 
 ### scripts/run.sh
 
 - Executes the full verification sequence (including declaration checks) with fail-fast semantics.
-- Prefer this entry point to ensure the commands always run in the correct order from the repo root.
+- Keeps `pnpm i` and `pnpm build` as barriers, then runs independent validation steps in parallel.
+- Prefer this entry point to ensure the commands always run from the repo root with the expected fail-fast behavior.
 
 ### scripts/run.ps1
 
