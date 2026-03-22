@@ -107,7 +107,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
     ```
 3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
 4.  Run `pnpm -r build-check` early to catch TypeScript errors across packages, tests, and examples.
-5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack in order before considering the work complete.
+5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack with the skill-defined phase barriers before considering the work complete.
 6.  Commit using Conventional Commits.
 7.  Push and open a pull request.
 8.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` as the final handoff step unless the task falls under the documented skip cases.
@@ -177,7 +177,7 @@ See [this README](integration-tests/README.md) for details.
 
 #### Mandatory Local Run Order
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step or change the order.
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i`, `pnpm build`, then the remaining validation steps).
 
 Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 
