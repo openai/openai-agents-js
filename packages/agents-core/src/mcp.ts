@@ -389,9 +389,14 @@ export class MCPServerStreamableHttp
   implements MCPServerWithResources
 {
   private underlying: UnderlyingMCPServerStreamableHttp;
+  private _cachedToolsSessionId: string | undefined = undefined;
   constructor(options: MCPServerStreamableHttpOptions) {
     super(options);
     this.underlying = new UnderlyingMCPServerStreamableHttp(options);
+  }
+  private clearLocalToolsCache(): void {
+    this._cachedTools = undefined;
+    this._cachedToolsSessionId = undefined;
   }
   get name(): string {
     return this.underlying.name;
@@ -399,28 +404,49 @@ export class MCPServerStreamableHttp
   get sessionId(): string | undefined {
     return this.underlying.sessionId;
   }
-  connect(): Promise<void> {
-    return this.underlying.connect();
+  async connect(): Promise<void> {
+    this.clearLocalToolsCache();
+    await this.underlying.connect();
   }
-  close(): Promise<void> {
-    return this.underlying.close();
+  async close(): Promise<void> {
+    this.clearLocalToolsCache();
+    await this.underlying.close();
   }
   async listTools(): Promise<MCPTool[]> {
-    if (this.cacheToolsList && this._cachedTools) {
+    const sessionId = this.sessionId;
+    if (sessionId === undefined) {
+      this.clearLocalToolsCache();
+      await this.underlying.invalidateToolsCache();
+      return this.underlying.listTools();
+    }
+
+    if (
+      this.cacheToolsList &&
+      this._cachedTools &&
+      this._cachedToolsSessionId === sessionId
+    ) {
       return this._cachedTools;
     }
     const tools = await this.underlying.listTools();
     if (this.cacheToolsList) {
       this._cachedTools = tools;
+      this._cachedToolsSessionId = sessionId;
     }
     return tools;
   }
-  callTool(
+  async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args, meta);
+    const previousSessionId = this.sessionId;
+    try {
+      return await this.underlying.callTool(toolName, args, meta);
+    } finally {
+      if (previousSessionId !== this.sessionId) {
+        this.clearLocalToolsCache();
+      }
+    }
   }
   listResources(
     params?: MCPListResourcesParams,
@@ -435,8 +461,9 @@ export class MCPServerStreamableHttp
   readResource(uri: string): Promise<MCPReadResourceResult> {
     return this.underlying.readResource(uri);
   }
-  invalidateToolsCache(): Promise<void> {
-    return this.underlying.invalidateToolsCache();
+  async invalidateToolsCache(): Promise<void> {
+    this.clearLocalToolsCache();
+    await this.underlying.invalidateToolsCache();
   }
 }
 

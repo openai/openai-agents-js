@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { allowConsole } from '../../../helpers/tests/console-guard';
+import logger from '../src/logger';
 import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
 
 class FakeRTCDataChannel extends EventTarget {
@@ -574,6 +574,9 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'debug').mockImplementation(() => {});
     originals.RTCPeerConnection = (global as any).RTCPeerConnection;
     originals.navigator = (global as any).navigator;
     originals.document = (global as any).document;
@@ -614,6 +617,7 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     (global as any).RTCPeerConnection = originals.RTCPeerConnection;
     Object.defineProperty(globalThis, 'navigator', {
@@ -635,7 +639,6 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
   });
 
   it('resolves connect() after timeout when server never sends session.updated', async () => {
-    allowConsole(['warn']);
     const rtc = new OpenAIRealtimeWebRTC();
     const connectPromise = rtc.connect({ apiKey: 'ek_test' });
 
@@ -655,7 +658,6 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
   });
 
   it('rejects connect() when close() is called during ack wait', async () => {
-    allowConsole(['warn', 'error']);
     const rtc = new OpenAIRealtimeWebRTC();
     rtc.on('error', () => {});
     const connectPromise = rtc.connect({ apiKey: 'ek_test' });
