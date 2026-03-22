@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.8.0
+
+### Patch Changes
+
+- e2e434a: fix: recover segmented assistant output in agent tools and finalization
+- 4f1824f: fix: remove reasoning and approval placeholders from handoff filters
+- 0ff9a25: feat: add MCP resource wrappers and streamable session ids
+- 05dd513: fix(mcp): resolve MCP server wrapper issues
+
 ## 0.7.2
 
 ### Patch Changes

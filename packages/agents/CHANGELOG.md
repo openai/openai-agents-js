@@ -1,5 +1,19 @@
 # @openai/agents
 
+## 0.8.0
+
+### Patch Changes
+
+- 0ff9a25: feat: add MCP resource wrappers and streamable session ids
+- Updated dependencies [e2e434a]
+- Updated dependencies [4f1824f]
+- Updated dependencies [3ccd31c]
+- Updated dependencies [0ff9a25]
+- Updated dependencies [05dd513]
+  - @openai/agents-core@0.8.0
+  - @openai/agents-realtime@0.8.0
+  - @openai/agents-openai@0.8.0
+
 ## 0.7.2
 
 ### Patch Changes

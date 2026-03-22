@@ -1,5 +1,20 @@
 # @openai/agents-realtime
 
+## 0.8.0
+
+### Minor Changes
+
+- 3ccd31c: fix: upgrade the default realtime model to gpt-realtime-1.5
+
+### Patch Changes
+
+- 05dd513: fix(mcp): resolve MCP server wrapper issues
+- Updated dependencies [e2e434a]
+- Updated dependencies [4f1824f]
+- Updated dependencies [0ff9a25]
+- Updated dependencies [05dd513]
+  - @openai/agents-core@0.8.0
+
 ## 0.7.2
 
 ### Patch Changes
