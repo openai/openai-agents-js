@@ -960,9 +960,13 @@ export class RealtimeSession<
       );
 
       if (this.#automaticallyTriggerResponseForMcpToolCalls) {
-        this.#transport.sendEvent({
-          type: 'response.create',
-        });
+        if (this.#transport.requestResponse) {
+          this.#transport.requestResponse();
+        } else {
+          this.#transport.sendEvent({
+            type: 'response.create',
+          });
+        }
       }
     });
 
