@@ -2461,6 +2461,7 @@ describe('Runner.run (streaming)', () => {
     });
 
     const result = await run(agent, 'filter me', { stream: true, session });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     await expect(result.completed).rejects.toBeInstanceOf(
       OutputGuardrailTripwireTriggered,
@@ -2469,6 +2470,11 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.state._currentStep?.type).not.toBe('next_step_final_output');
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
   });
 
   it('does not persist streaming result when the consumer cancels early', async () => {
