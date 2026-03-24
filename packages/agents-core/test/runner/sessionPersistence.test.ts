@@ -7,6 +7,7 @@ import {
 } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
+  RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
@@ -23,6 +24,7 @@ import {
 } from '../../src/runner/sessionPersistence';
 import { ServerConversationTracker } from '../../src/runner/conversation';
 import { getToolCallOutputItem } from '../../src/runner/toolExecution';
+import { getManagedConversationSupplementalItems } from '../../src/runner/turnPreparation';
 import { Runner } from '../../src/run';
 import { RunContext } from '../../src/runContext';
 import { RunResult, StreamedRunResult } from '../../src/result';
@@ -406,6 +408,186 @@ describe('ServerConversationTracker', () => {
 
     const nextTurnInput = tracker.prepareInput(initialInput, generatedItems);
     expect(nextTurnInput).toHaveLength(0);
+  });
+
+  it('does not resend supplemental generated items after they were marked sent', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_supplemental_sent',
+    });
+    const supplementalResult: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      name: 'transfer_to_managed_c',
+      callId: 'handoff-ignored',
+      status: 'completed',
+      output: {
+        type: 'text',
+        text: 'Multiple handoffs detected, ignoring this one.',
+      },
+    };
+
+    const firstPrepared = tracker.prepareInput([], [], [supplementalResult]);
+    expect(firstPrepared).toEqual([supplementalResult]);
+
+    tracker.markInputAsSent(firstPrepared);
+
+    const secondPrepared = tracker.prepareInput([], [], [supplementalResult]);
+    expect(secondPrepared).toEqual([]);
+  });
+
+  it('preserves current-turn supplemental items when resuming before they were sent', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_supplemental_resume',
+    });
+    const initialInput = toAgentInputList('hello');
+    const supplementalResult: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      name: 'transfer_to_managed_c',
+      callId: 'handoff-ignored',
+      status: 'completed',
+      output: {
+        type: 'text',
+        text: 'Multiple handoffs detected, ignoring this one.',
+      },
+    };
+
+    tracker.primeFromState({
+      originalInput: initialInput,
+      generatedItems: [],
+      modelResponses: [
+        {
+          output: [fakeModelMessage('handoff')],
+          usage: new Usage(),
+        },
+      ],
+    });
+
+    const nextTurnInput = tracker.prepareInput([], [], [supplementalResult]);
+    expect(nextTurnInput).toEqual([supplementalResult]);
+  });
+
+  it('creates fresh supplemental items for later responses with the same ignored handoff signature', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_supplemental_later_response',
+    });
+    const state = new RunState(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'hello',
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      3,
+    );
+    const makeProcessedResponse = (): ProcessedResponse<UnknownContext> => ({
+      newItems: [],
+      handoffs: [
+        {
+          toolCall: {
+            type: 'function_call',
+            id: 'handoff-accepted',
+            name: 'transfer_to_managed_b',
+            callId: 'handoff-accepted',
+            status: 'completed',
+            arguments: '{}',
+          },
+          handoff: {} as any,
+        },
+        {
+          toolCall: {
+            type: 'function_call',
+            id: 'handoff-ignored',
+            name: 'transfer_to_managed_c',
+            callId: 'handoff-ignored',
+            status: 'completed',
+            arguments: '{}',
+          },
+          handoff: {} as any,
+        },
+      ],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    });
+    state._generatedItems = [
+      new HandoffOutputItem(
+        {
+          type: 'function_call_result',
+          name: 'transfer_to_managed_b',
+          callId: 'handoff-accepted',
+          status: 'completed',
+          output: {
+            type: 'text',
+            text: 'Transferred to ManagedB',
+          },
+        },
+        TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+        TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      ),
+    ];
+
+    state._lastProcessedResponse = makeProcessedResponse();
+    const firstSupplementalItems =
+      getManagedConversationSupplementalItems(state);
+    tracker.markInputAsSent(
+      tracker.prepareInput([], [], firstSupplementalItems),
+    );
+
+    state._lastProcessedResponse = makeProcessedResponse();
+    const secondSupplementalItems =
+      getManagedConversationSupplementalItems(state);
+
+    expect(secondSupplementalItems).not.toBe(firstSupplementalItems);
+    expect(secondSupplementalItems[0]).not.toBe(firstSupplementalItems[0]);
+    expect(tracker.prepareInput([], [], secondSupplementalItems)).toEqual(
+      secondSupplementalItems,
+    );
+  });
+
+  it('does not create supplemental items when the accepted handoff output was filtered out', () => {
+    const state = new RunState(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'hello',
+      TEST_AGENT as Agent<UnknownContext, AgentOutputType>,
+      3,
+    );
+
+    state._lastProcessedResponse = {
+      newItems: [],
+      handoffs: [
+        {
+          toolCall: {
+            type: 'function_call',
+            id: 'handoff-accepted',
+            name: 'transfer_to_managed_b',
+            callId: 'handoff-accepted',
+            status: 'completed',
+            arguments: '{}',
+          },
+          handoff: {} as any,
+        },
+        {
+          toolCall: {
+            type: 'function_call',
+            id: 'handoff-ignored',
+            name: 'transfer_to_managed_c',
+            callId: 'handoff-ignored',
+            status: 'completed',
+            arguments: '{}',
+          },
+          handoff: {} as any,
+        },
+      ],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    expect(getManagedConversationSupplementalItems(state)).toEqual([]);
   });
 
   it('requeues initial inputs when resuming a server-managed conversation without responses', () => {
