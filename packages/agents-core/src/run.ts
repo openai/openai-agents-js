@@ -1261,7 +1261,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
           result.state._modelResponses.push(result.state._lastTurnResponse);
-
           const processedResponse = await processModelResponseAsync(
             result.state._lastTurnResponse,
             currentAgent,
