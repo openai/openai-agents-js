@@ -79,6 +79,7 @@ export {
   getHandoff,
   getTransferMessage,
   Handoff,
+  HANDOFF_REJECTED_MESSAGE,
   handoff,
   HandoffInputData,
   HandoffEnabledFunction,

@@ -9,7 +9,7 @@ import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
 import { setAgentToolParentRunConfigOnDetails } from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import { ToolCallError, ToolTimeoutError, UserError } from '../errors';
-import { getTransferMessage, HandoffInputData } from '../handoff';
+import { getTransferMessage, HANDOFF_REJECTED_MESSAGE, HandoffInputData } from '../handoff';
 import {
   RunHandoffOutputItem,
   RunItem,
@@ -1211,7 +1211,7 @@ export async function executeHandoffCalls<
 
   if (runHandoffs.length > 1) {
     // multiple handoffs. Ignoring all but the first one by adding reject responses for those
-    const outputMessage = 'Multiple handoffs detected, ignoring this one.';
+    const outputMessage = HANDOFF_REJECTED_MESSAGE;
     for (let i = 1; i < runHandoffs.length; i++) {
       newStepItems.push(
         new RunToolCallOutputItem(

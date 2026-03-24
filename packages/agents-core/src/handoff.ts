@@ -44,6 +44,12 @@ export type HandoffInputData = {
 export type HandoffInputFilter = (input: HandoffInputData) => HandoffInputData;
 
 /**
+ * The message returned as tool output when a parallel handoff is rejected.
+ * Only the first handoff in a turn executes; subsequent ones receive this message.
+ */
+export const HANDOFF_REJECTED_MESSAGE = 'Multiple handoffs detected, ignoring this one.';
+
+/**
  * Generates the message that will be given as tool output to the model that requested the handoff.
  *
  * @param agent The agent to transfer to
