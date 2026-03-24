@@ -1297,7 +1297,7 @@ describe('executeHandoffCalls', () => {
     }
   });
 
-  it('handles multiple handoffs by rejecting extras', async () => {
+  it('drops ignored handoffs from the step items', async () => {
     const target = new Agent({ name: 'Target' });
     const h = handoff(target);
     const call1: any = {
@@ -1314,7 +1314,10 @@ describe('executeHandoffCalls', () => {
         TEST_AGENT,
         '',
         [],
-        [],
+        [
+          new HandoffCallItem(call1.toolCall, TEST_AGENT),
+          new HandoffCallItem(call2.toolCall, TEST_AGENT),
+        ],
         TEST_MODEL_RESPONSE_WITH_FUNCTION,
         [call1, call2],
         new Runner({ tracingDisabled: true }),
@@ -1323,11 +1326,18 @@ describe('executeHandoffCalls', () => {
     );
 
     expect(
-      res.newStepItems.some(
-        (i) =>
-          i instanceof ToolCallOutputItem && (i.rawItem as any).callId === '2',
-      ),
-    ).toBe(true);
+      res.newStepItems.filter((item) => item instanceof HandoffCallItem),
+    ).toHaveLength(1);
+    expect(
+      (
+        res.newStepItems.find(
+          (item) => item instanceof HandoffCallItem,
+        ) as HandoffCallItem
+      ).rawItem.callId,
+    ).toBe('1');
+    expect(
+      res.newStepItems.some((item) => item instanceof ToolCallOutputItem),
+    ).toBe(false);
   });
 
   it('filters input when inputFilter provided', async () => {

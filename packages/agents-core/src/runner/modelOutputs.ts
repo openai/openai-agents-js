@@ -104,6 +104,28 @@ function handleToolCallAction<
   actions.push(buildAction(resolvedTool));
 }
 
+function recordHandoffRequest(
+  output: protocol.FunctionCallItem,
+  handoff: Handoff<any, any>,
+  agent: Agent<any, any>,
+  items: RunItem[],
+  toolsUsed: string[],
+  handoffs: ToolRunHandoff[],
+): void {
+  toolsUsed.push(output.name);
+  const isPrimaryHandoff = handoffs.length === 0;
+  handoffs.push({
+    toolCall: output,
+    handoff,
+  });
+  if (!isPrimaryHandoff) {
+    return;
+  }
+  // Only persist the first handoff request. Later handoffs are SDK-ignored and
+  // would otherwise bias future turns against valid delegation targets.
+  items.push(new RunHandoffCallItem(output, agent));
+}
+
 function resolveFunctionOrHandoff(
   toolCall: protocol.FunctionCallItem,
   handoffMap: Map<string, Handoff<any, any>>,
@@ -821,12 +843,14 @@ export function processModelResponse<TContext>(
       agent,
     );
     if (resolved.type === 'handoff') {
-      toolsUsed.push(output.name);
-      items.push(new RunHandoffCallItem(output, agent));
-      runHandoffs.push({
-        toolCall: output,
-        handoff: resolved.handoff,
-      });
+      recordHandoffRequest(
+        output,
+        resolved.handoff,
+        agent,
+        items,
+        toolsUsed,
+        runHandoffs,
+      );
     } else {
       ensureDeferredFunctionToolLoaded(
         output,
@@ -1119,12 +1143,14 @@ export async function processModelResponseAsync<TContext>(
       agent,
     );
     if (resolved.type === 'handoff') {
-      toolsUsed.push(output.name);
-      items.push(new RunHandoffCallItem(output, agent));
-      runHandoffs.push({
-        toolCall: output,
-        handoff: resolved.handoff,
-      });
+      recordHandoffRequest(
+        output,
+        resolved.handoff,
+        agent,
+        items,
+        toolsUsed,
+        runHandoffs,
+      );
     } else {
       ensureDeferredFunctionToolLoaded(
         output,
