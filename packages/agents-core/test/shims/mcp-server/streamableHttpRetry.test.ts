@@ -367,6 +367,23 @@ function throwProtocolNotConnected(this: MockClient): never {
   throw new Error('Not connected');
 }
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>['resolve'];
+  let reject: Deferred<T>['reject'];
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+
+  return { promise, resolve: resolve!, reject: reject! };
+}
+
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   beforeAll(() => {
     MockClient.instances = [];
@@ -833,39 +850,30 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   it('coalesces concurrent reconnects onto one recovered client', async () => {
     let sharedFailureCallCount = 0;
-    let firstSharedFailureStarted!: () => void;
-    let secondSharedFailureStarted!: () => void;
-    let reconnectStarted!: () => void;
-    let releaseSharedFailures!: () => void;
-    const firstSharedFailureStartedPromise = new Promise<void>((resolve) => {
-      firstSharedFailureStarted = resolve;
-    });
-    const secondSharedFailureStartedPromise = new Promise<void>((resolve) => {
-      secondSharedFailureStarted = resolve;
-    });
-    const reconnectStartedPromise = new Promise<void>((resolve) => {
-      reconnectStarted = resolve;
-    });
-    const sharedFailuresReleased = new Promise<void>((resolve) => {
-      releaseSharedFailures = resolve;
-    });
+    let reconnectCallCount = 0;
+    const firstSharedFailureStarted = createDeferred<void>();
+    const secondSharedFailureStarted = createDeferred<void>();
+    const reconnectStarted = createDeferred<void>();
+    const releaseReconnect = createDeferred<void>();
+    const sharedFailuresReleased = createDeferred<void>();
 
     MockClient.connectHandlers = [
       undefined,
       async () => {
-        reconnectStarted();
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        reconnectCallCount += 1;
+        reconnectStarted.resolve();
+        await releaseReconnect.promise;
       },
     ];
     MockClient.callToolHandlers = [
       async () => {
         sharedFailureCallCount += 1;
         if (sharedFailureCallCount === 1) {
-          firstSharedFailureStarted();
+          firstSharedFailureStarted.resolve();
         } else if (sharedFailureCallCount === 2) {
-          secondSharedFailureStarted();
+          secondSharedFailureStarted.resolve();
         }
-        await sharedFailuresReleased;
+        await sharedFailuresReleased.promise;
         throw new McpError(ErrorCode.ConnectionClosed, 'shared session closed');
       },
       async (params) => ({
@@ -879,17 +887,18 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     try {
       const firstCallPromise = server.callTool('first-tool', null);
       void firstCallPromise.catch(() => {});
-      await firstSharedFailureStartedPromise;
+      await firstSharedFailureStarted.promise;
 
       const secondCallPromise = server.callTool('second-tool', null);
       void secondCallPromise.catch(() => {});
 
-      await secondSharedFailureStartedPromise;
-      releaseSharedFailures();
-      await reconnectStartedPromise;
-      await vi.waitFor(() => {
-        expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
-      });
+      await secondSharedFailureStarted.promise;
+      expect(sharedFailureCallCount).toBe(2);
+      sharedFailuresReleased.resolve();
+      await reconnectStarted.promise;
+      expect(reconnectCallCount).toBe(1);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+      releaseReconnect.resolve();
 
       await Promise.all([
         expect(firstCallPromise).rejects.toMatchObject({
