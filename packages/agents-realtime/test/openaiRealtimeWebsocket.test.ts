@@ -601,6 +601,75 @@ describe('OpenAIRealtimeWebSocket', () => {
     ]);
   });
 
+  it('retries later coalesced auto response.create requests after a failure', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    ws.on('error', () => {});
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('first', {});
+    ws.sendMessage('second', {});
+    ws.sendMessage('third', {});
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    const firstResponseCreate = sentPayloads().find(
+      (payload: any) => payload.type === 'response.create',
+    );
+    expect(firstResponseCreate?.event_id).toEqual(expect.any(String));
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+      'response.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'err-coalesced',
+        error: {
+          code: 'bad_response_create',
+          message: 'bad response.create',
+          event_id: firstResponseCreate.event_id,
+        },
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+      'response.create',
+      'response.create',
+    ]);
+  });
+
   it('connects using callId when provided', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const p = ws.connect({ apiKey: 'ek_test', callId: 'call_abc' });

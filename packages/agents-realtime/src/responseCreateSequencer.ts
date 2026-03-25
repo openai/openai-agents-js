@@ -65,14 +65,14 @@ export class ResponseCreateSequencer {
 
   markResponseCreated(): void {
     this.#ongoingResponse = true;
-    this.#pendingResponseCreate = null;
+    this.#clearAcceptedResponseCreate();
     this.#responseControl = 'free';
     this.#notifyWaiters();
   }
 
   markResponseDone(): void {
     this.#ongoingResponse = false;
-    this.#pendingResponseCreate = null;
+    this.#clearAcceptedResponseCreate();
     this.#responseControl = 'free';
     this.#notifyWaiters();
   }
@@ -154,8 +154,6 @@ export class ResponseCreateSequencer {
       this.onError?.(error);
       return;
     }
-
-    this.#markResponseCreateSent(pending);
   }
 
   async #waitForResponseCreateSlot({
@@ -207,17 +205,6 @@ export class ResponseCreateSequencer {
     return null;
   }
 
-  #markResponseCreateSent(pending: PendingResponseCreate): void {
-    const coveredVersions = Array.from(this.#pendingRequestVersions).filter(
-      (version) => version <= pending.targetVersion,
-    );
-    for (const version of coveredVersions) {
-      this.#pendingRequestVersions.delete(version);
-      this.#manualResponseCreateVersions.delete(version);
-    }
-    this.#notifyWaiters();
-  }
-
   #clearPendingResponseCreate(eventId?: string): boolean {
     if (
       this.#responseControl !== 'create_requested' ||
@@ -230,6 +217,9 @@ export class ResponseCreateSequencer {
       return false;
     }
 
+    // Preserve later auto requests that were coalesced into the failed create
+    // so they can trigger a fresh response.create.
+    this.#restoreCoveredAutoRequestVersions(this.#pendingResponseCreate);
     this.#pendingRequestVersions.delete(
       this.#pendingResponseCreate.requestVersion,
     );
@@ -242,6 +232,33 @@ export class ResponseCreateSequencer {
     this.#responseControl = 'free';
     this.#notifyWaiters();
     return true;
+  }
+
+  #clearAcceptedResponseCreate(): void {
+    if (this.#pendingResponseCreate === null) {
+      return;
+    }
+
+    for (
+      let version = this.#pendingResponseCreate.requestVersion;
+      version <= this.#pendingResponseCreate.targetVersion;
+      version += 1
+    ) {
+      this.#pendingRequestVersions.delete(version);
+      this.#manualResponseCreateVersions.delete(version);
+    }
+
+    this.#pendingResponseCreate = null;
+  }
+
+  #restoreCoveredAutoRequestVersions(pending: PendingResponseCreate): void {
+    for (
+      let version = pending.requestVersion + 1;
+      version <= pending.targetVersion;
+      version += 1
+    ) {
+      this.#pendingRequestVersions.add(version);
+    }
   }
 
   #nextPendingRequestVersion(): number | null {
