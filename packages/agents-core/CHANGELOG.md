@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.8.1
+
+### Patch Changes
+
+- 1227865: fix: harden streamable HTTP reconnect test synchronization
+- 6f49230: fix: hide streamed final output after output guardrail failures
+- 4470af6: fix: #1122 hide ignored handoffs without breaking managed continuations
+
 ## 0.8.0
 
 ### Patch Changes

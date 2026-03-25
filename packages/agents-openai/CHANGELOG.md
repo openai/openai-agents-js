@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.8.1
+
+### Patch Changes
+
+- 4e00b3c: fix: omit empty computer safety check fields when replaying tool items
+- Updated dependencies [1227865]
+- Updated dependencies [6f49230]
+- Updated dependencies [4470af6]
+  - @openai/agents-core@0.8.1
+
 ## 0.8.0
 
 ### Patch Changes

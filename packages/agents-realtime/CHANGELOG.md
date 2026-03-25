@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.8.1
+
+### Patch Changes
+
+- 36a368b: fix: defer realtime response.create until the previous turn finishes
+- Updated dependencies [1227865]
+- Updated dependencies [6f49230]
+- Updated dependencies [4470af6]
+  - @openai/agents-core@0.8.1
+
 ## 0.8.0
 
 ### Minor Changes
