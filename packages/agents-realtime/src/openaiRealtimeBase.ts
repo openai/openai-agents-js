@@ -480,6 +480,13 @@ export abstract class OpenAIRealtimeBase
     this.emit('disconnected');
   }
 
+  requestResponse(response?: Record<string, any>): void {
+    this.sendEvent({
+      type: 'response.create',
+      ...(response ? { response } : {}),
+    });
+  }
+
   /**
    * Send a message to the Realtime API. This will create a new item in the conversation and
    * trigger a response.
@@ -522,9 +529,7 @@ export abstract class OpenAIRealtimeBase
     });
 
     if (triggerResponse) {
-      this.sendEvent({
-        type: 'response.create',
-      });
+      this.requestResponse();
     }
   }
 
@@ -856,9 +861,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (startResponse) {
-      this.sendEvent({
-        type: 'response.create',
-      });
+      this.requestResponse();
     }
   }
 

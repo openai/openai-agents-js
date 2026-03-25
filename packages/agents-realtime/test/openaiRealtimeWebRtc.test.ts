@@ -27,6 +27,10 @@ class FakeRTCDataChannel extends EventTarget {
 
 let lastChannel: FakeRTCDataChannel | null = null;
 
+function waitForAsyncResponseCreate() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 class FakeRTCPeerConnection {
   ontrack: ((ev: any) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
@@ -196,6 +200,182 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(channel.sent).toHaveLength(1);
     expect(JSON.parse(channel.sent[0])).toEqual({
       type: 'output_audio_buffer.clear',
+    });
+  });
+
+  it('defers follow-up response.create until response.done after interrupt', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    const channel = lastChannel as FakeRTCDataChannel;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: 'r1',
+          response: {},
+        }),
+      }),
+    );
+
+    channel.sent.length = 0;
+    rtc.interrupt();
+    rtc.sendMessage('blocked', {});
+    await waitForAsyncResponseCreate();
+
+    expect(channel.sent.map((payload) => JSON.parse(payload).type)).toEqual([
+      'response.cancel',
+      'output_audio_buffer.clear',
+      'conversation.item.create',
+    ]);
+
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'r1_done',
+          response: {},
+        }),
+      }),
+    );
+    await waitForAsyncResponseCreate();
+
+    expect(channel.sent.map((payload) => JSON.parse(payload).type)).toEqual([
+      'response.cancel',
+      'output_audio_buffer.clear',
+      'conversation.item.create',
+      'response.create',
+    ]);
+  });
+
+  it('keeps queued requestResponse overrides distinct from automatic follow-ups', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    const channel = lastChannel as FakeRTCDataChannel;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: 'r1',
+          response: {},
+        }),
+      }),
+    );
+
+    channel.sent.length = 0;
+    rtc.sendMessage('auto', {});
+    rtc.requestResponse({ instructions: 'Use the override.' });
+    await waitForAsyncResponseCreate();
+
+    expect(channel.sent.map((payload) => JSON.parse(payload).type)).toEqual([
+      'conversation.item.create',
+    ]);
+
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'r1_done',
+          response: {},
+        }),
+      }),
+    );
+    await waitForAsyncResponseCreate();
+
+    expect(
+      channel.sent.filter(
+        (payload) => JSON.parse(payload).type === 'response.create',
+      ),
+    ).toHaveLength(1);
+    expect(JSON.parse(channel.sent[channel.sent.length - 1])).toMatchObject({
+      type: 'response.create',
+    });
+
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: 'r2',
+          response: {},
+        }),
+      }),
+    );
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'r2_done',
+          response: {},
+        }),
+      }),
+    );
+    await waitForAsyncResponseCreate();
+
+    const responseCreates = channel.sent
+      .map((payload) => JSON.parse(payload))
+      .filter((payload) => payload.type === 'response.create');
+    expect(responseCreates).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+      },
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+        response: { instructions: 'Use the override.' },
+      },
+    ]);
+  });
+
+  it('does not treat response.output_audio.done as response.done for sequencing', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    const channel = lastChannel as FakeRTCDataChannel;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.created',
+          event_id: 'r1',
+          response: {},
+        }),
+      }),
+    );
+
+    channel.sent.length = 0;
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.output_audio.done',
+          event_id: 'r1_audio_done',
+          item_id: 'item-1',
+          content_index: 0,
+          output_index: 0,
+          response_id: 'resp-1',
+        }),
+      }),
+    );
+
+    rtc.requestResponse();
+    await waitForAsyncResponseCreate();
+
+    expect(channel.sent).toEqual([]);
+
+    channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'r1_done',
+          response: {},
+        }),
+      }),
+    );
+    await waitForAsyncResponseCreate();
+
+    expect(channel.sent).toHaveLength(1);
+    expect(JSON.parse(channel.sent[0])).toMatchObject({
+      type: 'response.create',
     });
   });
 
