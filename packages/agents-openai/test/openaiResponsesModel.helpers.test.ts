@@ -725,6 +725,44 @@ describe('getInputItems', () => {
     });
   });
 
+  it('omits empty computer safety checks when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-empty-1',
+        callId: 'computer-empty-call-1',
+        action: { type: 'wait' },
+        status: 'completed',
+        providerData: {
+          pending_safety_checks: [],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-empty-result-1',
+        callId: 'computer-empty-call-1',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-empty-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[0]).not.toHaveProperty('pending_safety_checks');
+
+    expect(items[1]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-empty-result-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[1]).not.toHaveProperty('acknowledged_safety_checks');
+  });
+
   it('preserves batched computer actions when rebuilding input items', () => {
     const items = getInputItems([
       {
