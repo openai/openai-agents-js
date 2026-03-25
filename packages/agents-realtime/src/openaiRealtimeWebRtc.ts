@@ -429,7 +429,7 @@ export class OpenAIRealtimeWebRTC
         type: 'response.create',
         ...(response ? { response } : {}),
       },
-      { manual: false },
+      { manual: response !== undefined },
     );
   }
 

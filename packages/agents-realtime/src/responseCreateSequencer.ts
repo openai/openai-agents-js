@@ -55,6 +55,16 @@ export class ResponseCreateSequencer {
   ): void {
     const requestVersion = this.#reserveResponseCreateRequest(manual);
     const generation = this.#generation;
+    const pending = this.#tryPrepareResponseCreate({
+      event,
+      manual,
+      requestVersion,
+    });
+    if (pending) {
+      this.#dispatchResponseCreate(pending, generation);
+      return;
+    }
+
     void this.#startResponseCreate({
       event,
       manual,
@@ -147,6 +157,17 @@ export class ResponseCreateSequencer {
       return;
     }
 
+    this.#dispatchResponseCreate(pending, generation);
+  }
+
+  #dispatchResponseCreate(
+    pending: PendingResponseCreate,
+    generation: number,
+  ): void {
+    if (generation !== this.#generation) {
+      return;
+    }
+
     try {
       this.sendEventNow(pending.event);
     } catch (error) {
@@ -168,34 +189,12 @@ export class ResponseCreateSequencer {
     generation: number;
   }): Promise<PendingResponseCreate | null> {
     while (generation === this.#generation) {
-      if (!this.#pendingRequestVersions.has(requestVersion)) {
-        return null;
-      }
-
-      if (
-        !this.#ongoingResponse &&
-        this.#responseControl === 'free' &&
-        this.#nextPendingRequestVersion() === requestVersion
-      ) {
-        this.#responseControl = 'create_requested';
-        const eventId =
-          typeof event.event_id === 'string'
-            ? event.event_id
-            : this.#nextResponseCreateEventId();
-        const targetVersion = manual
-          ? requestVersion
-          : this.#autoResponseCreateTargetVersion(requestVersion);
-        const pending: PendingResponseCreate = {
-          event: {
-            ...event,
-            event_id: eventId,
-          },
-          eventId,
-          requestVersion,
-          targetVersion,
-          manual,
-        };
-        this.#pendingResponseCreate = pending;
+      const pending = this.#tryPrepareResponseCreate({
+        event,
+        manual,
+        requestVersion,
+      });
+      if (pending) {
         return pending;
       }
 
@@ -203,6 +202,49 @@ export class ResponseCreateSequencer {
     }
 
     return null;
+  }
+
+  #tryPrepareResponseCreate({
+    event,
+    manual,
+    requestVersion,
+  }: {
+    event: RealtimeClientMessage;
+    manual: boolean;
+    requestVersion: number;
+  }): PendingResponseCreate | null {
+    if (!this.#pendingRequestVersions.has(requestVersion)) {
+      return null;
+    }
+
+    if (
+      this.#ongoingResponse ||
+      this.#responseControl !== 'free' ||
+      this.#nextPendingRequestVersion() !== requestVersion
+    ) {
+      return null;
+    }
+
+    this.#responseControl = 'create_requested';
+    const eventId =
+      typeof event.event_id === 'string'
+        ? event.event_id
+        : this.#nextResponseCreateEventId();
+    const targetVersion = manual
+      ? requestVersion
+      : this.#autoResponseCreateTargetVersion(requestVersion);
+    const pending: PendingResponseCreate = {
+      event: {
+        ...event,
+        event_id: eventId,
+      },
+      eventId,
+      requestVersion,
+      targetVersion,
+      manual,
+    };
+    this.#pendingResponseCreate = pending;
+    return pending;
   }
 
   #clearPendingResponseCreate(eventId?: string): boolean {

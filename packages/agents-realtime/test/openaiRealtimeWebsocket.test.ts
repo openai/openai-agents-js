@@ -493,6 +493,42 @@ describe('OpenAIRealtimeWebSocket', () => {
     ]);
   });
 
+  it('sends automatic response.create synchronously before later same-tick events', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('first', {});
+    ws.sendMessage('second', {});
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'response.create',
+      'conversation.item.create',
+    ]);
+  });
+
+  it('sends manual response.create synchronously before later same-tick events', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendEvent({ type: 'response.create' } as any);
+    ws.sendEvent({
+      type: 'input_audio_buffer.append',
+      audio: 'AA==',
+    } as any);
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'response.create',
+      'input_audio_buffer.append',
+    ]);
+  });
+
   it('queues manual response.create until the previous turn is done', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const p = ws.connect({ apiKey: 'ek', model: 'm' });
@@ -598,6 +634,82 @@ describe('OpenAIRealtimeWebSocket', () => {
       'response.create',
       'conversation.item.create',
       'response.create',
+    ]);
+  });
+
+  it('keeps queued requestResponse overrides distinct from automatic follow-ups', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('auto', {});
+    ws.requestResponse({ instructions: 'Use the override.' });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(
+      sentPayloads().filter(
+        (payload: any) => payload.type === 'response.create',
+      ),
+    ).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+      },
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r2',
+        response: {},
+      }),
+    });
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r2_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(
+      sentPayloads().filter(
+        (payload: any) => payload.type === 'response.create',
+      ),
+    ).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+      },
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+        response: { instructions: 'Use the override.' },
+      },
     ]);
   });
 

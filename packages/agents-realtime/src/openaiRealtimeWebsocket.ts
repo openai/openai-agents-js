@@ -405,7 +405,7 @@ export class OpenAIRealtimeWebSocket
         type: 'response.create',
         ...(response ? { response } : {}),
       },
-      { manual: false },
+      { manual: response !== undefined },
     );
   }
 
