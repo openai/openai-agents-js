@@ -1,5 +1,15 @@
 # @openai/agents-extensions
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [1227865]
+- Updated dependencies [6f49230]
+- Updated dependencies [4470af6]
+  - @openai/agents-core@0.8.1
+  - @openai/agents@0.8.1
+
 ## 0.8.0
 
 ### Patch Changes
