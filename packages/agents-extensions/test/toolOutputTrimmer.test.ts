@@ -320,6 +320,69 @@ describe('ToolOutputTrimmer', () => {
     );
   });
 
+  it('trims structured (non-string) tool outputs by serialized size', () => {
+    const structuredOutput = Array.from({ length: 100 }, (_, i) => ({
+      type: 'text' as const,
+      text: `Result line ${i}: ${'data'.repeat(50)}`,
+    }));
+    const items: AgentInputItem[] = [
+      userMessage('first question'),
+      functionCall('c1', 'search'),
+      {
+        type: 'function_call_result',
+        callId: 'c1',
+        name: 'search',
+        status: 'completed',
+        output: structuredOutput,
+      } as unknown as AgentInputItem,
+      userMessage('second question'),
+      userMessage('third question'),
+    ];
+
+    const trimmer = new ToolOutputTrimmer({
+      recentTurns: 2,
+      maxOutputChars: 500,
+      previewChars: 100,
+    });
+
+    const result = trimmer.filter(makeArgs(items));
+    const trimmedItem = result.input[2] as Record<string, unknown>;
+    expect(typeof trimmedItem.output).toBe('string');
+    expect(trimmedItem.output as string).toContain('[Trimmed:');
+  });
+
+  it('resolves tool_search call IDs from providerData', () => {
+    const longDesc = 'd'.repeat(1000);
+    const items: AgentInputItem[] = [
+      userMessage('first question'),
+      {
+        type: 'tool_search_call',
+        providerData: { call_id: 'ts1' },
+      } as unknown as AgentInputItem,
+      {
+        type: 'tool_search_output',
+        providerData: { call_id: 'ts1' },
+        tools: [{ type: 'function', name: 'search', description: longDesc }],
+      } as unknown as AgentInputItem,
+      userMessage('second question'),
+      userMessage('third question'),
+    ];
+
+    const trimmer = new ToolOutputTrimmer({
+      recentTurns: 2,
+      maxOutputChars: 100,
+      previewChars: 50,
+      trimmableTools: new Set(['tool_search']),
+    });
+
+    const result = trimmer.filter(makeArgs(items));
+    const resultItem = result.input[2] as Record<string, unknown>;
+    const resultTools = resultItem.tools as Record<string, unknown>[];
+    expect((resultTools[0].description as string).length).toBeLessThan(
+      longDesc.length,
+    );
+  });
+
   it('can be passed directly as a callModelInputFilter', () => {
     const trimmer = new ToolOutputTrimmer();
     const filterFn = trimmer.filter;

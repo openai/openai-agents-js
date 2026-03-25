@@ -146,8 +146,18 @@ export class ToolOutputTrimmer {
       if (i < boundary && item && typeof item === 'object') {
         const itemObj = item as AnyItem;
         const itemType = itemObj.type as string | undefined;
+        // Resolve call ID from top-level fields or providerData (client
+        // tool_search_output items store call_id in providerData).
+        const providerData =
+          typeof itemObj.providerData === 'object' && itemObj.providerData
+            ? (itemObj.providerData as AnyItem)
+            : undefined;
         const callId = String(
-          itemObj.callId ?? itemObj.call_id ?? itemObj.id ?? '',
+          itemObj.callId ??
+            itemObj.call_id ??
+            itemObj.id ??
+            providerData?.call_id ??
+            '',
         );
         const toolNames = callIdToNames.get(callId) ?? [];
 
@@ -230,8 +240,12 @@ export class ToolOutputTrimmer {
           mapping.set(callId, names);
         }
       } else if (itemObj.type === 'tool_search_call') {
+        const pd =
+          typeof itemObj.providerData === 'object' && itemObj.providerData
+            ? (itemObj.providerData as AnyItem)
+            : undefined;
         const callId = String(
-          itemObj.callId ?? itemObj.call_id ?? itemObj.id ?? '',
+          itemObj.callId ?? itemObj.call_id ?? itemObj.id ?? pd?.call_id ?? '',
         );
         if (callId) {
           mapping.set(callId, ['tool_search']);
@@ -246,8 +260,11 @@ export class ToolOutputTrimmer {
     toolNames: string[],
   ): TrimResult | null {
     const output = item.output;
+    // output can be a string, a structured content object, or an array of
+    // structured items. Serialize non-strings via JSON so we measure the
+    // real payload size instead of getting "[object Object]".
     const outputStr =
-      typeof output === 'string' ? output : String(output ?? '');
+      typeof output === 'string' ? output : serializeJsonLike(output ?? '');
     const outputLen = outputStr.length;
     if (outputLen <= this.maxOutputChars) {
       return null;
