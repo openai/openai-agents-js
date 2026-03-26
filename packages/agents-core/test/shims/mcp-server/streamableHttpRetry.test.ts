@@ -384,6 +384,64 @@ function createDeferred<T>(): Deferred<T> {
   return { promise, resolve: resolve!, reject: reject! };
 }
 
+function formatError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  description: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`Timed out waiting for ${description}.`));
+    }, timeoutMs);
+
+    void promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function waitForBarrier<T>(
+  barrier: Promise<T>,
+  description: string,
+  pendingCalls: Array<{ label: string; promise: Promise<unknown> }>,
+): Promise<T> {
+  // Fail immediately when a guarded call settles before the barrier we expect.
+  const earlySettlements = pendingCalls.map(({ label, promise }) =>
+    promise.then(
+      () => {
+        throw new Error(`${label} resolved before ${description}.`);
+      },
+      (error) => {
+        throw new Error(
+          `${label} rejected before ${description}: ${formatError(error)}`,
+        );
+      },
+    ),
+  );
+
+  for (const earlySettlement of earlySettlements) {
+    void earlySettlement.catch(() => {});
+  }
+
+  return await Promise.race([
+    withTimeout(barrier, 2_000, description),
+    ...earlySettlements,
+  ]);
+}
+
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   beforeAll(() => {
     MockClient.instances = [];
@@ -887,15 +945,29 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     try {
       const firstCallPromise = server.callTool('first-tool', null);
       void firstCallPromise.catch(() => {});
-      await firstSharedFailureStarted.promise;
+      await waitForBarrier(
+        firstSharedFailureStarted.promise,
+        'the first shared failure to start',
+        [{ label: 'first tool call', promise: firstCallPromise }],
+      );
 
       const secondCallPromise = server.callTool('second-tool', null);
       void secondCallPromise.catch(() => {});
 
-      await secondSharedFailureStarted.promise;
+      await waitForBarrier(
+        secondSharedFailureStarted.promise,
+        'the second shared failure to start',
+        [
+          { label: 'first tool call', promise: firstCallPromise },
+          { label: 'second tool call', promise: secondCallPromise },
+        ],
+      );
       expect(sharedFailureCallCount).toBe(2);
       sharedFailuresReleased.resolve();
-      await reconnectStarted.promise;
+      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start', [
+        { label: 'first tool call', promise: firstCallPromise },
+        { label: 'second tool call', promise: secondCallPromise },
+      ]);
       expect(reconnectCallCount).toBe(1);
       expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
       releaseReconnect.resolve();
