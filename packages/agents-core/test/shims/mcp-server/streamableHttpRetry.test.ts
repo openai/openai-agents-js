@@ -911,7 +911,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     let reconnectCallCount = 0;
     const firstSharedFailureStarted = createDeferred<void>();
     const secondSharedFailureStarted = createDeferred<void>();
-    const reconnectStarted = createDeferred<void>();
     const releaseReconnect = createDeferred<void>();
     const sharedFailuresReleased = createDeferred<void>();
 
@@ -919,7 +918,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       undefined,
       async () => {
         reconnectCallCount += 1;
-        reconnectStarted.resolve();
         await releaseReconnect.promise;
       },
     ];
@@ -964,12 +962,10 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       );
       expect(sharedFailureCallCount).toBe(2);
       sharedFailuresReleased.resolve();
-      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start', [
-        { label: 'first tool call', promise: firstCallPromise },
-        { label: 'second tool call', promise: secondCallPromise },
-      ]);
-      expect(reconnectCallCount).toBe(1);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+      await vi.waitFor(() => {
+        expect(reconnectCallCount).toBe(1);
+        expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+      });
       releaseReconnect.resolve();
 
       await Promise.all([
