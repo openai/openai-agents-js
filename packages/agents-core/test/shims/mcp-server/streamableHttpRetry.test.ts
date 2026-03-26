@@ -416,9 +416,9 @@ function withTimeout<T>(
 async function waitForBarrier<T>(
   barrier: Promise<T>,
   description: string,
-  pendingCalls: Array<{ label: string; promise: Promise<unknown> }>,
+  pendingCalls: Array<{ label: string; promise: Promise<unknown> }> = [],
 ): Promise<T> {
-  // Fail immediately when a guarded call settles before the barrier we expect.
+  // Guard only the promises that must remain unsettled until the barrier fires.
   const earlySettlements = pendingCalls.map(({ label, promise }) =>
     promise.then(
       () => {
@@ -964,10 +964,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       );
       expect(sharedFailureCallCount).toBe(2);
       sharedFailuresReleased.resolve();
-      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start', [
-        { label: 'first tool call', promise: firstCallPromise },
-        { label: 'second tool call', promise: secondCallPromise },
-      ]);
+      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start');
       expect(reconnectCallCount).toBe(1);
       expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
       releaseReconnect.resolve();
