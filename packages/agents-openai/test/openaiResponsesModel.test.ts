@@ -1695,12 +1695,12 @@ describe('OpenAIResponsesModel', () => {
                     enum: ['once', 'weekly'],
                   },
                   date: {
-                    type: ['string', 'null'],
-                    description: 'Set to null unless type is "once".',
+                    type: 'string',
+                    description: 'Ignored unless type is "once".',
                   },
                   dayOfWeek: {
-                    type: ['number', 'null'],
-                    description: 'Set to null unless type is "weekly".',
+                    type: 'number',
+                    description: 'Ignored unless type is "weekly".',
                   },
                 },
                 required: ['type', 'date', 'dayOfWeek'],
@@ -1779,12 +1779,12 @@ describe('OpenAIResponsesModel', () => {
                     enum: ['once', 'weekly'],
                   },
                   date: {
-                    type: ['string', 'null'],
-                    description: 'Set to null unless type is "once".',
+                    type: 'string',
+                    description: 'Ignored unless type is "once".',
                   },
                   dayOfWeek: {
-                    type: ['number', 'null'],
-                    description: 'Set to null unless type is "weekly".',
+                    type: 'number',
+                    description: 'Ignored unless type is "weekly".',
                   },
                 },
                 required: ['type', 'date', 'dayOfWeek'],

@@ -207,12 +207,12 @@ function expectNormalizedRecurrenceSchema(schema: JsonObjectSchema<any>) {
             enum: ['once', 'weekly'],
           },
           date: {
-            type: ['string', 'null'],
-            description: 'Set to null unless type is "once".',
+            type: 'string',
+            description: 'Ignored unless type is "once".',
           },
           dayOfWeek: {
-            type: ['number', 'null'],
-            description: 'Set to null unless type is "weekly".',
+            type: 'number',
+            description: 'Ignored unless type is "weekly".',
           },
         },
         required: ['type', 'date', 'dayOfWeek'],
@@ -315,7 +315,9 @@ describe('utils/tools', () => {
     expectNormalizedRecurrenceSchema(res.schema);
     expect(plainUnionRes.schema).toEqual(res.schema);
     expect(
-      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+      res.parser(
+        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2}}',
+      ),
     ).toEqual({
       recurrence: {
         type: 'weekly',
@@ -413,7 +415,7 @@ describe('utils/tools', () => {
     expect(recurrenceSchema.anyOf).toBeUndefined();
     expect(recurrenceSchema.properties.date).toMatchObject({
       anyOf: [{ type: 'string' }, { type: 'null' }],
-      description: 'Set to null unless type is "once".',
+      description: 'Ignored unless type is "once".',
     });
     expect(
       res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
@@ -425,14 +427,16 @@ describe('utils/tools', () => {
     });
   });
 
-  it('strips null filler keys before parsing strict discriminated unions', () => {
+  it('strips inactive branch keys before parsing strict discriminated unions', () => {
     const res = getSchemaAndParserFromInputType(
       buildStrictRecurrenceSchema(z),
       'tool',
     );
 
     expect(
-      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+      res.parser(
+        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2}}',
+      ),
     ).toEqual({
       recurrence: {
         type: 'weekly',
@@ -454,11 +458,12 @@ describe('utils/tools', () => {
     });
     expect(
       res.parser(
-        '{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2,"meta":"x"}}',
+        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2,"meta":"x"}}',
       ),
     ).toEqual({
       recurrence: {
         type: 'weekly',
+        date: '2026-04-01',
         dayOfWeek: 2,
         meta: 'x',
       },
@@ -649,7 +654,9 @@ describe('utils/tools', () => {
     expectNormalizedRecurrenceSchema(res.schema);
     expect(plainUnionRes.schema).toEqual(res.schema);
     expect(
-      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+      res.parser(
+        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2}}',
+      ),
     ).toEqual({
       recurrence: {
         type: 'weekly',

@@ -207,13 +207,27 @@ function mergeVariantProperty(
   const requiredInEveryPresentVariant = variantsWithProperty.every((variant) =>
     isPropertyRequired(variant.schema, propertyName),
   );
-  const canBeOmittedInSomeVariant =
-    variantsWithProperty.length !== variants.length ||
-    !requiredInEveryPresentVariant;
+  const presentInEveryVariant = variantsWithProperty.length === variants.length;
 
-  if (!canBeOmittedInSomeVariant) {
+  if (presentInEveryVariant && requiredInEveryPresentVariant) {
     return {
       schema: mergedProperty,
+      required: true,
+    };
+  }
+
+  if (!presentInEveryVariant) {
+    // Strict Responses schemas cannot omit branch-only keys, so keep their
+    // original type and let parser-side sanitization drop inactive copies.
+    const conditionedProperty = structuredClone(mergedProperty);
+    conditionedProperty.description = appendBranchConditionDescription(
+      conditionedProperty.description,
+      discriminatorKey,
+      variantsWithProperty.map((variant) => variant.discriminatorValue),
+    );
+
+    return {
+      schema: conditionedProperty,
       required: true,
     };
   }
@@ -223,17 +237,9 @@ function mergeVariantProperty(
     return undefined;
   }
 
-  if (variantsWithProperty.length !== variants.length) {
-    nullableProperty.description = appendConditionDescription(
-      nullableProperty.description,
-      discriminatorKey,
-      variantsWithProperty.map((variant) => variant.discriminatorValue),
-    );
-  } else {
-    nullableProperty.description = appendOptionalDescription(
-      nullableProperty.description,
-    );
-  }
+  nullableProperty.description = appendOptionalDescription(
+    nullableProperty.description,
+  );
 
   return {
     schema: nullableProperty,
@@ -438,7 +444,7 @@ function collectPropertyNames(
   return propertyNames;
 }
 
-function appendConditionDescription(
+function appendBranchConditionDescription(
   description: unknown,
   discriminatorKey: string,
   values: LiteralValue[],
@@ -449,7 +455,7 @@ function appendConditionDescription(
       : `${discriminatorKey} is one of ${values
           .map((value) => formatLiteralValue(value))
           .join(', ')}`;
-  const suffix = `Set to null unless ${condition}.`;
+  const suffix = `Ignored unless ${condition}.`;
 
   if (typeof description !== 'string' || description.trim().length === 0) {
     return suffix;

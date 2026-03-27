@@ -194,9 +194,8 @@ function sanitizeUnionVariantInput(
     }
 
     if (
-      value === null &&
       selectedVariant.branchOnlyPropertyNames.has(key) &&
-      shouldStripBranchOnlyNullKey(selectedVariant)
+      shouldStripBranchOnlyKey(selectedVariant, value)
     ) {
       delete sanitizedInput[key];
       continue;
@@ -214,8 +213,9 @@ function sanitizeUnionVariantInput(
   return sanitizedInput;
 }
 
-function shouldStripBranchOnlyNullKey(
+function shouldStripBranchOnlyKey(
   selectedVariant: SelectedDiscriminatedUnionVariant,
+  value: unknown,
 ): boolean {
   const additionalProperties =
     selectedVariant.variant.schema.additionalProperties;
@@ -223,11 +223,8 @@ function shouldStripBranchOnlyNullKey(
     return false;
   }
 
-  if (
-    isSchemaObject(additionalProperties) &&
-    schemaAllowsNull(additionalProperties)
-  ) {
-    return false;
+  if (isSchemaObject(additionalProperties)) {
+    return !schemaCouldAcceptValue(additionalProperties, value);
   }
 
   return true;
@@ -280,4 +277,76 @@ function schemaAllowsNull(schema: unknown): boolean {
   }
 
   return false;
+}
+
+function schemaCouldAcceptValue(schema: unknown, value: unknown): boolean {
+  if (schema === true) {
+    return true;
+  }
+
+  if (!isSchemaObject(schema)) {
+    return false;
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.some((entry) => schemaCouldAcceptValue(entry, value));
+  }
+
+  if (Array.isArray(schema.oneOf)) {
+    return (
+      schema.oneOf.filter((entry) => schemaCouldAcceptValue(entry, value))
+        .length === 1
+    );
+  }
+
+  if (Array.isArray(schema.allOf)) {
+    return schema.allOf.every((entry) => schemaCouldAcceptValue(entry, value));
+  }
+
+  if ('const' in schema) {
+    return Object.is(schema.const, value);
+  }
+
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.some((entry) => Object.is(entry, value));
+  }
+
+  if (Array.isArray(schema.type)) {
+    return schema.type.some((type) => jsonSchemaTypeMatchesValue(type, value));
+  }
+
+  if (typeof schema.type === 'string') {
+    return jsonSchemaTypeMatchesValue(schema.type, value);
+  }
+
+  if (isSchemaObject(schema.properties) || 'additionalProperties' in schema) {
+    return isSchemaObject(value);
+  }
+
+  if ('items' in schema) {
+    return Array.isArray(value);
+  }
+
+  return true;
+}
+
+function jsonSchemaTypeMatchesValue(type: unknown, value: unknown): boolean {
+  switch (type) {
+    case 'null':
+      return value === null;
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number';
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'object':
+      return isSchemaObject(value);
+    case 'array':
+      return Array.isArray(value);
+    default:
+      return false;
+  }
 }
