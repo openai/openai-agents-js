@@ -5,6 +5,7 @@ import {
   convertAgentOutputTypeToSerializable,
 } from '../../src/utils/tools';
 import { normalizeGeneratedJsonSchema } from '../../src/utils/normalizeGeneratedJsonSchema';
+import { sanitizeNormalizedUnionInput } from '../../src/utils/sanitizeNormalizedUnionInput';
 import { z } from 'zod';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
@@ -145,6 +146,55 @@ function buildMismatchedAdditionalPropertiesRecurrenceSchema(zod: {
   });
 }
 
+function buildOptionalSharedRecurrenceSchema(zod: {
+  object: typeof z.object;
+  discriminatedUnion: typeof z.discriminatedUnion;
+  literal: typeof z.literal;
+  string: typeof z.string;
+  number: typeof z.number;
+}) {
+  return zod.object({
+    recurrence: zod.discriminatedUnion('type', [
+      zod.object({
+        type: zod.literal('once'),
+        date: zod.string(),
+        note: zod.string().optional(),
+      }),
+      zod.object({
+        type: zod.literal('weekly'),
+        dayOfWeek: zod.number(),
+        note: zod.string().optional(),
+      }),
+    ]),
+  });
+}
+
+function buildNullableCatchallRecurrenceSchema(zod: {
+  object: typeof z.object;
+  discriminatedUnion: typeof z.discriminatedUnion;
+  literal: typeof z.literal;
+  string: typeof z.string;
+  number: typeof z.number;
+}) {
+  return zod.object({
+    recurrence: zod.discriminatedUnion('type', [
+      zod
+        .object({
+          type: zod.literal('once'),
+          date: zod.string(),
+        })
+        .catchall(zod.string().nullable()),
+      zod
+        .object({
+          type: zod.literal('weekly'),
+          dayOfWeek: zod.number(),
+          note: zod.string(),
+        })
+        .catchall(zod.string().nullable()),
+    ]),
+  });
+}
+
 function expectNormalizedRecurrenceSchema(schema: JsonObjectSchema<any>) {
   expect(schema).toMatchObject({
     type: 'object',
@@ -277,8 +327,8 @@ describe('utils/tools', () => {
     ).toThrow();
   });
 
-  it('preserves shared optional fields when normalizing discriminated unions', () => {
-    const normalized = normalizeGeneratedJsonSchema({
+  it('represents shared optional fields as required nullable properties in lowered unions', () => {
+    const originalSchema = {
       type: 'object',
       properties: {
         recurrence: {
@@ -322,41 +372,32 @@ describe('utils/tools', () => {
       },
       required: ['recurrence'],
       additionalProperties: false,
-    });
-
-    expect(normalized).toMatchObject({
-      type: 'object',
-      properties: {
-        recurrence: {
-          type: 'object',
-          properties: {
-            type: {
-              type: 'string',
-              enum: ['once', 'weekly'],
-            },
-            date: {
-              type: ['string', 'null'],
-              description: 'Set to null unless type is "once".',
-            },
-            dayOfWeek: {
-              type: ['number', 'null'],
-              description: 'Set to null unless type is "weekly".',
-            },
-            note: {
-              type: 'string',
-            },
-          },
-          required: ['type', 'date', 'dayOfWeek'],
-          additionalProperties: false,
-        },
-      },
-      required: ['recurrence'],
-      additionalProperties: false,
-    });
-    const recurrenceSchema = normalized.properties
+    } satisfies JsonObjectSchema<any>;
+    const normalizedSchema = normalizeGeneratedJsonSchema(originalSchema);
+    const recurrenceSchema = normalizedSchema.properties
       .recurrence as unknown as JsonObjectSchema<any>;
-    expect(recurrenceSchema.required).not.toContain('note');
-    expect(recurrenceSchema.properties.note.type).toBe('string');
+
+    expect(recurrenceSchema.properties.note).toMatchObject({
+      type: ['string', 'null'],
+      description: 'Set to null when omitted.',
+    });
+    expect(recurrenceSchema.required).toContain('note');
+    expect(
+      buildOptionalSharedRecurrenceSchema(z).parse(
+        sanitizeNormalizedUnionInput(
+          JSON.parse(
+            '{"recurrence":{"type":"weekly","note":null,"dayOfWeek":2}}',
+          ),
+          originalSchema,
+          normalizedSchema,
+        ),
+      ),
+    ).toEqual({
+      recurrence: {
+        type: 'weekly',
+        dayOfWeek: 2,
+      },
+    });
   });
 
   it('normalizes branch-only nullable fields that are already expressed with anyOf', () => {
@@ -420,6 +461,25 @@ describe('utils/tools', () => {
         type: 'weekly',
         dayOfWeek: 2,
         meta: 'x',
+      },
+    });
+  });
+
+  it('preserves valid null extras for selected variants with nullable catchall', () => {
+    const res = getSchemaAndParserFromInputType(
+      buildNullableCatchallRecurrenceSchema(z),
+      'tool',
+    );
+
+    expect(
+      res.parser(
+        '{"recurrence":{"type":"once","date":"2026-04-01","note":null}}',
+      ),
+    ).toEqual({
+      recurrence: {
+        type: 'once',
+        date: '2026-04-01',
+        note: null,
       },
     });
   });
@@ -512,6 +572,63 @@ describe('utils/tools', () => {
       },
       required: ['alpha', 'beta'],
       additionalProperties: false,
+    });
+  });
+
+  it('ignores anyOf member order when merging shared nullable fields', () => {
+    const normalized = normalizeGeneratedJsonSchema({
+      type: 'object',
+      properties: {
+        recurrence: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  const: 'once',
+                },
+                note: {
+                  anyOf: [{ type: 'string' }, { type: 'null' }],
+                },
+                date: {
+                  type: 'string',
+                },
+              },
+              required: ['type', 'note', 'date'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  const: 'weekly',
+                },
+                note: {
+                  anyOf: [{ type: 'null' }, { type: 'string' }],
+                },
+                dayOfWeek: {
+                  type: 'number',
+                },
+              },
+              required: ['type', 'note', 'dayOfWeek'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      required: ['recurrence'],
+      additionalProperties: false,
+    });
+    const recurrenceSchema = normalized.properties
+      .recurrence as unknown as JsonObjectSchema<any> & {
+      anyOf?: unknown;
+    };
+
+    expect(recurrenceSchema.anyOf).toBeUndefined();
+    expect(recurrenceSchema.properties.note).toEqual({
+      anyOf: [{ type: 'string' }, { type: 'null' }],
     });
   });
 

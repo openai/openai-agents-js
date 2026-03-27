@@ -26,12 +26,20 @@ function canonicalizeSchemaForComparison(input: unknown): unknown {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => {
       if (
-        (key === 'required' || key === 'enum' || key === 'type') &&
+        (key === 'required' ||
+          key === 'enum' ||
+          key === 'type' ||
+          key === 'anyOf' ||
+          key === 'oneOf' ||
+          key === 'allOf') &&
         Array.isArray(value)
       ) {
+        const normalizedValues = value.map((entry) =>
+          canonicalizeSchemaForComparison(entry),
+        );
         return [
           key,
-          [...value].sort((leftValue, rightValue) =>
+          normalizedValues.sort((leftValue, rightValue) =>
             JSON.stringify(leftValue).localeCompare(JSON.stringify(rightValue)),
           ),
         ];

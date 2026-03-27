@@ -170,17 +170,34 @@ function sanitizeUnionVariantInput(
 
   for (const [key, value] of Object.entries(input)) {
     if (key in selectedVariant.variant.properties) {
+      const normalizedPropertySchema = isSchemaObject(
+        selectedVariant.normalizedSchema.properties,
+      )
+        ? selectedVariant.normalizedSchema.properties[key]
+        : undefined;
+      if (
+        value === null &&
+        !isPropertyRequired(selectedVariant.variant.schema, key) &&
+        !schemaAllowsNull(selectedVariant.variant.properties[key]) &&
+        schemaAllowsNull(normalizedPropertySchema)
+      ) {
+        delete sanitizedInput[key];
+        continue;
+      }
+
       sanitizedInput[key] = sanitizeInputForSchema(
         value,
         selectedVariant.variant.properties[key],
-        isSchemaObject(selectedVariant.normalizedSchema.properties)
-          ? selectedVariant.normalizedSchema.properties[key]
-          : undefined,
+        normalizedPropertySchema,
       );
       continue;
     }
 
-    if (value === null && selectedVariant.branchOnlyPropertyNames.has(key)) {
+    if (
+      value === null &&
+      selectedVariant.branchOnlyPropertyNames.has(key) &&
+      shouldStripBranchOnlyNullKey(selectedVariant)
+    ) {
       delete sanitizedInput[key];
       continue;
     }
@@ -195,4 +212,72 @@ function sanitizeUnionVariantInput(
   }
 
   return sanitizedInput;
+}
+
+function shouldStripBranchOnlyNullKey(
+  selectedVariant: SelectedDiscriminatedUnionVariant,
+): boolean {
+  const additionalProperties =
+    selectedVariant.variant.schema.additionalProperties;
+  if (additionalProperties === true) {
+    return false;
+  }
+
+  if (
+    isSchemaObject(additionalProperties) &&
+    schemaAllowsNull(additionalProperties)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isPropertyRequired(
+  schema: JsonSchemaRecord,
+  propertyName: string,
+): boolean {
+  return (
+    Array.isArray(schema.required) && schema.required.includes(propertyName)
+  );
+}
+
+function schemaAllowsNull(schema: unknown): boolean {
+  if (!schema) {
+    return false;
+  }
+
+  if (schema === true) {
+    return true;
+  }
+
+  if (!isSchemaObject(schema)) {
+    return false;
+  }
+
+  if (schema.const === null) {
+    return true;
+  }
+
+  if (Array.isArray(schema.type) && schema.type.includes('null')) {
+    return true;
+  }
+
+  if (schema.type === 'null') {
+    return true;
+  }
+
+  if (Array.isArray(schema.enum) && schema.enum.includes(null)) {
+    return true;
+  }
+
+  if (Array.isArray(schema.anyOf) && schema.anyOf.some(schemaAllowsNull)) {
+    return true;
+  }
+
+  if (Array.isArray(schema.oneOf) && schema.oneOf.some(schemaAllowsNull)) {
+    return true;
+  }
+
+  return false;
 }
