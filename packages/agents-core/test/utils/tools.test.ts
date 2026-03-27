@@ -121,6 +121,30 @@ function buildCatchallRecurrenceSchema(zod: {
   });
 }
 
+function buildMismatchedAdditionalPropertiesRecurrenceSchema(zod: {
+  object: typeof z.object;
+  discriminatedUnion: typeof z.discriminatedUnion;
+  literal: typeof z.literal;
+  string: typeof z.string;
+  number: typeof z.number;
+  strictObject: typeof z.strictObject;
+}) {
+  return zod.object({
+    recurrence: zod.discriminatedUnion('type', [
+      zod.strictObject({
+        type: zod.literal('once'),
+        date: zod.string(),
+      }),
+      zod
+        .object({
+          type: zod.literal('weekly'),
+          dayOfWeek: zod.number(),
+        })
+        .catchall(zod.string()),
+    ]),
+  });
+}
+
 function expectNormalizedRecurrenceSchema(schema: JsonObjectSchema<any>) {
   expect(schema).toMatchObject({
     type: 'object',
@@ -398,6 +422,22 @@ describe('utils/tools', () => {
         meta: 'x',
       },
     });
+  });
+
+  it('does not strip null filler keys for discriminated unions that were not lowered', () => {
+    const res = getSchemaAndParserFromInputType(
+      buildMismatchedAdditionalPropertiesRecurrenceSchema(z),
+      'tool',
+    );
+    const recurrenceSchema = res.schema.properties
+      .recurrence as unknown as JsonObjectSchema<any> & {
+      anyOf?: unknown;
+    };
+
+    expect(recurrenceSchema.anyOf).toBeDefined();
+    expect(() =>
+      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+    ).toThrow();
   });
 
   it('ignores nested property key order when merging shared fields', () => {

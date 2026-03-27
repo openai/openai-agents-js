@@ -68,16 +68,24 @@ function buildJsonSchemaFromZod(
 function sanitizeRawToolInput(
   rawInput: string,
   originalSchema: unknown,
+  normalizedSchema: unknown,
 ): unknown {
-  return sanitizeNormalizedUnionInput(JSON.parse(rawInput), originalSchema);
+  return sanitizeNormalizedUnionInput(
+    JSON.parse(rawInput),
+    originalSchema,
+    normalizedSchema,
+  );
 }
 
 function createSanitizedToolParser(
   originalSchema: unknown,
+  normalizedSchema: unknown,
   parseSanitizedInput: (input: unknown) => unknown,
 ): (rawInput: string) => unknown {
   return (rawInput: string) =>
-    parseSanitizedInput(sanitizeRawToolInput(rawInput, originalSchema));
+    parseSanitizedInput(
+      sanitizeRawToolInput(rawInput, originalSchema, normalizedSchema),
+    );
 }
 
 function buildZodSchemaConversionError(originalError?: unknown): UserError {
@@ -144,10 +152,14 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
   if (isZodObject(inputType)) {
     const useFallback = (originalError?: unknown) => {
       const fallbackSchema = getFallbackJsonSchema(inputType, originalError);
+      const normalizedFallbackSchema =
+        normalizeGeneratedJsonSchema(fallbackSchema);
       return {
-        schema: normalizeGeneratedJsonSchema(fallbackSchema),
-        parser: createSanitizedToolParser(fallbackSchema, (sanitizedInput) =>
-          inputType.parse(sanitizedInput),
+        schema: normalizedFallbackSchema,
+        parser: createSanitizedToolParser(
+          fallbackSchema,
+          normalizedFallbackSchema,
+          (sanitizedInput) => inputType.parse(sanitizedInput),
         ),
       };
     };
@@ -171,10 +183,15 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       if (fallbackSchema) {
         mergeJsonSchemaDescriptions(originalSchema, fallbackSchema);
       }
+      const normalizedOriginalSchema =
+        normalizeGeneratedJsonSchema(originalSchema);
       return {
-        schema: normalizeGeneratedJsonSchema(originalSchema),
-        parser: createSanitizedToolParser(originalSchema, (sanitizedInput) =>
-          formattedFunction.$parseRaw(JSON.stringify(sanitizedInput)),
+        schema: normalizedOriginalSchema,
+        parser: createSanitizedToolParser(
+          originalSchema,
+          normalizedOriginalSchema,
+          (sanitizedInput) =>
+            formattedFunction.$parseRaw(JSON.stringify(sanitizedInput)),
         ),
       };
     }

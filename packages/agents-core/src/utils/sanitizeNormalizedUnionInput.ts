@@ -7,35 +7,58 @@ import {
 
 type SelectedDiscriminatedUnionVariant = {
   branchOnlyPropertyNames: Set<string>;
+  normalizedSchema: JsonSchemaRecord;
   variant: DiscriminatedObjectUnionVariant;
 };
 
 export function sanitizeNormalizedUnionInput<T>(
   input: T,
   originalSchema: unknown,
+  normalizedSchema: unknown,
 ): T {
-  return sanitizeInputForSchema(input, originalSchema) as T;
+  return sanitizeInputForSchema(input, originalSchema, normalizedSchema) as T;
 }
 
-function sanitizeInputForSchema(input: unknown, schema: unknown): unknown {
+function sanitizeInputForSchema(
+  input: unknown,
+  originalSchema: unknown,
+  normalizedSchema: unknown,
+): unknown {
   if (Array.isArray(input)) {
-    if (!isSchemaObject(schema)) {
+    if (!isSchemaObject(originalSchema) && !isSchemaObject(normalizedSchema)) {
       return input;
     }
-    if (Array.isArray(schema.items)) {
+
+    const originalItems = isSchemaObject(originalSchema)
+      ? originalSchema.items
+      : undefined;
+    const normalizedItems = isSchemaObject(normalizedSchema)
+      ? normalizedSchema.items
+      : undefined;
+
+    if (Array.isArray(originalItems) || Array.isArray(normalizedItems)) {
       return input.map((item, index) =>
-        sanitizeInputForSchema(item, schema.items[index]),
+        sanitizeInputForSchema(
+          item,
+          Array.isArray(originalItems) ? originalItems[index] : originalItems,
+          Array.isArray(normalizedItems)
+            ? normalizedItems[index]
+            : normalizedItems,
+        ),
       );
     }
-    return input.map((item) => sanitizeInputForSchema(item, schema.items));
+    return input.map((item) =>
+      sanitizeInputForSchema(item, originalItems, normalizedItems),
+    );
   }
 
-  if (!isSchemaObject(input) || !isSchemaObject(schema)) {
+  if (!isSchemaObject(input)) {
     return input;
   }
 
   const selectedVariant = selectMatchingDiscriminatedUnionVariant(
-    schema,
+    originalSchema,
+    normalizedSchema,
     input,
   );
   if (selectedVariant) {
@@ -44,17 +67,45 @@ function sanitizeInputForSchema(input: unknown, schema: unknown): unknown {
 
   const sanitizedInput = structuredClone(input);
   for (const [key, value] of Object.entries(input)) {
-    if (isSchemaObject(schema.properties) && key in schema.properties) {
+    const originalPropertySchema =
+      isSchemaObject(originalSchema) &&
+      isSchemaObject(originalSchema.properties) &&
+      key in originalSchema.properties
+        ? originalSchema.properties[key]
+        : undefined;
+    const normalizedPropertySchema =
+      isSchemaObject(normalizedSchema) &&
+      isSchemaObject(normalizedSchema.properties) &&
+      key in normalizedSchema.properties
+        ? normalizedSchema.properties[key]
+        : undefined;
+
+    if (
+      typeof originalPropertySchema !== 'undefined' ||
+      typeof normalizedPropertySchema !== 'undefined'
+    ) {
       sanitizedInput[key] = sanitizeInputForSchema(
         value,
-        schema.properties[key],
+        originalPropertySchema,
+        normalizedPropertySchema,
       );
       continue;
     }
-    if (isSchemaObject(schema.additionalProperties)) {
+
+    const originalAdditionalProperties = isSchemaObject(originalSchema)
+      ? originalSchema.additionalProperties
+      : undefined;
+    const normalizedAdditionalProperties = isSchemaObject(normalizedSchema)
+      ? normalizedSchema.additionalProperties
+      : undefined;
+    if (
+      isSchemaObject(originalAdditionalProperties) ||
+      isSchemaObject(normalizedAdditionalProperties)
+    ) {
       sanitizedInput[key] = sanitizeInputForSchema(
         value,
-        schema.additionalProperties,
+        originalAdditionalProperties,
+        normalizedAdditionalProperties,
       );
     }
   }
@@ -62,11 +113,20 @@ function sanitizeInputForSchema(input: unknown, schema: unknown): unknown {
 }
 
 function selectMatchingDiscriminatedUnionVariant(
-  schema: JsonSchemaRecord,
+  originalSchema: unknown,
+  normalizedSchema: unknown,
   input: JsonSchemaRecord,
 ): SelectedDiscriminatedUnionVariant | undefined {
-  const anyOf = schema.anyOf;
+  if (!isSchemaObject(originalSchema) || !isSchemaObject(normalizedSchema)) {
+    return undefined;
+  }
+
+  const anyOf = originalSchema.anyOf;
   if (!Array.isArray(anyOf) || anyOf.length < 2) {
+    return undefined;
+  }
+
+  if (Array.isArray(normalizedSchema.anyOf)) {
     return undefined;
   }
 
@@ -97,6 +157,7 @@ function selectMatchingDiscriminatedUnionVariant(
 
   return {
     branchOnlyPropertyNames,
+    normalizedSchema,
     variant: matchingVariant,
   };
 }
@@ -112,6 +173,9 @@ function sanitizeUnionVariantInput(
       sanitizedInput[key] = sanitizeInputForSchema(
         value,
         selectedVariant.variant.properties[key],
+        isSchemaObject(selectedVariant.normalizedSchema.properties)
+          ? selectedVariant.normalizedSchema.properties[key]
+          : undefined,
       );
       continue;
     }
@@ -125,6 +189,7 @@ function sanitizeUnionVariantInput(
       sanitizedInput[key] = sanitizeInputForSchema(
         value,
         selectedVariant.variant.schema.additionalProperties,
+        selectedVariant.normalizedSchema.additionalProperties,
       );
     }
   }
