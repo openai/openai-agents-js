@@ -12,11 +12,13 @@ import {
   Runner,
   setDefaultModelProvider,
   setTracingDisabled,
+  tool,
   withTrace,
   type ResponseStreamEvent,
   Span,
 } from '@openai/agents-core';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
+import { z } from 'zod';
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
@@ -1629,6 +1631,86 @@ describe('OpenAIResponsesModel', () => {
         },
         {
           type: 'tool_search',
+        },
+      ]);
+    });
+  });
+
+  it('passes normalized discriminated union schemas to Responses function tools', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-normalized-discriminated-union',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+      const recurrenceTool = tool({
+        name: 'plan_recurrence',
+        description: 'Plan a recurrence rule.',
+        parameters: z.object({
+          recurrence: z.discriminatedUnion('type', [
+            z.object({
+              type: z.literal('once'),
+              date: z.string(),
+            }),
+            z.object({
+              type: z.literal('weekly'),
+              dayOfWeek: z.number(),
+            }),
+          ]),
+        }),
+        execute: async () => 'ok',
+      });
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'plan the recurrence',
+        modelSettings: {},
+        tools: [recurrenceTool],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'plan_recurrence',
+          description: 'Plan a recurrence rule.',
+          parameters: {
+            $schema: 'http://json-schema.org/draft-07/schema#',
+            type: 'object',
+            properties: {
+              recurrence: {
+                type: 'object',
+                properties: {
+                  type: {
+                    type: 'string',
+                    enum: ['once', 'weekly'],
+                  },
+                  date: {
+                    type: ['string', 'null'],
+                    description: 'Set to null unless type is "once".',
+                  },
+                  dayOfWeek: {
+                    type: ['number', 'null'],
+                    description: 'Set to null unless type is "weekly".',
+                  },
+                },
+                required: ['type', 'date', 'dayOfWeek'],
+                additionalProperties: false,
+              },
+            },
+            required: ['recurrence'],
+            additionalProperties: false,
+          },
+          strict: true,
         },
       ]);
     });

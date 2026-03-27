@@ -9,6 +9,7 @@ import {
   hasJsonSchemaObjectShape,
   mergeJsonSchemaDescriptions,
 } from './zodJsonSchemaCompat';
+import { normalizeGeneratedJsonSchema } from './normalizeGeneratedJsonSchema';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
 
@@ -106,7 +107,7 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       const fallbackSchema = buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
         return {
-          schema: fallbackSchema,
+          schema: normalizeGeneratedJsonSchema(fallbackSchema),
           parser: (rawInput: string) => inputType.parse(JSON.parse(rawInput)),
         };
       }
@@ -142,7 +143,9 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
         );
       }
       return {
-        schema: formattedFunction.parameters as JsonObjectSchema<any>,
+        schema: normalizeGeneratedJsonSchema(
+          formattedFunction.parameters as JsonObjectSchema<any>,
+        ),
         parser: formattedFunction.$parseRaw,
       };
     }

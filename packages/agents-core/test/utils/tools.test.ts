@@ -7,6 +7,80 @@ import {
 import { z } from 'zod';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
+import type { ZodObjectLike } from '../../src/utils/zodCompat';
+
+function buildRecurrenceSchema(zod: {
+  object: typeof z.object;
+  discriminatedUnion: typeof z.discriminatedUnion;
+  literal: typeof z.literal;
+  string: typeof z.string;
+  union: typeof z.union;
+  number: typeof z.number;
+}) {
+  return zod.object({
+    recurrence: zod.discriminatedUnion('type', [
+      zod.object({
+        type: zod.literal('once'),
+        date: zod.string(),
+      }),
+      zod.object({
+        type: zod.literal('weekly'),
+        dayOfWeek: zod.number(),
+      }),
+    ]),
+  });
+}
+
+function buildPlainUnionRecurrenceSchema(zod: {
+  object: typeof z.object;
+  literal: typeof z.literal;
+  string: typeof z.string;
+  union: typeof z.union;
+  number: typeof z.number;
+}) {
+  return zod.object({
+    recurrence: zod.union([
+      zod.object({
+        type: zod.literal('once'),
+        date: zod.string(),
+      }),
+      zod.object({
+        type: zod.literal('weekly'),
+        dayOfWeek: zod.number(),
+      }),
+    ]),
+  });
+}
+
+function expectNormalizedRecurrenceSchema(schema: JsonObjectSchema<any>) {
+  expect(schema).toMatchObject({
+    type: 'object',
+    properties: {
+      recurrence: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['once', 'weekly'],
+          },
+          date: {
+            type: ['string', 'null'],
+            description: 'Set to null unless type is "once".',
+          },
+          dayOfWeek: {
+            type: ['number', 'null'],
+            description: 'Set to null unless type is "weekly".',
+          },
+        },
+        required: ['type', 'date', 'dayOfWeek'],
+        additionalProperties: false,
+      },
+    },
+    required: ['recurrence'],
+    additionalProperties: false,
+  });
+  expect(schema.properties.recurrence.anyOf).toBeUndefined();
+}
 
 describe('utils/tools', () => {
   it('normalizes function tool names', () => {
@@ -85,6 +159,58 @@ describe('utils/tools', () => {
       required: 'ok',
       optional: 2,
     });
+  });
+
+  it('normalizes discriminated unions for Zod v4 tool schemas', () => {
+    const zodSchema = buildRecurrenceSchema(z);
+    const res = getSchemaAndParserFromInputType(zodSchema, 'tool');
+    const plainUnionRes = getSchemaAndParserFromInputType(
+      buildPlainUnionRecurrenceSchema(z),
+      'tool',
+    );
+
+    expectNormalizedRecurrenceSchema(res.schema);
+    expect(plainUnionRes.schema).toEqual(res.schema);
+    expect(
+      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+    ).toEqual({
+      recurrence: {
+        type: 'weekly',
+        dayOfWeek: 2,
+      },
+    });
+    expect(() =>
+      res.parser('{"recurrence":{"type":"once","dayOfWeek":2}}'),
+    ).toThrow();
+  });
+
+  it('normalizes discriminated unions for Zod v3 tool schemas', async () => {
+    const z3 = (await import('zod/v3')) as unknown as {
+      z: typeof z;
+    };
+    const discriminatedSchema = buildRecurrenceSchema(z3.z);
+    const res = getSchemaAndParserFromInputType(
+      discriminatedSchema as ZodObjectLike,
+      'tool',
+    );
+    const plainUnionRes = getSchemaAndParserFromInputType(
+      buildPlainUnionRecurrenceSchema(z3.z) as ZodObjectLike,
+      'tool',
+    );
+
+    expectNormalizedRecurrenceSchema(res.schema);
+    expect(plainUnionRes.schema).toEqual(res.schema);
+    expect(
+      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+    ).toEqual({
+      recurrence: {
+        type: 'weekly',
+        dayOfWeek: 2,
+      },
+    });
+    expect(() =>
+      res.parser('{"recurrence":{"type":"once","dayOfWeek":2}}'),
+    ).toThrow();
   });
 
   it('convertAgentOutputTypeToSerializable falls back when helper rejects optional fields', () => {
