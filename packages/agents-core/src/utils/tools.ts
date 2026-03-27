@@ -65,6 +65,44 @@ function buildJsonSchemaFromZod(
   return zodJsonSchemaCompat(inputType);
 }
 
+function sanitizeRawToolInput(
+  rawInput: string,
+  originalSchema: unknown,
+): unknown {
+  return sanitizeNormalizedUnionInput(JSON.parse(rawInput), originalSchema);
+}
+
+function createSanitizedToolParser(
+  originalSchema: unknown,
+  parseSanitizedInput: (input: unknown) => unknown,
+): (rawInput: string) => unknown {
+  return (rawInput: string) =>
+    parseSanitizedInput(sanitizeRawToolInput(rawInput, originalSchema));
+}
+
+function buildZodSchemaConversionError(originalError?: unknown): UserError {
+  const errorMessage =
+    originalError instanceof Error
+      ? ` Upstream helper error: ${originalError.message}`
+      : '';
+
+  return new UserError(
+    `Unable to convert the provided Zod schema to JSON Schema. Ensure that the \`zod\` package is available at runtime or provide a JSON schema object instead.${errorMessage}`,
+  );
+}
+
+function getFallbackJsonSchema(
+  inputType: ZodObjectLike,
+  originalError?: unknown,
+): JsonObjectSchema<any> {
+  const fallbackSchema = buildJsonSchemaFromZod(inputType);
+  if (fallbackSchema) {
+    return fallbackSchema;
+  }
+
+  throw buildZodSchemaConversionError(originalError);
+}
+
 /**
  * Convert a string to a function tool name by replacing spaces with underscores and
  * non-alphanumeric characters with underscores.
@@ -105,28 +143,13 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
 
   if (isZodObject(inputType)) {
     const useFallback = (originalError?: unknown) => {
-      const fallbackSchema = buildJsonSchemaFromZod(inputType);
-      if (fallbackSchema) {
-        return {
-          schema: normalizeGeneratedJsonSchema(fallbackSchema),
-          parser: (rawInput: string) =>
-            inputType.parse(
-              sanitizeNormalizedUnionInput(
-                JSON.parse(rawInput),
-                fallbackSchema,
-              ),
-            ),
-        };
-      }
-
-      const errorMessage =
-        originalError instanceof Error
-          ? ` Upstream helper error: ${originalError.message}`
-          : '';
-
-      throw new UserError(
-        `Unable to convert the provided Zod schema to JSON Schema. Ensure that the \`zod\` package is available at runtime or provide a JSON schema object instead.${errorMessage}`,
-      );
+      const fallbackSchema = getFallbackJsonSchema(inputType, originalError);
+      return {
+        schema: normalizeGeneratedJsonSchema(fallbackSchema),
+        parser: createSanitizedToolParser(fallbackSchema, (sanitizedInput) =>
+          inputType.parse(sanitizedInput),
+        ),
+      };
     };
 
     let formattedFunction: MinimalParseableResponseTool;
@@ -150,15 +173,9 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       }
       return {
         schema: normalizeGeneratedJsonSchema(originalSchema),
-        parser: (rawInput: string) =>
-          formattedFunction.$parseRaw(
-            JSON.stringify(
-              sanitizeNormalizedUnionInput(
-                JSON.parse(rawInput),
-                originalSchema,
-              ),
-            ),
-          ),
+        parser: createSanitizedToolParser(originalSchema, (sanitizedInput) =>
+          formattedFunction.$parseRaw(JSON.stringify(sanitizedInput)),
+        ),
       };
     }
 
@@ -188,24 +205,12 @@ export function convertAgentOutputTypeToSerializable(
       existing?: MinimalParseableTextFormat,
       originalError?: unknown,
     ): JsonSchemaDefinition => {
-      const fallbackSchema = buildJsonSchemaFromZod(outputType);
-      if (fallbackSchema) {
-        return {
-          type: existing?.type ?? 'json_schema',
-          name: existing?.name ?? 'output',
-          strict: existing?.strict ?? false,
-          schema: fallbackSchema,
-        };
-      }
-
-      const errorMessage =
-        originalError instanceof Error
-          ? ` Upstream helper error: ${originalError.message}`
-          : '';
-
-      throw new UserError(
-        `Unable to convert the provided Zod schema to JSON Schema. Ensure that the \`zod\` package is available at runtime or provide a JSON schema object instead.${errorMessage}`,
-      );
+      return {
+        type: existing?.type ?? 'json_schema',
+        name: existing?.name ?? 'output',
+        strict: existing?.strict ?? false,
+        schema: getFallbackJsonSchema(outputType, originalError),
+      };
     };
 
     let output: MinimalParseableTextFormat;
