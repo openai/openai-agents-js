@@ -1,4 +1,8 @@
-import { RealtimeAgent, RealtimeSession, OpenAIRealtimeWebRTC } from '@openai/agents/realtime';
+import {
+  RealtimeAgent,
+  RealtimeSession,
+  OpenAIRealtimeWebRTC,
+} from '@openai/agents/realtime';
 
 const agent = new RealtimeAgent({
   name: 'Greeter',
