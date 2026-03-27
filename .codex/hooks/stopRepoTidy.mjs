@@ -2,10 +2,12 @@
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { stdout } from 'node:process';
+import process, { stdout } from 'node:process';
 import { fingerprintForPaths, gitRoot } from './lib/gitState.mjs';
 import { loadState, saveState } from './lib/hookState.mjs';
 import { MAX_LINT_FIX_FILES, lintFixPaths } from './lib/stopTidyPolicy.mjs';
+
+const PNPM_COMMAND = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
 function writeStopBlock(reason, systemMessage) {
   stdout.write(
@@ -44,14 +46,18 @@ function main() {
   }
 
   const repoRoot = gitRoot(cwd);
-  const lintResult = spawnSync('pnpm', ['lint:fix', '--', ...currentPaths], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
+  const lintResult = spawnSync(
+    PNPM_COMMAND,
+    ['lint:fix', '--', ...currentPaths],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    },
+  );
 
   let formatResult = null;
   if (lintResult.status === 0) {
-    formatResult = spawnSync('pnpm', ['format:changed'], {
+    formatResult = spawnSync(PNPM_COMMAND, ['format:changed'], {
       cwd: repoRoot,
       encoding: 'utf8',
     });
