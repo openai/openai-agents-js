@@ -67,8 +67,6 @@ function main() {
 
   const updatedPaths = lintFixPaths(cwd);
   const updatedFingerprint = fingerprintForPaths(cwd, updatedPaths);
-  state.last_tidy_fingerprint = updatedFingerprint;
-  saveState(sessionId, cwd, state);
 
   if (lintResult.status !== 0) {
     writeStopBlock(
@@ -85,6 +83,11 @@ function main() {
     );
     return;
   }
+
+  // Failed tidy runs must not cache the fingerprint, or the same broken diff
+  // would skip future closeout checks without any code changes.
+  state.last_tidy_fingerprint = updatedFingerprint;
+  saveState(sessionId, cwd, state);
 
   if (updatedFingerprint !== currentFingerprint) {
     writeStopBlock(
