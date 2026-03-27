@@ -5,11 +5,7 @@ import { readFileSync } from 'node:fs';
 import { stdout } from 'node:process';
 import { fingerprintForPaths, gitRoot } from './lib/gitState.mjs';
 import { loadState, saveState } from './lib/hookState.mjs';
-import {
-  MAX_LINT_FIX_FILES,
-  lintFixPaths,
-  shouldEnforce,
-} from './lib/stopTidyPolicy.mjs';
+import { MAX_LINT_FIX_FILES, lintFixPaths } from './lib/stopTidyPolicy.mjs';
 
 function writeStopBlock(reason, systemMessage) {
   stdout.write(
@@ -30,10 +26,6 @@ function main() {
   }
 
   if (payload.stop_hook_active) {
-    return;
-  }
-
-  if (!shouldEnforce(payload.last_assistant_message)) {
     return;
   }
 
