@@ -1716,6 +1716,92 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('preserves merged additionalProperties in normalized discriminated union tool schemas', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-normalized-discriminated-union-catchall',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.2');
+      const recurrenceTool = tool({
+        name: 'plan_recurrence',
+        description: 'Plan a recurrence rule.',
+        parameters: z.object({
+          recurrence: z.discriminatedUnion('type', [
+            z
+              .object({
+                type: z.literal('once'),
+                date: z.string(),
+              })
+              .catchall(z.string()),
+            z
+              .object({
+                type: z.literal('weekly'),
+                dayOfWeek: z.number(),
+              })
+              .catchall(z.string()),
+          ]),
+        }),
+        execute: async () => 'ok',
+      });
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'plan the recurrence',
+        modelSettings: {},
+        tools: [recurrenceTool],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.tools).toEqual([
+        {
+          type: 'function',
+          name: 'plan_recurrence',
+          description: 'Plan a recurrence rule.',
+          parameters: {
+            $schema: 'http://json-schema.org/draft-07/schema#',
+            type: 'object',
+            properties: {
+              recurrence: {
+                type: 'object',
+                properties: {
+                  type: {
+                    type: 'string',
+                    enum: ['once', 'weekly'],
+                  },
+                  date: {
+                    type: ['string', 'null'],
+                    description: 'Set to null unless type is "once".',
+                  },
+                  dayOfWeek: {
+                    type: ['number', 'null'],
+                    description: 'Set to null unless type is "weekly".',
+                  },
+                },
+                required: ['type', 'date', 'dayOfWeek'],
+                additionalProperties: {
+                  type: 'string',
+                },
+              },
+            },
+            required: ['recurrence'],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ]);
+    });
+  });
+
   it('rejects deferLoading without toolSearchTool', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

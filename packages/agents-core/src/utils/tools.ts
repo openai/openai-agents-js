@@ -10,6 +10,7 @@ import {
   mergeJsonSchemaDescriptions,
 } from './zodJsonSchemaCompat';
 import { normalizeGeneratedJsonSchema } from './normalizeGeneratedJsonSchema';
+import { sanitizeNormalizedUnionInput } from './sanitizeNormalizedUnionInput';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
 
@@ -108,7 +109,13 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       if (fallbackSchema) {
         return {
           schema: normalizeGeneratedJsonSchema(fallbackSchema),
-          parser: (rawInput: string) => inputType.parse(JSON.parse(rawInput)),
+          parser: (rawInput: string) =>
+            inputType.parse(
+              sanitizeNormalizedUnionInput(
+                JSON.parse(rawInput),
+                fallbackSchema,
+              ),
+            ),
         };
       }
 
@@ -135,18 +142,23 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     }
 
     if (hasJsonSchemaObjectShape(formattedFunction.parameters)) {
+      const originalSchema =
+        formattedFunction.parameters as JsonObjectSchema<any>;
       const fallbackSchema = buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
-        mergeJsonSchemaDescriptions(
-          formattedFunction.parameters as JsonObjectSchema<any>,
-          fallbackSchema,
-        );
+        mergeJsonSchemaDescriptions(originalSchema, fallbackSchema);
       }
       return {
-        schema: normalizeGeneratedJsonSchema(
-          formattedFunction.parameters as JsonObjectSchema<any>,
-        ),
-        parser: formattedFunction.$parseRaw,
+        schema: normalizeGeneratedJsonSchema(originalSchema),
+        parser: (rawInput: string) =>
+          formattedFunction.$parseRaw(
+            JSON.stringify(
+              sanitizeNormalizedUnionInput(
+                JSON.parse(rawInput),
+                originalSchema,
+              ),
+            ),
+          ),
       };
     }
 

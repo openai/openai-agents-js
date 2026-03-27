@@ -1,14 +1,12 @@
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../types';
-
-type JsonSchemaRecord = Record<string, any>;
-type JsonSchemaProperties = Record<string, JsonSchemaDefinitionEntry>;
-type LiteralValue = string | number | boolean | null;
-
-type ObjectUnionVariant = {
-  discriminatorValue: LiteralValue;
-  properties: JsonSchemaProperties;
-  schema: JsonSchemaRecord;
-};
+import {
+  analyzeDiscriminatedObjectUnion,
+  DiscriminatedObjectUnionVariant as ObjectUnionVariant,
+  isSchemaObject,
+  JsonSchemaProperties,
+  JsonSchemaRecord,
+  LiteralValue,
+} from './generatedJsonSchemaUnion';
 
 type MergedVariantProperties = {
   properties: JsonSchemaProperties;
@@ -74,18 +72,23 @@ function lowerDiscriminatedObjectUnion(
     return undefined;
   }
 
-  const discriminatorKey = findDiscriminatorKey(anyOf);
-  if (!discriminatorKey) {
+  const analysis = analyzeDiscriminatedObjectUnion(anyOf);
+  if (!analysis) {
     return undefined;
   }
 
-  const variants = getObjectUnionVariants(anyOf, discriminatorKey);
-  if (!variants) {
-    return undefined;
-  }
-
-  const mergedProperties = mergeVariantProperties(variants, discriminatorKey);
+  const mergedProperties = mergeVariantProperties(
+    analysis.variants,
+    analysis.discriminatorKey,
+  );
   if (!mergedProperties) {
+    return undefined;
+  }
+
+  const mergedAdditionalProperties = mergeAdditionalProperties(
+    analysis.variants,
+  );
+  if (!mergedAdditionalProperties.mergeable) {
     return undefined;
   }
 
@@ -94,86 +97,17 @@ function lowerDiscriminatedObjectUnion(
     type: 'object',
     properties: mergedProperties.properties,
     required: mergedProperties.required,
-    additionalProperties: false,
   };
+
+  if (mergedAdditionalProperties.hasAdditionalProperties) {
+    loweredSchema.additionalProperties =
+      mergedAdditionalProperties.additionalProperties;
+  } else {
+    delete loweredSchema.additionalProperties;
+  }
 
   delete loweredSchema.anyOf;
   return loweredSchema;
-}
-
-function findDiscriminatorKey(anyOf: unknown[]): string | undefined {
-  const firstVariant = anyOf[0];
-  if (!isObjectSchemaVariant(firstVariant)) {
-    return undefined;
-  }
-
-  const orderedKeys = Object.keys(firstVariant.properties);
-  const candidateKeys = orderedKeys.filter((key) =>
-    anyOf.every((variant) => {
-      if (!isObjectSchemaVariant(variant)) {
-        return false;
-      }
-
-      if (!Array.isArray(variant.required) || !variant.required.includes(key)) {
-        return false;
-      }
-
-      return getLiteralValue(variant.properties[key]) !== undefined;
-    }),
-  );
-
-  candidateKeys.sort((left, right) => {
-    if (left === 'type') {
-      return -1;
-    }
-    if (right === 'type') {
-      return 1;
-    }
-    return 0;
-  });
-
-  for (const key of candidateKeys) {
-    const serializedValues = new Set(
-      anyOf.map((variant) =>
-        serializeLiteralValue(
-          getLiteralValue((variant as JsonSchemaRecord).properties[key])!,
-        ),
-      ),
-    );
-    if (serializedValues.size === anyOf.length) {
-      return key;
-    }
-  }
-
-  return undefined;
-}
-
-function getObjectUnionVariants(
-  anyOf: unknown[],
-  discriminatorKey: string,
-): ObjectUnionVariant[] | undefined {
-  const variants: ObjectUnionVariant[] = [];
-
-  for (const entry of anyOf) {
-    if (!isObjectSchemaVariant(entry)) {
-      return undefined;
-    }
-
-    const discriminatorValue = getLiteralValue(
-      entry.properties[discriminatorKey],
-    );
-    if (discriminatorValue === undefined) {
-      return undefined;
-    }
-
-    variants.push({
-      discriminatorValue,
-      properties: entry.properties,
-      schema: entry,
-    });
-  }
-
-  return variants;
 }
 
 function mergeVariantProperties(
@@ -307,13 +241,9 @@ function mergeCompatiblePropertySchemas(
     return undefined;
   }
 
-  const normalizedReference = JSON.stringify(
-    stripDescriptionFields(schemas[0]),
-  );
+  const normalizedReference = getComparableSchemaFingerprint(schemas[0]);
   for (const schema of schemas.slice(1)) {
-    if (
-      JSON.stringify(stripDescriptionFields(schema)) !== normalizedReference
-    ) {
+    if (getComparableSchemaFingerprint(schema) !== normalizedReference) {
       return undefined;
     }
   }
@@ -331,13 +261,13 @@ function mergeCompatiblePropertySchemas(
 function makeSchemaNullable(
   schema: JsonSchemaRecord,
 ): JsonSchemaRecord | undefined {
-  if (
-    '$ref' in schema ||
-    Array.isArray(schema.anyOf) ||
-    Array.isArray(schema.oneOf) ||
-    Array.isArray(schema.allOf)
-  ) {
+  if ('$ref' in schema || Array.isArray(schema.allOf)) {
     return undefined;
+  }
+
+  const compositionalNullableSchema = makeCompositionalSchemaNullable(schema);
+  if (compositionalNullableSchema) {
+    return compositionalNullableSchema;
   }
 
   const nullableSchema = structuredClone(schema);
@@ -371,6 +301,32 @@ function makeSchemaNullable(
     nullableSchema.enum = [...nullableSchema.enum, null];
   }
 
+  return nullableSchema;
+}
+
+function makeCompositionalSchemaNullable(
+  schema: JsonSchemaRecord,
+): JsonSchemaRecord | undefined {
+  if (!Array.isArray(schema.anyOf) && !Array.isArray(schema.oneOf)) {
+    return undefined;
+  }
+
+  const keyword = Array.isArray(schema.anyOf) ? 'anyOf' : 'oneOf';
+  const entries = structuredClone(schema[keyword]) as unknown[];
+  if (entries.some(isNullTypeSchema)) {
+    const nullableSchema = structuredClone(schema);
+    if (keyword === 'oneOf') {
+      nullableSchema.anyOf = entries;
+      delete nullableSchema.oneOf;
+    }
+    return nullableSchema;
+  }
+
+  const nullableSchema = structuredClone(schema);
+  nullableSchema.anyOf = [...entries, { type: 'null' }];
+  if (keyword === 'oneOf') {
+    delete nullableSchema.oneOf;
+  }
   return nullableSchema;
 }
 
@@ -514,6 +470,54 @@ function mergeDescriptions(descriptions: unknown[]): string | undefined {
   return uniqueDescriptions.join(' ');
 }
 
+function mergeAdditionalProperties(variants: ObjectUnionVariant[]):
+  | {
+      mergeable: true;
+      hasAdditionalProperties: boolean;
+      additionalProperties?: unknown;
+    }
+  | { mergeable: false } {
+  const firstVariant = variants[0];
+  const hasAdditionalProperties = Object.prototype.hasOwnProperty.call(
+    firstVariant.schema,
+    'additionalProperties',
+  );
+  const referenceAdditionalProperties =
+    firstVariant.schema.additionalProperties;
+
+  for (const variant of variants.slice(1)) {
+    const hasCurrentAdditionalProperties = Object.prototype.hasOwnProperty.call(
+      variant.schema,
+      'additionalProperties',
+    );
+    if (hasCurrentAdditionalProperties !== hasAdditionalProperties) {
+      return { mergeable: false };
+    }
+    if (
+      hasAdditionalProperties &&
+      !schemasAreEquivalent(
+        variant.schema.additionalProperties,
+        referenceAdditionalProperties,
+      )
+    ) {
+      return { mergeable: false };
+    }
+  }
+
+  if (!hasAdditionalProperties) {
+    return {
+      mergeable: true,
+      hasAdditionalProperties: false,
+    };
+  }
+
+  return {
+    mergeable: true,
+    hasAdditionalProperties: true,
+    additionalProperties: structuredClone(referenceAdditionalProperties),
+  };
+}
+
 function isPropertyRequired(
   schema: JsonSchemaRecord,
   propertyName: string,
@@ -521,6 +525,48 @@ function isPropertyRequired(
   return (
     Array.isArray(schema.required) && schema.required.includes(propertyName)
   );
+}
+
+function getComparableSchemaFingerprint(input: unknown): string {
+  return JSON.stringify(
+    canonicalizeSchemaForComparison(stripDescriptionFields(input)),
+  );
+}
+
+function schemasAreEquivalent(left: unknown, right: unknown): boolean {
+  return (
+    getComparableSchemaFingerprint(left) ===
+    getComparableSchemaFingerprint(right)
+  );
+}
+
+function canonicalizeSchemaForComparison(input: unknown): unknown {
+  if (Array.isArray(input)) {
+    return input.map(canonicalizeSchemaForComparison);
+  }
+
+  if (!isSchemaObject(input)) {
+    return input;
+  }
+
+  const sortedEntries = Object.entries(input)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => {
+      if (
+        (key === 'required' || key === 'enum' || key === 'type') &&
+        Array.isArray(value)
+      ) {
+        return [
+          key,
+          [...value].sort((leftValue, rightValue) =>
+            JSON.stringify(leftValue).localeCompare(JSON.stringify(rightValue)),
+          ),
+        ];
+      }
+      return [key, canonicalizeSchemaForComparison(value)];
+    });
+
+  return Object.fromEntries(sortedEntries);
 }
 
 function stripDescriptionFields(input: unknown): unknown {
@@ -540,39 +586,6 @@ function stripDescriptionFields(input: unknown): unknown {
   return clone;
 }
 
-function getLiteralValue(schema: unknown): LiteralValue | undefined {
-  if (!isSchemaObject(schema)) {
-    return undefined;
-  }
-
-  if (
-    'const' in schema &&
-    (typeof schema.const === 'string' ||
-      typeof schema.const === 'number' ||
-      typeof schema.const === 'boolean' ||
-      schema.const === null)
-  ) {
-    return schema.const;
-  }
-
-  if (
-    Array.isArray(schema.enum) &&
-    schema.enum.length === 1 &&
-    (typeof schema.enum[0] === 'string' ||
-      typeof schema.enum[0] === 'number' ||
-      typeof schema.enum[0] === 'boolean' ||
-      schema.enum[0] === null)
-  ) {
-    return schema.enum[0];
-  }
-
-  return undefined;
-}
-
-function serializeLiteralValue(value: LiteralValue): string {
-  return `${typeof value}:${String(value)}`;
-}
-
 function formatLiteralValue(value: LiteralValue): string {
   return value === null ? 'null' : JSON.stringify(value);
 }
@@ -587,19 +600,6 @@ function replaceSchema(
   Object.assign(target, replacement);
 }
 
-function isObjectSchemaVariant(schema: unknown): schema is {
-  type: 'object';
-  properties: JsonSchemaProperties;
-  required?: string[];
-  additionalProperties?: boolean;
-} {
-  return (
-    isSchemaObject(schema) &&
-    schema.type === 'object' &&
-    isSchemaObject(schema.properties)
-  );
-}
-
-function isSchemaObject(value: unknown): value is JsonSchemaRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function isNullTypeSchema(value: unknown): boolean {
+  return isSchemaObject(value) && value.type === 'null';
 }
