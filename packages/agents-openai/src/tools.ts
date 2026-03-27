@@ -55,6 +55,12 @@ export type WebSearchTool = {
    * search. One of `low`, `medium`, or `high`. `medium` is the default.
    */
   searchContextSize: 'low' | 'medium' | 'high';
+
+  /**
+   * Whether the tool may fetch live internet content. When omitted, the API
+   * default is used.
+   */
+  externalWebAccess?: boolean;
 };
 
 /**
@@ -74,6 +80,9 @@ export function webSearchTool(
       : undefined,
     search_context_size: options.searchContextSize ?? 'medium',
   };
+  if (options.externalWebAccess !== undefined) {
+    providerData.external_web_access = options.externalWebAccess;
+  }
   return {
     type: 'hosted_tool',
     name: options.name ?? 'web_search',

@@ -1514,13 +1514,20 @@ function converTool<_TContext = unknown>(
     };
   } else if (tool.type === 'hosted_tool') {
     if (tool.providerData?.type === 'web_search') {
+      const webSearchTool: OpenAI.Responses.WebSearchTool & {
+        external_web_access?: boolean;
+      } = {
+        type: 'web_search',
+        user_location: tool.providerData.user_location,
+        filters: tool.providerData.filters,
+        search_context_size: tool.providerData.search_context_size,
+      };
+      if (tool.providerData.external_web_access !== undefined) {
+        webSearchTool.external_web_access =
+          tool.providerData.external_web_access;
+      }
       return {
-        tool: {
-          type: 'web_search',
-          user_location: tool.providerData.user_location,
-          filters: tool.providerData.filters,
-          search_context_size: tool.providerData.search_context_size,
-        },
+        tool: webSearchTool,
         include: undefined,
       };
     } else if (tool.providerData?.type === 'web_search_preview') {

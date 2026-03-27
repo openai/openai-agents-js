@@ -511,6 +511,24 @@ describe('converTool', () => {
     });
   });
 
+  it('preserves explicit false external web access on web search tools', () => {
+    const web = converTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'web_search',
+        search_context_size: 'medium',
+        external_web_access: false,
+      },
+    } as any);
+    expect(web.tool).toEqual({
+      type: 'web_search',
+      user_location: undefined,
+      filters: undefined,
+      search_context_size: 'medium',
+      external_web_access: false,
+    });
+  });
+
   it('throws on unsupported tool', () => {
     expect(() => converTool({ type: 'other' } as any)).toThrow();
   });
