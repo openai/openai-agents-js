@@ -4,6 +4,7 @@ import {
   getSchemaAndParserFromInputType,
   convertAgentOutputTypeToSerializable,
 } from '../../src/utils/tools';
+import { normalizeGeneratedJsonSchema } from '../../src/utils/normalizeGeneratedJsonSchema';
 import { z } from 'zod';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
@@ -182,6 +183,88 @@ describe('utils/tools', () => {
     expect(() =>
       res.parser('{"recurrence":{"type":"once","dayOfWeek":2}}'),
     ).toThrow();
+  });
+
+  it('preserves shared optional fields when normalizing discriminated unions', () => {
+    const normalized = normalizeGeneratedJsonSchema({
+      type: 'object',
+      properties: {
+        recurrence: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  const: 'once',
+                },
+                date: {
+                  type: 'string',
+                },
+                note: {
+                  type: 'string',
+                },
+              },
+              required: ['type', 'date'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  const: 'weekly',
+                },
+                dayOfWeek: {
+                  type: 'number',
+                },
+                note: {
+                  type: 'string',
+                },
+              },
+              required: ['type', 'dayOfWeek'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      required: ['recurrence'],
+      additionalProperties: false,
+    });
+
+    expect(normalized).toMatchObject({
+      type: 'object',
+      properties: {
+        recurrence: {
+          type: 'object',
+          properties: {
+            type: {
+              type: 'string',
+              enum: ['once', 'weekly'],
+            },
+            date: {
+              type: ['string', 'null'],
+              description: 'Set to null unless type is "once".',
+            },
+            dayOfWeek: {
+              type: ['number', 'null'],
+              description: 'Set to null unless type is "weekly".',
+            },
+            note: {
+              type: 'string',
+            },
+          },
+          required: ['type', 'date', 'dayOfWeek'],
+          additionalProperties: false,
+        },
+      },
+      required: ['recurrence'],
+      additionalProperties: false,
+    });
+    const recurrenceSchema = normalized.properties
+      .recurrence as unknown as JsonObjectSchema<any>;
+    expect(recurrenceSchema.required).not.toContain('note');
+    expect(recurrenceSchema.properties.note.type).toBe('string');
   });
 
   it('normalizes discriminated unions for Zod v3 tool schemas', async () => {

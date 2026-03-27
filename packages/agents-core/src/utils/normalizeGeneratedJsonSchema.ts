@@ -10,6 +10,16 @@ type ObjectUnionVariant = {
   schema: JsonSchemaRecord;
 };
 
+type MergedVariantProperties = {
+  properties: JsonSchemaProperties;
+  required: string[];
+};
+
+type MergedVariantProperty = {
+  required: boolean;
+  schema: JsonSchemaRecord;
+};
+
 export function normalizeGeneratedJsonSchema<
   T extends JsonObjectSchema<Record<string, JsonSchemaDefinitionEntry>>,
 >(schema: T): T {
@@ -82,8 +92,8 @@ function lowerDiscriminatedObjectUnion(
   const loweredSchema: JsonSchemaRecord = {
     ...schema,
     type: 'object',
-    properties: mergedProperties,
-    required: Object.keys(mergedProperties),
+    properties: mergedProperties.properties,
+    required: mergedProperties.required,
     additionalProperties: false,
   };
 
@@ -169,9 +179,10 @@ function getObjectUnionVariants(
 function mergeVariantProperties(
   variants: ObjectUnionVariant[],
   discriminatorKey: string,
-): JsonSchemaProperties | undefined {
+): MergedVariantProperties | undefined {
   const propertyNames = collectPropertyNames(variants, discriminatorKey);
   const mergedProperties: JsonSchemaProperties = {};
+  const requiredProperties: string[] = [];
 
   for (const propertyName of propertyNames) {
     if (propertyName === discriminatorKey) {
@@ -183,6 +194,7 @@ function mergeVariantProperties(
         return undefined;
       }
       mergedProperties[propertyName] = mergedDiscriminator;
+      requiredProperties.push(propertyName);
       continue;
     }
 
@@ -194,10 +206,16 @@ function mergeVariantProperties(
     if (!mergedProperty) {
       return undefined;
     }
-    mergedProperties[propertyName] = mergedProperty;
+    mergedProperties[propertyName] = mergedProperty.schema;
+    if (mergedProperty.required) {
+      requiredProperties.push(propertyName);
+    }
   }
 
-  return mergedProperties;
+  return {
+    properties: mergedProperties,
+    required: requiredProperties,
+  };
 }
 
 function mergeDiscriminatorProperty(
@@ -231,7 +249,7 @@ function mergeVariantProperty(
   variants: ObjectUnionVariant[],
   propertyName: string,
   discriminatorKey: string,
-): JsonSchemaRecord | undefined {
+): MergedVariantProperty | undefined {
   const variantsWithProperty = variants.filter(
     (variant) => propertyName in variant.properties,
   );
@@ -248,8 +266,22 @@ function mergeVariantProperty(
     return undefined;
   }
 
+  const requiredInEveryPresentVariant = variantsWithProperty.every((variant) =>
+    isPropertyRequired(variant.schema, propertyName),
+  );
+
   if (variantsWithProperty.length === variants.length) {
-    return mergedProperty;
+    return {
+      schema: mergedProperty,
+      required: requiredInEveryPresentVariant,
+    };
+  }
+
+  if (!requiredInEveryPresentVariant) {
+    return {
+      schema: mergedProperty,
+      required: false,
+    };
   }
 
   const nullableProperty = makeSchemaNullable(mergedProperty);
@@ -262,7 +294,10 @@ function mergeVariantProperty(
     discriminatorKey,
     variantsWithProperty.map((variant) => variant.discriminatorValue),
   );
-  return nullableProperty;
+  return {
+    schema: nullableProperty,
+    required: true,
+  };
 }
 
 function mergeCompatiblePropertySchemas(
@@ -477,6 +512,15 @@ function mergeDescriptions(descriptions: unknown[]): string | undefined {
   }
 
   return uniqueDescriptions.join(' ');
+}
+
+function isPropertyRequired(
+  schema: JsonSchemaRecord,
+  propertyName: string,
+): boolean {
+  return (
+    Array.isArray(schema.required) && schema.required.includes(propertyName)
+  );
 }
 
 function stripDescriptionFields(input: unknown): unknown {
