@@ -122,7 +122,7 @@ function buildCatchallRecurrenceSchema(zod: {
   });
 }
 
-function buildMismatchedAdditionalPropertiesRecurrenceSchema(zod: {
+function buildExtraLiteralStrictRecurrenceSchema(zod: {
   object: typeof z.object;
   discriminatedUnion: typeof z.discriminatedUnion;
   literal: typeof z.literal;
@@ -134,14 +134,14 @@ function buildMismatchedAdditionalPropertiesRecurrenceSchema(zod: {
     recurrence: zod.discriminatedUnion('type', [
       zod.strictObject({
         type: zod.literal('once'),
+        version: zod.literal(1),
         date: zod.string(),
       }),
-      zod
-        .object({
-          type: zod.literal('weekly'),
-          dayOfWeek: zod.number(),
-        })
-        .catchall(zod.string()),
+      zod.strictObject({
+        type: zod.literal('weekly'),
+        version: zod.literal(2),
+        dayOfWeek: zod.number(),
+      }),
     ]),
   });
 }
@@ -169,7 +169,7 @@ function buildOptionalSharedRecurrenceSchema(zod: {
   });
 }
 
-function buildNullableCatchallRecurrenceSchema(zod: {
+function buildEmailCatchallRecurrenceSchema(zod: {
   object: typeof z.object;
   discriminatedUnion: typeof z.discriminatedUnion;
   literal: typeof z.literal;
@@ -183,14 +183,14 @@ function buildNullableCatchallRecurrenceSchema(zod: {
           type: zod.literal('once'),
           date: zod.string(),
         })
-        .catchall(zod.string().nullable()),
+        .catchall(zod.string().email()),
       zod
         .object({
           type: zod.literal('weekly'),
           dayOfWeek: zod.number(),
           note: zod.string(),
         })
-        .catchall(zod.string().nullable()),
+        .catchall(zod.string().email()),
     ]),
   });
 }
@@ -207,12 +207,12 @@ function expectNormalizedRecurrenceSchema(schema: JsonObjectSchema<any>) {
             enum: ['once', 'weekly'],
           },
           date: {
-            type: 'string',
-            description: 'Ignored unless type is "once".',
+            type: ['string', 'null'],
+            description: 'Set to null unless type is "once".',
           },
           dayOfWeek: {
-            type: 'number',
-            description: 'Ignored unless type is "weekly".',
+            type: ['number', 'null'],
+            description: 'Set to null unless type is "weekly".',
           },
         },
         required: ['type', 'date', 'dayOfWeek'],
@@ -315,9 +315,7 @@ describe('utils/tools', () => {
     expectNormalizedRecurrenceSchema(res.schema);
     expect(plainUnionRes.schema).toEqual(res.schema);
     expect(
-      res.parser(
-        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2}}',
-      ),
+      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
     ).toEqual({
       recurrence: {
         type: 'weekly',
@@ -415,7 +413,7 @@ describe('utils/tools', () => {
     expect(recurrenceSchema.anyOf).toBeUndefined();
     expect(recurrenceSchema.properties.date).toMatchObject({
       anyOf: [{ type: 'string' }, { type: 'null' }],
-      description: 'Ignored unless type is "once".',
+      description: 'Set to null unless type is "once".',
     });
     expect(
       res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
@@ -445,53 +443,24 @@ describe('utils/tools', () => {
     });
   });
 
-  it('preserves merged additionalProperties for discriminated unions', () => {
-    const res = getSchemaAndParserFromInputType(
-      buildCatchallRecurrenceSchema(z),
-      'tool',
-    );
-    const recurrenceSchema = res.schema.properties
-      .recurrence as unknown as JsonObjectSchema<any>;
-
-    expect(recurrenceSchema.additionalProperties).toEqual({
-      type: 'string',
-    });
-    expect(
-      res.parser(
-        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2,"meta":"x"}}',
-      ),
-    ).toEqual({
-      recurrence: {
-        type: 'weekly',
-        date: '2026-04-01',
-        dayOfWeek: 2,
-        meta: 'x',
-      },
-    });
+  it('rejects discriminated unions with catchall additionalProperties as unsupported', () => {
+    expect(() =>
+      getSchemaAndParserFromInputType(buildCatchallRecurrenceSchema(z), 'tool'),
+    ).toThrow(UserError);
   });
 
-  it('preserves valid null extras for selected variants with nullable catchall', () => {
-    const res = getSchemaAndParserFromInputType(
-      buildNullableCatchallRecurrenceSchema(z),
-      'tool',
-    );
-
-    expect(
-      res.parser(
-        '{"recurrence":{"type":"once","date":"2026-04-01","note":null}}',
+  it('rejects discriminated unions with constrained catchall additionalProperties as unsupported', () => {
+    expect(() =>
+      getSchemaAndParserFromInputType(
+        buildEmailCatchallRecurrenceSchema(z),
+        'tool',
       ),
-    ).toEqual({
-      recurrence: {
-        type: 'once',
-        date: '2026-04-01',
-        note: null,
-      },
-    });
+    ).toThrow(UserError);
   });
 
   it('does not strip null filler keys for discriminated unions that were not lowered', () => {
     const res = getSchemaAndParserFromInputType(
-      buildMismatchedAdditionalPropertiesRecurrenceSchema(z),
+      buildExtraLiteralStrictRecurrenceSchema(z),
       'tool',
     );
     const recurrenceSchema = res.schema.properties
@@ -501,7 +470,9 @@ describe('utils/tools', () => {
 
     expect(recurrenceSchema.anyOf).toBeDefined();
     expect(() =>
-      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
+      res.parser(
+        '{"recurrence":{"type":"weekly","version":2,"date":null,"dayOfWeek":2}}',
+      ),
     ).toThrow();
   });
 
@@ -654,9 +625,7 @@ describe('utils/tools', () => {
     expectNormalizedRecurrenceSchema(res.schema);
     expect(plainUnionRes.schema).toEqual(res.schema);
     expect(
-      res.parser(
-        '{"recurrence":{"type":"weekly","date":"2026-04-01","dayOfWeek":2}}',
-      ),
+      res.parser('{"recurrence":{"type":"weekly","date":null,"dayOfWeek":2}}'),
     ).toEqual({
       recurrence: {
         type: 'weekly',

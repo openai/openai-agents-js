@@ -217,17 +217,18 @@ function mergeVariantProperty(
   }
 
   if (!presentInEveryVariant) {
-    // Strict Responses schemas cannot omit branch-only keys, so keep their
-    // original type and let parser-side sanitization drop inactive copies.
-    const conditionedProperty = structuredClone(mergedProperty);
-    conditionedProperty.description = appendBranchConditionDescription(
-      conditionedProperty.description,
+    const nullableProperty = makeSchemaNullable(mergedProperty);
+    if (!nullableProperty) {
+      return undefined;
+    }
+    nullableProperty.description = appendBranchConditionDescription(
+      nullableProperty.description,
       discriminatorKey,
       variantsWithProperty.map((variant) => variant.discriminatorValue),
     );
 
     return {
-      schema: conditionedProperty,
+      schema: nullableProperty,
       required: true,
     };
   }
@@ -455,7 +456,7 @@ function appendBranchConditionDescription(
       : `${discriminatorKey} is one of ${values
           .map((value) => formatLiteralValue(value))
           .join(', ')}`;
-  const suffix = `Ignored unless ${condition}.`;
+  const suffix = `Set to null unless ${condition}.`;
 
   if (typeof description !== 'string' || description.trim().length === 0) {
     return suffix;
@@ -536,10 +537,14 @@ function mergeAdditionalProperties(variants: ObjectUnionVariant[]):
     };
   }
 
+  if (referenceAdditionalProperties !== false) {
+    return { mergeable: false };
+  }
+
   return {
     mergeable: true,
     hasAdditionalProperties: true,
-    additionalProperties: structuredClone(referenceAdditionalProperties),
+    additionalProperties: false,
   };
 }
 

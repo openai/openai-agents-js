@@ -11,6 +11,10 @@ import {
 } from './zodJsonSchemaCompat';
 import { normalizeGeneratedJsonSchema } from './normalizeGeneratedJsonSchema';
 import { sanitizeNormalizedUnionInput } from './sanitizeNormalizedUnionInput';
+import {
+  analyzeDiscriminatedObjectUnion,
+  isSchemaObject,
+} from './generatedJsonSchemaUnion';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
 
@@ -111,6 +115,61 @@ function getFallbackJsonSchema(
   throw buildZodSchemaConversionError(originalError);
 }
 
+function ensureStrictCompatibleDiscriminatedUnions(schema: unknown): void {
+  visitSchemaNode(schema);
+}
+
+function visitSchemaNode(schema: unknown): void {
+  if (!isSchemaObject(schema)) {
+    return;
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    const analysis = analyzeDiscriminatedObjectUnion(schema.anyOf);
+    if (analysis) {
+      const hasUnsupportedAdditionalProperties = analysis.variants.some(
+        (variant) =>
+          Object.prototype.hasOwnProperty.call(
+            variant.schema,
+            'additionalProperties',
+          ) && variant.schema.additionalProperties !== false,
+      );
+      if (hasUnsupportedAdditionalProperties) {
+        throw new UserError(
+          'Strict function tool schemas do not support discriminated unions with catchall or passthrough object variants. Remove catchall/passthrough from the union branches or provide a JSON schema object instead.',
+        );
+      }
+    }
+  }
+
+  if (isSchemaObject(schema.properties)) {
+    for (const propertySchema of Object.values(schema.properties)) {
+      visitSchemaNode(propertySchema);
+    }
+  }
+
+  if (Array.isArray(schema.items)) {
+    for (const itemSchema of schema.items) {
+      visitSchemaNode(itemSchema);
+    }
+  } else {
+    visitSchemaNode(schema.items);
+  }
+
+  if (isSchemaObject(schema.additionalProperties)) {
+    visitSchemaNode(schema.additionalProperties);
+  }
+
+  for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
+    const entries = schema[keyword];
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        visitSchemaNode(entry);
+      }
+    }
+  }
+}
+
 /**
  * Convert a string to a function tool name by replacing spaces with underscores and
  * non-alphanumeric characters with underscores.
@@ -152,6 +211,7 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
   if (isZodObject(inputType)) {
     const useFallback = (originalError?: unknown) => {
       const fallbackSchema = getFallbackJsonSchema(inputType, originalError);
+      ensureStrictCompatibleDiscriminatedUnions(fallbackSchema);
       const normalizedFallbackSchema =
         normalizeGeneratedJsonSchema(fallbackSchema);
       return {
@@ -183,6 +243,7 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       if (fallbackSchema) {
         mergeJsonSchemaDescriptions(originalSchema, fallbackSchema);
       }
+      ensureStrictCompatibleDiscriminatedUnions(originalSchema);
       const normalizedOriginalSchema =
         normalizeGeneratedJsonSchema(originalSchema);
       return {
