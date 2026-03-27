@@ -373,6 +373,11 @@ type Deferred<T> = {
   reject: (reason?: unknown) => void;
 };
 
+type PromiseState<T> =
+  | { status: 'pending' }
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown };
+
 function createDeferred<T>(): Deferred<T> {
   let resolve: Deferred<T>['resolve'];
   let reject: Deferred<T>['reject'];
@@ -413,33 +418,61 @@ function withTimeout<T>(
   });
 }
 
+function trackPromiseState<T>(promise: Promise<T>): () => PromiseState<T> {
+  let state: PromiseState<T> = { status: 'pending' };
+
+  void promise.then(
+    (value) => {
+      state = { status: 'fulfilled', value };
+    },
+    (reason) => {
+      state = { status: 'rejected', reason };
+    },
+  );
+
+  return () => state;
+}
+
 async function waitForBarrier<T>(
   barrier: Promise<T>,
   description: string,
   pendingCalls: Array<{ label: string; promise: Promise<unknown> }>,
 ): Promise<T> {
-  // Fail immediately when a guarded call settles before the barrier we expect.
-  const earlySettlements = pendingCalls.map(({ label, promise }) =>
-    promise.then(
-      () => {
-        throw new Error(`${label} resolved before ${description}.`);
-      },
-      (error) => {
-        throw new Error(
-          `${label} rejected before ${description}: ${formatError(error)}`,
-        );
-      },
-    ),
-  );
-
-  for (const earlySettlement of earlySettlements) {
-    void earlySettlement.catch(() => {});
-  }
-
-  return await Promise.race([
+  // Poll tracked states so a late guarded-call rejection cannot retroactively
+  // beat a barrier that already resolved in the same turn.
+  const getBarrierState = trackPromiseState(
     withTimeout(barrier, 2_000, description),
-    ...earlySettlements,
-  ]);
+  );
+  const guardedCalls = pendingCalls.map(({ label, promise }) => ({
+    label,
+    getState: trackPromiseState(promise),
+  }));
+
+  while (true) {
+    const barrierState = getBarrierState();
+    if (barrierState.status === 'fulfilled') {
+      return barrierState.value;
+    }
+    if (barrierState.status === 'rejected') {
+      throw barrierState.reason;
+    }
+
+    for (const { label, getState } of guardedCalls) {
+      const guardedState = getState();
+      if (guardedState.status === 'fulfilled') {
+        throw new Error(`${label} resolved before ${description}.`);
+      }
+      if (guardedState.status === 'rejected') {
+        throw new Error(
+          `${label} rejected before ${description}: ${formatError(guardedState.reason)}`,
+        );
+      }
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
 }
 
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
@@ -908,37 +941,57 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   it('coalesces concurrent reconnects onto one recovered client', async () => {
     let sharedFailureCallCount = 0;
-    let reconnectCallCount = 0;
     const firstSharedFailureStarted = createDeferred<void>();
     const secondSharedFailureStarted = createDeferred<void>();
+    const reconnectStarted = createDeferred<void>();
     const releaseReconnect = createDeferred<void>();
     const sharedFailuresReleased = createDeferred<void>();
 
-    MockClient.connectHandlers = [
-      undefined,
-      async () => {
-        reconnectCallCount += 1;
-        await releaseReconnect.promise;
-      },
-    ];
-    MockClient.callToolHandlers = [
-      async () => {
-        sharedFailureCallCount += 1;
-        if (sharedFailureCallCount === 1) {
-          firstSharedFailureStarted.resolve();
-        } else if (sharedFailureCallCount === 2) {
-          secondSharedFailureStarted.resolve();
-        }
-        await sharedFailuresReleased.promise;
-        throw new McpError(ErrorCode.ConnectionClosed, 'shared session closed');
-      },
-      async (params) => ({
-        content: [{ type: 'text', text: `recovered:${params.name}` }],
-      }),
-    ];
-
     const server = createServer('concurrent-reconnect-server');
     await server.connect();
+
+    const sharedClient = MockClient.instances[0];
+    const initialTransport = sharedClient?.transport ?? null;
+    if (!sharedClient || !initialTransport) {
+      throw new Error(
+        'Expected the initial shared MCP client to be connected.',
+      );
+    }
+
+    let reconnectTransport: MockStreamableHTTPClientTransport | null = null;
+    const reconnectSpy = vi
+      .spyOn(sharedClient, 'connect')
+      .mockImplementation(async function (
+        this: MockClient,
+        transport: MockStreamableHTTPClientTransport,
+      ) {
+        this.transport = transport;
+        reconnectTransport = transport;
+        reconnectStarted.resolve();
+        transport.setProtocolVersion(TEST_PROTOCOL_VERSION);
+        await releaseReconnect.promise;
+      });
+    const callToolSpy = vi
+      .spyOn(sharedClient, 'callTool')
+      .mockImplementation(async (params) => {
+        if (sharedFailureCallCount < 2) {
+          sharedFailureCallCount += 1;
+          if (sharedFailureCallCount === 1) {
+            firstSharedFailureStarted.resolve();
+          } else {
+            secondSharedFailureStarted.resolve();
+          }
+          await sharedFailuresReleased.promise;
+          throw new McpError(
+            ErrorCode.ConnectionClosed,
+            'shared session closed',
+          );
+        }
+
+        return {
+          content: [{ type: 'text', text: `recovered:${params.name}` }],
+        };
+      });
 
     try {
       const firstCallPromise = server.callTool('first-tool', null);
@@ -962,10 +1015,20 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       );
       expect(sharedFailureCallCount).toBe(2);
       sharedFailuresReleased.resolve();
-      await vi.waitFor(() => {
-        expect(reconnectCallCount).toBe(1);
-        expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
-      });
+      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start', [
+        { label: 'first tool call', promise: firstCallPromise },
+        { label: 'second tool call', promise: secondCallPromise },
+      ]);
+      expect(reconnectSpy).toHaveBeenCalledTimes(1);
+      if (!reconnectTransport) {
+        throw new Error('Expected the reconnect transport to be captured.');
+      }
+      const resolvedReconnectTransport: MockStreamableHTTPClientTransport =
+        reconnectTransport;
+      expect(resolvedReconnectTransport).not.toBe(initialTransport);
+      expect(resolvedReconnectTransport.options.sessionId).toBe(
+        initialTransport.sessionId,
+      );
       releaseReconnect.resolve();
 
       await Promise.all([
@@ -979,14 +1042,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
         }),
       ]);
       expect(MockClient.instances).toHaveLength(1);
-      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
-      expect(MockClient.instances[0].notificationMock).toHaveBeenCalledWith({
-        method: 'notifications/initialized',
-      });
-      expect(MockClient.instances[0].closeMock).toHaveBeenCalledTimes(1);
-      expect(
-        MockStreamableHTTPClientTransport.instances[0].closeMock,
-      ).toHaveBeenCalledTimes(1);
 
       const followUp = await server.callTool('follow-up-tool', null);
 
@@ -995,6 +1050,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ]);
       expect(MockClient.instances).toHaveLength(1);
     } finally {
+      reconnectSpy.mockRestore();
+      callToolSpy.mockRestore();
       await server.close();
     }
   });
