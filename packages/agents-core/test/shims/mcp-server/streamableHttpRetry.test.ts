@@ -962,10 +962,14 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       );
       expect(sharedFailureCallCount).toBe(2);
       sharedFailuresReleased.resolve();
-      await vi.waitFor(() => {
-        expect(reconnectCallCount).toBe(1);
-        expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
-      });
+      // CI can schedule reconnect setup noticeably later once both failures unwind.
+      await vi.waitFor(
+        () => {
+          expect(reconnectCallCount).toBe(1);
+          expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+        },
+        { timeout: 5_000 },
+      );
       releaseReconnect.resolve();
 
       await Promise.all([
