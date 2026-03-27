@@ -18,8 +18,11 @@ export interface EventEmitter<
   ): EventEmitter<EventTypes>;
 }
 
-interface ReadableStreamAsyncIterator<T>
-  extends AsyncIterator<T, unknown, unknown> {
+interface ReadableStreamAsyncIterator<T> extends AsyncIterator<
+  T,
+  unknown,
+  unknown
+> {
   [Symbol.asyncIterator](): ReadableStreamAsyncIterator<T>;
 }
 export interface ReadableStream<R = any> {

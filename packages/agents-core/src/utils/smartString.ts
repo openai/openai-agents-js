@@ -77,8 +77,8 @@ export function isNodeBuffer(
   ).Buffer;
   return Boolean(
     bufferCtor &&
-      typeof bufferCtor.isBuffer === 'function' &&
-      bufferCtor.isBuffer(value),
+    typeof bufferCtor.isBuffer === 'function' &&
+    bufferCtor.isBuffer(value),
   );
 }
 

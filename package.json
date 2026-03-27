@@ -19,6 +19,8 @@
     "test:integration": "NODE_ENV=test vitest run --config=vitest.integration.config.ts",
     "test:watch": "NODE_ENV=test vitest --watch",
     "dev": "tsx scripts/dev.mts",
+    "format": "prettier --write \"packages/**/*.ts\" \"examples/**/*.ts\" \"integration-tests/**/*.ts\"",
+    "format:changed": "node scripts/prettier-changed.mjs",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "examples:basic": "pnpm -F basic start",

@@ -13,8 +13,7 @@ type EventMap = Record<string, any[]>;
 
 export class BrowserEventEmitter<
   EventTypes extends EventMap = Record<string, any[]>,
-> implements EventEmitter<EventTypes>
-{
+> implements EventEmitter<EventTypes> {
   #target = new EventTarget();
   #listenerWrappers = new Map<
     string,

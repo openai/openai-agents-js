@@ -14,7 +14,9 @@ describe('message helpers', () => {
   });
 
   it('user() keeps array content and provider data', () => {
-    const content: UserContent[] = [{ type: 'input_text', text: 'a', providerData: { foo: 'b' } }];
+    const content: UserContent[] = [
+      { type: 'input_text', text: 'a', providerData: { foo: 'b' } },
+    ];
     const msg = user(content, { extra: true });
     expect(msg.content).toBe(content);
     expect(msg.providerData).toEqual({ extra: true });
