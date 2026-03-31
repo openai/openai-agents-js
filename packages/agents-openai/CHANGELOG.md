@@ -1,5 +1,18 @@
 # @openai/agents-openai
 
+## 0.8.2
+
+### Patch Changes
+
+- 9014295: feat: add external web access control for web search tools
+- Updated dependencies [4b99d53]
+- Updated dependencies [fe67fb3]
+- Updated dependencies [8424092]
+- Updated dependencies [88d2539]
+- Updated dependencies [50edd08]
+- Updated dependencies [1531038]
+  - @openai/agents-core@0.8.2
+
 ## 0.8.1
 
 ### Patch Changes
