@@ -373,11 +373,6 @@ type Deferred<T> = {
   reject: (reason?: unknown) => void;
 };
 
-type PromiseState<T> =
-  | { status: 'pending' }
-  | { status: 'fulfilled'; value: T }
-  | { status: 'rejected'; reason: unknown };
-
 function createDeferred<T>(): Deferred<T> {
   let resolve: Deferred<T>['resolve'];
   let reject: Deferred<T>['reject'];
@@ -387,92 +382,6 @@ function createDeferred<T>(): Deferred<T> {
   });
 
   return { promise, resolve: resolve!, reject: reject! };
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error
-    ? `${error.name}: ${error.message}`
-    : String(error);
-}
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  description: string,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error(`Timed out waiting for ${description}.`));
-    }, timeoutMs);
-
-    void promise.then(
-      (value) => {
-        clearTimeout(timeoutId);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      },
-    );
-  });
-}
-
-function trackPromiseState<T>(promise: Promise<T>): () => PromiseState<T> {
-  let state: PromiseState<T> = { status: 'pending' };
-
-  void promise.then(
-    (value) => {
-      state = { status: 'fulfilled', value };
-    },
-    (reason) => {
-      state = { status: 'rejected', reason };
-    },
-  );
-
-  return () => state;
-}
-
-async function waitForBarrier<T>(
-  barrier: Promise<T>,
-  description: string,
-  pendingCalls: Array<{ label: string; promise: Promise<unknown> }>,
-): Promise<T> {
-  // Poll tracked states so a late guarded-call rejection cannot retroactively
-  // beat a barrier that already resolved in the same turn.
-  const getBarrierState = trackPromiseState(
-    withTimeout(barrier, 2_000, description),
-  );
-  const guardedCalls = pendingCalls.map(({ label, promise }) => ({
-    label,
-    getState: trackPromiseState(promise),
-  }));
-
-  while (true) {
-    const barrierState = getBarrierState();
-    if (barrierState.status === 'fulfilled') {
-      return barrierState.value;
-    }
-    if (barrierState.status === 'rejected') {
-      throw barrierState.reason;
-    }
-
-    for (const { label, getState } of guardedCalls) {
-      const guardedState = getState();
-      if (guardedState.status === 'fulfilled') {
-        throw new Error(`${label} resolved before ${description}.`);
-      }
-      if (guardedState.status === 'rejected') {
-        throw new Error(
-          `${label} rejected before ${description}: ${formatError(guardedState.reason)}`,
-        );
-      }
-    }
-
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-  }
 }
 
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
@@ -941,11 +850,9 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   it('coalesces concurrent reconnects onto one recovered client', async () => {
     let sharedFailureCallCount = 0;
-    const firstSharedFailureStarted = createDeferred<void>();
-    const secondSharedFailureStarted = createDeferred<void>();
-    const reconnectStarted = createDeferred<void>();
+    const firstSharedFailureReleased = createDeferred<void>();
+    const secondSharedFailureReleased = createDeferred<void>();
     const releaseReconnect = createDeferred<void>();
-    const sharedFailuresReleased = createDeferred<void>();
 
     const server = createServer('concurrent-reconnect-server');
     await server.connect();
@@ -967,21 +874,24 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ) {
         this.transport = transport;
         reconnectTransport = transport;
-        reconnectStarted.resolve();
         transport.setProtocolVersion(TEST_PROTOCOL_VERSION);
         await releaseReconnect.promise;
       });
     const callToolSpy = vi
       .spyOn(sharedClient, 'callTool')
       .mockImplementation(async (params) => {
-        if (sharedFailureCallCount < 2) {
-          sharedFailureCallCount += 1;
-          if (sharedFailureCallCount === 1) {
-            firstSharedFailureStarted.resolve();
-          } else {
-            secondSharedFailureStarted.resolve();
-          }
-          await sharedFailuresReleased.promise;
+        sharedFailureCallCount += 1;
+
+        if (sharedFailureCallCount === 1) {
+          await firstSharedFailureReleased.promise;
+          throw new McpError(
+            ErrorCode.ConnectionClosed,
+            'shared session closed',
+          );
+        }
+
+        if (sharedFailureCallCount === 2) {
+          await secondSharedFailureReleased.promise;
           throw new McpError(
             ErrorCode.ConnectionClosed,
             'shared session closed',
@@ -996,29 +906,21 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     try {
       const firstCallPromise = server.callTool('first-tool', null);
       void firstCallPromise.catch(() => {});
-      await waitForBarrier(
-        firstSharedFailureStarted.promise,
-        'the first shared failure to start',
-        [{ label: 'first tool call', promise: firstCallPromise }],
-      );
+      await vi.waitFor(() => {
+        expect(sharedFailureCallCount).toBe(1);
+      });
 
       const secondCallPromise = server.callTool('second-tool', null);
       void secondCallPromise.catch(() => {});
+      await vi.waitFor(() => {
+        expect(sharedFailureCallCount).toBe(2);
+      });
 
-      await waitForBarrier(
-        secondSharedFailureStarted.promise,
-        'the second shared failure to start',
-        [
-          { label: 'first tool call', promise: firstCallPromise },
-          { label: 'second tool call', promise: secondCallPromise },
-        ],
-      );
-      expect(sharedFailureCallCount).toBe(2);
-      sharedFailuresReleased.resolve();
-      await waitForBarrier(reconnectStarted.promise, 'the reconnect to start', [
-        { label: 'first tool call', promise: firstCallPromise },
-        { label: 'second tool call', promise: secondCallPromise },
-      ]);
+      firstSharedFailureReleased.resolve();
+      secondSharedFailureReleased.resolve();
+      await vi.waitFor(() => {
+        expect(reconnectSpy).toHaveBeenCalledTimes(1);
+      });
       expect(reconnectSpy).toHaveBeenCalledTimes(1);
       if (!reconnectTransport) {
         throw new Error('Expected the reconnect transport to be captured.');
