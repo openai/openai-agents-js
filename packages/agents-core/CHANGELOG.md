@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.8.3
+
+### Patch Changes
+
+- 850c91c: fix: #1148 reject duplicate agent names in RunState serialization
+
 ## 0.8.2
 
 ### Patch Changes
