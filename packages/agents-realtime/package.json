@@ -72,7 +72,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "vite": "^6.4.1",
+    "vite": "^6.4.2",
     "zod": "^4.0.0"
   },
   "files": [
