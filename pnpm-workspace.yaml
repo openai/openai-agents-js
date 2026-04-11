@@ -13,3 +13,6 @@ onlyBuiltDependencies:
   - 'prisma'
 
 publishBranch: main
+minimumReleaseAge: 10080
+blockExoticSubdeps: true
+strictDepBuilds: true
