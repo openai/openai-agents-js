@@ -43,13 +43,13 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
 - `code-interpreter.ts` – Demonstrates `codeInterpreterTool` for code execution.
 
   ```bash
-  pnpm examples:tools-code-interpreter
+  pnpm -F tools start:code-interpreter
   ```
 
 - `image-generation.ts` – Demonstrates `imageGenerationTool` for image generation.
 
   ```bash
-  pnpm examples:tools-image-generation
+  pnpm -F tools start:image-generation
   ```
 
 - `local-shell.ts` – Demonstrates `shellTool` with a local shell environment.
