@@ -1,5 +1,50 @@
 # @openai/agents-realtime
 
+## 0.8.3
+
+### Patch Changes
+
+- Updated dependencies [850c91c]
+  - @openai/agents-core@0.8.3
+
+## 0.8.2
+
+### Patch Changes
+
+- 4b99d53: chore: format agents-core and agents-realtime sources
+- Updated dependencies [4b99d53]
+- Updated dependencies [fe67fb3]
+- Updated dependencies [8424092]
+- Updated dependencies [88d2539]
+- Updated dependencies [50edd08]
+- Updated dependencies [1531038]
+  - @openai/agents-core@0.8.2
+
+## 0.8.1
+
+### Patch Changes
+
+- 36a368b: fix: defer realtime response.create until the previous turn finishes
+- Updated dependencies [1227865]
+- Updated dependencies [6f49230]
+- Updated dependencies [4470af6]
+  - @openai/agents-core@0.8.1
+
+## 0.8.0
+
+### Minor Changes
+
+- 3ccd31c: fix: upgrade the default realtime model to gpt-realtime-1.5
+
+### Patch Changes
+
+- 05dd513: fix(mcp): resolve MCP server wrapper issues
+- Updated dependencies [e2e434a]
+- Updated dependencies [4f1824f]
+- Updated dependencies [0ff9a25]
+- Updated dependencies [05dd513]
+  - @openai/agents-core@0.8.0
+
 ## 0.7.2
 
 ### Patch Changes

@@ -17,6 +17,22 @@ describe('Tool', () => {
     expect(t.name).toBe('web_search');
   });
 
+  it('webSearchTool preserves explicit false external web access', () => {
+    const t = webSearchTool({
+      externalWebAccess: false,
+    });
+    expect(t).toMatchObject({
+      type: 'hosted_tool',
+      name: 'web_search',
+      providerData: {
+        type: 'web_search',
+        name: 'web_search',
+        search_context_size: 'medium',
+        external_web_access: false,
+      },
+    });
+  });
+
   it('fileSearchTool', () => {
     const t = fileSearchTool(['test'], {});
     expect(t).toBeDefined();

@@ -296,6 +296,7 @@ export class ServerConversationTracker {
   prepareInput(
     originalInput: string | AgentInputItem[],
     generatedItems: RunItem[],
+    supplementalGeneratedItems: AgentInputItem[] = [],
   ): AgentInputItem[] {
     const inputItems: AgentInputItem[] = [];
     const generatedItemsForInput: RunItem[] = [];
@@ -348,6 +349,16 @@ export class ServerConversationTracker {
       this.registerPreparedItemSource(preparedItem, sourceItem);
     }
     inputItems.push(...preparedGeneratedItems);
+    const filteredSupplementalItems = filterSupplementalGeneratedItems(
+      supplementalGeneratedItems,
+      preparedGeneratedItems,
+      this.sentItems,
+      this.serverItems,
+    );
+    for (const item of filteredSupplementalItems) {
+      this.registerPreparedItemSource(item);
+    }
+    inputItems.push(...filteredSupplementalItems);
 
     return inputItems;
   }
@@ -444,4 +455,41 @@ export class ServerConversationTracker {
       this.remainingInitialInput = null;
     }
   }
+}
+
+function filterSupplementalGeneratedItems(
+  supplementalGeneratedItems: AgentInputItem[],
+  preparedGeneratedItems: AgentInputItem[],
+  sentItems: WeakSet<object>,
+  serverItems: WeakSet<object>,
+): AgentInputItem[] {
+  const preparedFunctionResultCallIds = new Set(
+    preparedGeneratedItems.flatMap((item) => {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        item.type !== 'function_call_result' ||
+        typeof item.callId !== 'string'
+      ) {
+        return [];
+      }
+      return [item.callId];
+    }),
+  );
+
+  return supplementalGeneratedItems.filter((item) => {
+    if (!item || typeof item !== 'object') {
+      return true;
+    }
+    if (sentItems.has(item) || serverItems.has(item)) {
+      return false;
+    }
+    if (
+      item.type !== 'function_call_result' ||
+      typeof item.callId !== 'string'
+    ) {
+      return true;
+    }
+    return !preparedFunctionResultCallIds.has(item.callId);
+  });
 }

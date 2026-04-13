@@ -927,7 +927,7 @@ export function hostedMcpTool<Context = UnknownContext>(
     ),
 ): HostedMCPTool<Context> {
   if ('serverUrl' in options) {
-    // the MCP servers comaptible with the specification
+    // the MCP servers compatible with the specification
     const providerData: ProviderData.HostedMCPTool<Context> =
       typeof options.requireApproval === 'undefined' ||
       options.requireApproval === 'never'
@@ -999,7 +999,7 @@ export function hostedMcpTool<Context = UnknownContext>(
       providerData,
     };
   } else {
-    // the MCP servers comaptible with the specification
+    // the MCP servers compatible with the specification
     const providerData: ProviderData.HostedMCPTool<Context> =
       typeof options.requireApproval === 'undefined' ||
       options.requireApproval === 'never'

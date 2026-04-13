@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getLastTextFromOutputMessage,
   getOutputText,
+  getTextFromOutputMessage,
 } from '../../src/utils/messages';
 import type { ResponseOutputItem } from '../../src/types';
 import { Usage } from '../../src/usage';
@@ -37,7 +38,23 @@ describe('utils/messages', () => {
     expect(getLastTextFromOutputMessage(item)).toBe('b');
   });
 
-  it('getOutputText returns last assistant text', () => {
+  it('concatenates all assistant text segments', () => {
+    const item: ResponseOutputItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'output_text', text: 'part1' },
+        { type: 'refusal', refusal: 'ignored' },
+        { type: 'output_text', text: 'part2' },
+      ],
+    } as any;
+
+    expect(getTextFromOutputMessage(item)).toBe('part1part2');
+    expect(getLastTextFromOutputMessage(item)).toBe('part2');
+  });
+
+  it('getOutputText returns all assistant text', () => {
     const response: ModelResponse = {
       usage: new Usage(),
       output: [
@@ -45,11 +62,14 @@ describe('utils/messages', () => {
           type: 'message',
           role: 'assistant',
           status: 'completed',
-          content: [{ type: 'output_text', text: 'final' }],
+          content: [
+            { type: 'output_text', text: 'first ' },
+            { type: 'output_text', text: 'final' },
+          ],
         } as any,
       ],
     };
-    expect(getOutputText(response)).toBe('final');
+    expect(getOutputText(response)).toBe('first final');
   });
 
   it('getOutputText returns empty string when output is empty', () => {

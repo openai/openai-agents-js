@@ -5,7 +5,7 @@ import { RunItem, RunMessageOutputItem, RunToolApprovalItem } from '../items';
 import { ModelResponse } from '../model';
 import type { Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
-import { getLastTextFromOutputMessage } from '../utils/messages';
+import { getTextFromOutputMessage } from '../utils/messages';
 import { getSchemaAndParserFromInputType } from '../utils/tools';
 import { safeExecute } from '../utils/safeExecute';
 import { addErrorToCurrentSpan } from '../tracing/context';
@@ -783,9 +783,7 @@ export async function resolveTurnAfterModelResponse<TContext>(
   // we will use the last content output as the final output
   const potentialFinalOutput =
     messageItems.length > 0
-      ? getLastTextFromOutputMessage(
-          messageItems[messageItems.length - 1].rawItem,
-        )
+      ? getTextFromOutputMessage(messageItems[messageItems.length - 1].rawItem)
       : undefined;
 
   // if there is no output we just run again

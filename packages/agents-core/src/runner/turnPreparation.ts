@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from '../agent';
 import { MaxTurnsExceededError } from '../errors';
-import { RunItem } from '../items';
+import { RunHandoffOutputItem, RunItem } from '../items';
 import logger from '../logger';
 import { RunState } from '../runState';
 import type { AgentInputItem } from '../types';
@@ -16,7 +16,8 @@ import {
 } from './guardrails';
 import { prepareModelInputItems } from './items';
 import { prepareAgentArtifacts } from './modelPreparation';
-import type { AgentArtifacts } from './types';
+import { getToolCallOutputItem } from './toolExecution';
+import type { AgentArtifacts, ProcessedResponse } from './types';
 
 type GuardrailHandlers = {
   onParallelStart?: () => void;
@@ -99,7 +100,11 @@ export async function prepareTurn<
   );
 
   const turnInput = serverConversationTracker
-    ? serverConversationTracker.prepareInput(input, generatedItems)
+    ? serverConversationTracker.prepareInput(
+        input,
+        generatedItems,
+        getManagedConversationSupplementalItems(state),
+      )
     : prepareModelInputItems(
         input,
         generatedItems,
@@ -121,6 +126,54 @@ export async function prepareTurn<
     turnInput,
     parallelGuardrailPromise,
   };
+}
+
+const IGNORED_HANDOFF_OUTPUT_MESSAGE =
+  'Multiple handoffs detected, ignoring this one.';
+
+const managedConversationSupplementalItemsCache = new WeakMap<
+  ProcessedResponse<any>,
+  AgentInputItem[]
+>();
+
+export function getManagedConversationSupplementalItems<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(state: RunState<TContext, TAgent>): AgentInputItem[] {
+  const processedResponse = state._lastProcessedResponse;
+  const handoffs = processedResponse?.handoffs;
+  if (!handoffs || handoffs.length <= 1) {
+    return [];
+  }
+
+  const acceptedCallId = handoffs[0]?.toolCall.callId;
+  // Respect handoff input filters that removed the accepted handoff output from the next turn.
+  const acceptedHandoffOutputStillPresent =
+    typeof acceptedCallId === 'string' &&
+    state._generatedItems.some(
+      (item) =>
+        item instanceof RunHandoffOutputItem &&
+        item.rawItem.callId === acceptedCallId,
+    );
+  if (!acceptedHandoffOutputStillPresent) {
+    return [];
+  }
+
+  const cached =
+    managedConversationSupplementalItemsCache.get(processedResponse);
+  if (cached) {
+    return cached;
+  }
+
+  // Server-managed transcripts still contain ignored handoff calls from the last response.
+  // Add synthetic results only to the continuation request so the provider transcript stays balanced.
+  const items = handoffs
+    .slice(1)
+    .map(({ toolCall }) =>
+      getToolCallOutputItem(toolCall, IGNORED_HANDOFF_OUTPUT_MESSAGE),
+    );
+  managedConversationSupplementalItemsCache.set(processedResponse, items);
+  return items;
 }
 
 async function runInputGuardrailsForTurn<

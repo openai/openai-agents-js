@@ -184,6 +184,24 @@ for (const item of [...set]) {
 NODE
   }
 
+  load_auto_input() {
+    local name="$1"
+    node --input-type=module - "$ROOT" "$name" <<'NODE'
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const [rootDir, key] = process.argv.slice(2);
+const { DEFAULT_INTERACTIVE_INPUTS } = await import(
+  pathToFileURL(path.join(rootDir, 'scripts', 'run-example-starts.mjs'))
+);
+const input =
+  DEFAULT_INTERACTIVE_INPUTS.get(key) ??
+  process.env.EXAMPLES_INTERACTIVE_DEFAULT_INPUT ??
+  '';
+process.stdout.write(input);
+NODE
+  }
+
   local -a auto_skip_list=()
   while IFS= read -r auto_skip_entry; do
     [[ -z "$auto_skip_entry" ]] && continue
@@ -226,7 +244,8 @@ NODE
 
   local -a remaining=()
 
-  while IFS= read -r entry; do
+  exec 3<"$file"
+  while IFS= read -r entry <&3; do
     [[ -z "$entry" ]] && continue
     IFS=':' read -r pkg rest <<<"$entry"
     script="$rest"
@@ -253,25 +272,45 @@ NODE
     fi
     log_name="${pkg}__${script//:/-}.rerun.log"
     echo ">>> Rerunning $pkg:${script}"
-    (
+    local auto_input=""
+    if [[ "$interactive_mode" == "auto" ]]; then
+      auto_input="$(load_auto_input "$full")"
+      if [[ -n "$auto_input" ]]; then
+        echo "[auto-input enabled]"
+      fi
+    fi
+    if (
       cd "$ROOT"
       export EXAMPLES_INTERACTIVE_MODE="${EXAMPLES_INTERACTIVE_MODE:-auto}"
       export AUTO_APPROVE_MCP="${AUTO_APPROVE_MCP:-1}"
       export APPLY_PATCH_AUTO_APPROVE="${APPLY_PATCH_AUTO_APPROVE:-1}"
       export AUTO_APPROVE_HITL="${AUTO_APPROVE_HITL:-1}"
-      { pnpm -C "examples/$pkg" run "${script}"; rc=$?; } 2>&1 | tee "$LOG_DIR/$log_name"
+      export SHELL_AUTO_APPROVE="${SHELL_AUTO_APPROVE:-1}"
+      {
+        if [[ -n "$auto_input" ]]; then
+          { printf '%s' "$auto_input"; printf '\n'; } | pnpm -C "examples/$pkg" run "${script}"
+          rc=${PIPESTATUS[1]}
+        else
+          pnpm -C "examples/$pkg" run "${script}"
+          rc=$?
+        fi
+      } 2>&1 | tee "$LOG_DIR/$log_name"
       rc=${PIPESTATUS[0]}
       if [[ $rc -ne 0 ]]; then
         echo "!!! Rerun failed: ${pkg}:${script} (exit $rc)"
         exit $rc
       fi
       exit 0
-    )
-    rc=$?
+    ); then
+      rc=0
+    else
+      rc=$?
+    fi
     if [[ $rc -ne 0 ]]; then
       remaining+=("$entry")
     fi
-  done <"$file"
+  done
+  exec 3<&-
 
   # De-duplicate and persist remaining list
   if [[ ${#remaining[@]} -gt 0 ]]; then

@@ -1,7 +1,6 @@
 # AI SDK UI Stream Example
 
-This example shows how to convert an Agents SDK streaming run into responses that
-are compatible with the AI SDK UI data stream and text stream protocols.
+This example shows how to convert an Agents SDK streaming run into responses that are compatible with the AI SDK UI data stream and text stream protocols.
 
 ## Run the Next.js chat UI
 
@@ -9,8 +8,7 @@ are compatible with the AI SDK UI data stream and text stream protocols.
 pnpm -F ai-sdk-ui dev
 ```
 
-Open http://localhost:3000 for the UI message stream (tool calls and reasoning
-parts are rendered). Open http://localhost:3000/text for the text-only stream.
+Open http://localhost:3000 for the UI message stream (tool calls and reasoning parts are rendered). Open http://localhost:3000/text for the text-only stream.
 
 ## Run the Node.js text stream samples
 
@@ -19,14 +17,13 @@ pnpm -F ai-sdk-ui start:script-ai-sdk
 pnpm -F ai-sdk-ui start:script-simple
 ```
 
-`ai-sdk.ts` uses `streamText` from the AI SDK, while `simple.ts` streams an
-Agents SDK run through `createAiSdkTextStreamResponse`.
+`ai-sdk.ts` uses `streamText` from the AI SDK, while `simple.ts` streams an Agents SDK run through `createAiSdkTextStreamResponse`.
 
 ## Next.js route examples
 
 ```ts
 import { Agent, run } from '@openai/agents';
-import { createAiSdkUiMessageStreamResponse } from '@openai/agents-extensions';
+import { createAiSdkUiMessageStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 
 export async function POST() {
   const agent = new Agent({
@@ -41,7 +38,7 @@ export async function POST() {
 
 ```ts
 import { Agent, run } from '@openai/agents';
-import { createAiSdkTextStreamResponse } from '@openai/agents-extensions';
+import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 
 export async function POST() {
   const agent = new Agent({

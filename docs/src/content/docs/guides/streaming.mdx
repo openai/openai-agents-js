@@ -185,6 +185,16 @@ Streaming is compatible with handoffs that pause execution (for example when a t
 
 A fuller example that interacts with the user is [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts).
 
+## Stop a stream and continue the same turn
+
+To stop a streaming run early, abort the `signal` you passed to `run()` or cancel a reader created from `stream.toStream()`. Either way, still await `stream.completed` before treating the run as settled. The SDK may still be persisting the current turn input or finishing other cleanup after your code stops consuming events.
+
+When a stream is cancelled, `stream.cancelled` becomes `true`, and `stream.finalOutput` often remains `undefined` because the current turn never finished. If you want to continue that unfinished turn later, rerun the same agent with `stream.state` instead of appending a fresh user message. That keeps turn counting correct and reuses any `conversationId` or `previousResponseId` already stored in the `RunState`.
+
+If you are also using session persistence, pass the same `session` again on the resumed `run()` call so the conversation keeps writing to the same backing store.
+
+Approval pauses follow the same rule: resolve `stream.interruptions`, then resume from `stream.state` rather than starting a new turn.
+
 ## Tips
 
 - Remember to wait for `stream.completed` before exiting to ensure all output has been flushed.

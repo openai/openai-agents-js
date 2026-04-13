@@ -138,6 +138,8 @@ On normal top-level `run()` results this is usually `undefined`. The metadata is
 
 If you need the settled final state of a streamed run, wait for `completed` before reading `finalOutput`, `history`, `interruptions`, or other summary properties. For event-by-event handling, see the [streaming guide](/openai-agents-js/guides/streaming).
 
+If a streamed run is cancelled, `completed` still resolves after cleanup and `cancelled` becomes `true`, but turn-end fields such as `finalOutput` can remain unset because the current turn never finished. Resume that unfinished turn with `result.state` (and the same `session`, if you use one) instead of appending a fresh user message.
+
 ## Diagnostics and advanced fields
 
 ### Run context

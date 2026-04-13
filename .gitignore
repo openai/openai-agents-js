@@ -154,3 +154,5 @@ bundled/
 
 .wrangler/
 .dev.vars
+
+.pnpm-store/

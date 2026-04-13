@@ -269,6 +269,102 @@ describe('Runner.run (streaming)', () => {
     expect(update?.agent).toBe(agentB);
   });
 
+  it('streams only the accepted handoff when multiple handoffs are emitted', async () => {
+    class SimpleStreamingModel implements Model {
+      constructor(private resp: ModelResponse) {}
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return this.resp;
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: this.resp.output,
+          },
+        } as any;
+      }
+    }
+
+    const agentB = new Agent({
+      name: 'B',
+      model: new SimpleStreamingModel({
+        output: [fakeModelMessage('done B')],
+        usage: new Usage(),
+      }),
+    });
+    const agentC = new Agent({
+      name: 'C',
+      model: new SimpleStreamingModel({
+        output: [fakeModelMessage('done C')],
+        usage: new Usage(),
+      }),
+    });
+    const handoffToB = handoff(agentB);
+    const handoffToC = handoff(agentC);
+    const acceptedCall: FunctionCallItem = {
+      id: 'h1',
+      type: 'function_call',
+      name: handoffToB.toolName,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const ignoredCall: FunctionCallItem = {
+      id: 'h2',
+      type: 'function_call',
+      name: handoffToC.toolName,
+      callId: 'c2',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agentA = new Agent({
+      name: 'A',
+      model: new SimpleStreamingModel({
+        output: [acceptedCall, ignoredCall],
+        usage: new Usage(),
+      }),
+      handoffs: [handoffToB, handoffToC],
+    });
+
+    const result = await run(agentA, 'hi', { stream: true });
+    const events: RunStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      events.push(event);
+    }
+    await result.completed;
+
+    const handoffRequested = events.filter(
+      (event): event is RunItemStreamEvent =>
+        event.type === 'run_item_stream_event' &&
+        event.name === 'handoff_requested',
+    );
+
+    expect(handoffRequested).toHaveLength(1);
+    expect((handoffRequested[0].item as any).rawItem.callId).toBe(
+      acceptedCall.callId,
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'run_item_stream_event' &&
+          event.name === 'tool_output' &&
+          (event.item as any).rawItem.callId === ignoredCall.callId,
+      ),
+    ).toBe(false);
+    expect(
+      result.history.some(
+        (item) => (item as { callId?: string }).callId === ignoredCall.callId,
+      ),
+    ).toBe(false);
+  });
+
   it('emits agent_end lifecycle event for streaming agents', async () => {
     class SimpleStreamingModel implements Model {
       constructor(private resp: ModelResponse) {}
@@ -1550,6 +1646,295 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('acknowledges ignored handoffs when continuing a managed conversationId stream', async () => {
+      const agentBModel = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentCModel = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('done C')], 'resp-c'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedStreamB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedStreamC',
+        model: agentCModel,
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const acceptedCall: FunctionCallItem = {
+        id: 'h1',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: FunctionCallItem = {
+        id: 'h2',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedStreamA',
+        model: new TrackingStreamingModel([
+          buildTurn([acceptedCall, ignoredCall], 'resp-a'),
+        ]),
+        handoffs: [handoffToB, handoffToC],
+      });
+      const runner = new Runner();
+
+      const result = await runner.run(agentA, 'hi', {
+        stream: true,
+        conversationId: 'conv-managed-handoff',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentCModel.requests).toHaveLength(0);
+      expect(agentBModel.requests[0].conversationId).toBe(
+        'conv-managed-handoff',
+      );
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+      expect(
+        result.history.some(
+          (item) => (item as { callId?: string }).callId === ignoredCall.callId,
+        ),
+      ).toBe(false);
+    });
+
+    it('acknowledges ignored handoffs when streaming after a reused callId from an earlier turn', async () => {
+      const agentBModel = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentCModel = new TrackingStreamingModel([
+        buildTurn([fakeModelMessage('done C')], 'resp-c'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedReuseStreamB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedReuseStreamC',
+        model: agentCModel,
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const reusedCallId = 'reused-call-id';
+      const acceptedCall: FunctionCallItem = {
+        id: 'handoff-accepted',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'handoff-accepted-id',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: FunctionCallItem = {
+        id: 'handoff-ignored',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: reusedCallId,
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedReuseStreamA',
+        model: new TrackingStreamingModel([
+          buildTurn([buildToolCall(reusedCallId, 'warmup')], 'resp-tool'),
+          buildTurn([acceptedCall, ignoredCall], 'resp-handoff'),
+        ]),
+        tools: [serverTool],
+        handoffs: [handoffToB, handoffToC],
+      });
+      const runner = new Runner();
+
+      const result = await runner.run(agentA, 'hi', {
+        stream: true,
+        conversationId: 'conv-managed-reused-call-id',
+      });
+
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentCModel.requests).toHaveLength(0);
+      expect(agentBModel.requests[0].conversationId).toBe(
+        'conv-managed-reused-call-id',
+      );
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+    });
+
+    it('replays managed handoff acknowledgements when resuming before streamed response completion', async () => {
+      class AbortAfterAckStreamingModel implements Model {
+        public requests: ModelRequest[] = [];
+        private attempt = 0;
+
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('not used');
+        }
+
+        async *getStreamedResponse(
+          request: ModelRequest,
+        ): AsyncIterable<StreamEvent> {
+          this.requests.push({
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          });
+          this.attempt += 1;
+
+          if (this.attempt === 1) {
+            yield { type: 'output_text_delta', delta: 'ack' } as any;
+            const abortError = new Error('aborted');
+            (abortError as Error & { name: string }).name = 'AbortError';
+            const signal = request.signal as AbortSignal | undefined;
+            await new Promise((_resolve, reject) => {
+              if (signal?.aborted) {
+                reject(abortError);
+                return;
+              }
+              const onAbort = () => {
+                signal?.removeEventListener('abort', onAbort);
+                reject(abortError);
+              };
+              signal?.addEventListener('abort', onAbort, { once: true });
+            });
+            yield* [] as any;
+            return;
+          }
+
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-b-final',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('done B')],
+            },
+          } as any;
+        }
+      }
+
+      const agentBModel = new AbortAfterAckStreamingModel();
+      const agentB = new Agent({
+        name: 'ManagedResumeB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedResumeC',
+        model: new TrackingStreamingModel([
+          buildTurn([fakeModelMessage('done C')], 'resp-c'),
+        ]),
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const acceptedCall: FunctionCallItem = {
+        id: 'handoff-accepted',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: FunctionCallItem = {
+        id: 'handoff-ignored',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedResumeA',
+        model: new TrackingStreamingModel([
+          buildTurn([acceptedCall, ignoredCall], 'resp-a'),
+        ]),
+        handoffs: [handoffToB, handoffToC],
+      });
+      const runner = new Runner();
+
+      const firstRun = await runner.run(agentA, 'hi', {
+        stream: true,
+        conversationId: 'conv-managed-handoff-resume',
+      });
+      const reader = (firstRun.toStream() as any).getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (
+          value?.type === 'raw_model_stream_event' &&
+          value.data?.type === 'output_text_delta'
+        ) {
+          await reader.cancel('stop');
+          break;
+        }
+      }
+      await firstRun.completed;
+
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+
+      const resumed = await runner.run(agentA, firstRun.state, {
+        stream: true,
+        conversationId: 'conv-managed-handoff-resume',
+      });
+      await drain(resumed);
+
+      expect(resumed.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(2);
+      expect(agentBModel.requests[1]?.input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+    });
+
     it('does not replay orphan hosted shell calls in default streamed multi-turn runs', async () => {
       const hostedShell = shellTool({
         environment: { type: 'container_auto' },
@@ -2076,6 +2461,7 @@ describe('Runner.run (streaming)', () => {
     });
 
     const result = await run(agent, 'filter me', { stream: true, session });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     await expect(result.completed).rejects.toBeInstanceOf(
       OutputGuardrailTripwireTriggered,
@@ -2084,6 +2470,11 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.state._currentStep?.type).not.toBe('next_step_final_output');
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
   });
 
   it('does not persist streaming result when the consumer cancels early', async () => {

@@ -109,11 +109,10 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
-          version: 10.32.1
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
@@ -157,11 +156,10 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
-          version: 10.32.1
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
         with:
           node-version: 22
           cache: 'pnpm'

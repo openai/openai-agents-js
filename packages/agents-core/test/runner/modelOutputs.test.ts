@@ -5,6 +5,7 @@ import { Agent } from '../../src/agent';
 import { ModelBehaviorError, UserError } from '../../src/errors';
 import { handoff } from '../../src/handoff';
 import {
+  RunHandoffCallItem as HandoffCallItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
   RunToolCallItem as ToolCallItem,
@@ -2048,6 +2049,46 @@ describe('processModelResponse edge cases', () => {
     expect(result.toolsUsed).toEqual(['test', computer.name, h.toolName]);
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
     expect(result.newItems[3]).toBeInstanceOf(MessageOutputItem);
+  });
+
+  it('only serializes the first handoff when multiple handoffs are requested', () => {
+    const targetB = new Agent({ name: 'B' });
+    const targetC = new Agent({ name: 'C' });
+    const handoffToB = handoff(targetB);
+    const handoffToC = handoff(targetC);
+    const handoffCallB: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'h1',
+      name: handoffToB.toolName,
+      callId: 'hb1',
+    };
+    const handoffCallC: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      id: 'h2',
+      name: handoffToC.toolName,
+      callId: 'hc1',
+    };
+    const response: ModelResponse = {
+      output: [handoffCallB, handoffCallC],
+      usage: new Usage(),
+    } as any;
+
+    const result = processModelResponse(
+      response,
+      TEST_AGENT,
+      [],
+      [handoffToB, handoffToC],
+    );
+
+    expect(result.handoffs).toEqual([
+      { toolCall: handoffCallB, handoff: handoffToB },
+      { toolCall: handoffCallC, handoff: handoffToC },
+    ]);
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(HandoffCallItem);
+    expect((result.newItems[0] as HandoffCallItem).rawItem.callId).toBe(
+      handoffCallB.callId,
+    );
   });
 });
 

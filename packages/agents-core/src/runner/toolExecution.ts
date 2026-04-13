@@ -11,6 +11,7 @@ import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import { ToolCallError, ToolTimeoutError, UserError } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
+  RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
   RunMessageOutputItem,
@@ -1211,17 +1212,17 @@ export async function executeHandoffCalls<
   }
 
   if (runHandoffs.length > 1) {
-    // multiple handoffs. Ignoring all but the first one by adding reject responses for those
-    const outputMessage = 'Multiple handoffs detected, ignoring this one.';
-    for (let i = 1; i < runHandoffs.length; i++) {
-      newStepItems.push(
-        new RunToolCallOutputItem(
-          getToolCallOutputItem(runHandoffs[i].toolCall, outputMessage),
-          agent,
-          outputMessage,
+    const ignoredCallIds = new Set(
+      runHandoffs.slice(1).map((handoff) => handoff.toolCall.callId),
+    );
+    // Drop ignored handoff requests from the step so they never persist to history.
+    newStepItems = newStepItems.filter(
+      (item) =>
+        !(
+          item instanceof RunHandoffCallItem &&
+          ignoredCallIds.has(item.rawItem.callId)
         ),
-      );
-    }
+    );
   }
 
   const actualHandoff = runHandoffs[0];
