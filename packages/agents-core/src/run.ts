@@ -580,15 +580,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         session,
         sessionInputCallback,
         {
-          // When the server tracks conversation state we only send the new turn inputs;
-          // previous messages are recovered via conversationId/previousResponseId.
-          includeHistoryInPreparedInput: !serverManagesConversation,
-          preserveDroppedNewItems: serverManagesConversation,
+          // When transcript history is server-managed we only send the new turn delta.
+          includeHistoryInPreparedInput: !historyIsServerManaged,
+          preserveDroppedNewItems: historyIsServerManaged,
         },
       );
-      if (serverManagesConversation && session) {
-        // When the server manages memory we only persist the new turn inputs locally so the
-        // conversation service stays the single source of truth for prior exchanges.
+      if (historyIsServerManaged && session) {
+        // Keep the model payload scoped to the new turn delta even when Session persists the
+        // transcript for a remote conversation service.
         const sessionItems = prepared.sessionItems;
         if (sessionItems && sessionItems.length > 0) {
           preparedInput = sessionItems;

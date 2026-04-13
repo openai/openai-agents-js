@@ -5780,6 +5780,67 @@ describe('Runner.run', () => {
       ).toBe(false);
     });
 
+    it('only sends the new user turn on later fresh runs with a server-managed session override', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-server-managed-fresh-turn', 'foo')],
+          'resp-server-managed-fresh-turn-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('done')],
+          'resp-server-managed-fresh-turn-2',
+        ),
+        buildResponse(
+          [fakeModelMessage('follow-up done')],
+          'resp-server-managed-fresh-turn-3',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalServerManagedFreshTurnAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const session = new ServerManagedPlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const resumedResult = await runner.run(agent, firstResult.state, {
+        session,
+      });
+      expect(resumedResult.finalOutput).toBe('done');
+
+      const freshTurnResult = await runner.run(agent, 'fresh_message', {
+        session,
+      });
+
+      expect(freshTurnResult.finalOutput).toBe('follow-up done');
+      expect(model.requests).toHaveLength(3);
+
+      const thirdItems = model.requests[2].input as AgentInputItem[];
+      expect(thirdItems).toHaveLength(1);
+      expect(thirdItems[0]).toMatchObject({
+        type: 'message',
+        role: 'user',
+        content: 'fresh_message',
+      });
+    });
+
     it('fails before resuming when saveOverrideArguments is required for a non-rewrite-aware session', async () => {
       class PlainSession implements Session {
         items: AgentInputItem[] = [];
