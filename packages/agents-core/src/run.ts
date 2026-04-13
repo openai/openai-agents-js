@@ -35,16 +35,13 @@ import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
-import {
-  isServerManagedConversationSession,
-  type Session,
-  type SessionInputCallback,
-} from './memory/session';
+import { type Session, type SessionInputCallback } from './memory/session';
 import type { AgentInputItem } from './types';
 import {
   ServerConversationTracker,
   applyCallModelInputFilter,
   createServerConversationReplayTracker,
+  resolveServerConversationContext,
 } from './runner/conversation';
 import {
   createGuardrailTracker,
@@ -489,11 +486,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ? (input as RunState<TContext, TAgent>)._previousResponseId
       : undefined;
     const session = effectiveOptions.session;
+    const serverConversation = resolveServerConversationContext({
+      explicitConversationId: effectiveOptions.conversationId,
+      resumedConversationId,
+      explicitPreviousResponseId: effectiveOptions.previousResponseId,
+      resumedPreviousResponseId,
+      session,
+    });
+    const runOptions = {
+      ...effectiveOptions,
+      conversationId: serverConversation.conversationId,
+      previousResponseId: serverConversation.previousResponseId,
+    };
     const serverManagesConversation =
-      Boolean(effectiveOptions.conversationId ?? resumedConversationId) ||
-      Boolean(effectiveOptions.previousResponseId ?? resumedPreviousResponseId);
-    const historyIsServerManaged =
-      serverManagesConversation || isServerManagedConversationSession(session);
+      serverConversation.serverConversationChainAvailable;
+    const historyIsServerManaged = serverConversation.historyIsServerManaged;
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     assertOverrideHistoryPersistenceSupport({
@@ -515,12 +522,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         session,
         sessionInputCallback,
         {
-          // When transcript history is server-managed we only send the new turn delta.
-          includeHistoryInPreparedInput: !historyIsServerManaged,
-          preserveDroppedNewItems: historyIsServerManaged,
+          // Only omit prepended history once we have a concrete server-side conversation chain.
+          includeHistoryInPreparedInput: !serverManagesConversation,
+          preserveDroppedNewItems: serverManagesConversation,
         },
       );
-      if (historyIsServerManaged && session) {
+      if (serverManagesConversation && session) {
         // Keep the model payload scoped to the new turn delta even when Session persists the
         // transcript for a remote conversation service.
         const sessionItems = prepared.sessionItems;
@@ -540,11 +547,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
     const executeRun = async () => {
-      if (effectiveOptions.stream) {
+      if (runOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
-          effectiveOptions,
+          runOptions,
           ensureStreamInputPersisted,
           sessionPersistence?.recordTurnItems,
           preserveTurnPersistenceOnResume,
@@ -554,7 +561,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const runResult = await this.#runIndividualNonStream(
         agent,
         preparedInput,
-        effectiveOptions,
+        runOptions,
         sessionPersistence?.recordTurnItems,
         preserveTurnPersistenceOnResume,
       );

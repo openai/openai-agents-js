@@ -23,6 +23,7 @@ import {
   tool,
   user,
   Session,
+  SERVER_MANAGED_CONVERSATION_SESSION,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
   RunState,
@@ -1412,6 +1413,36 @@ describe('Runner.run (streaming)', () => {
       execute: async ({ test }) => `result:${test}`,
     });
 
+    class ServerManagedRecordingSession implements Session {
+      readonly [SERVER_MANAGED_CONVERSATION_SESSION] = true as const;
+
+      public added: AgentInputItem[][] = [];
+      public history: AgentInputItem[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'server-managed-stream-session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.history.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        const cloned = items.map((item) => structuredClone(item));
+        this.added.push(cloned);
+        this.history.push(...cloned);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.history.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.added = [];
+        this.history = [];
+      }
+    }
+
     async function drain<TOutput, TAgent extends Agent<any, any>>(
       result: StreamedRunResult<TOutput, TAgent>,
     ) {
@@ -1475,6 +1506,66 @@ describe('Runner.run (streaming)', () => {
       expect(thirdItems[0]).toMatchObject({
         type: 'function_call_result',
         callId: 'call-2',
+      });
+    });
+
+    it('keeps prior history on the first streaming request when no explicit server chain is available', async () => {
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [
+            fakeModelMessage('a_message'),
+            buildToolCall('call-stream-session-1', 'foo'),
+          ],
+          'resp-stream-session-1',
+        ),
+        buildTurn([fakeModelMessage('done')], 'resp-stream-session-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamServerManagedSessionOnly',
+        model,
+        tools: [serverTool],
+      });
+
+      const session = new ServerManagedRecordingSession();
+      session.history = [user('Persisted remote history')];
+      const runner = new Runner();
+
+      const result = await runner.run(agent, 'user_message', {
+        stream: true,
+        session,
+      });
+      await drain(result);
+      expect(result.finalOutput).toBe('done');
+
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[0].conversationId).toBeUndefined();
+
+      const firstItems = model.requests[0].input as AgentInputItem[];
+      expect(firstItems.length).toBeGreaterThan(1);
+      expect(
+        firstItems.some(
+          (item) =>
+            item.type === 'message' &&
+            getFirstTextContent(item) === 'Persisted remote history',
+        ),
+      ).toBe(true);
+      expect(
+        firstItems.some(
+          (item) =>
+            item.type === 'message' &&
+            getFirstTextContent(item) === 'user_message',
+        ),
+      ).toBe(true);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(model.requests[1].previousResponseId).toBe(
+        'resp-stream-session-1',
+      );
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-stream-session-1',
       });
     });
 

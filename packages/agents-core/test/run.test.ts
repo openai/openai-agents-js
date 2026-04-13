@@ -5759,6 +5759,9 @@ describe('Runner.run', () => {
 
       expect(secondResult.finalOutput).toBe('done');
       expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].previousResponseId).toBe(
+        'resp-server-managed-replay-1',
+      );
 
       const secondItems = model.requests[1].input as AgentInputItem[];
       expect(secondItems).toHaveLength(1);
@@ -5780,7 +5783,7 @@ describe('Runner.run', () => {
       ).toBe(false);
     });
 
-    it('only sends the new user turn on later fresh runs with a server-managed session override', async () => {
+    it('keeps prior history on later fresh runs when no explicit server chain is available', async () => {
       const approvalTool = tool({
         name: 'test',
         description: 'tool that requires approval',
@@ -5833,12 +5836,22 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(3);
 
       const thirdItems = model.requests[2].input as AgentInputItem[];
-      expect(thirdItems).toHaveLength(1);
-      expect(thirdItems[0]).toMatchObject({
-        type: 'message',
-        role: 'user',
-        content: 'fresh_message',
-      });
+      expect(thirdItems.length).toBeGreaterThan(1);
+      expect(
+        thirdItems.some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            getFirstTextContent(item) === 'fresh_message',
+        ),
+      ).toBe(true);
+      expect(
+        thirdItems.some(
+          (item) =>
+            item.type === 'function_call' &&
+            item.callId === 'call-server-managed-fresh-turn',
+        ),
+      ).toBe(true);
     });
 
     it('fails before resuming when saveOverrideArguments is required for a non-rewrite-aware session', async () => {

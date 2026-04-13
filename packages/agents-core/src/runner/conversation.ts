@@ -53,6 +53,13 @@ export type FilterApplicationResult = {
   filterApplied: boolean;
 };
 
+export type ResolvedServerConversationContext = {
+  conversationId?: string;
+  previousResponseId?: string;
+  historyIsServerManaged: boolean;
+  serverConversationChainAvailable: boolean;
+};
+
 /**
  * Applies the optional callModelInputFilter and returns the filtered input alongside the original
  * items so downstream tracking and session persistence stay in sync with what the model saw.
@@ -181,6 +188,43 @@ export async function applyCallModelInputFilter<TContext>(
   }
 }
 
+export function resolveServerConversationContext(options: {
+  explicitConversationId?: string;
+  resumedConversationId?: string;
+  explicitPreviousResponseId?: string;
+  resumedPreviousResponseId?: string;
+  session?: Session;
+}): ResolvedServerConversationContext {
+  const {
+    explicitConversationId,
+    resumedConversationId,
+    explicitPreviousResponseId,
+    resumedPreviousResponseId,
+    session,
+  } = options;
+  const isTaggedServerManagedSession =
+    isServerManagedConversationSession(session);
+  const conversationId = explicitConversationId ?? resumedConversationId;
+  const previousResponseId =
+    explicitPreviousResponseId ?? resumedPreviousResponseId;
+
+  const historyIsServerManaged =
+    Boolean(conversationId) ||
+    Boolean(previousResponseId) ||
+    isTaggedServerManagedSession;
+  const serverConversationChainAvailable =
+    Boolean(conversationId) ||
+    Boolean(explicitPreviousResponseId) ||
+    (Boolean(resumedPreviousResponseId) && !isTaggedServerManagedSession);
+
+  return {
+    conversationId,
+    previousResponseId,
+    historyIsServerManaged,
+    serverConversationChainAvailable,
+  };
+}
+
 export function createServerConversationReplayTracker(options: {
   conversationId?: string;
   previousResponseId?: string;
@@ -202,9 +246,9 @@ export function createServerConversationReplayTracker(options: {
     conversationId,
     previousResponseId,
     reasoningItemIdPolicy,
-    // Tagged server-managed sessions still persist transcript items through Session.
-    // Only explicit conversation context should chain response ids into later model calls.
-    captureResponseIds: hasServerConversationContext,
+    // Conversation ids already pin the server-side transcript. Session-only and
+    // previous_response_id flows still need to capture the latest response id after each turn.
+    captureResponseIds: !conversationId,
   });
 }
 
