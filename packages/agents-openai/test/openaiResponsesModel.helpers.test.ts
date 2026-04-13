@@ -511,6 +511,24 @@ describe('converTool', () => {
     });
   });
 
+  it('preserves explicit false external web access on web search tools', () => {
+    const web = converTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'web_search',
+        search_context_size: 'medium',
+        external_web_access: false,
+      },
+    } as any);
+    expect(web.tool).toEqual({
+      type: 'web_search',
+      user_location: undefined,
+      filters: undefined,
+      search_context_size: 'medium',
+      external_web_access: false,
+    });
+  });
+
   it('throws on unsupported tool', () => {
     expect(() => converTool({ type: 'other' } as any)).toThrow();
   });
@@ -723,6 +741,44 @@ describe('getInputItems', () => {
       call_id: 'computer-call-1',
       acknowledged_safety_checks: [{ id: 'check-1', code: 'confirm' }],
     });
+  });
+
+  it('omits empty computer safety checks when rebuilding input items', () => {
+    const items = getInputItems([
+      {
+        type: 'computer_call',
+        id: 'computer-empty-1',
+        callId: 'computer-empty-call-1',
+        action: { type: 'wait' },
+        status: 'completed',
+        providerData: {
+          pending_safety_checks: [],
+        },
+      },
+      {
+        type: 'computer_call_result',
+        id: 'computer-empty-result-1',
+        callId: 'computer-empty-call-1',
+        output: { data: 'https://example.com/screenshot.png' },
+        providerData: {
+          acknowledged_safety_checks: [],
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toMatchObject({
+      type: 'computer_call',
+      id: 'computer-empty-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[0]).not.toHaveProperty('pending_safety_checks');
+
+    expect(items[1]).toMatchObject({
+      type: 'computer_call_output',
+      id: 'computer-empty-result-1',
+      call_id: 'computer-empty-call-1',
+    });
+    expect(items[1]).not.toHaveProperty('acknowledged_safety_checks');
   });
 
   it('preserves batched computer actions when rebuilding input items', () => {

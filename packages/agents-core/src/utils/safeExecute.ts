@@ -1,7 +1,7 @@
 export type SafeExecuteResult<T> = [Error | unknown | null, T | null];
 
 export async function safeExecute<T>(
-  fn: () => T
+  fn: () => T,
 ): Promise<SafeExecuteResult<T>> {
   try {
     return [null, await fn()];

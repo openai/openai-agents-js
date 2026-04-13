@@ -1,4 +1,8 @@
-import { RealtimeOutputGuardrail, RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
+import {
+  RealtimeOutputGuardrail,
+  RealtimeAgent,
+  RealtimeSession,
+} from '@openai/agents/realtime';
 
 const agent = new RealtimeAgent({
   name: 'Greeter',

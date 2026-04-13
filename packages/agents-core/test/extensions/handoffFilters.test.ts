@@ -4,6 +4,8 @@ import {
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunMessageOutputItem,
+  RunReasoningItem,
+  RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
   RunToolSearchCallItem,
@@ -98,6 +100,25 @@ const toolSearchOutput: protocol.ToolSearchOutputItem = {
   ],
 };
 
+const reasoningItem: protocol.ReasoningItem = {
+  type: 'reasoning',
+  content: [{ type: 'input_text', text: 'thinking' }],
+};
+
+const hostedMcpApprovalRequest: protocol.HostedToolCallItem = {
+  type: 'hosted_tool_call',
+  id: 'approval-1',
+  name: 'lookup_account',
+  status: 'in_progress',
+  providerData: {
+    type: 'mcp_approval_request',
+    id: 'approval-1',
+    server_label: 'crm',
+    name: 'lookup_account',
+    arguments: '{}',
+  },
+};
+
 describe('removeAllTools', () => {
   test('should be available', () => {
     const result = removeAllTools({
@@ -129,11 +150,13 @@ describe('removeAllTools', () => {
         message,
         new RunToolSearchCallItem(toolSearchCall, TEST_AGENT),
         new RunToolCallItem(TEST_MODEL_FUNCTION_CALL, TEST_AGENT),
+        new RunReasoningItem(reasoningItem, TEST_AGENT),
       ],
       newItems: [
         new RunToolSearchOutputItem(toolSearchOutput, TEST_AGENT),
         new RunToolCallOutputItem(functionCallResult, TEST_AGENT, 'ok'),
         new RunHandoffOutputItem(functionCallResult, TEST_AGENT, TEST_AGENT),
+        new RunToolApprovalItem(hostedMcpApprovalRequest, TEST_AGENT),
         anotherMessage,
       ],
     });
@@ -162,6 +185,7 @@ describe('removeAllTools', () => {
       shellCallResult,
       applyPatchCall,
       applyPatchCallResult,
+      reasoningItem,
     ];
 
     const result = removeAllTools({
@@ -171,7 +195,7 @@ describe('removeAllTools', () => {
     });
 
     expect(result.inputHistory).toStrictEqual([userMessage]);
-    expect(history).toHaveLength(12);
+    expect(history).toHaveLength(13);
     expect((result.inputHistory as AgentInputItem[])[0]).toBe(userMessage);
   });
 });

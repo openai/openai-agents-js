@@ -52,12 +52,11 @@ jobs:
             "https://github.com/${PR_HEAD_REPO}.git" \
             "${PR_HEAD_SHA}"
       - name: Install pnpm
-        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
-          version: 10.30.3
           run_install: false
       - name: Setup Node
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
         with:
           node-version: 22
 
@@ -85,13 +84,15 @@ jobs:
       - name: Run Codex changeset validation
         id: run_codex
         if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
-        uses: openai/codex-action@086169432f1d2ab2f4057540b1754d550f6a1189
+        uses: openai/codex-action@c25d10f3f498316d4b2496cc4c6dd58057a7b031
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
           prompt-file: .github/codex/prompts/changeset-validation.generated.md
           output-file: .github/codex/outputs/changeset-validation.json
           output-schema-file: .github/codex/schemas/changeset-validation.json
-          codex-args: '["--full-auto"]'
+          # Keep the legacy Linux sandbox path until the default bubblewrap path
+          # works reliably on GitHub-hosted Ubuntu runners.
+          codex-args: '["--full-auto","--enable","use_legacy_landlock"]'
           sandbox: read-only
           safety-strategy: drop-sudo
 

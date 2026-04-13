@@ -576,6 +576,35 @@ describe('RunState', () => {
     expect(JSON.parse(str)).toEqual(json);
   });
 
+  it('toJSON throws when handoff agents have duplicate names', () => {
+    const childA = new Agent({ name: 'SharedSkill' });
+    const childB = new Agent({ name: 'SharedSkill' });
+    const agentA = new Agent({ name: 'AgentA', handoffs: [childA] });
+    const agentB = new Agent({ name: 'AgentB', handoffs: [childB] });
+    const root = new Agent({ name: 'Root', handoffs: [agentA, agentB] });
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._currentAgent = childB;
+
+    expect(() => state.toJSON()).toThrow(
+      'Duplicate agent name "SharedSkill" detected. Use unique agent names when serializing RunState.',
+    );
+  });
+
+  it('fromString throws when deserializing with duplicate agent names', async () => {
+    const childA = new Agent({ name: 'SharedSkill' });
+    const childB = new Agent({ name: 'SharedSkill' });
+    const agentA = new Agent({ name: 'AgentA', handoffs: [childA] });
+    const agentB = new Agent({ name: 'AgentB', handoffs: [childB] });
+    const root = new Agent({ name: 'Root', handoffs: [agentA, agentB] });
+    const state = new RunState(new RunContext(), 'input', childB, 2);
+
+    await expect(() =>
+      RunState.fromString(root, state.toString()),
+    ).rejects.toThrow(
+      'Duplicate agent name "SharedSkill" detected. Use unique agent names when serializing RunState.',
+    );
+  });
+
   it('only serializes tracing api key when explicitly requested', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Tracey' });
@@ -1837,6 +1866,16 @@ describe('RunState', () => {
     expect(map.get('AgentA')).toBe(agentA);
     expect(map.get('AgentB')).toBe(agentB);
     expect(Array.from(map.keys()).sort()).toEqual(['AgentA', 'AgentB']);
+  });
+
+  it('buildAgentMap throws when distinct agents share the same name', () => {
+    const childA = new Agent({ name: 'Child' });
+    const childB = new Agent({ name: 'Child' });
+    const root = new Agent({ name: 'Root', handoffs: [childA, childB] });
+
+    expect(() => buildAgentMap(root)).toThrow(
+      'Duplicate agent name "Child" detected. Use unique agent names when serializing RunState.',
+    );
   });
 });
 

@@ -37,6 +37,12 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
 
+#### `$pr-draft-summary`
+
+When a task in this repo finishes with moderate-or-larger code changes, invoke `$pr-draft-summary` in the final handoff to generate the required PR summary block, branch suggestion, title, and draft description. Treat this as the default close-out step after runtime code, tests, examples, build/test configuration, or docs with behavior impact are changed.
+
+Skip `$pr-draft-summary` only for trivial or conversation-only tasks, repo-meta/doc-only tasks without behavior impact, or when the user explicitly says not to include the PR draft block.
+
 ### ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file under `plans/` with a descriptive name, and create the directory if it does not exist. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or a released/otherwise supported durable format. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data that is already supported outside the current branch.
@@ -101,10 +107,10 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
     ```
 3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
 4.  Run `pnpm -r build-check` early to catch TypeScript errors across packages, tests, and examples.
-5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack in order before considering the work complete.
+5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack with the skill-defined phase barriers before considering the work complete.
 6.  Commit using Conventional Commits.
 7.  Push and open a pull request.
-8.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` to generate the required PR summary block with change summary, PR title, and draft description.
+8.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` as the final handoff step unless the task falls under the documented skip cases.
 
 ### Testing & Automated Checks
 
@@ -171,7 +177,7 @@ See [this README](integration-tests/README.md) for details.
 
 #### Mandatory Local Run Order
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step or change the order.
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i`, `pnpm build`, then the remaining validation steps).
 
 Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 

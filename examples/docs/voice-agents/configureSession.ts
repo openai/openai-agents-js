@@ -6,7 +6,7 @@ const agent = new RealtimeAgent({
 });
 
 const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime',
+  model: 'gpt-realtime-1.5',
   config: {
     outputModalities: ['audio'],
     audio: {

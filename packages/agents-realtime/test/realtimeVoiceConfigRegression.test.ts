@@ -57,7 +57,7 @@ describe('Realtime session voice config regression', () => {
 
     const session = new RealtimeSession(agent, {
       transport,
-      model: 'gpt-realtime',
+      model: 'gpt-realtime-1.5',
       config: {
         audio: {
           input: { format: TELEPHONY_AUDIO_FORMAT },
@@ -90,7 +90,7 @@ describe('Realtime session voice config regression', () => {
 
     const session = new RealtimeSession(agent, {
       transport,
-      model: 'gpt-realtime',
+      model: 'gpt-realtime-1.5',
       config: {
         voice: 'verse',
       },
@@ -111,7 +111,7 @@ describe('Realtime session voice config regression', () => {
 
     const session = new RealtimeSession(agent, {
       transport,
-      model: 'gpt-realtime',
+      model: 'gpt-realtime-1.5',
     });
 
     await session.connect({ apiKey: 'dummy-key' });

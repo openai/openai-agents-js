@@ -5,6 +5,13 @@ import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 import { RealtimeAgent } from '../src/realtimeAgent';
 
 let lastFakeSocket: any;
+
+function sentPayloads() {
+  return (lastFakeSocket?.sent ?? []).map((payload: string) =>
+    JSON.parse(payload),
+  );
+}
+
 vi.mock('ws', () => {
   return {
     WebSocket: class {
@@ -72,9 +79,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     const ws = new OpenAIRealtimeWebSocket();
     const audioSpy = vi.fn();
     ws.on('audio', audioSpy);
-    const sendSpy = vi
-      .spyOn(ws as any, 'sendEvent')
-      .mockImplementation(() => {});
+    const sendSpy = vi.spyOn(ws as any, 'sendEvent');
     const interruptSpy = vi.spyOn(ws, 'interrupt');
     const p = ws.connect({ apiKey: 'ek', model: 'm' });
     await vi.runAllTimersAsync();
@@ -113,9 +118,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     });
     expect(interruptSpy).toHaveBeenCalled();
     expect(
-      sendSpy.mock.calls.some(
-        (c: unknown[]) => (c[0] as any).type === 'response.cancel',
-      ),
+      sentPayloads().some((payload: any) => payload.type === 'response.cancel'),
     ).toBe(true);
     expect(
       sendSpy.mock.calls.some(
@@ -124,6 +127,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     ).toBe(true);
 
     sendSpy.mockClear();
+    lastFakeSocket!.sent.length = 0;
     // mark done and ensure no cancel next time
     lastFakeSocket!.emit('message', {
       data: JSON.stringify({
@@ -153,17 +157,15 @@ describe('OpenAIRealtimeWebSocket', () => {
       }),
     });
     expect(
-      sendSpy.mock.calls.every(
-        (c: unknown[]) => (c[0] as any).type !== 'response.cancel',
+      sentPayloads().every(
+        (payload: any) => payload.type !== 'response.cancel',
       ),
     ).toBe(true);
   });
 
   it('does not send truncate events once audio playback completed', async () => {
     const ws = new OpenAIRealtimeWebSocket();
-    const sendSpy = vi
-      .spyOn(ws as any, 'sendEvent')
-      .mockImplementation(() => {});
+    const sendSpy = vi.spyOn(ws as any, 'sendEvent');
     const p = ws.connect({ apiKey: 'ek', model: 'm' });
     await vi.runAllTimersAsync();
     await p;
@@ -426,9 +428,7 @@ describe('OpenAIRealtimeWebSocket', () => {
       }),
     });
     expect(
-      sendSpy.mock.calls.some(
-        (c: unknown[]) => (c[0] as any).type === 'response.cancel',
-      ),
+      sentPayloads().some((payload: any) => payload.type === 'response.cancel'),
     ).toBe(true);
     expect(
       sendSpy.mock.calls.some(
@@ -438,6 +438,348 @@ describe('OpenAIRealtimeWebSocket', () => {
     sendSpy.mockClear();
     ws.interrupt();
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('defers follow-up response.create until response.done after interrupt', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.output_audio.delta',
+        event_id: 'a1',
+        item_id: 'item-1',
+        content_index: 0,
+        delta: 'AA==',
+        output_index: 0,
+        response_id: 'resp-1',
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.interrupt();
+    ws.sendMessage('blocked', {});
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'response.cancel',
+      'conversation.item.truncate',
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'response.cancel',
+      'conversation.item.truncate',
+      'conversation.item.create',
+      'response.create',
+    ]);
+  });
+
+  it('sends automatic response.create synchronously before later same-tick events', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('first', {});
+    ws.sendMessage('second', {});
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'response.create',
+      'conversation.item.create',
+    ]);
+  });
+
+  it('sends manual response.create synchronously before later same-tick events', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendEvent({ type: 'response.create' } as any);
+    ws.sendEvent({
+      type: 'input_audio_buffer.append',
+      audio: 'AA==',
+    } as any);
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'response.create',
+      'input_audio_buffer.append',
+    ]);
+  });
+
+  it('queues manual response.create until the previous turn is done', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendEvent({
+      type: 'response.create',
+      response: { instructions: 'Say hello.' },
+    } as any);
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads()).toEqual([]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads()).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+        response: { instructions: 'Say hello.' },
+      },
+    ]);
+  });
+
+  it('releases queued response.create when the server rejects the pending one', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    ws.on('error', () => {});
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('first', {});
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    const firstResponseCreate = sentPayloads().find(
+      (payload: any) => payload.type === 'response.create',
+    );
+    expect(firstResponseCreate?.event_id).toEqual(expect.any(String));
+
+    ws.sendMessage('second', {});
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'response.create',
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'err-1',
+        error: {
+          code: 'bad_response_create',
+          message: 'bad response.create',
+          event_id: firstResponseCreate.event_id,
+        },
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'response.create',
+      'conversation.item.create',
+      'response.create',
+    ]);
+  });
+
+  it('keeps queued requestResponse overrides distinct from automatic follow-ups', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('auto', {});
+    ws.requestResponse({ instructions: 'Use the override.' });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(
+      sentPayloads().filter(
+        (payload: any) => payload.type === 'response.create',
+      ),
+    ).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+      },
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r2',
+        response: {},
+      }),
+    });
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r2_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(
+      sentPayloads().filter(
+        (payload: any) => payload.type === 'response.create',
+      ),
+    ).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+      },
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+        response: { instructions: 'Use the override.' },
+      },
+    ]);
+  });
+
+  it('retries later coalesced auto response.create requests after a failure', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    ws.on('error', () => {});
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendMessage('first', {});
+    ws.sendMessage('second', {});
+    ws.sendMessage('third', {});
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    const firstResponseCreate = sentPayloads().find(
+      (payload: any) => payload.type === 'response.create',
+    );
+    expect(firstResponseCreate?.event_id).toEqual(expect.any(String));
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+      'response.create',
+    ]);
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'err-coalesced',
+        error: {
+          code: 'bad_response_create',
+          message: 'bad response.create',
+          event_id: firstResponseCreate.event_id,
+        },
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(sentPayloads().map((payload: any) => payload.type)).toEqual([
+      'conversation.item.create',
+      'conversation.item.create',
+      'conversation.item.create',
+      'response.create',
+      'response.create',
+    ]);
   });
 
   it('connects using callId when provided', async () => {
@@ -494,13 +836,13 @@ describe('OpenAIRealtimeWebSocket', () => {
     const payload = await OpenAIRealtimeSIP.buildInitialConfig(
       agent,
       {
-        model: 'gpt-realtime',
+        model: 'gpt-realtime-1.5',
         config: { audio: { output: { speed: 1.5 } } },
       },
       { audio: { output: { speed: 2 } } },
     );
     expect(payload.type).toBe('realtime');
-    expect(payload.model).toBe('gpt-realtime');
+    expect(payload.model).toBe('gpt-realtime-1.5');
     expect(payload.instructions).toBe('Respond politely.');
     expect(payload.audio?.output?.speed).toBe(2);
   });

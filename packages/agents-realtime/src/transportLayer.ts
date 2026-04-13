@@ -72,6 +72,14 @@ export interface RealtimeTransportLayer extends EventEmitter<RealtimeTransportEv
   sendEvent(event: RealtimeClientMessage): void;
 
   /**
+   * Requests a new response for the current conversation turn. Implementations may defer the
+   * underlying `response.create` until the server has fully finished the prior response.
+   *
+   * @param response - Optional one-off response override payload.
+   */
+  requestResponse?(response?: Record<string, any>): void;
+
+  /**
    * Sends a text message to the model
    * @param message - The message to send
    * @param otherEventData - Additional event data, will be merged into the event

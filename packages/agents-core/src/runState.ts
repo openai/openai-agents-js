@@ -496,6 +496,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentAgent: TAgent;
   /**
+   * The root agent that started the run.
+   */
+  #startingAgent: TAgent;
+  /**
    * Original user input prior to any processing.
    */
   public _originalInput: string | AgentInputItem[];
@@ -641,6 +645,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
     this._currentAgent = startingAgent;
+    this.#startingAgent = startingAgent;
     this._reasoningItemIdPolicy = undefined;
     this._toolUseTracker = new AgentToolUseTracker();
     this._pendingAgentToolRuns = new Map();
@@ -1213,6 +1218,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   toJSON(
     options: { includeTracingApiKey?: boolean } = {},
   ): z.infer<typeof SerializedRunState> {
+    buildAgentMap(this.#startingAgent);
+
     const includeTracingApiKey = options.includeTracingApiKey === true;
     const contextJson = this._context.toJSON();
     const output = {
@@ -1757,9 +1764,10 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   const state = new RunState<TContext, TAgent>(
     context,
     '',
-    currentAgent as TAgent,
+    initialAgent,
     stateJson.maxTurns,
   );
+  state._currentAgent = currentAgent as TAgent;
   state._currentTurn = stateJson.currentTurn;
   state._currentTurnInProgress = stateJson.currentTurnInProgress ?? false;
   state._conversationId = stateJson.conversationId ?? undefined;
@@ -1873,30 +1881,36 @@ export function buildAgentMap(
   initialAgent: Agent<any, any>,
 ): Map<string, Agent<any, any>> {
   const map = new Map<string, Agent<any, any>>();
+  const visitedAgents = new Set<Agent<any, any>>();
   const queue: Agent<any, any>[] = [initialAgent];
 
   while (queue.length > 0) {
     const currentAgent = queue.shift()!;
-    if (map.has(currentAgent.name)) {
+    if (visitedAgents.has(currentAgent)) {
       continue;
     }
+    visitedAgents.add(currentAgent);
+
+    const existingAgent = map.get(currentAgent.name);
+    if (existingAgent && existingAgent !== currentAgent) {
+      throw new UserError(
+        `Duplicate agent name "${currentAgent.name}" detected. Use unique agent names when serializing RunState.`,
+      );
+    }
+
     map.set(currentAgent.name, currentAgent);
 
     for (const handoff of currentAgent.handoffs) {
       if (handoff instanceof Agent) {
-        if (!map.has(handoff.name)) {
-          queue.push(handoff);
-        }
+        queue.push(handoff);
       } else if (handoff.agent) {
-        if (!map.has(handoff.agent.name)) {
-          queue.push(handoff.agent);
-        }
+        queue.push(handoff.agent);
       }
     }
 
     for (const tool of currentAgent.tools) {
       const sourceAgent = getAgentToolSourceAgent(tool);
-      if (sourceAgent && !map.has(sourceAgent.name)) {
+      if (sourceAgent) {
         queue.push(sourceAgent);
       }
     }

@@ -58,7 +58,7 @@ export type OpenAIRealtimeModels =
  * The default model that is used during the connection if no model is provided.
  */
 export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
-  'gpt-realtime';
+  'gpt-realtime-1.5';
 
 /**
  * The default session config that gets send over during session connection unless overridden
@@ -480,6 +480,13 @@ export abstract class OpenAIRealtimeBase
     this.emit('disconnected');
   }
 
+  requestResponse(response?: Record<string, any>): void {
+    this.sendEvent({
+      type: 'response.create',
+      ...(response ? { response } : {}),
+    });
+  }
+
   /**
    * Send a message to the Realtime API. This will create a new item in the conversation and
    * trigger a response.
@@ -522,9 +529,7 @@ export abstract class OpenAIRealtimeBase
     });
 
     if (triggerResponse) {
-      this.sendEvent({
-        type: 'response.create',
-      });
+      this.requestResponse();
     }
   }
 
@@ -856,9 +861,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (startResponse) {
-      this.sendEvent({
-        type: 'response.create',
-      });
+      this.requestResponse();
     }
   }
 

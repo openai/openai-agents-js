@@ -40,7 +40,8 @@ export interface RealtimeGuardrailMetadata extends OutputGuardrailMetadata {
 }
 
 export interface RealtimeOutputGuardrailDefinition
-  extends OutputGuardrailDefinition<RealtimeGuardrailMetadata>,
+  extends
+    OutputGuardrailDefinition<RealtimeGuardrailMetadata>,
     RealtimeGuardrailMetadata {
   run(
     args: OutputGuardrailFunctionArgs<unknown>,

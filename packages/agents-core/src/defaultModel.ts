@@ -1,24 +1,55 @@
 import { loadEnv } from './config';
-import { ModelSettings } from './model';
+import { ModelSettings, ModelSettingsReasoningEffort } from './model';
 
 export const OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME = 'OPENAI_DEFAULT_MODEL';
+const GPT_5_CHAT_MODEL_PATTERNS = [
+  /^gpt-5-chat-latest$/,
+  /^gpt-5\.1-chat-latest$/,
+  /^gpt-5\.2-chat-latest$/,
+  /^gpt-5\.3-chat-latest$/,
+] as const;
 
 /**
  * Returns True if the model name is a GPT-5 model and reasoning settings are required.
  */
 export function gpt5ReasoningSettingsRequired(modelName: string): boolean {
-  if (modelName.startsWith('gpt-5-chat')) {
-    // gpt-5-chat-latest does not require reasoning settings
+  if (GPT_5_CHAT_MODEL_PATTERNS.some((pattern) => pattern.test(modelName))) {
+    // Chat-latest aliases do not accept reasoning.effort.
     return false;
   }
   // matches any of gpt-5 models
   return modelName.startsWith('gpt-5');
 }
 
-const NONE_EFFORT_SUPPORTED_MODELS = new Set(['gpt-5.2', 'gpt-5.1']);
+const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
+  readonly [
+    RegExp,
+    Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>,
+  ]
+> = [
+  [/^gpt-5(?:-\d{4}-\d{2}-\d{2})?$/, 'low'],
+  [/^gpt-5\.1(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.2(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.2-pro(?:-\d{4}-\d{2}-\d{2})?$/, 'medium'],
+  [/^gpt-5\.2-codex$/, 'low'],
+  [/^gpt-5\.3-codex$/, 'none'],
+  [/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.4-pro(?:-\d{4}-\d{2}-\d{2})?$/, 'medium'],
+  [/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.4-nano(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+];
 
-function isNoneEffortSupportedModel(modelName: string): boolean {
-  return NONE_EFFORT_SUPPORTED_MODELS.has(modelName);
+function getDefaultReasoningEffort(
+  modelName: string,
+):
+  | Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>
+  | undefined {
+  for (const [pattern, effort] of DEFAULT_REASONING_EFFORT_PATTERNS) {
+    if (pattern.test(modelName)) {
+      return effort;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -48,16 +79,16 @@ export function getDefaultModel(): string {
 export function getDefaultModelSettings(model?: string): ModelSettings {
   const _model = model ?? getDefaultModel();
   if (gpt5ReasoningSettingsRequired(_model)) {
-    if (isNoneEffortSupportedModel(_model)) {
+    const effort = getDefaultReasoningEffort(_model);
+    if (effort !== undefined) {
       return {
-        reasoning: { effort: 'none' },
+        reasoning: { effort },
         text: { verbosity: 'low' },
       };
     }
     return {
-      // We choose "low" instead of "minimal" because some built-in tools do not support "minimal".
-      // If you want to use "minimal" reasoning effort, pass your own model settings.
-      reasoning: { effort: 'low' },
+      // Keep the GPT-5 text verbosity default, but omit reasoning.effort for
+      // variants whose supported values are not confirmed yet.
       text: { verbosity: 'low' },
     };
   }

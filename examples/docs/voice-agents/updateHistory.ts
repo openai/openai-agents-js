@@ -5,7 +5,7 @@ const agent = new RealtimeAgent({
 });
 
 const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime',
+  model: 'gpt-realtime-1.5',
 });
 
 await session.connect({ apiKey: '<client-api-key>' });

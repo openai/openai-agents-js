@@ -105,6 +105,7 @@ There are two related integrations in `@openai/agents-extensions`:
 - The `@openai/agents-extensions/ai-sdk` adapter is still in beta, so it is worth testing carefully with your chosen provider, especially smaller ones.
 - If you are using OpenAI models, prefer the default OpenAI model provider instead of this adapter.
 - Supported AI SDK providers must expose `specificationVersion` `v2` or `v3`. If you need the older v1 provider style, copy the module from [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) into your project.
+- Computer tools require display metadata when used through this adapter. Make sure the tool includes both `environment` and `dimensions` metadata.
 - Deferred Responses tool-loading flows are not supported here. That includes `toolNamespace()`, function tools with `deferLoading: true`, and `toolSearchTool()`. If you need tool search, use an OpenAI Responses model directly. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and [Models guide](/openai-agents-js/guides/models#responses-only-deferred-tool-loading).
 
 ## AI SDK UI stream helpers
@@ -117,6 +118,12 @@ There are two related integrations in `@openai/agents-extensions`:
 Both helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object and return a `Response` with streaming-friendly headers.
 
 Use `createAiSdkUiMessageStreamResponse(...)` when your UI needs structured chunks such as tool calls or reasoning parts. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
+
+Both helpers also accept optional response settings through `options`:
+
+- `headers`: additional response headers to merge into the streaming response.
+- `status`: the HTTP status code for the returned `Response`.
+- `statusText`: the HTTP status text for the returned `Response`.
 
 Example Next.js route for UI message streaming:
 

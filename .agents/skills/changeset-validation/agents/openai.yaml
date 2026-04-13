@@ -1,0 +1,4 @@
+interface:
+  display_name: "Changeset Validation"
+  short_description: "Validate changesets against the current branch diff"
+  default_prompt: "Use $changeset-validation to validate the current branch changeset against the diff and report any required edits or bump changes."

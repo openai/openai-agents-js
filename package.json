@@ -19,6 +19,8 @@
     "test:integration": "NODE_ENV=test vitest run --config=vitest.integration.config.ts",
     "test:watch": "NODE_ENV=test vitest --watch",
     "dev": "tsx scripts/dev.mts",
+    "format": "prettier --write \"packages/**/*.ts\" \"examples/**/*.ts\" \"integration-tests/**/*.ts\"",
+    "format:changed": "node scripts/prettier-changed.mjs",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "examples:basic": "pnpm -F basic start",
@@ -90,5 +92,5 @@
       "@types/node": "22.19.13"
     }
   },
-  "packageManager": "pnpm@10.30.3"
+  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

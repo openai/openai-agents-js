@@ -1514,13 +1514,20 @@ function converTool<_TContext = unknown>(
     };
   } else if (tool.type === 'hosted_tool') {
     if (tool.providerData?.type === 'web_search') {
+      const webSearchTool: OpenAI.Responses.WebSearchTool & {
+        external_web_access?: boolean;
+      } = {
+        type: 'web_search',
+        user_location: tool.providerData.user_location,
+        filters: tool.providerData.filters,
+        search_context_size: tool.providerData.search_context_size,
+      };
+      if (tool.providerData.external_web_access !== undefined) {
+        webSearchTool.external_web_access =
+          tool.providerData.external_web_access;
+      }
       return {
-        tool: {
-          type: 'web_search',
-          user_location: tool.providerData.user_location,
-          filters: tool.providerData.filters,
-          search_context_size: tool.providerData.search_context_size,
-        },
+        tool: webSearchTool,
         include: undefined,
       };
     } else if (tool.providerData?.type === 'web_search_preview') {
@@ -2057,8 +2064,6 @@ function getInputItems(
       const pendingSafetyChecks = getProviderDataField<
         OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks']
       >(item.providerData, ['pendingSafetyChecks', 'pending_safety_checks']);
-      const normalizedPendingSafetyChecks: OpenAI.Responses.ResponseComputerToolCall['pending_safety_checks'] =
-        Array.isArray(pendingSafetyChecks) ? pendingSafetyChecks : [];
       const batchedActions = Array.isArray(
         (item as { actions?: unknown }).actions,
       )
@@ -2074,12 +2079,15 @@ function getInputItems(
           : item.action
             ? { action: item.action }
             : {};
-      const entry: OpenAI.Responses.ResponseComputerToolCall = {
+      // The live API rejects empty pending_safety_checks on replayed computer calls.
+      const entry = {
         type: 'computer_call',
         call_id: item.callId,
         id: item.id!,
         status: item.status,
-        pending_safety_checks: normalizedPendingSafetyChecks,
+        ...(Array.isArray(pendingSafetyChecks) && pendingSafetyChecks.length > 0
+          ? { pending_safety_checks: pendingSafetyChecks }
+          : {}),
         ...actionPayload,
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
@@ -2092,7 +2100,7 @@ function getInputItems(
         ]),
       };
 
-      return entry;
+      return entry as unknown as OpenAI.Responses.ResponseComputerToolCall;
     }
 
     if (item.type === 'computer_call_result') {
@@ -2108,9 +2116,10 @@ function getInputItems(
         call_id: item.callId,
         output: buildResponseOutput(item),
         status: item.providerData?.status,
-        acknowledged_safety_checks: Array.isArray(acknowledgedSafetyChecks)
-          ? acknowledgedSafetyChecks
-          : [],
+        ...(Array.isArray(acknowledgedSafetyChecks) &&
+        acknowledgedSafetyChecks.length > 0
+          ? { acknowledged_safety_checks: acknowledgedSafetyChecks }
+          : {}),
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'id',

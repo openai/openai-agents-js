@@ -35,8 +35,10 @@ import {
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { ServerConversationTracker } from '../src/runner/conversation';
+import { removeAllTools } from '../src/extensions';
 import { handoff } from '../src/handoff';
 import {
+  RunHandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallOutputItem as ToolCallOutputItem,
@@ -1679,6 +1681,92 @@ describe('Runner.run', () => {
       const result = await runner.run(agentA, 'hi');
       expect(result.finalOutput).toBe('done B');
       expect(result.state._currentAgent).toBe(agentB);
+    });
+
+    it('does not keep ignored handoffs in history or session state', async () => {
+      class RecordingSession implements Session {
+        items: AgentInputItem[] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.items];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.items.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.items.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.items = [];
+        }
+      }
+
+      const agentB = new Agent({
+        name: 'B',
+        model: new FakeModel([
+          { output: [fakeModelMessage('done B')], usage: new Usage() },
+        ]),
+      });
+      const agentC = new Agent({
+        name: 'C',
+        model: new FakeModel([
+          { output: [fakeModelMessage('done C')], usage: new Usage() },
+        ]),
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const acceptedCall: protocol.FunctionCallItem = {
+        id: 'h1',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: protocol.FunctionCallItem = {
+        id: 'h2',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const session = new RecordingSession();
+      const agentA = new Agent({
+        name: 'A',
+        model: new FakeModel([
+          { output: [acceptedCall, ignoredCall], usage: new Usage() },
+        ]),
+        handoffs: [handoffToB, handoffToC],
+      });
+
+      const result = await new Runner().run(agentA, 'hi', { session });
+      const persistedItems = await session.getItems();
+
+      expect(result.finalOutput).toBe('done B');
+      expect(
+        result.history.some(
+          (item) => (item as { callId?: string }).callId === ignoredCall.callId,
+        ),
+      ).toBe(false);
+      expect(
+        persistedItems.some(
+          (item) => (item as { callId?: string }).callId === ignoredCall.callId,
+        ),
+      ).toBe(false);
+      expect(
+        persistedItems.some(
+          (item) =>
+            (item as { callId?: string }).callId === acceptedCall.callId,
+        ),
+      ).toBe(true);
     });
 
     it('streamed run produces same final output', async () => {
@@ -4894,6 +4982,293 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-1',
       });
+    });
+
+    it('acknowledges ignored handoffs when continuing a managed previousResponseId run', async () => {
+      const agentBModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentCModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedC',
+        model: agentCModel,
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const acceptedCall: protocol.FunctionCallItem = {
+        id: 'h1',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: protocol.FunctionCallItem = {
+        id: 'h2',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedA',
+        model: new TrackingModel([
+          buildResponse([acceptedCall, ignoredCall], 'resp-a'),
+        ]),
+        handoffs: [handoffToB, handoffToC],
+      });
+
+      const result = await new Runner().run(agentA, 'hi', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentCModel.requests).toHaveLength(0);
+      expect(agentBModel.requests[0].previousResponseId).toBe('resp-a');
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+      expect(
+        result.history.some(
+          (item) => (item as { callId?: string }).callId === ignoredCall.callId,
+        ),
+      ).toBe(false);
+    });
+
+    it('acknowledges ignored handoffs even when callIds were reused in earlier turns', async () => {
+      const agentBModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentCModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedReuseB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedReuseC',
+        model: agentCModel,
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const reusedCallId = 'reused-call-id';
+      const acceptedCall: protocol.FunctionCallItem = {
+        id: 'handoff-accepted',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'handoff-accepted-id',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: protocol.FunctionCallItem = {
+        id: 'handoff-ignored',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: reusedCallId,
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedReuseA',
+        model: new TrackingModel([
+          buildResponse([buildToolCall(reusedCallId, 'warmup')], 'resp-tool'),
+          buildResponse([acceptedCall, ignoredCall], 'resp-handoff'),
+        ]),
+        tools: [serverTool],
+        handoffs: [handoffToB, handoffToC],
+      });
+
+      const result = await new Runner().run(agentA, 'hi', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentCModel.requests).toHaveLength(0);
+      expect(agentBModel.requests[0].previousResponseId).toBe('resp-handoff');
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+    });
+
+    it('replays pending managed handoff acknowledgements when resuming in non-stream mode', async () => {
+      const agentBModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedResumeNonStreamB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedResumeNonStreamC',
+        model: new TrackingModel([
+          buildResponse([fakeModelMessage('done C')], 'resp-c'),
+        ]),
+      });
+      const handoffToB = handoff(agentB);
+      const handoffToC = handoff(agentC);
+      const acceptedCall: protocol.FunctionCallItem = {
+        id: 'handoff-accepted',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: protocol.FunctionCallItem = {
+        id: 'handoff-ignored',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedResumeNonStreamA',
+        model: new TrackingModel([]),
+        handoffs: [handoffToB, handoffToC],
+      });
+      const state = new RunState(new RunContext(), 'hi', agentA, 3);
+
+      state._currentAgent = agentB;
+      state._currentTurn = 1;
+      state._currentTurnInProgress = true;
+      state._currentStep = { type: 'next_step_run_again' } as const;
+      state._noActiveAgentRun = true;
+      state._modelResponses = [
+        buildResponse([acceptedCall, ignoredCall], 'resp-a'),
+      ];
+      state._generatedItems = [
+        new RunHandoffOutputItem(
+          {
+            type: 'function_call_result',
+            name: acceptedCall.name,
+            callId: acceptedCall.callId,
+            status: 'completed',
+            output: {
+              type: 'text',
+              text: 'Transferred to ManagedResumeNonStreamB',
+            },
+          },
+          agentA,
+          agentB,
+        ),
+      ];
+      state._lastProcessedResponse = {
+        newItems: [],
+        handoffs: [
+          { toolCall: acceptedCall, handoff: handoffToB },
+          { toolCall: ignoredCall, handoff: handoffToC },
+        ],
+        functions: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+        hasToolsOrApprovalsToRun: () => true,
+      } as any;
+      state.setConversationContext(
+        'conv-managed-handoff-resume-non-stream',
+        undefined,
+      );
+
+      const result = await new Runner().run(agentA, state, {
+        conversationId: 'conv-managed-handoff-resume-non-stream',
+      });
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentBModel.requests[0].conversationId).toBe(
+        'conv-managed-handoff-resume-non-stream',
+      );
+      expect(agentBModel.requests[0].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: acceptedCall.callId,
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: ignoredCall.callId,
+        }),
+      ]);
+    });
+
+    it('does not append ignored handoff acknowledgements after removeAllTools filters the handoff input', async () => {
+      const agentBModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+      ]);
+      const agentCModel = new TrackingModel([
+        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+      ]);
+      const agentB = new Agent({
+        name: 'ManagedFilteredB',
+        model: agentBModel,
+      });
+      const agentC = new Agent({
+        name: 'ManagedFilteredC',
+        model: agentCModel,
+      });
+      const handoffToB = handoff(agentB, {
+        inputFilter: removeAllTools,
+      });
+      const handoffToC = handoff(agentC);
+      const acceptedCall: protocol.FunctionCallItem = {
+        id: 'handoff-filtered-accepted',
+        type: 'function_call',
+        name: handoffToB.toolName,
+        callId: 'filtered-c1',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const ignoredCall: protocol.FunctionCallItem = {
+        id: 'handoff-filtered-ignored',
+        type: 'function_call',
+        name: handoffToC.toolName,
+        callId: 'filtered-c2',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agentA = new Agent({
+        name: 'ManagedFilteredA',
+        model: new TrackingModel([
+          buildResponse([acceptedCall, ignoredCall], 'resp-a'),
+        ]),
+        handoffs: [handoffToB, handoffToC],
+      });
+
+      const result = await new Runner().run(agentA, 'hi', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(result.finalOutput).toBe('done B');
+      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentCModel.requests).toHaveLength(0);
+      expect(agentBModel.requests[0].previousResponseId).toBe('resp-a');
+      expect(agentBModel.requests[0].input).toEqual([]);
     });
 
     it('does not replay orphan hosted shell calls in default multi-turn runs', async () => {

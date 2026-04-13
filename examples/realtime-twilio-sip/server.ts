@@ -48,7 +48,7 @@ async function main() {
   // Reuse the same session options when accepting the call and when instantiating the session so
   // the SIP payload remains in sync with the live websocket session.
   const sessionOptions: Partial<RealtimeSessionOptions> = {
-    model: 'gpt-realtime',
+    model: 'gpt-realtime-1.5',
     config: {
       audio: {
         input: {

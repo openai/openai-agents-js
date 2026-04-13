@@ -240,6 +240,44 @@ describe('mcpToFunctionTool', () => {
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
+  it('normalizes AbortError-like MCP failures into the default tool error', async () => {
+    const callTool = vi.fn(async () => {
+      throw new DOMException('synthetic abort', 'AbortError');
+    });
+
+    const server: MCPServer = {
+      name: 'abort-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'abort_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    const result = await tool.invoke(new RunContext({}), '{}');
+
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again. Error: AbortError: synthetic abort',
+    );
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
   it('rethrows tool failures when server errorFunction is null', async () => {
     const callTool = vi.fn(async () => {
       throw new Error('boom');
@@ -275,6 +313,44 @@ describe('mcpToFunctionTool', () => {
     await expect(
       tool.invoke(runContext, JSON.stringify({ foo: 'bar' })),
     ).rejects.toThrow('boom');
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rethrows AbortError-like MCP failures when server errorFunction is null', async () => {
+    const callTool = vi.fn(async () => {
+      throw new DOMException('synthetic abort', 'AbortError');
+    });
+
+    const server: MCPServer = {
+      name: 'abort-server-null',
+      cacheToolsList: false,
+      errorFunction: null,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'abort_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'synthetic abort',
+    });
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 

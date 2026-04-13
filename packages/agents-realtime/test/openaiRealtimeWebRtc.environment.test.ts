@@ -7,10 +7,9 @@ describe('OpenAIRealtimeWebRTC constructor', () => {
     delete (global as any).RTCPeerConnection;
 
     expect(() => new OpenAIRealtimeWebRTC()).toThrow(
-      'WebRTC is not supported in this environment'
+      'WebRTC is not supported in this environment',
     );
 
     (global as any).RTCPeerConnection = original;
   });
 });
-

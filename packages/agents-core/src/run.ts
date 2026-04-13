@@ -1321,7 +1321,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
           result.state._modelResponses.push(result.state._lastTurnResponse);
-
           const processedResponse = await processModelResponseAsync(
             result.state._lastTurnResponse,
             currentAgent,
@@ -1366,11 +1365,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         const currentStep = result.state._currentStep;
         switch (currentStep.type) {
           case 'next_step_final_output':
-            await runOutputGuardrails(
-              result.state,
-              this.outputGuardrailDefs,
-              currentStep.output,
-            );
+            try {
+              await runOutputGuardrails(
+                result.state,
+                this.outputGuardrailDefs,
+                currentStep.output,
+              );
+            } catch (error) {
+              // Do not leave blocked output visible through StreamedRunResult.finalOutput.
+              result.state._currentStep = undefined;
+              result.state._finalOutputSource = undefined;
+              throw error;
+            }
             result.state._currentTurnInProgress = false;
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.

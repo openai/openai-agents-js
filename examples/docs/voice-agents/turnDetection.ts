@@ -2,7 +2,7 @@ import { RealtimeSession } from '@openai/agents/realtime';
 import { agent } from './agent';
 
 const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime',
+  model: 'gpt-realtime-1.5',
   config: {
     audio: {
       input: {

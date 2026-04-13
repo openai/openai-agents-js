@@ -1,5 +1,46 @@
 # @openai/agents-core
 
+## 0.8.3
+
+### Patch Changes
+
+- 850c91c: fix: #1148 reject duplicate agent names in RunState serialization
+
+## 0.8.2
+
+### Patch Changes
+
+- 4b99d53: chore: format agents-core and agents-realtime sources
+- fe67fb3: test: remove flaky concurrent streamable HTTP reconnect coverage
+- 8424092: fix: avoid reconnect barrier false positives in MCP retry test
+- 88d2539: docs: fix typo in hosted MCP comment
+- 50edd08: fix: harden streamable HTTP reconnect test barriers
+- 1531038: fix: update default reasoning effort for newer models
+
+## 0.8.1
+
+### Patch Changes
+
+- 1227865: fix: harden streamable HTTP reconnect test synchronization
+- 6f49230: fix: hide streamed final output after output guardrail failures
+- 4470af6: fix: #1122 hide ignored handoffs without breaking managed continuations
+
+## 0.8.0
+
+### Patch Changes
+
+- e2e434a: fix: recover segmented assistant output in agent tools and finalization
+- 4f1824f: fix: remove reasoning and approval placeholders from handoff filters
+- 0ff9a25: feat: add MCP resource wrappers and streamable session ids
+- 05dd513: fix(mcp): resolve MCP server wrapper issues
+
+## 0.7.2
+
+### Patch Changes
+
+- 5f86461: fix: avoid replaying orphan hosted shell calls across turns
+- dc97919: fix: prune orphan hosted shell calls from public history
+
 ## 0.7.1
 
 ### Patch Changes
