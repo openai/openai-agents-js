@@ -185,6 +185,7 @@ export class ServerConversationTracker {
   public conversationId?: string;
   public previousResponseId?: string;
   private readonly reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+  private readonly captureResponseIds: boolean;
 
   // Using this flag because WeakSet does not provide a way to check its size.
   private sentInitialInput = false;
@@ -201,14 +202,17 @@ export class ServerConversationTracker {
     conversationId,
     previousResponseId,
     reasoningItemIdPolicy,
+    captureResponseIds = true,
   }: {
     conversationId?: string;
     previousResponseId?: string;
     reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+    captureResponseIds?: boolean;
   }) {
     this.conversationId = conversationId ?? undefined;
     this.previousResponseId = previousResponseId ?? undefined;
     this.reasoningItemIdPolicy = reasoningItemIdPolicy;
+    this.captureResponseIds = captureResponseIds;
   }
 
   /**
@@ -252,7 +256,11 @@ export class ServerConversationTracker {
     }
 
     const latestResponse = modelResponses[modelResponses.length - 1];
-    if (!this.conversationId && latestResponse?.responseId) {
+    if (
+      this.captureResponseIds &&
+      !this.conversationId &&
+      latestResponse?.responseId
+    ) {
       this.previousResponseId = latestResponse.responseId;
     }
 
@@ -283,7 +291,11 @@ export class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    if (!this.conversationId && modelResponse.responseId) {
+    if (
+      this.captureResponseIds &&
+      !this.conversationId &&
+      modelResponse.responseId
+    ) {
       this.previousResponseId = modelResponse.responseId;
     }
   }

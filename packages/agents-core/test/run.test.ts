@@ -5632,32 +5632,32 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(1);
     });
 
-    it('supports execution-only overrides when the session history is server-managed', async () => {
-      class ServerManagedPlainSession implements Session {
-        readonly [SERVER_MANAGED_CONVERSATION_SESSION] = true as const;
-        items: AgentInputItem[] = [];
+    class ServerManagedPlainSession implements Session {
+      readonly [SERVER_MANAGED_CONVERSATION_SESSION] = true as const;
+      items: AgentInputItem[] = [];
 
-        async getSessionId(): Promise<string> {
-          return 'server-managed-session';
-        }
-
-        async getItems(): Promise<AgentInputItem[]> {
-          return this.items.map((item) => structuredClone(item));
-        }
-
-        async addItems(items: AgentInputItem[]): Promise<void> {
-          this.items.push(...items.map((item) => structuredClone(item)));
-        }
-
-        async popItem(): Promise<AgentInputItem | undefined> {
-          return this.items.pop();
-        }
-
-        async clearSession(): Promise<void> {
-          this.items = [];
-        }
+      async getSessionId(): Promise<string> {
+        return 'server-managed-session';
       }
 
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.items.push(...items.map((item) => structuredClone(item)));
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+    }
+
+    it('supports execution-only overrides when the session history is server-managed', async () => {
       const approvalTool = tool({
         name: 'test',
         description: 'tool that requires approval',
@@ -5715,6 +5715,69 @@ describe('Runner.run', () => {
           },
         },
       ]);
+    });
+
+    it('replays only corrected deltas when resuming with a server-managed session override', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-server-managed-replay', 'foo')],
+          'resp-server-managed-replay-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('done')],
+          'resp-server-managed-replay-2',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalServerManagedReplayAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const session = new ServerManagedPlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        session,
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-server-managed-replay',
+        output: {
+          type: 'text',
+          text: 'result:bar',
+        },
+      });
+      expect(
+        secondItems.some(
+          (item) =>
+            item.type === 'message' ||
+            (item.type === 'function_call' &&
+              item.callId === 'call-server-managed-replay'),
+        ),
+      ).toBe(false);
     });
 
     it('fails before resuming when saveOverrideArguments is required for a non-rewrite-aware session', async () => {

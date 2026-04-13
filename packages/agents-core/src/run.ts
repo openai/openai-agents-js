@@ -350,6 +350,33 @@ function hasPendingExecutionOnlyOverride(state: RunState<any, any>): boolean {
   return state.hasPendingExecutionOnlyApprovalOverrides();
 }
 
+function createServerConversationReplayTracker(options: {
+  conversationId?: string;
+  previousResponseId?: string;
+  session?: Session;
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+}): ServerConversationTracker | undefined {
+  const { conversationId, previousResponseId, session, reasoningItemIdPolicy } =
+    options;
+  const hasServerConversationContext =
+    Boolean(conversationId) || Boolean(previousResponseId);
+  if (
+    !hasServerConversationContext &&
+    !isServerManagedConversationSession(session)
+  ) {
+    return undefined;
+  }
+
+  return new ServerConversationTracker({
+    conversationId,
+    previousResponseId,
+    reasoningItemIdPolicy,
+    // Tagged server-managed sessions still persist transcript items through Session.
+    // Only explicit conversation context should chain response ids into later model calls.
+    captureResponseIds: hasServerConversationContext,
+  });
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -731,14 +758,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
 
-      const serverConversationTracker =
-        resolvedConversationId || resolvedPreviousResponseId
-          ? new ServerConversationTracker({
-              conversationId: resolvedConversationId,
-              previousResponseId: resolvedPreviousResponseId,
-              reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
-            })
-          : undefined;
+      const serverConversationTracker = createServerConversationReplayTracker({
+        conversationId: resolvedConversationId,
+        previousResponseId: resolvedPreviousResponseId,
+        session: options.session,
+        reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
+      });
 
       if (serverConversationTracker && isResumedState) {
         serverConversationTracker.primeFromState({
@@ -1047,13 +1072,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options.previousResponseId ?? result.state._previousResponseId;
     const serverManagesConversation =
       Boolean(resolvedConversationId) || Boolean(resolvedPreviousResponseId);
-    const serverConversationTracker = serverManagesConversation
-      ? new ServerConversationTracker({
-          conversationId: resolvedConversationId,
-          previousResponseId: resolvedPreviousResponseId,
-          reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
-        })
-      : undefined;
+    const serverConversationTracker = createServerConversationReplayTracker({
+      conversationId: resolvedConversationId,
+      previousResponseId: resolvedPreviousResponseId,
+      session: options.session,
+      reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
+    });
     if (serverConversationTracker) {
       result.state.setConversationContext(
         serverConversationTracker.conversationId,
