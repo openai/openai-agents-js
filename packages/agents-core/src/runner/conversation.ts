@@ -1,6 +1,10 @@
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
 import { RunItem } from '../items';
+import {
+  isServerManagedConversationSession,
+  type Session,
+} from '../memory/session';
 import { ModelResponse } from '../model';
 import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
@@ -175,6 +179,33 @@ export async function applyCallModelInputFilter<TContext>(
     });
     throw error;
   }
+}
+
+export function createServerConversationReplayTracker(options: {
+  conversationId?: string;
+  previousResponseId?: string;
+  session?: Session;
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+}): ServerConversationTracker | undefined {
+  const { conversationId, previousResponseId, session, reasoningItemIdPolicy } =
+    options;
+  const hasServerConversationContext =
+    Boolean(conversationId) || Boolean(previousResponseId);
+  if (
+    !hasServerConversationContext &&
+    !isServerManagedConversationSession(session)
+  ) {
+    return undefined;
+  }
+
+  return new ServerConversationTracker({
+    conversationId,
+    previousResponseId,
+    reasoningItemIdPolicy,
+    // Tagged server-managed sessions still persist transcript items through Session.
+    // Only explicit conversation context should chain response ids into later model calls.
+    captureResponseIds: hasServerConversationContext,
+  });
 }
 
 /**

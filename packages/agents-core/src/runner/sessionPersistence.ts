@@ -41,6 +41,45 @@ export type SessionPersistenceTracker = {
   ) => (() => Promise<void>) | undefined;
 };
 
+export function assertOverrideHistoryPersistenceSupport(options: {
+  input: string | AgentInputItem[] | RunState<any, any>;
+  session?: Session;
+  historyIsServerManaged: boolean;
+}): void {
+  const { input, session, historyIsServerManaged } = options;
+  if (!(input instanceof RunState)) {
+    return;
+  }
+
+  if (hasPendingExecutionOnlyOverride(input) && !historyIsServerManaged) {
+    throw new UserError(
+      'saveOverrideArguments: false is only supported when using conversationId, previousResponseId, or a server-managed session.',
+      input,
+    );
+  }
+
+  const mutations = input.getSessionHistoryMutations();
+  if (mutations.length === 0) {
+    return;
+  }
+
+  if (historyIsServerManaged) {
+    throw new UserError(
+      'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
+      input,
+    );
+  }
+
+  if (!session || isSessionHistoryRewriteAwareSession(session)) {
+    return;
+  }
+
+  throw new UserError(
+    'saveOverrideArguments requires a session that supports persisted-history rewrites. Use MemorySession, OpenAIResponsesHistoryRewriteSession, or another SessionHistoryRewriteAwareSession, or pass saveOverrideArguments: false to apply the override only to the current execution.',
+    input,
+  );
+}
+
 export function createSessionPersistenceTracker(options: {
   session?: Session;
   hasCallModelInputFilter: boolean;
@@ -144,6 +183,10 @@ export function createSessionPersistenceTracker(options: {
   }
 
   return new SessionPersistenceTrackerImpl();
+}
+
+function hasPendingExecutionOnlyOverride(state: RunState<any, any>): boolean {
+  return state.hasPendingExecutionOnlyApprovalOverrides();
 }
 
 function cloneItems(items: AgentInputItem[]): AgentInputItem[] {

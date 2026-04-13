@@ -36,7 +36,6 @@ import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import {
-  isSessionHistoryRewriteAwareSession,
   isServerManagedConversationSession,
   type Session,
   type SessionInputCallback,
@@ -45,6 +44,7 @@ import type { AgentInputItem } from './types';
 import {
   ServerConversationTracker,
   applyCallModelInputFilter,
+  createServerConversationReplayTracker,
 } from './runner/conversation';
 import {
   createGuardrailTracker,
@@ -67,6 +67,7 @@ import {
   isAbortError,
 } from './runner/streaming';
 import {
+  assertOverrideHistoryPersistenceSupport,
   createSessionPersistenceTracker,
   prepareInputItemsWithSession,
   saveStreamInputToSession,
@@ -80,7 +81,11 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { applyTraceOverrides, getTracing } from './runner/tracing';
+import {
+  applyTraceOverrides,
+  applyTraceRedactionPolicyToState,
+  getTracing,
+} from './runner/tracing';
 import type { ReasoningItemIdPolicy } from './runner/items';
 import type {
   AgentArtifacts,
@@ -306,86 +311,6 @@ export type IndividualRunOptions<
   TContext = undefined,
   TAgent extends Agent<any, any> = Agent<any, any>,
 > = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
-
-function assertOverrideHistoryPersistenceSupport(options: {
-  input: string | AgentInputItem[] | RunState<any, any>;
-  session?: Session;
-  historyIsServerManaged: boolean;
-}): void {
-  const { input, session, historyIsServerManaged } = options;
-  if (!(input instanceof RunState)) {
-    return;
-  }
-
-  if (hasPendingExecutionOnlyOverride(input) && !historyIsServerManaged) {
-    throw new UserError(
-      'saveOverrideArguments: false is only supported when using conversationId, previousResponseId, or a server-managed session.',
-      input,
-    );
-  }
-
-  const mutations = input.getSessionHistoryMutations();
-  if (mutations.length === 0) {
-    return;
-  }
-
-  if (historyIsServerManaged) {
-    throw new UserError(
-      'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
-      input,
-    );
-  }
-
-  if (!session || isSessionHistoryRewriteAwareSession(session)) {
-    return;
-  }
-
-  throw new UserError(
-    'saveOverrideArguments requires a session that supports persisted-history rewrites. Use MemorySession, OpenAIResponsesHistoryRewriteSession, or another SessionHistoryRewriteAwareSession, or pass saveOverrideArguments: false to apply the override only to the current execution.',
-    input,
-  );
-}
-
-function hasPendingExecutionOnlyOverride(state: RunState<any, any>): boolean {
-  return state.hasPendingExecutionOnlyApprovalOverrides();
-}
-
-function createServerConversationReplayTracker(options: {
-  conversationId?: string;
-  previousResponseId?: string;
-  session?: Session;
-  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
-}): ServerConversationTracker | undefined {
-  const { conversationId, previousResponseId, session, reasoningItemIdPolicy } =
-    options;
-  const hasServerConversationContext =
-    Boolean(conversationId) || Boolean(previousResponseId);
-  if (
-    !hasServerConversationContext &&
-    !isServerManagedConversationSession(session)
-  ) {
-    return undefined;
-  }
-
-  return new ServerConversationTracker({
-    conversationId,
-    previousResponseId,
-    reasoningItemIdPolicy,
-    // Tagged server-managed sessions still persist transcript items through Session.
-    // Only explicit conversation context should chain response ids into later model calls.
-    captureResponseIds: hasServerConversationContext,
-  });
-}
-
-function applyTraceRedactionPolicyToState(
-  state: RunState<any, any>,
-  traceIncludeSensitiveData: boolean,
-  isResumedState: boolean,
-): void {
-  if (!isResumedState || state._traceIncludeSensitiveDataNeedsConfigFallback) {
-    state.setTraceIncludeSensitiveData(traceIncludeSensitiveData);
-  }
-}
 
 // --------------------------------------------------------------
 //  Runner
