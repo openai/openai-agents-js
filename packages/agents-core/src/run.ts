@@ -377,6 +377,16 @@ function createServerConversationReplayTracker(options: {
   });
 }
 
+function applyTraceRedactionPolicyToState(
+  state: RunState<any, any>,
+  traceIncludeSensitiveData: boolean,
+  isResumedState: boolean,
+): void {
+  if (!isResumedState || state._traceIncludeSensitiveDataNeedsConfigFallback) {
+    state.setTraceIncludeSensitiveData(traceIncludeSensitiveData);
+  }
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -737,11 +747,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
         this.config.reasoningItemIdPolicy;
       state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
-      if (!isResumedState) {
-        state.setTraceIncludeSensitiveData(
-          this.config.traceIncludeSensitiveData,
-        );
-      }
+      applyTraceRedactionPolicyToState(
+        state,
+        this.config.traceIncludeSensitiveData,
+        isResumedState,
+      );
 
       const resolvedConversationId =
         options.conversationId ??
@@ -1549,11 +1559,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (isResumedState) {
         state._agentToolInvocation = undefined;
       }
-      if (!isResumedState) {
-        state.setTraceIncludeSensitiveData(
-          this.config.traceIncludeSensitiveData,
-        );
-      }
+      applyTraceRedactionPolicyToState(
+        state,
+        this.config.traceIncludeSensitiveData,
+        isResumedState,
+      );
       const resolvedConversationId =
         options.conversationId ??
         (isResumedState ? state._conversationId : undefined);

@@ -617,6 +617,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _traceIncludeSensitiveData = true;
   /**
+   * Whether this state was restored from a snapshot that did not persist trace redaction policy.
+   * This is runtime-only metadata and is not serialized.
+   */
+  public _traceIncludeSensitiveDataNeedsConfigFallback = false;
+  /**
    * Runtime-only tool_search-loaded tools, scoped by agent name and preserved across turns for
    * the lifetime of this in-memory run.
    */
@@ -691,6 +696,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public setTraceIncludeSensitiveData(includeSensitiveData: boolean): void {
     this._traceIncludeSensitiveData = includeSensitiveData;
+    this._traceIncludeSensitiveDataNeedsConfigFallback = false;
   }
 
   private getOrCreateToolSearchRuntimeToolState(
@@ -1777,8 +1783,14 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     stateJson.executionOnlyApprovalOverrideCallIds ?? [];
   state._sessionHistoryMutations = (stateJson.sessionHistoryMutations ??
     []) as SessionHistoryMutation[];
-  state._traceIncludeSensitiveData =
-    stateJson.traceIncludeSensitiveData ?? true;
+  if (typeof stateJson.traceIncludeSensitiveData === 'boolean') {
+    state.setTraceIncludeSensitiveData(stateJson.traceIncludeSensitiveData);
+  } else {
+    // Legacy snapshots pre-1.10 did not persist this policy. Start redacted until a
+    // Runner instance re-applies its configured tracing behavior for resumed execution.
+    state._traceIncludeSensitiveData = false;
+    state._traceIncludeSensitiveDataNeedsConfigFallback = true;
+  }
 
   // rebuild tool use tracker
   state._toolUseTracker = new AgentToolUseTracker();

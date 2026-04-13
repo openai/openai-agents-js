@@ -6237,6 +6237,65 @@ describe('Runner.run', () => {
       expect(model.requests[1].tracing).toBe('enabled_without_data');
     });
 
+    it('reapplies runner trace redaction for legacy serialized states', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-trace-legacy-1', 'foo')],
+          'resp-trace-legacy-1',
+        ),
+        buildResponse(
+          [buildToolCall('call-trace-legacy-2', 'bar')],
+          'resp-trace-legacy-2',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalLegacyTraceResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const firstResult = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, 'user_message');
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      expect(firstResult.state._traceIncludeSensitiveData).toBe(false);
+
+      const legacyJson = firstResult.state.toJSON() as Record<string, unknown>;
+      delete legacyJson.traceIncludeSensitiveData;
+      legacyJson.$schemaVersion = '1.9';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(legacyJson),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+      expect(restored._traceIncludeSensitiveDataNeedsConfigFallback).toBe(true);
+
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, restored);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.state._traceIncludeSensitiveData).toBe(false);
+      expect(resumed.state._traceIncludeSensitiveDataNeedsConfigFallback).toBe(
+        false,
+      );
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].tracing).toBe('enabled_without_data');
+    });
+
     it('does not resend items when resuming multiple times without new approvals', async () => {
       const approvalTool = tool({
         name: 'test',

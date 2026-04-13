@@ -2144,6 +2144,73 @@ describe('Runner.run (streaming)', () => {
       expect(model.requests[1].tracing).toBe('enabled_without_data');
     });
 
+    it('reapplies runner trace redaction for legacy serialized streamed states', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn(
+          [buildToolCall('call-stream-trace-legacy-1', 'foo')],
+          'resp-stream-legacy-1',
+        ),
+        buildTurn(
+          [buildToolCall('call-stream-trace-legacy-2', 'bar')],
+          'resp-stream-legacy-2',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamLegacyTraceResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const firstResult = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, 'user_message', {
+        stream: true,
+      });
+
+      await drain(firstResult);
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      expect(firstResult.state._traceIncludeSensitiveData).toBe(false);
+
+      const legacyJson = firstResult.state.toJSON() as Record<string, unknown>;
+      delete legacyJson.traceIncludeSensitiveData;
+      legacyJson.$schemaVersion = '1.9';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(legacyJson),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+      expect(restored._traceIncludeSensitiveDataNeedsConfigFallback).toBe(true);
+
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, restored, {
+        stream: true,
+      });
+
+      await drain(resumed);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.state._traceIncludeSensitiveData).toBe(false);
+      expect(resumed.state._traceIncludeSensitiveDataNeedsConfigFallback).toBe(
+        false,
+      );
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].tracing).toBe('enabled_without_data');
+    });
+
     it('uses runner-level toolErrorFormatter when resuming a rejected approval', async () => {
       const approvalTool = tool({
         name: 'test',

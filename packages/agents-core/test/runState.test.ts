@@ -1108,6 +1108,59 @@ describe('RunState', () => {
     }
   });
 
+  it('legacy snapshots without trace redaction metadata redact approval override traces by default', async () => {
+    const traceProvider = getGlobalTraceProvider();
+    const processor = new TestTracingProcessor();
+    traceProvider.setProcessors([processor]);
+    traceProvider.setDisabled(false);
+
+    try {
+      const { agent, state } = buildOverrideableApprovalState();
+      const legacyJson = state.toJSON() as Record<string, unknown>;
+      delete legacyJson.traceIncludeSensitiveData;
+      legacyJson.$schemaVersion = '1.9';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(legacyJson),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+      expect(restored._traceIncludeSensitiveDataNeedsConfigFallback).toBe(true);
+
+      const [approvalItem] = restored.getInterruptions();
+      expect(approvalItem).toBeDefined();
+
+      const trace = traceProvider.createTrace({
+        name: 'approval-override-legacy-redacted-trace',
+      });
+      await trace.start();
+      restored._trace = trace;
+      restored._currentAgentSpan = createAgentSpan(
+        { data: { name: agent.name } },
+        trace,
+      );
+      restored._currentAgentSpan.start();
+
+      restored.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      restored._currentAgentSpan.end();
+      await trace.end();
+
+      const overrideSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          'name' in span.spanData &&
+          span.spanData.name === 'approval override: send_email',
+      );
+      expect(overrideSpan).toBeUndefined();
+    } finally {
+      traceProvider.setProcessors([defaultProcessor()]);
+      traceProvider.setDisabled(true);
+    }
+  });
+
   it('approve rejects saveOverrideArguments defaults for server-managed conversations', () => {
     const { state, approvalItem } = buildOverrideableApprovalState({
       previousResponseId: 'resp-existing',
