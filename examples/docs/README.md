@@ -1,80 +1,80 @@
 # Documentation Snippets
 
-This directory contains small scripts used throughout the documentation. Run them with `pnpm` using the commands shown below.
+This directory contains small scripts used throughout the documentation. The `docs-code` workspace does not define per-snippet `start:*` scripts, so run snippets directly from the repository root with `pnpm exec tsx <path-to-file>`.
 
-- `agents-basic-configuration.ts` – Configure a weather agent with a tool and model.
+- [`agents/agentWithTools.ts`](./agents/agentWithTools.ts) – Configure a weather agent with a tool and model.
   ```bash
-  pnpm -F docs start:agents-basic-configuration
+  pnpm exec tsx examples/docs/agents/agentWithTools.ts
   ```
-- `agents-cloning.ts` – Clone an agent and reuse its configuration.
+- [`agents/agentCloning.ts`](./agents/agentCloning.ts) – Clone an agent and reuse its configuration.
   ```bash
-  pnpm -F docs start:agents-cloning
+  pnpm exec tsx examples/docs/agents/agentCloning.ts
   ```
-- `agents-context.ts` – Access user context from tools during execution.
+- [`agents/agentWithContext.ts`](./agents/agentWithContext.ts) – Access user context from tools during execution.
   ```bash
-  pnpm -F docs start:agents-context
+  pnpm exec tsx examples/docs/agents/agentWithContext.ts
   ```
-- `agents-dynamic-instructions.ts` – Build instructions dynamically from context.
+- [`agents/agentWithDynamicInstructions.ts`](./agents/agentWithDynamicInstructions.ts) – Build instructions dynamically from context.
   ```bash
-  pnpm -F docs start:agents-dynamic-instructions
+  pnpm exec tsx examples/docs/agents/agentWithDynamicInstructions.ts
   ```
-- `agents-forcing-tool-use.ts` – Require specific tools before producing output.
+- [`agents/agentForcingToolUse.ts`](./agents/agentForcingToolUse.ts) – Require specific tools before producing output.
   ```bash
-  pnpm -F docs start:agents-forcing-tool-use
+  pnpm exec tsx examples/docs/agents/agentForcingToolUse.ts
   ```
-- `agents-handoffs.ts` – Route requests to specialized agents using handoffs.
+- [`agents/agentWithHandoffs.ts`](./agents/agentWithHandoffs.ts) – Route requests to specialized agents using handoffs.
   ```bash
-  pnpm -F docs start:agents-handoffs
+  pnpm exec tsx examples/docs/agents/agentWithHandoffs.ts
   ```
-- `agents-lifecycle-hooks.ts` – Log agent lifecycle events as they run.
+- [`agents/agentWithLifecycleHooks.ts`](./agents/agentWithLifecycleHooks.ts) – Log agent lifecycle events as they run.
   ```bash
-  pnpm -F docs start:agents-lifecycle-hooks
+  pnpm exec tsx examples/docs/agents/agentWithLifecycleHooks.ts
   ```
-- `agents-output-types.ts` – Return structured data using a Zod schema.
+- [`agents/agentWithAodOutputType.ts`](./agents/agentWithAodOutputType.ts) – Return structured data using a Zod schema.
   ```bash
-  pnpm -F docs start:agents-output-types
+  pnpm exec tsx examples/docs/agents/agentWithAodOutputType.ts
   ```
-- `guardrails-input.ts` – Block unwanted requests using input guardrails.
+- [`guardrails/guardrails-input.ts`](./guardrails/guardrails-input.ts) – Block unwanted requests using input guardrails.
   ```bash
-  pnpm -F docs start:guardrails-input
+  pnpm exec tsx examples/docs/guardrails/guardrails-input.ts
   ```
-- `guardrails-output.ts` – Check responses with output guardrails.
+- [`guardrails/guardrails-output.ts`](./guardrails/guardrails-output.ts) – Check responses with output guardrails.
   ```bash
-  pnpm -F docs start:guardrails-output
+  pnpm exec tsx examples/docs/guardrails/guardrails-output.ts
   ```
-- `models-custom-providers.ts` – Create and use a custom model provider.
+- [`models/customProviders.ts`](./models/customProviders.ts) – Create and use a custom model provider.
   ```bash
-  pnpm -F docs start:models-custom-providers
+  pnpm exec tsx examples/docs/models/customProviders.ts
   ```
-- `models-openai-provider.ts` – Run agents with the OpenAI provider.
+- [`models/openaiProvider.ts`](./models/openaiProvider.ts) – Run agents with the OpenAI provider.
   ```bash
-  pnpm -F docs start:models-openai-provider
+  pnpm exec tsx examples/docs/models/openaiProvider.ts
   ```
-- `quickstart.ts` – Simple triage agent that hands off questions to tutors.
+- [`quickstart/index.ts`](./quickstart/index.ts) – Simple triage agent that hands off questions to tutors.
   ```bash
-  pnpm -F docs start:quickstart
+  pnpm exec tsx examples/docs/quickstart/index.ts
   ```
-- `readme-functions.ts` – README example showing how to call functions as tools.
+- [`readme/readme-functions.ts`](./readme/readme-functions.ts) – README example showing how to call functions as tools.
   ```bash
-  pnpm -F docs start:readme-functions
+  pnpm exec tsx examples/docs/readme/readme-functions.ts
   ```
-- `readme-handoffs.ts` – README example that demonstrates handoffs.
+- [`readme/readme-handoffs.ts`](./readme/readme-handoffs.ts) – README example that demonstrates handoffs.
   ```bash
-  pnpm -F docs start:readme-handoffs
+  pnpm exec tsx examples/docs/readme/readme-handoffs.ts
   ```
-- `readme-hello-world.ts` – The hello world snippet from the README.
+- [`readme/readme-hello-world.ts`](./readme/readme-hello-world.ts) – The hello world snippet from the README.
   ```bash
-  pnpm -F docs start:readme-hello-world
+  pnpm exec tsx examples/docs/readme/readme-hello-world.ts
   ```
-- `readme-voice-agent.ts` – Browser-based realtime voice agent example.
+- [`readme/readme-voice-agent.ts`](./readme/readme-voice-agent.ts) – Browser-based realtime voice agent example.
   ```bash
-  pnpm -F docs start:readme-voice-agent
+  pnpm exec tsx examples/docs/readme/readme-voice-agent.ts
   ```
-- `running-agents-exceptions1.ts` – Retry after a guardrail execution error.
+- [`running-agents/exceptions1.ts`](./running-agents/exceptions1.ts) – Retry after a guardrail execution error.
   ```bash
-  pnpm -F docs start:running-agents-exceptions1
+  pnpm exec tsx examples/docs/running-agents/exceptions1.ts
   ```
-- `running-agents-exceptions2.ts` – Retry after a failed tool call.
+- [`running-agents/exceptions2.ts`](./running-agents/exceptions2.ts) – Retry after a failed tool call.
   ```bash
-  pnpm -F docs start:running-agents-exceptions2
+  pnpm exec tsx examples/docs/running-agents/exceptions2.ts
   ```
