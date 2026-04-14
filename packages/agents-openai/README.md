@@ -5,7 +5,7 @@ The OpenAI Agents SDK is a lightweight yet powerful framework for building multi
 ## Installation
 
 ```bash
-npm install @openai/agents
+npm install @openai/agents-openai zod
 ```
 
 ## License
