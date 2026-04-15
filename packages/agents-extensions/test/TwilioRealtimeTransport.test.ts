@@ -64,6 +64,44 @@ describe('TwilioRealtimeTransportLayer', () => {
     ).toEqual({ inputAudioFormat: 'foo', outputAudioFormat: 'g711_ulaw' });
   });
 
+  test('_setInputAndOutputAudioFormat preserves nested audio config', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: new FakeTwilioWebSocket() as any,
+    });
+
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        instructions: 'hi',
+        audio: {
+          input: {
+            turnDetection: {
+              type: 'server_vad',
+              silenceDurationMs: 300,
+            },
+          },
+          output: {
+            voice: 'alloy',
+          },
+        },
+      } as any),
+    ).toEqual({
+      instructions: 'hi',
+      audio: {
+        input: {
+          format: 'g711_ulaw',
+          turnDetection: {
+            type: 'server_vad',
+            silenceDurationMs: 300,
+          },
+        },
+        output: {
+          format: 'g711_ulaw',
+          voice: 'alloy',
+        },
+      },
+    });
+  });
+
   test('connect handles messages and events', async () => {
     allowConsole(['error']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -158,6 +196,51 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(audioListener).toHaveBeenCalledTimes(3);
   });
 
+  test('connect preserves nested audio config while defaulting Twilio formats', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const connectSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.connect);
+
+    await transport.connect({
+      apiKey: 'ek_test',
+      initialSessionConfig: {
+        audio: {
+          input: {
+            turnDetection: {
+              type: 'server_vad',
+              silenceDurationMs: 300,
+            },
+          },
+          output: {
+            voice: 'alloy',
+          },
+        },
+      },
+    } as any);
+
+    expect(connectSpy).toHaveBeenCalledWith({
+      apiKey: 'ek_test',
+      initialSessionConfig: {
+        audio: {
+          input: {
+            format: 'g711_ulaw',
+            turnDetection: {
+              type: 'server_vad',
+              silenceDurationMs: 300,
+            },
+          },
+          output: {
+            format: 'g711_ulaw',
+            voice: 'alloy',
+          },
+        },
+      },
+    });
+  });
+
   test('updateSessionConfig keeps audio format', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
@@ -168,11 +251,35 @@ describe('TwilioRealtimeTransportLayer', () => {
     const spy = vi.mocked(
       OpenAIRealtimeWebSocket.prototype.updateSessionConfig,
     );
-    transport.updateSessionConfig({ instructions: 'hi' });
+    transport.updateSessionConfig({
+      instructions: 'hi',
+      audio: {
+        input: {
+          turnDetection: {
+            type: 'server_vad',
+            silenceDurationMs: 300,
+          },
+        },
+        output: {
+          voice: 'alloy',
+        },
+      },
+    } as any);
     expect(spy).toHaveBeenCalledWith({
       instructions: 'hi',
-      inputAudioFormat: 'g711_ulaw',
-      outputAudioFormat: 'g711_ulaw',
+      audio: {
+        input: {
+          format: 'g711_ulaw',
+          turnDetection: {
+            type: 'server_vad',
+            silenceDurationMs: 300,
+          },
+        },
+        output: {
+          format: 'g711_ulaw',
+          voice: 'alloy',
+        },
+      },
     });
   });
 
