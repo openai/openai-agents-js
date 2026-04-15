@@ -97,6 +97,11 @@ export function zodJsonSchemaCompat(
   return schema as JsonObjectSchema<Record<string, JsonSchemaDefinitionEntry>>;
 }
 
+export function normalizeOpenAiJsonSchema<T>(schema: T): T {
+  normalizeOpenAiJsonSchemaNode(schema, new Set<unknown>());
+  return schema;
+}
+
 export function mergeJsonSchemaDescriptions(
   target: JsonSchemaDefinitionEntry,
   source: JsonSchemaDefinitionEntry | undefined,
@@ -275,6 +280,7 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
     case 'tuple':
       return buildTupleSchema(def);
     case 'union':
+    case 'discriminatedunion':
       return buildUnionSchema(def);
     case 'intersection':
       return buildIntersectionSchema(def);
@@ -293,6 +299,36 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
       return buildNullableSchema(def);
     default:
       return undefined;
+  }
+}
+
+function normalizeOpenAiJsonSchemaNode(
+  value: unknown,
+  visited: Set<unknown>,
+): void {
+  if (value === null || typeof value !== 'object' || visited.has(value)) {
+    return;
+  }
+
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      normalizeOpenAiJsonSchemaNode(item, visited);
+    }
+    return;
+  }
+
+  const definition = value as Record<string, unknown>;
+  const oneOf = Array.isArray(definition.oneOf) ? definition.oneOf : undefined;
+  if (oneOf) {
+    const anyOf = Array.isArray(definition.anyOf) ? definition.anyOf : [];
+    definition.anyOf = [...anyOf, ...oneOf];
+    delete definition.oneOf;
+  }
+
+  for (const entry of Object.values(definition)) {
+    normalizeOpenAiJsonSchemaNode(entry, visited);
   }
 }
 

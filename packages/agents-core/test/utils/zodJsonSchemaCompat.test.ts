@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { zodJsonSchemaCompat } from '../../src/utils/zodJsonSchemaCompat';
+import { z as zod3 } from 'zod/v3';
+import {
+  normalizeOpenAiJsonSchema,
+  zodJsonSchemaCompat,
+} from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
   it('builds schema for basic object with optional property', () => {
@@ -55,6 +59,47 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
     expect(jsonSchema?.properties.union).toMatchObject({
       anyOf: [{ type: 'string' }, { type: 'number' }],
+    });
+  });
+
+  it('handles discriminated unions from legacy zod internals', () => {
+    const schema = zod3.object({
+      recurrence: zod3.discriminatedUnion('type', [
+        zod3.object({
+          type: zod3.literal('once'),
+          date: zod3.string(),
+        }),
+        zod3.object({
+          type: zod3.literal('weekly'),
+          dayOfWeek: zod3.number(),
+        }),
+      ]),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(
+      schema as unknown as z.ZodObject<any>,
+    );
+    expect(jsonSchema?.properties.recurrence).toMatchObject({
+      anyOf: [
+        {
+          type: 'object',
+          properties: {
+            type: { const: 'once', type: 'string' },
+            date: { type: 'string' },
+          },
+          required: ['type', 'date'],
+          additionalProperties: false,
+        },
+        {
+          type: 'object',
+          properties: {
+            type: { const: 'weekly', type: 'string' },
+            dayOfWeek: { type: 'number' },
+          },
+          required: ['type', 'dayOfWeek'],
+          additionalProperties: false,
+        },
+      ],
     });
   });
 
@@ -257,5 +302,64 @@ describe('utils/zodJsonSchemaCompat', () => {
       description: 'Text to translate',
     });
     expect(jsonSchema?.properties.target).toEqual({ type: 'string' });
+  });
+
+  it('normalizes oneOf branches into anyOf for OpenAI compatibility', () => {
+    const schema = normalizeOpenAiJsonSchema({
+      type: 'object',
+      properties: {
+        recurrence: {
+          oneOf: [
+            {
+              type: 'object',
+              properties: {
+                type: { type: 'string', const: 'once' },
+              },
+              required: ['type'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                type: { type: 'string', const: 'weekly' },
+              },
+              required: ['type'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      required: ['recurrence'],
+      additionalProperties: false,
+    });
+
+    expect(schema).toMatchObject({
+      type: 'object',
+      properties: {
+        recurrence: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                type: { type: 'string', const: 'once' },
+              },
+              required: ['type'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                type: { type: 'string', const: 'weekly' },
+              },
+              required: ['type'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+    });
+    expect(
+      'oneOf' in (schema.properties.recurrence as Record<string, unknown>),
+    ).toBe(false);
   });
 });

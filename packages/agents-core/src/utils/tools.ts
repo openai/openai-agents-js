@@ -8,6 +8,7 @@ import {
   zodJsonSchemaCompat,
   hasJsonSchemaObjectShape,
   mergeJsonSchemaDescriptions,
+  normalizeOpenAiJsonSchema,
 } from './zodJsonSchemaCompat';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
@@ -60,7 +61,8 @@ export type FunctionToolName = string & { __brand?: 'ToolName' } & {
 function buildJsonSchemaFromZod(
   inputType: ZodObjectLike,
 ): JsonObjectSchema<any> | undefined {
-  return zodJsonSchemaCompat(inputType);
+  const schema = zodJsonSchemaCompat(inputType);
+  return schema ? normalizeOpenAiJsonSchema(schema) : undefined;
 }
 
 /**
@@ -134,15 +136,15 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     }
 
     if (hasJsonSchemaObjectShape(formattedFunction.parameters)) {
+      const schema = normalizeOpenAiJsonSchema(
+        formattedFunction.parameters as JsonObjectSchema<any>,
+      );
       const fallbackSchema = buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
-        mergeJsonSchemaDescriptions(
-          formattedFunction.parameters as JsonObjectSchema<any>,
-          fallbackSchema,
-        );
+        mergeJsonSchemaDescriptions(schema, fallbackSchema);
       }
       return {
-        schema: formattedFunction.parameters as JsonObjectSchema<any>,
+        schema,
         parser: formattedFunction.$parseRaw,
       };
     }
@@ -201,11 +203,14 @@ export function convertAgentOutputTypeToSerializable(
     }
 
     if (hasJsonSchemaObjectShape(output.schema)) {
+      const schema = normalizeOpenAiJsonSchema(
+        output.schema as JsonObjectSchema<any>,
+      );
       return {
         type: output.type,
         name: output.name,
         strict: output.strict || false,
-        schema: output.schema as JsonObjectSchema<any>,
+        schema,
       };
     }
 
