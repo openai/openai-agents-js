@@ -68,23 +68,41 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
 
   _setInputAndOutputAudioFormat(
     partialConfig?: Partial<RealtimeSessionConfig>,
-  ) {
-    let newConfig: Partial<RealtimeSessionConfig> = {};
+  ): Partial<RealtimeSessionConfig> {
     if (!partialConfig) {
+      const newConfig: Partial<RealtimeSessionConfig> = {};
       // @ts-expect-error - this is a valid config
       newConfig.inputAudioFormat = 'g711_ulaw';
       // @ts-expect-error - this is a valid config
       newConfig.outputAudioFormat = 'g711_ulaw';
-    } else {
-      newConfig = {
+      return newConfig;
+    }
+
+    const audioConfig = 'audio' in partialConfig ? partialConfig.audio : null;
+    if (audioConfig) {
+      return {
         ...partialConfig,
-        // @ts-expect-error - this is a valid config
-        inputAudioFormat: partialConfig.inputAudioFormat ?? 'g711_ulaw',
-        // @ts-expect-error - this is a valid config
-        outputAudioFormat: partialConfig.outputAudioFormat ?? 'g711_ulaw',
+        audio: {
+          ...audioConfig,
+          input: {
+            ...audioConfig.input,
+            format: audioConfig.input?.format ?? 'g711_ulaw',
+          },
+          output: {
+            ...audioConfig.output,
+            format: audioConfig.output?.format ?? 'g711_ulaw',
+          },
+        },
       };
     }
-    return newConfig;
+
+    return {
+      ...partialConfig,
+      // @ts-expect-error - this is a valid config
+      inputAudioFormat: partialConfig.inputAudioFormat ?? 'g711_ulaw',
+      // @ts-expect-error - this is a valid config
+      outputAudioFormat: partialConfig.outputAudioFormat ?? 'g711_ulaw',
+    };
   }
 
   async connect(options: RealtimeTransportLayerConnectOptions) {
