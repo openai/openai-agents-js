@@ -5,6 +5,7 @@ import {
   RunRawModelStreamEvent,
   RunMessageOutputItem,
   RunReasoningItem,
+  RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
   RunToolSearchCallItem,
@@ -984,5 +985,162 @@ describe('createAiSdkUiMessageStreamResponse', () => {
 
     expect(deltas).toHaveLength(1);
     expect(deltas[0]).toMatchObject({ delta: 'Hello again' });
+  });
+
+  test('falls back for invalid JSON arguments and maps non-function tool inputs', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const invalidFunctionCall = new RunToolCallItem(
+      {
+        type: 'function_call',
+        name: 'broken_json',
+        arguments: '{not valid json',
+      } as any,
+      agent,
+    );
+    const computerCall = new RunToolCallItem(
+      {
+        type: 'computer_call',
+        callId: 'computer-call-1',
+        action: { type: 'click', x: 1, y: 2, button: 'left' },
+      } as any,
+      agent,
+    );
+    const shellCall = new RunToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell-call-1',
+        action: {
+          command: 'pwd',
+          cwd: '/tmp',
+        },
+      } as any,
+      agent,
+    );
+    const applyPatchCall = new RunToolCallItem(
+      {
+        type: 'apply_patch_call',
+        callId: 'apply-patch-call-1',
+        operation: '*** Begin Patch\n*** End Patch\n',
+      } as any,
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_called', invalidFunctionCall);
+      yield new RunItemStreamEvent('tool_called', computerCall);
+      yield new RunItemStreamEvent('tool_called', shellCall);
+      yield new RunItemStreamEvent('tool_called', applyPatchCall);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+
+    expect(
+      chunks.filter((chunk) => chunk.type === 'tool-input-available'),
+    ).toMatchObject([
+      {
+        toolCallId: expect.stringMatching(/^broken_json-call-/),
+        toolName: 'broken_json',
+        input: { raw: '{not valid json' },
+        dynamic: true,
+      },
+      {
+        toolCallId: 'computer-call-1',
+        toolName: 'computer_call',
+        input: { type: 'click', x: 1, y: 2, button: 'left' },
+        dynamic: true,
+      },
+      {
+        toolCallId: 'shell-call-1',
+        toolName: 'shell_call',
+        input: {
+          command: 'pwd',
+          cwd: '/tmp',
+        },
+        dynamic: true,
+      },
+      {
+        toolCallId: 'apply-patch-call-1',
+        toolName: 'apply_patch_call',
+        input: '*** Begin Patch\n*** End Patch\n',
+        dynamic: true,
+      },
+    ]);
+  });
+
+  test('emits approval requests with generated fallback ids', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'shell_call',
+        action: {
+          command: 'rm -rf /tmp/nope',
+        },
+      } as any,
+      agent,
+      'shell',
+    );
+
+    const events = (async function* () {
+      yield new RunItemStreamEvent('tool_approval_requested', approvalItem);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const approvalRequest = chunks.find(
+      (chunk) => chunk.type === 'tool-approval-request',
+    );
+
+    expect(approvalRequest).toMatchObject({
+      type: 'tool-approval-request',
+      toolCallId: expect.stringMatching(/^shell-call-/),
+      approvalId: expect.stringMatching(/^shell-call-/),
+    });
+  });
+
+  test('closes pending empty steps when response_done arrives before empty message output', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const emptyMessageOutput = new RunMessageOutputItem(
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [],
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunRawModelStreamEvent({ type: 'response_started' });
+      yield new RunRawModelStreamEvent({
+        type: 'response_done',
+        response: {
+          id: 'resp-empty',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 0,
+            totalTokens: 1,
+          },
+          output: [],
+        },
+      });
+      yield new RunItemStreamEvent(
+        'message_output_created',
+        emptyMessageOutput,
+      );
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+
+    expect(chunks.map((chunk) => chunk.type)).toEqual([
+      'start',
+      'start-step',
+      'finish-step',
+      'finish',
+    ]);
   });
 });

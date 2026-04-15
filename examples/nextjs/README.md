@@ -19,7 +19,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser and ask `Wha
 ## Endpoints
 
 - **`/`** – The basic example that actually handles receiving the approval requests and sending messages to the API. Code in `src/app/page.tsx`.
-- **`/api/basic`** – The endpoint that gets triggered to run the agent. Code in `src/app/websocket/page.tsx`.
+- **`/api/basic`** – The endpoint that gets triggered to run the agent. Code in `src/app/api/basic/route.ts`.
 
 ## Other files
 
