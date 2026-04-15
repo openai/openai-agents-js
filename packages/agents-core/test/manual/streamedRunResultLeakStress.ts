@@ -1,8 +1,11 @@
 import { getEventListeners } from 'node:events';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Agent } from '../../src/agent';
 import { StreamedRunResult } from '../../src/result';
 import { RunContext } from '../../src/runContext';
 import { RunState } from '../../src/runState';
+import { getExposedGc } from './gcRuntime';
 
 /**
  * Stress-style manual leak check that amplifies retention through abort signals.
@@ -36,46 +39,48 @@ type FinalizationRegistryConstructor = new <T>(
   cleanup: (heldValue: T) => void,
 ) => FinalizationRegistryLike<T>;
 
-const maybeGc = (globalThis as { gc?: () => void }).gc;
-if (typeof maybeGc !== 'function') {
-  console.error('global.gc is not available. Run with --expose-gc.');
-  process.exit(2);
-}
-const gc: () => void = maybeGc;
-const finalizationRegistryConstructor = (
-  globalThis as {
-    FinalizationRegistry?: FinalizationRegistryConstructor;
+export type StreamedRunResultLeakStressOptions = {
+  iterations?: number;
+  payloadBytes?: number;
+  snapshotEvery?: number;
+  gcCycles?: number;
+  pressureSize?: number;
+  abortAfterDone?: boolean;
+  retainSignals?: boolean;
+  removeMode?: RemoveMode;
+  minFinalizedRatio?: number;
+  maxPostDoneAbortMutations?: number;
+  onLog?: (line: string) => void;
+};
+
+export type StreamedRunResultLeakStressResult = {
+  finalizedRatio: number;
+  minFinalizedRatio: number;
+  postDoneAbortMutations: number;
+  maxPostDoneAbortMutations: number;
+  deltaExternal: number;
+  finalizedRatioTooLow: boolean;
+  abortMutationExceeded: boolean;
+};
+
+function getLeakStressRuntime(): {
+  gc: () => void;
+  finalizationRegistryCtor: FinalizationRegistryConstructor;
+} {
+  const finalizationRegistryConstructor = (
+    globalThis as {
+      FinalizationRegistry?: FinalizationRegistryConstructor;
+    }
+  ).FinalizationRegistry;
+  if (typeof finalizationRegistryConstructor !== 'function') {
+    throw new Error('FinalizationRegistry is not available in this runtime.');
   }
-).FinalizationRegistry;
-if (typeof finalizationRegistryConstructor !== 'function') {
-  console.error('FinalizationRegistry is not available in this runtime.');
-  process.exit(2);
+
+  return {
+    gc: getExposedGc(),
+    finalizationRegistryCtor: finalizationRegistryConstructor,
+  };
 }
-const finalizationRegistryCtor: FinalizationRegistryConstructor =
-  finalizationRegistryConstructor;
-
-const iterations = Number(process.env.LEAK_STRESS_ITERATIONS ?? 1000);
-const payloadBytes = Number(process.env.LEAK_STRESS_PAYLOAD_BYTES ?? 200_000);
-const snapshotEvery = Number(process.env.LEAK_STRESS_SNAPSHOT_EVERY ?? 250);
-const gcCycles = Number(process.env.LEAK_STRESS_GC_CYCLES ?? 6);
-const pressureSize = Number(process.env.LEAK_STRESS_PRESSURE_SIZE ?? 200_000);
-const abortAfterDone = process.env.LEAK_STRESS_ABORT_AFTER_DONE !== '0';
-const retainSignals = process.env.LEAK_STRESS_RETAIN_SIGNAL !== '0';
-const removeMode = (process.env.LEAK_STRESS_REMOVE_MODE ??
-  'noop') as RemoveMode;
-const minFinalizedRatio = Number(
-  process.env.LEAK_STRESS_MIN_FINALIZED_RATIO ?? 0.9,
-);
-const maxPostDoneAbortMutations = Number(
-  process.env.LEAK_STRESS_MAX_POST_DONE_ABORT_MUTATIONS ?? 0,
-);
-
-const retainedSignals: AbortSignal[] = [];
-let postDoneAbortMutations = 0;
-const finalizedTokens = new Set<string>();
-const registry = new finalizationRegistryCtor<string>((token) => {
-  finalizedTokens.add(token);
-});
 
 function formatMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -83,7 +88,12 @@ function formatMb(bytes: number): string {
 
 const waitTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function settleGc(): Promise<void> {
+async function settleGc(options: {
+  gc: () => void;
+  gcCycles: number;
+  pressureSize: number;
+}): Promise<void> {
+  const { gc, gcCycles, pressureSize } = options;
   // Run multiple GC cycles with ticks so finalizers have a chance to run.
   for (let i = 0; i < gcCycles; i += 1) {
     gc();
@@ -94,26 +104,12 @@ async function settleGc(): Promise<void> {
   }
 }
 
-async function snapshotMemory(): Promise<{
-  heapUsed: number;
-  external: number;
-  rss: number;
-}> {
-  await settleGc();
-  const usage = process.memoryUsage();
-  return {
-    heapUsed: usage.heapUsed,
-    external: usage.external,
-    rss: usage.rss,
-  };
-}
-
 function makePayload(bytes: number, seed: number): Buffer {
   // Buffers allocate external memory, which is easier to observe for leaks.
   return Buffer.alloc(bytes, seed % 256);
 }
 
-function patchSignalRemoval(signal: AbortSignal): void {
+function patchSignalRemoval(signal: AbortSignal, removeMode: RemoveMode): void {
   if (removeMode === 'normal') {
     return;
   }
@@ -136,7 +132,25 @@ function patchSignalRemoval(signal: AbortSignal): void {
   }) as typeof originalRemove;
 }
 
-async function runOnce(i: number): Promise<boolean> {
+async function runOnce(
+  i: number,
+  options: {
+    payloadBytes: number;
+    abortAfterDone: boolean;
+    retainSignals: boolean;
+    retainedSignals: AbortSignal[];
+    removeMode: RemoveMode;
+    registry: FinalizationRegistryLike<string>;
+  },
+): Promise<boolean> {
+  const {
+    payloadBytes,
+    abortAfterDone,
+    retainSignals,
+    retainedSignals,
+    removeMode,
+    registry,
+  } = options;
   let agent: Agent<any, any> | undefined = new Agent({
     name: `leak-stress-${i}`,
   });
@@ -161,7 +175,7 @@ async function runOnce(i: number): Promise<boolean> {
   const signal = result._getAbortSignal();
   if (signal) {
     // Patch only this signal so we do not affect unrelated AbortSignal usage.
-    patchSignalRemoval(signal);
+    patchSignalRemoval(signal, removeMode);
   }
   if (retainSignals && signal) {
     retainedSignals.push(signal);
@@ -186,7 +200,10 @@ async function runOnce(i: number): Promise<boolean> {
   return mutatedAfterDone;
 }
 
-function totalAbortListeners(): number {
+function totalAbortListeners(
+  retainedSignals: AbortSignal[],
+  retainSignals: boolean,
+): number {
   if (!retainSignals) {
     return 0;
   }
@@ -197,19 +214,83 @@ function totalAbortListeners(): number {
   return total;
 }
 
-async function main(): Promise<void> {
-  const baseline = await snapshotMemory();
-  console.log(
+export async function runStreamedRunResultLeakStress(
+  options: StreamedRunResultLeakStressOptions = {},
+): Promise<StreamedRunResultLeakStressResult> {
+  const runtime = getLeakStressRuntime();
+  const iterations = Number(
+    options.iterations ?? process.env.LEAK_STRESS_ITERATIONS ?? 1000,
+  );
+  const payloadBytes = Number(
+    options.payloadBytes ?? process.env.LEAK_STRESS_PAYLOAD_BYTES ?? 200_000,
+  );
+  const snapshotEvery = Number(
+    options.snapshotEvery ?? process.env.LEAK_STRESS_SNAPSHOT_EVERY ?? 250,
+  );
+  const gcCycles = Number(
+    options.gcCycles ?? process.env.LEAK_STRESS_GC_CYCLES ?? 6,
+  );
+  const pressureSize = Number(
+    options.pressureSize ?? process.env.LEAK_STRESS_PRESSURE_SIZE ?? 200_000,
+  );
+  const abortAfterDone =
+    options.abortAfterDone ?? process.env.LEAK_STRESS_ABORT_AFTER_DONE !== '0';
+  const retainSignals =
+    options.retainSignals ?? process.env.LEAK_STRESS_RETAIN_SIGNAL !== '0';
+  const removeMode =
+    options.removeMode ??
+    ((process.env.LEAK_STRESS_REMOVE_MODE ?? 'noop') as RemoveMode);
+  const minFinalizedRatio = Number(
+    options.minFinalizedRatio ??
+      process.env.LEAK_STRESS_MIN_FINALIZED_RATIO ??
+      0.9,
+  );
+  const maxPostDoneAbortMutations = Number(
+    options.maxPostDoneAbortMutations ??
+      process.env.LEAK_STRESS_MAX_POST_DONE_ABORT_MUTATIONS ??
+      0,
+  );
+  const retainedSignals: AbortSignal[] = [];
+  const finalizedTokens = new Set<string>();
+  const registry = new runtime.finalizationRegistryCtor<string>((token) => {
+    finalizedTokens.add(token);
+  });
+  let postDoneAbortMutations = 0;
+  const onLog = options.onLog;
+  const settleOptions = {
+    gc: runtime.gc,
+    gcCycles,
+    pressureSize,
+  };
+  const snapshotMemoryWithOptions = async () => {
+    await settleGc(settleOptions);
+    const usage = process.memoryUsage();
+    return {
+      heapUsed: usage.heapUsed,
+      external: usage.external,
+      rss: usage.rss,
+    };
+  };
+
+  const baseline = await snapshotMemoryWithOptions();
+  onLog?.(
     `baseline heapUsed=${formatMb(baseline.heapUsed)} external=${formatMb(baseline.external)} rss=${formatMb(baseline.rss)} mode=${removeMode} iterations=${iterations} payload=${formatMb(payloadBytes)} gcCycles=${gcCycles} pressureSize=${pressureSize} abortAfterDone=${abortAfterDone}`,
   );
 
   for (let i = 1; i <= iterations; i += 1) {
-    const mutatedAfterDone = await runOnce(i);
+    const mutatedAfterDone = await runOnce(i, {
+      payloadBytes,
+      abortAfterDone,
+      retainSignals,
+      retainedSignals,
+      removeMode,
+      registry,
+    });
     if (mutatedAfterDone) {
       postDoneAbortMutations += 1;
     }
     if (i % snapshotEvery === 0 || i === iterations) {
-      const current = await snapshotMemory();
+      const current = await snapshotMemoryWithOptions();
       const deltaHeap = current.heapUsed - baseline.heapUsed;
       const deltaExternal = current.external - baseline.external;
       const expectedTokens = i * 3;
@@ -218,13 +299,13 @@ async function main(): Promise<void> {
         expectedTokens > 0
           ? (finalizedCount / expectedTokens).toFixed(2)
           : '0.00';
-      console.log(
-        `[${i}] heapUsed=${formatMb(current.heapUsed)} deltaHeap=${formatMb(deltaHeap)} external=${formatMb(current.external)} deltaExternal=${formatMb(deltaExternal)} listeners=${totalAbortListeners()} finalized=${finalizedCount}/${expectedTokens} finalizedRatio=${finalizedRatio} postDoneAbortMutations=${postDoneAbortMutations}`,
+      onLog?.(
+        `[${i}] heapUsed=${formatMb(current.heapUsed)} deltaHeap=${formatMb(deltaHeap)} external=${formatMb(current.external)} deltaExternal=${formatMb(deltaExternal)} listeners=${totalAbortListeners(retainedSignals, retainSignals)} finalized=${finalizedCount}/${expectedTokens} finalizedRatio=${finalizedRatio} postDoneAbortMutations=${postDoneAbortMutations}`,
       );
     }
   }
 
-  const finalSnapshot = await snapshotMemory();
+  const finalSnapshot = await snapshotMemoryWithOptions();
   const expectedTokens = iterations * 3;
   const finalizedCount = finalizedTokens.size;
   const finalizedRatio =
@@ -234,19 +315,62 @@ async function main(): Promise<void> {
     abortAfterDone && postDoneAbortMutations > maxPostDoneAbortMutations;
   const finalizedRatioTooLow = finalizedRatio < minFinalizedRatio;
 
-  if (finalizedRatioTooLow || abortMutationExceeded) {
-    console.error(
-      `leak stress check failed: finalizedRatio=${finalizedRatio.toFixed(2)} minFinalizedRatio=${minFinalizedRatio} postDoneAbortMutations=${postDoneAbortMutations} maxPostDoneAbortMutations=${maxPostDoneAbortMutations} deltaExternal=${formatMb(deltaExternal)}`,
-    );
-    process.exit(1);
-  }
-
-  console.log(
-    `OK: finalizedRatio=${finalizedRatio.toFixed(2)} postDoneAbortMutations=${postDoneAbortMutations} deltaExternal=${formatMb(deltaExternal)}`,
-  );
+  return {
+    finalizedRatio,
+    minFinalizedRatio,
+    postDoneAbortMutations,
+    maxPostDoneAbortMutations,
+    deltaExternal,
+    finalizedRatioTooLow,
+    abortMutationExceeded,
+  };
 }
 
-main().catch((err) => {
-  console.error(`unexpected error: ${err}`);
-  process.exit(1);
-});
+async function writeLine(stream: NodeJS.WriteStream, line: string) {
+  await new Promise<void>((resolve, reject) => {
+    stream.write(`${line}\n`, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function main(): Promise<number> {
+  const result = await runStreamedRunResultLeakStress({
+    onLog: (line) => {
+      console.log(line);
+    },
+  });
+
+  if (result.finalizedRatioTooLow || result.abortMutationExceeded) {
+    await writeLine(
+      process.stderr,
+      `leak stress check failed: finalizedRatio=${result.finalizedRatio.toFixed(2)} minFinalizedRatio=${result.minFinalizedRatio} postDoneAbortMutations=${result.postDoneAbortMutations} maxPostDoneAbortMutations=${result.maxPostDoneAbortMutations} deltaExternal=${formatMb(result.deltaExternal)}`,
+    );
+    return 1;
+  }
+
+  await writeLine(
+    process.stdout,
+    `OK: finalizedRatio=${result.finalizedRatio.toFixed(2)} postDoneAbortMutations=${result.postDoneAbortMutations} deltaExternal=${formatMb(result.deltaExternal)}`,
+  );
+  return 0;
+}
+
+const isMain =
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  main()
+    .then((exitCode) => {
+      process.exitCode = exitCode;
+    })
+    .catch(async (err) => {
+      await writeLine(process.stderr, `unexpected error: ${err}`);
+      process.exit(1);
+    });
+}
