@@ -10,35 +10,35 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-핸드오프를 사용하면 에이전트가 대화의 일부를 다른 에이전트에 위임할 수 있습니다. 이는 서로 다른 에이전트가 특정 영역에 특화되어 있을 때 유용합니다. 예를 들어 고객 지원 앱에서는 예약, 환불, FAQ를 처리하는 에이전트를 둘 수 있습니다.
+핸드오프를 사용하면 에이전트가 대화의 일부를 다른 에이전트에게 위임할 수 있습니다. 이는 서로 다른 에이전트가 특정 영역을 전문적으로 담당할 때 유용합니다. 예를 들어 고객 지원 앱에서는 예약, 환불 또는 FAQ 를 처리하는 에이전트를 둘 수 있습니다.
 
-핸드오프는 LLM에 도구로 표현됩니다. `Refund Agent`라는 에이전트로 핸드오프하면 도구 이름은 `transfer_to_refund_agent`가 됩니다.
+핸드오프는 LLM 에게 도구로 표현됩니다. `Refund Agent` 라는 에이전트로 핸드오프하면 도구 이름은 `transfer_to_refund_agent` 가 됩니다.
 
-> 전문 에이전트가 대화를 이어받아야 한다는 것을 알게 된 뒤에 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns) 페이지를 읽으세요. 전문 에이전트가 원래 에이전트 뒤에서 동작해야 한다면 대신 [agents as tools](/openai-agents-js/ko/guides/tools#4-agents-as-tools)을 사용하세요.
+> 전문 에이전트가 대화를 이어받아야 하는 시점을 이해한 뒤 이 페이지는 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns) 다음에 읽어보세요. 전문 에이전트가 원래 에이전트 뒤에서 계속 동작해야 한다면 대신 [Agents as tools](/openai-agents-js/ko/guides/tools#4-agents-as-tools) 을 사용하세요.
 
 ## 핸드오프 생성
 
-모든 에이전트는 `handoffs` 옵션을 받습니다. 여기에는 다른 `Agent` 인스턴스나 `handoff()` 헬퍼가 반환한 `Handoff` 객체를 넣을 수 있습니다.
+모든 에이전트는 `handoffs` 옵션을 받습니다. 여기에 다른 `Agent` 인스턴스나 `handoff()` 헬퍼가 반환하는 `Handoff` 객체를 넣을 수 있습니다.
 
-일반 `Agent` 인스턴스를 전달하면 해당 `handoffDescription`(제공된 경우)이 기본 도구 설명에 추가됩니다. 모델이 언제 해당 핸드오프를 선택해야 하는지 명확히 할 때 사용하세요.
+일반 `Agent` 인스턴스를 전달하면 해당 `handoffDescription`(제공된 경우)이 기본 도구 설명에 추가됩니다. 모델이 언제 그 핸드오프를 선택해야 하는지 명확히 하는 데 사용하세요.
 
 ### 기본 사용법
 
 <Code lang="typescript" code={basicUsageExample} title="Basic handoffs" />
 
-### `handoff()`를 통한 핸드오프 사용자 지정
+### `handoff()` 를 통한 핸드오프 커스터마이징
 
 `handoff()` 함수로 생성된 도구를 조정할 수 있습니다.
 
 - `agent` – 핸드오프할 대상 에이전트
 - `toolNameOverride` – 기본 `transfer_to_<agent_name>` 도구 이름 재정의
 - `toolDescriptionOverride` – 기본 도구 설명 재정의
-- `onHandoff` – 핸드오프가 발생할 때의 콜백. `RunContext`를 받고, `inputType`이 설정된 경우 파싱된 핸드오프 페이로드도 받음
-- `inputType` – 핸드오프 도구 호출 인자용 스키마
-- `inputFilter` – 다음 에이전트로 전달할 히스토리 필터
-- `isEnabled` – 일치하는 실행에서만 핸드오프를 노출하는 boolean 또는 조건 함수
+- `onHandoff` – 핸드오프가 발생할 때 호출되는 콜백. `RunContext` 를 받고, `inputType` 이 설정된 경우 파싱된 핸드오프 페이로드도 받습니다
+- `inputType` – 핸드오프 도구 호출 인자를 위한 스키마
+- `inputFilter` – 다음 에이전트에 전달할 히스토리를 필터링
+- `isEnabled` – 일치하는 실행에서만 핸드오프를 노출하는 boolean 또는 predicate
 
-`handoff()` 헬퍼는 항상 전달한 특정 `agent`로 제어를 넘깁니다. 가능한 목적지가 여러 개라면 목적지마다 하나의 핸드오프를 등록하고, 모델이 그중에서 선택하게 하세요. 핸드오프 호출 시점에 어떤 에이전트를 반환할지 직접 결정해야 한다면 커스텀 `Handoff`를 사용하세요.
+`handoff()` 헬퍼는 항상 전달된 특정 `agent` 로 제어를 넘깁니다. 가능한 대상이 여러 개라면 대상마다 하나의 핸드오프를 등록하고 모델이 그중에서 선택하도록 하세요. 호출 시점에 어떤 에이전트를 반환할지 직접 결정해야 한다면 커스텀 `Handoff` 를 사용하세요.
 
 <Code
   lang="typescript"
@@ -48,52 +48,52 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ## 핸드오프 입력
 
-모델이 핸드오프를 선택할 때 작은 structured outputs 페이로드를 함께 붙이게 하고 싶을 때가 있습니다. 이 경우 `inputType`과 `onHandoff`를 함께 정의하세요.
+때로는 모델이 핸드오프를 선택할 때 작은 structured outputs 페이로드를 함께 붙이도록 하고 싶을 수 있습니다. 이런 경우 `inputType` 과 `onHandoff` 를 함께 정의하세요.
 
 <Code lang="typescript" code={handoffInputExample} title="Handoff inputs" />
 
-`inputType`은 핸드오프 도구 호출 자체의 인자를 설명합니다. SDK는 이 스키마를 핸드오프 도구의 `parameters`로 모델에 노출하고, 반환된 인자를 로컬에서 파싱한 뒤 파싱된 값을 `onHandoff`에 전달합니다.
+`inputType` 은 핸드오프 도구 호출 자체의 인자를 설명합니다. SDK 는 이 스키마를 핸드오프 도구의 `parameters` 로 모델에 노출하고, 반환된 인자를 로컬에서 파싱한 뒤 파싱된 값을 `onHandoff` 에 전달합니다.
 
-이는 다음 에이전트의 기본 입력을 대체하지 않으며, 다른 목적지를 선택하지도 않습니다. `handoff()` 헬퍼는 여전히 감싼 특정 에이전트로 핸드오프하고, `inputFilter`로 바꾸지 않는 한 수신 에이전트는 여전히 대화 히스토리를 봅니다.
+이것은 다음 에이전트의 메인 입력을 대체하지 않으며, 다른 대상을 선택하지도 않습니다. `handoff()` 헬퍼는 여전히 래핑한 특정 에이전트로 핸드오프하며, 수신 에이전트는 `inputFilter` 로 변경하지 않는 한 여전히 대화 히스토리를 보게 됩니다.
 
-`inputType`은 `RunContext`와도 별개입니다. 핸드오프 시점에 모델이 결정하는 메타데이터에 사용하고, 이미 로컬에 있는 애플리케이션 상태나 의존성에는 사용하지 마세요.
+`inputType` 은 `RunContext` 와도 별개입니다. 로컬에 이미 가지고 있는 애플리케이션 상태나 의존성이 아니라, 모델이 핸드오프 시점에 결정하는 메타데이터에 사용하세요.
 
 ### `inputType` 사용 시점
 
-핸드오프에 `reason`, `language`, `priority`, `summary` 같은 모델 생성 라우팅 메타데이터가 조금 필요할 때 `inputType`을 사용하세요. 예를 들어 분류 에이전트가 `{ reason: 'duplicate_charge', priority: 'high' }`와 함께 환불 에이전트로 핸드오프할 수 있고, 환불 에이전트가 이어받기 전에 `onHandoff`에서 해당 메타데이터를 로깅하거나 저장할 수 있습니다.
+핸드오프에 `reason`, `language`, `priority`, `summary` 같은 모델 생성 라우팅 메타데이터의 작은 조각이 필요할 때 `inputType` 을 사용하세요. 예를 들어 트리아지 에이전트는 `{ reason: 'duplicate_charge', priority: 'high' }` 와 함께 환불 에이전트로 핸드오프할 수 있고, `onHandoff` 는 환불 에이전트가 이어받기 전에 이 메타데이터를 기록하거나 저장할 수 있습니다.
 
 목적이 다르면 다른 메커니즘을 선택하세요.
 
-- 기존 애플리케이션 상태는 `RunContext`에 넣기
-- 수신 에이전트가 보는 히스토리를 바꾸고 싶다면 `inputFilter` 사용
-- 가능한 전문 에이전트가 여러 명이면 목적지마다 핸드오프 하나씩 등록. `inputType`은 선택된 핸드오프에 메타데이터를 추가할 수 있지만 목적지 간 디스패치는 하지 않음
-- `onHandoff` 실행 전에 SDK가 파싱된 페이로드를 검증하길 원하면 원문 JSON Schema보다 Zod 스키마를 우선 사용. 원문 JSON Schema는 모델에 전송되는 도구 계약만 정의함
+- 기존 애플리케이션 상태는 `RunContext` 에 넣기
+- 수신 에이전트가 보게 되는 히스토리를 바꾸고 싶다면 `inputFilter` 사용
+- 가능한 전문 에이전트가 여러 명이라면 대상마다 하나의 핸드오프 등록. `inputType` 은 선택된 핸드오프에 메타데이터를 추가할 수는 있지만, 대상 간 디스패치는 하지 않음
+- `onHandoff` 실행 전에 SDK 가 파싱된 페이로드를 검증하길 원한다면 Zod 스키마를 우선 사용. 원문 JSON Schema 는 모델에 전달되는 도구 계약만 정의함
 
 ## 입력 필터
 
-기본적으로 핸드오프는 전체 대화 히스토리를 받습니다. 다음 에이전트로 전달되는 내용을 수정하려면 `inputFilter`를 제공하세요. 공통 헬퍼는 `@openai/agents-core/extensions`에 있습니다.
+기본적으로 핸드오프는 전체 대화 히스토리를 받습니다. 다음 에이전트에 전달되는 내용을 수정하려면 `inputFilter` 를 제공하세요. 일반적인 헬퍼는 `@openai/agents-core/extensions` 에 있습니다.
 
 <Code lang="typescript" code={inputFilterExample} title="Input filters" />
 
-`inputFilter`는 `HandoffInputData` 객체를 받아 같은 형태로 반환합니다.
+`inputFilter` 는 `HandoffInputData` 객체를 받아 반환합니다.
 
 - `inputHistory` – 실행 시작 전의 입력 히스토리
 - `preHandoffItems` – 핸드오프가 발생한 턴 이전에 생성된 항목
-- `newItems` – 현재 턴에서 생성된 항목(핸드오프 호출/출력 항목 포함)
+- `newItems` – 현재 턴 동안 생성된 항목으로, 핸드오프 호출/출력 항목 포함
 - `runContext` – 활성 실행 컨텍스트
 
-`Runner`에 `handoffInputFilter`도 설정한 경우, 해당 핸드오프에서는 핸드오프별 `inputFilter`가 우선합니다.
+`Runner` 에 `handoffInputFilter` 도 설정한 경우, 해당 특정 핸드오프에는 핸드오프별 `inputFilter` 가 우선 적용됩니다.
 
 <Aside type="note">
-  핸드오프는 단일 실행 내에서 유지됩니다. 입력 가드레일은 체인의 첫 번째
-  에이전트에만 적용되고, 출력 가드레일은 최종 출력을 생성하는 에이전트에만
-  적용됩니다. 워크플로 내부의 각 커스텀 함수 도구 호출 주변 검사가 필요하다면
-  도구 가드레일을 사용하세요.
+  핸드오프는 단일 실행 내에서만 유지됩니다. 입력 가드레일은 여전히 체인의 첫
+  번째 에이전트에만 적용되고, 출력 가드레일은 최종 출력을 생성하는 에이전트에만
+  적용됩니다. 워크플로 내 각 커스텀 함수 도구 호출 주변에 검사가 필요하다면 tool
+  guardrails 를 사용하세요.
 </Aside>
 
 ## 권장 프롬프트
 
-프롬프트에 핸드오프를 언급하면 LLM이 더 안정적으로 응답합니다. SDK는 `RECOMMENDED_PROMPT_PREFIX`를 통해 권장 접두사를 제공합니다.
+프롬프트에 핸드오프를 언급하면 LLM 이 더 안정적으로 응답합니다. SDK 는 `RECOMMENDED_PROMPT_PREFIX` 를 통해 권장 프리픽스를 제공합니다.
 
 <Code
   lang="typescript"
@@ -103,8 +103,8 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ## 관련 가이드
 
-- 관리자 패턴과 핸드오프 중 선택 기준은 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns)를 참고하세요
-- 더 넓은 워크플로 절충점은 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)을 참고하세요
-- `agent.asTool()`을 사용하는 관리자 스타일 대안은 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)를 참고하세요
-- 런타임에서 핸드오프가 동작하는 방식은 [에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 참고하세요
-- 핸드오프 그래프 전반의 타입 지정 `finalOutput`은 [실행 결과](/openai-agents-js/ko/guides/results#final-output)를 참고하세요
+- 관리자와 핸드오프 중 무엇을 선택할지에 대해서는 [에이전트](/openai-agents-js/ko/guides/agents#composition-patterns)
+- 더 넓은 워크플로의 트레이드오프에 대해서는 [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent)
+- `agent.asTool()` 을 사용하는 관리자 스타일 대안에 대해서는 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)
+- 실행 시 핸드오프가 어떻게 동작하는지에 대해서는 [에이전트 실행](/openai-agents-js/ko/guides/running-agents)
+- 핸드오프 그래프 전반의 타입 지정된 `finalOutput` 에 대해서는 [실행 결과](/openai-agents-js/ko/guides/results#final-output)

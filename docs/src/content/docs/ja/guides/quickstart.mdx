@@ -17,7 +17,7 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
 
 <Steps>
 
-1. プロジェクトを作成して npm を初期化します。これは一度だけ実行すれば十分です
+1. プロジェクトを作成し、 npm を初期化します。これは一度だけ行えば十分です。
 
    ```bash
    mkdir my_project
@@ -25,21 +25,19 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
    npm init -y
    ```
 
-2. Agents SDK と Zod をインストールします。SDK はツールスキーマと structured outputs に Zod v4 を使用します
+2. Agents SDK と Zod をインストールします。 SDK は、ツールのスキーマと structured outputs に Zod v4 を使用します。
 
    ```bash
    npm install @openai/agents zod
    ```
 
-3. OpenAI API キーを設定します。まだ持っていない場合は、OpenAI API キーを作成するために [この手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) に従ってください
+3. OpenAI API キーを設定します。まだお持ちでない場合は、 OpenAI API キーを作成するために [こちらの手順](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) を参照してください。
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   あるいは、`setDefaultOpenAIKey('<api key>')` を呼び出してキーをプログラムから設定し、
-   トレーシングには `setTracingExportApiKey('<api key>')` を使用することもできます。
-   詳細は [SDK の設定](/openai-agents-js/ja/guides/config) を参照してください
+   または、 `setDefaultOpenAIKey('<api key>')` を呼び出してキーをプログラムから設定し、トレーシングには `setTracingExportApiKey('<api key>')` を使用することもできます。詳細は [SDK の設定](/openai-agents-js/ja/guides/config) を参照してください。
 
 </Steps>
 
@@ -47,71 +45,68 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
 
 エージェントは instructions と名前で定義します。
 
-<Code lang="typescript" code={createAgentExample} title="エージェントを作成" />
+<Code lang="typescript" code={createAgentExample} title="Create an agent" />
 
 ## 最初のエージェントの実行
 
-エージェントの実行には `run` メソッドを使用できます。実行を開始するには、開始したいエージェントと渡したい入力の両方を渡します。
+`run` メソッドを使ってエージェントを実行できます。実行を開始するには、開始したいエージェントと渡したい入力の両方を指定します。
 
-これにより、その実行中に行われた最終出力とアクションを含む結果が返されます。
+これにより、その実行中に行われた最終出力とあらゆるアクションを含む結果が返されます。
 
-<Code lang="typescript" code={runAgentExample} title="エージェントを実行" />
+<Code lang="typescript" code={runAgentExample} title="Run an agent" />
 
-2 回目のターンでは、`result.history` を `run()` に戻すか、[セッション](/openai-agents-js/ja/guides/sessions) を関連付けるか、
-`conversationId` / `previousResponseId` を使って OpenAI サーバー管理の状態を再利用できます。[エージェントの実行](/openai-agents-js/ja/guides/running-agents)
-では、これらの方法を比較しています。
+2 回目のターンでは、 `result.history` を `run()` に戻して渡すか、 [セッション](/openai-agents-js/ja/guides/sessions) をアタッチするか、 `conversationId` / `previousResponseId` を使って OpenAI サーバー管理の状態を再利用できます。[エージェントの実行](/openai-agents-js/ja/guides/running-agents) ガイドでは、これらのアプローチを比較しています。
 
-## エージェントへのツール追加
+## エージェントへのツールの追加
 
-エージェントにツールを与えることで、情報の検索やアクションの実行ができます。
+エージェントには、情報を調べたりアクションを実行したりするためのツールを与えることができます。
 
-<Code lang="typescript" code={agentWithToolsExample} title="ツールを追加" />
+<Code lang="typescript" code={agentWithToolsExample} title="Add a tool" />
 
-## 追加エージェントの作成
+## 追加エージェントの定義
 
-追加のエージェントも同様に定義でき、問題をより小さな部分に分割して、エージェントが目の前のタスクにより集中できるようになります。また、エージェント上でモデルを定義することで、問題ごとに異なるモデルを使うこともできます。
+追加のエージェントも同様に定義でき、問題をより小さな部分に分解し、対象のタスクにより集中したエージェントにできます。また、エージェント上でモデルを定義することで、問題ごとに異なるモデルを使うことも可能です。
 
 <Code
   lang="typescript"
   code={additionalAgentsExample}
-  title="専門エージェントを作成"
+  title="Create specialist agents"
 />
 
 ## ハンドオフの定義
 
-複数のエージェント間をオーケストレーションするには、エージェントに `handoffs` を定義できます。これにより、エージェントが会話を次のエージェントに引き継げるようになります。これは実行中に自動で行われます。
+複数のエージェント間でオーケストレーションするには、エージェントに `handoffs` を定義できます。これにより、エージェントは会話を次のエージェントに引き継げるようになります。これは実行の過程で自動的に行われます。
 
-<Code lang="typescript" code={defineHandoffsExample} title="ハンドオフを定義" />
+<Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
 実行後は、結果の `lastAgent` プロパティを見ることで、どのエージェントが最終応答を生成したかを確認できます。
 
 ## エージェントオーケストレーションの実行
 
-ランナーは、個々のエージェントの実行、ハンドオフ、ツール呼び出しを処理します。
+runner は、個々のエージェントの実行、あらゆるハンドオフ、およびあらゆるツール呼び出しを処理します。
 
 <Code
   lang="typescript"
   code={runOrchestrationExample}
-  title="エージェントオーケストレーションを実行"
+  title="Run agent orchestration"
 />
 
 ## 全体の統合
 
-すべてを 1 つの完全な例にまとめましょう。これを `index.js` ファイルに配置して実行します。アプリがすでに TypeScript 用に設定されている場合は、代わりに `index.ts` を使用できます。
+ここまでの内容を 1 つの完全な例にまとめましょう。これを `index.js` ファイルに配置して実行してください。アプリがすでに TypeScript 用にセットアップされている場合は、代わりに `index.ts` を使用できます。
 
-<Code lang="typescript" code={quickstartExample} title="クイックスタート" />
+<Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
 ## トレースの確認
 
-Agents SDK は自動的にトレースを生成します。これにより、エージェントがどのように動作しているか、どのツールを呼び出したか、どのエージェントにハンドオフしたかを確認できます。
+Agents SDK は自動的にトレースを生成します。これにより、エージェントがどのように動作しているか、どのツールを呼び出したか、またはどのエージェントにハンドオフしたかを確認できます。
 
-エージェント実行中に何が起きたかを確認するには、
-[OpenAI Dashboard の Trace viewer](https://platform.openai.com/traces) に移動してください。
+エージェント実行中に何が起きたかを確認するには、 [OpenAI Dashboard の Trace viewer](https://platform.openai.com/traces) にアクセスしてください。
 
 ## 次のステップ
 
-より複雑な agentic フローの構築方法を学びましょう:
+より複雑なエージェントフローの構築方法を学びましょう。
 
 - [エージェント](/openai-agents-js/ja/guides/agents) の設定について学ぶ
 - [エージェントの実行](/openai-agents-js/ja/guides/running-agents) と [セッション](/openai-agents-js/ja/guides/sessions) について学ぶ
-- [ツール](/openai-agents-js/ja/guides/tools)、[ガードレール](/openai-agents-js/ja/guides/guardrails)、[モデル](/openai-agents-js/ja/guides/models) について学ぶ
+- [ツール](/openai-agents-js/ja/guides/tools)、 [ガードレール](/openai-agents-js/ja/guides/guardrails)、 [モデル](/openai-agents-js/ja/guides/models) について学ぶ

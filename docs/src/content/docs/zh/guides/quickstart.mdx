@@ -17,7 +17,7 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
 
 <Steps>
 
-1. 创建一个项目并初始化 npm。你只需要做一次。
+1. 创建一个项目并初始化 npm。您只需要执行一次。
 
    ```bash
    mkdir my_project
@@ -31,81 +31,82 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
    npm install @openai/agents zod
    ```
 
-3. 设置 OpenAI API key。如果你还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建一个 OpenAI API key。
+3. 设置 OpenAI API 密钥。如果您还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建 OpenAI API 密钥。
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   或者，你也可以调用 `setDefaultOpenAIKey('<api key>')` 以编程方式设置 key，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。
-   更多细节请参阅[SDK 配置指南](/openai-agents-js/zh/guides/config)。
+   或者，您也可以通过编程方式调用 `setDefaultOpenAIKey('<api key>')` 来设置密钥，并使用 `setTracingExportApiKey('<api key>')` 进行追踪。更多详情请参阅[SDK 配置](/openai-agents-js/zh/guides/config)。
 
 </Steps>
 
-## 创建首个智能体
+## 创建您的第一个智能体
 
 智能体通过 instructions 和名称来定义。
 
-<Code lang="typescript" code={createAgentExample} title="创建智能体" />
+<Code lang="typescript" code={createAgentExample} title="Create an agent" />
 
-## 首次运行智能体
+## 运行您的第一个智能体
 
-你可以使用 `run` 方法来运行智能体。触发一次运行时，需要同时传入你要启动的智能体和要传入的输入。
+您可以使用 `run` 方法来运行智能体。通过同时传入要启动的智能体和要传递的输入，即可触发一次运行。
 
-这会返回一个运行结果，其中包含最终输出以及本次运行期间执行的所有操作。
+这将返回一个执行结果，其中包含最终输出以及该次运行期间执行的所有操作。
 
-<Code lang="typescript" code={runAgentExample} title="运行智能体" />
+<Code lang="typescript" code={runAgentExample} title="Run an agent" />
 
-在第二轮中，你可以将 `result.history` 传回 `run()`，绑定一个[会话](/openai-agents-js/zh/guides/sessions)，或通过
-`conversationId` / `previousResponseId` 复用 OpenAI 服务器管理的状态。[运行智能体](/openai-agents-js/zh/guides/running-agents)
-指南对比了这些方法。
+对于第二轮，您可以将 `result.history` 传回 `run()`，附加一个[会话](/openai-agents-js/guides/sessions)，或通过 `conversationId` / `previousResponseId` 复用 OpenAI 服务器管理的状态。[运行智能体](/openai-agents-js/guides/running-agents)指南对这些方法进行了比较。
 
-## 为智能体添加工具
+## 为智能体提供工具
 
-你可以为智能体提供工具，用于查询信息或执行操作。
+您可以为智能体提供工具，以便其查找信息或执行操作。
 
-<Code lang="typescript" code={agentWithToolsExample} title="添加工具" />
+<Code lang="typescript" code={agentWithToolsExample} title="Add a tool" />
 
 ## 添加更多智能体
 
-你也可以类似地定义更多智能体，将问题拆分为更小的部分，让智能体更专注于当前任务。
-此外，通过在智能体上定义模型，你还可以针对不同问题使用不同模型。
+您也可以用类似方式定义更多智能体，将问题拆分为更小的部分，使智能体更专注于当前任务。这样还可以通过在智能体上定义模型，为不同问题使用不同模型。
 
-<Code lang="typescript" code={additionalAgentsExample} title="创建专家智能体" />
+<Code
+  lang="typescript"
+  code={additionalAgentsExample}
+  title="Create specialist agents"
+/>
 
 ## 定义交接
 
-为了在多个智能体之间进行编排，你可以为智能体定义 `handoffs`。这样智能体就能将对话传递给下一个智能体。
-这一过程会在运行期间自动发生。
+为了在多个智能体之间进行编排，您可以为智能体定义 `handoffs`。这样智能体就能将对话传递给下一个智能体。这会在一次运行过程中自动发生。
 
-<Code lang="typescript" code={defineHandoffsExample} title="定义交接" />
+<Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
-运行结束后，你可以通过查看结果中的 `lastAgent` 属性，确认是哪个智能体生成了最终响应。
+运行结束后，您可以通过查看执行结果上的 `lastAgent` 属性，了解是哪个智能体生成了最终响应。
 
 ## 运行智能体编排
 
-runner 会处理单个智能体执行、交接以及工具调用。
+运行器负责执行各个智能体、所有交接以及所有工具调用。
 
-<Code lang="typescript" code={runOrchestrationExample} title="运行智能体编排" />
+<Code
+  lang="typescript"
+  code={runOrchestrationExample}
+  title="Run agent orchestration"
+/>
 
-## 整体集成
+## 整体整合
 
-现在把这些整合成一个完整示例。将其放入你的 `index.js` 文件并运行。
-如果你的应用已经配置为 TypeScript，也可以改用 `index.ts`。
+让我们将以上内容整合成一个完整示例。将其放入您的 `index.js` 文件并运行。如果您的应用已经配置为 TypeScript，也可以改用 `index.ts`。
 
-<Code lang="typescript" code={quickstartExample} title="快速开始" />
+<Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
 ## 查看追踪
 
-Agents SDK 会自动为你生成追踪。这让你可以查看智能体如何运行、调用了哪些工具，以及交接到了哪个智能体。
+Agents SDK 会自动为您生成追踪。这使您可以查看智能体是如何运行的、调用了哪些工具，或交接给了哪个智能体。
 
-要查看你的智能体运行期间发生了什么，请前往
-[OpenAI Dashboard 中的 Trace 查看器](https://platform.openai.com/traces)。
+要查看智能体运行期间发生的情况，请前往 [OpenAI Dashboard 中的追踪查看器](https://platform.openai.com/traces)。
 
 ## 后续步骤
 
-了解如何构建更复杂的智能体流程：
+了解如何构建更复杂的智能体工作流：
 
-- 了解如何配置[智能体](/openai-agents-js/zh/guides/agents)。
-- 了解[运行智能体](/openai-agents-js/zh/guides/running-agents)和[会话](/openai-agents-js/zh/guides/sessions)。
-- 了解[工具](/openai-agents-js/zh/guides/tools)、[护栏](/openai-agents-js/zh/guides/guardrails)和[模型](/openai-agents-js/zh/guides/models)。
+- 了解如何配置[智能体](/openai-agents-js/guides/agents)。
+- 了解[运行智能体](/openai-agents-js/guides/running-agents)和[会话](/openai-agents-js/guides/sessions)。
+- 了解[工具](/openai-agents-js/guides/tools)、[护栏](/openai-agents-js/guides/guardrails)和[模型](/openai-agents-js/guides/models)。
