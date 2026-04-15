@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { createAiSdkTextStreamResponse } from '../../src/ai-sdk-ui/index';
 
@@ -33,6 +33,10 @@ async function readResponseText(response: Response): Promise<string> {
   return output;
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('createAiSdkTextStreamResponse', () => {
   test('streams text and applies default headers', async () => {
     const response = createAiSdkTextStreamResponse(
@@ -62,5 +66,23 @@ describe('createAiSdkTextStreamResponse', () => {
     expect(response.status).toBe(201);
     expect(response.headers.get('cache-control')).toBe('no-store');
     await expect(readResponseText(response)).resolves.toBe('One more');
+  });
+
+  test('preserves explicit headers and encodes without TextEncoderStream', async () => {
+    vi.stubGlobal('TextEncoderStream', undefined);
+
+    const response = createAiSdkTextStreamResponse(
+      stringStream(['Edge case']),
+      {
+        headers: [
+          ['Content-Type', 'text/custom'],
+          ['cache-control', 'max-age=60'],
+        ],
+      },
+    );
+
+    expect(response.headers.get('content-type')).toBe('text/custom');
+    expect(response.headers.get('cache-control')).toBe('max-age=60');
+    await expect(readResponseText(response)).resolves.toBe('Edge case');
   });
 });
