@@ -11,90 +11,98 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-세션이 어디에서 실행되는지, 그리고 얼마나 많은 원문 미디어 또는 이벤트 제어가 필요한지에 따라 전송 방식을 선택하세요.
+세션이 실행되는 위치와 필요한 원문 미디어 또는 이벤트 제어 수준에 따라 전송 방식을 선택하세요.
 
 | 시나리오 | 권장 전송 방식 | 이유 |
 | --- | --- | --- |
-| 브라우저 음성-대-음성 앱 | `OpenAIRealtimeWebRTC` | 가장 간편한 경로입니다. SDK 가 마이크 캡처, 재생, WebRTC 연결을 대신 관리합니다 |
-| 서버 측 음성 루프 또는 커스텀 오디오 파이프라인 | `OpenAIRealtimeWebSocket` | 이미 오디오 캡처/재생을 제어하고 있고 이벤트에 직접 접근하려는 경우 잘 맞습니다 |
-| SIP 또는 전화 브리지 | `OpenAIRealtimeSIP` | `callId` 로 기존 SIP 시작 Realtime 통화에 `RealtimeSession` 을 연결합니다 |
-| Cloudflare Workers / workerd | Cloudflare extension transport | workerd 는 전역 `WebSocket` 생성자로 외부 WebSocket 을 열 수 없습니다 |
-| Twilio 의 provider-specific 전화 흐름 | Twilio extension transport | Twilio 오디오 전달과 인터럽션(중단 처리) 동작을 SDK 가 대신 처리합니다 |
+| 브라우저 speech-to-speech 앱 | `OpenAIRealtimeWebRTC` | 가장 마찰이 적은 경로입니다. SDK가 마이크 캡처, 재생, WebRTC 연결을 대신 관리합니다. |
+| 서버 측 음성 루프 또는 커스텀 오디오 파이프라인 | `OpenAIRealtimeWebSocket` | 이미 오디오 캡처/재생을 제어하고 있고 이벤트에 직접 접근하려는 경우에 잘 맞습니다. |
+| SIP 또는 전화 브리지 | `OpenAIRealtimeSIP` | `callId`로 기존 SIP 시작 Realtime 통화에 `RealtimeSession`을 연결합니다. |
+| Cloudflare Workers / workerd | Cloudflare 확장 전송 방식 | workerd는 전역 `WebSocket` 생성자로 아웃바운드 WebSocket을 열 수 없습니다. |
+| Twilio의 provider별 전화 흐름 | Twilio 확장 전송 방식 | Twilio 오디오 전달 및 인터럽션(중단 처리) 동작을 대신 처리합니다. |
 
 <Aside type="note">
-  브라우저 제품을 만들고 있고 원문 오디오를 직접 관리해야 할 특별한 이유가
-  없다면 WebRTC 로 시작하세요. 서버에서 실행하거나 다른 미디어 시스템을
-  브리지한다면 WebSocket 또는 SIP 로 시작하세요.
+  브라우저 제품을 만들고 있고 원문 오디오를 직접 관리해야 할 이유가 없다면
+  WebRTC로 시작하세요. 서버에서 실행하거나 다른 미디어 시스템을 브리지한다면
+  WebSocket 또는 SIP로 시작하세요.
 </Aside>
 
 ## 기본 전송 계층
 
-### WebRTC 기본 브라우저 선택지
+### WebRTC: 기본 브라우저 선택지
 
-기본 브라우저 전송 방식은 WebRTC 를 사용합니다. 오디오는 마이크에서 캡처되고 자동으로 재생되므로, [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart)에서는 임시 토큰과 `session.connect(...)` 만으로 연결할 수 있습니다.
+기본 브라우저 전송 방식은 WebRTC를 사용합니다. 오디오는 마이크에서 캡처되고 자동으로 재생되므로, [빠른 시작](/openai-agents-js/guides/voice-agents/quickstart)에서 ephemeral token과 `session.connect(...)`만으로 연결할 수 있습니다.
 
-이 경로에서 `session.connect()` 는 resolve 되기 전에 초기 세션 구성이 `session.updated` 로 승인될 때까지 기다리려고 시도하므로, 오디오가 흐르기 전에 instructions 와 tools 가 적용됩니다. 다만 해당 승인이 끝내 도착하지 않으면 timeout fallback 이 있습니다.
+이 경로에서 `session.connect()`는 resolve되기 전에 초기 세션 구성이 `session.updated`로 확인될 때까지 기다리도록 시도하므로, 오디오 스트리밍이 시작되기 전에 instructions와 tools가 적용됩니다. 해당 확인이 끝내 도착하지 않는 경우를 위한 타임아웃 폴백도 있습니다.
 
-자체 미디어 스트림이나 오디오 엘리먼트를 사용하려면, 세션 생성 시 `OpenAIRealtimeWebRTC` 인스턴스를 전달하세요.
+자체 미디어 스트림이나 오디오 요소를 사용하려면, 세션 생성 시 `OpenAIRealtimeWebRTC` 인스턴스를 제공하세요.
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-더 낮은 수준의 커스터마이징을 위해 `OpenAIRealtimeWebRTC` 는 `changePeerConnection` 도 받습니다. 이를 통해 offer 생성 전에 새로 생성된 `RTCPeerConnection` 을 검사하거나 교체할 수 있습니다.
+더 낮은 수준의 커스터마이징을 위해 `OpenAIRealtimeWebRTC`는 `changePeerConnection`도 받으며, 이를 통해 offer가 생성되기 전에 새로 생성된 `RTCPeerConnection`을 확인하거나 교체할 수 있습니다.
 
-### WebSocket 기본 서버 선택지
+### WebSocket: 기본 서버 선택지
 
-세션 생성 시 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하면 WebRTC 대신 WebSocket 연결을 사용합니다. 서버 측 사용 사례, 전화 브리지, 커스텀 오디오 파이프라인에 잘 맞습니다.
+WebRTC 대신 WebSocket 연결을 사용하려면 세션 생성 시 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하세요. 이는 서버 측 사용 사례, 전화 브리지, 커스텀 오디오 파이프라인에 잘 맞습니다.
 
-WebSocket 경로에서 `session.connect()` 는 소켓이 열리고 초기 구성이 전송되면 resolve 됩니다. 대응되는 `session.updated` 이벤트는 조금 뒤에 도착할 수 있으므로, `connect()` 가 곧 해당 업데이트가 이미 되돌아왔다는 뜻으로 가정하면 안 됩니다.
+WebSocket 경로에서 `session.connect()`는 소켓이 열리고 초기 구성이 전송되면 resolve됩니다. 대응되는 `session.updated` 이벤트는 약간 늦게 도착할 수 있으므로, `connect()`가 해당 업데이트가 이미 되돌아왔음을 의미한다고 가정하지 마세요.
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-원문 PCM16 오디오 바이트 처리는 원하는 녹음/재생 라이브러리를 사용하세요.
+원문 PCM16 오디오 바이트 처리는 임의의 녹음/재생 라이브러리를 사용하세요.
 
-고급 연동을 위해 `OpenAIRealtimeWebSocket` 은 `createWebSocket()` 을 받아 자체 소켓 구현을 제공할 수 있고, 커스텀 커넥터가 소켓을 connected 상태로 전환하는 책임을 가질 때 `skipOpenEventListeners` 를 사용할 수 있습니다. `@openai/agents-extensions` 의 Cloudflare 전송 방식은 이 훅을 기반으로 구현되어 있습니다.
+고급 연동을 위해 `OpenAIRealtimeWebSocket`은 자체 소켓 구현을 제공할 수 있도록 `createWebSocket()`을 받고, 커스텀 커넥터가 소켓을 연결 상태로 전환하는 책임을 가질 때 `skipOpenEventListeners`를 지원합니다. `@openai/agents-extensions`의 Cloudflare 전송 방식은 이 훅을 기반으로 구축되었습니다.
 
-### SIP 호출 provider 및 전화 브리지용
+### SIP: 통화 provider와 전화 브리지용
 
-기존 SIP 시작 Realtime 통화에 `RealtimeSession` 을 연결하려면 `OpenAIRealtimeSIP` 를 사용하세요. 이는 얇은 SIP 인지 전송 계층입니다. 오디오는 SIP 통화 자체에서 처리되고, SDK 세션은 `callId` 로 연결합니다.
+기존 SIP 시작 Realtime 통화에 `RealtimeSession`을 연결하려면 `OpenAIRealtimeSIP`를 사용하세요. 이는 SIP를 인식하는 얇은 전송 계층으로, 오디오는 SIP 통화 자체에서 처리되며 SDK 세션은 `callId`로 연결합니다.
 
-1. `OpenAIRealtimeSIP.buildInitialConfig()` 로 초기 세션 구성을 생성해 수신 통화를 수락하세요. 이렇게 하면 SIP 초대와 이후 SDK 세션이 같은 기본값에서 시작됩니다
-2. `OpenAIRealtimeSIP` 전송 방식을 사용하는 `RealtimeSession` 을 연결하고 provider webhook 이 발급한 `callId` 로 connect 하세요
-3. provider-specific 미디어 전달이나 이벤트 브리지가 필요하면 Twilio extension 같은 통합 전송 방식을 사용하세요
+1. `OpenAIRealtimeSIP.buildInitialConfig()`로 초기 세션 구성을 생성해 수신 통화를 수락하세요. 이렇게 하면 SIP 초대와 이후 SDK 세션이 같은 기본값에서 시작됩니다.
+2. `OpenAIRealtimeSIP` 전송 방식을 사용하는 `RealtimeSession`을 연결하고 provider webhook이 발급한 `callId`로 연결하세요.
+3. provider별 미디어 전달 또는 이벤트 브리지가 필요하면 Twilio 확장 같은 통합 전송 방식을 사용하세요.
+
+<Aside type="caution">
+  SIP 통화 수락은 Realtime turn-detection 필드의 일부만 지원합니다. 구성에
+  `threshold`, `prefixPaddingMs`, `silenceDurationMs`(또는 이에 해당하는
+  snake_case 형태)가 포함되면 `OpenAIRealtimeSIP.buildInitialConfig()`는
+  로컬에서 예외를 발생시킵니다. Realtime Calls API가 SIP 세션의
+  `session.audio.input.turn_detection` 속성에서 해당 항목을 거부하기 때문입니다.
+</Aside>
 
 <Code lang="typescript" code={sipTransportExample} />
 
-### Cloudflare Workers 및 workerd
+### Cloudflare Workers와 workerd
 
-Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 외부 WebSocket 을 열 수 없습니다. extensions 패키지의 Cloudflare 전송 방식을 사용하세요. 내부적으로 `fetch()` 기반 업그레이드를 수행합니다.
+Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 확장 패키지의 Cloudflare 전송 방식을 사용하세요. 이 방식은 내부적으로 `fetch()` 기반 업그레이드를 수행합니다.
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-전체 설정은 [Cloudflare용 Realtime 에이전트](/openai-agents-js/ko/extensions/cloudflare)에서 확인하세요.
+전체 설정은 [Cloudflare용 Realtime 에이전트](/openai-agents-js/extensions/cloudflare)를 참고하세요.
 
 ### Twilio 전화 통화
 
-원문 WebSocket 이나 `@openai/agents-extensions` 의 전용 Twilio 전송 방식 중 하나로 `RealtimeSession` 을 Twilio 에 연결할 수 있습니다. Twilio Media Streams 에 대해 SDK 가 인터럽션(중단 처리) 타이밍과 오디오 전달을 처리하게 하려면 전용 전송 방식이 더 좋은 기본 선택입니다.
+원시 WebSocket 또는 `@openai/agents-extensions`의 전용 Twilio 전송 방식을 사용해 `RealtimeSession`을 Twilio에 연결할 수 있습니다. Twilio Media Streams에 대해 SDK가 인터럽션(중단 처리) 타이밍과 오디오 전달을 처리하게 하려면 전용 전송 방식이 더 나은 기본 선택입니다.
 
-전체 설정은 [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio)에서 확인하세요.
+전체 설정은 [Twilio용 Realtime 에이전트](/openai-agents-js/extensions/twilio)를 참고하세요.
 
 ### 자체 전송 방식 사용
 
-다른 음성-대-음성 API 를 사용하거나 자체 커스텀 전송 메커니즘이 있다면 `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 직접 emit 할 수 있습니다.
+다른 speech-to-speech API를 사용하거나 자체 커스텀 전송 메커니즘이 있다면, `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 직접 emit할 수 있습니다.
 
-## 필요 시 원문 Realtime 이벤트 접근
+## 필요할 때 원문 Realtime 이벤트 접근
 
-기반 Realtime API 에 더 직접적으로 접근하려면 두 가지 옵션이 있습니다.
+기본 Realtime API에 더 직접적으로 접근하려면 두 가지 옵션이 있습니다.
 
 ### 옵션 1 - 전송 계층 접근
 
-`RealtimeSession` 의 모든 기능을 계속 활용하고 싶다면 `session.transport` 를 통해 전송 계층에 접근할 수 있습니다.
+`RealtimeSession`의 모든 기능 이점을 유지하면서 `session.transport`를 통해 전송 계층에 접근할 수 있습니다.
 
-전송 계층은 수신하는 모든 이벤트를 `*` 이벤트로 emit 하며, `sendEvent()` 로 원문 이벤트를 보낼 수 있습니다. 이는 `session.update`, `response.create`, `response.cancel` 같은 저수준 작업을 위한 escape hatch 입니다.
+전송 계층은 수신하는 모든 이벤트를 `*` 이벤트로 emit하며, `sendEvent()`를 사용해 원문 이벤트를 전송할 수 있습니다. 이는 `session.update`, `response.create`, `response.cancel` 같은 저수준 작업을 위한 이스케이프 해치입니다.
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 옵션 2 - 전송 계층만 사용
 
-자동 도구 실행, 가드레일, 로컬 히스토리 관리가 필요 없다면 연결 및 인터럽션(중단 처리)만 관리하는 "thin" 클라이언트로 전송 계층만 사용할 수도 있습니다.
+자동 도구 실행, 가드레일, 로컬 히스토리 관리가 필요 없다면 연결과 인터럽션(중단 처리)만 관리하는 "얇은" 클라이언트로 전송 계층만 사용할 수도 있습니다.
 
 <Code lang="typescript" code={thinClientExample} />
