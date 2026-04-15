@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 import { RealtimeAgent } from '../src/realtimeAgent';
 import { RealtimeSession } from '../src/realtimeSession';
@@ -31,6 +31,10 @@ vi.mock('ws', () => {
 });
 
 describe('OpenAIRealtimeSIP', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('requires callId on connect', async () => {
     const sip = new OpenAIRealtimeSIP();
     await expect(
@@ -64,6 +68,75 @@ describe('OpenAIRealtimeSIP', () => {
     expect(computeSpy).toHaveBeenCalled();
     expect(payload.instructions).toBe('hi');
     expect(payload.audio?.output?.voice).toBe('alloy');
+  });
+
+  it('buildInitialConfig fails fast on unsupported SIP VAD tuning fields', async () => {
+    const agent = new RealtimeAgent({ name: 'SIP Agent' });
+
+    await expect(
+      OpenAIRealtimeSIP.buildInitialConfig(agent, {
+        config: {
+          audio: {
+            input: {
+              turnDetection: {
+                type: 'server_vad',
+                threshold: 0.4,
+                prefixPaddingMs: 150,
+                silenceDurationMs: 600,
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      /threshold, prefixPaddingMs\/prefix_padding_ms, and silenceDurationMs\/silence_duration_ms/,
+    );
+  });
+
+  it('buildInitialConfig rejects snake_case SIP VAD tuning fields', async () => {
+    const agent = new RealtimeAgent({ name: 'SIP Agent' });
+
+    await expect(
+      OpenAIRealtimeSIP.buildInitialConfig(agent, {
+        config: {
+          audio: {
+            input: {
+              turnDetection: {
+                type: 'server_vad',
+                prefix_padding_ms: 150,
+                silence_duration_ms: 600,
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      /prefixPaddingMs\/prefix_padding_ms and silenceDurationMs\/silence_duration_ms/,
+    );
+  });
+
+  it('buildInitialConfig still allows supported SIP turn detection fields', async () => {
+    const agent = new RealtimeAgent({ name: 'SIP Agent' });
+
+    const payload = await OpenAIRealtimeSIP.buildInitialConfig(agent, {
+      config: {
+        audio: {
+          input: {
+            turnDetection: {
+              type: 'server_vad',
+              idleTimeoutMs: 900,
+              interruptResponse: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(payload.audio?.input?.turn_detection).toMatchObject({
+      type: 'server_vad',
+      idle_timeout_ms: 900,
+      interrupt_response: true,
+    });
   });
 
   it('sendAudio is explicitly unsupported', async () => {
