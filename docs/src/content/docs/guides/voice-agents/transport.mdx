@@ -61,6 +61,14 @@ Use `OpenAIRealtimeSIP` when you want a `RealtimeSession` to attach to an existi
 2. Attach a `RealtimeSession` that uses the `OpenAIRealtimeSIP` transport and connect with the `callId` issued by the provider webhook.
 3. If you need provider-specific media forwarding or event bridging, use an integration transport such as the Twilio extension.
 
+<Aside type="caution">
+  SIP call acceptance only supports a subset of Realtime turn-detection fields.
+  `OpenAIRealtimeSIP.buildInitialConfig()` throws locally if your config
+  includes `threshold`, `prefixPaddingMs`, or `silenceDurationMs` (or their
+  snake_case equivalents) because the Realtime Calls API rejects those
+  `session.audio.input.turn_detection` properties for SIP sessions.
+</Aside>
+
 <Code lang="typescript" code={sipTransportExample} />
 
 ### Cloudflare Workers and workerd
