@@ -755,6 +755,106 @@ describe('Runner.run (streaming)', () => {
     warnSpy.mockRestore();
   });
 
+  it('preserves the latest usage snapshot when AbortSignal cancels a streaming run', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    class AbortableUsageSnapshotStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_usage_in_progress' },
+          },
+          providerData: {
+            usageSnapshot: {
+              inputTokens: 21,
+              outputTokens: 13,
+              totalTokens: 34,
+              requestUsageEntries: [
+                {
+                  inputTokens: 21,
+                  outputTokens: 13,
+                  totalTokens: 34,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+          },
+        } as any;
+        await waitWithAbort(500, request.signal);
+      }
+    }
+
+    const controller = new AbortController();
+    const agent = new Agent({
+      name: 'AbortWithUsageSnapshot',
+      model: new AbortableUsageSnapshotStreamingModel(),
+    });
+
+    const result = await run(agent, 'go', {
+      stream: true,
+      signal: controller.signal,
+    });
+
+    const reader = (result.toStream() as any).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    controller.abort();
+
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(result.state.usage.inputTokens).toBe(21);
+    expect(result.state.usage.outputTokens).toBe(13);
+    expect(result.state.usage.totalTokens).toBe(34);
+    expect(result.state.usage.requestUsageEntries).toEqual([
+      {
+        inputTokens: 21,
+        outputTokens: 13,
+        totalTokens: 34,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+  });
+
   it('cancels streaming promptly when the consumer cancels the stream', async () => {
     const waitWithAbort = (ms: number, signal?: AbortSignal) =>
       new Promise<void>((resolve, reject) => {

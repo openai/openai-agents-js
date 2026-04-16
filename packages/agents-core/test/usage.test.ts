@@ -195,4 +195,54 @@ describe('Usage', () => {
       },
     ]);
   });
+
+  it('replaces the latest in-flight request usage snapshot without double counting', () => {
+    const aggregated = new Usage();
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 5,
+          outputTokens: 2,
+          totalTokens: 7,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+    const final = new Usage({
+      requests: 1,
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 8,
+          outputTokens: 4,
+          totalTokens: 12,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(1);
+    expect(aggregated.inputTokens).toBe(8);
+    expect(aggregated.outputTokens).toBe(4);
+    expect(aggregated.totalTokens).toBe(12);
+    expect(aggregated.requestUsageEntries).toEqual([
+      {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+  });
 });

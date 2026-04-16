@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { Usage } from '../usage';
 import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
 import {
   RunHandoffCallItem,
@@ -12,6 +13,8 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../items';
+import type { StreamEvent } from '../types/protocol';
+import { StreamEventResponseCompleted } from '../types/protocol';
 import { StreamedRunResult } from '../result';
 
 export const isAbortError = (error: unknown): boolean => {
@@ -32,6 +35,25 @@ export const isAbortError = (error: unknown): boolean => {
   }
   return false;
 };
+
+export function getUsageSnapshotFromStreamEvent(
+  event: StreamEvent,
+): Usage | undefined {
+  if (event.type === 'response_done') {
+    return new Usage(StreamEventResponseCompleted.parse(event).response.usage);
+  }
+
+  if (event.type !== 'model') {
+    return undefined;
+  }
+
+  const usageSnapshot = event.providerData?.usageSnapshot;
+  if (!usageSnapshot || typeof usageSnapshot !== 'object') {
+    return undefined;
+  }
+
+  return new Usage(usageSnapshot as ConstructorParameters<typeof Usage>[0]);
+}
 
 function getRunItemStreamEventName(
   item: RunItem,
