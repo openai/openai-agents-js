@@ -10,6 +10,7 @@ import {
   UserError,
 } from '@openai/agents-core';
 import type {
+  AgentInputItem,
   ModelRetryAdvice,
   ModelRetryAdviceRequest,
   SerializedHandoff,
@@ -983,9 +984,11 @@ function convertStructuredOutputToRequestItem(
   );
 }
 
-function convertResponseFunctionCallOutputItemToStructured(
-  item: ResponseFunctionCallOutputListItem,
-): protocol.ToolCallStructuredOutput | null {
+function convertResponseInputContentToStructured(
+  item:
+    | ResponseFunctionCallOutputListItem
+    | OpenAI.Responses.ResponseInputContent,
+): protocol.InputText | protocol.InputImage | protocol.InputFile | null {
   if (item.type === 'input_text') {
     return {
       type: 'input_text',
@@ -1052,7 +1055,7 @@ function convertFunctionCallOutputToProtocol(
 
   if (Array.isArray(output)) {
     return output
-      .map(convertResponseFunctionCallOutputItemToStructured)
+      .map(convertResponseInputContentToStructured)
       .filter((s) => s !== null);
   }
 
@@ -1911,6 +1914,104 @@ function getPrompt(prompt: ModelRequest['prompt']):
   };
 }
 
+function normalizeCompactionMessageItem(
+  item:
+    | OpenAI.Responses.ResponseInputItem.Message
+    | OpenAI.Responses.ResponseOutputMessage,
+): AgentInputItem | null {
+  if (item.role === 'user') {
+    const {
+      id,
+      type: _type,
+      role: _role,
+      content,
+      ...providerData
+    } = item as OpenAI.Responses.ResponseInputItem.Message &
+      Record<string, any>;
+    const normalizedContent =
+      typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? (content
+              .map(convertResponseInputContentToStructured)
+              .filter((entry) => entry !== null) as protocol.UserContent[])
+          : [];
+
+    return {
+      id,
+      type: 'message',
+      role: 'user',
+      content: normalizedContent,
+      ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
+    };
+  }
+
+  if (item.role === 'assistant') {
+    const { id, type, role, content, status, ...providerData } = item;
+    return {
+      id,
+      type,
+      role,
+      content: content.map(convertToMessageContentItem),
+      status,
+      ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
+    };
+  }
+
+  return null;
+}
+
+function normalizeCompactionOutputItem(
+  item:
+    | OpenAI.Responses.ResponseOutputItem
+    | OpenAI.Responses.ResponseInputItem,
+): AgentInputItem | null {
+  if (item.type === 'message') {
+    return normalizeCompactionMessageItem(
+      item as
+        | OpenAI.Responses.ResponseInputItem.Message
+        | OpenAI.Responses.ResponseOutputMessage,
+    );
+  }
+
+  if (item.type === 'compaction') {
+    const {
+      id: _id,
+      type: _type,
+      encrypted_content,
+      created_by,
+      ...providerData
+    } = item as {
+      encrypted_content?: string;
+      created_by?: string;
+      id?: string;
+      type?: string;
+    };
+    if (typeof encrypted_content !== 'string') {
+      throw new UserError('Compaction item missing encrypted_content');
+    }
+    return {
+      type: 'compaction',
+      id: item.id ?? undefined,
+      encrypted_content,
+      created_by,
+      ...(Object.keys(providerData).length > 0 ? { providerData } : {}),
+    };
+  }
+
+  throw new UserError(
+    `Unsupported compaction output item: ${JSON.stringify(item)}`,
+  );
+}
+
+function normalizeCompactionOutputItems(
+  items: Array<OpenAI.Responses.ResponseOutputItem>,
+): AgentInputItem[] {
+  return items
+    .map(normalizeCompactionOutputItem)
+    .filter((item): item is AgentInputItem => item !== null);
+}
+
 function getInputItems(
   input: ModelRequest['input'],
 ): OpenAI.Responses.ResponseInputItem[] {
@@ -2755,7 +2856,13 @@ function convertToOutputItem(
   });
 }
 
-export { getToolChoice, converTool, getInputItems, convertToOutputItem };
+export {
+  getToolChoice,
+  converTool,
+  getInputItems,
+  convertToOutputItem,
+  normalizeCompactionOutputItems,
+};
 
 const TERMINAL_RESPONSES_STREAM_EVENT_TYPES = new Set([
   'response.completed',

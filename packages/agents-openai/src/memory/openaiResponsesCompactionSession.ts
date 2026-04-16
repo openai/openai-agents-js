@@ -13,7 +13,10 @@ import type {
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
-import { getInputItems } from '../openaiResponsesModel';
+import {
+  getInputItems,
+  normalizeCompactionOutputItems,
+} from '../openaiResponsesModel';
 import {
   OPENAI_SESSION_API,
   type OpenAISessionApiTagged,
@@ -204,7 +207,7 @@ export class OpenAIResponsesCompactionSession
     const compacted = await this.client.responses.compact(compactRequest);
 
     await this.underlyingSession.clearSession();
-    const outputItems = (compacted.output ?? []) as AgentInputItem[];
+    const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
     if (outputItems.length > 0) {
       await this.underlyingSession.addItems(outputItems);
     }
