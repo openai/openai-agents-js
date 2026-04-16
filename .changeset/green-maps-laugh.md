@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: restore discriminated union tool schema compatibility (#1138)
+fix: handle legacy discriminated union fallback schemas

@@ -55,54 +55,6 @@ describe('utils/tools', () => {
     });
   });
 
-  it('getSchemaAndParserFromInputType keeps discriminated unions OpenAI-compatible', () => {
-    const zodSchema = z.object({
-      name: z.string(),
-      recurrence: z.discriminatedUnion('type', [
-        z.object({ type: z.literal('once'), date: z.string() }),
-        z.object({ type: z.literal('weekly'), dayOfWeek: z.number() }),
-      ]),
-    });
-
-    const res = getSchemaAndParserFromInputType(zodSchema, 'create_event');
-    expect(res.schema.properties.recurrence).toMatchObject({
-      anyOf: [
-        {
-          type: 'object',
-          properties: {
-            type: { type: 'string', const: 'once' },
-            date: { type: 'string' },
-          },
-          required: ['type', 'date'],
-          additionalProperties: false,
-        },
-        {
-          type: 'object',
-          properties: {
-            type: { type: 'string', const: 'weekly' },
-            dayOfWeek: { type: 'number' },
-          },
-          required: ['type', 'dayOfWeek'],
-          additionalProperties: false,
-        },
-      ],
-    });
-    expect(
-      'oneOf' in (res.schema.properties.recurrence as Record<string, unknown>),
-    ).toBe(false);
-    expect(
-      res.parser(
-        JSON.stringify({
-          name: 'Weekly sync',
-          recurrence: { type: 'weekly', dayOfWeek: 1 },
-        }),
-      ),
-    ).toEqual({
-      name: 'Weekly sync',
-      recurrence: { type: 'weekly', dayOfWeek: 1 },
-    });
-  });
-
   it('getSchemaAndParserFromInputType rejects invalid input', () => {
     expect(() => getSchemaAndParserFromInputType('bad' as any, 't')).toThrow(
       UserError,

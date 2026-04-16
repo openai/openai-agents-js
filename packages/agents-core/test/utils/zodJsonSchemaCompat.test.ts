@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { z as zod3 } from 'zod/v3';
-import {
-  normalizeOpenAiJsonSchema,
-  zodJsonSchemaCompat,
-} from '../../src/utils/zodJsonSchemaCompat';
+import { zodJsonSchemaCompat } from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
   it('builds schema for basic object with optional property', () => {
@@ -302,64 +299,5 @@ describe('utils/zodJsonSchemaCompat', () => {
       description: 'Text to translate',
     });
     expect(jsonSchema?.properties.target).toEqual({ type: 'string' });
-  });
-
-  it('normalizes oneOf branches into anyOf for OpenAI compatibility', () => {
-    const schema = normalizeOpenAiJsonSchema({
-      type: 'object',
-      properties: {
-        recurrence: {
-          oneOf: [
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', const: 'once' },
-              },
-              required: ['type'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', const: 'weekly' },
-              },
-              required: ['type'],
-              additionalProperties: false,
-            },
-          ],
-        },
-      },
-      required: ['recurrence'],
-      additionalProperties: false,
-    });
-
-    expect(schema).toMatchObject({
-      type: 'object',
-      properties: {
-        recurrence: {
-          anyOf: [
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', const: 'once' },
-              },
-              required: ['type'],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', const: 'weekly' },
-              },
-              required: ['type'],
-              additionalProperties: false,
-            },
-          ],
-        },
-      },
-    });
-    expect(
-      'oneOf' in (schema.properties.recurrence as Record<string, unknown>),
-    ).toBe(false);
   });
 });
