@@ -94,6 +94,19 @@ export type RealtimeHistoryDiff = {
   updates: RealtimeItem[];
 };
 
+type RealtimeMessageStatus = Extract<
+  RealtimeMessageItem,
+  { status: unknown }
+>['status'];
+
+export type ConversationItemCreateMessage = {
+  type: 'message';
+  role: RealtimeMessageItem['role'];
+  content: RealtimeMessageItem['content'];
+  id: string;
+  status?: RealtimeMessageStatus;
+};
+
 /**
  * Compare two conversation histories to determine the removals, additions, and updates.
  * @param oldHistory - The old history.
@@ -122,6 +135,52 @@ export function diffRealtimeHistory(
     additions,
     updates,
   };
+}
+
+/**
+ * Normalize a history message into a shape the Realtime API accepts for conversation.item.create.
+ * Assistant audio history can only be replayed from transcripts, so output_audio items are
+ * converted into output_text entries and transcript-less audio is dropped.
+ * @param item - The message item to normalize.
+ * @returns A conversation.item.create message payload or null if nothing replayable remains.
+ */
+export function realtimeMessageToConversationItemCreateMessage(
+  item: RealtimeMessageItem,
+): ConversationItemCreateMessage | null {
+  const content =
+    item.role === 'assistant'
+      ? item.content.flatMap((entry) => {
+          if (entry.type !== 'output_audio') {
+            return [entry];
+          }
+
+          if (
+            typeof entry.transcript !== 'string' ||
+            entry.transcript.length === 0
+          ) {
+            return [];
+          }
+
+          return [{ type: 'output_text' as const, text: entry.transcript }];
+        })
+      : item.content;
+
+  if (content.length === 0) {
+    return null;
+  }
+
+  const normalizedItem: ConversationItemCreateMessage = {
+    type: 'message',
+    role: item.role,
+    content: content as RealtimeMessageItem['content'],
+    id: item.itemId,
+  };
+
+  if (item.role !== 'system' && item.status) {
+    normalizedItem.status = item.status;
+  }
+
+  return normalizedItem;
 }
 
 /**

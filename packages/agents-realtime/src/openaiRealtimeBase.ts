@@ -33,7 +33,11 @@ import {
   RealtimeTransportEventTypes,
   TransportToolCallEvent,
 } from './transportLayerEvents';
-import { arrayBufferToBase64, diffRealtimeHistory } from './utils';
+import {
+  arrayBufferToBase64,
+  diffRealtimeHistory,
+  realtimeMessageToConversationItemCreateMessage,
+} from './utils';
 import { EventEmitterDelegate } from '@openai/agents-core/utils';
 
 /**
@@ -921,14 +925,14 @@ export abstract class OpenAIRealtimeBase
 
     for (const addition of additionsAndUpdates) {
       if (addition.type === 'message') {
-        const itemEntry: Record<string, any> = {
-          type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
-        };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
+        const itemEntry =
+          realtimeMessageToConversationItemCreateMessage(addition);
+        if (!itemEntry) {
+          logger.warn(
+            'Assistant audio history can only be replayed when transcripts are available. Skipping item %s.',
+            addition.itemId,
+          );
+          continue;
         }
         this.sendEvent({
           type: 'conversation.item.create',

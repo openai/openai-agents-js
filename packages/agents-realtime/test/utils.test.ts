@@ -7,6 +7,7 @@ import {
   updateRealtimeHistory,
   hasWebRTCSupport,
   removeAudioFromContent,
+  realtimeMessageToConversationItemCreateMessage,
   realtimeApprovalItemToApprovalItem,
   approvalItemToRealtimeApprovalItem,
 } from '../src/utils';
@@ -141,6 +142,36 @@ describe('realtime utils', () => {
     expect(diff.removals.map((i) => i.itemId)).toEqual(['2']);
     expect(diff.additions.map((i) => i.itemId)).toEqual(['3']);
     expect(diff.updates.map((i) => i.itemId)).toEqual(['1']);
+  });
+
+  it('converts assistant audio history into transcript-backed text for replay', () => {
+    const item: RealtimeMessageItem = {
+      itemId: 'assistant-1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_audio', audio: 'abc', transcript: 'hello' }],
+    };
+
+    expect(realtimeMessageToConversationItemCreateMessage(item)).toEqual({
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      id: 'assistant-1',
+      content: [{ type: 'output_text', text: 'hello' }],
+    });
+  });
+
+  it('returns null for assistant audio history without replayable transcripts', () => {
+    const item: RealtimeMessageItem = {
+      itemId: 'assistant-2',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_audio', audio: 'abc', transcript: null }],
+    };
+
+    expect(realtimeMessageToConversationItemCreateMessage(item)).toBeNull();
   });
 
   it('updateRealtimeHistory inserts and strips audio', () => {

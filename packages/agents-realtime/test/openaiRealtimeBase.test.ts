@@ -266,6 +266,53 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('resetHistory replays assistant audio history as transcript-backed text', () => {
+    const base = new TestBase();
+
+    base.resetHistory([], [
+      {
+        itemId: 'assistant-1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          { type: 'output_audio', audio: 'abc', transcript: 'hello there' },
+        ],
+      },
+    ] as any);
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        id: 'assistant-1',
+        role: 'assistant',
+        type: 'message',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello there' }],
+      },
+    });
+  });
+
+  it('resetHistory skips assistant audio history without transcripts', () => {
+    const base = new TestBase();
+
+    base.resetHistory([], [
+      {
+        itemId: 'assistant-2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_audio', audio: 'abc', transcript: null }],
+      },
+    ] as any);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Assistant audio history can only be replayed when transcripts are available. Skipping item %s.',
+      'assistant-2',
+    );
+    expect(base.events).toHaveLength(0);
+  });
+
   it('resetHistory warns on function call additions', () => {
     const base = new TestBase();
     const newHist = [

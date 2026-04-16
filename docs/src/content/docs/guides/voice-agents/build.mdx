@@ -254,14 +254,14 @@ Set `debounceTextLength: -1` when you only want to evaluate the fully generated 
 
 `RealtimeSession` automatically maintains a local `history` snapshot that tracks user messages, assistant output, tool calls, and truncation state. You can render it in the UI, inspect it inside tools, or update it when you need to correct or remove items.
 
-As the conversation changes the session emits `history_updated`. If you need to request history changes, use `updateHistory()`. It asks the transport to diff the current history and send the necessary delete/create events; the local `session.history` view updates as the corresponding conversation events come back.
+As the conversation changes the session emits `history_updated`. If you need to request history changes, use `updateHistory()`. It asks the transport to diff the current history and send the necessary delete/create events; the local `session.history` view updates as the corresponding conversation events come back. Because the Realtime API does not currently accept assistant audio items in `conversation.item.create`, replaying assistant audio history converts transcript-backed `output_audio` entries into assistant text and skips assistant audio turns that do not have transcripts.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 #### Limitations
 
 1. You cannot currently edit function tool calls after the fact.
-2. Assistant text in history depends on available transcripts, including `output_audio.transcript`.
+2. Assistant text in history depends on available transcripts, including `output_audio.transcript`. Replaying assistant audio history also depends on those transcripts because transcript-backed audio is restored as assistant text.
 3. Responses truncated by interruption do not retain a final transcript.
 4. Input audio transcription is best treated as a rough guide to what the user said, not an exact copy of how the model interpreted the audio.
 
