@@ -1224,6 +1224,31 @@ describe('getInputItems', () => {
     ).toThrow(UserError);
   });
 
+  it('treats raw base64 input_file strings in messages as inline data', () => {
+    const base64 = Buffer.from('message-inline').toString('base64');
+    const items = getInputItems([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: base64,
+            filename: 'inline.txt',
+          },
+        ],
+      },
+    ] as any);
+
+    const user = items.find((entry) => (entry as any).role === 'user') as any;
+    expect(user.content).toEqual([
+      {
+        type: 'input_file',
+        file_data: base64,
+        filename: 'inline.txt',
+      },
+    ]);
+  });
+
   it('converts legacy input_image fields in structured outputs', () => {
     const items = getInputItems([
       {

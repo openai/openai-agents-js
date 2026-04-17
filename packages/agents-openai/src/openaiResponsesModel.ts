@@ -1691,10 +1691,13 @@ function getInputMessageContent(
       type: 'input_file',
     };
     if (typeof entry.file === 'string') {
-      if (entry.file.startsWith('data:')) {
-        fileEntry.file_data = entry.file;
-      } else if (entry.file.startsWith('https://')) {
-        fileEntry.file_url = entry.file;
+      const value = entry.file.trim();
+      if (value.startsWith('data:')) {
+        fileEntry.file_data = value;
+      } else if (value.startsWith('https://')) {
+        fileEntry.file_url = value;
+      } else if (/^[A-Za-z0-9+/=]+$/.test(value)) {
+        fileEntry.file_data = value;
       } else {
         throw new UserError(
           `Unsupported string data for file input. If you're trying to pass an uploaded file's ID, use an object with the ID property instead.`,

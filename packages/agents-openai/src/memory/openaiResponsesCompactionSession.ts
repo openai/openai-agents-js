@@ -203,8 +203,8 @@ export class OpenAIResponsesCompactionSession
 
     const compacted = await this.client.responses.compact(compactRequest);
 
+    const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
     await this.underlyingSession.clearSession();
-    const outputItems = (compacted.output ?? []) as AgentInputItem[];
     if (outputItems.length > 0) {
       await this.underlyingSession.addItems(outputItems);
     }
@@ -411,6 +411,106 @@ function toRequestUsage(
     outputTokensDetails: { ...usage?.output_tokens_details },
     endpoint: 'responses.compact',
   });
+}
+
+type CompactionOutputItem =
+  | OpenAI.Responses.ResponseOutputItem
+  | OpenAI.Responses.ResponseInputMessageItem;
+
+function normalizeCompactionOutputItems(
+  items: ReadonlyArray<CompactionOutputItem>,
+): AgentInputItem[] {
+  return items.flatMap((item) => {
+    if (isCompactionInputMessage(item)) {
+      return [normalizeCompactionInputMessage(item)];
+    }
+
+    return [item as AgentInputItem];
+  });
+}
+
+function isCompactionInputMessage(
+  item: CompactionOutputItem,
+): item is OpenAI.Responses.ResponseInputMessageItem {
+  return item.type === 'message' && item.role === 'user';
+}
+
+function normalizeCompactionInputMessage(
+  item: OpenAI.Responses.ResponseInputMessageItem,
+): AgentInputItem {
+  return {
+    id: (item as { id?: string }).id,
+    type: 'message',
+    role: 'user',
+    content: item.content.map((content) => {
+      if (content.type === 'input_text') {
+        return {
+          type: 'input_text',
+          text: content.text,
+        };
+      }
+
+      if (content.type === 'input_image') {
+        if (
+          typeof content.image_url === 'string' &&
+          content.image_url.length > 0
+        ) {
+          return {
+            type: 'input_image',
+            image: content.image_url,
+            ...(content.detail ? { detail: content.detail } : {}),
+          };
+        }
+        if (typeof content.file_id === 'string' && content.file_id.length > 0) {
+          return {
+            type: 'input_image',
+            image: { id: content.file_id },
+            ...(content.detail ? { detail: content.detail } : {}),
+          };
+        }
+        throw new UserError(
+          'Compaction input_image item missing image_url or file_id.',
+        );
+      }
+
+      if (content.type === 'input_file') {
+        if (
+          typeof content.file_data === 'string' &&
+          content.file_data.length > 0
+        ) {
+          return {
+            type: 'input_file',
+            file: content.file_data,
+            ...(content.filename ? { filename: content.filename } : {}),
+          };
+        }
+        if (
+          typeof content.file_url === 'string' &&
+          content.file_url.length > 0
+        ) {
+          return {
+            type: 'input_file',
+            file: content.file_url,
+            ...(content.filename ? { filename: content.filename } : {}),
+          };
+        }
+        if (typeof content.file_id === 'string' && content.file_id.length > 0) {
+          return {
+            type: 'input_file',
+            file: { id: content.file_id },
+            ...(content.filename ? { filename: content.filename } : {}),
+          };
+        }
+        throw new UserError(
+          'Compaction input_file item missing file_data, file_url, or file_id.',
+        );
+      }
+
+      throw new UserError(
+        `Unsupported compaction message content type: ${JSON.stringify(content)}`,
+      );
+    }),
+  };
 }
 
 function isOpenAIConversationsSessionDelegate(
