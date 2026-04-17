@@ -275,6 +275,7 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
     case 'tuple':
       return buildTupleSchema(def);
     case 'union':
+    case 'discriminatedunion':
       return buildUnionSchema(def);
     case 'intersection':
       return buildIntersectionSchema(def);
