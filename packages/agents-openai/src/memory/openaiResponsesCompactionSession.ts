@@ -203,8 +203,8 @@ export class OpenAIResponsesCompactionSession
 
     const compacted = await this.client.responses.compact(compactRequest);
 
-    await this.underlyingSession.clearSession();
     const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
+    await this.underlyingSession.clearSession();
     if (outputItems.length > 0) {
       await this.underlyingSession.addItems(outputItems);
     }

@@ -543,6 +543,50 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(secondRequest.input[0].content[1].file_id).toBeUndefined();
   });
 
+  it('preserves existing history when compacted output normalization fails', async () => {
+    const history = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hello' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'world' }],
+      },
+    ] as const;
+    const compact = vi.fn().mockResolvedValue({
+      output: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_image', detail: 'auto' }],
+        },
+      ],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+    });
+
+    await session.addItems([...history] as any);
+
+    await expect(
+      session.runCompaction({ force: true, compactionMode: 'input' }),
+    ).rejects.toThrow(
+      'Compaction input_image item missing image_url or file_id.',
+    );
+
+    expect(await session.getItems()).toEqual(history);
+  });
+
   it('throws when runCompaction is called without a responseId in previous_response_id mode', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({
