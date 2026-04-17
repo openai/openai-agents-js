@@ -543,6 +543,97 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(secondRequest.input[0].content[1].file_id).toBeUndefined();
   });
 
+  it('normalizes compacted user file_data messages before reusing them as input', async () => {
+    const base64 = Buffer.from('inline-file').toString('base64');
+    const compact = vi
+      .fn()
+      .mockResolvedValueOnce({
+        output: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_file',
+                file_data: base64,
+                filename: 'notes.txt',
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 2,
+          output_tokens: 1,
+          total_tokens: 3,
+        },
+      })
+      .mockResolvedValueOnce({
+        output: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 0,
+          total_tokens: 1,
+        },
+      });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: base64,
+            filename: 'notes.txt',
+          },
+        ],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'ready' }],
+      },
+    ] as any);
+
+    await session.runCompaction({ force: true, compactionMode: 'input' });
+
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: base64,
+            filename: 'notes.txt',
+          },
+        ],
+      },
+    ]);
+
+    await session.runCompaction({ force: true, compactionMode: 'input' });
+
+    const [secondRequest] = compact.mock.calls[1] ?? [];
+    expect(secondRequest.input).toHaveLength(1);
+    expect(secondRequest.input[0]).toMatchObject({
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          file_data: base64,
+          filename: 'notes.txt',
+        },
+      ],
+    });
+    expect(secondRequest.input[0].content[0].file_id).toBeUndefined();
+    expect(secondRequest.input[0].content[0].file_url).toBeUndefined();
+  });
+
   it('preserves existing history when compacted output normalization fails', async () => {
     const history = [
       {
