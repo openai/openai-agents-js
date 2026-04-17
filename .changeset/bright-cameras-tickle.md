@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: stabilize streamed run result leak tests
+test: stabilize streamed run result leak tests
