@@ -449,6 +449,100 @@ describe('OpenAIResponsesCompactionSession', () => {
     ]);
   });
 
+  it('normalizes compacted user image messages before reusing them as input', async () => {
+    const dataUrl = 'data:image/jpeg;base64,abc123';
+    const compact = vi
+      .fn()
+      .mockResolvedValueOnce({
+        output: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'analyse these images' },
+              {
+                type: 'input_image',
+                detail: 'auto',
+                file_id: null,
+                image_url: dataUrl,
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 2,
+          output_tokens: 1,
+          total_tokens: 3,
+        },
+      })
+      .mockResolvedValueOnce({
+        output: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 0,
+          total_tokens: 1,
+        },
+      });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+    });
+
+    await session.addItems([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'analyse these images' },
+          {
+            type: 'input_image',
+            image: dataUrl,
+          },
+        ],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'how can I help?' }],
+      },
+    ] as any);
+
+    await session.runCompaction({ force: true, compactionMode: 'input' });
+
+    expect(await session.getItems()).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'analyse these images' },
+          {
+            type: 'input_image',
+            image: dataUrl,
+            detail: 'auto',
+          },
+        ],
+      },
+    ]);
+
+    await session.runCompaction({ force: true, compactionMode: 'input' });
+
+    const [secondRequest] = compact.mock.calls[1] ?? [];
+    expect(secondRequest.input).toHaveLength(1);
+    expect(secondRequest.input[0]).toMatchObject({
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'analyse these images' },
+        {
+          type: 'input_image',
+          image_url: dataUrl,
+          detail: 'auto',
+        },
+      ],
+    });
+    expect(secondRequest.input[0].content[1].file_id).toBeUndefined();
+  });
+
   it('throws when runCompaction is called without a responseId in previous_response_id mode', async () => {
     const compact = vi.fn();
     const session = new OpenAIResponsesCompactionSession({

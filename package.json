@@ -3,10 +3,10 @@
   "name": "openai-agents-js",
   "version": "0.0.1",
   "scripts": {
-    "clean": "tsc-multi --clean",
+    "clean": "node scripts/clean-package-dists.mjs && tsc-multi --clean",
     "prebuild": "pnpm -F @openai/* -r prebuild",
-    "build": "tsc-multi",
-    "build:ci": "pnpm run prebuild && tsc-multi --maxWorkers 1 && pnpm run postbuild",
+    "build": "pnpm clean && tsc-multi",
+    "build:ci": "pnpm run prebuild && pnpm clean && tsc-multi --maxWorkers 1 && pnpm run postbuild",
     "postbuild": "pnpm -r -F @openai/* bundle",
     "packages:dev": "tsc-multi --watch",
     "docs:dev": "pnpm -F docs dev",
