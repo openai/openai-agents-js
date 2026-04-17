@@ -229,6 +229,7 @@ export class Usage {
       return;
     }
 
+    this.requests += nextUsage.requests - previousUsage.requests;
     this.inputTokens += nextUsage.inputTokens - previousUsage.inputTokens;
     this.outputTokens += nextUsage.outputTokens - previousUsage.outputTokens;
     this.totalTokens += nextUsage.totalTokens - previousUsage.totalTokens;
@@ -244,28 +245,30 @@ export class Usage {
       nextUsage.outputTokensDetails[0],
     );
 
-    this.#replaceLatestRequestUsageEntry(
-      Usage.#getSingleRequestUsageEntry(previousUsage),
-      Usage.#getSingleRequestUsageEntry(nextUsage),
+    this.#replaceLatestRequestUsageEntries(
+      Usage.#getTrackedRequestUsageEntries(previousUsage),
+      Usage.#getTrackedRequestUsageEntries(nextUsage),
     );
   }
 
-  static #getSingleRequestUsageEntry(usage: Usage): RequestUsage | undefined {
+  static #getTrackedRequestUsageEntries(usage: Usage): RequestUsage[] {
     if (usage.requestUsageEntries?.length) {
-      return usage.requestUsageEntries[0];
+      return usage.requestUsageEntries.map((entry) => new RequestUsage(entry));
     }
 
     if (usage.requests === 1 && usage.totalTokens > 0) {
-      return new RequestUsage({
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        totalTokens: usage.totalTokens,
-        inputTokensDetails: usage.inputTokensDetails[0],
-        outputTokensDetails: usage.outputTokensDetails[0],
-      });
+      return [
+        new RequestUsage({
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+          inputTokensDetails: usage.inputTokensDetails[0],
+          outputTokensDetails: usage.outputTokensDetails[0],
+        }),
+      ];
     }
 
-    return undefined;
+    return [];
   }
 
   #replaceLatestDetails(
@@ -288,26 +291,23 @@ export class Usage {
     }
   }
 
-  #replaceLatestRequestUsageEntry(
-    previous: RequestUsage | undefined,
-    next: RequestUsage | undefined,
+  #replaceLatestRequestUsageEntries(
+    previous: RequestUsage[],
+    next: RequestUsage[],
   ) {
-    if (previous && next) {
-      this.requestUsageEntries![this.requestUsageEntries!.length - 1] = next;
-      return;
+    if (previous.length > 0) {
+      const retainedEntries =
+        this.requestUsageEntries?.slice(
+          0,
+          Math.max(this.requestUsageEntries.length - previous.length, 0),
+        ) ?? [];
+      this.requestUsageEntries =
+        retainedEntries.length > 0 ? retainedEntries : undefined;
     }
 
-    if (previous) {
-      this.requestUsageEntries?.pop();
-      if (this.requestUsageEntries?.length === 0) {
-        this.requestUsageEntries = undefined;
-      }
-      return;
-    }
-
-    if (next) {
+    if (next.length > 0) {
       this.requestUsageEntries ??= [];
-      this.requestUsageEntries.push(next);
+      this.requestUsageEntries.push(...next);
     }
   }
 }

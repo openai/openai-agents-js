@@ -245,4 +245,65 @@ describe('Usage', () => {
       },
     ]);
   });
+
+  it('replaces a streaming snapshot with the full retry-adjusted usage', () => {
+    const aggregated = new Usage();
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 5,
+          outputTokens: 2,
+          totalTokens: 7,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+    const final = new Usage({
+      requests: 2,
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      requestUsageEntries: [
+        new RequestUsage({
+          endpoint: 'responses.create',
+        }),
+        new RequestUsage({
+          inputTokens: 8,
+          outputTokens: 4,
+          totalTokens: 12,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(2);
+    expect(aggregated.inputTokens).toBe(8);
+    expect(aggregated.outputTokens).toBe(4);
+    expect(aggregated.totalTokens).toBe(12);
+    expect(aggregated.requestUsageEntries).toEqual([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+      {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+  });
 });
