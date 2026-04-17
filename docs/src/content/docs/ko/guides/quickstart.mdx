@@ -17,7 +17,7 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
 
 <Steps>
 
-1. 프로젝트를 만들고 npm 을 초기화합니다. 이 작업은 한 번만 하면 됩니다
+1. 프로젝트를 만들고 npm 을 초기화합니다. 이 작업은 한 번만 하면 됩니다.
 
    ```bash
    mkdir my_project
@@ -25,97 +25,88 @@ import runOrchestrationExample from '../../../../../../examples/docs/quickstart/
    npm init -y
    ```
 
-2. Agents SDK 와 Zod 를 설치합니다. SDK 는 도구 스키마와 structured outputs 에 Zod v4 를 사용합니다
+2. Agents SDK 와 Zod 를 설치합니다. SDK 는 도구 스키마와 structured outputs 에 Zod v4 를 사용합니다.
 
    ```bash
    npm install @openai/agents zod
    ```
 
-3. OpenAI API 키를 설정합니다. 아직 없다면 OpenAI API 키를 만들기 위해 [이 안내](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)를 따르세요
+3. OpenAI API 키를 설정합니다. 아직 키가 없다면 [다음 안내](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)를 따라 OpenAI API 키를 만드세요.
 
    ```bash
    export OPENAI_API_KEY=sk-...
    ```
 
-   또는 `setDefaultOpenAIKey('<api key>')` 를 호출해 프로그래밍 방식으로 키를 설정하고,
-   트레이싱에는 `setTracingExportApiKey('<api key>')` 를 사용할 수 있습니다.
-   자세한 내용은 [SDK 설정](/openai-agents-js/ko/guides/config) 가이드를 참고하세요
+   또는 `setDefaultOpenAIKey('<api key>')` 를 호출해 프로그래밍 방식으로 키를 설정하고, 트레이싱에는 `setTracingExportApiKey('<api key>')` 를 사용할 수 있습니다. 자세한 내용은 [SDK 설정 가이드](/openai-agents-js/ko/guides/config)를 참고하세요.
 
 </Steps>
 
 ## 첫 에이전트 생성
 
-에이전트는 instructions 와 이름으로 정의됩니다.
+에이전트는 instructions 와 이름으로 정의합니다.
 
-<Code lang="typescript" code={createAgentExample} title="에이전트 생성" />
+<Code lang="typescript" code={createAgentExample} title="Create an agent" />
 
 ## 첫 에이전트 실행
 
-`run` 메서드를 사용해 에이전트를 실행할 수 있습니다. 실행을 시작하려면 시작할 에이전트와 전달할 입력을 함께 넘기면 됩니다.
+`run` 메서드를 사용해 에이전트를 실행할 수 있습니다. 시작할 에이전트와 전달할 입력을 함께 넘기면 실행이 시작됩니다.
 
-그러면 최종 출력과 실행 중 수행된 모든 작업이 포함된 결과가 반환됩니다.
+그러면 최종 출력과 해당 실행 중 수행된 모든 작업이 포함된 결과가 반환됩니다.
 
-<Code lang="typescript" code={runAgentExample} title="에이전트 실행" />
+<Code lang="typescript" code={runAgentExample} title="Run an agent" />
 
-두 번째 턴에서는 `result.history` 를 다시 `run()` 에 전달하거나, [세션](/openai-agents-js/ko/guides/sessions) 을 연결하거나,
-`conversationId` / `previousResponseId` 로 OpenAI 서버 관리 상태를 재사용할 수 있습니다.
-[에이전트 실행](/openai-agents-js/ko/guides/running-agents) 가이드에서 이 접근 방식들을 비교합니다.
+두 번째 턴에서는 `result.history` 를 다시 `run()` 에 전달하거나, [세션](/openai-agents-js/ko/guides/sessions)을 연결하거나, `conversationId` / `previousResponseId` 로 OpenAI 서버가 관리하는 상태를 재사용할 수 있습니다. [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 가이드에서 이러한 접근 방식을 비교합니다.
 
-## 에이전트 도구 추가
+## 에이전트에 도구 제공
 
-에이전트에 도구를 제공해 정보를 조회하거나 작업을 수행하도록 할 수 있습니다.
+에이전트가 정보를 조회하거나 작업을 수행할 수 있도록 도구를 제공할 수 있습니다.
 
-<Code lang="typescript" code={agentWithToolsExample} title="도구 추가" />
+<Code lang="typescript" code={agentWithToolsExample} title="Add a tool" />
 
 ## 추가 에이전트 정의
 
-추가 에이전트도 유사하게 정의하여 문제를 더 작은 부분으로 나누고, 에이전트가 현재 작업에 더 집중하도록 만들 수 있습니다.
-또한 에이전트에 모델을 정의해 문제별로 다른 모델을 사용할 수 있습니다.
+추가 에이전트도 비슷한 방식으로 정의하여 문제를 더 작은 부분으로 나누고, 각 에이전트가 현재 작업에 더 집중하도록 만들 수 있습니다. 또한 에이전트에 모델을 정의해 문제별로 서로 다른 모델을 사용할 수도 있습니다.
 
 <Code
   lang="typescript"
   code={additionalAgentsExample}
-  title="전문 에이전트 생성"
+  title="Create specialist agents"
 />
 
 ## 핸드오프 정의
 
-멀티 에이전트 오케스트레이션을 위해 에이전트에 `handoffs` 를 정의할 수 있습니다.
-그러면 에이전트가 다음 에이전트로 대화를 넘길 수 있습니다. 이 과정은 실행 중 자동으로 일어납니다.
+여러 에이전트 사이를 오케스트레이션하려면 에이전트에 `handoffs` 를 정의할 수 있습니다. 이렇게 하면 에이전트가 대화를 다음 에이전트로 넘길 수 있습니다. 이는 실행 과정 중 자동으로 이루어집니다.
 
-<Code lang="typescript" code={defineHandoffsExample} title="핸드오프 정의" />
+<Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
 실행 후에는 결과의 `lastAgent` 속성을 확인해 어떤 에이전트가 최종 응답을 생성했는지 볼 수 있습니다.
 
 ## 에이전트 오케스트레이션 실행
 
-러너는 개별 에이전트 실행, 핸드오프, 도구 호출을 처리합니다.
+러너는 개별 에이전트 실행, 모든 핸드오프, 그리고 모든 도구 호출 처리를 담당합니다.
 
 <Code
   lang="typescript"
   code={runOrchestrationExample}
-  title="에이전트 오케스트레이션 실행"
+  title="Run agent orchestration"
 />
 
-## 전체 통합
+## 전체 예제 통합
 
-이제 모든 내용을 하나의 전체 예제로 합쳐보겠습니다. 이를 `index.js` 파일에 넣고 실행하세요.
-앱이 이미 TypeScript 로 설정되어 있다면 `index.ts` 를 대신 사용할 수 있습니다.
+이제 전체를 하나의 완전한 예제로 합쳐보겠습니다. 이를 `index.js` 파일에 넣고 실행하세요. 앱이 이미 TypeScript 용으로 설정되어 있다면 대신 `index.ts` 를 사용할 수 있습니다.
 
-<Code lang="typescript" code={quickstartExample} title="빠른 시작" />
+<Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
 ## 트레이스 확인
 
-Agents SDK 는 자동으로 트레이스를 생성합니다. 이를 통해 에이전트가 어떻게 동작하는지,
-어떤 도구를 호출했는지, 어떤 에이전트로 핸드오프했는지 검토할 수 있습니다.
+Agents SDK 는 자동으로 트레이스를 생성합니다. 이를 통해 에이전트가 어떻게 동작하는지, 어떤 도구를 호출했는지, 또는 어떤 에이전트로 핸드오프했는지 검토할 수 있습니다.
 
-에이전트 실행 중 발생한 내용을 검토하려면
-[OpenAI Dashboard 의 Trace viewer](https://platform.openai.com/traces)로 이동하세요.
+에이전트 실행 중 어떤 일이 있었는지 확인하려면 [OpenAI Dashboard 의 Trace viewer](https://platform.openai.com/traces)로 이동하세요.
 
 ## 다음 단계
 
-더 복잡한 에이전트 흐름을 구축하는 방법을 알아보세요:
+더 복잡한 에이전트형 흐름을 구축하는 방법을 알아보세요.
 
-- [에이전트](/openai-agents-js/ko/guides/agents) 설정을 알아보세요
-- [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 및 [세션](/openai-agents-js/ko/guides/sessions) 을 알아보세요
-- [도구](/openai-agents-js/ko/guides/tools), [가드레일](/openai-agents-js/ko/guides/guardrails), [모델](/openai-agents-js/ko/guides/models) 을 알아보세요
+- [에이전트](/openai-agents-js/guides/agents) 구성 방법 알아보기
+- [에이전트 실행](/openai-agents-js/guides/running-agents)과 [세션](/openai-agents-js/guides/sessions) 알아보기
+- [도구](/openai-agents-js/guides/tools), [가드레일](/openai-agents-js/guides/guardrails), [모델](/openai-agents-js/guides/models) 알아보기

@@ -13,6 +13,24 @@ import {
 } from './realtimeSession';
 import { RealtimeAgent } from './realtimeAgent';
 
+const SIP_UNSUPPORTED_TURN_DETECTION_FIELDS = [
+  ['threshold', 'threshold'],
+  ['prefix_padding_ms', 'prefixPaddingMs/prefix_padding_ms'],
+  ['silence_duration_ms', 'silenceDurationMs/silence_duration_ms'],
+] as const;
+
+function formatFieldList(fields: string[]): string {
+  if (fields.length <= 1) {
+    return fields[0] ?? '';
+  }
+
+  if (fields.length === 2) {
+    return `${fields[0]} and ${fields[1]}`;
+  }
+
+  return `${fields.slice(0, -1).join(', ')}, and ${fields.at(-1)}`;
+}
+
 /**
  * Transport layer that connects to an existing SIP-initiated Realtime call via call ID.
  */
@@ -47,7 +65,9 @@ export class OpenAIRealtimeSIP extends OpenAIRealtimeWebSocket {
       overrides,
     );
     const transport = new OpenAIRealtimeSIP();
-    return transport.buildSessionPayload(sessionConfig);
+    const payload = transport.buildSessionPayload(sessionConfig);
+    OpenAIRealtimeSIP.assertSupportedInitialConfigPayload(payload);
+    return payload;
   }
 
   override sendAudio(
@@ -69,5 +89,31 @@ export class OpenAIRealtimeSIP extends OpenAIRealtimeWebSocket {
     }
 
     await super.connect(options);
+  }
+
+  private static assertSupportedInitialConfigPayload(
+    payload: RealtimeSessionPayload,
+  ): void {
+    const turnDetection = payload.audio?.input?.turn_detection as
+      | Record<string, unknown>
+      | null
+      | undefined;
+
+    if (!turnDetection || typeof turnDetection !== 'object') {
+      return;
+    }
+
+    const unsupportedFields = SIP_UNSUPPORTED_TURN_DETECTION_FIELDS.flatMap(
+      ([key, label]) =>
+        typeof turnDetection[key] === 'undefined' ? [] : [label],
+    );
+
+    if (unsupportedFields.length === 0) {
+      return;
+    }
+
+    throw new UserError(
+      `OpenAIRealtimeSIP.buildInitialConfig() does not support SIP turn-detection fields ${formatFieldList(unsupportedFields)}. The Realtime Calls API rejects these session.audio.input.turn_detection properties for SIP sessions, so remove them before accepting the call.`,
+    );
   }
 }
