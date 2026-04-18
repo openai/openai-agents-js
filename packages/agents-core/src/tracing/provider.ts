@@ -14,10 +14,12 @@ export type CreateSpanOptions<TData extends SpanData> = Omit<
 export class TraceProvider {
   #multiProcessor: MultiTracingProcessor;
   #disabled: boolean;
+  #shutdownPromise: Promise<void> | null;
 
   constructor() {
     this.#multiProcessor = new MultiTracingProcessor();
     this.#disabled = tracing.disabled;
+    this.#shutdownPromise = null;
 
     this.#addCleanupListeners();
   }
@@ -28,6 +30,7 @@ export class TraceProvider {
    * @param processor - The processor to add.
    */
   registerProcessor(processor: TracingProcessor): void {
+    this.#shutdownPromise = null;
     this.#multiProcessor.addTraceProcessor(processor);
   }
 
@@ -37,6 +40,7 @@ export class TraceProvider {
    * @param processors - The list of processors to set.
    */
   setProcessors(processors: TracingProcessor[]): void {
+    this.#shutdownPromise = null;
     this.#multiProcessor.setProcessors(processors);
   }
 
@@ -167,12 +171,17 @@ export class TraceProvider {
   }
 
   async shutdown(timeout?: number): Promise<void> {
-    try {
-      logger.debug('Shutting down tracing provider');
-      await this.#multiProcessor.shutdown(timeout);
-    } catch (error) {
-      logger.error('Error shutting down tracing provider %o', error);
+    if (!this.#shutdownPromise) {
+      this.#shutdownPromise = (async () => {
+        try {
+          logger.debug('Shutting down tracing provider');
+          await this.#multiProcessor.shutdown(timeout);
+        } catch (error) {
+          logger.error('Error shutting down tracing provider %o', error);
+        }
+      })();
     }
+    await this.#shutdownPromise;
   }
 
   /** Adds listeners to `process` to ensure `shutdown` occurs before exit. */
@@ -193,7 +202,7 @@ export class TraceProvider {
       };
 
       // Handle normal termination
-      process.on('beforeExit', cleanup);
+      process.once('beforeExit', cleanup);
 
       // Handle CTRL+C (SIGINT)
       process.on('SIGINT', async () => {
