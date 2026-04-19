@@ -203,6 +203,16 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     super.updateSessionConfig(newConfig);
   }
 
+  interrupt(cancelOngoingResponse: boolean = true): void {
+    this.#twilioWebSocket.send(
+      JSON.stringify({
+        event: 'clear',
+        streamSid: this.#streamSid,
+      }),
+    );
+    super.interrupt(cancelOngoingResponse);
+  }
+
   _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
     const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
     this.#logger.debug(
