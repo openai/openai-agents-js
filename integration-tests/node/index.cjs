@@ -1,14 +1,6 @@
 // @ts-check
 
-const {
-  Agent,
-  run,
-  setTraceProcessors,
-  ConsoleSpanExporter,
-  BatchTraceProcessor,
-} = require('@openai/agents');
-
-setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+const { Agent, getGlobalTraceProvider, run } = require('@openai/agents');
 
 const agent = new Agent({
   name: 'Test Agent',
@@ -17,8 +9,12 @@ const agent = new Agent({
 });
 
 async function main() {
-  const result = await run(agent, 'Hey there!');
-  console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+  try {
+    const result = await run(agent, 'Hey there!');
+    console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+  } finally {
+    await getGlobalTraceProvider().shutdown();
+  }
 }
 
 main().catch(console.error);

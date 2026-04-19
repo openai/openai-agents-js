@@ -1,14 +1,11 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
+import { createIntegrationSubprocessEnv } from './_helpers/env';
+
 const execa = execaBase({
   cwd: './integration-tests/node-ai-sdk-v2-ts',
-  env: {
-    ...process.env,
-    NODE_OPTIONS: '',
-    TS_NODE_PROJECT: '',
-    TS_NODE_COMPILER_OPTIONS: '',
-  },
+  env: createIntegrationSubprocessEnv(),
 });
 
 describe('Node.js (TypeScript + AI SDK v2)', () => {

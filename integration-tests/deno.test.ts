@@ -4,6 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { createIntegrationSubprocessEnv } from './_helpers/env';
+
 const denoCwd = './integration-tests/deno';
 const denoNpmrcPath = path.resolve(denoCwd, '.npmrc');
 let denoCacheDir = '';
@@ -15,11 +17,10 @@ describe('Deno', () => {
     denoCacheDir = await mkdtemp(path.join(tmpdir(), 'openai-agents-js-deno-'));
     execa = execaBase({
       cwd: denoCwd,
-      env: {
-        ...process.env,
+      env: createIntegrationSubprocessEnv({
         DENO_DIR: denoCacheDir,
         NPM_CONFIG_USERCONFIG: denoNpmrcPath,
-      },
+      }),
     });
 
     await rm(path.join(denoCwd, 'deno.lock'), { force: true });

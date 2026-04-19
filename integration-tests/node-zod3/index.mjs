@@ -2,16 +2,7 @@
 
 import { z } from 'zod/v3';
 
-import {
-  Agent,
-  run,
-  tool,
-  setTraceProcessors,
-  ConsoleSpanExporter,
-  BatchTraceProcessor,
-} from '@openai/agents';
-
-setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
 
 const getWeatherTool = tool({
   name: 'get_weather',
@@ -29,5 +20,9 @@ const agent = new Agent({
   tools: [getWeatherTool],
 });
 
-const result = await run(agent, 'What is the weather in San Francisco?');
-console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+try {
+  const result = await run(agent, 'What is the weather in San Francisco?');
+  console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+} finally {
+  await getGlobalTraceProvider().shutdown();
+}

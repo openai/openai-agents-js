@@ -1,4 +1,4 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 import { openai } from '@ai-sdk/openai';
@@ -29,11 +29,15 @@ export async function main() {
     },
   });
 
-  const result = await run(
-    agent,
-    'Hello what is the weather in San Francisco?',
-  );
-  console.log(`[AISDK_V3_RESPONSE]${result.finalOutput}[/AISDK_V3_RESPONSE]`);
+  try {
+    const result = await run(
+      agent,
+      'Hello what is the weather in San Francisco?',
+    );
+    console.log(`[AISDK_V3_RESPONSE]${result.finalOutput}[/AISDK_V3_RESPONSE]`);
+  } finally {
+    await getGlobalTraceProvider().shutdown();
+  }
 }
 
 main().catch((error) => {

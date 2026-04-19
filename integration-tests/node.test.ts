@@ -1,25 +1,16 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
-const {
-  CODEX_CI: _codexCi,
-  CODEX_THREAD_ID: _codexThreadId,
-  ...integrationEnv
-} = process.env;
+import { createIntegrationSubprocessEnv } from './_helpers/env';
 
 const execa = execaBase({
   cwd: './integration-tests/node',
-  env: {
-    ...integrationEnv,
-    NODE_OPTIONS: '',
-    TS_NODE_PROJECT: '',
-    TS_NODE_COMPILER_OPTIONS: '',
-  },
+  env: createIntegrationSubprocessEnv(),
 });
 
 describe('Node.js', () => {
   beforeAll(async () => {
-    // remove lock file to avoid errors
+    // Remove lock file to avoid errors.
     console.log('[node] Removing node_modules');
     await execa`rm -rf node_modules`;
     console.log('[node] Installing dependencies');

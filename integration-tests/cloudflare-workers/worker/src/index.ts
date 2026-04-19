@@ -17,14 +17,11 @@ export interface Env {
 
 import {
   Agent,
-  BatchTraceProcessor,
-  ConsoleSpanExporter,
   getGlobalTraceProvider,
   getCurrentTrace,
   run,
   Runner,
   setDefaultOpenAIKey,
-  setTraceProcessors,
   withTrace,
 } from '@openai/agents';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
@@ -33,7 +30,6 @@ export default {
   async fetch(request, env, ctx): Promise<Response> {
     try {
       setDefaultOpenAIKey(env.OPENAI_API_KEY!);
-      setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
       const url = new URL(request.url);
 
       if (url.pathname === '/aisdk') {
