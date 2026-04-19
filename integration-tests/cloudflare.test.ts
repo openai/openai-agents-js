@@ -2,10 +2,12 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { execa as execaBase, ResultPromise } from 'execa';
 import path from 'node:path';
 
+import { createIntegrationSubprocessEnv } from './_helpers/env';
 import { requireEnvVar, withManagedFile } from './_helpers/prereqs';
 
 const execa = execaBase({
   cwd: './integration-tests/cloudflare-workers/worker',
+  env: createIntegrationSubprocessEnv(),
 });
 
 let server: ResultPromise;
@@ -20,7 +22,7 @@ let cleanupDevVars: (() => Promise<void>) | undefined;
 
 describe('Cloudflare Workers', () => {
   beforeAll(async () => {
-    // Remove lock file to avoid errors
+    // Remove lock file to avoid errors.
     await execa`rm -f package-lock.json`;
     console.log('[cloudflare] Removing node_modules');
     await execa`rm -rf node_modules`;

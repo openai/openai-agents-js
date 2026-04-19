@@ -1,17 +1,8 @@
 // @ts-check
 
-const {
-  Agent,
-  run,
-  tool,
-  setTraceProcessors,
-  ConsoleSpanExporter,
-  BatchTraceProcessor,
-} = require('@openai/agents');
+const { Agent, getGlobalTraceProvider, run, tool } = require('@openai/agents');
 
 const { z } = require('zod');
-
-setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
 
 const getWeatherTool = tool({
   name: 'get_weather',
@@ -30,8 +21,12 @@ const agent = new Agent({
 });
 
 async function main() {
-  const result = await run(agent, 'Hey there!');
-  console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+  try {
+    const result = await run(agent, 'Hey there!');
+    console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+  } finally {
+    await getGlobalTraceProvider().shutdown();
+  }
 }
 
 main().catch(console.error);

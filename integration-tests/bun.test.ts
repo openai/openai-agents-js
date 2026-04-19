@@ -1,11 +1,16 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
-const execa = execaBase({ cwd: './integration-tests/bun' });
+import { createIntegrationSubprocessEnv } from './_helpers/env';
+
+const execa = execaBase({
+  cwd: './integration-tests/bun',
+  env: createIntegrationSubprocessEnv(),
+});
 
 describe('Bun', () => {
   beforeAll(async () => {
-    // remove lock file to avoid errors
+    // Remove lock file to avoid errors.
     await execa`rm -f bun.lock`;
     console.log('[bun] Removing node_modules');
     await execa`rm -rf node_modules`;
@@ -13,12 +18,12 @@ describe('Bun', () => {
     await execa`bun install`;
   }, 60000);
 
-  test('should be able to run', async () => {
+  test('should be able to run', { timeout: 15_000 }, async () => {
     const { stdout } = await execa`bun run index.ts`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
-  test('should be able to run with zod', async () => {
+  test('should be able to run with zod', { timeout: 15_000 }, async () => {
     const { stdout } = await execa`bun run zod.ts`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });

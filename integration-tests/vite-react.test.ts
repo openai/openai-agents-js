@@ -3,6 +3,7 @@ import { chromium } from 'playwright';
 import { execa as execaBase, ResultPromise } from 'execa';
 import path from 'node:path';
 
+import { createIntegrationSubprocessEnv } from './_helpers/env';
 import {
   assertPathExists,
   requireEnvVar,
@@ -11,6 +12,7 @@ import {
 
 const execa = execaBase({
   cwd: './integration-tests/vite-react',
+  env: createIntegrationSubprocessEnv(),
 });
 
 let server: ResultPromise;
@@ -24,7 +26,7 @@ let cleanupEnvFile: (() => Promise<void>) | undefined;
 
 describe('Vite React', () => {
   beforeAll(async () => {
-    // Remove lock file to avoid errors
+    // Remove lock file to avoid errors.
     await execa`rm -f package-lock.json`;
     console.log('[vite-react] Removing node_modules');
     await execa`rm -rf node_modules`;
