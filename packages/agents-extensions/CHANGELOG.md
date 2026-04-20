@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.8.4
+
+### Patch Changes
+
+- d17da19: test: add AI SDK UI boundary coverage
+- dde9797: fix: preserve nested audio config in Twilio transport
+- Updated dependencies [34c07ef]
+- Updated dependencies [4b13496]
+- Updated dependencies [7929f7a]
+  - @openai/agents-core@0.8.4
+  - @openai/agents@0.8.4
+
 ## 0.8.3
 
 ### Patch Changes

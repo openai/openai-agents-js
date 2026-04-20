@@ -329,6 +329,47 @@ describe('Trace & Span lifecycle', () => {
     }
   });
 
+  it('deduplicates provider shutdown calls', async () => {
+    const provider = new TraceProvider();
+    const processor = new TestProcessor();
+    processor.shutdown = vi.fn(async () => {});
+    provider.setProcessors([processor]);
+
+    await Promise.all([provider.shutdown(), provider.shutdown()]);
+    await provider.shutdown();
+
+    expect(processor.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers beforeExit cleanup as a one-shot listener', () => {
+    const onceSpy = vi.spyOn(process, 'once');
+    const onSpy = vi.spyOn(process, 'on');
+    new TraceProvider();
+
+    const beforeExitListener = onceSpy.mock.calls.find(
+      ([event]) => event === 'beforeExit',
+    )?.[1];
+
+    expect(beforeExitListener).toEqual(expect.any(Function));
+
+    if (typeof beforeExitListener === 'function') {
+      process.off('beforeExit', beforeExitListener);
+    }
+    for (const [event, listener] of onSpy.mock.calls) {
+      if (
+        (event === 'SIGINT' ||
+          event === 'SIGTERM' ||
+          event === 'unhandledRejection') &&
+        typeof listener === 'function'
+      ) {
+        process.off(event, listener);
+      }
+    }
+
+    onceSpy.mockRestore();
+    onSpy.mockRestore();
+  });
+
   it('falls back to module provider when global registration fails', () => {
     const symbol = Symbol.for('openai.agents.core.traceProvider');
     const globalHolder = globalThis as unknown as Record<

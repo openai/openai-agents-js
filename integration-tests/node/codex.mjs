@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Agent, run } from '@openai/agents';
+import { Agent, getGlobalTraceProvider, run } from '@openai/agents';
 import { codexTool } from '@openai/agents-extensions/experimental/codex';
 
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -122,11 +122,15 @@ async function main() {
     ].join(' '),
     tools: [codex],
   });
-  const result = await run(
-    agent,
-    'Use the codex tool to inspect package.json in the current workspace and tell me the version of @openai/codex-sdk.',
-  );
-  console.log(`[CODEX_RESPONSE]${result.finalOutput}[/CODEX_RESPONSE]`);
+  try {
+    const result = await run(
+      agent,
+      'Use the codex tool to inspect package.json in the current workspace and tell me the version of @openai/codex-sdk.',
+    );
+    console.log(`[CODEX_RESPONSE]${result.finalOutput}[/CODEX_RESPONSE]`);
+  } finally {
+    await getGlobalTraceProvider().shutdown();
+  }
 }
 
 main().catch((error) => {

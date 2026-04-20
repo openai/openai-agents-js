@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
+import { z as zod3 } from 'zod/v3';
 import { zodJsonSchemaCompat } from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
@@ -55,6 +56,47 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
     expect(jsonSchema?.properties.union).toMatchObject({
       anyOf: [{ type: 'string' }, { type: 'number' }],
+    });
+  });
+
+  it('handles discriminated unions from legacy zod internals', () => {
+    const schema = zod3.object({
+      recurrence: zod3.discriminatedUnion('type', [
+        zod3.object({
+          type: zod3.literal('once'),
+          date: zod3.string(),
+        }),
+        zod3.object({
+          type: zod3.literal('weekly'),
+          dayOfWeek: zod3.number(),
+        }),
+      ]),
+    });
+
+    const jsonSchema = zodJsonSchemaCompat(
+      schema as unknown as z.ZodObject<any>,
+    );
+    expect(jsonSchema?.properties.recurrence).toMatchObject({
+      anyOf: [
+        {
+          type: 'object',
+          properties: {
+            type: { const: 'once', type: 'string' },
+            date: { type: 'string' },
+          },
+          required: ['type', 'date'],
+          additionalProperties: false,
+        },
+        {
+          type: 'object',
+          properties: {
+            type: { const: 'weekly', type: 'string' },
+            dayOfWeek: { type: 'number' },
+          },
+          required: ['type', 'dayOfWeek'],
+          additionalProperties: false,
+        },
+      ],
     });
   });
 

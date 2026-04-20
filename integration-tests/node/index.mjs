@@ -1,14 +1,6 @@
 // @ts-check
 
-import {
-  Agent,
-  run,
-  setTraceProcessors,
-  ConsoleSpanExporter,
-  BatchTraceProcessor,
-} from '@openai/agents';
-
-setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+import { Agent, getGlobalTraceProvider, run } from '@openai/agents';
 
 const agent = new Agent({
   name: 'Test Agent',
@@ -16,5 +8,9 @@ const agent = new Agent({
     'You will always only respond with "Hello there!". Not more not less.',
 });
 
-const result = await run(agent, 'Hey there!');
-console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+try {
+  const result = await run(agent, 'Hey there!');
+  console.log(`[RESPONSE]${result.finalOutput}[/RESPONSE]`);
+} finally {
+  await getGlobalTraceProvider().shutdown();
+}
