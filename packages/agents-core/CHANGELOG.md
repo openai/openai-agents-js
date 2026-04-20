@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.8.4
+
+### Patch Changes
+
+- 34c07ef: test: stabilize streamed run result leak tests
+- 4b13496: fix: deduplicate trace provider shutdown cleanup.
+- 7929f7a: fix: handle legacy discriminated union fallback schemas
+
 ## 0.8.3
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.8.4
+
+### Patch Changes
+
+- 6ad32cb: fix: fail fast on unsupported SIP VAD fields (#741)
+- Updated dependencies [34c07ef]
+- Updated dependencies [4b13496]
+- Updated dependencies [7929f7a]
+  - @openai/agents-core@0.8.4
+
 ## 0.8.3
 
 ### Patch Changes
