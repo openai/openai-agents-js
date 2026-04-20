@@ -856,6 +856,132 @@ describe('Runner.run (streaming)', () => {
     expect(done.done).toBe(true);
   });
 
+  it('preserves retry-adjusted usage when AbortSignal cancels after a retried streaming snapshot', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    class RetryThenAbortableUsageSnapshotStreamingModel implements Model {
+      #attempt = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.#attempt += 1;
+        if (this.#attempt === 1) {
+          const error = new Error('Rate limited');
+          (error as Error & { statusCode?: number }).statusCode = 429;
+          throw error;
+        }
+
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_retry_abort_snapshot' },
+          },
+          providerData: {
+            usageSnapshot: {
+              requests: 1,
+              inputTokens: 11,
+              outputTokens: 7,
+              totalTokens: 18,
+              requestUsageEntries: [
+                {
+                  inputTokens: 11,
+                  outputTokens: 7,
+                  totalTokens: 18,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+          },
+        } as any;
+        await waitWithAbort(500, request.signal);
+      }
+    }
+
+    const controller = new AbortController();
+    const agent = new Agent({
+      name: 'RetryThenAbortSnapshot',
+      model: new RetryThenAbortableUsageSnapshotStreamingModel(),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: retryPolicies.httpStatus([429]),
+        },
+      },
+    });
+
+    const result = await run(agent, 'go', {
+      stream: true,
+      signal: controller.signal,
+    });
+
+    const reader = (result.toStream() as any).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    controller.abort();
+
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(result.state.usage.requests).toBe(2);
+    expect(result.state.usage.inputTokens).toBe(11);
+    expect(result.state.usage.outputTokens).toBe(7);
+    expect(result.state.usage.totalTokens).toBe(18);
+    expect(result.state.usage.requestUsageEntries).toEqual([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+      {
+        inputTokens: 11,
+        outputTokens: 7,
+        totalTokens: 18,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+  });
+
   it('preserves retry-adjusted request usage when a streaming snapshot is replaced by response_done', async () => {
     class RetryThenSnapshotStreamingModel implements Model {
       #attempt = 0;
