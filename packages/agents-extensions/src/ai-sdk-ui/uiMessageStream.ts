@@ -483,15 +483,15 @@ async function* buildUiMessageStream(
 }
 
 /**
- * Creates a UI message stream Response compatible with the AI SDK data stream protocol.
+ * Creates a UI message stream compatible with the AI SDK data stream protocol.
  */
-export function createAiSdkUiMessageStreamResponse(
+export function createAiSdkUiMessageStream(
   source: AiSdkUiMessageStreamSource,
-  options: AiSdkUiMessageStreamResponseOptions = {},
-): Response {
+): ReadableStream<UIMessageChunk> {
   const events = resolveEventSource(source);
   const iterator = buildUiMessageStream(events)[Symbol.asyncIterator]();
-  const stream = new ReadableStream<UIMessageChunk>({
+
+  return new ReadableStream<UIMessageChunk>({
     async pull(controller) {
       const { value, done } = await iterator.next();
       if (done) {
@@ -506,6 +506,16 @@ export function createAiSdkUiMessageStreamResponse(
       }
     },
   });
+}
+
+/**
+ * Creates a UI message stream Response compatible with the AI SDK data stream protocol.
+ */
+export function createAiSdkUiMessageStreamResponse(
+  source: AiSdkUiMessageStreamSource,
+  options: AiSdkUiMessageStreamResponseOptions = {},
+): Response {
+  const stream = createAiSdkUiMessageStream(source);
 
   return createUIMessageStreamResponse({
     stream,
