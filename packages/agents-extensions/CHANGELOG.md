@@ -1,5 +1,13 @@
 # @openai/agents-extensions
 
+## 0.8.5
+
+### Patch Changes
+
+- f7dba06: feat: #1186 expose createAiSdkUiMessageStream for AI SDK UI chunks
+  - @openai/agents@0.8.5
+  - @openai/agents-core@0.8.5
+
 ## 0.8.4
 
 ### Patch Changes

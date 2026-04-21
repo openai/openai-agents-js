@@ -1,5 +1,13 @@
 # @openai/agents
 
+## 0.8.5
+
+### Patch Changes
+
+- @openai/agents-core@0.8.5
+- @openai/agents-openai@0.8.5
+- @openai/agents-realtime@0.8.5
+
 ## 0.8.4
 
 ### Patch Changes
