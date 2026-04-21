@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-feat: expose createAiSdkUiMessageStream for AI SDK UI chunks
+feat: #1186 expose createAiSdkUiMessageStream for AI SDK UI chunks
