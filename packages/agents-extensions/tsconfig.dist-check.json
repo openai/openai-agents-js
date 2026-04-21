@@ -4,7 +4,7 @@
     "noEmit": true,
     "skipLibCheck": false,
     "types": ["node"],
-    "lib": ["ES2018", "DOM"],
+    "lib": ["ES2018", "ES2022.Intl", "DOM"],
     "baseUrl": ".",
     "paths": {
       "@openai/agents-core/_shims": [

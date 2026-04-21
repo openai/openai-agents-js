@@ -10,6 +10,7 @@ import aiSdkProviderDataExample from '../../../../../examples/docs/extensions/ai
 import aiSdkProviderMetadataExample from '../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
 import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 import aiSdkTransformOutputTextExample from '../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
+import aiSdkUiMessageStreamExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
 import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
@@ -113,17 +114,26 @@ There are two related integrations in `@openai/agents-extensions`:
 `@openai/agents-extensions/ai-sdk-ui` provides response helpers for wiring Agents SDK streams into AI SDK UI routes:
 
 - `createAiSdkTextStreamResponse(source, options?)` for plain text streaming responses.
+- `createAiSdkUiMessageStream(source)` for a lower-level `ReadableStream<UIMessageChunk>`.
 - `createAiSdkUiMessageStreamResponse(source, options?)` for `UIMessageChunk` streaming responses.
 
-Both helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object and return a `Response` with streaming-friendly headers.
+These helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object. The response helpers return a `Response` with streaming-friendly headers.
 
-Use `createAiSdkUiMessageStreamResponse(...)` when your UI needs structured chunks such as tool calls or reasoning parts. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
+Use `createAiSdkUiMessageStreamResponse(...)` when your route should return the AI SDK response directly. Use `createAiSdkUiMessageStream(...)` when you want to own the response or rendering layer while still using the maintained Agents SDK to AI SDK `UIMessageChunk` translation. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
 
-Both helpers also accept optional response settings through `options`:
+The response helpers also accept optional response settings through `options`:
 
 - `headers`: additional response headers to merge into the streaming response.
 - `status`: the HTTP status code for the returned `Response`.
 - `statusText`: the HTTP status text for the returned `Response`.
+
+Example lower-level UI message stream:
+
+<Code
+  lang="typescript"
+  code={aiSdkUiMessageStreamExample}
+  title="UI message stream"
+/>
 
 Example Next.js route for UI message streaming:
 

@@ -11,8 +11,12 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '@openai/agents';
+import type { RunStreamEvent } from '@openai/agents';
 import type { UIMessageChunk } from 'ai';
-import { createAiSdkUiMessageStreamResponse } from '../../src/ai-sdk-ui/index';
+import {
+  createAiSdkUiMessageStream,
+  createAiSdkUiMessageStreamResponse,
+} from '../../src/ai-sdk-ui/index';
 
 async function readResponseText(response: Response): Promise<string> {
   if (!response.body) {
@@ -61,7 +65,106 @@ async function readUiMessageChunks(
   return chunks;
 }
 
+async function readUiMessageStream(
+  stream: ReadableStream<UIMessageChunk>,
+): Promise<UIMessageChunk[]> {
+  const reader = stream.getReader();
+  const chunks: UIMessageChunk[] = [];
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return chunks;
+}
+
+function createRunEventStream(
+  events: RunStreamEvent[],
+): ReadableStream<RunStreamEvent> {
+  return new ReadableStream<RunStreamEvent>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(event);
+      }
+      controller.close();
+    },
+  });
+}
+
 describe('createAiSdkUiMessageStreamResponse', () => {
+  test('creates a raw UI message chunk stream from toStream sources', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+
+    const messageOutput = new RunMessageOutputItem(
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Raw stream message' }],
+      },
+      agent,
+    );
+
+    const stream = createAiSdkUiMessageStream({
+      toStream: () =>
+        createRunEventStream([
+          new RunItemStreamEvent('message_output_created', messageOutput),
+        ]),
+    });
+
+    const chunks = await readUiMessageStream(stream);
+
+    expect(chunks.map((chunk) => chunk.type)).toEqual([
+      'start',
+      'start-step',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish-step',
+      'finish',
+    ]);
+
+    const textDelta = chunks.find((chunk) => chunk.type === 'text-delta');
+    expect(textDelta).toMatchObject({ delta: 'Raw stream message' });
+  });
+
+  test('cancels the underlying event iterator when a raw stream is cancelled', async () => {
+    let cancelled = false;
+
+    const events = (async function* () {
+      try {
+        yield new RunRawModelStreamEvent({ type: 'response_started' });
+        yield new RunRawModelStreamEvent({
+          type: 'output_text_delta',
+          delta: 'unread',
+        });
+      } finally {
+        cancelled = true;
+      }
+    })();
+
+    const stream = createAiSdkUiMessageStream(events);
+    const reader = stream.getReader();
+
+    const first = await reader.read();
+    expect(first).toMatchObject({
+      done: false,
+      value: { type: 'start' },
+    });
+
+    await reader.cancel();
+
+    expect(cancelled).toBe(true);
+  });
+
   test('maps run stream events to UI message chunks', async () => {
     const agent = new Agent({ name: 'Test Agent' });
 
