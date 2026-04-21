@@ -43,16 +43,17 @@ export function getUsageSnapshotFromStreamEvent(
     return new Usage(StreamEventResponseCompleted.parse(event).response.usage);
   }
 
-  if (event.type !== 'model') {
+  if (
+    event.type !== 'model' ||
+    !event.providerData?.usageSnapshot ||
+    typeof event.providerData.usageSnapshot !== 'object'
+  ) {
     return undefined;
   }
 
-  const usageSnapshot = event.providerData?.usageSnapshot;
-  if (!usageSnapshot || typeof usageSnapshot !== 'object') {
-    return undefined;
-  }
-
-  return new Usage(usageSnapshot as ConstructorParameters<typeof Usage>[0]);
+  return new Usage(
+    event.providerData.usageSnapshot as ConstructorParameters<typeof Usage>[0],
+  );
 }
 
 function getRunItemStreamEventName(
