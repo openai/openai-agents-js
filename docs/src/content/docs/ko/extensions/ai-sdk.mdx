@@ -10,48 +10,45 @@ import aiSdkProviderDataExample from '../../../../../../examples/docs/extensions
 import aiSdkProviderMetadataExample from '../../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
 import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
 import aiSdkTransformOutputTextExample from '../../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
+import aiSdkUiMessageStreamExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
 import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
-기본적으로 Agents SDK 는 Responses API 또는 Chat Completions API 를 통해 OpenAI 모델과 함께 작동합니다. 하지만 다른 모델을 사용하려는 경우, [Vercel AI SDK](https://sdk.vercel.ai/) 는 이 어댑터를 통해 Agents SDK 에 연결할 수 있는 다양한 지원 모델을 제공합니다.
+기본적으로 Agents SDK는 Responses API 또는 Chat Completions API를 통해 OpenAI 모델과 함께 동작합니다. 하지만 다른 모델을 사용하려는 경우, [Vercel AI SDK](https://sdk.vercel.ai/)는 이 어댑터를 통해 Agents SDK에 연결할 수 있는 다양한 지원 모델을 제공합니다.
 
 ## 설정
 
 <Steps>
 
-1. extensions 패키지를 설치하여 AI SDK 어댑터를 설치합니다:
+1. extensions 패키지를 설치하여 AI SDK 어댑터를 설치합니다
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel의 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 에서 원하는 모델 패키지를 선택하고 설치합니다:
+2. [Vercel의 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models)에서 원하는 모델 패키지를 선택해 설치합니다
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. 어댑터와 모델을 import 하여 에이전트에 연결합니다:
+3. 어댑터와 모델을 import하여 에이전트에 연결합니다
 
-   <Code
-     lang="typescript"
-     code={aiSdkImportsExample}
-     title="Import the adapter"
-   />
+   <Code lang="typescript" code={aiSdkImportsExample} title="어댑터 import" />
 
-4. 에이전트가 사용할 모델 인스턴스를 초기화합니다:
+4. 에이전트에서 사용할 모델 인스턴스를 초기화합니다
 
-   <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
+   <Code lang="typescript" code={aiSdkModelExample} title="모델 생성" />
 
 </Steps>
 
 ## 코드 예제
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK Setup" />
+<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 설정" />
 
-## provider metadata 전달
+## provider 메타데이터 전달
 
-메시지와 함께 provider 별 옵션을 보내야 한다면 `providerMetadata` 를 통해 전달하세요. 값은 기본 AI SDK 모델로 직접 전달됩니다. 예를 들어, Agents SDK 에서 다음 `providerData` 는
+메시지와 함께 provider별 옵션을 보내야 한다면 `providerMetadata`를 통해 전달하세요. 값은 하위 AI SDK 모델로 직접 전달됩니다. 예를 들어, Agents SDK의 다음 `providerData`는
 
 <Code
   lang="typescript"
@@ -59,7 +56,7 @@ import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/exte
   title="Agents SDK providerData"
 />
 
-다음과 같이 변환됩니다
+AI SDK 연동을 사용할 때 다음과 같이 변환됩니다
 
 <Code
   lang="typescript"
@@ -67,78 +64,85 @@ import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/exte
   title="AI SDK providerMetadata"
 />
 
-AI SDK 연동을 사용할 때 위와 같이 됩니다.
-
 ## 최종 출력 텍스트 정규화
 
-일부 provider 는 JSON 코드 펜스처럼 추가 래핑이 포함된 일반 텍스트로 structured outputs 을 반환합니다. Agents 런타임이 최종 출력을 검증하기 전에 provider 별 정리가 필요하다면, 어댑터를 생성할 때 `transformOutputText` 를 전달하세요:
+일부 provider는 JSON 코드 펜스처럼 추가 래핑이 포함된 일반 텍스트로 structured outputs를 반환합니다. Agents 런타임이 최종 출력을 검증하기 전에 provider별 정리가 필요하다면, 어댑터를 생성할 때 `transformOutputText`를 전달하세요.
 
 <Code
   lang="typescript"
   code={aiSdkTransformOutputTextExample}
-  title="Normalize finalized output text"
+  title="최종 출력 텍스트 정규화"
 />
 
-`transformOutputText` 는 비스트리밍 응답의 최종 assistant 텍스트와 스트리밍 응답의 최종 `response_done` 이벤트에서 실행됩니다. 증분 `output_text_delta` 이벤트는 수정하지 않습니다.
+`transformOutputText`는 비스트리밍 응답에서는 최종 assistant 텍스트에 대해, 스트리밍 응답에서는 최종 `response_done` 이벤트에 대해 실행됩니다. 점진적인 `output_text_delta` 이벤트는 수정하지 않습니다.
 
 ## 재시도
 
-`modelSettings.retry` 는 AI SDK 기반 모델에서도 작동합니다. 재시도는 기본 OpenAI provider 에서만이 아니라 Agents 런타임에서 구현되기 때문입니다.
+`modelSettings.retry`는 AI SDK 기반 모델에서도 동작합니다. 재시도는 기본 OpenAI provider에만 있는 것이 아니라 Agents 런타임에서 구현되기 때문입니다.
 
-즉, 다른 곳에서 사용하는 것과 동일한 재시도 구성을 연결할 수 있습니다:
+즉, 다른 곳에서 사용하는 것과 동일한 재시도 구성을 연결할 수 있습니다.
 
-- `Agent`, `Runner` 또는 둘 다에 `modelSettings.retry` 를 설정합니다
-- `networkError()`, `httpStatus([...])`, `providerSuggested()` 같은 `retryPolicies` 를 조합합니다
-- `providerSuggested()` 는 어댑터를 통해 래핑된 AI SDK 모델이 재시도 관련 조언을 노출할 수 있을 때만 도움이 된다는 점을 유의하세요
+- `Agent`, `Runner`, 또는 둘 다에 `modelSettings.retry`를 설정합니다
+- `networkError()`, `httpStatus([...])`, `providerSuggested()` 같은 `retryPolicies`를 조합합니다
+- `providerSuggested()`는 래핑된 AI SDK 모델이 어댑터를 통해 재시도 관련 조언을 노출할 수 있을 때만 도움이 된다는 점에 유의하세요
 
-`aisdk(openai(...))` 를 사용하는 전체 예제는 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts) 를 참고하세요. 스트리밍과 상태를 가지는 후속 요청에 대한 안전 경계를 포함한 재시도 API 자체에 대해서는 [모델 가이드](/openai-agents-js/ko/guides/models#model-retries) 를 참고하세요.
+`aisdk(openai(...))`를 사용하는 전체 예제는 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)를 참고하세요. 스트리밍과 상태를 가지는 후속 요청의 안전 경계를 포함한 재시도 API 자체는 [모델 가이드](/openai-agents-js/ko/guides/models#model-retries)를 참고하세요.
 
 ## 적절한 연동 선택
 
-`@openai/agents-extensions` 에는 서로 관련된 두 가지 연동이 있습니다:
+`@openai/agents-extensions`에는 서로 관련된 두 가지 연동이 있습니다.
 
-- `@openai/agents-extensions/ai-sdk` 는 AI SDK 모델을 어댑트하여 `Agent` 가 그 위에서 실행될 수 있게 합니다
-- `@openai/agents-extensions/ai-sdk-ui` 는 스트리밍되는 Agents SDK 실행을 어댑트하여 AI SDK UI 라우트가 표준 스트리밍 `Response` 를 반환할 수 있게 합니다
+- `@openai/agents-extensions/ai-sdk`는 AI SDK 모델을 어댑트하여 `Agent`가 그 위에서 실행될 수 있게 합니다
+- `@openai/agents-extensions/ai-sdk-ui`는 스트리밍되는 Agents SDK 실행을 어댑트하여 AI SDK UI 라우트가 표준 스트리밍 `Response`를 반환할 수 있게 합니다
 
 ### AI SDK 모델 관련 참고 사항
 
-- `@openai/agents-extensions/ai-sdk` 어댑터는 아직 beta 이므로, 특히 규모가 작은 provider 를 사용할 때는 신중하게 테스트하는 것이 좋습니다
-- OpenAI 모델을 사용 중이라면, 이 어댑터 대신 기본 OpenAI 모델 provider 를 사용하는 것을 권장합니다
-- 지원되는 AI SDK provider 는 `specificationVersion` `v2` 또는 `v3` 를 노출해야 합니다. 이전 v1 provider 스타일이 필요하다면 [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) 의 모듈을 프로젝트에 복사하세요
-- 컴퓨터 도구는 이 어댑터를 통해 사용할 때 디스플레이 metadata 가 필요합니다. 도구에 `environment` 와 `dimensions` metadata 가 모두 포함되어 있는지 확인하세요
-- Deferred Responses 도구 로딩 플로우는 여기서 지원되지 않습니다. 여기에는 `toolNamespace()`, `deferLoading: true` 를 사용하는 함수 도구, `toolSearchTool()` 이 포함됩니다. 도구 검색이 필요하다면 OpenAI Responses 모델을 직접 사용하세요. [도구 가이드](/openai-agents-js/ko/guides/tools#deferred-tool-loading-with-tool-search) 및 [모델 가이드](/openai-agents-js/ko/guides/models#responses-only-deferred-tool-loading) 를 참고하세요
+- `@openai/agents-extensions/ai-sdk` 어댑터는 아직 beta이므로, 특히 규모가 작은 provider를 사용할 때는 신중하게 테스트하는 것이 좋습니다
+- OpenAI 모델을 사용하는 경우, 이 어댑터 대신 기본 OpenAI 모델 provider를 우선 사용하는 것이 좋습니다
+- 지원되는 AI SDK provider는 `specificationVersion` `v2` 또는 `v3`를 노출해야 합니다. 이전 v1 provider 스타일이 필요하다면 [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)의 모듈을 프로젝트로 복사하세요
+- 컴퓨터 도구는 이 어댑터를 통해 사용할 때 디스플레이 메타데이터가 필요합니다. 도구에 `environment`와 `dimensions` 메타데이터가 모두 포함되어 있는지 확인하세요
+- Deferred Responses 도구 로딩 플로우는 여기서 지원되지 않습니다. 여기에는 `toolNamespace()`, `deferLoading: true`가 설정된 함수 도구, `toolSearchTool()`이 포함됩니다. 도구 검색이 필요하다면 OpenAI Responses 모델을 직접 사용하세요. [도구 가이드](/openai-agents-js/ko/guides/tools#deferred-tool-loading-with-tool-search)와 [모델 가이드](/openai-agents-js/ko/guides/models#responses-only-deferred-tool-loading)를 참고하세요
 
 ## AI SDK UI 스트림 헬퍼
 
-`@openai/agents-extensions/ai-sdk-ui` 는 Agents SDK 스트림을 AI SDK UI 라우트에 연결하기 위한 응답 헬퍼를 제공합니다:
+`@openai/agents-extensions/ai-sdk-ui`는 Agents SDK 스트림을 AI SDK UI 라우트에 연결하기 위한 응답 헬퍼를 제공합니다.
 
 - 일반 텍스트 스트리밍 응답용 `createAiSdkTextStreamResponse(source, options?)`
+- 더 낮은 수준의 `ReadableStream<UIMessageChunk>`용 `createAiSdkUiMessageStream(source)`
 - `UIMessageChunk` 스트리밍 응답용 `createAiSdkUiMessageStreamResponse(source, options?)`
 
-두 헬퍼 모두 `StreamedRunResult`, 스트림과 유사한 소스 또는 호환되는 래퍼 객체를 받아 스트리밍 친화적인 헤더가 포함된 `Response` 를 반환합니다.
+이 헬퍼들은 `StreamedRunResult`, 스트림과 유사한 source, 또는 호환되는 래퍼 객체를 받을 수 있습니다. 응답 헬퍼는 스트리밍에 적합한 헤더가 포함된 `Response`를 반환합니다.
 
-UI 에서 도구 호출이나 reasoning 파트 같은 구조화된 청크가 필요하다면 `createAiSdkUiMessageStreamResponse(...)` 를 사용하세요. 일반 텍스트만 원한다면 `createAiSdkTextStreamResponse(...)` 를 사용하세요.
+라우트가 AI SDK 응답을 직접 반환해야 한다면 `createAiSdkUiMessageStreamResponse(...)`를 사용하세요. 응답 또는 렌더링 계층을 직접 제어하면서도 유지관리되는 Agents SDK에서 AI SDK `UIMessageChunk`로의 변환을 사용하려면 `createAiSdkUiMessageStream(...)`를 사용하세요. 일반 텍스트만 원한다면 `createAiSdkTextStreamResponse(...)`를 사용하세요.
 
-두 헬퍼 모두 `options` 를 통해 선택적 응답 설정도 받을 수 있습니다:
+응답 헬퍼는 `options`를 통해 선택적 응답 설정도 받을 수 있습니다.
 
 - `headers`: 스트리밍 응답에 병합할 추가 응답 헤더
-- `status`: 반환되는 `Response` 의 HTTP 상태 코드
-- `statusText`: 반환되는 `Response` 의 HTTP 상태 텍스트
+- `status`: 반환되는 `Response`의 HTTP 상태 코드
+- `statusText`: 반환되는 `Response`의 HTTP 상태 텍스트
 
-UI 메시지 스트리밍을 위한 Next.js 라우트 예제:
+하위 수준 UI 메시지 스트림 예제:
+
+<Code
+  lang="typescript"
+  code={aiSdkUiMessageStreamExample}
+  title="UI 메시지 스트림"
+/>
+
+UI 메시지 스트리밍용 Next.js 라우트 예제:
 
 <Code
   lang="typescript"
   code={aiSdkUiMessageStreamResponseExample}
-  title="UI message stream response"
+  title="UI 메시지 스트림 응답"
 />
 
-텍스트 전용 스트리밍을 위한 Next.js 라우트 예제:
+텍스트 전용 스트리밍용 Next.js 라우트 예제:
 
 <Code
   lang="typescript"
   code={aiSdkTextStreamResponseExample}
-  title="Text stream response"
+  title="텍스트 스트림 응답"
 />
 
 엔드 투 엔드 사용법은 이 저장소의 `examples/ai-sdk-ui` 앱을 참고하세요.
