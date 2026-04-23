@@ -3,6 +3,7 @@
   "name": "docs-code",
   "dependencies": {
     "@ai-sdk/openai": "^2.0.15",
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",

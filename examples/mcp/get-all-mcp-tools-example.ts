@@ -14,7 +14,7 @@ async function main() {
   // Create multiple MCP servers to demonstrate getAllMcpTools
   const filesystemServer = new MCPServerStdio({
     name: 'Filesystem Server',
-    fullCommand: `npx -y @modelcontextprotocol/server-filesystem ${samplesDir}`,
+    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
   });
 
   // Note: This example shows how to use multiple servers

@@ -24,7 +24,7 @@ async function main() {
   const samplesDir = path.join(__dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem Server with filter',
-    fullCommand: `npx -y @modelcontextprotocol/server-filesystem ${samplesDir}`,
+    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
     toolFilter: createMCPToolStaticFilter({
       allowed: ['read_file', 'list_directory'],
       blocked: ['write_file'],

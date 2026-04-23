@@ -4,8 +4,8 @@ import * as path from 'node:path';
 async function main() {
   const samplesDir = path.join(__dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
-    name: 'Filesystem MCP Server, via npx',
-    fullCommand: `npx -y @modelcontextprotocol/server-filesystem ${samplesDir}`,
+    name: 'Filesystem MCP Server, via local package',
+    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
   });
   await mcpServer.connect();
   try {
