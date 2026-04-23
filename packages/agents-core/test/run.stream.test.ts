@@ -1094,6 +1094,82 @@ describe('Runner.run (streaming)', () => {
     expect(result.finalOutput).toBe('Recovered with retried snapshot');
   });
 
+  it('replaces entire detail arrays when response_done supersedes a streaming usage snapshot', async () => {
+    class DetailArraySnapshotStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_detail_array_snapshot' },
+          },
+          providerData: {
+            usageSnapshot: {
+              requests: 1,
+              inputTokens: 5,
+              outputTokens: 2,
+              totalTokens: 7,
+              inputTokensDetails: [{ cached_tokens: 1 }, { audio_tokens: 2 }],
+              outputTokensDetails: [{ reasoning_tokens: 1 }],
+            },
+          },
+        } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp_detail_array_snapshot',
+            usage: {
+              requests: 1,
+              inputTokens: 8,
+              outputTokens: 4,
+              totalTokens: 12,
+              inputTokensDetails: [{ cached_tokens: 6 }],
+              outputTokensDetails: [
+                { reasoning_tokens: 2 },
+                { accepted_prediction_tokens: 1 },
+              ],
+            },
+            output: [fakeModelMessage('Final snapshot')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'DetailArraySnapshot',
+      model: new DetailArraySnapshotStreamingModel(),
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+
+    for await (const _event of result.toStream()) {
+      // Exhaust the stream so completion reflects the final usage state.
+    }
+    await result.completed;
+
+    expect(result.state.usage.requests).toBe(1);
+    expect(result.state.usage.inputTokens).toBe(8);
+    expect(result.state.usage.outputTokens).toBe(4);
+    expect(result.state.usage.totalTokens).toBe(12);
+    expect(result.state.usage.inputTokensDetails).toEqual([
+      { cached_tokens: 6 },
+    ]);
+    expect(result.state.usage.outputTokensDetails).toEqual([
+      { reasoning_tokens: 2 },
+      { accepted_prediction_tokens: 1 },
+    ]);
+    expect(result.finalOutput).toBe('Final snapshot');
+  });
+
   it('cancels streaming promptly when the consumer cancels the stream', async () => {
     const waitWithAbort = (ms: number, signal?: AbortSignal) =>
       new Promise<void>((resolve, reject) => {

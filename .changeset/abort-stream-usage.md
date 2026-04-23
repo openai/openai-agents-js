@@ -3,4 +3,4 @@
 '@openai/agents-openai': patch
 ---
 
-fix: preserve retry-adjusted streaming usage snapshots after AbortSignal cancellation (#995)
+fix: preserve streaming usage snapshots across aborts and response_done replacement (#995)

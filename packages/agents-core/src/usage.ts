@@ -236,13 +236,13 @@ export class Usage {
 
     this.#replaceLatestDetails(
       this.inputTokensDetails,
-      previousUsage.inputTokensDetails[0],
-      nextUsage.inputTokensDetails[0],
+      previousUsage.inputTokensDetails,
+      nextUsage.inputTokensDetails,
     );
     this.#replaceLatestDetails(
       this.outputTokensDetails,
-      previousUsage.outputTokensDetails[0],
-      nextUsage.outputTokensDetails[0],
+      previousUsage.outputTokensDetails,
+      nextUsage.outputTokensDetails,
     );
 
     this.#replaceLatestRequestUsageEntries(
@@ -273,22 +273,14 @@ export class Usage {
 
   #replaceLatestDetails(
     details: Array<Record<string, number>>,
-    previous: Record<string, number> | undefined,
-    next: Record<string, number> | undefined,
+    previous: Array<Record<string, number>>,
+    next: Array<Record<string, number>>,
   ) {
-    if (previous && next) {
-      details[details.length - 1] = next;
-      return;
-    }
-
-    if (previous) {
-      details.pop();
-      return;
-    }
-
-    if (next) {
-      details.push(next);
-    }
+    details.splice(
+      Math.max(details.length - previous.length, 0),
+      previous.length,
+      ...next,
+    );
   }
 
   #replaceLatestRequestUsageEntries(

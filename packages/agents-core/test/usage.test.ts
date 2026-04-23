@@ -306,4 +306,51 @@ describe('Usage', () => {
       },
     ]);
   });
+
+  it('replaces the full trailing detail slices when a snapshot changes length', () => {
+    const aggregated = new Usage({
+      requests: 1,
+      inputTokens: 4,
+      outputTokens: 3,
+      totalTokens: 7,
+      inputTokensDetails: [{ baseline_input: 4 }],
+      outputTokensDetails: [{ baseline_output: 3 }],
+    });
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      inputTokensDetails: [{ cached_tokens: 1 }, { audio_tokens: 2 }],
+      outputTokensDetails: [{ reasoning_tokens: 1 }],
+    });
+    const final = new Usage({
+      requests: 1,
+      inputTokens: 6,
+      outputTokens: 4,
+      totalTokens: 10,
+      inputTokensDetails: [{ cached_tokens: 6 }],
+      outputTokensDetails: [
+        { reasoning_tokens: 2 },
+        { accepted_prediction_tokens: 1 },
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(2);
+    expect(aggregated.inputTokens).toBe(10);
+    expect(aggregated.outputTokens).toBe(7);
+    expect(aggregated.totalTokens).toBe(17);
+    expect(aggregated.inputTokensDetails).toEqual([
+      { baseline_input: 4 },
+      { cached_tokens: 6 },
+    ]);
+    expect(aggregated.outputTokensDetails).toEqual([
+      { baseline_output: 3 },
+      { reasoning_tokens: 2 },
+      { accepted_prediction_tokens: 1 },
+    ]);
+  });
 });
