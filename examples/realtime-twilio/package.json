@@ -7,7 +7,7 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "dotenv": "^16.5.0",
-    "fastify": "^5.8.3",
+    "fastify": "^5.8.5",
     "ws": "^8.18.1"
   },
   "scripts": {
