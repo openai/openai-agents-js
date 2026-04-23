@@ -3,6 +3,7 @@
   "name": "mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@openai/agents": "workspace:*"
   },
   "scripts": {
