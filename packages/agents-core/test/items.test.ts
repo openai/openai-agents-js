@@ -17,6 +17,7 @@ import {
   FUNCTION_TOOL_NAMESPACE,
   FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
 } from '../src/toolIdentity';
+import type * as protocol from '../src/types/protocol';
 
 import { TEST_MODEL_MESSAGE, TEST_MODEL_FUNCTION_CALL } from './stubs';
 
@@ -99,6 +100,43 @@ describe('items toJSON()', () => {
         agent: item.agent.toJSON(),
       });
     });
+
+    it('exposes the tool name and call id from function calls', () => {
+      expect(item.toolName).toBe('test');
+      expect(item.callId).toBe('test');
+    });
+
+    it('exposes the hosted tool name and falls back to the item id for call id', () => {
+      const hostedToolCall = new ToolCallItem(
+        {
+          id: 'hosted-call-id',
+          type: 'hosted_tool_call',
+          name: 'web_search_call',
+          arguments: '{"query":"OpenAI"}',
+          status: 'completed',
+        },
+        new Agent({ name: 'TestAgent' }),
+      );
+
+      expect(hostedToolCall.toolName).toBe('web_search_call');
+      expect(hostedToolCall.callId).toBe('hosted-call-id');
+    });
+
+    it('returns undefined for missing tool names', () => {
+      const shellCall = new ToolCallItem(
+        {
+          id: 'shell-id',
+          type: 'shell_call',
+          callId: 'shell-call-id',
+          action: { commands: ['echo hi'] },
+          status: 'completed',
+        },
+        new Agent({ name: 'TestAgent' }),
+      );
+
+      expect(shellCall.toolName).toBeUndefined();
+      expect(shellCall.callId).toBe('shell-call-id');
+    });
   });
 
   describe('ToolCallOutputItem', () => {
@@ -122,6 +160,43 @@ describe('items toJSON()', () => {
         agent: item.agent.toJSON(),
         output: item.output,
       });
+    });
+
+    it('exposes the call id from tool call outputs', () => {
+      expect(item.callId).toBe('test');
+    });
+
+    it('falls back to the raw item id for call id', () => {
+      const rawItem = {
+        id: 'result-id',
+        type: 'function_call_result',
+        name: 'test',
+        output: 'ok',
+        status: 'completed',
+      } as unknown as protocol.FunctionCallResultItem;
+      const outputItem = new ToolCallOutputItem(
+        rawItem,
+        new Agent({ name: 'TestAgent' }),
+        'ok',
+      );
+
+      expect(outputItem.callId).toBe('result-id');
+    });
+
+    it('returns undefined when no call id is available', () => {
+      const rawItem = {
+        type: 'function_call_result',
+        name: 'test',
+        output: 'ok',
+        status: 'completed',
+      } as unknown as protocol.FunctionCallResultItem;
+      const outputItem = new ToolCallOutputItem(
+        rawItem,
+        new Agent({ name: 'TestAgent' }),
+        'ok',
+      );
+
+      expect(outputItem.callId).toBeUndefined();
     });
   });
 

@@ -62,6 +62,17 @@ export class RunToolCallItem extends RunItemBase {
       agent: this.agent.toJSON(),
     };
   }
+
+  get toolName(): string | undefined {
+    return getStringProperty(this.rawItem, 'name');
+  }
+
+  get callId(): string | undefined {
+    return (
+      getStringProperty(this.rawItem, 'callId') ??
+      getStringProperty(this.rawItem, 'id')
+    );
+  }
 }
 
 export class RunToolSearchCallItem extends RunItemBase {
@@ -121,6 +132,13 @@ export class RunToolCallOutputItem extends RunItemBase {
       agent: this.agent.toJSON(),
       output: toSmartString(this.output),
     };
+  }
+
+  get callId(): string | undefined {
+    return (
+      getStringProperty(this.rawItem, 'callId') ??
+      getStringProperty(this.rawItem, 'id')
+    );
   }
 }
 
@@ -256,6 +274,11 @@ function getDefaultApprovalToolName(
   }
 
   return resolvedToolName ?? rawItem.name;
+}
+
+function getStringProperty(item: object, key: string): string | undefined {
+  const value = (item as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
 }
 
 export type RunItem =
