@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.8.6
+
+### Patch Changes
+
+- 4a879bb: feat: add tool item convenience accessors
+
 ## 0.8.5
 
 ## 0.8.4
