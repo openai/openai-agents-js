@@ -835,6 +835,7 @@ export abstract class OpenAIRealtimeBase
     toolCall: TransportToolCallEvent,
     output: string,
     startResponse: boolean = true,
+    status?: 'completed' | 'incomplete' | 'in_progress',
   ): void {
     this.sendEvent({
       type: 'conversation.item.create',
@@ -842,6 +843,7 @@ export abstract class OpenAIRealtimeBase
         type: 'function_call_output',
         output,
         call_id: toolCall.callId,
+        ...(status ? { status } : {}),
       },
     });
 
@@ -850,7 +852,7 @@ export abstract class OpenAIRealtimeBase
         itemId: toolCall.id,
         previousItemId: toolCall.previousItemId,
         type: 'function_call',
-        status: 'completed',
+        status: status ?? 'completed',
         arguments: toolCall.arguments,
         name: toolCall.name,
         output,

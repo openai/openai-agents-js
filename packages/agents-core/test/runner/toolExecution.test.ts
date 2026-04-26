@@ -171,6 +171,25 @@ describe('getToolCallOutputItem', () => {
     });
   });
 
+  it('accepts an explicit function_call_result status override', () => {
+    const output = getToolCallOutputItem(
+      TEST_MODEL_FUNCTION_CALL,
+      'hi',
+      'incomplete',
+    );
+
+    expect(output).toEqual({
+      type: 'function_call_result',
+      name: TEST_MODEL_FUNCTION_CALL.name,
+      callId: TEST_MODEL_FUNCTION_CALL.callId,
+      status: 'incomplete',
+      output: {
+        type: 'text',
+        text: 'hi',
+      },
+    });
+  });
+
   it('preserves namespace on function_call_result items', () => {
     const output = getToolCallOutputItem(
       {
@@ -2345,6 +2364,31 @@ describe('executeShellActions', () => {
         'toolErrorFormatter threw while formatting approval rejection: formatter failed',
       );
       warnSpy.mockRestore();
+    });
+
+    it('emits incomplete status when approval is rejected', async () => {
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        const rawItem = res[0].runItem
+          .rawItem as protocol.FunctionCallResultItem;
+        expect(rawItem.status).toBe('incomplete');
+        expect(rawItem.output).toEqual({
+          type: 'text',
+          text: 'Tool execution was not approved.',
+        });
+      }
     });
 
     it('clears pending nested agent run when approval is rejected', async () => {

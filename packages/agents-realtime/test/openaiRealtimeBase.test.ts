@@ -202,6 +202,30 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(updates.length).toBe(1);
   });
 
+  it('sendFunctionCallOutput preserves an explicit incomplete status', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (e) => updates.push(e));
+
+    base.sendFunctionCallOutput(createToolCall(), 'output', true, 'incomplete');
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        output: 'output',
+        call_id: 'c1',
+        status: 'incomplete',
+      },
+    });
+    expect(updates[0]).toMatchObject({
+      type: 'function_call',
+      itemId: '1',
+      status: 'incomplete',
+      output: 'output',
+    });
+  });
+
   it('sendFunctionCallOutput logs errors when tool call parsing fails', () => {
     const base = new TestBase();
     const toolCall = {
