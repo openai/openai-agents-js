@@ -216,6 +216,92 @@ export class Usage {
       );
     }
   }
+
+  /**
+   * Replaces the latest in-flight request usage snapshot with a newer snapshot.
+   *
+   * This is used for streaming providers that surface provisional usage before
+   * emitting a terminal response event.
+   */
+  replaceCurrentRequestSnapshot(nextUsage: Usage, previousUsage?: Usage) {
+    if (!previousUsage) {
+      this.add(nextUsage);
+      return;
+    }
+
+    this.requests += nextUsage.requests - previousUsage.requests;
+    this.inputTokens += nextUsage.inputTokens - previousUsage.inputTokens;
+    this.outputTokens += nextUsage.outputTokens - previousUsage.outputTokens;
+    this.totalTokens += nextUsage.totalTokens - previousUsage.totalTokens;
+
+    this.#replaceLatestDetails(
+      this.inputTokensDetails,
+      previousUsage.inputTokensDetails,
+      nextUsage.inputTokensDetails,
+    );
+    this.#replaceLatestDetails(
+      this.outputTokensDetails,
+      previousUsage.outputTokensDetails,
+      nextUsage.outputTokensDetails,
+    );
+
+    this.#replaceLatestRequestUsageEntries(
+      Usage.#getTrackedRequestUsageEntries(previousUsage),
+      Usage.#getTrackedRequestUsageEntries(nextUsage),
+    );
+  }
+
+  static #getTrackedRequestUsageEntries(usage: Usage): RequestUsage[] {
+    if (usage.requestUsageEntries?.length) {
+      return usage.requestUsageEntries.map((entry) => new RequestUsage(entry));
+    }
+
+    if (usage.requests === 1 && usage.totalTokens > 0) {
+      return [
+        new RequestUsage({
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+          inputTokensDetails: usage.inputTokensDetails[0],
+          outputTokensDetails: usage.outputTokensDetails[0],
+        }),
+      ];
+    }
+
+    return [];
+  }
+
+  #replaceLatestDetails(
+    details: Array<Record<string, number>>,
+    previous: Array<Record<string, number>>,
+    next: Array<Record<string, number>>,
+  ) {
+    details.splice(
+      Math.max(details.length - previous.length, 0),
+      previous.length,
+      ...next,
+    );
+  }
+
+  #replaceLatestRequestUsageEntries(
+    previous: RequestUsage[],
+    next: RequestUsage[],
+  ) {
+    if (previous.length > 0) {
+      const retainedEntries =
+        this.requestUsageEntries?.slice(
+          0,
+          Math.max(this.requestUsageEntries.length - previous.length, 0),
+        ) ?? [];
+      this.requestUsageEntries =
+        retainedEntries.length > 0 ? retainedEntries : undefined;
+    }
+
+    if (next.length > 0) {
+      this.requestUsageEntries ??= [];
+      this.requestUsageEntries.push(...next);
+    }
+  }
 }
 
 export { RequestUsageData, UsageData };

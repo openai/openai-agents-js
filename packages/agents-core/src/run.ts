@@ -59,6 +59,7 @@ import { processModelResponseAsync } from './runner/modelOutputs';
 import {
   addStepToRunResult,
   streamStepItemsToRunResult,
+  getUsageSnapshotFromStreamEvent,
   isAbortError,
 } from './runner/streaming';
 import {
@@ -1149,6 +1150,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           guardrailTracker.throwIfError();
 
           let finalResponse: ModelResponse | undefined = undefined;
+          let latestStreamingUsageSnapshot: Usage | undefined = undefined;
           let inputMarked = false;
           const markInputOnce = () => {
             if (inputMarked || !serverConversationTracker) {
@@ -1167,6 +1169,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               },
             );
             inputMarked = true;
+          };
+          const applyStreamingUsageSnapshot = (usageSnapshot: Usage) => {
+            result.state._context.usage.replaceCurrentRequestSnapshot(
+              usageSnapshot,
+              latestStreamingUsageSnapshot,
+            );
+            latestStreamingUsageSnapshot = usageSnapshot;
           };
 
           sentInputToModel = true;
@@ -1203,6 +1212,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             )) {
               guardrailTracker.throwIfError();
               markInputOnce();
+              const usageSnapshot = getUsageSnapshotFromStreamEvent(event);
+              if (usageSnapshot) {
+                applyStreamingUsageSnapshot(usageSnapshot);
+              }
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1211,7 +1224,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   responseId: parsed.response.id,
                   requestId: parsed.response.requestId,
                 };
-                result.state._context.usage.add(finalResponse.usage);
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break

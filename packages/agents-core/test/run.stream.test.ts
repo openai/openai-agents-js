@@ -27,6 +27,7 @@ import {
   OutputGuardrailTripwireTriggered,
   RunState,
   shellTool,
+  retryPolicies,
 } from '../src';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
 import * as protocol from '../src/types/protocol';
@@ -753,6 +754,420 @@ describe('Runner.run (streaming)', () => {
       'Accessed finalOutput before agent run is completed.',
     );
     warnSpy.mockRestore();
+  });
+
+  it('preserves the latest usage snapshot when AbortSignal cancels a streaming run', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    class AbortableUsageSnapshotStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_usage_in_progress' },
+          },
+          providerData: {
+            usageSnapshot: {
+              inputTokens: 21,
+              outputTokens: 13,
+              totalTokens: 34,
+              requestUsageEntries: [
+                {
+                  inputTokens: 21,
+                  outputTokens: 13,
+                  totalTokens: 34,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+          },
+        } as any;
+        await waitWithAbort(500, request.signal);
+      }
+    }
+
+    const controller = new AbortController();
+    const agent = new Agent({
+      name: 'AbortWithUsageSnapshot',
+      model: new AbortableUsageSnapshotStreamingModel(),
+    });
+
+    const result = await run(agent, 'go', {
+      stream: true,
+      signal: controller.signal,
+    });
+
+    const reader = (result.toStream() as any).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    controller.abort();
+
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(result.state.usage.inputTokens).toBe(21);
+    expect(result.state.usage.outputTokens).toBe(13);
+    expect(result.state.usage.totalTokens).toBe(34);
+    expect(result.state.usage.requestUsageEntries).toEqual([
+      {
+        inputTokens: 21,
+        outputTokens: 13,
+        totalTokens: 34,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+  });
+
+  it('preserves retry-adjusted usage when AbortSignal cancels after a retried streaming snapshot', async () => {
+    const waitWithAbort = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, ms);
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(timer);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          reject(error);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    class RetryThenAbortableUsageSnapshotStreamingModel implements Model {
+      #attempt = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.#attempt += 1;
+        if (this.#attempt === 1) {
+          const error = new Error('Rate limited');
+          (error as Error & { statusCode?: number }).statusCode = 429;
+          throw error;
+        }
+
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_retry_abort_snapshot' },
+          },
+          providerData: {
+            usageSnapshot: {
+              requests: 1,
+              inputTokens: 11,
+              outputTokens: 7,
+              totalTokens: 18,
+              requestUsageEntries: [
+                {
+                  inputTokens: 11,
+                  outputTokens: 7,
+                  totalTokens: 18,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+          },
+        } as any;
+        await waitWithAbort(500, request.signal);
+      }
+    }
+
+    const controller = new AbortController();
+    const agent = new Agent({
+      name: 'RetryThenAbortSnapshot',
+      model: new RetryThenAbortableUsageSnapshotStreamingModel(),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: retryPolicies.httpStatus([429]),
+        },
+      },
+    });
+
+    const result = await run(agent, 'go', {
+      stream: true,
+      signal: controller.signal,
+    });
+
+    const reader = (result.toStream() as any).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    controller.abort();
+
+    await expect(result.completed).resolves.toBeUndefined();
+
+    expect(result.state.usage.requests).toBe(2);
+    expect(result.state.usage.inputTokens).toBe(11);
+    expect(result.state.usage.outputTokens).toBe(7);
+    expect(result.state.usage.totalTokens).toBe(18);
+    expect(result.state.usage.requestUsageEntries).toEqual([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+      {
+        inputTokens: 11,
+        outputTokens: 7,
+        totalTokens: 18,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+  });
+
+  it('preserves retry-adjusted request usage when a streaming snapshot is replaced by response_done', async () => {
+    class RetryThenSnapshotStreamingModel implements Model {
+      #attempt = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.#attempt += 1;
+        if (this.#attempt === 1) {
+          const error = new Error('Rate limited');
+          (error as Error & { statusCode?: number }).statusCode = 429;
+          throw error;
+        }
+
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_retry_snapshot' },
+          },
+          providerData: {
+            usageSnapshot: {
+              requests: 1,
+              inputTokens: 11,
+              outputTokens: 7,
+              totalTokens: 18,
+              requestUsageEntries: [
+                {
+                  inputTokens: 11,
+                  outputTokens: 7,
+                  totalTokens: 18,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+          },
+        } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp_retry_snapshot',
+            usage: {
+              requests: 1,
+              inputTokens: 13,
+              outputTokens: 8,
+              totalTokens: 21,
+              requestUsageEntries: [
+                {
+                  inputTokens: 13,
+                  outputTokens: 8,
+                  totalTokens: 21,
+                  endpoint: 'responses.create',
+                },
+              ],
+            },
+            output: [fakeModelMessage('Recovered with retried snapshot')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'RetryThenSnapshot',
+      model: new RetryThenSnapshotStreamingModel(),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: retryPolicies.httpStatus([429]),
+        },
+      },
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+
+    for await (const _event of result.toStream()) {
+      // Exhaust the stream so completion reflects the final usage state.
+    }
+    await result.completed;
+
+    expect(result.state.usage.requests).toBe(2);
+    expect(result.state.usage.inputTokens).toBe(13);
+    expect(result.state.usage.outputTokens).toBe(8);
+    expect(result.state.usage.totalTokens).toBe(21);
+    expect(result.state.usage.requestUsageEntries).toEqual([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+      {
+        inputTokens: 13,
+        outputTokens: 8,
+        totalTokens: 21,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+    expect(result.finalOutput).toBe('Recovered with retried snapshot');
+  });
+
+  it('replaces entire detail arrays when response_done supersedes a streaming usage snapshot', async () => {
+    class DetailArraySnapshotStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelMessage('unused')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            response: { id: 'resp_detail_array_snapshot' },
+          },
+          providerData: {
+            usageSnapshot: {
+              requests: 1,
+              inputTokens: 5,
+              outputTokens: 2,
+              totalTokens: 7,
+              inputTokensDetails: [{ cached_tokens: 1 }, { audio_tokens: 2 }],
+              outputTokensDetails: [{ reasoning_tokens: 1 }],
+            },
+          },
+        } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp_detail_array_snapshot',
+            usage: {
+              requests: 1,
+              inputTokens: 8,
+              outputTokens: 4,
+              totalTokens: 12,
+              inputTokensDetails: [{ cached_tokens: 6 }],
+              outputTokensDetails: [
+                { reasoning_tokens: 2 },
+                { accepted_prediction_tokens: 1 },
+              ],
+            },
+            output: [fakeModelMessage('Final snapshot')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'DetailArraySnapshot',
+      model: new DetailArraySnapshotStreamingModel(),
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+
+    for await (const _event of result.toStream()) {
+      // Exhaust the stream so completion reflects the final usage state.
+    }
+    await result.completed;
+
+    expect(result.state.usage.requests).toBe(1);
+    expect(result.state.usage.inputTokens).toBe(8);
+    expect(result.state.usage.outputTokens).toBe(4);
+    expect(result.state.usage.totalTokens).toBe(12);
+    expect(result.state.usage.inputTokensDetails).toEqual([
+      { cached_tokens: 6 },
+    ]);
+    expect(result.state.usage.outputTokensDetails).toEqual([
+      { reasoning_tokens: 2 },
+      { accepted_prediction_tokens: 1 },
+    ]);
+    expect(result.finalOutput).toBe('Final snapshot');
   });
 
   it('cancels streaming promptly when the consumer cancels the stream', async () => {

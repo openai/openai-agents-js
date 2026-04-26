@@ -195,4 +195,162 @@ describe('Usage', () => {
       },
     ]);
   });
+
+  it('replaces the latest in-flight request usage snapshot without double counting', () => {
+    const aggregated = new Usage();
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 5,
+          outputTokens: 2,
+          totalTokens: 7,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+    const final = new Usage({
+      requests: 1,
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 8,
+          outputTokens: 4,
+          totalTokens: 12,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(1);
+    expect(aggregated.inputTokens).toBe(8);
+    expect(aggregated.outputTokens).toBe(4);
+    expect(aggregated.totalTokens).toBe(12);
+    expect(aggregated.requestUsageEntries).toEqual([
+      {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+  });
+
+  it('replaces a streaming snapshot with the full retry-adjusted usage', () => {
+    const aggregated = new Usage();
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      requestUsageEntries: [
+        new RequestUsage({
+          inputTokens: 5,
+          outputTokens: 2,
+          totalTokens: 7,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+    const final = new Usage({
+      requests: 2,
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      requestUsageEntries: [
+        new RequestUsage({
+          endpoint: 'responses.create',
+        }),
+        new RequestUsage({
+          inputTokens: 8,
+          outputTokens: 4,
+          totalTokens: 12,
+          endpoint: 'responses.create',
+        }),
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(2);
+    expect(aggregated.inputTokens).toBe(8);
+    expect(aggregated.outputTokens).toBe(4);
+    expect(aggregated.totalTokens).toBe(12);
+    expect(aggregated.requestUsageEntries).toEqual([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+      {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+        inputTokensDetails: {},
+        outputTokensDetails: {},
+        endpoint: 'responses.create',
+      },
+    ]);
+  });
+
+  it('replaces the full trailing detail slices when a snapshot changes length', () => {
+    const aggregated = new Usage({
+      requests: 1,
+      inputTokens: 4,
+      outputTokens: 3,
+      totalTokens: 7,
+      inputTokensDetails: [{ baseline_input: 4 }],
+      outputTokensDetails: [{ baseline_output: 3 }],
+    });
+    const partial = new Usage({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      inputTokensDetails: [{ cached_tokens: 1 }, { audio_tokens: 2 }],
+      outputTokensDetails: [{ reasoning_tokens: 1 }],
+    });
+    const final = new Usage({
+      requests: 1,
+      inputTokens: 6,
+      outputTokens: 4,
+      totalTokens: 10,
+      inputTokensDetails: [{ cached_tokens: 6 }],
+      outputTokensDetails: [
+        { reasoning_tokens: 2 },
+        { accepted_prediction_tokens: 1 },
+      ],
+    });
+
+    aggregated.replaceCurrentRequestSnapshot(partial);
+    aggregated.replaceCurrentRequestSnapshot(final, partial);
+
+    expect(aggregated.requests).toBe(2);
+    expect(aggregated.inputTokens).toBe(10);
+    expect(aggregated.outputTokens).toBe(7);
+    expect(aggregated.totalTokens).toBe(17);
+    expect(aggregated.inputTokensDetails).toEqual([
+      { baseline_input: 4 },
+      { cached_tokens: 6 },
+    ]);
+    expect(aggregated.outputTokensDetails).toEqual([
+      { baseline_output: 3 },
+      { reasoning_tokens: 2 },
+      { accepted_prediction_tokens: 1 },
+    ]);
+  });
 });

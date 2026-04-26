@@ -3957,6 +3957,98 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('getStreamedResponse exposes response.in_progress usage snapshots on raw model events', async () => {
+    await withTrace('test', async () => {
+      const createdEvent: OpenAIResponseStreamEvent = {
+        type: 'response.created',
+        response: { id: 'res-stream-init' } as any,
+        sequence_number: 0,
+      };
+      const inProgressEvent: OpenAIResponseStreamEvent = {
+        type: 'response.in_progress',
+        response: {
+          id: 'res-stream-progress',
+          output: [],
+          usage: {
+            input_tokens: 7,
+            output_tokens: 4,
+            total_tokens: 11,
+            input_tokens_details: { cached_tokens: 1 },
+            output_tokens_details: { reasoning_tokens: 2 },
+          },
+        },
+        sequence_number: 1,
+      } as any;
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-progress',
+          output: [],
+          usage: {
+            input_tokens: 7,
+            output_tokens: 4,
+            total_tokens: 11,
+            input_tokens_details: { cached_tokens: 1 },
+            output_tokens_details: { reasoning_tokens: 2 },
+          },
+        },
+        sequence_number: 2,
+      } as any;
+      async function* fakeStream() {
+        yield createdEvent;
+        yield inProgressEvent;
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'model-usage');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'payload',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      for await (const ev of model.getStreamedResponse(request as any)) {
+        received.push(ev);
+      }
+
+      const inProgressRawEvent = received.find(
+        (ev) =>
+          ev.type === 'model' &&
+          (ev as any).event?.type === 'response.in_progress',
+      );
+      expect(inProgressRawEvent).toBeDefined();
+      expect(
+        (inProgressRawEvent as any).providerData?.usageSnapshot,
+      ).toMatchObject({
+        inputTokens: 7,
+        outputTokens: 4,
+        totalTokens: 11,
+        inputTokensDetails: { cached_tokens: 1 },
+        outputTokensDetails: { reasoning_tokens: 2 },
+        requestUsageEntries: [
+          {
+            inputTokens: 7,
+            outputTokens: 4,
+            totalTokens: 11,
+            inputTokensDetails: { cached_tokens: 1 },
+            outputTokensDetails: { reasoning_tokens: 2 },
+            endpoint: 'responses.create',
+          },
+        ],
+      });
+    });
+  });
+
   it('getStreamedResponse preserves request IDs from HTTP streaming responses', async () => {
     await withTrace('test', async () => {
       const createdEvent: OpenAIResponseStreamEvent = {

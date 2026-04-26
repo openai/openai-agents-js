@@ -3088,16 +3088,7 @@ export class OpenAIResponsesModel implements Model {
     });
 
     const output: ModelResponse = {
-      usage: new Usage({
-        inputTokens: response.usage?.input_tokens ?? 0,
-        outputTokens: response.usage?.output_tokens ?? 0,
-        totalTokens: response.usage?.total_tokens ?? 0,
-        inputTokensDetails: { ...response.usage?.input_tokens_details },
-        outputTokensDetails: { ...response.usage?.output_tokens_details },
-        requestUsageEntries: [
-          toRequestUsageEntry(response.usage, 'responses.create'),
-        ],
-      }),
+      usage: new Usage(toProtocolUsage(response.usage)),
       output: convertToOutputItem(response.output),
       responseId: response.id,
       requestId: getOpenAIResponseRequestId(response),
@@ -3150,20 +3141,7 @@ export class OpenAIResponsesModel implements Model {
               id: id,
               requestId: getOpenAIResponseRequestId(response),
               output: convertToOutputItem(output),
-              usage: {
-                inputTokens: usage?.input_tokens ?? 0,
-                outputTokens: usage?.output_tokens ?? 0,
-                totalTokens: usage?.total_tokens ?? 0,
-                inputTokensDetails: {
-                  ...usage?.input_tokens_details,
-                },
-                outputTokensDetails: {
-                  ...usage?.output_tokens_details,
-                },
-                requestUsageEntries: [
-                  toRequestUsageEntry(usage, 'responses.create'),
-                ],
-              },
+              usage: toProtocolUsage(usage),
               providerData: remainingResponse,
             },
             providerData: remainingEvent,
@@ -3193,6 +3171,18 @@ export class OpenAIResponsesModel implements Model {
           event: event,
           providerData: {
             rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+            ...(eventType === 'response.in_progress' &&
+            (event as OpenAI.Responses.ResponseInProgressEvent).response?.usage
+              ? {
+                  // Preserve the latest normalized usage snapshot so agents-core
+                  // can retain usage when a streaming request is aborted before
+                  // the terminal response event arrives.
+                  usageSnapshot: toProtocolUsage(
+                    (event as OpenAI.Responses.ResponseInProgressEvent).response
+                      ?.usage,
+                  ),
+                }
+              : {}),
           },
         };
       }
@@ -3911,4 +3901,17 @@ function toRequestUsageEntry(
     outputTokensDetails: { ...usage?.output_tokens_details },
     endpoint,
   });
+}
+
+function toProtocolUsage(
+  usage: OpenAI.Responses.ResponseUsage | undefined,
+): protocol.UsageData {
+  return {
+    inputTokens: usage?.input_tokens ?? 0,
+    outputTokens: usage?.output_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0,
+    inputTokensDetails: { ...usage?.input_tokens_details },
+    outputTokensDetails: { ...usage?.output_tokens_details },
+    requestUsageEntries: [toRequestUsageEntry(usage, 'responses.create')],
+  };
 }

@@ -89,6 +89,75 @@ function addFailedRetryAttemptsToUsage(
   });
 }
 
+function toUsageSnapshotData(
+  usage: Usage,
+): ConstructorParameters<typeof Usage>[0] {
+  return {
+    requests: usage.requests,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    inputTokensDetails: usage.inputTokensDetails,
+    outputTokensDetails: usage.outputTokensDetails,
+    ...(usage.requestUsageEntries && usage.requestUsageEntries.length > 0
+      ? {
+          requestUsageEntries: usage.requestUsageEntries.map((entry) => ({
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            totalTokens: entry.totalTokens,
+            inputTokensDetails: entry.inputTokensDetails,
+            outputTokensDetails: entry.outputTokensDetails,
+            ...(entry.endpoint ? { endpoint: entry.endpoint } : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
+function addFailedRetryAttemptsToStreamEvent(
+  event: StreamEvent,
+  failedRetryAttempts: number,
+): StreamEvent {
+  if (failedRetryAttempts <= 0) {
+    return event;
+  }
+
+  if (event.type === 'response_done') {
+    return {
+      ...event,
+      response: {
+        ...event.response,
+        usage: addFailedRetryAttemptsToUsage(
+          new Usage(event.response.usage),
+          failedRetryAttempts,
+        ),
+      },
+    };
+  }
+
+  if (event.type !== 'model') {
+    return event;
+  }
+
+  const usageSnapshot = event.providerData?.usageSnapshot;
+  if (!isRecord(usageSnapshot)) {
+    return event;
+  }
+
+  return {
+    ...event,
+    providerData: {
+      ...(event.providerData ?? {}),
+      usageSnapshot: toUsageSnapshotData(
+        addFailedRetryAttemptsToUsage(
+          new Usage(usageSnapshot as ConstructorParameters<typeof Usage>[0]),
+          failedRetryAttempts,
+        ),
+      ),
+    },
+  };
+}
+
 function withRunnerManagedRetry(request: ModelRequest): ModelRequest {
   return Object.assign({}, request, {
     _internal: {
@@ -736,20 +805,7 @@ export async function* getStreamedResponseWithRetry(
           emittedRawModelEvent = true;
         }
         emittedVisibleEvent = true;
-        if (event.type === 'response_done' && attempt > 1) {
-          yield {
-            ...event,
-            response: {
-              ...event.response,
-              usage: addFailedRetryAttemptsToUsage(
-                new Usage(event.response.usage),
-                attempt - 1,
-              ),
-            },
-          };
-          continue;
-        }
-        yield event;
+        yield addFailedRetryAttemptsToStreamEvent(event, attempt - 1);
       }
       return;
     } catch (error) {
