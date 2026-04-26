@@ -262,8 +262,9 @@ As the conversation changes the session emits `history_updated`. If you need to 
 
 1. You cannot currently edit function tool calls after the fact.
 2. Assistant text in history depends on available transcripts, including `output_audio.transcript`.
-3. Responses truncated by interruption do not retain a final transcript.
-4. Input audio transcription is best treated as a rough guide to what the user said, not an exact copy of how the model interpreted the audio.
+3. `updateHistory()` cannot directly replay assistant `output_audio` items through the Realtime create-item path. If you need to round-trip history that contains assistant audio, convert those items to text messages using `output_audio.transcript`, or remove the audio items before calling `updateHistory()`.
+4. Responses truncated by interruption do not retain a final transcript.
+5. Input audio transcription is best treated as a rough guide to what the user said, not an exact copy of how the model interpreted the audio.
 
 ### Delegation through tools
 
