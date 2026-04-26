@@ -1,6 +1,10 @@
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
 import { RunItem } from '../items';
+import {
+  isServerManagedConversationSession,
+  type Session,
+} from '../memory/session';
 import { ModelResponse } from '../model';
 import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
@@ -47,6 +51,13 @@ export type FilterApplicationResult = {
   sourceItems: (AgentInputItem | undefined)[];
   persistedItems: AgentInputItem[];
   filterApplied: boolean;
+};
+
+export type ResolvedServerConversationContext = {
+  conversationId?: string;
+  previousResponseId?: string;
+  historyIsServerManaged: boolean;
+  serverConversationChainAvailable: boolean;
 };
 
 /**
@@ -177,6 +188,70 @@ export async function applyCallModelInputFilter<TContext>(
   }
 }
 
+export function resolveServerConversationContext(options: {
+  explicitConversationId?: string;
+  resumedConversationId?: string;
+  explicitPreviousResponseId?: string;
+  resumedPreviousResponseId?: string;
+  session?: Session;
+}): ResolvedServerConversationContext {
+  const {
+    explicitConversationId,
+    resumedConversationId,
+    explicitPreviousResponseId,
+    resumedPreviousResponseId,
+    session,
+  } = options;
+  const isTaggedServerManagedSession =
+    isServerManagedConversationSession(session);
+  const conversationId = explicitConversationId ?? resumedConversationId;
+  const previousResponseId =
+    explicitPreviousResponseId ?? resumedPreviousResponseId;
+
+  const historyIsServerManaged =
+    Boolean(conversationId) ||
+    Boolean(previousResponseId) ||
+    isTaggedServerManagedSession;
+  const serverConversationChainAvailable =
+    Boolean(conversationId) ||
+    Boolean(explicitPreviousResponseId) ||
+    (Boolean(resumedPreviousResponseId) && !isTaggedServerManagedSession);
+
+  return {
+    conversationId,
+    previousResponseId,
+    historyIsServerManaged,
+    serverConversationChainAvailable,
+  };
+}
+
+export function createServerConversationReplayTracker(options: {
+  conversationId?: string;
+  previousResponseId?: string;
+  session?: Session;
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+}): ServerConversationTracker | undefined {
+  const { conversationId, previousResponseId, session, reasoningItemIdPolicy } =
+    options;
+  const hasServerConversationContext =
+    Boolean(conversationId) || Boolean(previousResponseId);
+  if (
+    !hasServerConversationContext &&
+    !isServerManagedConversationSession(session)
+  ) {
+    return undefined;
+  }
+
+  return new ServerConversationTracker({
+    conversationId,
+    previousResponseId,
+    reasoningItemIdPolicy,
+    // Conversation ids already pin the server-side transcript. Session-only and
+    // previous_response_id flows still need to capture the latest response id after each turn.
+    captureResponseIds: !conversationId,
+  });
+}
+
 /**
  * Tracks which items have already been sent to or received from the Responses API when the caller
  * supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
@@ -185,6 +260,7 @@ export class ServerConversationTracker {
   public conversationId?: string;
   public previousResponseId?: string;
   private readonly reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+  private readonly captureResponseIds: boolean;
 
   // Using this flag because WeakSet does not provide a way to check its size.
   private sentInitialInput = false;
@@ -201,14 +277,17 @@ export class ServerConversationTracker {
     conversationId,
     previousResponseId,
     reasoningItemIdPolicy,
+    captureResponseIds = true,
   }: {
     conversationId?: string;
     previousResponseId?: string;
     reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+    captureResponseIds?: boolean;
   }) {
     this.conversationId = conversationId ?? undefined;
     this.previousResponseId = previousResponseId ?? undefined;
     this.reasoningItemIdPolicy = reasoningItemIdPolicy;
+    this.captureResponseIds = captureResponseIds;
   }
 
   /**
@@ -252,7 +331,11 @@ export class ServerConversationTracker {
     }
 
     const latestResponse = modelResponses[modelResponses.length - 1];
-    if (!this.conversationId && latestResponse?.responseId) {
+    if (
+      this.captureResponseIds &&
+      !this.conversationId &&
+      latestResponse?.responseId
+    ) {
       this.previousResponseId = latestResponse.responseId;
     }
 
@@ -283,7 +366,11 @@ export class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    if (!this.conversationId && modelResponse.responseId) {
+    if (
+      this.captureResponseIds &&
+      !this.conversationId &&
+      modelResponse.responseId
+    ) {
       this.previousResponseId = modelResponse.responseId;
     }
   }

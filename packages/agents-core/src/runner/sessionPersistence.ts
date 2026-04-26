@@ -1,7 +1,10 @@
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  isSessionHistoryRewriteAwareSession,
   type Session,
+  type SessionFunctionCallItem,
+  type SessionHistoryMutation,
   type SessionInputCallback,
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
@@ -37,6 +40,45 @@ export type SessionPersistenceTracker = {
     serverManagesConversation: boolean,
   ) => (() => Promise<void>) | undefined;
 };
+
+export function assertOverrideHistoryPersistenceSupport(options: {
+  input: string | AgentInputItem[] | RunState<any, any>;
+  session?: Session;
+  historyIsServerManaged: boolean;
+}): void {
+  const { input, session, historyIsServerManaged } = options;
+  if (!(input instanceof RunState)) {
+    return;
+  }
+
+  if (hasPendingExecutionOnlyOverride(input) && !historyIsServerManaged) {
+    throw new UserError(
+      'saveOverrideArguments: false is only supported when using conversationId, previousResponseId, or a server-managed session.',
+      input,
+    );
+  }
+
+  const mutations = input.getSessionHistoryMutations();
+  if (mutations.length === 0) {
+    return;
+  }
+
+  if (historyIsServerManaged) {
+    throw new UserError(
+      'saveOverrideArguments requires local canonical history. Server-managed conversations cannot persist corrected function_call arguments. Pass saveOverrideArguments: false to apply the override only to the current execution.',
+      input,
+    );
+  }
+
+  if (!session || isSessionHistoryRewriteAwareSession(session)) {
+    return;
+  }
+
+  throw new UserError(
+    'saveOverrideArguments requires a session that supports persisted-history rewrites. Use MemorySession, OpenAIResponsesHistoryRewriteSession, or another SessionHistoryRewriteAwareSession, or pass saveOverrideArguments: false to apply the override only to the current execution.',
+    input,
+  );
+}
 
 export function createSessionPersistenceTracker(options: {
   session?: Session;
@@ -141,6 +183,10 @@ export function createSessionPersistenceTracker(options: {
   }
 
   return new SessionPersistenceTrackerImpl();
+}
+
+function hasPendingExecutionOnlyOverride(state: RunState<any, any>): boolean {
+  return state.hasPendingExecutionOnlyApprovalOverrides();
 }
 
 function cloneItems(items: AgentInputItem[]): AgentInputItem[] {
@@ -438,6 +484,17 @@ function normalizeItemsForSessionPersistence(
   );
 }
 
+function normalizeHistoryMutationsForSessionPersistence(
+  mutations: SessionHistoryMutation[],
+): SessionHistoryMutation[] {
+  return mutations.map((mutation) => ({
+    ...mutation,
+    replacement: normalizeItemsForSessionPersistence([
+      mutation.replacement,
+    ])[0] as SessionFunctionCallItem,
+  }));
+}
+
 type SessionBinaryContext = {
   mediaType?: string;
 };
@@ -587,17 +644,40 @@ async function persistRunItemsToSession(options: {
   ];
 
   if (itemsToSave.length === 0) {
+    await applySessionHistoryMutationsOnSession(session, state);
+    await runCompactionOnSession(session, lastResponseId, state);
     state._currentTurnPersistedItemCount =
       alreadyPersistedCount + newRunItems.length;
-    await runCompactionOnSession(session, lastResponseId, state);
     return;
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
+  await applySessionHistoryMutationsOnSession(session, state);
   await runCompactionOnSession(session, lastResponseId, state);
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
+}
+
+async function applySessionHistoryMutationsOnSession(
+  session: Session,
+  state: RunState<any, any>,
+): Promise<void> {
+  const mutations = state.getSessionHistoryMutations();
+  if (mutations.length === 0) {
+    return;
+  }
+
+  const normalizedMutations =
+    normalizeHistoryMutationsForSessionPersistence(mutations);
+
+  if (isSessionHistoryRewriteAwareSession(session)) {
+    await session.applyHistoryMutations({ mutations: normalizedMutations });
+    state.clearSessionHistoryMutations();
+    return;
+  }
+
+  state.clearSessionHistoryMutations();
 }
 
 async function runCompactionOnSession(

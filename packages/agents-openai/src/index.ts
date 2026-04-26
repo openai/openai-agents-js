@@ -51,3 +51,7 @@ export {
   type OpenAIResponsesCompactionSessionOptions,
   type OpenAIResponsesCompactionDecisionContext,
 } from './memory/openaiResponsesCompactionSession';
+export {
+  OpenAIResponsesHistoryRewriteSession,
+  type OpenAIResponsesHistoryRewriteSessionOptions,
+} from './memory/openaiResponsesHistoryRewriteSession';

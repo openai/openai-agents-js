@@ -1425,6 +1425,299 @@ describe('saveToSession', () => {
     );
   });
 
+  it('applies session history mutations before running compaction', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [
+        {
+          type: 'message',
+          role: 'user',
+          content: 'hello',
+        },
+        {
+          type: 'function_call',
+          callId: 'call_override',
+          name: 'lookup_customer_profile',
+          status: 'completed',
+          arguments: JSON.stringify({ id: '1' }),
+        },
+      ];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async applyHistoryMutations(args: {
+        mutations: Array<{
+          type: 'replace_function_call';
+          callId: string;
+          replacement: Extract<AgentInputItem, { type: 'function_call' }>;
+        }>;
+      }): Promise<void> {
+        this.events.push(`applyHistoryMutations:${args.mutations.length}`);
+        for (const mutation of args.mutations) {
+          const nextItems: AgentInputItem[] = [];
+          let keptReplacement = false;
+          for (const item of this.items) {
+            if (
+              item.type === 'function_call' &&
+              item.callId === mutation.callId
+            ) {
+              if (!keptReplacement) {
+                nextItems.push(structuredClone(mutation.replacement));
+                keptReplacement = true;
+              }
+              continue;
+            }
+
+            nextItems.push(item);
+          }
+          this.items = nextItems;
+        }
+      }
+
+      async runCompaction(
+        args?: OpenAIResponsesCompactionArgs,
+      ): Promise<OpenAIResponsesCompactionResult | null> {
+        this.events.push(`runCompaction:${args?.responseId}`);
+        return null;
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'RewriteRecorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const correctedCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_override',
+      callId: 'call_override',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '2' }),
+      providerData: {},
+    };
+    const toolOutputText = 'Customer 2 details.';
+    const toolOutputItem = getToolCallOutputItem(correctedCall, toolOutputText);
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_override',
+    });
+    state._generatedItems = [
+      new ToolCallItem(correctedCall, textAgent),
+      new ToolCallOutputItem(toolOutputItem, textAgent, toolOutputText),
+    ];
+    state._sessionHistoryMutations = [
+      {
+        type: 'replace_function_call',
+        callId: correctedCall.callId,
+        replacement: correctedCall,
+      },
+    ];
+
+    await saveToSession(session, [], new RunResult(state));
+
+    expect(session.events).toEqual([
+      'addItems:2',
+      'applyHistoryMutations:1',
+      'runCompaction:resp_override',
+    ]);
+    expect(state.getSessionHistoryMutations()).toEqual([]);
+
+    expect(session.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '2' }),
+        providerData: {},
+      },
+      {
+        type: 'function_call_result',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: toolOutputText,
+        },
+      },
+    ]);
+  });
+
+  it('applies session history mutations even when a resumed save only carries approval placeholders', async () => {
+    class TrackingSession implements Session {
+      items: AgentInputItem[] = [
+        {
+          type: 'function_call',
+          callId: 'call_override',
+          name: 'lookup_customer_profile',
+          status: 'completed',
+          arguments: JSON.stringify({ id: '1' }),
+        },
+      ];
+      events: string[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.events.push(`addItems:${items.length}`);
+        this.items.push(...items);
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return undefined;
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async applyHistoryMutations(args: {
+        mutations: Array<{
+          type: 'replace_function_call';
+          callId: string;
+          replacement: Extract<AgentInputItem, { type: 'function_call' }>;
+        }>;
+      }): Promise<void> {
+        this.events.push(`applyHistoryMutations:${args.mutations.length}`);
+        for (const mutation of args.mutations) {
+          this.items = this.items.map((item) => {
+            if (
+              item.type === 'function_call' &&
+              item.callId === mutation.callId
+            ) {
+              return structuredClone(mutation.replacement);
+            }
+            return item;
+          });
+        }
+      }
+
+      async runCompaction(
+        args?: OpenAIResponsesCompactionArgs,
+      ): Promise<OpenAIResponsesCompactionResult | null> {
+        this.events.push(`runCompaction:${args?.responseId}`);
+        return null;
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'ApprovalOnlyRewriteRecorder',
+      outputType: 'text',
+      instructions: 'capture',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+
+    const correctedCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_override',
+      callId: 'call_override',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '2' }),
+      providerData: {},
+    };
+    const pendingApprovalCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_pending',
+      callId: 'call_pending',
+      name: 'lookup_customer_profile',
+      status: 'completed',
+      arguments: JSON.stringify({ id: '3' }),
+      providerData: {},
+    };
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_override',
+    });
+    state._generatedItems = [
+      new ToolCallItem(correctedCall, textAgent),
+      new ToolApprovalItem(pendingApprovalCall, textAgent),
+    ];
+    state._currentTurnPersistedItemCount = 1;
+    state._sessionHistoryMutations = [
+      {
+        type: 'replace_function_call',
+        callId: correctedCall.callId,
+        replacement: correctedCall,
+      },
+    ];
+
+    await saveToSession(session, [], new RunResult(state));
+
+    expect(session.events).toEqual([
+      'applyHistoryMutations:1',
+      'runCompaction:resp_override',
+    ]);
+    expect(state.getSessionHistoryMutations()).toEqual([]);
+    expect(state._currentTurnPersistedItemCount).toBe(2);
+    expect(session.items).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call_override',
+        name: 'lookup_customer_profile',
+        status: 'completed',
+        arguments: JSON.stringify({ id: '2' }),
+        providerData: {},
+      },
+    ]);
+  });
+
   it('propagates lastResponseId to sessions after persisting items', async () => {
     class TrackingSession implements Session {
       items: AgentInputItem[] = [];

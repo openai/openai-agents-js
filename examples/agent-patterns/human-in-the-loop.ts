@@ -22,15 +22,21 @@ const weatherAgent = new Agent({
   tools: [getWeatherTool],
 });
 
+const temperatureParams = z.object({
+  city: z.string(),
+  approver: z.string().nullable().optional(),
+});
+
+const APPROVER_NAME = 'Kaz';
+
 const getTemperatureTool = tool({
   name: 'get_temperature',
   description: 'Get the temperature for a given city',
-  parameters: z.object({
-    city: z.string(),
-  }),
+  parameters: temperatureParams,
   needsApproval: async (_ctx, { city }) => city.includes('Oakland'),
-  execute: async ({ city }) => {
-    return `The temperature in ${city} is 20° Celsius`;
+  execute: async ({ city, approver }) => {
+    const approvedBy = approver ? ` Approved by ${approver}.` : '';
+    return `The temperature in ${city} is 20° Celsius.${approvedBy}`;
   },
 });
 
@@ -73,7 +79,7 @@ async function confirm(question: string) {
 async function main() {
   let result: RunResult<unknown, Agent<unknown, any>> = await run(
     agent,
-    'What is the weather and temperature in San Francisco and Oakland? Use available tools as needed.',
+    'Please check both San Francisco and Oakland, and do not consider the task complete until you have provided the weather and temperature for both cities.',
   );
   let hasInterruptions = result.interruptions?.length > 0;
   while (hasInterruptions) {
@@ -96,7 +102,21 @@ async function main() {
       );
 
       if (confirmed) {
-        state.approve(interruption);
+        if (
+          interruption.rawItem.type === 'function_call' &&
+          interruption.name === 'get_temperature'
+        ) {
+          const parsedArgs = temperatureParams.parse(
+            JSON.parse(interruption.rawItem.arguments),
+          );
+          const overrideArguments = { ...parsedArgs, approver: APPROVER_NAME };
+          console.log(
+            `Injecting approver="${APPROVER_NAME}" into the approved tool call.`,
+          );
+          state.approve(interruption, { overrideArguments });
+        } else {
+          state.approve(interruption);
+        }
       } else {
         state.reject(interruption);
       }

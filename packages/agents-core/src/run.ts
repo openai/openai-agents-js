@@ -35,11 +35,13 @@ import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
-import type { Session, SessionInputCallback } from './memory/session';
+import { type Session, type SessionInputCallback } from './memory/session';
 import type { AgentInputItem } from './types';
 import {
   ServerConversationTracker,
   applyCallModelInputFilter,
+  createServerConversationReplayTracker,
+  resolveServerConversationContext,
 } from './runner/conversation';
 import {
   createGuardrailTracker,
@@ -62,6 +64,7 @@ import {
   isAbortError,
 } from './runner/streaming';
 import {
+  assertOverrideHistoryPersistenceSupport,
   createSessionPersistenceTracker,
   prepareInputItemsWithSession,
   saveStreamInputToSession,
@@ -75,7 +78,11 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { applyTraceOverrides, getTracing } from './runner/tracing';
+import {
+  applyTraceOverrides,
+  applyTraceRedactionPolicyToState,
+  getTracing,
+} from './runner/tracing';
 import type { ReasoningItemIdPolicy } from './runner/items';
 import type {
   AgentArtifacts,
@@ -478,12 +485,29 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const resumedPreviousResponseId = resumingFromState
       ? (input as RunState<TContext, TAgent>)._previousResponseId
       : undefined;
+    const session = effectiveOptions.session;
+    const serverConversation = resolveServerConversationContext({
+      explicitConversationId: effectiveOptions.conversationId,
+      resumedConversationId,
+      explicitPreviousResponseId: effectiveOptions.previousResponseId,
+      resumedPreviousResponseId,
+      session,
+    });
+    const runOptions = {
+      ...effectiveOptions,
+      conversationId: serverConversation.conversationId,
+      previousResponseId: serverConversation.previousResponseId,
+    };
     const serverManagesConversation =
-      Boolean(effectiveOptions.conversationId ?? resumedConversationId) ||
-      Boolean(effectiveOptions.previousResponseId ?? resumedPreviousResponseId);
+      serverConversation.serverConversationChainAvailable;
+    const historyIsServerManaged = serverConversation.historyIsServerManaged;
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
-    const session = effectiveOptions.session;
+    assertOverrideHistoryPersistenceSupport({
+      input,
+      session,
+      historyIsServerManaged,
+    });
     const sessionPersistence = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter,
@@ -498,15 +522,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         session,
         sessionInputCallback,
         {
-          // When the server tracks conversation state we only send the new turn inputs;
-          // previous messages are recovered via conversationId/previousResponseId.
+          // Only omit prepended history once we have a concrete server-side conversation chain.
           includeHistoryInPreparedInput: !serverManagesConversation,
           preserveDroppedNewItems: serverManagesConversation,
         },
       );
       if (serverManagesConversation && session) {
-        // When the server manages memory we only persist the new turn inputs locally so the
-        // conversation service stays the single source of truth for prior exchanges.
+        // Keep the model payload scoped to the new turn delta even when Session persists the
+        // transcript for a remote conversation service.
         const sessionItems = prepared.sessionItems;
         if (sessionItems && sessionItems.length > 0) {
           preparedInput = sessionItems;
@@ -524,11 +547,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
     const executeRun = async () => {
-      if (effectiveOptions.stream) {
+      if (runOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
-          effectiveOptions,
+          runOptions,
           ensureStreamInputPersisted,
           sessionPersistence?.recordTurnItems,
           preserveTurnPersistenceOnResume,
@@ -538,7 +561,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const runResult = await this.#runIndividualNonStream(
         agent,
         preparedInput,
-        effectiveOptions,
+        runOptions,
         sessionPersistence?.recordTurnItems,
         preserveTurnPersistenceOnResume,
       );
@@ -656,6 +679,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
         this.config.reasoningItemIdPolicy;
       state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
+      applyTraceRedactionPolicyToState(
+        state,
+        this.config.traceIncludeSensitiveData,
+        isResumedState,
+      );
 
       const resolvedConversationId =
         options.conversationId ??
@@ -671,14 +699,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
 
-      const serverConversationTracker =
-        resolvedConversationId || resolvedPreviousResponseId
-          ? new ServerConversationTracker({
-              conversationId: resolvedConversationId,
-              previousResponseId: resolvedPreviousResponseId,
-              reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
-            })
-          : undefined;
+      const serverConversationTracker = createServerConversationReplayTracker({
+        conversationId: resolvedConversationId,
+        previousResponseId: resolvedPreviousResponseId,
+        session: options.session,
+        reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
+      });
 
       if (serverConversationTracker && isResumedState) {
         serverConversationTracker.primeFromState({
@@ -805,7 +831,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 handoffs: preparedCall.serializedHandoffs,
                 tracing: getTracing(
                   this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
+                  state._traceIncludeSensitiveData,
                 ),
                 signal: options.signal,
               },
@@ -987,13 +1013,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options.previousResponseId ?? result.state._previousResponseId;
     const serverManagesConversation =
       Boolean(resolvedConversationId) || Boolean(resolvedPreviousResponseId);
-    const serverConversationTracker = serverManagesConversation
-      ? new ServerConversationTracker({
-          conversationId: resolvedConversationId,
-          previousResponseId: resolvedPreviousResponseId,
-          reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
-        })
-      : undefined;
+    const serverConversationTracker = createServerConversationReplayTracker({
+      conversationId: resolvedConversationId,
+      previousResponseId: resolvedPreviousResponseId,
+      session: options.session,
+      reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
+    });
     if (serverConversationTracker) {
       result.state.setConversationContext(
         serverConversationTracker.conversationId,
@@ -1196,7 +1221,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 ),
                 tracing: getTracing(
                   this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
+                  result.state._traceIncludeSensitiveData,
                 ),
                 signal: options.signal,
               },
@@ -1466,6 +1491,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (isResumedState) {
         state._agentToolInvocation = undefined;
       }
+      applyTraceRedactionPolicyToState(
+        state,
+        this.config.traceIncludeSensitiveData,
+        isResumedState,
+      );
       const resolvedConversationId =
         options.conversationId ??
         (isResumedState ? state._conversationId : undefined);

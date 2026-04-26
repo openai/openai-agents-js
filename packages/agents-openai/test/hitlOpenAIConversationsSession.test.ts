@@ -113,9 +113,10 @@ describe('OpenAIConversationsSession HITL scenario', () => {
       },
     );
     const listItems = vi.fn(() => ({
-      // eslint-disable-next-line require-yield -- empty iterator is intentional.
       async *[Symbol.asyncIterator]() {
-        return;
+        for (const item of storedItems) {
+          yield item;
+        }
       },
     }));
     const client = {
@@ -181,6 +182,81 @@ describe('OpenAIConversationsSession HITL scenario', () => {
 
     expect(executeCounts.get(TOOL_ECHO)).toBe(1);
     expect(executeCounts.get(TOOL_NOTE)).toBe(1);
+  });
+
+  it('supports execution-only overrides for conversations-backed sessions', async () => {
+    const storedItems: Array<Record<string, any>> = [];
+    const createItems = vi.fn(
+      async (_conversationId: string, payload: { items: any[] }) => {
+        storedItems.push(...payload.items);
+        return {};
+      },
+    );
+    const listItems = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of storedItems) {
+          yield item;
+        }
+      },
+    }));
+    const client = {
+      conversations: {
+        items: {
+          create: createItems,
+          list: listItems,
+          delete: vi.fn(),
+        },
+        create: vi.fn(),
+        delete: vi.fn(),
+      },
+    } as any;
+    const session = new OpenAIConversationsSession({
+      conversationId: 'conv_override',
+      client,
+    });
+    const model = new ScenarioModel();
+    const agent = new Agent({
+      name: 'OpenAIConversationsSession override',
+      instructions: `Always call ${TOOL_ECHO} before responding.`,
+      model,
+      tools: [approvalEchoTool],
+      modelSettings: { toolChoice: TOOL_ECHO },
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+
+    const firstRun = await run(agent, USER_MESSAGES[0], { session });
+    expect(firstRun.interruptions).toHaveLength(1);
+
+    const approval = firstRun.interruptions[0];
+    expect(approval.rawItem.type).toBe('function_call');
+    const approvalCallId =
+      approval.rawItem.type === 'function_call'
+        ? approval.rawItem.callId
+        : undefined;
+    firstRun.state.approve(approval, {
+      overrideArguments: { query: 'Overridden query' },
+      saveOverrideArguments: false,
+    });
+
+    const resumed = await run(agent, firstRun.state, { session });
+    expect(resumed.interruptions).toHaveLength(0);
+    expect(resumed.finalOutput).toMatch(/^approved:/);
+
+    const functionCalls = storedItems.filter(
+      (item) => item.type === 'function_call',
+    );
+    const functionOutputs = storedItems.filter(
+      (item) => item.type === 'function_call_output',
+    );
+
+    expect(functionCalls).toHaveLength(1);
+    expect(functionOutputs).toHaveLength(1);
+    expect(functionCalls[0]?.call_id).toBe(approvalCallId);
+    expect(functionCalls[0]?.arguments).toBe(
+      JSON.stringify({ query: USER_MESSAGES[0] }),
+    );
+    expect(functionOutputs[0]?.call_id).toBe(approvalCallId);
+    expect(extractOutputText(functionOutputs[0])).toBe(resumed.finalOutput);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   ModelResponse,
   OutputGuardrailTripwireTriggered,
   Session,
+  SERVER_MANAGED_CONVERSATION_SESSION,
   UserError,
   ModelInputData,
   type OutputGuardrailFunctionArgs,
@@ -28,6 +29,7 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   BatchTraceProcessor,
+  MemorySession as RewriteableMemorySession,
   user,
   assistant,
 } from '../src';
@@ -3079,6 +3081,110 @@ describe('Runner.run', () => {
         expect(functionCalls).toHaveLength(1);
       });
 
+      it('does not duplicate already-persisted tool results when overriding a later approval in the same turn', async () => {
+        const getWeatherTool = tool({
+          name: 'get_weather',
+          description: 'Get weather for a city',
+          parameters: z.object({ city: z.string() }),
+          needsApproval: async () => true,
+          execute: async ({ city }) => `Sunny, 72°F in ${city}`,
+        });
+
+        const model = new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_weather_a',
+                callId: 'call_weather_a',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'Oakland' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+              {
+                type: 'function_call',
+                id: 'fc_weather_b',
+                callId: 'call_weather_b',
+                name: 'get_weather',
+                status: 'completed',
+                arguments: JSON.stringify({ city: 'San Francisco' }),
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('All approvals complete.')],
+            usage: new Usage(),
+          },
+        ]);
+
+        const agent = new Agent({
+          name: 'Assistant',
+          instructions: 'Use get_weather for both cities.',
+          model,
+          tools: [getWeatherTool],
+          toolUseBehavior: 'run_llm_again',
+        });
+
+        const session = new RewriteableMemorySession();
+
+        const first = await run(agent, 'Need weather updates for two cities.', {
+          session,
+        });
+
+        expect(first.interruptions).toHaveLength(2);
+        const firstApproval = first.interruptions.find(
+          (item) =>
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.callId === 'call_weather_a',
+        );
+        expect(firstApproval).toBeDefined();
+
+        first.state.approve(firstApproval!);
+
+        const second = await run(agent, first.state, { session });
+
+        expect(second.interruptions).toHaveLength(1);
+        const pendingOverrideApproval = second.interruptions.find(
+          (item) =>
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.callId === 'call_weather_b',
+        );
+        expect(pendingOverrideApproval).toBeDefined();
+
+        second.state.approve(pendingOverrideApproval!, {
+          overrideArguments: { city: 'San Jose' },
+        });
+
+        const final = await run(agent, second.state, { session });
+        expect(final.finalOutput).toBe('All approvals complete.');
+
+        const allItems = await session.getItems();
+        const firstToolResults = allItems.filter(
+          (item): item is protocol.FunctionCallResultItem =>
+            item.type === 'function_call_result' &&
+            item.callId === 'call_weather_a',
+        );
+        const secondToolCalls = allItems.filter(
+          (item): item is protocol.FunctionCallItem =>
+            item.type === 'function_call' && item.callId === 'call_weather_b',
+        );
+        const secondToolResults = allItems.filter(
+          (item): item is protocol.FunctionCallResultItem =>
+            item.type === 'function_call_result' &&
+            item.callId === 'call_weather_b',
+        );
+
+        expect(firstToolResults).toHaveLength(1);
+        expect(secondToolCalls).toHaveLength(1);
+        expect(secondToolCalls[0]?.arguments).toBe(
+          JSON.stringify({ city: 'San Jose' }),
+        );
+        expect(secondToolResults).toHaveLength(1);
+      });
+
       it('does not duplicate already persisted items when the resumed run continues into additional turns', async () => {
         // Regression test for session persistence across resumed runs that execute additional turns.
         //
@@ -5430,6 +5536,388 @@ describe('Runner.run', () => {
       markSpy.mockRestore();
     });
 
+    it('replays corrected function calls when overriding arguments without server-managed conversation', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-local-override', 'foo')],
+          'resp-local-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-local-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalLocalOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message');
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state);
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(3);
+      expect(secondItems[0]).toMatchObject({
+        role: 'user',
+        content: 'user_message',
+      });
+      expect(secondItems[1]).toMatchObject({
+        type: 'function_call',
+        callId: 'call-local-override',
+        name: 'test',
+        arguments: JSON.stringify({ test: 'bar' }),
+      });
+      expect(secondItems[2]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-local-override',
+        output: {
+          type: 'text',
+          text: 'result:bar',
+        },
+      });
+    });
+
+    it('rejects execution-only overrides when resuming without conversationId or previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-local-exec-only', 'foo')],
+          'resp-local-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-local-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalLocalExecutionOnlyAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message');
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      await expect(runner.run(agent, firstResult.state)).rejects.toThrow(
+        'saveOverrideArguments: false is only supported when using conversationId, previousResponseId, or a server-managed session',
+      );
+      expect(model.requests).toHaveLength(1);
+    });
+
+    class ServerManagedPlainSession implements Session {
+      readonly [SERVER_MANAGED_CONVERSATION_SESSION] = true as const;
+      items: AgentInputItem[] = [];
+
+      async getSessionId(): Promise<string> {
+        return 'server-managed-session';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return this.items.map((item) => structuredClone(item));
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.items.push(...items.map((item) => structuredClone(item)));
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+    }
+
+    it('supports execution-only overrides when the session history is server-managed', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-server-managed-session', 'foo')],
+          'resp-server-managed-1',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalServerManagedSessionAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const runner = new Runner();
+      const session = new ServerManagedPlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        session,
+      });
+
+      expect(secondResult.finalOutput).toBe('result:bar');
+      expect(model.requests).toHaveLength(1);
+      expect(await session.getItems()).toMatchObject([
+        {
+          role: 'user',
+          content: 'user_message',
+        },
+        {
+          type: 'function_call',
+          callId: 'call-server-managed-session',
+          arguments: JSON.stringify({ test: 'foo' }),
+        },
+        {
+          type: 'function_call_result',
+          callId: 'call-server-managed-session',
+          output: {
+            type: 'text',
+            text: 'result:bar',
+          },
+        },
+      ]);
+    });
+
+    it('replays only corrected deltas when resuming with a server-managed session override', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-server-managed-replay', 'foo')],
+          'resp-server-managed-replay-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('done')],
+          'resp-server-managed-replay-2',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalServerManagedReplayAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const session = new ServerManagedPlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        session,
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].previousResponseId).toBe(
+        'resp-server-managed-replay-1',
+      );
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-server-managed-replay',
+        output: {
+          type: 'text',
+          text: 'result:bar',
+        },
+      });
+      expect(
+        secondItems.some(
+          (item) =>
+            item.type === 'message' ||
+            (item.type === 'function_call' &&
+              item.callId === 'call-server-managed-replay'),
+        ),
+      ).toBe(false);
+    });
+
+    it('keeps prior history on later fresh runs when no explicit server chain is available', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-server-managed-fresh-turn', 'foo')],
+          'resp-server-managed-fresh-turn-1',
+        ),
+        buildResponse(
+          [fakeModelMessage('done')],
+          'resp-server-managed-fresh-turn-2',
+        ),
+        buildResponse(
+          [fakeModelMessage('follow-up done')],
+          'resp-server-managed-fresh-turn-3',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalServerManagedFreshTurnAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const session = new ServerManagedPlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const resumedResult = await runner.run(agent, firstResult.state, {
+        session,
+      });
+      expect(resumedResult.finalOutput).toBe('done');
+
+      const freshTurnResult = await runner.run(agent, 'fresh_message', {
+        session,
+      });
+
+      expect(freshTurnResult.finalOutput).toBe('follow-up done');
+      expect(model.requests).toHaveLength(3);
+
+      const thirdItems = model.requests[2].input as AgentInputItem[];
+      expect(thirdItems.length).toBeGreaterThan(1);
+      expect(
+        thirdItems.some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            getFirstTextContent(item) === 'fresh_message',
+        ),
+      ).toBe(true);
+      expect(
+        thirdItems.some(
+          (item) =>
+            item.type === 'function_call' &&
+            item.callId === 'call-server-managed-fresh-turn',
+        ),
+      ).toBe(true);
+    });
+
+    it('fails before resuming when saveOverrideArguments is required for a non-rewrite-aware session', async () => {
+      class PlainSession implements Session {
+        items: AgentInputItem[] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'plain-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return this.items.map((item) => structuredClone(item));
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.items.push(...items.map((item) => structuredClone(item)));
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.items.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.items = [];
+        }
+      }
+
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-plain-session', 'foo')],
+          'resp-plain-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-plain-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalPlainSessionAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const session = new PlainSession();
+      const firstResult = await runner.run(agent, 'user_message', { session });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0], {
+        overrideArguments: { test: 'bar' },
+      });
+
+      await expect(
+        runner.run(agent, firstResult.state, { session }),
+      ).rejects.toThrow(
+        'saveOverrideArguments requires a session that supports persisted-history rewrites',
+      );
+      expect(model.requests).toHaveLength(1);
+    });
+
     it('does not resend prior items when resuming with conversationId', async () => {
       const approvalTool = tool({
         name: 'test',
@@ -5486,6 +5974,97 @@ describe('Runner.run', () => {
       });
     });
 
+    it('rejects saveOverrideArguments defaults when overriding arguments with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-approved-override', 'foo')],
+          'resp-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-approval-override',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      expect(() =>
+        firstResult.state.approve(approvalItem, {
+          overrideArguments: { test: 'bar' },
+        }),
+      ).toThrow('saveOverrideArguments requires local canonical history');
+    });
+
+    it('supports execution-only overrides with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-approved-override', 'foo')],
+          'resp-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-approval-override',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem, {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-approval-override',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-approved-override',
+        output: {
+          type: 'text',
+          text: 'result:bar',
+        },
+      });
+    });
+
     it('does not resend prior items when resuming with previousResponseId', async () => {
       const approvalTool = tool({
         name: 'test',
@@ -5533,6 +6112,201 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-prev',
       });
+    });
+
+    it('rejects saveOverrideArguments defaults when overriding arguments with previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-prev-override', 'foo')],
+          'resp-prev-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-prev-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalPrevOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      expect(() =>
+        firstResult.state.approve(approvalItem, {
+          overrideArguments: { test: 'bar' },
+        }),
+      ).toThrow('saveOverrideArguments requires local canonical history');
+    });
+
+    it('supports execution-only overrides with previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-prev-override', 'foo')],
+          'resp-prev-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-prev-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalPrevOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const approvalItem = firstResult.interruptions[0];
+      firstResult.state.approve(approvalItem, {
+        overrideArguments: { test: 'bar' },
+        saveOverrideArguments: false,
+      });
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].previousResponseId).toBe('resp-prev-1');
+
+      const secondItems = model.requests[1].input as AgentInputItem[];
+      expect(secondItems).toHaveLength(1);
+      expect(secondItems[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-prev-override',
+        output: {
+          type: 'text',
+          text: 'result:bar',
+        },
+      });
+    });
+
+    it('preserves restored trace redaction when a resumed run interrupts again', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-trace-1', 'foo')], 'resp-trace-1'),
+        buildResponse([buildToolCall('call-trace-2', 'bar')], 'resp-trace-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalTraceResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const firstRunner = new Runner({
+        traceIncludeSensitiveData: false,
+      });
+      const firstResult = await firstRunner.run(agent, 'user_message');
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      expect(firstResult.state._traceIncludeSensitiveData).toBe(false);
+
+      const restored = await RunState.fromString(
+        agent,
+        firstResult.state.toString(),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await new Runner().run(agent, restored);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.state._traceIncludeSensitiveData).toBe(false);
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].tracing).toBe('enabled_without_data');
+    });
+
+    it('reapplies runner trace redaction for legacy serialized states', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-trace-legacy-1', 'foo')],
+          'resp-trace-legacy-1',
+        ),
+        buildResponse(
+          [buildToolCall('call-trace-legacy-2', 'bar')],
+          'resp-trace-legacy-2',
+        ),
+      ]);
+
+      const agent = new Agent({
+        name: 'ApprovalLegacyTraceResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const firstResult = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, 'user_message');
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      expect(firstResult.state._traceIncludeSensitiveData).toBe(false);
+
+      const legacyJson = firstResult.state.toJSON() as Record<string, unknown>;
+      delete legacyJson.traceIncludeSensitiveData;
+      legacyJson.$schemaVersion = '1.9';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(legacyJson),
+      );
+      expect(restored._traceIncludeSensitiveData).toBe(false);
+      expect(restored._traceIncludeSensitiveDataNeedsConfigFallback).toBe(true);
+
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await new Runner({
+        traceIncludeSensitiveData: false,
+      }).run(agent, restored);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.state._traceIncludeSensitiveData).toBe(false);
+      expect(resumed.state._traceIncludeSensitiveDataNeedsConfigFallback).toBe(
+        false,
+      );
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[1].tracing).toBe('enabled_without_data');
     });
 
     it('does not resend items when resuming multiple times without new approvals', async () => {
