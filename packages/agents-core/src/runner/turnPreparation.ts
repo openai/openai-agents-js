@@ -135,15 +135,63 @@ const managedConversationSupplementalItemsCache = new WeakMap<
   ProcessedResponse<any>,
   AgentInputItem[]
 >();
+const pendingManagedConversationAbortItems = new Map<string, AgentInputItem[]>();
+
+export function queueManagedConversationSupplementalItems(
+  conversationId: string | undefined,
+  items: AgentInputItem[],
+): void {
+  if (!conversationId || items.length === 0) {
+    return;
+  }
+
+  const existing = pendingManagedConversationAbortItems.get(conversationId) ?? [];
+  const merged = [...existing];
+  const seenCallIds = new Set(
+    existing.flatMap((item) =>
+      item.type === 'function_call_result' && typeof item.callId === 'string'
+        ? [item.callId]
+        : [],
+    ),
+  );
+
+  for (const item of items) {
+    if (
+      item.type !== 'function_call_result' ||
+      typeof item.callId !== 'string' ||
+      seenCallIds.has(item.callId)
+    ) {
+      continue;
+    }
+    merged.push(item);
+    seenCallIds.add(item.callId);
+  }
+
+  if (merged.length > 0) {
+    pendingManagedConversationAbortItems.set(conversationId, merged);
+  }
+}
+
+export function clearManagedConversationSupplementalItems(
+  conversationId: string | undefined,
+): void {
+  if (!conversationId) {
+    return;
+  }
+  pendingManagedConversationAbortItems.delete(conversationId);
+}
 
 export function getManagedConversationSupplementalItems<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
 >(state: RunState<TContext, TAgent>): AgentInputItem[] {
+  const pendingAbortItems = state._conversationId
+    ? pendingManagedConversationAbortItems.get(state._conversationId) ?? []
+    : [];
   const processedResponse = state._lastProcessedResponse;
   const handoffs = processedResponse?.handoffs;
   if (!handoffs || handoffs.length <= 1) {
-    return [];
+    return pendingAbortItems;
   }
 
   const acceptedCallId = handoffs[0]?.toolCall.callId;
@@ -156,13 +204,15 @@ export function getManagedConversationSupplementalItems<
         item.rawItem.callId === acceptedCallId,
     );
   if (!acceptedHandoffOutputStillPresent) {
-    return [];
+    return pendingAbortItems;
   }
 
   const cached =
     managedConversationSupplementalItemsCache.get(processedResponse);
   if (cached) {
-    return cached;
+    return pendingAbortItems.length > 0
+      ? [...pendingAbortItems, ...cached]
+      : cached;
   }
 
   // Server-managed transcripts still contain ignored handoff calls from the last response.
@@ -173,7 +223,7 @@ export function getManagedConversationSupplementalItems<
       getToolCallOutputItem(toolCall, IGNORED_HANDOFF_OUTPUT_MESSAGE),
     );
   managedConversationSupplementalItemsCache.set(processedResponse, items);
-  return items;
+  return pendingAbortItems.length > 0 ? [...pendingAbortItems, ...items] : items;
 }
 
 async function runInputGuardrailsForTurn<

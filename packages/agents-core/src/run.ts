@@ -71,6 +71,10 @@ import {
 import { resolveTurnAfterModelResponse } from './runner/turnResolution';
 import { prepareTurn } from './runner/turnPreparation';
 import {
+  clearManagedConversationSupplementalItems,
+  queueManagedConversationSupplementalItems,
+} from './runner/turnPreparation';
+import {
   applyTurnResult,
   handleInterruptedOutcome,
   resumeInterruptedTurn,
@@ -84,6 +88,71 @@ import type {
 } from './runner/types';
 import { tryHandleRunError } from './runner/errorHandlers';
 import type { RunErrorHandlers } from './runner/errorHandlers';
+
+function extractPendingFunctionCallOutputsFromRawModelEvents(
+  rawModelEvents: unknown[],
+): AgentInputItem[] {
+  const pendingItems: AgentInputItem[] = [];
+  const seenCallIds = new Set<string>();
+
+  const getRawItem = (event: unknown): Record<string, unknown> | undefined => {
+    if (!event || typeof event !== 'object') {
+      return undefined;
+    }
+
+    const rawEvent = event as Record<string, unknown>;
+    const eventType = rawEvent.type;
+    if (
+      eventType !== 'response.output_item.added' &&
+      eventType !== 'response.output_item.done'
+    ) {
+      return undefined;
+    }
+
+    const item =
+      (rawEvent.item as Record<string, unknown> | undefined) ??
+      (rawEvent.output_item as Record<string, unknown> | undefined);
+
+    return item && typeof item === 'object' ? item : undefined;
+  };
+
+  for (const rawEvent of rawModelEvents) {
+    const rawItem = getRawItem(rawEvent);
+    if (!rawItem || rawItem.type !== 'function_call') {
+      continue;
+    }
+
+    const callId =
+      typeof rawItem.call_id === 'string'
+        ? rawItem.call_id
+        : typeof rawItem.callId === 'string'
+          ? rawItem.callId
+          : undefined;
+    const name =
+      typeof rawItem.name === 'string' ? rawItem.name : undefined;
+
+    if (!callId || !name || seenCallIds.has(callId)) {
+      continue;
+    }
+
+    seenCallIds.add(callId);
+    pendingItems.push({
+      type: 'function_call_result',
+      name,
+      ...(typeof rawItem.namespace === 'string'
+        ? { namespace: rawItem.namespace }
+        : {}),
+      callId,
+      status: 'completed',
+      output: {
+        type: 'text',
+        text: 'aborted',
+      },
+    });
+  }
+
+  return pendingItems;
+}
 
 export type {
   CallModelInputFilter,
@@ -1150,6 +1219,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           let finalResponse: ModelResponse | undefined = undefined;
           let inputMarked = false;
+          const rawModelEvents: unknown[] = [];
           const markInputOnce = () => {
             if (inputMarked || !serverConversationTracker) {
               return;
@@ -1212,6 +1282,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
+              } else if (event.type === 'model') {
+                rawModelEvents.push(event.event);
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
@@ -1226,6 +1298,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (sentInputToModel) {
                 markInputOnce();
               }
+              if (serverConversationTracker?.conversationId) {
+                const pendingItems =
+                  extractPendingFunctionCallOutputsFromRawModelEvents(
+                    rawModelEvents,
+                  );
+                queueManagedConversationSupplementalItems(
+                  serverConversationTracker.conversationId,
+                  pendingItems,
+                );
+              }
               await awaitGuardrailsAndPersistInput();
               return;
             }
@@ -1234,6 +1316,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           if (finalResponse) {
             markInputOnce();
+          }
+
+          if (serverConversationTracker?.conversationId && inputMarked) {
+            clearManagedConversationSupplementalItems(
+              serverConversationTracker.conversationId,
+            );
           }
 
           await awaitGuardrailsAndPersistInput();

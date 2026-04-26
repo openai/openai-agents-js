@@ -1935,6 +1935,130 @@ describe('Runner.run (streaming)', () => {
       ]);
     });
 
+    it('replays synthetic tool outputs after an aborted managed conversation turn', async () => {
+      class AbortAfterFunctionCallStreamingModel implements Model {
+        public readonly requests: ModelRequest[] = [];
+        private attempt = 0;
+
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('not used');
+        }
+
+        async *getStreamedResponse(
+          request: ModelRequest,
+        ): AsyncIterable<StreamEvent> {
+          this.requests.push({
+            ...request,
+            input: Array.isArray(request.input)
+              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+              : request.input,
+          });
+          this.attempt += 1;
+
+          if (this.attempt === 1) {
+            yield { type: 'response_started' } as any;
+            yield {
+              type: 'model',
+              event: {
+                type: 'response.output_item.done',
+                item: {
+                  type: 'function_call',
+                  id: 'fc_abort_1',
+                  call_id: 'call_abort_1',
+                  name: 'test',
+                  arguments: '{"test":"abort"}',
+                },
+              },
+              providerData: {
+                rawModelEventSource: 'openai-responses',
+              },
+            } as any;
+
+            const abortError = new Error('aborted');
+            (abortError as Error & { name: string }).name = 'AbortError';
+            const signal = request.signal as AbortSignal | undefined;
+            await new Promise((_resolve, reject) => {
+              if (signal?.aborted) {
+                reject(abortError);
+                return;
+              }
+              const onAbort = () => {
+                signal?.removeEventListener('abort', onAbort);
+                reject(abortError);
+              };
+              signal?.addEventListener('abort', onAbort, { once: true });
+            });
+            return;
+          }
+
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-after-abort',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('done after abort')],
+            },
+          } as any;
+        }
+      }
+
+      const model = new AbortAfterFunctionCallStreamingModel();
+      const agent = new Agent({
+        name: 'ManagedAbortRecovery',
+        model,
+        tools: [serverTool],
+      });
+      const runner = new Runner();
+      const controller = new AbortController();
+
+      const firstRun = await runner.run(agent, 'hi', {
+        stream: true,
+        conversationId: 'conv-abort-recovery',
+        signal: controller.signal,
+      });
+      const reader = (firstRun.toStream() as any).getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (
+          value?.type === 'raw_model_stream_event' &&
+          value.data?.type === 'model' &&
+          value.data?.event?.type === 'response.output_item.done'
+        ) {
+          controller.abort();
+          break;
+        }
+      }
+      await firstRun.completed;
+
+      const secondRun = await runner.run(agent, 'resume after abort', {
+        stream: true,
+        conversationId: 'conv-abort-recovery',
+      });
+      await drain(secondRun);
+
+      expect(secondRun.finalOutput).toBe('done after abort');
+      expect(model.requests).toHaveLength(2);
+      expect(getRequestInputItems(model.requests[1])).toEqual([
+        expect.objectContaining({
+          role: 'user',
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call_abort_1',
+          name: 'test',
+        }),
+      ]);
+    });
+
     it('does not replay orphan hosted shell calls in default streamed multi-turn runs', async () => {
       const hostedShell = shellTool({
         environment: { type: 'container_auto' },
