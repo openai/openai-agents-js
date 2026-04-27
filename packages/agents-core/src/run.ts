@@ -34,7 +34,11 @@ import type { TracingConfig } from './tracing';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
-import { StreamEventResponseCompleted } from './types/protocol';
+import {
+  StreamEventResponseCompleted,
+  FunctionCallItem,
+  FunctionCallResultItem,
+} from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
 import type { AgentInputItem } from './types';
 import {
@@ -1149,6 +1153,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           guardrailTracker.throwIfError();
 
           let finalResponse: ModelResponse | undefined = undefined;
+          // Track function_call items the server has already persisted during streaming.
+          // These need synthetic outputs if we abort before tool execution.
+          const pendingFunctionCalls = new Map<
+            string,
+            Pick<FunctionCallItem, 'callId' | 'name' | 'namespace'>
+          >();
           let inputMarked = false;
           const markInputOnce = () => {
             if (inputMarked || !serverConversationTracker) {
@@ -1203,6 +1213,36 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             )) {
               guardrailTracker.throwIfError();
               markInputOnce();
+              // Track function_call items persisted server-side as they stream so we can
+              // reconcile them with synthetic outputs on abort.
+              if (
+                serverConversationTracker &&
+                event.type === 'model' &&
+                event.event &&
+                typeof event.event === 'object'
+              ) {
+                const rawEvent = event.event as Record<string, unknown>;
+                if (
+                  rawEvent['type'] === 'response.output_item.done' &&
+                  rawEvent['item'] &&
+                  typeof rawEvent['item'] === 'object'
+                ) {
+                  const item = rawEvent['item'] as Record<string, unknown>;
+                  if (
+                    item['type'] === 'function_call' &&
+                    typeof item['call_id'] === 'string'
+                  ) {
+                    pendingFunctionCalls.set(item['call_id'] as string, {
+                      callId: item['call_id'] as string,
+                      name:
+                        typeof item['name'] === 'string' ? item['name'] : '',
+                      ...(typeof item['namespace'] === 'string'
+                        ? { namespace: item['namespace'] as string }
+                        : {}),
+                    });
+                  }
+                }
+              }
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1212,6 +1252,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
+                // All function_call items are now accounted for in the final response;
+                // tool execution will supply the corresponding outputs normally.
+                pendingFunctionCalls.clear();
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
@@ -1227,6 +1270,56 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 markInputOnce();
               }
               await awaitGuardrailsAndPersistInput();
+              // When using server-managed conversations (conversationId /
+              // previousResponseId), the server has already persisted any
+              // function_call items that finished streaming. Submit synthetic
+              // function_call_result outputs so the conversation stays consistent
+              // and subsequent runs against the same conversation do not fail with
+              // "No tool output found for function call".
+              if (
+                serverConversationTracker &&
+                pendingFunctionCalls.size > 0
+              ) {
+                const syntheticOutputs: FunctionCallResultItem[] = Array.from(
+                  pendingFunctionCalls.values(),
+                ).map(
+                  (fc): FunctionCallResultItem => ({
+                    type: 'function_call_result',
+                    callId: fc.callId,
+                    name: fc.name,
+                    ...(fc.namespace ? { namespace: fc.namespace } : {}),
+                    status: 'incomplete',
+                    output: { type: 'text', text: 'aborted' },
+                  }),
+                );
+                try {
+                  await getResponseWithRetry(preparedCall.model, {
+                    systemInstructions:
+                      preparedCall.modelInput.instructions,
+                    prompt: preparedCall.prompt,
+                    input: syntheticOutputs,
+                    previousResponseId: preparedCall.previousResponseId,
+                    conversationId: preparedCall.conversationId,
+                    modelSettings: preparedCall.modelSettings,
+                    tools: preparedCall.serializedTools,
+                    toolsExplicitlyProvided:
+                      preparedCall.toolsExplicitlyProvided,
+                    handoffs: preparedCall.serializedHandoffs,
+                    outputType: convertAgentOutputTypeToSerializable(
+                      currentAgent.outputType,
+                    ),
+                    tracing: getTracing(
+                      this.config.tracingDisabled,
+                      this.config.traceIncludeSensitiveData,
+                    ),
+                    // Do not forward the abort signal — this reconciliation call
+                    // must complete even though the original run was aborted.
+                  });
+                } catch {
+                  // Best-effort: ignore errors from the reconciliation call so
+                  // the original AbortError propagates cleanly.
+                }
+              }
               return;
             }
             throw error;
