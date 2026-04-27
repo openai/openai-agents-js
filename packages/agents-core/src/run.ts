@@ -1279,29 +1279,37 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                       }),
                     );
                   try {
-                    await getResponseWithRetry(preparedCall.model, {
-                      systemInstructions:
-                        preparedCall.modelInput.instructions,
-                      prompt: preparedCall.prompt,
-                      ...(preparedCall.explictlyModelSet
-                        ? { overridePromptModel: true }
-                        : {}),
-                      input: syntheticOutputs,
-                      previousResponseId: preparedCall.previousResponseId,
-                      conversationId: preparedCall.conversationId,
-                      modelSettings: preparedCall.modelSettings,
-                      tools: preparedCall.serializedTools,
-                      toolsExplicitlyProvided:
-                        preparedCall.toolsExplicitlyProvided,
-                      handoffs: preparedCall.serializedHandoffs,
-                      outputType: convertAgentOutputTypeToSerializable(
-                        currentAgent.outputType,
-                      ),
-                      tracing: getTracing(
-                        this.config.tracingDisabled,
-                        this.config.traceIncludeSensitiveData,
-                      ),
-                    });
+                    const reconciliationResponse =
+                      await getResponseWithRetry(preparedCall.model, {
+                        systemInstructions:
+                          preparedCall.modelInput.instructions,
+                        prompt: preparedCall.prompt,
+                        ...(preparedCall.explictlyModelSet
+                          ? { overridePromptModel: true }
+                          : {}),
+                        input: syntheticOutputs,
+                        previousResponseId: preparedCall.previousResponseId,
+                        conversationId: preparedCall.conversationId,
+                        modelSettings: preparedCall.modelSettings,
+                        tools: preparedCall.serializedTools,
+                        toolsExplicitlyProvided:
+                          preparedCall.toolsExplicitlyProvided,
+                        handoffs: preparedCall.serializedHandoffs,
+                        outputType: convertAgentOutputTypeToSerializable(
+                          currentAgent.outputType,
+                        ),
+                        tracing: getTracing(
+                          this.config.tracingDisabled,
+                          this.config.traceIncludeSensitiveData,
+                        ),
+                      });
+                    serverConversationTracker.trackServerItems(
+                      reconciliationResponse,
+                    );
+                    result.state.setConversationContext(
+                      serverConversationTracker.conversationId,
+                      serverConversationTracker.previousResponseId,
+                    );
                   } catch {
                     // Best-effort: ignore errors so normal cancellation flow
                     // is not disrupted.
@@ -1340,31 +1348,39 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   }),
                 );
                 try {
-                  await getResponseWithRetry(preparedCall.model, {
-                    systemInstructions:
-                      preparedCall.modelInput.instructions,
-                    prompt: preparedCall.prompt,
-                    ...(preparedCall.explictlyModelSet
-                      ? { overridePromptModel: true }
-                      : {}),
-                    input: syntheticOutputs,
-                    previousResponseId: preparedCall.previousResponseId,
-                    conversationId: preparedCall.conversationId,
-                    modelSettings: preparedCall.modelSettings,
-                    tools: preparedCall.serializedTools,
-                    toolsExplicitlyProvided:
-                      preparedCall.toolsExplicitlyProvided,
-                    handoffs: preparedCall.serializedHandoffs,
-                    outputType: convertAgentOutputTypeToSerializable(
-                      currentAgent.outputType,
-                    ),
-                    tracing: getTracing(
-                      this.config.tracingDisabled,
-                      this.config.traceIncludeSensitiveData,
-                    ),
-                    // Do not forward the abort signal — this reconciliation call
-                    // must complete even though the original run was aborted.
-                  });
+                  const reconciliationResponse =
+                    await getResponseWithRetry(preparedCall.model, {
+                      systemInstructions:
+                        preparedCall.modelInput.instructions,
+                      prompt: preparedCall.prompt,
+                      ...(preparedCall.explictlyModelSet
+                        ? { overridePromptModel: true }
+                        : {}),
+                      input: syntheticOutputs,
+                      previousResponseId: preparedCall.previousResponseId,
+                      conversationId: preparedCall.conversationId,
+                      modelSettings: preparedCall.modelSettings,
+                      tools: preparedCall.serializedTools,
+                      toolsExplicitlyProvided:
+                        preparedCall.toolsExplicitlyProvided,
+                      handoffs: preparedCall.serializedHandoffs,
+                      outputType: convertAgentOutputTypeToSerializable(
+                        currentAgent.outputType,
+                      ),
+                      tracing: getTracing(
+                        this.config.tracingDisabled,
+                        this.config.traceIncludeSensitiveData,
+                      ),
+                      // Do not forward the abort signal — this reconciliation call
+                      // must complete even though the original run was aborted.
+                    });
+                  serverConversationTracker.trackServerItems(
+                    reconciliationResponse,
+                  );
+                  result.state.setConversationContext(
+                    serverConversationTracker.conversationId,
+                    serverConversationTracker.previousResponseId,
+                  );
                 } catch {
                   // Best-effort: ignore errors from the reconciliation call so
                   // the original AbortError propagates cleanly.
