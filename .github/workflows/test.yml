@@ -138,6 +138,47 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test
 
+  windows-sandbox-paths:
+    needs: changes
+    runs-on: windows-latest
+    env:
+      CI: "1"
+      NODE_ENV: test
+    steps:
+      - name: Skip CI for docs/meta-only changes
+        if: ${{ needs.changes.outputs.run_ci != 'true' }}
+        run: echo "Only docs/meta files changed. Marking Windows sandbox path checks as successful without running CI."
+      - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          run_install: false
+      - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm install
+      - name: Build packages
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm build
+      - name: Run Windows sandbox path tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts
+      - name: Run Windows remote path tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: pnpm exec vitest --run --project "@openai/agents-extensions" packages/agents-extensions/test/sandbox/remotePaths.test.ts
+
   coverage:
     needs: changes
     runs-on: ubuntu-latest

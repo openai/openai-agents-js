@@ -66,4 +66,52 @@ describe('MemorySession', () => {
     }
     expect(await session.getItems()).toEqual([createUserMessage('start')]);
   });
+
+  test('applies history mutations atomically', async () => {
+    const session = new MemorySession({
+      sessionId: 'session-3',
+      initialItems: [
+        createUserMessage('start'),
+        {
+          type: 'function_call',
+          id: 'call-old-1',
+          callId: 'call-1',
+          name: 'lookup',
+          status: 'completed',
+          arguments: '{"ok":false}',
+        },
+        {
+          type: 'function_call',
+          id: 'call-old-2',
+          callId: 'call-1',
+          name: 'lookup',
+          status: 'completed',
+          arguments: '{"duplicate":true}',
+        },
+      ],
+    });
+    const replacement = {
+      type: 'function_call',
+      id: 'call-new',
+      callId: 'call-1',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{"ok":true}',
+    } satisfies AgentInputItem;
+
+    await session.applyHistoryMutations({
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call-1',
+          replacement,
+        },
+      ],
+    });
+
+    expect(await session.getItems()).toEqual([
+      createUserMessage('start'),
+      replacement,
+    ]);
+  });
 });

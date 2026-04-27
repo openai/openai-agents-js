@@ -1770,7 +1770,6 @@ export function tool<
       'Tool name cannot be empty. Either name your function or provide a name in the options.',
     );
   }
-
   const strictMode = options.strict ?? true;
   if (!strictMode && isZodObject(options.parameters)) {
     throw new UserError('Strict mode is required for Zod parameters');
@@ -1786,6 +1785,7 @@ export function tool<
   const { parser, schema: parameters } = getSchemaAndParserFromInputType(
     options.parameters,
     name,
+    { strict: strictMode },
   );
 
   async function _invoke(

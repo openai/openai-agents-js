@@ -61,7 +61,7 @@ describe('utils/tools', () => {
     );
   });
 
-  it('falls back to compat schema when the helper rejects optional fields', () => {
+  it('falls back to a strict-compatible schema when optional fields are present', () => {
     const zodSchema = z.object({
       required: z.string(),
       optional: z.number().optional(),
@@ -69,14 +69,17 @@ describe('utils/tools', () => {
     const res = getSchemaAndParserFromInputType(
       zodSchema,
       'tool-with-optional',
+      { strict: true },
     );
     expect(res.schema).toEqual({
       type: 'object',
       properties: {
         required: { type: 'string' },
-        optional: { type: 'number' },
+        optional: {
+          anyOf: [{ type: 'number' }, { type: 'null' }],
+        },
       },
-      required: ['required'],
+      required: ['required', 'optional'],
       additionalProperties: false,
       $schema: 'http://json-schema.org/draft-07/schema#',
     });
@@ -84,6 +87,100 @@ describe('utils/tools', () => {
     expect(res.parser('{"required":"ok","optional":2}')).toEqual({
       required: 'ok',
       optional: 2,
+    });
+    expect(res.parser('{"required":"ok","optional":null}')).toEqual({
+      required: 'ok',
+    });
+  });
+
+  it('normalizes nullable optional fields inside strict Zod unions', () => {
+    const zodSchema = z.object({
+      payload: z.union([
+        z.object({
+          kind: z.literal('text'),
+          optional: z.string().optional(),
+        }),
+        z.object({
+          kind: z.literal('count'),
+          optional: z.number().optional(),
+        }),
+      ]),
+    });
+    const res = getSchemaAndParserFromInputType(zodSchema, 'union-tool', {
+      strict: true,
+    });
+
+    expect(
+      res.parser(
+        JSON.stringify({
+          payload: {
+            kind: 'text',
+            optional: null,
+          },
+        }),
+      ),
+    ).toEqual({
+      payload: {
+        kind: 'text',
+      },
+    });
+  });
+
+  it('preserves explicit nulls for optional Zod fields that allow null', () => {
+    const zodSchema = z.object({
+      value: z.union([z.string(), z.null()]).optional(),
+    });
+    const res = getSchemaAndParserFromInputType(zodSchema, 'nullable-tool', {
+      strict: true,
+    });
+
+    expect(res.parser('{"value":null}')).toEqual({
+      value: null,
+    });
+  });
+
+  it('normalizes strict JSON-schema nulls for optional properties', () => {
+    const schema: JsonObjectSchema<Record<string, JsonSchemaDefinitionEntry>> =
+      {
+        type: 'object',
+        properties: {
+          required: { type: 'string' },
+          optional: { type: 'string' },
+          nullableOptional: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+          },
+          nested: {
+            type: 'object',
+            properties: {
+              optional: { type: 'number' },
+            },
+            required: [],
+            additionalProperties: false,
+          },
+        },
+        required: ['required', 'nested'],
+        additionalProperties: false,
+      };
+
+    const res = getSchemaAndParserFromInputType(schema, 'json-schema-tool', {
+      strict: true,
+    });
+
+    expect(
+      res.parser(
+        JSON.stringify({
+          required: 'ok',
+          optional: null,
+          nullableOptional: null,
+          nested: {
+            optional: null,
+          },
+        }),
+      ),
+    ).toEqual({
+      required: 'ok',
+      nullableOptional: null,
+      nested: {},
     });
   });
 

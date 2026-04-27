@@ -316,6 +316,26 @@ describe('Tool', () => {
     expect(t.shell).toBe(shell);
   });
 
+  it('tool allows reserved built-in names for compatibility', () => {
+    const shellWrapper = tool({
+      name: 'shell',
+      description: 'compatibility shell wrapper',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const computerWrapper = tool({
+      name: 'computer_use_preview',
+      description: 'compatibility computer wrapper',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+
+    expect(shellWrapper.type).toBe('function');
+    expect(shellWrapper.name).toBe('shell');
+    expect(computerWrapper.type).toBe('function');
+    expect(computerWrapper.name).toBe('computer_use_preview');
+  });
+
   it('ShellTool keeps local environment optional for compatibility', () => {
     const legacyTool: ShellTool = {
       type: 'shell',
@@ -736,8 +756,12 @@ describe('tool.invoke', () => {
       description: 'slow',
       parameters: z.object({}),
       timeoutMs: 5,
-      execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
+      execute: async (_input, _context, details) => {
+        await new Promise<void>((resolve) => {
+          details?.signal?.addEventListener('abort', () => resolve(), {
+            once: true,
+          });
+        });
         return 'done';
       },
     });

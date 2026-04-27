@@ -34,6 +34,16 @@
       "require": "./dist/extensions/index.js",
       "import": "./dist/extensions/index.mjs"
     },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "require": "./dist/sandbox/index.js",
+      "import": "./dist/sandbox/index.mjs"
+    },
+    "./sandbox/local": {
+      "types": "./dist/sandbox/local.d.ts",
+      "require": "./dist/sandbox/local.js",
+      "import": "./dist/sandbox/local.mjs"
+    },
     "./types": {
       "types": "./dist/types/index.d.ts",
       "require": "./dist/types/index.js",
@@ -92,6 +102,12 @@
       ],
       "extensions": [
         "dist/extensions/index.d.ts"
+      ],
+      "sandbox": [
+        "dist/sandbox/index.d.ts"
+      ],
+      "sandbox/local": [
+        "dist/sandbox/local.d.ts"
       ],
       "types": [
         "dist/types/index.d.ts"
