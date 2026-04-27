@@ -1260,6 +1260,53 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
                 await awaitGuardrailsAndPersistInput();
+                // Reconcile any persisted function_call items the same way we do on
+                // the abort-error path, so server-managed conversation state stays
+                // consistent when a consumer cancels iteration mid-stream.
+                if (
+                  serverConversationTracker &&
+                  pendingFunctionCalls.size > 0
+                ) {
+                  const syntheticOutputs: FunctionCallResultItem[] =
+                    Array.from(pendingFunctionCalls.values()).map(
+                      (fc): FunctionCallResultItem => ({
+                        type: 'function_call_result',
+                        callId: fc.callId,
+                        name: fc.name,
+                        ...(fc.namespace ? { namespace: fc.namespace } : {}),
+                        status: 'incomplete',
+                        output: { type: 'text', text: 'aborted' },
+                      }),
+                    );
+                  try {
+                    await getResponseWithRetry(preparedCall.model, {
+                      systemInstructions:
+                        preparedCall.modelInput.instructions,
+                      prompt: preparedCall.prompt,
+                      ...(preparedCall.explictlyModelSet
+                        ? { overridePromptModel: true }
+                        : {}),
+                      input: syntheticOutputs,
+                      previousResponseId: preparedCall.previousResponseId,
+                      conversationId: preparedCall.conversationId,
+                      modelSettings: preparedCall.modelSettings,
+                      tools: preparedCall.serializedTools,
+                      toolsExplicitlyProvided:
+                        preparedCall.toolsExplicitlyProvided,
+                      handoffs: preparedCall.serializedHandoffs,
+                      outputType: convertAgentOutputTypeToSerializable(
+                        currentAgent.outputType,
+                      ),
+                      tracing: getTracing(
+                        this.config.tracingDisabled,
+                        this.config.traceIncludeSensitiveData,
+                      ),
+                    });
+                  } catch {
+                    // Best-effort: ignore errors so normal cancellation flow
+                    // is not disrupted.
+                  }
+                }
                 return;
               }
               result._addItem(new RunRawModelStreamEvent(event));
@@ -1297,6 +1344,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     systemInstructions:
                       preparedCall.modelInput.instructions,
                     prompt: preparedCall.prompt,
+                    ...(preparedCall.explictlyModelSet
+                      ? { overridePromptModel: true }
+                      : {}),
                     input: syntheticOutputs,
                     previousResponseId: preparedCall.previousResponseId,
                     conversationId: preparedCall.conversationId,
