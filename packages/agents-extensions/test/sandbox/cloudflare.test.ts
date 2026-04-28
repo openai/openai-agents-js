@@ -371,9 +371,12 @@ describe('CloudflareSandboxClient', () => {
       .mocked(global.fetch)
       .mock.calls.find(([input]) => String(input).includes('/exec'));
     const execInit = execCall?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(execInit?.body))).toMatchObject({
-      timeoutMs: 101,
-    });
+    const execBody = JSON.parse(String(execInit?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(execBody).toMatchObject({ timeout_ms: 101 });
+    expect(execBody).not.toHaveProperty('timeoutMs');
     expect(execInit?.signal).toBeInstanceOf(AbortSignal);
   });
 
@@ -1640,7 +1643,7 @@ describe('CloudflareSandboxClient', () => {
             endpoint: 'https://s3.us-east-1.amazonaws.com',
             provider: 's3',
             readOnly: true,
-            prefix: '/2026/04/',
+            prefix: '2026/04',
             credentials: {
               accessKeyId: 'access-key',
               secretAccessKey: 'secret-key',
