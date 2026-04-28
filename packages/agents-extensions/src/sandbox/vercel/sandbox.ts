@@ -294,7 +294,6 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       try {
         await this.replaceSandboxFromSnapshot(snapshotId, {
           snapshotFreshAfterRestore: true,
-          stopPrevious: false,
         });
       } catch (error) {
         await this.recoverSandboxAfterSnapshotRestoreFailure(snapshotId, error);
@@ -399,7 +398,6 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     snapshotId: string,
     options: {
       snapshotFreshAfterRestore?: boolean;
-      stopPrevious?: boolean;
     } = {},
   ): Promise<void> {
     const previousSandbox = this.sandbox;
@@ -409,27 +407,25 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       credentials,
     );
 
-    if (options.stopPrevious ?? true) {
+    try {
+      await stopVercelSandbox(previousSandbox);
+    } catch (error) {
+      let replacementStopCause: string | undefined;
       try {
-        await stopVercelSandbox(previousSandbox);
-      } catch (error) {
-        let replacementStopCause: string | undefined;
-        try {
-          await stopVercelSandbox(sandbox);
-        } catch (replacementStopError) {
-          replacementStopCause = errorMessage(replacementStopError);
-        }
-        throw new SandboxProviderError(
-          'Vercel snapshot restore created a replacement sandbox, but stopping the previous sandbox failed.',
-          {
-            provider: 'vercel',
-            sandboxId: previousSandbox.sandboxId,
-            replacementSandboxId: sandbox.sandboxId,
-            cause: errorMessage(error),
-            ...(replacementStopCause ? { replacementStopCause } : {}),
-          },
-        );
+        await stopVercelSandbox(sandbox);
+      } catch (replacementStopError) {
+        replacementStopCause = errorMessage(replacementStopError);
       }
+      throw new SandboxProviderError(
+        'Vercel snapshot restore created a replacement sandbox, but stopping the previous sandbox failed.',
+        {
+          provider: 'vercel',
+          sandboxId: previousSandbox.sandboxId,
+          replacementSandboxId: sandbox.sandboxId,
+          cause: errorMessage(error),
+          ...(replacementStopCause ? { replacementStopCause } : {}),
+        },
+      );
     }
 
     this.bindRestoredSandbox(
@@ -444,12 +440,9 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     restoreError: unknown,
   ): Promise<void> {
     try {
-      const credentials = await this.resolveSnapshotCredentials();
-      const sandbox = await this.createAndPrepareSandboxFromSnapshot(
-        snapshotId,
-        credentials,
-      );
-      this.bindRestoredSandbox(sandbox, snapshotId, true);
+      await this.replaceSandboxFromSnapshot(snapshotId, {
+        snapshotFreshAfterRestore: true,
+      });
     } catch (recoveryError) {
       throw new SandboxProviderError(
         'Vercel snapshot persistence captured a snapshot, but restoring the live session failed and recovery also failed.',
