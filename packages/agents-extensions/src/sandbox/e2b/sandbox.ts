@@ -180,7 +180,7 @@ export interface E2BSandboxSessionState extends SandboxSessionState {
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
   connectionTimeoutMs?: number;
-  onTimeout: E2BTimeoutAction;
+  onTimeout?: E2BTimeoutAction;
   timeoutAction?: E2BTimeoutAction;
   autoResume?: boolean;
   metadata?: Record<string, string>;
@@ -891,7 +891,7 @@ export class E2BSandboxClient implements SandboxClient<
             connectionTimeoutMs: resolvedOptions.connectionTimeoutMs,
             onTimeout: resolveE2BOnTimeout(resolvedOptions),
             timeoutAction: resolvedOptions.timeoutAction,
-            autoResume: resolveE2BAutoResume(resolvedOptions),
+            autoResume: resolvedOptions.autoResume,
             metadata: resolvedOptions.metadata,
             secure: resolvedOptions.secure,
             allowInternetAccess: resolvedOptions.allowInternetAccess,
@@ -945,14 +945,14 @@ export class E2BSandboxClient implements SandboxClient<
       commandTimeoutMs: readOptionalNumber(state, 'commandTimeoutMs'),
       requestTimeoutMs: readOptionalNumber(state, 'requestTimeoutMs'),
       connectionTimeoutMs: readOptionalNumber(state, 'connectionTimeoutMs'),
-      onTimeout: readE2BTimeoutAction(
+      onTimeout: readOptionalE2BTimeoutAction(
         readOptionalString(state, 'onTimeout') ??
           readOptionalString(state, 'timeoutAction'),
       ),
       timeoutAction: readOptionalE2BTimeoutAction(
         readOptionalString(state, 'timeoutAction'),
       ),
-      autoResume: readOptionalBoolean(state, 'autoResume') ?? true,
+      autoResume: readOptionalBoolean(state, 'autoResume'),
       metadata: readOptionalStringRecord(state.metadata),
       secure: readOptionalBoolean(state, 'secure'),
       allowInternetAccess: readOptionalBoolean(state, 'allowInternetAccess'),
@@ -1004,19 +1004,10 @@ function validateOptions(options: E2BSandboxClientOptions): void {
 
 function resolveE2BOnTimeout(
   options: Pick<E2BSandboxClientOptions, 'onTimeout' | 'timeoutAction'>,
-): E2BTimeoutAction {
-  return readE2BTimeoutAction(options.onTimeout ?? options.timeoutAction);
-}
-
-function resolveE2BAutoResume(
-  options: Pick<E2BSandboxClientOptions, 'autoResume'>,
-): boolean {
-  return options.autoResume ?? true;
-}
-
-function readE2BTimeoutAction(value: unknown): E2BTimeoutAction {
-  const action = readOptionalE2BTimeoutAction(value);
-  return action ?? 'pause';
+): E2BTimeoutAction | undefined {
+  return readOptionalE2BTimeoutAction(
+    options.onTimeout ?? options.timeoutAction,
+  );
 }
 
 function readOptionalE2BTimeoutAction(
@@ -1085,6 +1076,9 @@ function e2bReconnectOptions(
   state: E2BSandboxSessionState,
 ): Record<string, unknown> | undefined {
   const options: Record<string, unknown> = {};
+  if (state.timeout !== undefined) {
+    options.timeoutMs = Math.max(1, Math.trunc(state.timeout * 1000));
+  }
   if (state.requestTimeoutMs !== undefined) {
     options.requestTimeoutMs = state.requestTimeoutMs;
   }
@@ -1153,12 +1147,16 @@ async function createSandboxInstance(
     createOptions.timeoutMs = Math.max(1, Math.trunc(options.timeout * 1000));
   }
   const onTimeout = resolveE2BOnTimeout(options);
-  createOptions.lifecycle = {
-    onTimeout,
-    ...(onTimeout === 'pause'
-      ? { autoResume: resolveE2BAutoResume(options) }
-      : {}),
-  };
+  const lifecycle: Record<string, unknown> = {};
+  if (onTimeout !== undefined) {
+    lifecycle.onTimeout = onTimeout;
+  }
+  if (options.autoResume !== undefined && onTimeout === 'pause') {
+    lifecycle.autoResume = options.autoResume;
+  }
+  if (Object.keys(lifecycle).length > 0) {
+    createOptions.lifecycle = lifecycle;
+  }
   for (const key of [
     'commandTimeoutMs',
     'requestTimeoutMs',

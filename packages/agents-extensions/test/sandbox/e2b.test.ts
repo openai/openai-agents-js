@@ -227,6 +227,16 @@ describe('E2BSandboxClient', () => {
     expect(output).toContain('README.md');
   });
 
+  test('omits E2B lifecycle defaults when lifecycle options are omitted', async () => {
+    const client = new E2BSandboxClient();
+
+    const session = await client.create(new Manifest());
+
+    expect(createMock.mock.calls[0]).toEqual([]);
+    expect(session.state.onTimeout).toBeUndefined();
+    expect(session.state.autoResume).toBeUndefined();
+  });
+
   test('treats missing command exit codes as failures', async () => {
     const client = new E2BSandboxClient();
     const session = await client.create(new Manifest());
@@ -307,10 +317,6 @@ describe('E2BSandboxClient', () => {
 
     expect(createMock).toHaveBeenCalledWith('base', {
       timeoutMs: 30000,
-      lifecycle: {
-        onTimeout: 'pause',
-        autoResume: true,
-      },
     });
     expect(pauseMock).toHaveBeenCalledOnce();
     expect(killMock).not.toHaveBeenCalled();
@@ -460,6 +466,18 @@ describe('E2BSandboxClient', () => {
         onTimeout: 'kill',
       },
     });
+  });
+
+  test('does not force an onTimeout default for autoResume without pause', async () => {
+    const client = new E2BSandboxClient({
+      autoResume: true,
+    } satisfies E2BSandboxClientOptions);
+
+    const session = await client.create(new Manifest());
+
+    expect(createMock.mock.calls[0]).toEqual([]);
+    expect(session.state.onTimeout).toBeUndefined();
+    expect(session.state.autoResume).toBe(true);
   });
 
   test('rejects invalid workspace persistence before creating a sandbox', async () => {
@@ -616,6 +634,9 @@ describe('E2BSandboxClient', () => {
   test('serializes state and reconnects paused sandboxes by id', async () => {
     const client = new E2BSandboxClient({
       pauseOnExit: true,
+      timeout: 30,
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
       env: {
         CLIENT_ONLY: 'override',
       },
@@ -634,7 +655,11 @@ describe('E2BSandboxClient', () => {
 
     expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
     expect(restored.pauseOnExitSupported).toBe(true);
-    expect(connectMock).toHaveBeenCalledWith('sbx_test', undefined);
+    expect(connectMock).toHaveBeenCalledWith('sbx_test', {
+      timeoutMs: 30000,
+      requestTimeoutMs: 1000,
+      connectionTimeoutMs: 2000,
+    });
     expect(resumed.state.environment).toEqual({
       CLIENT_ONLY: 'override',
       MANIFEST_FLAG: 'enabled',
@@ -653,12 +678,7 @@ describe('E2BSandboxClient', () => {
     const recreated = await client.resume(session.state);
 
     expect(connectMock).toHaveBeenCalledWith('sbx_test', undefined);
-    expect(createMock).toHaveBeenCalledWith('base', {
-      lifecycle: {
-        onTimeout: 'pause',
-        autoResume: true,
-      },
-    });
+    expect(createMock).toHaveBeenCalledWith('base', {});
     expect(recreated.state.sandboxId).toBe('sbx_test');
   });
 
@@ -764,12 +784,7 @@ describe('E2BSandboxClient', () => {
 
     await session.hydrateWorkspace(await session.persistWorkspace());
 
-    expect(createMock).toHaveBeenLastCalledWith('snap_test', {
-      lifecycle: {
-        onTimeout: 'pause',
-        autoResume: true,
-      },
-    });
+    expect(createMock).toHaveBeenLastCalledWith('snap_test', {});
     expect(session.state.sandboxId).toBe('sbx_restored');
     expect(killMock).toHaveBeenCalledOnce();
   });
@@ -949,10 +964,6 @@ describe('E2BSandboxClient', () => {
     const cachedEndpoint = await session.resolveExposedPort(3000);
 
     expect(createMock).toHaveBeenCalledWith({
-      lifecycle: {
-        onTimeout: 'pause',
-        autoResume: true,
-      },
       network: { allowPublicTraffic: true },
     });
     expect(getHostMock).toHaveBeenCalledWith(3000);
@@ -1032,10 +1043,6 @@ describe('E2BSandboxClient', () => {
 
     const session = await client.create(manifest);
     expect(createMock).toHaveBeenCalledWith({
-      lifecycle: {
-        onTimeout: 'pause',
-        autoResume: true,
-      },
       envs: {
         CLIENT_ONLY: 'override',
         MANIFEST_FLAG: 'enabled',
