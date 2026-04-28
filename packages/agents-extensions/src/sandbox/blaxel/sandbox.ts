@@ -528,7 +528,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   private mountCommandRunner(): RemoteMountCommand {
     return async (command, options = {}) => {
       const result = await this.sandbox.process.exec({
-        command: buildShellCommand(command, this.state.environment),
+        command,
         workingDir: this.state.manifest.root,
         waitForCompletion: true,
         timeout:
