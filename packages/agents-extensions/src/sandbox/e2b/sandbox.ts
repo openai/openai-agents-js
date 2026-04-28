@@ -581,6 +581,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   ): boolean {
     return (
       options?.reason === 'cleanup' &&
+      options.preserveOwnedSessions === true &&
       this.state.pauseOnExit &&
       canPauseE2BSandbox(this.sandbox)
     );
@@ -590,7 +591,10 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     operation: 'close' | 'cleanup',
   ): Promise<boolean> {
     try {
-      await this.sandbox.pause!();
+      const paused = await this.sandbox.pause!();
+      if (!paused) {
+        throw new Error('E2B sandbox pause returned false.');
+      }
       return true;
     } catch (pauseError) {
       try {
