@@ -123,7 +123,7 @@ type VercelSandboxInstance = {
     }[],
   ): Promise<void>;
   domain?(port: number): string;
-  stop?(params?: { blocking?: boolean }): Promise<unknown>;
+  stop?(): Promise<unknown>;
   snapshot?(params?: { expiration?: number }): Promise<{ snapshotId?: string }>;
 };
 
@@ -984,7 +984,7 @@ function adaptVercelSandboxClass(
 function adaptVercelSandbox(sandbox: VercelSdkSandbox): VercelSandboxInstance {
   const optionalSandbox = sandbox as VercelSdkSandbox & {
     domain?: (port: number) => string;
-    stop?: (params?: { blocking?: boolean }) => Promise<unknown>;
+    stop?: () => Promise<unknown>;
     snapshot?: (params?: {
       expiration?: number;
     }) => Promise<{ snapshotId?: string }>;
@@ -1005,7 +1005,7 @@ function adaptVercelSandbox(sandbox: VercelSdkSandbox): VercelSandboxInstance {
   }
   if (typeof optionalSandbox.stop === 'function') {
     const stop = optionalSandbox.stop.bind(sandbox);
-    adapted.stop = async (params) => await stop(params);
+    adapted.stop = async () => await stop();
   }
   if (typeof optionalSandbox.snapshot === 'function') {
     const snapshotFn = optionalSandbox.snapshot.bind(sandbox);
@@ -1362,7 +1362,7 @@ async function stopVercelSandbox(
       sandbox_id: sandbox.sandboxId,
     },
     async () => {
-      await sandbox.stop!({ blocking: true });
+      await sandbox.stop!();
     },
   );
 }
