@@ -1079,6 +1079,72 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test('does not prepend session environment exports to cloud bucket mount commands', async () => {
+    const client = new BlaxelSandboxClient({
+      env: {
+        VALID_ENV: 'env-value',
+      },
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const mountCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find(
+        (command) =>
+          command.includes('command -v s3fs') || command.includes(' s3fs '),
+      );
+
+    expect(mountCommand).toBeDefined();
+    expect(mountCommand).not.toContain('export VALID_ENV=');
+  });
+
+  test('runs fuse cleanup without validating session environment exports', async () => {
+    const client = new BlaxelSandboxClient({
+      env: {
+        VALID_ENV: 'env-value',
+      },
+    });
+
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+    session.state.environment['INVALID-NAME'] = 'env-value';
+    processExecMock.mockClear();
+
+    await session.close();
+
+    const unmountCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find((command) => command.includes('fusermount -u'));
+    expect(unmountCommand).toBeDefined();
+    expect(unmountCommand).not.toContain('INVALID-NAME');
+  });
+
   test('cleans S3 credential files when cloud bucket mount commands reject', async () => {
     processExecMock.mockImplementation(
       async (params: { command?: string } = {}) => {
