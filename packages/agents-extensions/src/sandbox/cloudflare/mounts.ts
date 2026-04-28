@@ -191,11 +191,7 @@ function isGCSMount(entry: Entry): entry is GCSMount {
 }
 
 function normalizePrefix(prefix: string | undefined): string | undefined {
-  if (prefix === undefined) {
-    return undefined;
-  }
-  const trimmed = prefix.replace(/^\/+|\/+$/gu, '');
-  return trimmed ? `/${trimmed}/` : '/';
+  return prefix;
 }
 
 function buildCredentials(args: {

@@ -628,7 +628,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           ...(typeof this.state.timeouts?.execTimeoutMs === 'number' ||
           typeof this.state.timeoutMs === 'number'
             ? {
-                timeoutMs:
+                timeout_ms:
                   this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs,
               }
             : {}),
