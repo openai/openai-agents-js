@@ -5,7 +5,7 @@ export function resolvedRemotePathFromValidationCommand(
     return undefined;
   }
   const match = command.match(
-    /"\$helper_path"\s+'[^']*'\s+'([^']*)'\s+'[01]'/u,
+    /sh\s+"\$helper_path"\s+'[^']*'\s+'([^']*)'\s+'[01]'/u,
   );
   return match?.[1]?.replace(/'\\''/g, "'");
 }

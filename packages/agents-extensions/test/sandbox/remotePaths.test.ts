@@ -27,7 +27,7 @@ describe('remote sandbox path command construction', () => {
     );
     const invocation = commands[0]?.trim().split(/\r?\n/u).at(-1);
     expect(invocation).toBe(
-      "\"$helper_path\" '/workspace' '/workspace/link.txt' '0'",
+      "sh \"$helper_path\" '/workspace' '/workspace/link.txt' '0'",
     );
     expect(invocation).not.toContain('\\');
   });

@@ -220,8 +220,7 @@ export async function validateRemoteSandboxPath({
     'cat > "$helper_path" <<\'OPENAI_AGENTS_RESOLVE_PATH\'',
     RESOLVE_WORKSPACE_PATH_HELPER,
     'OPENAI_AGENTS_RESOLVE_PATH',
-    'chmod 700 "$helper_path" || exit 125',
-    `"$helper_path" ${helperArgs.map(shellQuote).join(' ')}`,
+    `sh "$helper_path" ${helperArgs.map(shellQuote).join(' ')}`,
   ].join('\n');
   const result = await runCommand(command);
   if (result.status !== 0) {
