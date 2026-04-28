@@ -377,9 +377,12 @@ describe('E2BSandboxClient', () => {
 
     expect(pauseMock).toHaveBeenCalledOnce();
     expect(killMock).toHaveBeenCalledOnce();
+    expect(session.state.pauseOnExit).toBe(false);
+    expect(session.state.pauseOnExitSupported).toBe(false);
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(false);
   });
 
-  test('kills the sandbox when close reports an unpaused persistable session', async () => {
+  test('treats false pause results as already-paused close success', async () => {
     pauseMock.mockResolvedValueOnce(false);
     const client = new E2BSandboxClient({
       pauseOnExit: true,
@@ -389,7 +392,8 @@ describe('E2BSandboxClient', () => {
     await session.close();
 
     expect(pauseMock).toHaveBeenCalledOnce();
-    expect(killMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
   });
 
   test('kills the sandbox when cleanup delete cannot pause a persistable session', async () => {
@@ -406,9 +410,12 @@ describe('E2BSandboxClient', () => {
 
     expect(pauseMock).toHaveBeenCalledOnce();
     expect(killMock).toHaveBeenCalledOnce();
+    expect(session.state.pauseOnExit).toBe(false);
+    expect(session.state.pauseOnExitSupported).toBe(false);
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(false);
   });
 
-  test('kills the sandbox when cleanup delete reports an unpaused persistable session', async () => {
+  test('treats false pause results as already-paused cleanup success', async () => {
     pauseMock.mockResolvedValueOnce(false);
     const client = new E2BSandboxClient({
       pauseOnExit: true,
@@ -421,7 +428,8 @@ describe('E2BSandboxClient', () => {
     });
 
     expect(pauseMock).toHaveBeenCalledOnce();
-    expect(killMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+    expect(client.canPersistOwnedSessionState(session.state)).toBe(true);
   });
 
   test('does not persist owned state when pauseOnExit is unsupported', async () => {
