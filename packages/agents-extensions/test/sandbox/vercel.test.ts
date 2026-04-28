@@ -743,6 +743,59 @@ describe('VercelSandboxClient', () => {
     );
   });
 
+  test('refreshes expired serialized CLI credentials when resuming live sandboxes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-refresh-'));
+    const authDir = join(root, 'auth');
+    mkdirSync(authDir, { recursive: true });
+    getAuthMock.mockReturnValue({
+      token: 'cli_access_token',
+      refreshToken: 'cli_refresh_token',
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    refreshTokenMock.mockResolvedValue({
+      access_token: 'cli_refreshed_token',
+      expires_in: 3_600,
+      refresh_token: 'cli_next_refresh_token',
+    });
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+
+    try {
+      const client = new VercelSandboxClient();
+      const state = await client.deserializeSessionState({
+        manifest: new Manifest(),
+        sandboxId: 'vercel_existing',
+        workspacePersistence: 'tar',
+        environment: {},
+        projectId: 'prj_serialized',
+        teamId: 'team_serialized',
+        token: 'cli_access_token',
+      });
+
+      await client.resume(state);
+
+      expect(refreshTokenMock).toHaveBeenCalledWith('cli_refresh_token');
+      expect(updateAuthConfigMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'cli_refreshed_token',
+          refreshToken: 'cli_next_refresh_token',
+          expiresAt: expect.any(Date),
+        }),
+      );
+      expect(getMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxId: 'vercel_existing',
+          projectId: 'prj_serialized',
+          teamId: 'team_serialized',
+          token: 'cli_refreshed_token',
+        }),
+      );
+      expect(state.token).toBe('cli_refreshed_token');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('retains serialized access token credentials when resuming snapshot sandboxes', async () => {
     createMock.mockResolvedValueOnce(makeSandbox('vercel_restored'));
     const client = new VercelSandboxClient();
