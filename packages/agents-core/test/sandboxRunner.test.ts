@@ -2398,6 +2398,28 @@ describe('sandbox runner integration', () => {
     expect(calls).toEqual(['hook', 'preStop:cleanup', 'close']);
   });
 
+  it('passes preserveOwnedSessions through standardized lifecycle cleanup', async () => {
+    const calls: unknown[] = [];
+    const session: SandboxSessionLike<FakeSandboxSessionState> = {
+      state: {
+        manifest: new Manifest(),
+        sessionId: 'session-1',
+      },
+      shutdown: async (options) => {
+        calls.push(options);
+      },
+    };
+
+    await cleanupSandboxSession(session, { preserveOwnedSessions: true });
+
+    expect(calls).toEqual([
+      {
+        reason: 'cleanup',
+        preserveOwnedSessions: true,
+      },
+    ]);
+  });
+
   it('runs managed provider pre-stop hooks before serialization', async () => {
     const calls: string[] = [];
     const providerHooks = new Set<() => Promise<void> | void>();

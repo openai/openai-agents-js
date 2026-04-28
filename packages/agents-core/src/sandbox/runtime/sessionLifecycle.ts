@@ -61,7 +61,9 @@ export async function runSandboxSessionPreStopHooks(
 
 export async function runSandboxSessionPreStop(
   session: SandboxSessionLike<SandboxSessionState>,
+  options?: SandboxSessionLifecycleOptions,
 ): Promise<void> {
+  const lifecycleOptions = cleanupLifecycleOptions(options);
   let preStopError: unknown;
   const runPreStop = async (preStop: () => Promise<void>) => {
     try {
@@ -78,7 +80,7 @@ export async function runSandboxSessionPreStop(
   }
   if (session.preStop) {
     await runPreStop(async () => {
-      await session.preStop!({ reason: 'cleanup' });
+      await session.preStop!(lifecycleOptions);
     });
   }
   if (preStopError) {
@@ -88,7 +90,9 @@ export async function runSandboxSessionPreStop(
 
 export async function cleanupSandboxSession(
   session: SandboxSessionLike<SandboxSessionState>,
+  options?: SandboxSessionLifecycleOptions,
 ): Promise<void> {
+  const lifecycleOptions = cleanupLifecycleOptions(options);
   let cleanupError: unknown;
   let usedStandardLifecycle = false;
   const runCleanup = async (cleanup: () => Promise<void>) => {
@@ -104,24 +108,24 @@ export async function cleanupSandboxSession(
     session.preStop
   ) {
     await runCleanup(async () => {
-      await runSandboxSessionPreStop(session);
+      await runSandboxSessionPreStop(session, lifecycleOptions);
     });
   }
   if (session.stop) {
     await runCleanup(async () => {
-      await session.stop!({ reason: 'cleanup' });
+      await session.stop!(lifecycleOptions);
     });
     usedStandardLifecycle = true;
   }
   if (session.shutdown) {
     await runCleanup(async () => {
-      await session.shutdown!({ reason: 'cleanup' });
+      await session.shutdown!(lifecycleOptions);
     });
     usedStandardLifecycle = true;
   }
   if (session.delete) {
     await runCleanup(async () => {
-      await session.delete!({ reason: 'cleanup' });
+      await session.delete!(lifecycleOptions);
     });
     usedStandardLifecycle = true;
   }
@@ -133,6 +137,15 @@ export async function cleanupSandboxSession(
   if (cleanupError) {
     throw cleanupError;
   }
+}
+
+function cleanupLifecycleOptions(
+  options?: SandboxSessionLifecycleOptions,
+): SandboxSessionLifecycleOptions {
+  return {
+    ...options,
+    reason: options?.reason ?? 'cleanup',
+  };
 }
 
 function getManagedHookState(

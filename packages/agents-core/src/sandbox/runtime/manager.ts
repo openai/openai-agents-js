@@ -201,6 +201,7 @@ export class SandboxRuntimeManager<TContext> {
           onCloseError: () => {
             preserveCleanupHandles = true;
           },
+          preserveOwnedSessions,
         });
       } finally {
         this.releaseAgents();
@@ -370,6 +371,7 @@ export class SandboxRuntimeManager<TContext> {
     plan: SandboxCleanupPlan,
     options: {
       onCloseError: () => void;
+      preserveOwnedSessions: boolean;
     },
   ): Promise<void> {
     if (plan.ownedSessionCloseTarget) {
@@ -378,6 +380,9 @@ export class SandboxRuntimeManager<TContext> {
           plan.ownedSessionCloseTarget === 'all'
             ? undefined
             : plan.ownedSessionCloseTarget,
+          {
+            preserveOwnedSessions: options.preserveOwnedSessions,
+          },
         );
       } catch (error) {
         options.onCloseError();
@@ -909,6 +914,9 @@ export class SandboxRuntimeManager<TContext> {
 
   private async closeOwnedSessions(
     agentKeys?: Iterable<string>,
+    options: {
+      preserveOwnedSessions?: boolean;
+    } = {},
   ): Promise<void> {
     const keysToClose = [...(agentKeys ?? this.ownedSessionAgentKeys)].filter(
       (agentKey) => this.ownedSessionAgentKeys.has(agentKey),
@@ -944,7 +952,12 @@ export class SandboxRuntimeManager<TContext> {
                 agent_name: agentName,
               },
               async () => {
-                await cleanupSandboxSession(session);
+                await cleanupSandboxSession(
+                  session,
+                  options.preserveOwnedSessions
+                    ? { preserveOwnedSessions: true }
+                    : undefined,
+                );
               },
             );
           }),
