@@ -1756,6 +1756,7 @@ describe('VercelSandboxClient', () => {
     await session.delete();
 
     expect(stopMock).toHaveBeenCalledOnce();
+    expect(stopMock).toHaveBeenCalledWith();
   });
 
   test('retries close after a stop failure', async () => {
