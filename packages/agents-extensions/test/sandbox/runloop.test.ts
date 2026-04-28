@@ -1655,4 +1655,40 @@ describe('RunloopSandboxClient', () => {
       ),
     ).toBe(true);
   });
+
+  test('does not export manifest environment into root mount commands', async () => {
+    const client = new RunloopSandboxClient();
+
+    await client.create(
+      runloopManifest({
+        environment: {
+          PATH: '/tmp/attacker-bin',
+        },
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new RunloopCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const rootMountCommands = execMock.mock.calls
+      .map(([command]) => String(command))
+      .filter(
+        (command) =>
+          command.startsWith("sudo -n -u 'root' -- sh -lc ") &&
+          command.includes('chmod a+rw /dev/fuse'),
+      );
+
+    expect(rootMountCommands.length).toBeGreaterThan(0);
+    for (const command of rootMountCommands) {
+      expect(command).not.toContain('export PATH=');
+      expect(command).not.toContain('/tmp/attacker-bin');
+    }
+  });
 });
