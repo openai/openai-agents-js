@@ -295,6 +295,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       try {
         await this.replaceSandboxFromSnapshot(snapshotId, {
           snapshotFreshAfterRestore: true,
+          ignorePreviousStopFailure: true,
         });
       } catch (error) {
         await this.recoverSandboxAfterSnapshotRestoreFailure(snapshotId, error);
@@ -339,6 +340,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
 
   private async closeOnce(): Promise<void> {
     let snapshotError: unknown;
+    let snapshotCapturedBeforeStop = false;
     if (
       this.state.workspacePersistence === 'snapshot' &&
       this.sandbox.snapshot &&
@@ -348,6 +350,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await captureVercelSnapshot(this.state, {
           sandbox: this.sandbox,
         });
+        snapshotCapturedBeforeStop = true;
       } catch (error) {
         snapshotError = error;
       }
@@ -361,6 +364,10 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         throw new UserError(
           `Failed to capture a Vercel sandbox snapshot and stop the sandbox. Snapshot error: ${errorMessage(snapshotError)} Stop error: ${errorMessage(stopError)}`,
         );
+      }
+      if (snapshotCapturedBeforeStop) {
+        this.closeCompleted = true;
+        return;
       }
       throw stopError;
     }
@@ -399,6 +406,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     snapshotId: string,
     options: {
       snapshotFreshAfterRestore?: boolean;
+      ignorePreviousStopFailure?: boolean;
     } = {},
   ): Promise<void> {
     const previousSandbox = this.sandbox;
@@ -411,6 +419,14 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     try {
       await stopVercelSandbox(previousSandbox);
     } catch (error) {
+      if (options.ignorePreviousStopFailure) {
+        this.bindRestoredSandbox(
+          sandbox,
+          snapshotId,
+          options.snapshotFreshAfterRestore,
+        );
+        return;
+      }
       let replacementStopCause: string | undefined;
       try {
         await stopVercelSandbox(sandbox);
@@ -443,6 +459,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     try {
       await this.replaceSandboxFromSnapshot(snapshotId, {
         snapshotFreshAfterRestore: true,
+        ignorePreviousStopFailure: true,
       });
     } catch (recoveryError) {
       throw new SandboxProviderError(
@@ -1094,7 +1111,7 @@ async function resolveVercelCliCredentials(): Promise<
 
   const linkedProject = findLinkedVercelProject();
   if (!linkedProject) {
-    return undefined;
+    return { token };
   }
 
   return {
