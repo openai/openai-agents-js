@@ -1974,10 +1974,31 @@ function effectiveRunloopHome(
   if (!userParameters) {
     return DEFAULT_RUNLOOP_WORKSPACE_ROOT;
   }
+  validateRunloopUsername(userParameters.username);
   if (userParameters.username === 'root' && userParameters.uid === 0) {
     return DEFAULT_RUNLOOP_ROOT_WORKSPACE_ROOT;
   }
   return `/home/${userParameters.username}`;
+}
+
+function validateRunloopUsername(username: string): void {
+  if (
+    username.length > 0 &&
+    username !== '.' &&
+    !username.includes('/') &&
+    !username.includes('..') &&
+    !username.includes('\0')
+  ) {
+    return;
+  }
+
+  throw new SandboxConfigurationError(
+    'RunloopSandboxClient userParameters.username must be non-empty and must not contain "/", "..", or NUL bytes.',
+    {
+      provider: 'runloop',
+      username,
+    },
+  );
 }
 
 function validateRunloopManifestRoot(manifest: Manifest, home: string): void {
