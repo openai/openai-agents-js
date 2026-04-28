@@ -602,10 +602,30 @@ describe('RunloopSandboxClient', () => {
     const defaultSession = await client.create();
 
     expect(defaultSession.state.manifest.root).toBe(RUNLOOP_HOME);
+    uploadMock.mockClear();
+
+    const defaultRootManifestSession = await client.create({
+      manifest: new Manifest({
+        root: '/workspace',
+        entries: {
+          'capability.txt': {
+            type: 'file',
+            content: 'capability\n',
+          },
+        },
+      }),
+    });
+
+    expect(defaultRootManifestSession.state.manifest.root).toBe(RUNLOOP_HOME);
+    expect(uploadMock).toHaveBeenCalledWith({
+      path: '/home/user/capability.txt',
+      file: expect.any(File),
+    });
+
     await expect(
       client.create(
         new Manifest({
-          root: '/workspace',
+          root: '/tmp',
         }),
       ),
     ).rejects.toBeInstanceOf(SandboxConfigurationError);

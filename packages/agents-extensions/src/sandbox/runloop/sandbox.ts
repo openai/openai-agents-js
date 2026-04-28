@@ -1289,11 +1289,6 @@ export class RunloopSandboxClient implements SandboxClient<
     args?: SandboxClientCreateArgs<RunloopSandboxClientOptions> | Manifest,
     manifestOptions?: RunloopSandboxClientOptions,
   ): Promise<RunloopSandboxSession> {
-    const manifestProvided =
-      args instanceof Manifest ||
-      (typeof args === 'object' &&
-        args !== null &&
-        args.manifest instanceof Manifest);
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('RunloopSandboxClient', createArgs.snapshot);
     assertCoreConcurrencyLimitsUnsupported(
@@ -1308,7 +1303,7 @@ export class RunloopSandboxClient implements SandboxClient<
     const manifest = resolveRunloopManifestRoot(
       createArgs.manifest,
       resolvedOptions.userParameters,
-      manifestProvided,
+      false,
     );
     assertSandboxManifestMetadataSupported(
       'RunloopSandboxClient',
@@ -2038,13 +2033,13 @@ function createRunloopParams(
 function resolveRunloopManifestRoot(
   manifest: Manifest,
   userParameters: RunloopUserParameters | undefined,
-  manifestProvided: boolean,
+  preserveDefaultRoot: boolean,
 ): Manifest {
   const effectiveHome = effectiveRunloopHome(userParameters);
   const resolvedManifest =
-    manifestProvided || manifest.root !== '/workspace'
-      ? manifest
-      : cloneManifestWithRoot(manifest, effectiveHome);
+    !preserveDefaultRoot && manifest.root === '/workspace'
+      ? cloneManifestWithRoot(manifest, effectiveHome)
+      : manifest;
   validateRunloopManifestRoot(resolvedManifest, effectiveHome);
   return resolvedManifest;
 }
