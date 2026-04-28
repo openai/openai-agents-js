@@ -115,6 +115,11 @@ export function buildModalCloudBucketMountConfig(
     const accessId = readOptionalString(mount, 'accessId');
     const secretAccessKey = readOptionalString(mount, 'secretAccessKey');
     const endpointUrl = readOptionalString(mount, 'endpointUrl');
+    validateGcsCredentialPair({
+      accessId,
+      secretAccessKey,
+      mountType: mount.type,
+    });
     if ((!accessId || !secretAccessKey) && !options.secretName) {
       throw new SandboxMountError(
         'Modal GCS bucket mounts require accessId and secretAccessKey unless secretName is provided.',
@@ -231,6 +236,22 @@ function validateCredentialPair(args: {
   if (Boolean(args.accessKeyId) !== Boolean(args.secretAccessKey)) {
     throw new SandboxMountError(
       'Modal cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.',
+      {
+        provider: 'modal',
+        mountType: args.mountType,
+      },
+    );
+  }
+}
+
+function validateGcsCredentialPair(args: {
+  accessId?: string;
+  secretAccessKey?: string;
+  mountType: string;
+}): void {
+  if (Boolean(args.accessId) !== Boolean(args.secretAccessKey)) {
+    throw new SandboxMountError(
+      'Modal GCS bucket mounts require both accessId and secretAccessKey when either is provided.',
       {
         provider: 'modal',
         mountType: args.mountType,
