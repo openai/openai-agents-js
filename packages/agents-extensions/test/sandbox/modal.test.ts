@@ -24,6 +24,10 @@ import { makeTarArchive } from './tarFixture';
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
 }));
+const modalSdkMocks = vi.hoisted(() => ({
+  cloudBucketMountAvailable: true,
+  classSecretApi: false,
+}));
 const appsFromNameMock = vi.fn();
 const imagesFromRegistryMock = vi.fn();
 const imagesFromIdMock = vi.fn();
@@ -44,40 +48,76 @@ const secretFromObjectMock = vi.fn();
 const imageBuilderVersionMock = vi.fn();
 const modalClientParams: Record<string, unknown>[] = [];
 
-vi.mock('modal', () => ({
-  CloudBucketMount: class CloudBucketMount {
+vi.mock('modal', () => {
+  class CloudBucketMount {
     constructor(
       readonly bucketName: string,
       readonly params: Record<string, unknown> = {},
     ) {}
-  },
-  ModalClient: class ModalClient {
-    readonly apps = {
-      fromName: appsFromNameMock,
-    };
 
-    readonly images = {
-      fromRegistry: imagesFromRegistryMock,
-      fromId: imagesFromIdMock,
-      delete: imagesDeleteMock,
-    };
-
-    readonly sandboxes = {
-      create: sandboxesCreateMock,
-      fromId: sandboxesFromIdMock,
-    };
-
-    imageBuilderVersion = imageBuilderVersionMock;
-
-    constructor(params?: Record<string, unknown>) {
-      modalClientParams.push(params ?? {});
+    toProto(mountPath: string): Record<string, unknown> {
+      return {
+        mountPath,
+        bucketName: this.bucketName,
+        params: this.params,
+      };
     }
-  },
-  Secret: {
-    fromName: secretFromNameMock,
-    fromObject: secretFromObjectMock,
-  },
-}));
+  }
+
+  class Secret {
+    static async fromName(
+      name: string,
+      params?: Record<string, unknown>,
+    ): Promise<unknown> {
+      return await secretFromNameMock(name, params);
+    }
+
+    static async fromObject(
+      entries: Record<string, string>,
+      params?: Record<string, unknown>,
+    ): Promise<unknown> {
+      return await secretFromObjectMock(entries, params);
+    }
+  }
+
+  return {
+    get CloudBucketMount() {
+      return modalSdkMocks.cloudBucketMountAvailable
+        ? CloudBucketMount
+        : undefined;
+    },
+    ModalClient: class ModalClient {
+      readonly apps = {
+        fromName: appsFromNameMock,
+      };
+
+      readonly images = {
+        fromRegistry: imagesFromRegistryMock,
+        fromId: imagesFromIdMock,
+        delete: imagesDeleteMock,
+      };
+
+      readonly sandboxes = {
+        create: sandboxesCreateMock,
+        fromId: sandboxesFromIdMock,
+      };
+
+      imageBuilderVersion = imageBuilderVersionMock;
+
+      constructor(params?: Record<string, unknown>) {
+        modalClientParams.push(params ?? {});
+      }
+    },
+    get Secret() {
+      return modalSdkMocks.classSecretApi
+        ? Secret
+        : {
+            fromName: secretFromNameMock,
+            fromObject: secretFromObjectMock,
+          };
+    },
+  };
+});
 
 vi.mock('../../src/sandbox/shared/process', () => ({
   runSandboxProcess: processMocks.runSandboxProcess,
@@ -151,6 +191,8 @@ describe('ModalSandboxClient', () => {
     secretFromObjectMock.mockReset();
     imageBuilderVersionMock.mockReset();
     processMocks.runSandboxProcess.mockReset();
+    modalSdkMocks.cloudBucketMountAvailable = true;
+    modalSdkMocks.classSecretApi = false;
     modalClientParams.splice(0);
 
     appsFromNameMock.mockResolvedValue({ appId: 'ap_test' });
@@ -471,6 +513,41 @@ describe('ModalSandboxClient', () => {
     );
   });
 
+  test('rejects Modal cloud bucket mounts when the SDK export is unavailable', async () => {
+    modalSdkMocks.classSecretApi = true;
+    modalSdkMocks.cloudBucketMountAvailable = false;
+    const client = new ModalSandboxClient();
+
+    const createPromise = client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'logs',
+            mountStrategy: new ModalCloudBucketMountStrategy({
+              secretName: 'modal-bucket-secret',
+            }),
+          },
+        },
+      }),
+      {
+        appName: 'sandbox-tests',
+      },
+    );
+
+    await expect(createPromise).rejects.toBeInstanceOf(SandboxProviderError);
+    await expect(createPromise).rejects.toThrow(
+      'Modal cloud bucket mounts require modal.CloudBucketMount support.',
+    );
+    await expect(createPromise).rejects.toMatchObject({
+      details: {
+        provider: 'modal',
+      },
+    });
+    expect(secretFromNameMock).not.toHaveBeenCalled();
+    expect(sandboxesCreateMock).not.toHaveBeenCalled();
+  });
+
   test('rejects partial S3 cloud bucket credentials', async () => {
     const client = new ModalSandboxClient();
 
@@ -496,6 +573,40 @@ describe('ModalSandboxClient', () => {
         mountType: 's3_mount',
       },
     });
+    expect(sandboxesCreateMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects partial GCS cloud bucket credentials even with a secret name', async () => {
+    const client = new ModalSandboxClient();
+
+    const createPromise = client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'gcs_mount',
+            bucket: 'logs',
+            accessId: 'access-id',
+            mountStrategy: new ModalCloudBucketMountStrategy({
+              secretName: 'modal-bucket-secret',
+            }),
+          },
+        },
+      }),
+      {
+        appName: 'sandbox-tests',
+      },
+    );
+
+    await expect(createPromise).rejects.toThrow(
+      'Modal GCS bucket mounts require both accessId and secretAccessKey when either is provided.',
+    );
+    await expect(createPromise).rejects.toMatchObject({
+      details: {
+        provider: 'modal',
+        mountType: 'gcs_mount',
+      },
+    });
+    expect(secretFromNameMock).not.toHaveBeenCalled();
     expect(sandboxesCreateMock).not.toHaveBeenCalled();
   });
 

@@ -1483,35 +1483,16 @@ function shouldResolveModalApp(args: {
 function adaptModalModule(modal: typeof import('modal')): ModalModule {
   const secretApi: unknown = modal.Secret;
   const usesClassSecretApi = typeof secretApi === 'function';
+  const cloudBucketMountClass =
+    typeof modal.CloudBucketMount === 'function'
+      ? (modal.CloudBucketMount as NonNullable<ModalModule['CloudBucketMount']>)
+      : undefined;
   return {
     ModalClient: modal.ModalClient,
-    CloudBucketMount: usesClassSecretApi
-      ? class implements ModalCloudBucketMountLike {
-          private readonly mount: InstanceType<typeof modal.CloudBucketMount>;
-
-          constructor(bucketName: string, params?: Record<string, unknown>) {
-            const bucketEndpointUrl = readOptionalString(
-              params,
-              'bucketEndpointUrl',
-            );
-            const keyPrefix = readOptionalString(params, 'keyPrefix');
-            this.mount = new modal.CloudBucketMount(bucketName, {
-              ...(bucketEndpointUrl ? { bucketEndpointUrl } : {}),
-              ...(keyPrefix ? { keyPrefix } : {}),
-              ...(typeof params?.readOnly === 'boolean'
-                ? { readOnly: params.readOnly }
-                : {}),
-              ...(params?.secret
-                ? { secret: params.secret as InstanceType<typeof modal.Secret> }
-                : {}),
-            });
-          }
-
-          toProto(mountPath: string): unknown {
-            return this.mount.toProto(mountPath);
-          }
-        }
-      : (modal.CloudBucketMount as ModalModule['CloudBucketMount']),
+    CloudBucketMount:
+      usesClassSecretApi && cloudBucketMountClass
+        ? adaptClassModalCloudBucketMount(cloudBucketMountClass)
+        : (modal.CloudBucketMount as ModalModule['CloudBucketMount']),
     Secret: {
       fromName: async (name, params) => {
         if (usesClassSecretApi) {
@@ -1537,6 +1518,39 @@ function adaptModalModule(modal: typeof import('modal')): ModalModule {
         throw new Error('Missing Secret export from modal.');
       },
     },
+  };
+}
+
+function adaptClassModalCloudBucketMount(
+  CloudBucketMount: NonNullable<ModalModule['CloudBucketMount']>,
+): NonNullable<ModalModule['CloudBucketMount']> {
+  return class implements ModalCloudBucketMountLike {
+    private readonly mount: ModalCloudBucketMountLike;
+
+    constructor(bucketName: string, params?: Record<string, unknown>) {
+      const bucketEndpointUrl = readOptionalString(params, 'bucketEndpointUrl');
+      const keyPrefix = readOptionalString(params, 'keyPrefix');
+      this.mount = new CloudBucketMount(bucketName, {
+        ...(bucketEndpointUrl ? { bucketEndpointUrl } : {}),
+        ...(keyPrefix ? { keyPrefix } : {}),
+        ...(typeof params?.readOnly === 'boolean'
+          ? { readOnly: params.readOnly }
+          : {}),
+        ...(params?.secret ? { secret: params.secret } : {}),
+      });
+    }
+
+    toProto(mountPath: string): unknown {
+      if (!this.mount.toProto) {
+        throw new SandboxProviderError(
+          'Modal CloudBucketMount is missing toProto support.',
+          {
+            provider: 'modal',
+          },
+        );
+      }
+      return this.mount.toProto(mountPath);
+    }
   };
 }
 
