@@ -382,6 +382,13 @@
       }
     }
 
+    ul.top-level > li > details > ul > li > details > summary {
+      span {
+        font-weight: 400 !important;
+        color: var(--openai-nav-text) !important;
+      }
+    }
+
     details > summary span {
       font-size: var(--sl-text-sm) !important;
     }
@@ -433,6 +440,138 @@
       &:has(.code *:is(span)) {
         line-height: 1.2rem;
       }
+    }
+  }
+
+  .sl-markdown-content .sandbox-harness-image {
+    margin-block: 2rem;
+    text-align: center;
+
+    img {
+      display: block;
+      margin-inline: auto;
+      max-height: 28rem;
+      max-width: 100%;
+      width: auto;
+    }
+  }
+
+  .sl-markdown-content .sandbox-flow-diagram {
+    align-items: stretch;
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 1fr;
+    margin-block: 1.5rem;
+
+    @media (min-width: 64rem) {
+      align-items: center;
+      grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+    }
+
+    > div {
+      border: 1px solid var(--openai-code-border-color);
+      border-radius: 8px;
+      padding: 0.9rem;
+    }
+
+    strong {
+      display: block;
+      font-size: var(--sl-text-sm);
+      margin-bottom: 0.35rem;
+    }
+
+    span {
+      color: var(--openai-gray-2);
+      display: block;
+      font-size: var(--sl-text-xs);
+      line-height: 1.35;
+    }
+
+    > span {
+      align-self: center;
+      color: var(--openai-primary);
+      display: none;
+      font-size: var(--sl-text-lg);
+      line-height: 1;
+      text-align: center;
+
+      @media (min-width: 64rem) {
+        display: block;
+      }
+    }
+  }
+
+  .sl-markdown-content .sandbox-lifecycle-diagram {
+    align-items: stretch;
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: 1fr;
+    margin-block: 1.5rem;
+
+    @media (min-width: 64rem) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    > section {
+      border: 1px solid var(--openai-code-border-color);
+      border-inline-start: 3px solid var(--openai-primary);
+      border-radius: 8px;
+      margin-top: 0;
+      min-width: 0;
+      padding: 1rem;
+    }
+
+    .sandbox-lifecycle-heading {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.75rem;
+      margin-bottom: 0.9rem;
+
+      strong {
+        font-size: var(--sl-text-sm);
+      }
+
+      span {
+        color: var(--openai-gray-2);
+        font-size: var(--sl-text-2xs);
+      }
+    }
+
+    ol {
+      display: grid;
+      gap: 0.7rem;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    li {
+      align-items: start;
+      display: grid;
+      gap: 0.65rem;
+      grid-template-columns: auto 1fr;
+    }
+
+    li > span {
+      align-items: center;
+      background: var(--openai-code-background);
+      border: 1px solid var(--openai-code-border-color);
+      border-radius: 999px;
+      color: var(--openai-gray-2);
+      display: inline-flex;
+      font-size: var(--sl-text-2xs);
+      height: 1.45rem;
+      justify-content: center;
+      line-height: 1;
+      width: 1.45rem;
+    }
+
+    p {
+      color: var(--openai-gray-2);
+      font-size: var(--sl-text-xs);
+      line-height: 1.4;
+      margin: 0;
     }
   }
 
