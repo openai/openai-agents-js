@@ -476,13 +476,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         entry,
         mountPath,
         runCommand: this.mountCommandRunner(),
-        writeSecretFile: async (path, content) => {
-          await withBlaxelOperationTimeout(
-            this.sandbox.fs.write(path, content),
-            this.state.timeouts?.fileUploadTimeoutMs,
-            'write mount secret',
-          );
-        },
+        writeSecretFile: this.writeMountSecretFile.bind(this),
       });
       this.activeFuseMountPaths.add(mountPath);
       return;
@@ -542,6 +536,28 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         stderr: result.stderr ?? '',
       };
     };
+  }
+
+  private async writeMountSecretFile(
+    path: string,
+    content: string,
+  ): Promise<void> {
+    const operation = this.sandbox.fs.write(path, content);
+    await withBlaxelOperationTimeout(
+      operation,
+      this.state.timeouts?.fileUploadTimeoutMs,
+      'write mount secret',
+      {
+        onTimeout: () => {
+          void operation.then(
+            async () => {
+              await this.sandbox.fs.rm(path).catch(() => {});
+            },
+            () => {},
+          );
+        },
+      },
+    );
   }
 
   protected override async runRemoteCommand(
@@ -970,8 +986,10 @@ async function createNamedBlaxelSandboxWithOwnership(args: {
         `Blaxel sandbox ${args.sandboxName} cannot be safely recreated because another sandbox already uses that name.`,
       );
     }
+    const fallback = await args.SandboxInstance.get(args.sandboxName);
+    assertBlaxelSandboxReusable(fallback, args.sandboxName);
     return {
-      sandbox: await args.SandboxInstance.get(args.sandboxName),
+      sandbox: fallback,
       ownsSandbox: false,
       sandboxName: args.sandboxName,
     };
@@ -1018,6 +1036,18 @@ function generateBlaxelSandboxName(): string {
 function isBlaxelSandboxNonResumable(sandbox: BlaxelSandboxLike): boolean {
   const status = sandbox.status?.trim().toUpperCase();
   return status ? BLAXEL_NON_RESUMABLE_SANDBOX_STATUSES.has(status) : false;
+}
+
+function assertBlaxelSandboxReusable(
+  sandbox: BlaxelSandboxLike,
+  sandboxName: string,
+): void {
+  if (!isBlaxelSandboxNonResumable(sandbox)) {
+    return;
+  }
+  throw new UserError(
+    `Blaxel sandbox ${sandboxName} cannot be safely reused because its status is ${sandbox.status ?? 'unknown'}.`,
+  );
 }
 
 function assertBlaxelSandboxIdentityMatchesState(
@@ -1234,6 +1264,7 @@ async function withBlaxelOperationTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number | undefined,
   operationName: string,
+  options: { onTimeout?: () => void } = {},
 ): Promise<T> {
   if (typeof timeoutMs !== 'number') {
     return await operation;
@@ -1242,6 +1273,7 @@ async function withBlaxelOperationTimeout<T>(
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
+      options.onTimeout?.();
       reject(
         new SandboxProviderError(
           `BlaxelSandboxClient ${operationName} timed out after ${timeoutMs}ms.`,
