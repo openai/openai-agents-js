@@ -1142,7 +1142,7 @@ describe('VercelSandboxClient', () => {
     await session.close();
 
     expect(snapshotMock).toHaveBeenCalledOnce();
-    expect(stopMock).toHaveBeenCalledOnce();
+    expect(stopMock).toHaveBeenCalledTimes(2);
   });
 
   test('persists and hydrates tar workspaces through safe archive helpers', async () => {
@@ -1277,12 +1277,17 @@ describe('VercelSandboxClient', () => {
   });
 
   test('rebinds live snapshot persistence to a replacement sandbox', async () => {
+    const sourceStopMock = vi.fn().mockResolvedValue(undefined);
     const replacementRunCommandMock = vi.fn(async () => ({
       exitCode: 0,
       output: vi.fn().mockResolvedValue('replacement\n'),
     }));
     createMock
-      .mockResolvedValueOnce(makeSandbox('vercel_source'))
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_source', {
+          stop: sourceStopMock,
+        }),
+      )
       .mockResolvedValueOnce(
         makeSandbox('vercel_replacement', {
           runCommand: replacementRunCommandMock,
@@ -1309,6 +1314,7 @@ describe('VercelSandboxClient', () => {
         },
       }),
     );
+    expect(sourceStopMock).toHaveBeenCalledOnce();
     expect(stopMock).not.toHaveBeenCalled();
     expect(session.state).toMatchObject({
       sandboxId: 'vercel_replacement',
@@ -1330,6 +1336,45 @@ describe('VercelSandboxClient', () => {
       args: ['-lc', 'echo after-persist'],
       cwd: '/vercel/sandbox',
       env: {},
+    });
+  });
+
+  test('stops each previous sandbox during repeated snapshot persistence', async () => {
+    const sourceStopMock = vi.fn().mockResolvedValue(undefined);
+    const firstReplacementStopMock = vi.fn().mockResolvedValue(undefined);
+    const secondReplacementStopMock = vi.fn().mockResolvedValue(undefined);
+    createMock
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_source', {
+          stop: sourceStopMock,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_replacement_1', {
+          stop: firstReplacementStopMock,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_replacement_2', {
+          stop: secondReplacementStopMock,
+        }),
+      );
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    await session.persistWorkspace();
+    await session.persistWorkspace();
+
+    expect(sourceStopMock).toHaveBeenCalledOnce();
+    expect(firstReplacementStopMock).toHaveBeenCalledOnce();
+    expect(secondReplacementStopMock).not.toHaveBeenCalled();
+    expect(stopMock).not.toHaveBeenCalled();
+    expect(session.state).toMatchObject({
+      sandboxId: 'vercel_replacement_2',
+      snapshotId: 'snap_test',
+      snapshotSandboxId: 'vercel_replacement_2',
     });
   });
 
@@ -1359,6 +1404,7 @@ describe('VercelSandboxClient', () => {
       snapshotId: 'snap_test',
     });
     expect(createMock).toHaveBeenCalledTimes(2);
+    expect(stopMock).toHaveBeenCalledOnce();
     expect(session.state).toMatchObject({
       sandboxId: 'vercel_recovered',
       snapshotId: 'snap_test',
