@@ -1582,6 +1582,48 @@ describe('VercelSandboxClient', () => {
     });
   });
 
+  test('does not rebind snapshot persistence when the previous sandbox stop fails', async () => {
+    const sourceStopMock = vi
+      .fn()
+      .mockRejectedValue(new Error('network timeout'));
+    const firstReplacementStopMock = vi.fn().mockResolvedValue(undefined);
+    const secondReplacementStopMock = vi.fn().mockResolvedValue(undefined);
+    createMock
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_source', {
+          stop: sourceStopMock,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_replacement_1', {
+          stop: firstReplacementStopMock,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_replacement_2', {
+          stop: secondReplacementStopMock,
+        }),
+      );
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    await expect(session.persistWorkspace()).rejects.toMatchObject({
+      details: {
+        provider: 'vercel',
+        sandboxId: 'vercel_source',
+        snapshotId: 'snap_test',
+      },
+    });
+
+    expect(sourceStopMock).toHaveBeenCalledTimes(2);
+    expect(firstReplacementStopMock).toHaveBeenCalledOnce();
+    expect(secondReplacementStopMock).toHaveBeenCalledOnce();
+    expect(session.state.sandboxId).toBe('vercel_source');
+    expect(session.state.snapshotSandboxId).toBe('vercel_source');
+  });
+
   test('uses refreshed state token when restoring persisted snapshots', async () => {
     createMock
       .mockResolvedValueOnce(makeSandbox('vercel_source'))

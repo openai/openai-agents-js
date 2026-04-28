@@ -38,6 +38,7 @@ import {
   readOptionalRecord,
   readOptionalString,
   readString,
+  isProviderSandboxNotFoundError,
   withProviderError,
   withSandboxSpan,
   RemoteSandboxSessionBase,
@@ -419,7 +420,10 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     try {
       await stopVercelSandbox(previousSandbox);
     } catch (error) {
-      if (options.ignorePreviousStopFailure) {
+      if (
+        options.ignorePreviousStopFailure &&
+        isVercelSandboxAlreadyStoppedError(error)
+      ) {
         this.bindRestoredSandbox(
           sandbox,
           snapshotId,
@@ -1390,6 +1394,22 @@ async function waitForVercelSandboxRunning(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isVercelSandboxAlreadyStoppedError(error: unknown): boolean {
+  if (isProviderSandboxNotFoundError(error)) {
+    return true;
+  }
+
+  const message = errorMessage(error);
+  return (
+    /\b(sandbox|sandbox instance|instance)\b.*\b(already\s+)?(stopped|terminated|not running)\b/iu.test(
+      message,
+    ) ||
+    /\b(already\s+)?(stopped|terminated|not running)\b.*\b(sandbox|sandbox instance|instance)\b/iu.test(
+      message,
+    )
+  );
 }
 
 function assertFilesystemRunAs(runAs?: string): void {
