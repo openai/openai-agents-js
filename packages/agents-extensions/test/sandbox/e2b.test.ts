@@ -340,15 +340,47 @@ describe('E2BSandboxClient', () => {
     } satisfies E2BSandboxClientOptions);
     const session = await client.create(new Manifest());
 
-    await session.shutdown({ reason: 'cleanup' });
-    await session.delete({ reason: 'cleanup' });
+    await session.shutdown({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
 
     expect(pauseMock).toHaveBeenCalledOnce();
     expect(killMock).not.toHaveBeenCalled();
   });
 
+  test('cleanup lifecycle kills pauseOnExit sessions unless preservation is requested', async () => {
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.shutdown({ reason: 'cleanup' });
+    await session.delete({ reason: 'cleanup' });
+
+    expect(pauseMock).not.toHaveBeenCalled();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
   test('kills the sandbox when close cannot pause a persistable session', async () => {
     pauseMock.mockRejectedValueOnce(new Error('pause failed'));
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.close();
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('kills the sandbox when close reports an unpaused persistable session', async () => {
+    pauseMock.mockResolvedValueOnce(false);
     const client = new E2BSandboxClient({
       pauseOnExit: true,
     } satisfies E2BSandboxClientOptions);
@@ -367,7 +399,26 @@ describe('E2BSandboxClient', () => {
     } satisfies E2BSandboxClientOptions);
     const session = await client.create(new Manifest());
 
-    await session.delete({ reason: 'cleanup' });
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+
+    expect(pauseMock).toHaveBeenCalledOnce();
+    expect(killMock).toHaveBeenCalledOnce();
+  });
+
+  test('kills the sandbox when cleanup delete reports an unpaused persistable session', async () => {
+    pauseMock.mockResolvedValueOnce(false);
+    const client = new E2BSandboxClient({
+      pauseOnExit: true,
+    } satisfies E2BSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
 
     expect(pauseMock).toHaveBeenCalledOnce();
     expect(killMock).toHaveBeenCalledOnce();
