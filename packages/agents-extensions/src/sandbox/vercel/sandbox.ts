@@ -740,7 +740,7 @@ export class VercelSandboxClient implements SandboxClient<
             sandboxId: sandbox.sandboxId,
             projectId: resolvedOptions.projectId ?? credentials.projectId,
             teamId: resolvedOptions.teamId ?? credentials.teamId,
-            token: resolvedOptions.token,
+            token: credentials.token,
             runtime: resolvedOptions.runtime,
             resources: resolvedOptions.resources,
             configuredExposedPorts: resolvedOptions.exposedPorts,
