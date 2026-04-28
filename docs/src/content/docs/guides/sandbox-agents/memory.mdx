@@ -1,0 +1,119 @@
+---
+title: Agent memory
+description: Preserve and reuse lessons from previous sandbox-agent runs.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import conversationIdentityExample from '../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
+import enableMemoryExample from '../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
+import generateMemoryExample from '../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
+import memoryLayoutsExample from '../../../../../../examples/docs/sandbox-agents/memory-layouts.ts?raw';
+import readOnlyMemoryExample from '../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
+
+Memory lets future sandbox-agent runs learn from prior runs. It is separate from the SDK's conversational [Session](/openai-agents-js/guides/sessions) memory, which stores message history. Memory distills lessons from prior runs into files in the sandbox workspace.
+
+<Aside type="caution" title="Beta feature">
+  Sandbox agents are in beta. API details, defaults, and supported capabilities
+  may change before general availability, and more advanced features are
+  expected over time.
+</Aside>
+
+Memory can reduce three kinds of cost for future runs:
+
+1. Agent cost: If the agent took a long time to complete a workflow, the next run should need less exploration. This can reduce token usage and time to completion.
+2. User cost: If the user corrected the agent or expressed a preference, future runs can remember that feedback. This can reduce human intervention.
+3. Context cost: If the agent completed a task before, and the user wants to build on that task, the user should not need to find the previous thread or re-type all the context. This makes task descriptions shorter.
+
+## Enable memory
+
+Add `memory()` as a capability to the sandbox agent.
+
+<Code lang="typescript" code={enableMemoryExample} title="Enable memory" />
+
+If read is enabled, `memory()` requires `shell()`, which lets the agent read and search memory files when the injected summary is not enough. When live memory update is enabled by default, it also requires `filesystem()`, which lets the agent update `memories/MEMORY.md` if the agent discovers stale memory or the user asks it to update memory.
+
+By default, memory artifacts are stored in the sandbox workspace under `memories/`. To reuse them in a later run, preserve and reuse the whole configured memories directory by keeping the same live sandbox session or resuming from a persisted session state or snapshot; a fresh empty sandbox starts with empty memory.
+
+`memory()` enables both reading and generating memories. Use `memory({ generate: false })` for agents that should read memory but should not generate new memories: for example, an internal agent, subagent, checker, or one-off tool agent whose run does not add much signal. Use `memory({ read: null })` when the run should generate memory for later, but the user does not want the run to be influenced by existing memory.
+
+<Code
+  lang="typescript"
+  code={readOnlyMemoryExample}
+  title="Configure read-only memory"
+/>
+
+## Read memory
+
+Memory reads use progressive disclosure. At the start of a run, the SDK injects a small summary (`memory_summary.md`) of generally useful tips, user preferences, and available memories into the agent's developer prompt. This gives the agent enough context to decide whether prior work may be relevant.
+
+When prior work looks relevant, the agent searches the configured memory index (`MEMORY.md` under `memoriesDir`) for keywords from the current task. It opens the corresponding prior rollout summaries under the configured `rollout_summaries/` directory only when the task needs more detail.
+
+Memory can become stale. Agents are instructed to treat memories as guidance only and trust the current environment. By default, memory reads have `liveUpdate` enabled, so if the agent discovers stale memory, it can update the configured `MEMORY.md` in the same run. Disable live updates when the agent should read memory but not modify it during the run, for example if the run is latency sensitive.
+
+## Generate memory
+
+After a run finishes, the sandbox runtime appends that run segment to a conversation file. Accumulated conversation files are processed when the sandbox session closes.
+
+Memory generation has two phases:
+
+1. Phase 1: conversation extraction. A memory-generating model processes one accumulated conversation file and generates a conversation summary. System, developer, and reasoning content are omitted. If the conversation is too long, it is truncated to fit within the context window, with the beginning and end preserved. It also generates a raw memory extract: compact notes from the conversation that Phase 2 can consolidate.
+2. Phase 2: layout consolidation. A consolidation agent reads raw memories for one memory layout, opens conversation summaries when more evidence is needed, and extracts patterns into `MEMORY.md` and `memory_summary.md`.
+
+The default workspace layout is:
+
+```text
+workspace/
+├── sessions/
+│   └── <rollout-id>.jsonl
+└── memories/
+    ├── memory_summary.md
+    ├── MEMORY.md
+    ├── raw_memories.md
+    ├── raw_memories/
+    └── rollout_summaries/
+```
+
+You can configure memory generation with `memory({ generate: ... })`:
+
+<Code
+  lang="typescript"
+  code={generateMemoryExample}
+  title="Configure memory generation"
+/>
+
+Use `extraPrompt` to tell the memory generator which signals matter most for your use case, such as customer and company details for a GTM agent.
+
+If recent raw memories exceed `maxRawMemoriesForConsolidation`, Phase 2 keeps only memories from the newest conversations and removes older ones. Recency is based on the last time the conversation is updated. This forgetting mechanism helps memories reflect the newest environment.
+
+## Multi-turn conversations
+
+For multi-turn sandbox chats, use the normal SDK `Session` together with the same live sandbox session:
+
+<Code
+  lang="typescript"
+  code={conversationIdentityExample}
+  title="Use one SDK session with one sandbox session"
+/>
+
+Both runs append to one memory conversation file because they pass the same SDK conversation session and therefore share the same session id. This is different from the sandbox, which identifies the live workspace and is not used as the memory conversation ID. Phase 1 sees the accumulated conversation when the sandbox session closes, so it can extract memory from the whole exchange instead of two isolated turns.
+
+If you want multiple `run(...)` calls to become one memory conversation, pass a stable identifier across those calls. When memory associates a run with a conversation, it resolves in this order:
+
+1. `conversationId`, when you pass one to `run(...)`.
+2. the SDK `session` id, when you pass an SDK `Session`.
+3. `groupId`, when neither of the above is present.
+4. a generated per-run ID, when no stable identifier is present.
+
+## Use different layouts to isolate memory for different agents
+
+Memory isolation is based on `MemoryLayoutConfig`, not on agent name. Agents with the same layout and the same memory conversation ID share one memory conversation and one consolidated memory. Agents with different layouts keep separate rollout files, raw memories, `MEMORY.md`, and `memory_summary.md`, even when they share the same sandbox workspace.
+
+Use separate layouts when multiple agents share one sandbox but should not share memory:
+
+<Code
+  lang="typescript"
+  code={memoryLayoutsExample}
+  title="Use separate memory layouts"
+/>
+
+This prevents one domain's analysis from being consolidated into another domain's memory, and vice versa.

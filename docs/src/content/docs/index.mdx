@@ -45,6 +45,7 @@ Here are the main features of the SDK:
 - **Sessions**: A persistent memory layer for maintaining working context within an agent loop.
 - **Human in the loop**: Built-in mechanisms for involving humans across agent runs.
 - **Tracing**: Built-in tracing for visualizing, debugging, and monitoring workflows, with support for the OpenAI suite of evaluation, fine-tuning, and distillation tools.
+- **Sandbox agents**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state.
 - **Realtime Agents**: Build powerful voice agents with features such as automatic interruption detection, context management, guardrails, and more.
 
 ## Installation
@@ -59,11 +60,11 @@ The SDK requires Zod v4; installing `zod` via npm will fetch the latest v4 relea
 
 Most first-time users only need one of these entry points:
 
-| Start with                                                                                         | Use it when                                                                         | Notes                                                                                                              |
-| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `@openai/agents`                                                                                   | You are building most text or voice applications.                                   | Recommended default. It includes the OpenAI provider setup and exposes voice APIs under `@openai/agents/realtime`. |
-| `@openai/agents-realtime`                                                                          | You only need the standalone Realtime package.                                      | Useful for browser-only voice apps or when you want a narrower package boundary.                                   |
-| Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need.                                                   |
+| Start with | Use it when | Notes |
+| --- | --- | --- |
+| `@openai/agents` | You are building most text or voice applications. | Recommended default. It includes the OpenAI provider setup and exposes voice APIs under `@openai/agents/realtime`. |
+| `@openai/agents-realtime` | You only need the standalone Realtime package. | Useful for browser-only voice apps or when you want a narrower package boundary. |
+| Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need. |
 
 ## Hello world example
 
@@ -91,16 +92,23 @@ Pick one path first, get it working end to end, then come back for the deeper gu
   description="Start with the Realtime voice path when you are building spoken interactions."
 />
 
+<LinkCard
+  title="Sandbox agents"
+  href="/openai-agents-js/guides/sandbox-agents"
+  description="Start a sandbox agent when the agent needs files, shell commands, patches, or resumable sandbox state."
+/>
+
 ## Choose your path
 
 Use this table when you know the job you want to do, but not which page explains it.
 
-| Goal                                                            | Start here                                                                                                  |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Build the first text agent and see one complete run             | [Quickstart](/openai-agents-js/guides/quickstart)                                                           |
-| Add function tools, hosted tools, or agents as tools            | [Tools](/openai-agents-js/guides/tools)                                                                     |
-| Decide between handoffs and manager-style orchestration         | [Agent orchestration](/openai-agents-js/guides/multi-agent)                                                 |
-| Keep memory across turns                                        | [Running agents](/openai-agents-js/guides/running-agents) and [Sessions](/openai-agents-js/guides/sessions) |
-| Use OpenAI models, websocket transport, or non-OpenAI providers | [Models](/openai-agents-js/guides/models)                                                                   |
-| Review outputs, run items, interruptions, and resume state      | [Results](/openai-agents-js/guides/results)                                                                 |
-| Build a low-latency voice agent                                 | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart)                                 |
+| Goal | Start here |
+| --- | --- |
+| Build the first text agent and see one complete run | [Quickstart](/openai-agents-js/guides/quickstart) |
+| Add function tools, hosted tools, or agents as tools | [Tools](/openai-agents-js/guides/tools) |
+| Give an agent an isolated filesystem and shell workspace | [Sandbox agents](/openai-agents-js/guides/sandbox-agents) |
+| Decide between handoffs and manager-style orchestration | [Agent orchestration](/openai-agents-js/guides/multi-agent) |
+| Keep memory across turns | [Running agents](/openai-agents-js/guides/running-agents) and [Sessions](/openai-agents-js/guides/sessions) |
+| Use OpenAI models, websocket transport, or non-OpenAI providers | [Models](/openai-agents-js/guides/models) |
+| Review outputs, run items, interruptions, and resume state | [Results](/openai-agents-js/guides/results) |
+| Build a low-latency voice agent | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
