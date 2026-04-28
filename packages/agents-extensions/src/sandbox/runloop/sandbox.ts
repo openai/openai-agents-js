@@ -1070,7 +1070,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       command,
       options.workdir,
       options.timeoutMs ?? this.timeoutForCommand(options),
-      this.state.environment,
+      remoteCommandEnvironment(this.state.environment, options),
       options.runAs,
     );
     return {
@@ -1489,16 +1489,14 @@ export class RunloopSandboxClient implements SandboxClient<
   ): Promise<RunloopSandboxSession> {
     const resumeState: RunloopSandboxSessionState = {
       ...state,
+      baseUrl: this.options.baseUrl,
       manifest: resolveRunloopManifestRoot(
         state.manifest,
         state.userParameters,
         true,
       ),
     };
-    const sdk = await createRunloopClient({
-      ...this.options,
-      baseUrl: resumeState.baseUrl ?? this.options.baseUrl,
-    });
+    const sdk = await createRunloopClient(this.options);
     try {
       const devbox = sdk.devbox.fromId(resumeState.devboxId);
       if (resumeState.pauseOnExit) {
@@ -1525,6 +1523,7 @@ export class RunloopSandboxClient implements SandboxClient<
         provider: 'runloop',
         details: { devboxId: resumeState.devboxId },
       });
+      assertRunloopResumeRecreateSecretRefsTrusted(resumeState, this.options);
       const recreateOptions: RunloopSandboxResolvedOptions = {
         blueprintName: resumeState.blueprintName,
         blueprintId: resumeState.blueprintId,
@@ -1535,11 +1534,11 @@ export class RunloopSandboxClient implements SandboxClient<
         gateways: resumeState.gateways,
         mcp: resumeState.mcp,
         metadata: resumeState.metadata,
-        secretRefs: resumeState.secretRefs,
+        managedSecrets: this.options.managedSecrets,
         pauseOnExit: resumeState.pauseOnExit,
         userParameters: resumeState.userParameters,
         env: resumeState.environment,
-        baseUrl: resumeState.baseUrl ?? this.options.baseUrl,
+        baseUrl: this.options.baseUrl,
         createTimeoutMs: resumeState.createTimeoutMs,
         timeouts: resumeState.timeouts,
       };
@@ -2159,6 +2158,31 @@ function invalidateRunloopRuntimeCaches(
   state: RunloopSandboxSessionState,
 ): void {
   delete state.exposedPorts;
+}
+
+function remoteCommandEnvironment(
+  environment: Record<string, string>,
+  options: RemoteSandboxCommandOptions,
+): Record<string, string> {
+  return options.kind === 'exec' ? environment : {};
+}
+
+function assertRunloopResumeRecreateSecretRefsTrusted(
+  state: RunloopSandboxSessionState,
+  options: RunloopSandboxClientOptions,
+): void {
+  if (!state.secretRefs || Object.keys(state.secretRefs).length === 0) {
+    return;
+  }
+  if (
+    options.managedSecrets &&
+    Object.keys(options.managedSecrets).length > 0
+  ) {
+    return;
+  }
+  throw new UserError(
+    'RunloopSandboxClient cannot recreate a missing devbox with persisted secretRefs. Configure managedSecrets on the client to recreate secrets from trusted input.',
+  );
 }
 
 async function rematerializeRunloopManifestMounts(
