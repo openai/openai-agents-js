@@ -103,6 +103,7 @@ type VercelCredentials = Pick<
   VercelSandboxClientOptions,
   'projectId' | 'teamId' | 'token'
 >;
+type VercelAuth = NonNullable<ReturnType<VercelAuthModule['getAuth']>>;
 
 type VercelSandboxInstance = {
   sandboxId: string;
@@ -458,11 +459,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async resolveSnapshotCredentials(): Promise<Record<string, string>> {
-    return await resolveVercelCredentials({
+    const credentials = await resolveVercelCredentials({
       ...this.credentials,
       projectId: this.state.projectId ?? this.credentials.projectId,
       teamId: this.state.teamId ?? this.credentials.teamId,
     });
+    applyResolvedVercelCredentials(this.state, credentials);
+    return credentials;
   }
 
   private async createAndPrepareSandboxFromSnapshot(
@@ -855,6 +858,7 @@ export class VercelSandboxClient implements SandboxClient<
       teamId: state.teamId ?? this.options.teamId,
       token: state.token ?? this.options.token,
     });
+    applyResolvedVercelCredentials(state, credentials);
     const resumeFromSnapshot = hasFreshVercelSnapshot(state);
     const sandbox = resumeFromSnapshot
       ? await withProviderError(
@@ -1054,7 +1058,10 @@ async function resolveVercelCredentials(
     token: options.token ?? envOptions.token,
   });
   if (Object.keys(layeredCredentials).length > 0) {
-    return layeredCredentials;
+    return (
+      (await refreshLayeredVercelCliCredentials(layeredCredentials)) ??
+      layeredCredentials
+    );
   }
 
   if (hasAnyVercelCredentialOption(options)) {
@@ -1071,18 +1078,73 @@ function hasAnyVercelCredentialOption(options: VercelCredentials): boolean {
 async function resolveVercelCliCredentials(): Promise<
   Record<string, string> | undefined
 > {
+  const authModule = await loadVercelAuthModule();
+  if (!authModule) {
+    return undefined;
+  }
+
+  const auth = await resolveVercelCliAuth(authModule);
+  if (!auth?.token) {
+    return undefined;
+  }
+
+  const linkedProject = findLinkedVercelProject();
+  if (!linkedProject) {
+    return undefined;
+  }
+
+  return {
+    token: auth.token,
+    projectId: linkedProject.projectId,
+    teamId: linkedProject.teamId,
+  };
+}
+
+async function refreshLayeredVercelCliCredentials(
+  credentials: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+  if (!credentials.token) {
+    return undefined;
+  }
+
+  const authModule = await loadVercelAuthModule();
+  if (!authModule) {
+    return undefined;
+  }
+
+  const auth = authModule.getAuth();
+  if (!auth?.token || auth.token !== credentials.token) {
+    return undefined;
+  }
+
+  const resolvedAuth = await resolveVercelCliAuth(authModule, auth);
+  if (!resolvedAuth?.token) {
+    return undefined;
+  }
+
+  return {
+    ...credentials,
+    token: resolvedAuth.token,
+  };
+}
+
+async function loadVercelAuthModule(): Promise<VercelAuthModule | undefined> {
   if (process.env.NODE_ENV === 'test' && !process.env.VERCEL_AUTH_CONFIG_DIR) {
     return undefined;
   }
 
-  let authModule: VercelAuthModule;
   try {
-    authModule = await import('@vercel/sandbox/dist/auth/index.js');
+    return await import('@vercel/sandbox/dist/auth/index.js');
   } catch {
     return undefined;
   }
+}
 
-  let auth = authModule.getAuth();
+async function resolveVercelCliAuth(
+  authModule: VercelAuthModule,
+  initialAuth = authModule.getAuth(),
+): Promise<VercelAuth | undefined> {
+  let auth = initialAuth;
   if (!auth?.token && !auth?.refreshToken) {
     return undefined;
   }
@@ -1106,20 +1168,22 @@ async function resolveVercelCliCredentials(): Promise<
     }
   }
 
-  if (!auth?.token) {
-    return undefined;
-  }
+  return auth ?? undefined;
+}
 
-  const linkedProject = findLinkedVercelProject();
-  if (!linkedProject) {
-    return undefined;
+function applyResolvedVercelCredentials(
+  state: Pick<VercelSandboxSessionState, 'projectId' | 'teamId' | 'token'>,
+  credentials: Record<string, string>,
+): void {
+  if (credentials.projectId) {
+    state.projectId = credentials.projectId;
   }
-
-  return {
-    token: auth.token,
-    projectId: linkedProject.projectId,
-    teamId: linkedProject.teamId,
-  };
+  if (credentials.teamId) {
+    state.teamId = credentials.teamId;
+  }
+  if (credentials.token) {
+    state.token = credentials.token;
+  }
 }
 
 function findLinkedVercelProject():
@@ -1194,6 +1258,7 @@ async function captureVercelSnapshot(
       teamId: state.teamId ?? args.options?.teamId,
       token: state.token ?? args.options?.token,
     });
+    applyResolvedVercelCredentials(state, credentials);
     sandbox = await withProviderError(
       'VercelSandboxClient',
       'vercel',
