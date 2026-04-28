@@ -166,8 +166,8 @@ export async function mountBlaxelCloudBucket(args: {
   }
 
   const config = buildBlaxelCloudBucketMountConfig(args.entry, args.mountPath);
-  await materializeBlaxelCloudBucketSecrets(config, args.writeSecretFile);
   try {
+    await materializeBlaxelCloudBucketSecrets(config, args.writeSecretFile);
     if (config.provider === 'gcs') {
       await runBlaxelMountScript(
         args.runCommand,
