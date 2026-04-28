@@ -99,6 +99,7 @@ export async function openPtyWebSocket(args: {
   url: string;
   providerName: string;
   headers?: Record<string, string>;
+  headersUnsupportedUrl?: string;
   timeoutMs?: number;
   configure?: (socket: PtyWebSocket) => void | Promise<void>;
 }): Promise<PtyWebSocket> {
@@ -221,11 +222,13 @@ async function createWebSocket(args: {
   url: string;
   providerName: string;
   headers?: Record<string, string>;
+  headersUnsupportedUrl?: string;
 }): Promise<PtyWebSocket> {
   if (!args.headers && typeof globalThis.WebSocket === 'function') {
     return new globalThis.WebSocket(args.url) as unknown as PtyWebSocket;
   }
 
+  let wsImportError: unknown;
   try {
     const mod = (await import('ws')) as {
       WebSocket?: new (
@@ -245,15 +248,25 @@ async function createWebSocket(args: {
       );
     }
   } catch (error) {
-    if (args.headers) {
-      throw new UserError(
-        `${args.providerName} PTY WebSocket support requires the optional \`ws\` package when headers are needed. ${(error as Error).message}`,
-      );
-    }
+    wsImportError = error;
   }
 
   if (typeof globalThis.WebSocket === 'function') {
-    return new globalThis.WebSocket(args.url) as unknown as PtyWebSocket;
+    if (!args.headers || args.headersUnsupportedUrl) {
+      return new globalThis.WebSocket(
+        args.headersUnsupportedUrl ?? args.url,
+      ) as unknown as PtyWebSocket;
+    }
+  }
+
+  if (args.headers) {
+    const reason =
+      wsImportError instanceof Error
+        ? wsImportError.message
+        : 'custom WebSocket headers are unavailable';
+    throw new UserError(
+      `${args.providerName} PTY WebSocket support requires the optional \`ws\` package when headers are needed. ${reason}`,
+    );
   }
 
   throw new UserError(
