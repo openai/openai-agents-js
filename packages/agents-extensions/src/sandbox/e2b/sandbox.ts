@@ -529,9 +529,8 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       async () => {
         await this.ptyProcesses.terminateAll();
         if (this.state.pauseOnExit && canPauseE2BSandbox(this.sandbox)) {
-          if (await this.pauseOrKillAfterPauseFailure('close')) {
-            return;
-          }
+          await this.pauseOrKillAfterPauseFailure('close');
+          return;
         }
         await this.unmountActiveMounts();
         await this.sandbox.kill();
@@ -566,9 +565,8 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       async () => {
         await this.ptyProcesses.terminateAll();
         if (this.shouldPauseOnCleanup(options)) {
-          if (await this.pauseOrKillAfterPauseFailure('cleanup')) {
-            return;
-          }
+          await this.pauseOrKillAfterPauseFailure('cleanup');
+          return;
         }
         await this.unmountActiveMounts();
         await this.sandbox.kill();
@@ -591,10 +589,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     operation: 'close' | 'cleanup',
   ): Promise<boolean> {
     try {
-      const paused = await this.sandbox.pause!();
-      if (!paused) {
-        throw new Error('E2B sandbox pause returned false.');
-      }
+      await this.sandbox.pause!();
       return true;
     } catch (pauseError) {
       try {
@@ -618,7 +613,9 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
           },
         );
       }
-      return true;
+      this.state.pauseOnExit = false;
+      this.state.pauseOnExitSupported = false;
+      return false;
     }
   }
 
