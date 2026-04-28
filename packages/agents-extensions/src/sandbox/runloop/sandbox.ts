@@ -988,10 +988,11 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
 
   private mountCommandRunner(): RemoteMountCommand {
     return async (command, options = {}) => {
-      const result = await this.execShell(
+      const result = await this.execShellWithEnvironment(
         command,
         undefined,
         options.timeoutMs ?? this.state.timeouts?.fastOperationTimeoutMs,
+        mountCommandEnvironment(this.state.environment, options.user),
         options.user,
       );
       return {
@@ -1022,17 +1023,18 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     }
   }
 
-  private async execShell(
+  private async execShellWithEnvironment(
     command: string,
-    workdir?: string,
-    timeoutMs?: number,
+    workdir: string | undefined,
+    timeoutMs: number | undefined,
+    environment: Record<string, string>,
     user?: string,
   ): Promise<RunloopExecutionResultLike> {
     return await this.execShellInWorkdir(
       command,
       this.resolveWorkdir(workdir),
       timeoutMs,
-      this.state.environment,
+      environment,
       user,
     );
   }
@@ -2164,6 +2166,13 @@ async function rematerializeRunloopManifestMounts(
   manifest: Manifest,
 ): Promise<void> {
   await session.rematerializeManifestMounts(manifest);
+}
+
+function mountCommandEnvironment(
+  environment: Record<string, string>,
+  user?: string,
+): Record<string, string> {
+  return user === 'root' ? {} : environment;
 }
 
 function buildShellCommand(
