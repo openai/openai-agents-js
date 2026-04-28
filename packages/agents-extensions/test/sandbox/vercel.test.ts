@@ -316,6 +316,45 @@ describe('VercelSandboxClient', () => {
     }
   });
 
+  test('uses Vercel CLI auth token without a linked project', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
+    const authDir = join(root, 'auth');
+    const projectRoot = join(root, 'project');
+    mkdirSync(authDir, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
+    getAuthMock.mockReturnValue({
+      token: 'cli_access_token',
+      refreshToken: 'cli_refresh_token',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+    vi.stubEnv('INIT_CWD', projectRoot);
+    vi.stubEnv('PWD', projectRoot);
+
+    try {
+      const client = new VercelSandboxClient();
+
+      await client.create(new Manifest());
+
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: 'cli_access_token',
+        }),
+      );
+      expect(createMock).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          projectId: expect.any(String),
+          teamId: expect.any(String),
+        }),
+      );
+    } finally {
+      cwdSpy.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('serializes Vercel CLI credentials resolved during create', async () => {
     const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
     const authDir = join(root, 'auth');
@@ -1269,6 +1308,22 @@ describe('VercelSandboxClient', () => {
     expect(stopMock).toHaveBeenCalledOnce();
   });
 
+  test('ignores stop failures after a close snapshot already shut down the sandbox', async () => {
+    stopMock.mockRejectedValueOnce(new Error('sandbox already stopped'));
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    await expect(session.close()).resolves.toBeUndefined();
+    await session.delete();
+
+    expect(snapshotMock).toHaveBeenCalledOnce();
+    expect(stopMock).toHaveBeenCalledOnce();
+    expect(session.state.snapshotId).toBe('snap_test');
+    expect(session.state.snapshotSandboxId).toBe('vercel_test');
+  });
+
   test('invalidates snapshot freshness after workspace writes', async () => {
     const client = new VercelSandboxClient();
     const session = await client.create(new Manifest(), {
@@ -1487,6 +1542,43 @@ describe('VercelSandboxClient', () => {
       args: ['-lc', 'echo after-persist'],
       cwd: '/vercel/sandbox',
       env: {},
+    });
+  });
+
+  test('keeps restored snapshot persistence when the snapshotted source is already stopped', async () => {
+    const sourceStopMock = vi
+      .fn()
+      .mockRejectedValue(new Error('sandbox already stopped'));
+    const replacementStopMock = vi.fn().mockResolvedValue(undefined);
+    createMock
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_source', {
+          stop: sourceStopMock,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeSandbox('vercel_replacement', {
+          stop: replacementStopMock,
+        }),
+      );
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      encodeNativeSnapshotRef({
+        provider: 'vercel',
+        snapshotId: 'snap_test',
+      }),
+    );
+
+    expect(sourceStopMock).toHaveBeenCalledOnce();
+    expect(replacementStopMock).not.toHaveBeenCalled();
+    expect(session.state).toMatchObject({
+      sandboxId: 'vercel_replacement',
+      snapshotId: 'snap_test',
+      snapshotSandboxId: 'vercel_replacement',
     });
   });
 
