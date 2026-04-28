@@ -463,6 +463,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       ...this.credentials,
       projectId: this.state.projectId ?? this.credentials.projectId,
       teamId: this.state.teamId ?? this.credentials.teamId,
+      token: this.state.token ?? this.credentials.token,
     });
     applyResolvedVercelCredentials(this.state, credentials);
     return credentials;
