@@ -1133,6 +1133,56 @@ describe('BlaxelSandboxClient', () => {
     expect(commands[cleanupCommandIndex]).not.toContain('secret-key');
   });
 
+  test('cleans S3 credential files when secret file writes reject', async () => {
+    writeMock.mockImplementation(
+      async (path: string, content: string): Promise<void> => {
+        if (path.startsWith('/tmp/s3fs-passwd-')) {
+          void content;
+          throw new Error('secret write lost');
+        }
+      },
+    );
+    const client = new BlaxelSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountPath: 'mounted/logs',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow('secret write lost');
+
+    const commands = processExecMock.mock.calls.map(([params]) =>
+      String(params.command),
+    );
+    const cleanupCommand = commands.find(
+      (command) =>
+        command.includes('rm -f --') &&
+        command.includes('/tmp/s3fs-passwd-') &&
+        !command.includes('command -v s3fs') &&
+        !command.includes(' s3fs '),
+    );
+
+    expect(cleanupCommand).toBeDefined();
+    expect(cleanupCommand).not.toContain('access-key');
+    expect(cleanupCommand).not.toContain('secret-key');
+    expect(
+      commands.some(
+        (command) =>
+          command.includes('command -v s3fs') || command.includes(' s3fs '),
+      ),
+    ).toBe(false);
+  });
+
   test('rejects S3 cloud bucket mounts with partial credentials', async () => {
     const client = new BlaxelSandboxClient();
 
@@ -1323,6 +1373,56 @@ describe('BlaxelSandboxClient', () => {
     expect(cleanupCommand).toContain('.sock');
     expect(cleanupCommand).toContain('.pid');
     expect(cleanupCommand).not.toContain('ya29.token');
+  });
+
+  test('cleans GCS token artifacts when secret file writes reject', async () => {
+    writeMock.mockImplementation(
+      async (path: string, content: string): Promise<void> => {
+        if (
+          path.startsWith('/tmp/gcs-access-token-') &&
+          path.endsWith('.json')
+        ) {
+          void content;
+          throw new Error('token write lost');
+        }
+      },
+    );
+    const client = new BlaxelSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'private-gcs',
+              accessToken: 'ya29.token',
+              mountPath: 'mounted/gcs',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow('token write lost');
+
+    const commands = processExecMock.mock.calls.map(([params]) =>
+      String(params.command),
+    );
+    const cleanupCommand = commands.find(
+      (command) =>
+        command.includes('rm -f --') &&
+        command.includes('/tmp/gcs-access-token-') &&
+        !command.includes('gcsfuse'),
+    );
+
+    expect(cleanupCommand).toBeDefined();
+    expect(cleanupCommand).toContain('openai_agents_kill_pidfile()');
+    expect(cleanupCommand).toContain('.json');
+    expect(cleanupCommand).toContain('.py');
+    expect(cleanupCommand).toContain('.sock');
+    expect(cleanupCommand).toContain('.pid');
+    expect(cleanupCommand).not.toContain('ya29.token');
+    expect(commands.some((command) => command.includes('gcsfuse'))).toBe(false);
   });
 
   test('scopes GCS access token cleanup to each unmounted path', async () => {
