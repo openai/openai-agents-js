@@ -238,6 +238,44 @@ describe('VercelSandboxClient', () => {
     }
   });
 
+  test('merges explicit project credentials with Vercel CLI access token', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
+    const authDir = join(root, 'auth');
+    const projectRoot = join(root, 'project');
+    mkdirSync(authDir, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
+    getAuthMock.mockReturnValue({
+      token: 'cli_access_token',
+      refreshToken: 'cli_refresh_token',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+    vi.stubEnv('INIT_CWD', projectRoot);
+    vi.stubEnv('PWD', projectRoot);
+
+    try {
+      const client = new VercelSandboxClient({
+        projectId: 'prj_explicit',
+        teamId: 'team_explicit',
+      });
+
+      await client.create(new Manifest());
+
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: 'prj_explicit',
+          teamId: 'team_explicit',
+          token: 'cli_access_token',
+        }),
+      );
+    } finally {
+      cwdSpy.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('uses Vercel CLI auth and linked project when no explicit credentials are provided', async () => {
     const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
     const authDir = join(root, 'auth');

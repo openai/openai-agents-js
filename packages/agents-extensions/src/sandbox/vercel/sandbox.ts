@@ -1030,9 +1030,6 @@ function pickVercelCredentials(
   options: VercelCredentials,
 ): Record<string, string> {
   const credentials: Record<string, string> = {};
-  if (!options.token) {
-    return credentials;
-  }
   if (options.projectId) {
     credentials.projectId = options.projectId;
   }
@@ -1058,11 +1055,22 @@ async function resolveVercelCredentials(
     teamId: options.teamId ?? envOptions.teamId,
     token: options.token ?? envOptions.token,
   });
-  if (Object.keys(layeredCredentials).length > 0) {
+  if (layeredCredentials.token) {
     return (
       (await refreshLayeredVercelCliCredentials(layeredCredentials)) ??
       layeredCredentials
     );
+  }
+
+  if (Object.keys(layeredCredentials).length > 0) {
+    const cliToken = await resolveVercelCliAuthToken();
+    if (cliToken) {
+      return {
+        ...layeredCredentials,
+        token: cliToken,
+      };
+    }
+    return {};
   }
 
   if (hasAnyVercelCredentialOption(options)) {
@@ -1079,13 +1087,8 @@ function hasAnyVercelCredentialOption(options: VercelCredentials): boolean {
 async function resolveVercelCliCredentials(): Promise<
   Record<string, string> | undefined
 > {
-  const authModule = await loadVercelAuthModule();
-  if (!authModule) {
-    return undefined;
-  }
-
-  const auth = await resolveVercelCliAuth(authModule);
-  if (!auth?.token) {
+  const token = await resolveVercelCliAuthToken();
+  if (!token) {
     return undefined;
   }
 
@@ -1095,10 +1098,20 @@ async function resolveVercelCliCredentials(): Promise<
   }
 
   return {
-    token: auth.token,
+    token,
     projectId: linkedProject.projectId,
     teamId: linkedProject.teamId,
   };
+}
+
+async function resolveVercelCliAuthToken(): Promise<string | undefined> {
+  const authModule = await loadVercelAuthModule();
+  if (!authModule) {
+    return undefined;
+  }
+
+  const auth = await resolveVercelCliAuth(authModule);
+  return auth?.token;
 }
 
 async function refreshLayeredVercelCliCredentials(
