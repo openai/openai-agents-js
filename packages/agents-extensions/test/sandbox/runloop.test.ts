@@ -16,6 +16,7 @@ import { decodeNativeSnapshotRef } from '../../src/sandbox/shared';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
 
+const runloopSdkConstructorMock = vi.fn();
 const createMock = vi.fn();
 const createFromBlueprintNameMock = vi.fn();
 const createFromSnapshotMock = vi.fn();
@@ -131,6 +132,10 @@ function mockRunloopDevbox(overrides: Record<string, unknown> = {}) {
 
 vi.mock('@runloop/api-client', () => ({
   RunloopSDK: class RunloopSDK {
+    constructor(options?: Record<string, unknown>) {
+      runloopSdkConstructorMock(options);
+    }
+
     readonly devbox = {
       create: createMock,
       createFromBlueprintName: createFromBlueprintNameMock,
@@ -196,6 +201,7 @@ vi.mock('@runloop/api-client', () => ({
 
 describe('RunloopSandboxClient', () => {
   beforeEach(() => {
+    runloopSdkConstructorMock.mockReset();
     createMock.mockReset();
     createFromBlueprintNameMock.mockReset();
     createFromSnapshotMock.mockReset();
@@ -1099,6 +1105,36 @@ describe('RunloopSandboxClient', () => {
     );
   });
 
+  test('does not export manifest environment into internal path and manifest commands', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(
+      runloopManifest({
+        environment: {
+          PATH: '/tmp/attacker-bin',
+        },
+      }),
+    );
+    execMock.mockClear();
+
+    await session.pathExists('README.md');
+    await session.applyManifest(
+      runloopManifest({
+        entries: {
+          logs: {
+            type: 'dir',
+          },
+        },
+      }),
+    );
+
+    const commands = execMock.mock.calls.map(([command]) => String(command));
+    expect(commands.length).toBeGreaterThan(0);
+    for (const command of commands) {
+      expect(command).not.toContain('export PATH=');
+      expect(command).not.toContain('/tmp/attacker-bin');
+    }
+  });
+
   test('rejects unsupported PTY execution with a typed error', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopManifest());
@@ -1121,6 +1157,30 @@ describe('RunloopSandboxClient', () => {
     expect(fromIdMock).toHaveBeenCalledWith('devbox_test');
     expect(resumeMock).toHaveBeenCalledOnce();
     expect(shutdownMock).not.toHaveBeenCalled();
+  });
+
+  test('ignores persisted baseUrl when resuming sessions', async () => {
+    const client = new RunloopSandboxClient({
+      apiKey: 'trusted-key',
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      baseUrl: 'https://attacker.example',
+    });
+    runloopSdkConstructorMock.mockClear();
+
+    const resumed = await client.resume(state);
+
+    expect(runloopSdkConstructorMock).toHaveBeenCalledWith({
+      bearerToken: 'trusted-key',
+    });
+    expect(runloopSdkConstructorMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      'baseURL',
+    );
+    expect(resumed.state.baseUrl).toBeUndefined();
   });
 
   test('rejects persisted resume manifests outside the effective Runloop home', async () => {
@@ -1254,6 +1314,26 @@ describe('RunloopSandboxClient', () => {
     expect(resumeMock).toHaveBeenCalledOnce();
     expect(createMock).toHaveBeenCalledOnce();
     expect(recreated.state.devboxId).toBe('devbox_test');
+  });
+
+  test('rejects persisted secret refs when recreating missing devboxes', async () => {
+    const client = new RunloopSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      secretRefs: {
+        API_KEY: 'attacker-secret',
+      },
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await expect(client.resume(state)).rejects.toThrow(
+      'RunloopSandboxClient cannot recreate a missing devbox with persisted secretRefs.',
+    );
+
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   test('fails fast when resume lookup fails with a provider error', async () => {
