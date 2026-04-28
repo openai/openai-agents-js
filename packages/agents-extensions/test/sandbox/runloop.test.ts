@@ -587,6 +587,29 @@ describe('RunloopSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxConfigurationError);
   });
 
+  test('rejects unsafe usernames before deriving the effective home', async () => {
+    for (const username of [
+      '',
+      '.',
+      '..',
+      '../root',
+      'team/user',
+      'user/../root',
+      'team..user',
+    ]) {
+      const client = new RunloopSandboxClient({
+        userParameters: {
+          username,
+          uid: 1000,
+        },
+      });
+
+      await expect(client.create()).rejects.toThrow('userParameters.username');
+    }
+
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   test('validates manifest roots when applying manifests to sessions', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create();
