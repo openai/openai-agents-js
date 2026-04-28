@@ -1181,6 +1181,40 @@ describe('CloudflareSandboxClient', () => {
     expect(started).toContain('Process exited with code 7');
   });
 
+  test('passes PTY auth through the URL when WebSocket headers are unavailable', async () => {
+    vi.doMock('ws', () => {
+      throw new Error('ws unavailable');
+    });
+    globalThis.WebSocket =
+      TestWebSocket as unknown as typeof globalThis.WebSocket;
+    const client = new CloudflareSandboxClient({ apiKey: 'secret-token' });
+    const session = await client.create(new Manifest(), {
+      workerUrl: 'https://worker.example.com',
+    });
+
+    const startedPromise = session.execCommand({
+      cmd: 'echo ready',
+      tty: true,
+      yieldTimeMs: 250,
+    });
+    const socket = await TestWebSocket.nextInstance();
+    const firstSend = socket.nextSend();
+    socket.open();
+    socket.message(JSON.stringify({ type: 'ready' }));
+    await firstSend;
+    socket.message(JSON.stringify({ type: 'exit', code: 0 }));
+    const started = await startedPromise;
+    const socketUrl = new URL(socket.url);
+
+    expect(socketUrl.searchParams.get('authorization')).toBe(
+      'Bearer secret-token',
+    );
+    expect(socketUrl.searchParams.get('cols')).toBe('80');
+    expect(socketUrl.searchParams.get('rows')).toBe('24');
+    expect(socket.options).toBeUndefined();
+    expect(started).toContain('Process exited with code 0');
+  });
+
   test('passes PTY auth through WebSocket headers for native runtimes', async () => {
     globalThis.WebSocket =
       TestWebSocket as unknown as typeof globalThis.WebSocket;
