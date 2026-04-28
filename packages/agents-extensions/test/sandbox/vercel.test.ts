@@ -278,6 +278,66 @@ describe('VercelSandboxClient', () => {
     }
   });
 
+  test('serializes Vercel CLI credentials resolved during create', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
+    const authDir = join(root, 'auth');
+    const projectRoot = join(root, 'project');
+    mkdirSync(authDir, { recursive: true });
+    mkdirSync(join(projectRoot, '.vercel'), { recursive: true });
+    getAuthMock.mockReturnValue({
+      token: 'cli_access_token',
+      refreshToken: 'cli_refresh_token',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    writeFileSync(
+      join(projectRoot, '.vercel', 'project.json'),
+      JSON.stringify({
+        projectId: 'prj_cli',
+        orgId: 'team_cli',
+        projectName: 'sandbox-tests',
+      }),
+    );
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+    vi.stubEnv('INIT_CWD', projectRoot);
+
+    let session: Awaited<ReturnType<VercelSandboxClient['create']>> | undefined;
+    try {
+      const client = new VercelSandboxClient();
+      session = await client.create(new Manifest(), {
+        workspacePersistence: 'snapshot',
+      });
+      expect(session.state.token).toBe('cli_access_token');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+    if (!session) {
+      throw new Error('Expected Vercel sandbox session.');
+    }
+
+    const client = new VercelSandboxClient();
+    getMock.mockClear();
+
+    const serialized = await client.serializeSessionState(session.state, {
+      willCloseAfterSerialize: true,
+    });
+
+    expect(getMock).toHaveBeenCalledWith({
+      sandboxId: 'vercel_test',
+      projectId: 'prj_cli',
+      teamId: 'team_cli',
+      token: 'cli_access_token',
+    });
+    expect(serialized).toMatchObject({
+      projectId: 'prj_cli',
+      teamId: 'team_cli',
+      token: 'cli_access_token',
+      sandboxId: 'vercel_test',
+      workspacePersistence: 'snapshot',
+      snapshotId: 'snap_test',
+    });
+  });
+
   test('passes complete access token credentials to Vercel', async () => {
     const client = new VercelSandboxClient({
       projectId: 'prj_access_token',
