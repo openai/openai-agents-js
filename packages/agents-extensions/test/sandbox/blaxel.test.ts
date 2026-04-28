@@ -1079,6 +1079,60 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test('cleans S3 credential files when cloud bucket mount commands reject', async () => {
+    processExecMock.mockImplementation(
+      async (params: { command?: string } = {}) => {
+        const command = String(params.command ?? '');
+        if (command.includes('command -v s3fs') || command.includes(' s3fs ')) {
+          throw new Error('transport lost');
+        }
+        const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+        return {
+          stdout: resolvedPath ? `${resolvedPath}\n` : '',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+    );
+    const client = new BlaxelSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountPath: 'mounted/logs',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow('transport lost');
+
+    const commands = processExecMock.mock.calls.map(([params]) =>
+      String(params.command),
+    );
+    const mountCommandIndex = commands.findIndex((command) =>
+      command.includes('s3fs'),
+    );
+    const cleanupCommandIndex = commands.findIndex(
+      (command) =>
+        command.includes('rm -f --') &&
+        command.includes('/tmp/s3fs-passwd-') &&
+        !command.includes('command -v s3fs') &&
+        !command.includes(' s3fs '),
+    );
+
+    expect(mountCommandIndex).toBeGreaterThanOrEqual(0);
+    expect(cleanupCommandIndex).toBeGreaterThan(mountCommandIndex);
+    expect(commands[cleanupCommandIndex]).not.toContain('access-key');
+    expect(commands[cleanupCommandIndex]).not.toContain('secret-key');
+  });
+
   test('rejects S3 cloud bucket mounts with partial credentials', async () => {
     const client = new BlaxelSandboxClient();
 
@@ -1212,6 +1266,63 @@ describe('BlaxelSandboxClient', () => {
     expect(mountCommand).toContain('sha256sum -c -');
     expect(mountCommand).not.toContain('releases/latest');
     expect(mountCommand).not.toContain('--anonymous-access');
+  });
+
+  test('cleans GCS token artifacts when cloud bucket mount commands reject', async () => {
+    processExecMock.mockImplementation(
+      async (params: { command?: string } = {}) => {
+        const command = String(params.command ?? '');
+        if (command.includes('gcsfuse')) {
+          throw new Error('transport lost');
+        }
+        const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+        return {
+          stdout: resolvedPath ? `${resolvedPath}\n` : '',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+    );
+    const client = new BlaxelSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'private-gcs',
+              accessToken: 'ya29.token',
+              mountPath: 'mounted/gcs',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow('transport lost');
+
+    const commands = processExecMock.mock.calls.map(([params]) =>
+      String(params.command),
+    );
+    const mountCommandIndex = commands.findIndex((command) =>
+      command.includes('gcsfuse'),
+    );
+    const cleanupCommandIndex = commands.findIndex(
+      (command) =>
+        command.includes('rm -f --') &&
+        command.includes('/tmp/gcs-access-token-') &&
+        !command.includes('gcsfuse'),
+    );
+    const cleanupCommand = commands[cleanupCommandIndex];
+
+    expect(mountCommandIndex).toBeGreaterThanOrEqual(0);
+    expect(cleanupCommandIndex).toBeGreaterThan(mountCommandIndex);
+    expect(cleanupCommand).toContain('openai_agents_kill_pidfile()');
+    expect(cleanupCommand).toContain('.json');
+    expect(cleanupCommand).toContain('.py');
+    expect(cleanupCommand).toContain('.sock');
+    expect(cleanupCommand).toContain('.pid');
+    expect(cleanupCommand).not.toContain('ya29.token');
   });
 
   test('scopes GCS access token cleanup to each unmounted path', async () => {
