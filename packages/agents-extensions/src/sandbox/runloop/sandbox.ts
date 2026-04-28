@@ -94,7 +94,7 @@ type RunloopClientLike = {
     ): Promise<unknown>;
   };
   blueprint?: RunloopPlatformResourceLike;
-  benchmark?: RunloopPlatformResourceLike;
+  benchmark?: RunloopBenchmarkResourceLike;
   networkPolicy?: RunloopPlatformResourceLike;
   axon?: RunloopPlatformResourceLike;
   api?: Record<string, Record<string, RunloopPlatformMethodLike>>;
@@ -106,6 +106,12 @@ type RunloopPlatformResourceLike = {
   create?: RunloopPlatformMethodLike;
   list?: RunloopPlatformMethodLike;
   fromId?: (id: string) => unknown;
+};
+
+type RunloopBenchmarkResourceLike = RunloopPlatformResourceLike & {
+  retrieve?: RunloopPlatformMethodLike;
+  update?: RunloopPlatformMethodLike;
+  startRun?: RunloopPlatformMethodLike;
 };
 
 type RunloopDevboxLike = {
@@ -323,11 +329,15 @@ export class RunloopPlatformBenchmarksClient {
   }
 
   get(benchmarkId: string): unknown {
-    return callRunloopPlatformGetter(
-      'benchmark.fromId',
-      this.sdk.benchmark?.fromId,
-      benchmarkId,
-    );
+    if (this.sdk.benchmark?.retrieve) {
+      return callRunloopPlatformMethod(
+        'benchmark.retrieve',
+        this.sdk.benchmark.retrieve,
+        benchmarkId,
+      );
+    }
+
+    return this.getBenchmarkFacade(benchmarkId);
   }
 
   async create(params: Record<string, unknown> = {}): Promise<unknown> {
@@ -342,9 +352,18 @@ export class RunloopPlatformBenchmarksClient {
     benchmarkId: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
+    if (this.sdk.benchmark?.update) {
+      return await callRunloopPlatformMethod(
+        'benchmark.update',
+        this.sdk.benchmark.update,
+        benchmarkId,
+        params,
+      );
+    }
+
     return await callRunloopPlatformMethod(
       'benchmark.update',
-      bindRunloopMethod(this.get(benchmarkId), 'update'),
+      bindRunloopMethod(this.getBenchmarkFacade(benchmarkId), 'update'),
       params,
     );
   }
@@ -365,9 +384,20 @@ export class RunloopPlatformBenchmarksClient {
     benchmarkId: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
+    if (this.sdk.benchmark?.startRun) {
+      return await callRunloopPlatformMethod(
+        'benchmark.startRun',
+        this.sdk.benchmark.startRun,
+        {
+          ...params,
+          benchmark_id: benchmarkId,
+        },
+      );
+    }
+
     return await callRunloopPlatformMethod(
       'benchmark.startRun',
-      bindRunloopMethod(this.get(benchmarkId), 'startRun'),
+      bindRunloopMethod(this.getBenchmarkFacade(benchmarkId), 'startRun'),
       params,
     );
   }
@@ -381,6 +411,14 @@ export class RunloopPlatformBenchmarksClient {
       this.sdk.api?.benchmarks?.updateScenarios,
       benchmarkId,
       params,
+    );
+  }
+
+  private getBenchmarkFacade(benchmarkId: string): unknown {
+    return callRunloopPlatformGetter(
+      'benchmark.fromId',
+      this.sdk.benchmark?.fromId,
+      benchmarkId,
     );
   }
 }
@@ -1447,21 +1485,33 @@ export class RunloopSandboxClient implements SandboxClient<
   async resume(
     state: RunloopSandboxSessionState,
   ): Promise<RunloopSandboxSession> {
+    const resumeState: RunloopSandboxSessionState = {
+      ...state,
+      manifest: resolveRunloopManifestRoot(
+        state.manifest,
+        state.userParameters,
+        true,
+      ),
+    };
     const sdk = await createRunloopClient({
       ...this.options,
-      baseUrl: state.baseUrl ?? this.options.baseUrl,
+      baseUrl: resumeState.baseUrl ?? this.options.baseUrl,
     });
     try {
-      const devbox = sdk.devbox.fromId(state.devboxId);
-      if (state.pauseOnExit) {
+      const devbox = sdk.devbox.fromId(resumeState.devboxId);
+      if (resumeState.pauseOnExit) {
         await devbox.resume(
-          runloopLongPollOptions(state.timeouts?.resumeTimeoutMs),
+          runloopLongPollOptions(resumeState.timeouts?.resumeTimeoutMs),
         );
       }
-      invalidateRunloopRuntimeCaches(state);
-      const session = new RunloopSandboxSession({ state, sdk, devbox });
+      invalidateRunloopRuntimeCaches(resumeState);
+      const session = new RunloopSandboxSession({
+        state: resumeState,
+        sdk,
+        devbox,
+      });
       try {
-        await rematerializeRunloopManifestMounts(session, state.manifest);
+        await rematerializeRunloopManifestMounts(session, resumeState.manifest);
       } catch (error) {
         await session.cleanupAfterFailedResume();
         throw error;
@@ -1471,27 +1521,27 @@ export class RunloopSandboxClient implements SandboxClient<
       assertResumeRecreateAllowed(error, {
         providerName: 'RunloopSandboxClient',
         provider: 'runloop',
-        details: { devboxId: state.devboxId },
+        details: { devboxId: resumeState.devboxId },
       });
       const recreateOptions: RunloopSandboxResolvedOptions = {
-        blueprintName: state.blueprintName,
-        blueprintId: state.blueprintId,
-        name: state.name,
-        launchParameters: state.launchParameters,
-        exposedPorts: state.configuredExposedPorts,
-        tunnel: state.tunnel,
-        gateways: state.gateways,
-        mcp: state.mcp,
-        metadata: state.metadata,
-        secretRefs: state.secretRefs,
-        pauseOnExit: state.pauseOnExit,
-        userParameters: state.userParameters,
-        env: state.environment,
-        baseUrl: state.baseUrl ?? this.options.baseUrl,
-        createTimeoutMs: state.createTimeoutMs,
-        timeouts: state.timeouts,
+        blueprintName: resumeState.blueprintName,
+        blueprintId: resumeState.blueprintId,
+        name: resumeState.name,
+        launchParameters: resumeState.launchParameters,
+        exposedPorts: resumeState.configuredExposedPorts,
+        tunnel: resumeState.tunnel,
+        gateways: resumeState.gateways,
+        mcp: resumeState.mcp,
+        metadata: resumeState.metadata,
+        secretRefs: resumeState.secretRefs,
+        pauseOnExit: resumeState.pauseOnExit,
+        userParameters: resumeState.userParameters,
+        env: resumeState.environment,
+        baseUrl: resumeState.baseUrl ?? this.options.baseUrl,
+        createTimeoutMs: resumeState.createTimeoutMs,
+        timeouts: resumeState.timeouts,
       };
-      return await this.create(state.manifest, recreateOptions);
+      return await this.create(resumeState.manifest, recreateOptions);
     }
   }
 }
@@ -1598,9 +1648,7 @@ function adaptRunloopClient(
         : {}),
     },
     blueprint: adaptRunloopPlatformResource(sdk.blueprint),
-    benchmark: adaptRunloopPlatformResource(
-      (sdk as { benchmark?: unknown }).benchmark,
-    ),
+    benchmark: adaptRunloopBenchmarkResource(sdk),
     networkPolicy: adaptRunloopPlatformResource(sdk.networkPolicy),
     axon: adaptRunloopPlatformResource(sdk.axon),
     api: adaptRunloopApi(sdk),
@@ -1716,6 +1764,38 @@ function adaptRunloopPlatformResource(
         ? (id) => fromId.call(resource, id)
         : undefined,
   };
+}
+
+function adaptRunloopBenchmarkResource(
+  sdk: import('@runloop/api-client').RunloopSDK,
+): RunloopBenchmarkResourceLike | undefined {
+  const apiBenchmarks = (sdk as { api?: { benchmarks?: unknown } }).api
+    ?.benchmarks;
+  const apiResource = adaptRunloopApiBenchmarkResource(apiBenchmarks);
+  if (apiResource) {
+    return apiResource;
+  }
+  return adaptRunloopPlatformResource(
+    (sdk as { benchmark?: unknown }).benchmark,
+  );
+}
+
+function adaptRunloopApiBenchmarkResource(
+  resource: unknown,
+): RunloopBenchmarkResourceLike | undefined {
+  if (!isRecord(resource)) {
+    return undefined;
+  }
+  const adapted: RunloopBenchmarkResourceLike = {
+    create: bindRunloopMethod(resource, 'create'),
+    list: bindRunloopMethod(resource, 'list'),
+    retrieve: bindRunloopMethod(resource, 'retrieve'),
+    update: bindRunloopMethod(resource, 'update'),
+    startRun: bindRunloopMethod(resource, 'startRun'),
+  };
+  return Object.values(adapted).some((value) => typeof value === 'function')
+    ? adapted
+    : undefined;
 }
 
 function adaptRunloopApi(

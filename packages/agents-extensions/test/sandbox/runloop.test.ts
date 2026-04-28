@@ -31,6 +31,7 @@ const benchmarkCreateMock = vi.fn();
 const benchmarkListMock = vi.fn();
 const benchmarkListPublicMock = vi.fn();
 const benchmarkFromIdMock = vi.fn();
+const benchmarkRetrieveMock = vi.fn();
 const benchmarkUpdateMock = vi.fn();
 const benchmarkDefinitionsMock = vi.fn();
 const benchmarkStartRunMock = vi.fn();
@@ -64,6 +65,8 @@ const suspendMock = vi.fn();
 const shutdownMock = vi.fn();
 const RUNLOOP_HOME = '/home/user';
 let includeCreateFromSnapshotApi = true;
+let includeApiBenchmarks = true;
+let includeLegacyBenchmarkFacade = false;
 
 function runloopManifest(config: Record<string, unknown> = {}): Manifest {
   return new Manifest({
@@ -147,11 +150,13 @@ vi.mock('@runloop/api-client', () => ({
       list: blueprintListMock,
       fromId: blueprintFromIdMock,
     };
-    readonly benchmark = {
-      create: benchmarkCreateMock,
-      list: benchmarkListMock,
-      fromId: benchmarkFromIdMock,
-    };
+    readonly benchmark = includeLegacyBenchmarkFacade
+      ? {
+          create: benchmarkCreateMock,
+          list: benchmarkListMock,
+          fromId: benchmarkFromIdMock,
+        }
+      : undefined;
     readonly networkPolicy = {
       create: networkPolicyCreateMock,
       list: networkPolicyListMock,
@@ -168,11 +173,20 @@ vi.mock('@runloop/api-client', () => ({
         logs: blueprintLogsMock,
         awaitBuildComplete: blueprintAwaitBuildCompleteMock,
       },
-      benchmarks: {
-        listPublic: benchmarkListPublicMock,
-        definitions: benchmarkDefinitionsMock,
-        updateScenarios: benchmarkUpdateScenariosMock,
-      },
+      ...(includeApiBenchmarks
+        ? {
+            benchmarks: {
+              create: benchmarkCreateMock,
+              list: benchmarkListMock,
+              retrieve: benchmarkRetrieveMock,
+              update: benchmarkUpdateMock,
+              listPublic: benchmarkListPublicMock,
+              definitions: benchmarkDefinitionsMock,
+              startRun: benchmarkStartRunMock,
+              updateScenarios: benchmarkUpdateScenariosMock,
+            },
+          }
+        : {}),
       secrets: {
         retrieve: secretRetrieveMock,
       },
@@ -198,6 +212,7 @@ describe('RunloopSandboxClient', () => {
     benchmarkListMock.mockReset();
     benchmarkListPublicMock.mockReset();
     benchmarkFromIdMock.mockReset();
+    benchmarkRetrieveMock.mockReset();
     benchmarkUpdateMock.mockReset();
     benchmarkDefinitionsMock.mockReset();
     benchmarkStartRunMock.mockReset();
@@ -229,6 +244,8 @@ describe('RunloopSandboxClient', () => {
     resumeMock.mockReset();
     suspendMock.mockReset();
     shutdownMock.mockReset();
+    includeApiBenchmarks = true;
+    includeLegacyBenchmarkFacade = false;
 
     const devbox = mockRunloopDevbox();
 
@@ -251,6 +268,7 @@ describe('RunloopSandboxClient', () => {
     benchmarkCreateMock.mockResolvedValue({ id: 'bench_created' });
     benchmarkListMock.mockResolvedValue([{ id: 'bench_test' }]);
     benchmarkListPublicMock.mockResolvedValue([{ id: 'bench_public' }]);
+    benchmarkRetrieveMock.mockResolvedValue({ id: 'bench_test' });
     benchmarkFromIdMock.mockReturnValue({
       update: benchmarkUpdateMock,
       startRun: benchmarkStartRunMock,
@@ -850,7 +868,7 @@ describe('RunloopSandboxClient', () => {
     await platform.blueprints.delete('bp_test', { force: true });
     await platform.benchmarks.list({ limit: 5 });
     await platform.benchmarks.listPublic({ limit: 6 });
-    const benchmark = platform.benchmarks.get('bench_test');
+    const benchmark = await platform.benchmarks.get('bench_test');
     await platform.benchmarks.create({ name: 'agent-benchmark' });
     await platform.benchmarks.update('bench_test', { name: 'updated' });
     await platform.benchmarks.definitions('bench_test', { scenario: 'all' });
@@ -886,10 +904,7 @@ describe('RunloopSandboxClient', () => {
     expect(blueprint).toEqual({
       delete: blueprintDeleteMock,
     });
-    expect(benchmark).toEqual({
-      update: benchmarkUpdateMock,
-      startRun: benchmarkStartRunMock,
-    });
+    expect(benchmark).toEqual({ id: 'bench_test' });
     expect(networkPolicy).toEqual({
       update: networkPolicyUpdateMock,
       delete: networkPolicyDeleteMock,
@@ -914,15 +929,20 @@ describe('RunloopSandboxClient', () => {
     expect(blueprintDeleteMock).toHaveBeenCalledWith({ force: true });
     expect(benchmarkListMock).toHaveBeenCalledWith({ limit: 5 });
     expect(benchmarkListPublicMock).toHaveBeenCalledWith({ limit: 6 });
-    expect(benchmarkFromIdMock).toHaveBeenCalledWith('bench_test');
+    expect(benchmarkRetrieveMock).toHaveBeenCalledWith('bench_test');
     expect(benchmarkCreateMock).toHaveBeenCalledWith({
       name: 'agent-benchmark',
     });
-    expect(benchmarkUpdateMock).toHaveBeenCalledWith({ name: 'updated' });
+    expect(benchmarkUpdateMock).toHaveBeenCalledWith('bench_test', {
+      name: 'updated',
+    });
     expect(benchmarkDefinitionsMock).toHaveBeenCalledWith('bench_test', {
       scenario: 'all',
     });
-    expect(benchmarkStartRunMock).toHaveBeenCalledWith({ input: 'run' });
+    expect(benchmarkStartRunMock).toHaveBeenCalledWith({
+      benchmark_id: 'bench_test',
+      input: 'run',
+    });
     expect(benchmarkUpdateScenariosMock).toHaveBeenCalledWith('bench_test', {
       scenarios: [],
     });
@@ -968,21 +988,6 @@ describe('RunloopSandboxClient', () => {
         return blueprintDeleteMock(params);
       },
     });
-    benchmarkFromIdMock.mockReturnValue({
-      client: 'benchmark-client',
-      update: function (this: { client: string }, params: unknown) {
-        if (this.client !== 'benchmark-client') {
-          throw new Error('unbound benchmark update method');
-        }
-        return benchmarkUpdateMock(params);
-      },
-      startRun: function (this: { client: string }, params: unknown) {
-        if (this.client !== 'benchmark-client') {
-          throw new Error('unbound benchmark startRun method');
-        }
-        return benchmarkStartRunMock(params);
-      },
-    });
     networkPolicyFromIdMock.mockReturnValue({
       client: 'network-policy-client',
       update: function (this: { client: string }, params: unknown) {
@@ -1024,8 +1029,6 @@ describe('RunloopSandboxClient', () => {
     });
 
     await platform.blueprints.delete('bp_test', { force: true });
-    await platform.benchmarks.update('bench_test', { name: 'updated' });
-    await platform.benchmarks.startRun('bench_test', { input: 'run' });
     await platform.networkPolicies.update('np_test', { name: 'updated' });
     await platform.networkPolicies.delete('np_test', { force: true });
     await platform.axons.publish('axon_test', { revision: 'latest' });
@@ -1035,8 +1038,6 @@ describe('RunloopSandboxClient', () => {
     });
 
     expect(blueprintDeleteMock).toHaveBeenCalledWith({ force: true });
-    expect(benchmarkUpdateMock).toHaveBeenCalledWith({ name: 'updated' });
-    expect(benchmarkStartRunMock).toHaveBeenCalledWith({ input: 'run' });
     expect(networkPolicyUpdateMock).toHaveBeenCalledWith({ name: 'updated' });
     expect(networkPolicyDeleteMock).toHaveBeenCalledWith({ force: true });
     expect(axonPublishMock).toHaveBeenCalledWith({ revision: 'latest' });
@@ -1044,6 +1045,43 @@ describe('RunloopSandboxClient', () => {
     expect(axonBatchMock).toHaveBeenCalledWith({
       statements: ['select 1'],
     });
+  });
+
+  test('falls back to legacy Runloop benchmark facade methods', async () => {
+    includeApiBenchmarks = false;
+    includeLegacyBenchmarkFacade = true;
+    const client = new RunloopSandboxClient();
+    const platform = await client.platform();
+    benchmarkFromIdMock.mockReturnValue({
+      client: 'benchmark-client',
+      update: function (this: { client: string }, params: unknown) {
+        if (this.client !== 'benchmark-client') {
+          throw new Error('unbound benchmark update method');
+        }
+        return benchmarkUpdateMock(params);
+      },
+      startRun: function (this: { client: string }, params: unknown) {
+        if (this.client !== 'benchmark-client') {
+          throw new Error('unbound benchmark startRun method');
+        }
+        return benchmarkStartRunMock(params);
+      },
+    });
+
+    await platform.benchmarks.list({ limit: 5 });
+    const benchmark = platform.benchmarks.get('bench_test');
+    await platform.benchmarks.create({ name: 'agent-benchmark' });
+    await platform.benchmarks.update('bench_test', { name: 'updated' });
+    await platform.benchmarks.startRun('bench_test', { input: 'run' });
+
+    expect(benchmark).toMatchObject({ client: 'benchmark-client' });
+    expect(benchmarkListMock).toHaveBeenCalledWith({ limit: 5 });
+    expect(benchmarkCreateMock).toHaveBeenCalledWith({
+      name: 'agent-benchmark',
+    });
+    expect(benchmarkFromIdMock).toHaveBeenCalledWith('bench_test');
+    expect(benchmarkUpdateMock).toHaveBeenCalledWith({ name: 'updated' });
+    expect(benchmarkStartRunMock).toHaveBeenCalledWith({ input: 'run' });
   });
 
   test('rejects unsafe environment names before building shell commands', async () => {
@@ -1083,6 +1121,23 @@ describe('RunloopSandboxClient', () => {
     expect(fromIdMock).toHaveBeenCalledWith('devbox_test');
     expect(resumeMock).toHaveBeenCalledOnce();
     expect(shutdownMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects persisted resume manifests outside the effective Runloop home', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(runloopManifest(), {
+      pauseOnExit: true,
+    });
+    session.state.manifest = new Manifest({ root: '/tmp' });
+    fromIdMock.mockClear();
+    resumeMock.mockClear();
+
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxConfigurationError,
+    );
+
+    expect(fromIdMock).not.toHaveBeenCalled();
+    expect(resumeMock).not.toHaveBeenCalled();
   });
 
   test('refreshes ports and rematerializes cloud mounts when resuming', async () => {
