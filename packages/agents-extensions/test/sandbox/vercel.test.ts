@@ -1452,6 +1452,37 @@ describe('VercelSandboxClient', () => {
     });
   });
 
+  test('uses refreshed state token when restoring persisted snapshots', async () => {
+    createMock
+      .mockResolvedValueOnce(makeSandbox('vercel_source'))
+      .mockResolvedValueOnce(makeSandbox('vercel_replacement'));
+    const client = new VercelSandboxClient({
+      projectId: 'prj_cli',
+      teamId: 'team_cli',
+      token: 'cli_access_token',
+    });
+    const session = await client.create(new Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+    session.state.token = 'cli_refreshed_token';
+    createMock.mockClear();
+
+    await session.persistWorkspace();
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'prj_cli',
+        teamId: 'team_cli',
+        token: 'cli_refreshed_token',
+        source: {
+          type: 'snapshot',
+          snapshotId: 'snap_test',
+        },
+      }),
+    );
+    expect(session.state.token).toBe('cli_refreshed_token');
+  });
+
   test('stops each previous sandbox during repeated snapshot persistence', async () => {
     const sourceStopMock = vi.fn().mockResolvedValue(undefined);
     const firstReplacementStopMock = vi.fn().mockResolvedValue(undefined);
