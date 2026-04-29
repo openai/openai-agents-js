@@ -137,6 +137,27 @@ const sidebar = [
         },
       },
       {
+        label: 'Sandbox agents',
+        items: [
+          {
+            label: 'Quickstart',
+            link: '/guides/sandbox-agents',
+          },
+          {
+            label: 'Concepts',
+            link: '/guides/sandbox-agents/concepts',
+          },
+          {
+            label: 'Sandbox clients',
+            link: '/guides/sandbox-agents/clients',
+          },
+          {
+            label: 'Agent memory',
+            link: '/guides/sandbox-agents/memory',
+          },
+        ],
+      },
+      {
         label: 'Models',
         link: '/guides/models',
         translations: {

@@ -69,6 +69,7 @@ The additional options are:
 | `toolErrorFormatter` | – | Hook to customize tool approval rejection messages returned to the model. See [Tool error formatter](#tool-error-formatter). |
 | `reasoningItemIdPolicy` | – | Controls whether reasoning-item `id`s are preserved or omitted when prior run items are turned back into model input. See [Reasoning item ID policy](#reasoning-item-id-policy). |
 | `tracing` | – | Per-run tracing configuration overrides (for example, export API key). |
+| `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
 | `errorHandlers` | – | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers). |
 | `conversationId` | – | Reuse a server-side conversation (OpenAI Responses API + Conversations API only). |
 | `previousResponseId` | – | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only). |
@@ -99,6 +100,7 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `callModelInputFilter` | `CallModelInputFilter` | Global hook to edit model inputs before each model call. |
 | `toolErrorFormatter` | `ToolErrorFormatter` | Global hook to customize tool approval rejection messages returned to the model. |
 | `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | Default policy for preserving or omitting reasoning-item `id`s when replaying generated items into later model calls. |
+| `sandbox` | `SandboxRunConfig` | Default sandbox runtime configuration for `SandboxAgent` runs. |
 
 ## State and conversation management
 
@@ -114,6 +116,8 @@ There are four common ways to carry state into the next turn:
 | `previousResponseId` | OpenAI Responses API only | The simplest server-managed continuation without creating a conversation | `result.lastResponseId` plus only the new user turn |
 
 `result.history` and `session` are client-managed. `conversationId` and `previousResponseId` are OpenAI-managed and only apply when you are using the OpenAI Responses API. In most applications, pick one persistence strategy per conversation. Mixing client-managed history with server-managed state can duplicate context unless you are deliberately reconciling both layers.
+
+Sandbox agents add another state layer: the live sandbox workspace. Use the regular SDK `session`, `conversationId`, or `previousResponseId` for conversation history, and use `sandbox.session`, `sandbox.sessionState`, `RunState`, or snapshots for sandbox filesystem state. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts) for the workspace lifecycle.
 
 ### Conversations / chat threads
 
