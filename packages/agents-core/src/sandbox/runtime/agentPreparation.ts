@@ -11,6 +11,8 @@ import type { SandboxSessionLike, SandboxSessionState } from '../session';
 import {
   getDefaultSandboxInstructions,
   renderFilesystemInstructions,
+  renderInstructionSection,
+  renderRemoteMountPolicyInstructions,
 } from './prompts';
 import { manifestWithRunAsUser } from './runAsManifest';
 
@@ -116,18 +118,51 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
           capability.instructions(runtimeManifest),
         ),
       );
-      const segments = [
-        await renderBaseInstructions(agent, runContext, preparedAgent),
-        await renderAgentInstructions(
-          agent.instructions,
-          runContext,
-          preparedAgent,
-        ),
-        ...capabilityInstructions.filter((fragment): fragment is string =>
-          Boolean(fragment),
-        ),
-        renderFilesystemInstructions(runtimeManifest),
-      ].filter(Boolean);
+      const segments: string[] = [];
+      const baseInstructions = await renderBaseInstructions(
+        agent,
+        runContext,
+        preparedAgent,
+      );
+      if (baseInstructions) {
+        segments.push(baseInstructions);
+      }
+
+      const agentInstructions = await renderAgentInstructions(
+        agent.instructions,
+        runContext,
+        preparedAgent,
+      );
+      if (agentInstructions) {
+        segments.push(
+          renderInstructionSection('Agent instructions', agentInstructions),
+        );
+      }
+
+      const capabilityFragments = capabilityInstructions.filter(
+        (fragment): fragment is string => Boolean(fragment),
+      );
+      if (capabilityFragments.length > 0) {
+        segments.push(
+          renderInstructionSection(
+            'Sandbox capability instructions',
+            capabilityFragments.join('\n\n'),
+          ),
+        );
+      }
+
+      const remoteMountPolicy =
+        renderRemoteMountPolicyInstructions(runtimeManifest);
+      if (remoteMountPolicy) {
+        segments.push(
+          renderInstructionSection(
+            'Sandbox remote mount policy',
+            remoteMountPolicy,
+          ),
+        );
+      }
+
+      segments.push(renderFilesystemInstructions(runtimeManifest));
 
       return segments.join('\n\n');
     },
