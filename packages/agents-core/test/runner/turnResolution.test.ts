@@ -92,6 +92,182 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
+  it('runs apply_patch actions only after shell actions finish', async () => {
+    const events: string[] = [];
+    let releaseShell: () => void = () => {};
+    let markShellStarted: () => void = () => {};
+    const shellReleased = new Promise<void>((resolve) => {
+      releaseShell = resolve;
+    });
+    const shellStarted = new Promise<void>((resolve) => {
+      markShellStarted = resolve;
+    });
+    const shellToolDef = shellTool({
+      shell: {
+        async run() {
+          events.push('shell-start');
+          markShellStarted();
+          await shellReleased;
+          events.push('shell-end');
+          return {
+            output: [
+              {
+                stdout: 'done',
+                stderr: '',
+                outcome: { type: 'exit', exitCode: 0 },
+              },
+            ],
+          };
+        },
+      },
+    });
+    const editor = new FakeEditor();
+    vi.spyOn(editor, 'updateFile').mockImplementation(async () => {
+      events.push('patch');
+      return { status: 'completed' };
+    });
+    const applyPatch = applyPatchTool({ editor });
+    const agent = new Agent({
+      name: 'ShellPatchAgent',
+      tools: [shellToolDef, applyPatch],
+    });
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call-shell',
+      status: 'completed',
+      action: { commands: ['swap path'] },
+    };
+    const patchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call-patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        new ToolCallItem(shellCall, agent),
+        new ToolCallItem(patchCall, agent),
+      ],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [{ toolCall: patchCall, applyPatch }],
+      mcpApprovalRequests: [],
+      toolsUsed: [shellToolDef.name, applyPatch.name],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const resultPromise = resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    await shellStarted;
+    expect(events).toEqual(['shell-start']);
+    expect(editor.updateFile).not.toHaveBeenCalled();
+
+    releaseShell();
+    const result = await resultPromise;
+
+    expect(events).toEqual(['shell-start', 'shell-end', 'patch']);
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('preserves model order when apply_patch precedes shell', async () => {
+    const events: string[] = [];
+    const shellToolDef = shellTool({
+      shell: {
+        async run() {
+          events.push('shell');
+          return {
+            output: [
+              {
+                stdout: 'done',
+                stderr: '',
+                outcome: { type: 'exit', exitCode: 0 },
+              },
+            ],
+          };
+        },
+      },
+    });
+    const editor = new FakeEditor();
+    vi.spyOn(editor, 'updateFile').mockImplementation(async () => {
+      events.push('patch');
+      return { status: 'completed' };
+    });
+    const applyPatch = applyPatchTool({ editor });
+    const agent = new Agent({
+      name: 'PatchShellAgent',
+      tools: [shellToolDef, applyPatch],
+    });
+    const patchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call-patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call-shell',
+      status: 'completed',
+      action: { commands: ['cat README.md'] },
+    };
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        new ToolCallItem(patchCall, agent),
+        new ToolCallItem(shellCall, agent),
+      ],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [{ toolCall: patchCall, applyPatch }],
+      mcpApprovalRequests: [],
+      toolsUsed: [applyPatch.name, shellToolDef.name],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    const result = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(events).toEqual(['patch', 'shell']);
+    expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
   it('emits hosted MCP approval responses when already approved', async () => {
     const agent = new Agent({ name: 'MCPAgent', outputType: 'text' });
     const approvalCall: protocol.HostedToolCallItem = {
@@ -1133,6 +1309,115 @@ describe('resolveInterruptedTurn', () => {
 
     expect(toolOutputs).toHaveLength(1);
     expect(editor.operations).toHaveLength(1);
+  });
+
+  it('preserves approved apply_patch and shell order when resuming an interruption', async () => {
+    const events: string[] = [];
+    const shellToolDef = shellTool({
+      shell: {
+        async run() {
+          events.push('shell');
+          return {
+            output: [
+              {
+                stdout: 'done',
+                stderr: '',
+                outcome: { type: 'exit', exitCode: 0 },
+              },
+            ],
+          };
+        },
+      },
+      needsApproval: async () => true,
+    });
+    const editor = new FakeEditor();
+    vi.spyOn(editor, 'updateFile').mockImplementation(async () => {
+      events.push('patch');
+      return { status: 'completed' };
+    });
+    const applyPatch = applyPatchTool({
+      editor,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({
+      name: 'PatchShellApprovalAgent',
+      tools: [shellToolDef, applyPatch],
+    });
+    const patchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call-patch',
+      status: 'completed',
+      operation: {
+        type: 'update_file',
+        path: 'README.md',
+        diff: 'diff --git',
+      },
+    };
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call-shell',
+      status: 'completed',
+      action: { commands: ['cat README.md'] },
+    };
+    const patchApproval = new ToolApprovalItem(
+      patchCall,
+      agent,
+      applyPatch.name,
+    );
+    const shellApproval = new ToolApprovalItem(
+      shellCall,
+      agent,
+      shellToolDef.name,
+    );
+    const originalItems = [
+      new ToolCallItem(patchCall, agent),
+      patchApproval,
+      new ToolCallItem(shellCall, agent),
+      shellApproval,
+    ];
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [
+        new ToolCallItem(patchCall, agent),
+        new ToolCallItem(shellCall, agent),
+      ],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [{ toolCall: shellCall, shell: shellToolDef }],
+      applyPatchActions: [{ toolCall: patchCall, applyPatch }],
+      mcpApprovalRequests: [],
+      toolsUsed: [applyPatch.name, shellToolDef.name],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+
+    const runner = new Runner({ tracingDisabled: true });
+    const state = new RunState(new RunContext(), 'hello', agent, 1);
+    const modelResponse: ModelResponse = {
+      output: [],
+      usage: new Usage(),
+    } as any;
+
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [patchApproval, shellApproval] },
+    };
+    state._context.approveTool(patchApproval);
+    state._context.approveTool(shellApproval);
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      originalItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      state,
+    );
+
+    expect(events).toEqual(['patch', 'shell']);
+    expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
   it('does not rerun completed tools when approvals are handled across resumes', async () => {

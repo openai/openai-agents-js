@@ -156,48 +156,18 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
   });
 
-  it('supports Zod objects with sets', () => {
-    const schema = z.object({
-      title: z.string(),
-      score: z.number().optional(),
-      tags: z.set(z.string()),
-    });
-
-    const jsonSchema = zodJsonSchemaCompat(schema);
-    expect(jsonSchema).toBeDefined();
-    expect(jsonSchema?.properties.title).toEqual({ type: 'string' });
-    expect(jsonSchema?.properties.score).toEqual({ type: 'number' });
-    expect(jsonSchema?.properties.tags).toEqual({
-      type: 'array',
-      uniqueItems: true,
-      items: { type: 'string' },
-    });
-    expect(jsonSchema?.required).toEqual(['title', 'tags']);
-  });
-
-  it('handles map, set, nullable, and enum fallbacks', () => {
+  it('handles nullable and enum fallbacks', () => {
     enum Status {
       Ready = 'ready',
       Done = 'done',
     }
 
     const schema = z.object({
-      map: z.map(z.string(), z.number()),
-      set: z.set(z.string()),
       nullable: z.string().nullable(),
       nativeEnum: z.nativeEnum(Status),
     });
 
     const jsonSchema = zodJsonSchemaCompat(schema);
-    expect(jsonSchema?.properties.map).toEqual({
-      type: 'array',
-      items: { type: 'number' },
-    });
-    expect(jsonSchema?.properties.set).toEqual({
-      type: 'array',
-      items: { type: 'string' },
-      uniqueItems: true,
-    });
     expect(jsonSchema?.properties.nullable).toEqual({
       anyOf: [{ type: 'string' }, { type: 'null' }],
     });
@@ -205,6 +175,21 @@ describe('utils/zodJsonSchemaCompat', () => {
       type: 'string',
       enum: ['ready', 'done'],
     });
+  });
+
+  it('rejects Zod types that cannot be produced by JSON.parse', () => {
+    for (const field of [
+      z.date(),
+      z.bigint(),
+      z.map(z.string(), z.number()),
+      z.set(z.string()),
+    ]) {
+      const schema = z.object({
+        value: field,
+      });
+
+      expect(zodJsonSchemaCompat(schema)).toBeUndefined();
+    }
   });
 
   it('includes type:"number" for numeric native enums', () => {

@@ -156,3 +156,4 @@ bundled/
 .dev.vars
 
 .pnpm-store/
+.vercel/

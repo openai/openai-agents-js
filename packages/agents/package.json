@@ -13,6 +13,16 @@
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
     },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "require": "./dist/sandbox/index.js",
+      "import": "./dist/sandbox/index.mjs"
+    },
+    "./sandbox/local": {
+      "types": "./dist/sandbox/local.d.ts",
+      "require": "./dist/sandbox/local.js",
+      "import": "./dist/sandbox/local.mjs"
+    },
     "./realtime": {
       "types": "./dist/realtime/index.d.ts",
       "require": "./dist/realtime/index.js",
@@ -56,6 +66,12 @@
   ],
   "typesVersions": {
     "*": {
+      "sandbox": [
+        "dist/sandbox/index.d.ts"
+      ],
+      "sandbox/local": [
+        "dist/sandbox/local.d.ts"
+      ],
       "realtime": [
         "dist/realtime/index.d.ts"
       ],

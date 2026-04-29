@@ -6,6 +6,7 @@ import {
   deserializeItem,
   CURRENT_SCHEMA_VERSION,
 } from '../src/runState';
+import { processedResponseRequiresExecutionToolRehydration } from '../src/sandbox/runtime/toolRehydration';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 import { Usage } from '../src/usage';
@@ -36,7 +37,27 @@ import { RunResult } from '../src/result';
 import { createAgentSpan } from '../src/tracing';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import type { MCPServer, MCPTool } from '../src/mcp';
+import { SANDBOX_SESSION_STATE_VERSION, SandboxAgent } from '../src/sandbox';
 import { z } from 'zod';
+
+function sandboxSessionStateEnvelope(
+  providerState: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+): any {
+  return {
+    version: SANDBOX_SESSION_STATE_VERSION,
+    backendId: 'unix-local',
+    manifest: {
+      version: 1,
+      root: '/workspace',
+      entries: {},
+      environment: {},
+    },
+    workspaceReady: true,
+    providerState,
+    ...overrides,
+  };
+}
 
 describe('RunState', () => {
   it('initializes with default values', () => {
@@ -170,6 +191,70 @@ describe('RunState', () => {
 
     const restored = await RunState.fromString(agent, state.toString());
     expect(restored._context.toolInput).toEqual(context.toolInput);
+  });
+
+  it('serializes sandbox state with schema version 1.9', async () => {
+    const context = new RunContext({ foo: 'bar' });
+    const agent = new Agent({ name: 'SandboxStateAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    state._sandbox = {
+      backendId: 'unix-local',
+      currentAgentKey: 'sandbox-state-agent',
+      currentAgentName: 'SandboxStateAgent',
+      sessionState: sandboxSessionStateEnvelope(
+        { workspaceId: 'ws_123' },
+        {
+          snapshotFingerprint: 'fp_123',
+          snapshotFingerprintVersion: 'v1',
+        },
+      ),
+      sessionsByAgent: {
+        SandboxStateAgent: {
+          backendId: 'unix-local',
+          currentAgentKey: 'sandbox-state-agent',
+          currentAgentName: 'SandboxStateAgent',
+          sessionState: sandboxSessionStateEnvelope(
+            { workspaceId: 'ws_123' },
+            {
+              snapshotFingerprint: 'fp_123',
+              snapshotFingerprintVersion: 'v1',
+            },
+          ),
+          preservedOwnedSession: true,
+          reuseLiveSession: false,
+        },
+      },
+    };
+
+    const serialized = state.toJSON();
+    expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(serialized.sandbox).toEqual(state._sandbox);
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    expect(restored._sandbox).toEqual(state._sandbox);
+  });
+
+  it('keeps reading schema 1.8 payloads without sandbox state', async () => {
+    const context = new RunContext({ foo: 'bar' });
+    const agent = new Agent({ name: 'LegacySandboxStateAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const serialized = state.toJSON();
+    const legacyPayload = {
+      ...serialized,
+      $schemaVersion: '1.8' as const,
+    };
+    delete (legacyPayload as { sandbox?: unknown }).sandbox;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(legacyPayload),
+    );
+
+    expect(restored._sandbox).toBeUndefined();
+    expect(restored._currentAgent.name).toBe('LegacySandboxStateAgent');
   });
 
   it('does not serialize runtime-only agent-tool metadata', async () => {
@@ -1907,6 +1992,40 @@ describe('deserialize helpers', () => {
     expect(
       restored._lastProcessedResponse?.applyPatchActions[0]?.applyPatch,
     ).toBe(editorTool);
+  });
+
+  it('deserializeProcessedResponse restores sandbox-injected apply_patch placeholders', async () => {
+    const editorTool = applyPatchTool({ editor: new FakeEditor() });
+    const agent = new SandboxAgent({ name: 'SandboxEditor' });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const call: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'ap_sandbox',
+      status: 'completed',
+      operation: { type: 'delete_file', path: 'tmp.txt' },
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [{ toolCall: call, applyPatch: editorTool }],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(
+      restored._lastProcessedResponse?.applyPatchActions[0]?.applyPatch.name,
+    ).toBe('apply_patch');
+    expect(
+      processedResponseRequiresExecutionToolRehydration(
+        restored._lastProcessedResponse,
+      ),
+    ).toBe(true);
   });
 
   it('fromString tolerates agents gaining MCP servers after serialization', async () => {

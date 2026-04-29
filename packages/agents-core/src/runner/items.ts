@@ -110,7 +110,7 @@ export function extractOutputItemsFromRunItems(
   return items
     .filter((item) => item.type !== 'tool_approval_item')
     .map((item) => {
-      const rawItem = item.rawItem as AgentInputItem;
+      const rawItem = withoutNullStatus(item.rawItem as AgentInputItem);
       if (!omitReasoningItemIds || item.type !== 'reasoning_item') {
         return rawItem;
       }
@@ -120,6 +120,20 @@ export function extractOutputItemsFromRunItems(
       const { id: _id, ...withoutId } = rawItem as Record<string, unknown>;
       return withoutId as AgentInputItem;
     });
+}
+
+function withoutNullStatus(item: AgentInputItem): AgentInputItem {
+  if (
+    !item ||
+    typeof item !== 'object' ||
+    !('status' in item) ||
+    (item as { status?: unknown }).status !== null
+  ) {
+    return item;
+  }
+
+  const { status: _status, ...withoutStatus } = item as Record<string, unknown>;
+  return withoutStatus as AgentInputItem;
 }
 
 function collectCompletedCallIdsByResultType(
