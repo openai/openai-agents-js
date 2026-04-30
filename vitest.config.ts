@@ -5,6 +5,16 @@ import { defineConfig } from 'vitest/config';
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
+const testAliases = {
+  '@openai/agents-core/sandbox/local': resolve(
+    rootDir,
+    'packages/agents-core/src/sandbox/local.ts',
+  ),
+  '@openai/agents-core/sandbox': resolve(
+    rootDir,
+    'packages/agents-core/src/sandbox/index.ts',
+  ),
+};
 
 const baseTestConfig = {
   setupFiles: [resolve(rootDir, 'helpers/tests/console-guard.ts')],
@@ -25,8 +35,12 @@ const packageProjects = packageEntries.map((entry) => {
 
   return {
     root,
+    resolve: {
+      alias: testAliases,
+    },
     test: {
       ...baseTestConfig,
+      alias: testAliases,
       name,
     },
   };
@@ -34,6 +48,7 @@ const packageProjects = packageEntries.map((entry) => {
 
 export default defineConfig({
   test: {
+    alias: testAliases,
     pool: 'threads',
     projects: packageProjects,
     // Coverage options are global in Vitest workspaces.

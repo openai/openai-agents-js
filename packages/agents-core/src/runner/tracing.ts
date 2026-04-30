@@ -115,6 +115,7 @@ export function ensureAgentSpan<TContext>(
   const { agent, handoffs, tools, currentSpan } = params;
   const existingSpan = currentSpan;
   if (existingSpan) {
+    existingSpan.spanData.handoffs = handoffs.map((h) => h.agentName);
     existingSpan.spanData.tools = tools.map((t) => t.name);
     return existingSpan;
   }
