@@ -186,6 +186,7 @@ type ActiveModalProcess = {
   done: boolean;
   exitCode: number | null;
   donePromise: Promise<void>;
+  waitError?: unknown;
   stopOutputPumps?: () => Promise<void>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
 };
@@ -805,7 +806,16 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       'ModalSandboxClient',
       'modal',
       'restore snapshot_directory',
-      async () =>
+      async () => {
+        if (!ownsSandbox) {
+          const image = await withOptionalTimeoutMs(
+            this.modalImageFromId(snapshotId),
+            this.state.snapshotFilesystemRestoreTimeoutMs,
+            'Modal snapshot_directory restore timed out.',
+          );
+          await sandbox.mountImage!(this.state.manifest.root, image);
+          return;
+        }
         await withOptionalTimeoutMs(
           (async () => {
             const image = await this.modalImageFromId(snapshotId);
@@ -814,11 +824,10 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
           this.state.snapshotFilesystemRestoreTimeoutMs,
           'Modal snapshot_directory restore timed out.',
           async () => {
-            if (ownsSandbox) {
-              await terminateModalSandboxAfterTimeout(sandbox);
-            }
+            await terminateModalSandboxAfterTimeout(sandbox);
           },
-        ),
+        );
+      },
       { sandboxId: this.state.sandboxId, snapshotId },
     );
   }
@@ -1007,7 +1016,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       path,
       options,
       runCommand: async (command) => {
-        const process = await this.sandbox.exec(['/bin/sh', '-lc', command], {
+        const process = await this.sandbox.exec(['/bin/sh', '-c', command], {
           mode: 'text',
           workdir: this.state.manifest.root,
           stdout: 'pipe',
@@ -1078,7 +1087,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   private archiveIo() {
     return {
       runCommand: async (command: string) => {
-        const process = await this.sandbox.exec(['/bin/sh', '-lc', command], {
+        const process = await this.sandbox.exec(['/bin/sh', '-c', command], {
           mode: 'text',
           workdir: this.state.manifest.root,
           env: this.state.environment,
@@ -2164,7 +2173,8 @@ function snapshotIdFromModalResult(
 
 function buildShellCommand(args: ExecCommandArgs): string[] {
   const shellPath = args.shell ?? '/bin/sh';
-  const flag = (args.login ?? true) ? '-lc' : '-c';
+  const login = args.shell ? (args.login ?? true) : false;
+  const flag = login ? '-lc' : '-c';
   return [shellPath, flag, args.cmd];
 }
 
@@ -2195,6 +2205,9 @@ function createActiveProcess(
   activeProcess.donePromise = (async () => {
     try {
       activeProcess.exitCode = await process.wait();
+      await Promise.allSettled([stdoutPump.promise, stderrPump.promise]);
+    } catch (error) {
+      activeProcess.waitError = error;
       await Promise.allSettled([stdoutPump.promise, stderrPump.promise]);
     } finally {
       activeProcess.done = true;
@@ -2281,6 +2294,21 @@ async function waitForProcessOrTimeout(
       clearTimeout(timeout);
     }
   }
+  if (activeProcess.waitError) {
+    await activeProcess.stopOutputPumps?.();
+    throw new SandboxProviderError(
+      'ModalSandboxClient failed to wait for process completion.',
+      {
+        provider: 'modal',
+        operation: 'wait process',
+        cause: modalErrorMessage(activeProcess.waitError),
+      },
+    );
+  }
+}
+
+function modalErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function joinCommandOutput(activeProcess: ActiveModalProcess): string {

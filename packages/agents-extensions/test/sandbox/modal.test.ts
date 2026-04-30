@@ -242,7 +242,7 @@ describe('ModalSandboxClient', () => {
 
     sandboxExecMock.mockImplementation(
       async (command: string[], _params?: Record<string, unknown>) => {
-        if (command[0] === '/bin/sh' && command[1] === '-lc') {
+        if (command[0] === '/bin/sh') {
           const resolvedPath = resolvedRemotePathFromValidationCommand(
             command[2] ?? '',
           );
@@ -259,11 +259,7 @@ describe('ModalSandboxClient', () => {
           }
         }
 
-        if (
-          command[0] === '/bin/sh' &&
-          command[1] === '-lc' &&
-          command[2] === 'ls'
-        ) {
+        if (command[0] === '/bin/sh' && command[2] === 'ls') {
           return {
             stdin: {
               writeText: async (_text: string) => {},
@@ -393,6 +389,32 @@ describe('ModalSandboxClient', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test('wraps rejected process waits as provider errors', async () => {
+    sandboxExecMock.mockResolvedValueOnce({
+      stdin: {
+        writeText: async (_text: string) => {},
+        close: async () => {},
+      },
+      stdout: textStream('partial stdout\n'),
+      stderr: textStream('partial stderr\n'),
+      wait: async () => {
+        throw new Error('wait failed');
+      },
+    });
+    const client = new ModalSandboxClient();
+    const session = await client.create(new Manifest(), {
+      appName: 'sandbox-tests',
+    } satisfies ModalSandboxClientOptions);
+
+    await expect(session.execCommand({ cmd: 'false' })).rejects.toMatchObject({
+      details: {
+        provider: 'modal',
+        operation: 'wait process',
+        cause: 'wait failed',
+      },
+    });
   });
 
   test('allows disabling the Modal sleep command image override', async () => {
@@ -1191,7 +1213,7 @@ describe('ModalSandboxClient', () => {
     const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
     sandboxExecMock.mockImplementation(
       async (command: string[], _params?: Record<string, unknown>) => {
-        if (command[0] === '/bin/sh' && command[1] === '-lc') {
+        if (command[0] === '/bin/sh') {
           const resolvedPath = resolvedRemotePathFromValidationCommand(
             command[2] ?? '',
           );
@@ -1676,7 +1698,7 @@ describe('ModalSandboxClient', () => {
     expect(sandboxMountImageMock).not.toHaveBeenCalled();
   });
 
-  test('does not terminate reused sandboxes when snapshot_directory restores resolve after timeout', async () => {
+  test('waits for reused sandbox snapshot_directory mounts instead of timing out late mutations', async () => {
     const previousTerminateMock = vi.fn().mockResolvedValue(undefined);
     const previousSandbox = {
       sandboxId: 'sbx_existing',
@@ -1706,12 +1728,17 @@ describe('ModalSandboxClient', () => {
     const pendingMount = deferred<void>();
     sandboxMountImageMock.mockReturnValueOnce(pendingMount.promise);
 
-    await expect(session.hydrateWorkspace(snapshotBytes)).rejects.toThrow(
-      'Modal snapshot_directory restore timed out.',
-    );
+    let restoreCompleted = false;
+    const restorePromise = session.hydrateWorkspace(snapshotBytes).then(() => {
+      restoreCompleted = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
+    expect(restoreCompleted).toBe(false);
+    expect(sandboxMountImageMock).toHaveBeenCalledOnce();
     pendingMount.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await restorePromise;
+
     expect(previousTerminateMock).not.toHaveBeenCalled();
   });
 
