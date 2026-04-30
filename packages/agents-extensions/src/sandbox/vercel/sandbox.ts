@@ -1077,10 +1077,14 @@ async function resolveVercelCredentials(
     token: options.token ?? envOptions.token,
   });
   if (layeredCredentials.token) {
-    return (
-      (await refreshLayeredVercelCliCredentials(layeredCredentials)) ??
-      layeredCredentials
-    );
+    const refreshedCredentials =
+      await refreshLayeredVercelCliCredentials(layeredCredentials);
+    if (refreshedCredentials === null) {
+      const { token: _token, ...credentialsWithoutToken } = layeredCredentials;
+      void _token;
+      return credentialsWithoutToken;
+    }
+    return refreshedCredentials ?? layeredCredentials;
   }
 
   if (Object.keys(layeredCredentials).length > 0) {
@@ -1137,7 +1141,7 @@ async function resolveVercelCliAuthToken(): Promise<string | undefined> {
 
 async function refreshLayeredVercelCliCredentials(
   credentials: Record<string, string>,
-): Promise<Record<string, string> | undefined> {
+): Promise<Record<string, string> | null | undefined> {
   if (!credentials.token) {
     return undefined;
   }
@@ -1154,7 +1158,7 @@ async function refreshLayeredVercelCliCredentials(
 
   const resolvedAuth = await resolveVercelCliAuth(authModule, auth);
   if (!resolvedAuth?.token) {
-    return undefined;
+    return null;
   }
 
   return {
@@ -1218,6 +1222,8 @@ function applyResolvedVercelCredentials(
   }
   if (credentials.token) {
     state.token = credentials.token;
+  } else {
+    delete state.token;
   }
 }
 

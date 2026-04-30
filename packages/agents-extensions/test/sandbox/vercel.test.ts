@@ -873,6 +873,46 @@ describe('VercelSandboxClient', () => {
     }
   });
 
+  test('drops expired serialized CLI tokens when refresh cannot run', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-expired-'));
+    const authDir = join(root, 'auth');
+    mkdirSync(authDir, { recursive: true });
+    getAuthMock.mockReturnValue({
+      token: 'cli_access_token',
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+
+    try {
+      const client = new VercelSandboxClient();
+      const state = await client.deserializeSessionState({
+        manifest: new Manifest(),
+        sandboxId: 'vercel_existing',
+        workspacePersistence: 'tar',
+        environment: {},
+        projectId: 'prj_serialized',
+        teamId: 'team_serialized',
+        token: 'cli_access_token',
+      });
+
+      await client.resume(state);
+
+      expect(refreshTokenMock).not.toHaveBeenCalled();
+      expect(getMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxId: 'vercel_existing',
+          projectId: 'prj_serialized',
+          teamId: 'team_serialized',
+        }),
+      );
+      expect(getMock.mock.calls[0]?.[0]).not.toHaveProperty('token');
+      expect(state.token).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('retains serialized access token credentials when resuming snapshot sandboxes', async () => {
     createMock.mockResolvedValueOnce(makeSandbox('vercel_restored'));
     const client = new VercelSandboxClient();
