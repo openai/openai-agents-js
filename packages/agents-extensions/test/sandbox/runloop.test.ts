@@ -106,6 +106,18 @@ function execResult(args: {
   };
 }
 
+function runloopRealpathResult(command: string) {
+  if (!command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
+    return undefined;
+  }
+  const home = command.match(/^cd '([^']+)' && /u)?.[1] ?? RUNLOOP_HOME;
+  const root = command.match(/mkdir -p -- '([^']+)'/u)?.[1] ?? home;
+  return execResult({
+    exitCode: 0,
+    stdout: `OPENAI_AGENTS_REALPATH_HOME=${home}\nOPENAI_AGENTS_REALPATH_ANCESTOR=${home}\nOPENAI_AGENTS_REALPATH_ROOT=${root}\n`,
+  });
+}
+
 function mockRunloopDevbox(overrides: Record<string, unknown> = {}) {
   return {
     id: 'devbox_test',
@@ -309,6 +321,10 @@ describe('RunloopSandboxClient', () => {
     axonQueryMock.mockResolvedValue({ rows: [] });
     axonBatchMock.mockResolvedValue({ results: [] });
     execMock.mockImplementation(async (command: string) => {
+      const realpathResult = runloopRealpathResult(command);
+      if (realpathResult) {
+        return realpathResult;
+      }
       const resolvedPath = resolvedRemotePathFromValidationCommand(command);
       return {
         exitCode: 0,
@@ -418,15 +434,20 @@ describe('RunloopSandboxClient', () => {
   test('creates subdirectory manifest roots before path validation', async () => {
     let rootCreated = false;
     execMock.mockImplementation(async (command: string) => {
-      if (command === "cd '/home/user' && mkdir -p -- '/home/user/project'") {
+      if (command.includes("mkdir -p -- '/home/user/project'")) {
         rootCreated = true;
-        return execResult({ exitCode: 0 });
+        const realpathResult = runloopRealpathResult(command);
+        return realpathResult ?? execResult({ exitCode: 0 });
       }
       if (command.startsWith("cd '/home/user/project' &&") && !rootCreated) {
         return execResult({
           exitCode: 1,
           stderr: 'cd: /home/user/project: No such file or directory',
         });
+      }
+      const realpathResult = runloopRealpathResult(command);
+      if (realpathResult) {
+        return realpathResult;
       }
       const resolvedPath = resolvedRemotePathFromValidationCommand(command);
       return execResult({
@@ -631,6 +652,80 @@ describe('RunloopSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxConfigurationError);
   });
 
+  test('rejects manifest roots that resolve outside the effective Runloop home', async () => {
+    execMock.mockImplementation(async (command: string) => {
+      if (command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
+        return execResult({
+          exitCode: 0,
+          stdout: `OPENAI_AGENTS_REALPATH_HOME=${RUNLOOP_HOME}\nOPENAI_AGENTS_REALPATH_ANCESTOR=${RUNLOOP_HOME}\nOPENAI_AGENTS_REALPATH_ROOT=/\n`,
+        });
+      }
+      return execResult({ exitCode: 0, stdout: '' });
+    });
+    const client = new RunloopSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          root: '/home/user/link',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxConfigurationError);
+
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  test('checks manifest root ancestor confinement before creating directories', async () => {
+    let prepareRootCommand = '';
+    execMock.mockImplementation(async (command: string) => {
+      if (command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
+        prepareRootCommand = command;
+        return execResult({
+          exitCode: 0,
+          stdout: `OPENAI_AGENTS_REALPATH_HOME=${RUNLOOP_HOME}\nOPENAI_AGENTS_REALPATH_ANCESTOR=/\nOPENAI_AGENTS_REALPATH_ROOT=\n`,
+        });
+      }
+      return execResult({ exitCode: 0, stdout: '' });
+    });
+    const client = new RunloopSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          root: '/home/user/link/project',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxConfigurationError);
+
+    expect(prepareRootCommand.indexOf('ancestor_real=')).toBeLessThan(
+      prepareRootCommand.indexOf("mkdir -p -- '/home/user/link/project'"),
+    );
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects effective Runloop homes that resolve to filesystem root', async () => {
+    execMock.mockImplementation(async (command: string) => {
+      if (command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
+        return execResult({
+          exitCode: 0,
+          stdout: `OPENAI_AGENTS_REALPATH_HOME=/\nOPENAI_AGENTS_REALPATH_ANCESTOR=/\nOPENAI_AGENTS_REALPATH_ROOT=/home/user/project\n`,
+        });
+      }
+      return execResult({ exitCode: 0, stdout: '' });
+    });
+    const client = new RunloopSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          root: '/home/user/project',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxConfigurationError);
+
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
   test('rejects unsafe usernames before deriving the effective home', async () => {
     for (const username of [
       '',
@@ -697,6 +792,10 @@ describe('RunloopSandboxClient', () => {
     const client = new RunloopSandboxClient();
     const session = await client.create();
     execMock.mockImplementation(async (command: string) => {
+      const realpathResult = runloopRealpathResult(command);
+      if (realpathResult) {
+        return realpathResult;
+      }
       if (command.includes("mkdir -p -- '/home/user/logs'")) {
         return execResult({
           exitCode: 1,
@@ -1203,6 +1302,40 @@ describe('RunloopSandboxClient', () => {
     expect(resumed.state.baseUrl).toBeUndefined();
   });
 
+  test('uses trusted user parameters when resuming sessions', async () => {
+    const userParameters: RunloopUserParameters = {
+      username: 'root',
+      uid: 0,
+    };
+    const client = new RunloopSandboxClient({
+      userParameters,
+    });
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest({
+        root: '/root',
+      }),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {
+        PATH: '/tmp/attacker-bin',
+      },
+      userParameters: {
+        username: 'agent',
+        uid: 1001,
+      },
+    });
+
+    const resumed = await client.resume(state);
+
+    expect(resumed.state.userParameters).toEqual(userParameters);
+    const commands = execMock.mock.calls.map(([command]) => String(command));
+    expect(commands.length).toBeGreaterThan(0);
+    for (const command of commands) {
+      expect(command).not.toContain('export PATH=');
+      expect(command).not.toContain('/tmp/attacker-bin');
+    }
+  });
+
   test('rejects persisted resume manifests outside the effective Runloop home', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopManifest(), {
@@ -1336,6 +1469,130 @@ describe('RunloopSandboxClient', () => {
     expect(recreated.state.devboxId).toBe('devbox_test');
   });
 
+  test('uses trusted launch parameters when recreating missing devboxes', async () => {
+    const client = new RunloopSandboxClient({
+      launchParameters: {
+        trusted: true,
+      },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      launchParameters: {
+        attacker: true,
+      },
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await client.resume(state);
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launch_parameters: expect.objectContaining({
+          trusted: true,
+        }),
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(createMock.mock.calls.at(-1)?.[0])).not.toContain(
+      'attacker',
+    );
+  });
+
+  test('uses trusted user parameters when recreating missing devboxes', async () => {
+    const userParameters: RunloopUserParameters = {
+      username: 'agent',
+      uid: 1001,
+    };
+    const client = new RunloopSandboxClient({
+      userParameters,
+    });
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest({
+        root: '/home/agent',
+      }),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      userParameters: {
+        username: 'root',
+        uid: 0,
+      },
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await client.resume(state);
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launch_parameters: expect.objectContaining({
+          user_parameters: userParameters,
+        }),
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(createMock.mock.calls.at(-1)?.[0])).not.toContain(
+      'root',
+    );
+  });
+
+  test('uses trusted blueprint settings when recreating missing devboxes', async () => {
+    const client = new RunloopSandboxClient({
+      blueprintName: 'trusted-blueprint',
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      blueprintName: 'attacker-blueprint',
+      blueprintId: 'bp_attacker',
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await client.resume(state);
+
+    expect(createFromBlueprintNameMock).toHaveBeenCalledWith(
+      'trusted-blueprint',
+      expect.objectContaining({
+        environment_variables: {},
+      }),
+      undefined,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify(createFromBlueprintNameMock.mock.calls.at(-1)),
+    ).not.toContain('attacker');
+  });
+
+  test('uses trusted blueprint ids when recreating missing devboxes', async () => {
+    const client = new RunloopSandboxClient({
+      blueprintId: 'bp_trusted',
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      blueprintId: 'bp_attacker',
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await client.resume(state);
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blueprint_id: 'bp_trusted',
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(createMock.mock.calls.at(-1))).not.toContain(
+      'bp_attacker',
+    );
+  });
+
   test('rejects persisted secret refs when recreating missing devboxes', async () => {
     const client = new RunloopSandboxClient();
     const state = await client.deserializeSessionState({
@@ -1462,6 +1719,32 @@ describe('RunloopSandboxClient', () => {
         String(command).includes("'rclone' 'mount'"),
       ),
     ).toBe(true);
+  });
+
+  test('drops persisted secret refs when restoring native snapshots', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(runloopManifest(), {
+      managedSecrets: {
+        API_KEY: 'secret-value',
+      },
+    });
+    const snapshotBytes = await session.persistWorkspace();
+    session.state.secretRefs = {
+      API_KEY: 'attacker-secret',
+    };
+
+    await session.hydrateWorkspace(snapshotBytes);
+
+    expect(createFromSnapshotMock).toHaveBeenCalledWith(
+      'snap_runloop',
+      {
+        environment_variables: {},
+      },
+      undefined,
+    );
+    expect(
+      JSON.stringify(createFromSnapshotMock.mock.calls.at(-1)?.[1]),
+    ).not.toContain('attacker-secret');
   });
 
   test('shuts down replacement devboxes when snapshot mount restore fails', async () => {
@@ -1703,6 +1986,10 @@ describe('RunloopSandboxClient', () => {
   test('fails mount commands when Runloop exit code is unknown', async () => {
     const client = new RunloopSandboxClient();
     execMock.mockImplementation(async (command: string) => {
+      const realpathResult = runloopRealpathResult(command);
+      if (realpathResult) {
+        return realpathResult;
+      }
       const resolvedPath = resolvedRemotePathFromValidationCommand(command);
       if (resolvedPath) {
         return execResult({
@@ -1787,6 +2074,49 @@ describe('RunloopSandboxClient', () => {
 
     expect(rootMountCommands.length).toBeGreaterThan(0);
     for (const command of rootMountCommands) {
+      expect(command).not.toContain('export PATH=');
+      expect(command).not.toContain('/tmp/attacker-bin');
+    }
+  });
+
+  test('does not export manifest environment into default root session mount commands', async () => {
+    const client = new RunloopSandboxClient({
+      userParameters: {
+        username: 'root',
+        uid: 0,
+      },
+    });
+
+    await client.create(
+      runloopManifest({
+        root: '/root',
+        environment: {
+          PATH: '/tmp/attacker-bin',
+        },
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new RunloopCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const defaultRootMountCommands = execMock.mock.calls
+      .map(([command]) => String(command))
+      .filter(
+        (command) =>
+          !command.startsWith("sudo -n -u 'root' -- sh -lc ") &&
+          (command.includes('chmod a+rw /dev/fuse') ||
+            command.includes("'rclone' 'mount'")),
+      );
+
+    expect(defaultRootMountCommands.length).toBeGreaterThan(0);
+    for (const command of defaultRootMountCommands) {
       expect(command).not.toContain('export PATH=');
       expect(command).not.toContain('/tmp/attacker-bin');
     }

@@ -814,6 +814,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         snapshotId,
         createRunloopParams(this.state, this.state.environment, {
           includeBlueprint: false,
+          includeSecrets: false,
         }),
         createRunloopOptions(this.state),
       );
@@ -974,6 +975,10 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       .catch(() => {});
   }
 
+  async ensureCurrentManifestRoot(): Promise<void> {
+    await this.ensureManifestRoot(this.state.manifest.root);
+  }
+
   private async unmountActiveMounts(): Promise<void> {
     for (const mountPath of [...this.activeMountPaths].reverse()) {
       await unmountRcloneMount({
@@ -992,7 +997,11 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         command,
         undefined,
         options.timeoutMs ?? this.state.timeouts?.fastOperationTimeoutMs,
-        mountCommandEnvironment(this.state.environment, options.user),
+        mountCommandEnvironment(
+          this.state.environment,
+          options.user,
+          this.state.userParameters,
+        ),
         options.user,
       );
       return {
@@ -1004,9 +1013,22 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   }
 
   private async ensureManifestRoot(root: string): Promise<void> {
+    const home = effectiveRunloopHome(this.state.userParameters);
+    const rootParent = root === home ? root : pathPosix.dirname(root);
     const result = await this.execShellInWorkdir(
-      `mkdir -p -- ${shellQuote(root)}`,
-      effectiveRunloopHome(this.state.userParameters),
+      [
+        `home_real=$(cd -- ${shellQuote(home)} && pwd -P)`,
+        `root_ancestor=${shellQuote(rootParent)}`,
+        'while [ ! -e "$root_ancestor" ]; do parent=$(dirname -- "$root_ancestor"); [ "$parent" = "$root_ancestor" ] && break; root_ancestor="$parent"; done',
+        'ancestor_real=$(cd -- "$root_ancestor" && pwd -P)',
+        `printf 'OPENAI_AGENTS_REALPATH_HOME=%s\\nOPENAI_AGENTS_REALPATH_ANCESTOR=%s\\n' "$home_real" "$ancestor_real"`,
+        'case "$ancestor_real" in "$home_real"|"$home_real"/*) ancestor_confined=1 ;; *) ancestor_confined=0 ;; esac',
+        `if [ "$home_real" = / ] || [ "$ancestor_confined" != 1 ]; then printf 'OPENAI_AGENTS_REALPATH_ROOT=%s\\n' ''; exit 0; fi`,
+        `mkdir -p -- ${shellQuote(root)}`,
+        `root_real=$(cd -- ${shellQuote(root)} && pwd -P)`,
+        `printf 'OPENAI_AGENTS_REALPATH_ROOT=%s\\n' "$root_real"`,
+      ].join(' && '),
+      home,
       this.state.timeouts?.fastOperationTimeoutMs,
       {},
     );
@@ -1021,6 +1043,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         },
       );
     }
+    assertRunloopManifestRootRealPath(root, home, await result.stdout());
   }
 
   private async execShellWithEnvironment(
@@ -1485,9 +1508,10 @@ export class RunloopSandboxClient implements SandboxClient<
     const resumeState: RunloopSandboxSessionState = {
       ...state,
       baseUrl: this.options.baseUrl,
+      userParameters: this.options.userParameters,
       manifest: resolveRunloopManifestRoot(
         state.manifest,
-        state.userParameters,
+        this.options.userParameters,
         true,
       ),
     };
@@ -1506,6 +1530,7 @@ export class RunloopSandboxClient implements SandboxClient<
         devbox,
       });
       try {
+        await session.ensureCurrentManifestRoot();
         await rematerializeRunloopManifestMounts(session, resumeState.manifest);
       } catch (error) {
         await session.cleanupAfterFailedResume();
@@ -1520,10 +1545,10 @@ export class RunloopSandboxClient implements SandboxClient<
       });
       assertRunloopResumeRecreateSecretRefsTrusted(resumeState, this.options);
       const recreateOptions: RunloopSandboxResolvedOptions = {
-        blueprintName: resumeState.blueprintName,
-        blueprintId: resumeState.blueprintId,
+        blueprintName: this.options.blueprintName,
+        blueprintId: this.options.blueprintId,
         name: resumeState.name,
-        launchParameters: resumeState.launchParameters,
+        launchParameters: this.options.launchParameters,
         exposedPorts: resumeState.configuredExposedPorts,
         tunnel: resumeState.tunnel,
         gateways: resumeState.gateways,
@@ -1531,7 +1556,7 @@ export class RunloopSandboxClient implements SandboxClient<
         metadata: resumeState.metadata,
         managedSecrets: this.options.managedSecrets,
         pauseOnExit: resumeState.pauseOnExit,
-        userParameters: resumeState.userParameters,
+        userParameters: this.options.userParameters,
         env: resumeState.environment,
         baseUrl: this.options.baseUrl,
         createTimeoutMs: resumeState.createTimeoutMs,
@@ -1998,12 +2023,14 @@ function createRunloopParams(
   environment: Record<string, string>,
   options: {
     includeBlueprint?: boolean;
+    includeSecrets?: boolean;
   } = {},
 ): Record<string, unknown> {
   const createParams: Record<string, unknown> = {
     environment_variables: environment,
   };
   const includeBlueprint = options.includeBlueprint ?? true;
+  const includeSecrets = options.includeSecrets ?? true;
   const values = {
     blueprintId: includeBlueprint ? state.blueprintId : undefined,
     name: state.name,
@@ -2012,7 +2039,7 @@ function createRunloopParams(
     gateways: state.gateways,
     mcp: state.mcp,
     metadata: state.metadata,
-    secrets: state.secretRefs,
+    secrets: includeSecrets ? state.secretRefs : undefined,
   };
   for (const [key, value] of Object.entries(values)) {
     if (value !== undefined) {
@@ -2088,6 +2115,53 @@ function validateRunloopManifestRoot(manifest: Manifest, home: string): void {
       provider: 'runloop',
       root: manifest.root,
       effectiveHome: home,
+    },
+  );
+}
+
+function assertRunloopManifestRootRealPath(
+  root: string,
+  home: string,
+  stdout: string,
+): void {
+  const values = new Map(
+    stdout
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) =>
+        line.match(/^(OPENAI_AGENTS_REALPATH_(?:ANCESTOR|HOME|ROOT))=(.*)$/u),
+      )
+      .filter((match): match is RegExpMatchArray => match !== null)
+      .map((match) => [match[1], pathPosix.normalize(match[2] ?? '')]),
+  );
+  const realHome = values.get('OPENAI_AGENTS_REALPATH_HOME');
+  const realAncestor = values.get('OPENAI_AGENTS_REALPATH_ANCESTOR');
+  const realRoot = values.get('OPENAI_AGENTS_REALPATH_ROOT');
+  const normalizedHome = pathPosix.normalize(home);
+  const realHomeIsConfined =
+    realHome &&
+    realHome !== '/' &&
+    (realHome === normalizedHome || realHome.startsWith(`${normalizedHome}/`));
+  const realAncestorIsConfined =
+    realHome &&
+    realAncestor &&
+    (realAncestor === realHome || realAncestor.startsWith(`${realHome}/`));
+  const realRootIsConfined =
+    realHome &&
+    realRoot &&
+    (realRoot === realHome || realRoot.startsWith(`${realHome}/`));
+  if (realHomeIsConfined && realAncestorIsConfined && realRootIsConfined) {
+    return;
+  }
+  throw new SandboxConfigurationError(
+    `RunloopSandboxClient requires manifest.root to resolve to the effective Runloop home (${home}) or a subdirectory of it.`,
+    {
+      provider: 'runloop',
+      root,
+      effectiveHome: home,
+      resolvedRoot: realRoot,
+      resolvedHome: realHome,
+      resolvedAncestor: realAncestor,
     },
   );
 }
@@ -2190,8 +2264,10 @@ async function rematerializeRunloopManifestMounts(
 function mountCommandEnvironment(
   environment: Record<string, string>,
   user?: string,
+  userParameters?: RunloopUserParameters,
 ): Record<string, string> {
-  return user === 'root' ? {} : environment;
+  const effectiveUser = user ?? effectiveRunloopUsername(userParameters);
+  return effectiveUser === 'root' ? {} : environment;
 }
 
 function buildShellCommand(
