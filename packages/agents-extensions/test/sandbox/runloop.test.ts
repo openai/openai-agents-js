@@ -1336,6 +1336,29 @@ describe('RunloopSandboxClient', () => {
     }
   });
 
+  test('uses trusted launch parameters when resuming sessions', async () => {
+    const client = new RunloopSandboxClient({
+      launchParameters: {
+        trusted: true,
+      },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      launchParameters: {
+        attacker: true,
+      },
+    });
+
+    const resumed = await client.resume(state);
+
+    expect(resumed.state.launchParameters).toEqual({
+      trusted: true,
+    });
+  });
+
   test('rejects persisted resume manifests outside the effective Runloop home', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopManifest(), {
@@ -1776,6 +1799,40 @@ describe('RunloopSandboxClient', () => {
     expect(
       JSON.stringify(createFromSnapshotMock.mock.calls.at(-1)?.[1]),
     ).not.toContain('attacker-secret');
+  });
+
+  test('uses trusted launch parameters when restoring resumed native snapshots', async () => {
+    const client = new RunloopSandboxClient({
+      launchParameters: {
+        trusted: true,
+      },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+      launchParameters: {
+        attacker: true,
+      },
+    });
+    const resumed = await client.resume(state);
+    const snapshotBytes = await resumed.persistWorkspace();
+
+    await resumed.hydrateWorkspace(snapshotBytes);
+
+    expect(createFromSnapshotMock).toHaveBeenCalledWith(
+      'snap_runloop',
+      expect.objectContaining({
+        launch_parameters: expect.objectContaining({
+          trusted: true,
+        }),
+      }),
+      undefined,
+    );
+    expect(
+      JSON.stringify(createFromSnapshotMock.mock.calls.at(-1)?.[1]),
+    ).not.toContain('attacker');
   });
 
   test('shuts down replacement devboxes when snapshot mount restore fails', async () => {

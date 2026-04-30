@@ -1508,6 +1508,7 @@ export class RunloopSandboxClient implements SandboxClient<
     const resumeState: RunloopSandboxSessionState = {
       ...state,
       baseUrl: this.options.baseUrl,
+      launchParameters: this.options.launchParameters,
       userParameters: this.options.userParameters,
       manifest: resolveRunloopManifestRoot(
         state.manifest,
