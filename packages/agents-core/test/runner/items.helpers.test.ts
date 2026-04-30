@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { Agent } from '../../src/agent';
-import { RunToolCallItem, RunToolCallOutputItem } from '../../src/items';
+import {
+  RunMessageOutputItem,
+  RunToolCallItem,
+  RunToolCallOutputItem,
+} from '../../src/items';
 import {
   dropOrphanToolCalls,
+  extractOutputItemsFromRunItems,
   prepareModelInputItems,
 } from '../../src/runner/items';
 import type { AgentInputItem } from '../../src/types';
@@ -120,6 +125,27 @@ describe('prepareModelInputItems', () => {
       },
       shellCall.rawItem,
       shellOutput.rawItem,
+    ]);
+  });
+});
+
+describe('extractOutputItemsFromRunItems', () => {
+  it('omits null statuses from model input history', () => {
+    const agent = new Agent({ name: 'HelperAgent' });
+    const message = {
+      type: 'message',
+      role: 'assistant',
+      content: [],
+      status: null,
+    } as unknown as protocol.AssistantMessageItem;
+    const runItem = new RunMessageOutputItem(message, agent);
+
+    expect(extractOutputItemsFromRunItems([runItem])).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
     ]);
   });
 });

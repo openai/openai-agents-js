@@ -509,7 +509,7 @@ describe('Agent', () => {
     expect(calledOptions?.signal).toBe(abortController.signal);
   });
 
-  it('inherits only parent runner model config for nested agent tools by default', async () => {
+  it('inherits only the parent RunConfig model for nested agent tools by default', async () => {
     const agent = new Agent({
       name: 'Inherited Config Agent',
       instructions: 'You do tests.',

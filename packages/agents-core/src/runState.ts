@@ -29,6 +29,7 @@ import logger from './logger';
 import { handoff } from './handoff';
 import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
+import { SANDBOX_SESSION_STATE_VERSION } from './sandbox/session';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import type {
   ToolInputGuardrailResult,
@@ -58,6 +59,12 @@ import {
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
 } from './runner/toolSearch';
+import {
+  getSerializedApplyPatchToolPlaceholder,
+  getSerializedComputerToolPlaceholder,
+  getSerializedFunctionToolPlaceholder,
+  getSerializedShellToolPlaceholder,
+} from './sandbox/runtime/toolRehydration';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -77,8 +84,10 @@ import {
  * - 1.7: Adds optional approval rejection messages.
  * - 1.8: Adds tool search item variants, batched computer actions, and GA computer tool
  *   aliasing to serialized run state payloads.
+ * - 1.9: Adds optional sandbox session persistence with a versioned session-state
+ *   envelope for sandbox-agent resume.
  */
-export const CURRENT_SCHEMA_VERSION = '1.8' as const;
+export const CURRENT_SCHEMA_VERSION = '1.9' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -88,6 +97,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.5',
   '1.6',
   '1.7',
+  '1.8',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -222,6 +232,35 @@ const serializedTraceSchema = z.object({
   // Populated only if the trace was created with a per-run tracingApiKey (e.g., Runner.run({ tracing: { apiKey } }))
   // and serialization opts in to include it. By default this is omitted to avoid persisting secrets.
   tracing_api_key: z.string().optional().nullable(),
+});
+
+const sandboxSessionStateEnvelopeSchema = z.object({
+  version: z.literal(SANDBOX_SESSION_STATE_VERSION),
+  backendId: z.string(),
+  manifest: z.record(z.string(), z.any()),
+  snapshot: z.record(z.string(), z.any()).nullable().optional(),
+  snapshotFingerprint: z.string().nullable().optional(),
+  snapshotFingerprintVersion: z.string().nullable().optional(),
+  workspaceReady: z.boolean(),
+  exposedPorts: z.record(z.string(), z.any()).optional(),
+  providerState: z.record(z.string(), z.any()),
+});
+
+const sandboxSessionEntrySchema = z.object({
+  backendId: z.string(),
+  currentAgentKey: z.string(),
+  currentAgentName: z.string(),
+  sessionState: sandboxSessionStateEnvelopeSchema,
+  preservedOwnedSession: z.boolean().optional(),
+  reuseLiveSession: z.boolean().optional(),
+});
+
+const sandboxStateSchema = z.object({
+  backendId: z.string(),
+  currentAgentKey: z.string(),
+  currentAgentName: z.string(),
+  sessionState: sandboxSessionStateEnvelopeSchema,
+  sessionsByAgent: z.record(z.string(), sandboxSessionEntrySchema),
 });
 
 const serializedProcessedResponseSchema = z.object({
@@ -388,6 +427,7 @@ export const SerializedRunState = z.object({
   previousResponseId: z.string().optional(),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
   trace: serializedTraceSchema.nullable(),
+  sandbox: sandboxStateSchema.optional(),
 });
 
 export type FinalOutputSource = 'error_handler' | 'turn_resolution';
@@ -549,6 +589,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     string,
     ToolSearchRuntimeToolState<TContext>
   >();
+  /**
+   * Persisted sandbox session metadata for sandbox-agent resume.
+   */
+  public _sandbox: z.infer<typeof sandboxStateSchema> | undefined = undefined;
 
   constructor(
     context: RunContext<TContext>,
@@ -890,6 +934,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       trace: this._trace
         ? (this._trace.toJSON({ includeTracingApiKey }) as any)
         : null,
+      sandbox: this._sandbox,
     };
 
     // parsing the schema to ensure the output is valid for reparsing
@@ -981,7 +1026,7 @@ function assertSchemaVersionSupportsToolSearch(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.8') {
+  if (schemaVersion === '1.8' || schemaVersion === '1.9') {
     return;
   }
 
@@ -1433,6 +1478,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  state._sandbox = stateJson.sandbox ?? undefined;
   await rehydrateToolSearchRuntimeTools(state);
   state._lastProcessedResponse = stateJson.lastProcessedResponse
     ? await deserializeProcessedResponse(
@@ -1461,6 +1507,34 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     };
   }
   return state;
+}
+
+/**
+ * @internal
+ */
+export async function rehydrateProcessedResponseTools<
+  TContext,
+  TAgent extends Agent<any, any>,
+>(
+  initialAgent: TAgent,
+  state: RunState<TContext, TAgent>,
+  executionTools: Tool<TContext>[],
+): Promise<void> {
+  if (!state._lastProcessedResponse) {
+    return;
+  }
+
+  state._lastProcessedResponse = await deserializeProcessedResponse(
+    buildAgentMap(initialAgent),
+    state as RunState<TContext, Agent<any, any>>,
+    state._lastProcessedResponse as unknown as z.infer<
+      typeof serializedProcessedResponseSchema
+    >,
+    {
+      executionTools,
+      allowSerializedExecutionToolPlaceholder: false,
+    },
+  );
 }
 
 /**
@@ -1700,6 +1774,11 @@ function deserializeInterruptions(
     );
 }
 
+type DeserializeProcessedResponseOptions<TContext> = {
+  executionTools?: Tool<TContext>[];
+  allowSerializedExecutionToolPlaceholder?: boolean;
+};
+
 /**
  * @internal
  */
@@ -1709,13 +1788,18 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   serializedProcessedResponse: z.infer<
     typeof serializedProcessedResponseSchema
   >,
+  options: DeserializeProcessedResponseOptions<TContext> = {},
 ): Promise<ProcessedResponse<TContext>> {
   const currentAgent = state._currentAgent;
-  const configuredTools = await currentAgent.getAllTools(state._context);
+  const configuredTools =
+    options.executionTools ?? (await currentAgent.getAllTools(state._context));
   const allTools = [
     ...(configuredTools as Tool<TContext>[]),
     ...state.getToolSearchRuntimeTools(currentAgent),
   ];
+  const baseAgentTools = currentAgent.tools as Tool<TContext>[];
+  const allowSerializedExecutionToolPlaceholder =
+    options.allowSerializedExecutionToolPlaceholder ?? true;
   const tools = new Map(
     allTools
       .filter((tool) => tool.type === 'function')
@@ -1782,20 +1866,38 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         const toolIdentity =
           resolveFunctionToolCallName(functionCall.toolCall, tools) ??
           functionCall.tool.name;
-        if (!tools.has(toolIdentity)) {
+        const resolvedTool =
+          tools.get(toolIdentity) ??
+          getSerializedFunctionToolPlaceholder({
+            agent: currentAgent,
+            baseAgentTools,
+            serializedTool: functionCall.tool,
+            toolCall: functionCall.toolCall,
+            toolIdentity,
+            allowSerializedExecutionToolPlaceholder,
+          });
+        if (!resolvedTool) {
           throw new UserError(`Tool ${toolIdentity} not found`);
         }
 
         return {
           toolCall: functionCall.toolCall,
-          tool: tools.get(toolIdentity)!,
+          tool: resolvedTool,
         };
       }),
     ),
     computerActions: serializedProcessedResponse.computerActions.map(
       (computerAction) => {
         const toolName = computerAction.computer.name;
-        const computerTool = resolveComputerTool(toolName);
+        const computerTool =
+          resolveComputerTool(toolName) ??
+          getSerializedComputerToolPlaceholder({
+            agent: currentAgent,
+            baseAgentTools,
+            serializedTool: computerAction.computer,
+            toolName,
+            allowSerializedExecutionToolPlaceholder,
+          });
         if (!computerTool) {
           throw new UserError(`Computer tool ${toolName} not found`);
         }
@@ -1809,13 +1911,22 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
     shellActions: (serializedProcessedResponse.shellActions ?? []).map(
       (shellAction) => {
         const toolName = shellAction.shell.name;
-        if (!shellTools.has(toolName)) {
+        const shellTool =
+          shellTools.get(toolName) ??
+          getSerializedShellToolPlaceholder({
+            agent: currentAgent,
+            baseAgentTools,
+            serializedTool: shellAction.shell,
+            toolName,
+            allowSerializedExecutionToolPlaceholder,
+          });
+        if (!shellTool) {
           throw new UserError(`Shell tool ${toolName} not found`);
         }
 
         return {
           toolCall: shellAction.toolCall,
-          shell: shellTools.get(toolName)!,
+          shell: shellTool,
         };
       },
     ),
@@ -1823,13 +1934,22 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       serializedProcessedResponse.applyPatchActions ?? []
     ).map((applyPatchAction) => {
       const toolName = applyPatchAction.applyPatch.name;
-      if (!applyPatchTools.has(toolName)) {
+      const applyPatchTool =
+        applyPatchTools.get(toolName) ??
+        getSerializedApplyPatchToolPlaceholder({
+          agent: currentAgent,
+          baseAgentTools,
+          serializedTool: applyPatchAction.applyPatch,
+          toolName,
+          allowSerializedExecutionToolPlaceholder,
+        });
+      if (!applyPatchTool) {
         throw new UserError(`Apply patch tool ${toolName} not found`);
       }
 
       return {
         toolCall: applyPatchAction.toolCall,
-        applyPatch: applyPatchTools.get(toolName)!,
+        applyPatch: applyPatchTool,
       };
     }),
     mcpApprovalRequests: (

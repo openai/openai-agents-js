@@ -333,6 +333,7 @@ export function handoff<
     const result = getSchemaAndParserFromInputType(
       config.inputType,
       handoff.toolName,
+      { strict: true },
     );
     handoff.inputJsonSchema = result.schema;
     handoff.strictJsonSchema = true;

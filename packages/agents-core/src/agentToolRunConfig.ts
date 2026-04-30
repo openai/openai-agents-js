@@ -275,6 +275,9 @@ export function getInheritedAgentToolRunConfig(
       inheritedRunConfig.modelSettings = inheritedModelSettings;
     }
   }
+  if (typeof parentRunConfig.sandbox !== 'undefined') {
+    inheritedRunConfig.sandbox = parentRunConfig.sandbox;
+  }
 
   return Object.keys(inheritedRunConfig).length > 0
     ? inheritedRunConfig

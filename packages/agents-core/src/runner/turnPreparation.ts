@@ -15,17 +15,16 @@ import {
   splitInputGuardrails,
 } from './guardrails';
 import { prepareModelInputItems } from './items';
-import { prepareAgentArtifacts } from './modelPreparation';
+import { ensureAgentSpan } from './tracing';
 import { getToolCallOutputItem } from './toolExecution';
-import type { AgentArtifacts, ProcessedResponse } from './types';
+import type { ProcessedResponse } from './types';
 
 type GuardrailHandlers = {
   onParallelStart?: () => void;
   onParallelError?: (error: unknown) => void;
 };
 
-type PreparedTurn<TContext> = {
-  artifacts: AgentArtifacts<TContext>;
+type PreparedTurn = {
   turnInput: AgentInputItem[];
   parallelGuardrailPromise?: Promise<InputGuardrailResult[]>;
 };
@@ -53,9 +52,7 @@ type PrepareTurnOptions<
 export async function prepareTurn<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
->(
-  options: PrepareTurnOptions<TContext, TAgent>,
-): Promise<PreparedTurn<TContext>> {
+>(options: PrepareTurnOptions<TContext, TAgent>): Promise<PreparedTurn> {
   const {
     state,
     input,
@@ -68,7 +65,6 @@ export async function prepareTurn<
     guardrailHandlers,
     emitAgentStart,
   } = options;
-  const artifacts = await prepareAgentArtifacts(state);
 
   const { isResumingFromInterruption } = beginTurn(state, {
     isResumedState,
@@ -90,6 +86,14 @@ export async function prepareTurn<
 
   logger.debug(
     `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
+  );
+  state.setCurrentAgentSpan(
+    ensureAgentSpan({
+      agent: state._currentAgent,
+      handoffs: [],
+      tools: [],
+      currentSpan: state._currentAgentSpan,
+    }),
   );
 
   const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
@@ -122,7 +126,6 @@ export async function prepareTurn<
   }
 
   return {
-    artifacts,
     turnInput,
     parallelGuardrailPromise,
   };

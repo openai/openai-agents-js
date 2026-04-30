@@ -56,14 +56,17 @@ async function initComputerOnce(
 export async function prepareAgentArtifacts<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
->(state: RunState<TContext, TAgent>): Promise<AgentArtifacts<TContext>> {
-  const capabilities = await collectAgentCapabilities(state);
+>(
+  state: RunState<TContext, TAgent>,
+  executionAgent: Agent<TContext, AgentOutputType> = state._currentAgent,
+): Promise<AgentArtifacts<TContext>> {
+  const capabilities = await collectAgentCapabilities(state, executionAgent);
   validateClientToolSearchSupport(capabilities.tools);
   await warmUpComputerTools(capabilities.tools, state._context);
   await initializeComputerTools(capabilities.tools, state);
   state.setCurrentAgentSpan(
     ensureAgentSpan({
-      agent: state._currentAgent,
+      agent: executionAgent,
       handoffs: capabilities.handoffs,
       tools: capabilities.tools,
       currentSpan: state._currentAgentSpan,
@@ -76,18 +79,19 @@ export async function prepareAgentArtifacts<
       serializeHandoff(handoff),
     ),
     serializedTools: capabilities.tools.map((tool) => serializeTool(tool)),
-    toolsExplicitlyProvided: state._currentAgent.hasExplicitToolConfig(),
+    toolsExplicitlyProvided: executionAgent.hasExplicitToolConfig(),
   };
 }
 
 async function collectAgentCapabilities<TContext>(
   state: RunState<TContext, Agent<TContext, AgentOutputType>>,
+  executionAgent: Agent<TContext, AgentOutputType>,
 ): Promise<{
   handoffs: Handoff<any, any>[];
   tools: Tool<TContext>[];
 }> {
-  const handoffs = await state._currentAgent.getEnabledHandoffs(state._context);
-  const configuredTools = (await state._currentAgent.getAllTools(
+  const handoffs = await executionAgent.getEnabledHandoffs(state._context);
+  const configuredTools = (await executionAgent.getAllTools(
     state._context,
   )) as Tool<TContext>[];
   const runtimeLoadedTools = state.getToolSearchRuntimeTools(

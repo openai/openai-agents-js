@@ -381,7 +381,7 @@ describe('mcpToFunctionTool', () => {
 
     expect(strictTool.strict).toBe(true);
     expect(strictTool.parameters.additionalProperties).toBe(false);
-    expect(strictTool.parameters.required).toEqual([]);
+    expect(strictTool.parameters.required).toEqual(['foo']);
   });
 
   it('annotates the current span when invoking the tool', async () => {
