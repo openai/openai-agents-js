@@ -1,5 +1,5 @@
 import { UserError } from '@openai/agents-core';
-import { loadEnv } from '@openai/agents-core/_shims';
+import { loadEnv, randomUUID } from '@openai/agents-core/_shims';
 import {
   Manifest,
   SandboxProviderError,
@@ -32,6 +32,7 @@ import {
   materializeEnvironment,
   openPtyWebSocket,
   parseExposedPortEndpoint,
+  posixDirname,
   resolveSandboxWorkdir,
   serializeRemoteSandboxSessionState,
   shellQuote,
@@ -157,6 +158,7 @@ export interface BlaxelSandboxClientOptions extends SandboxClientOptions {
 export interface BlaxelSandboxSessionState extends SandboxSessionState {
   sandboxName: string;
   sandboxIdentity?: string;
+  mountArtifactScope?: string;
   image?: string;
   memory?: number;
   region?: string;
@@ -199,6 +201,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     this.sandbox = args.sandbox;
     this.apiKey = args.apiKey;
     this.ownsSandbox = args.ownsSandbox ?? true;
+    this.ensureMountArtifactScope();
   }
 
   override supportsPty(): boolean {
@@ -265,26 +268,34 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       removeErrorListener();
       socket.close();
     };
-    await entry.sendInput(
-      `${shellCommandForPty({
-        ...args,
-        cmd: buildShellCommand(args.cmd, this.state.environment),
-      })}\n`,
-    );
+    let registered = false;
+    try {
+      await entry.sendInput(
+        `${shellCommandForPty({
+          ...args,
+          cmd: buildShellCommand(args.cmd, this.state.environment),
+        })}\n`,
+      );
 
-    const { sessionId, pruned } = this.ptyProcesses.register(entry);
-    if (pruned) {
-      await pruned.terminate?.().catch(() => {});
+      const { sessionId, pruned } = this.ptyProcesses.register(entry);
+      registered = true;
+      if (pruned) {
+        await pruned.terminate?.().catch(() => {});
+      }
+
+      return await formatPtyExecUpdate({
+        registry: this.ptyProcesses,
+        sessionId,
+        entry,
+        startTime: start,
+        yieldTimeMs: args.yieldTimeMs,
+        maxOutputTokens: args.maxOutputTokens,
+      });
+    } finally {
+      if (!registered) {
+        await entry.terminate?.().catch(() => {});
+      }
     }
-
-    return await formatPtyExecUpdate({
-      registry: this.ptyProcesses,
-      sessionId,
-      entry,
-      startTime: start,
-      yieldTimeMs: args.yieldTimeMs,
-      maxOutputTokens: args.maxOutputTokens,
-    });
   }
 
   protected override allowOnDemandExposedPorts(): boolean {
@@ -475,6 +486,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       await mountBlaxelCloudBucket({
         entry,
         mountPath,
+        artifactScope: this.ensureMountArtifactScope(),
         runCommand: this.mountCommandRunner(),
         writeSecretFile: this.writeMountSecretFile.bind(this),
       });
@@ -504,18 +516,41 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
 
   private async unmountActiveMounts(): Promise<void> {
     for (const mountPath of [...this.activeDriveMountPaths].reverse()) {
-      await unmountBlaxelDrive({
-        mountPath,
-        drives: this.sandbox.drives,
-      });
-      this.activeDriveMountPaths.delete(mountPath);
+      try {
+        await unmountBlaxelDrive({
+          mountPath,
+          drives: this.sandbox.drives,
+        });
+        this.activeDriveMountPaths.delete(mountPath);
+      } catch (error) {
+        throw new SandboxProviderError(
+          'BlaxelSandboxClient failed to unmount an active drive mount.',
+          {
+            provider: 'blaxel',
+            mountPath,
+            cause: unknownErrorMessage(error),
+          },
+        );
+      }
     }
     for (const mountPath of [...this.activeFuseMountPaths].reverse()) {
-      await unmountBlaxelFuseMount({
-        mountPath,
-        runCommand: this.mountCommandRunner(),
-      }).catch(() => {});
-      this.activeFuseMountPaths.delete(mountPath);
+      try {
+        await unmountBlaxelFuseMount({
+          mountPath,
+          artifactScope: this.ensureMountArtifactScope(),
+          runCommand: this.mountCommandRunner(),
+        });
+        this.activeFuseMountPaths.delete(mountPath);
+      } catch (error) {
+        throw new SandboxProviderError(
+          'BlaxelSandboxClient failed to unmount an active FUSE mount.',
+          {
+            provider: 'blaxel',
+            mountPath,
+            cause: unknownErrorMessage(error),
+          },
+        );
+      }
     }
   }
 
@@ -523,7 +558,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     return async (command, options = {}) => {
       const result = await this.sandbox.process.exec({
         command,
-        workingDir: this.state.manifest.root,
+        workingDir: '/',
         waitForCompletion: true,
         timeout:
           options.timeoutMs ??
@@ -607,23 +642,77 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     path: string,
     content: string | Uint8Array,
   ): Promise<void> {
+    const tempPath = remoteWriteTempPath(path);
     if (typeof content === 'string') {
-      await withBlaxelOperationTimeout(
-        this.sandbox.fs.write(path, content),
-        this.state.timeouts?.fileUploadTimeoutMs,
+      await this.writeRemoteTempFile(
+        tempPath,
+        this.sandbox.fs.write(tempPath, content),
         'write file',
       );
-      return;
+    } else {
+      await this.writeRemoteTempFile(
+        tempPath,
+        this.sandbox.fs.writeBinary(tempPath, content),
+        'write binary file',
+      );
     }
+    try {
+      const result = await this.sandbox.process.exec({
+        command: `mv -f -- ${shellQuote(tempPath)} ${shellQuote(path)}`,
+        workingDir: '/',
+        waitForCompletion: true,
+        timeout: this.state.timeouts?.fileUploadTimeoutMs,
+      });
+      if ((result.exitCode ?? 1) === 0) {
+        return;
+      }
+      throw new SandboxProviderError(
+        'BlaxelSandboxClient failed to commit uploaded file.',
+        {
+          provider: 'blaxel',
+          operation: 'commit uploaded file',
+          path,
+          tempPath,
+          exitCode: result.exitCode ?? 1,
+          stdout: result.stdout ?? '',
+          stderr: result.stderr ?? '',
+        },
+      );
+    } catch (error) {
+      await this.sandbox.fs.rm(tempPath).catch(() => {});
+      throw error;
+    }
+  }
+
+  private async writeRemoteTempFile(
+    tempPath: string,
+    operation: Promise<unknown>,
+    operationName: string,
+  ): Promise<void> {
     await withBlaxelOperationTimeout(
-      this.sandbox.fs.writeBinary(path, content),
+      operation,
       this.state.timeouts?.fileUploadTimeoutMs,
-      'write binary file',
+      operationName,
+      {
+        onTimeout: () => {
+          void operation.then(
+            async () => {
+              await this.sandbox.fs.rm(tempPath).catch(() => {});
+            },
+            () => {},
+          );
+        },
+      },
     );
   }
 
   protected override async deleteRemotePath(path: string): Promise<void> {
     await this.sandbox.fs.rm(path);
+  }
+
+  private ensureMountArtifactScope(): string {
+    this.state.mountArtifactScope ??= randomUUID();
+    return this.state.mountArtifactScope;
   }
 
   private timeoutForCommand(options: RemoteSandboxCommandOptions) {
@@ -766,6 +855,7 @@ export class BlaxelSandboxClient implements SandboxClient<
             timeouts,
             sandboxUrl: extractBlaxelSandboxUrl(sandbox),
             sandboxIdentity: extractBlaxelSandboxIdentity(sandbox),
+            mountArtifactScope: randomUUID(),
             labels: resolvedOptions.labels,
             ttl: resolvedOptions.ttl,
             pauseOnExit: resolvedOptions.pauseOnExit ?? false,
@@ -824,6 +914,8 @@ export class BlaxelSandboxClient implements SandboxClient<
       }),
       sandboxUrl: readOptionalString(state, 'sandboxUrl'),
       sandboxIdentity: readOptionalString(state, 'sandboxIdentity'),
+      mountArtifactScope:
+        readOptionalString(state, 'mountArtifactScope') ?? randomUUID(),
       labels: readOptionalStringRecord(state.labels),
       ttl: readOptionalString(state, 'ttl'),
       pauseOnExit: Boolean(state.pauseOnExit),
@@ -1240,6 +1332,12 @@ function buildShellCommand(
     return command;
   }
   return [...exports, command].join(' && ');
+}
+
+function remoteWriteTempPath(path: string): string {
+  const dir = posixDirname(path);
+  const prefix = dir === '/' ? '' : dir;
+  return `${prefix}/.openai-agents-write-${randomUUID()}`;
 }
 
 function resolveBlaxelTimeouts(

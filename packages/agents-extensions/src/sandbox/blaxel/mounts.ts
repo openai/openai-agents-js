@@ -28,6 +28,7 @@ export type BlaxelCloudBucketMountConfig = {
   provider: BlaxelBucketProvider;
   bucket: string;
   mountPath: string;
+  artifactScope: string;
   readOnly: boolean;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -150,6 +151,7 @@ export function isBlaxelDriveMountEntry(
 export async function mountBlaxelCloudBucket(args: {
   entry: Entry;
   mountPath: string;
+  artifactScope: string;
   runCommand: RemoteMountCommand;
   writeSecretFile: BlaxelMountSecretWriter;
 }): Promise<void> {
@@ -165,7 +167,11 @@ export async function mountBlaxelCloudBucket(args: {
     );
   }
 
-  const config = buildBlaxelCloudBucketMountConfig(args.entry, args.mountPath);
+  const config = buildBlaxelCloudBucketMountConfig(
+    args.entry,
+    args.mountPath,
+    args.artifactScope,
+  );
   try {
     await materializeBlaxelCloudBucketSecrets(config, args.writeSecretFile);
     if (config.provider === 'gcs') {
@@ -184,6 +190,7 @@ export async function mountBlaxelCloudBucket(args: {
 
 export async function unmountBlaxelFuseMount(args: {
   mountPath: string;
+  artifactScope: string;
   runCommand: RemoteMountCommand;
 }): Promise<void> {
   const {
@@ -191,7 +198,7 @@ export async function unmountBlaxelFuseMount(args: {
     socketPath: tokenSocketPath,
     serverPath: tokenServerPath,
     payloadPath: tokenPayloadPath,
-  } = gcsAccessTokenArtifactPaths(args.mountPath);
+  } = gcsAccessTokenArtifactPaths(args.mountPath, args.artifactScope);
   const tokenServerCleanup = [
     safePidFileKillFunctionCommand(),
     `if [ -e ${shellQuote(tokenPidPath)} ]; then ${safeKillPidFileCommand({
@@ -206,16 +213,23 @@ export async function unmountBlaxelFuseMount(args: {
       .map(shellQuote)
       .join(' ')}; fi`,
   ].join('; ');
-  await args.runCommand(
-    [
+  const result = await args.runCommand(
+    `${[
       `fusermount -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
       `fusermount3 -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
       `umount ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
       `umount -l ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
-      'true',
-    ].join(' || ') + ` ; ${tokenServerCleanup}`,
+    ].join(' || ')}; status=$?; ${tokenServerCleanup}; exit $status`,
     { timeoutMs: 30_000 },
   );
+  if (result.status !== 0) {
+    throw new SandboxMountError('Blaxel cloud bucket unmount failed.', {
+      provider: 'blaxel',
+      status: result.status,
+      stderr: result.stderr,
+      stdout: result.stdout,
+    });
+  }
 }
 
 export async function mountBlaxelDrive(args: {
@@ -259,13 +273,14 @@ export async function unmountBlaxelDrive(args: {
   drives?: BlaxelDriveApi;
 }): Promise<void> {
   if (args.drives?.unmount) {
-    await args.drives.unmount(args.mountPath).catch(() => {});
+    await args.drives.unmount(args.mountPath);
   }
 }
 
 export function buildBlaxelCloudBucketMountConfig(
   entry: S3Mount | R2Mount | GCSMount,
   mountPath: string,
+  artifactScope: string,
 ): BlaxelCloudBucketMountConfig {
   if (entry.type === 's3_mount') {
     const accessKeyId = readOptionalString(entry, 'accessKeyId');
@@ -279,6 +294,7 @@ export function buildBlaxelCloudBucketMountConfig(
       provider: 's3',
       bucket: entry.bucket,
       mountPath,
+      artifactScope,
       readOnly: entry.readOnly ?? true,
       accessKeyId,
       secretAccessKey,
@@ -309,6 +325,7 @@ export function buildBlaxelCloudBucketMountConfig(
       provider: 'r2',
       bucket: entry.bucket,
       mountPath,
+      artifactScope,
       readOnly: entry.readOnly ?? true,
       accessKeyId: readOptionalString(entry, 'accessKeyId'),
       secretAccessKey: readOptionalString(entry, 'secretAccessKey'),
@@ -330,6 +347,7 @@ export function buildBlaxelCloudBucketMountConfig(
       provider: 's3',
       bucket: entry.bucket,
       mountPath,
+      artifactScope,
       readOnly: entry.readOnly ?? true,
       accessKeyId: accessId,
       secretAccessKey,
@@ -343,6 +361,7 @@ export function buildBlaxelCloudBucketMountConfig(
     provider: 'gcs',
     bucket: entry.bucket,
     mountPath,
+    artifactScope,
     readOnly: entry.readOnly ?? true,
     serviceAccountCredentials: readOptionalString(
       entry,
@@ -367,7 +386,10 @@ function buildBlaxelDriveMountConfig(
 }
 
 function buildS3FuseMountScript(config: BlaxelCloudBucketMountConfig): string {
-  const credentialPath = s3fsCredentialPath(config.mountPath);
+  const credentialPath = s3fsCredentialPath(
+    config.mountPath,
+    config.artifactScope,
+  );
   const credentials =
     config.accessKeyId && config.secretAccessKey
       ? `${config.accessKeyId}:${config.secretAccessKey}${
@@ -411,13 +433,13 @@ function buildS3FuseMountScript(config: BlaxelCloudBucketMountConfig): string {
 }
 
 function buildGcsFuseMountScript(config: BlaxelCloudBucketMountConfig): string {
-  const keyPath = gcsCredentialPath(config.mountPath);
+  const keyPath = gcsCredentialPath(config.mountPath, config.artifactScope);
   const {
     serverPath: tokenServerPath,
     socketPath: tokenSocketPath,
     pidPath: tokenPidPath,
     payloadPath: tokenPayloadPath,
-  } = gcsAccessTokenArtifactPaths(config.mountPath);
+  } = gcsAccessTokenArtifactPaths(config.mountPath, config.artifactScope);
   const tokenUrl = `unix://${tokenSocketPath}`;
   const hasAuth = hasGcsAuth(config);
   const usesAccessToken = usesGcsAccessTokenSecret(config);
@@ -533,7 +555,7 @@ async function materializeBlaxelCloudBucketSecrets(
   if (config.provider !== 'gcs') {
     if (config.accessKeyId && config.secretAccessKey) {
       await writeSecretFile(
-        s3fsCredentialPath(config.mountPath),
+        s3fsCredentialPath(config.mountPath, config.artifactScope),
         `${config.accessKeyId}:${config.secretAccessKey}${
           config.sessionToken ? `:${config.sessionToken}` : ''
         }`,
@@ -544,13 +566,14 @@ async function materializeBlaxelCloudBucketSecrets(
 
   if (config.serviceAccountCredentials) {
     await writeSecretFile(
-      gcsCredentialPath(config.mountPath),
+      gcsCredentialPath(config.mountPath, config.artifactScope),
       config.serviceAccountCredentials,
     );
   }
   if (usesGcsAccessTokenSecret(config)) {
     await writeSecretFile(
-      gcsAccessTokenArtifactPaths(config.mountPath).payloadPath,
+      gcsAccessTokenArtifactPaths(config.mountPath, config.artifactScope)
+        .payloadPath,
       JSON.stringify({
         access_token: config.accessToken,
         token_type: 'Bearer',
@@ -577,16 +600,21 @@ function buildBlaxelCloudBucketSecretCleanupCommand(
     if (!config.accessKeyId || !config.secretAccessKey) {
       return undefined;
     }
-    return `rm -f -- ${shellQuote(s3fsCredentialPath(config.mountPath))}`;
+    return `rm -f -- ${shellQuote(
+      s3fsCredentialPath(config.mountPath, config.artifactScope),
+    )}`;
   }
 
   const files: string[] = [];
   const commands: string[] = [];
   if (config.serviceAccountCredentials) {
-    files.push(gcsCredentialPath(config.mountPath));
+    files.push(gcsCredentialPath(config.mountPath, config.artifactScope));
   }
   if (usesGcsAccessTokenSecret(config)) {
-    const tokenPaths = gcsAccessTokenArtifactPaths(config.mountPath);
+    const tokenPaths = gcsAccessTokenArtifactPaths(
+      config.mountPath,
+      config.artifactScope,
+    );
     commands.push(
       safePidFileKillFunctionCommand(),
       `if [ -e ${shellQuote(tokenPaths.pidPath)} ]; then ${safeKillPidFileCommand(
@@ -612,21 +640,26 @@ function buildBlaxelCloudBucketSecretCleanupCommand(
   return commands.length > 0 ? commands.join('; ') : undefined;
 }
 
-function s3fsCredentialPath(mountPath: string): string {
-  return `/tmp/s3fs-passwd-${safeId(mountPath)}`;
+function s3fsCredentialPath(mountPath: string, artifactScope: string): string {
+  return `/tmp/s3fs-passwd-${safeId(`${artifactScope}:${mountPath}`)}`;
 }
 
-function gcsCredentialPath(mountPath: string): string {
-  return `/tmp/gcs-creds-${safeId(mountPath)}.json`;
+function gcsCredentialPath(mountPath: string, artifactScope: string): string {
+  return `/tmp/gcs-creds-${safeId(`${artifactScope}:${mountPath}`)}.json`;
 }
 
-function gcsAccessTokenArtifactPaths(mountPath: string): {
+function gcsAccessTokenArtifactPaths(
+  mountPath: string,
+  artifactScope: string,
+): {
   serverPath: string;
   socketPath: string;
   pidPath: string;
   payloadPath: string;
 } {
-  const prefix = `/tmp/gcs-access-token-${safeId(mountPath)}`;
+  const prefix = `/tmp/gcs-access-token-${safeId(
+    `${artifactScope}:${mountPath}`,
+  )}`;
   return {
     serverPath: `${prefix}.py`,
     socketPath: `${prefix}.sock`,

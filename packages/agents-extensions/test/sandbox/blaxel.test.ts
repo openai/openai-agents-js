@@ -162,7 +162,17 @@ describe('BlaxelSandboxClient', () => {
       workingDir: '/',
       waitForCompletion: true,
     });
-    expect(writeMock).toHaveBeenCalledWith('/workspace/README.md', '# Hello\n');
+    expect(writeMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/workspace\/\.openai-agents-write-[0-9a-f-]+$/u),
+      '# Hello\n',
+    );
+    expect(
+      processExecMock.mock.calls.some(([params]) =>
+        String(params.command).startsWith(
+          "mv -f -- '/workspace/.openai-agents-write-",
+        ),
+      ),
+    ).toBe(true);
     expect(processExecMock).toHaveBeenLastCalledWith({
       command: 'ls',
       workingDir: '/workspace',
@@ -416,6 +426,53 @@ describe('BlaxelSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxProviderError);
   });
 
+  test('does not write target files directly when uploads time out', async () => {
+    let resolveWrite: (() => void) | undefined;
+    let tempPath: string | undefined;
+    writeMock.mockImplementation(async (path: string) => {
+      if (path.includes('.openai-agents-write-')) {
+        tempPath = path;
+        await new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        });
+      }
+    });
+    const client = new BlaxelSandboxClient({
+      timeouts: {
+        fileUploadTimeoutMs: 1,
+      },
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            'README.md': {
+              type: 'file',
+              content: '# Hello\n',
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow('BlaxelSandboxClient write file timed out after 1ms.');
+
+    expect(tempPath).toMatch(/^\/workspace\/\.openai-agents-write-/u);
+    expect(writeMock).not.toHaveBeenCalledWith(
+      '/workspace/README.md',
+      '# Hello\n',
+    );
+    expect(
+      processExecMock.mock.calls.some(([params]) =>
+        String(params.command).includes('mv -f --'),
+      ),
+    ).toBe(false);
+
+    resolveWrite?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(rmMock.mock.calls.some(([path]) => path === tempPath)).toBe(true);
+  });
+
   test('rejects unsupported PTY execution with a typed error', async () => {
     const client = new BlaxelSandboxClient({ apiKey: '' });
     const session = await client.create(new Manifest());
@@ -518,6 +575,35 @@ describe('BlaxelSandboxClient', () => {
     expect(command).toContain('export MANIFEST_VALUE=');
     expect(command).toContain('manifest');
     expect(command).toContain('printf "$CLIENT_SECRET:$MANIFEST_VALUE"');
+  });
+
+  test('terminates PTY sockets when the initial command cannot be built', async () => {
+    globalThis.WebSocket =
+      TestWebSocket as unknown as typeof globalThis.WebSocket;
+    const client = new BlaxelSandboxClient({
+      apiKey: 'blaxel-token',
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          'X; touch /tmp/pwned; #': 'bad',
+        },
+      }),
+    );
+
+    const startedPromise = session.execCommand({
+      cmd: 'ls',
+      tty: true,
+      yieldTimeMs: 250,
+    });
+    const socket = await TestWebSocket.nextInstance();
+    socket.open();
+
+    await expect(startedPromise).rejects.toThrow(
+      'Invalid environment variable name',
+    );
+    expect(socket.readyState).toBe(3);
+    expect(socket.sent).toHaveLength(0);
   });
 
   test('preserves PTY error exit codes after websocket close', async () => {
@@ -664,6 +750,116 @@ describe('BlaxelSandboxClient', () => {
     expect(session.state.ownsSandbox).toBe(false);
     expect(serialized.ownsSandbox).toBe(false);
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  test('retains failed FUSE unmounts so cleanup can retry', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+    processExecMock.mockClear();
+    processExecMock.mockImplementationOnce(async () => {
+      throw new Error('transport lost');
+    });
+
+    await expect(session.close()).rejects.toThrow(
+      'failed to unmount an active FUSE mount',
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
+    await session.close();
+
+    const unmountCommands = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .filter((command) => command.includes('fusermount -u'));
+    expect(unmountCommands).toHaveLength(2);
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
+  test('retains FUSE mounts when every unmount command fails', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+    processExecMock.mockClear();
+    processExecMock
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: 'still mounted',
+        exitCode: 1,
+      })
+      .mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+
+    await expect(session.close()).rejects.toThrow(
+      'failed to unmount an active FUSE mount',
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
+    await session.close();
+
+    const unmountCommands = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .filter((command) => command.includes('fusermount -u'));
+    expect(unmountCommands).toHaveLength(2);
+    expect(unmountCommands[0]?.split('; status=$?;')[0]).not.toContain(
+      '|| true',
+    );
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
+  test('retains failed drive unmounts so cleanup can retry', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          drive: new BlaxelDriveMount({
+            driveName: 'agent-drive',
+            mountPath: 'mounted/drive',
+            mountStrategy: new BlaxelDriveMountStrategy(),
+          }),
+        },
+      }),
+    );
+    driveUnmountMock
+      .mockRejectedValueOnce(new Error('drive transport lost'))
+      .mockResolvedValue(undefined);
+
+    await expect(session.close()).rejects.toThrow(
+      'failed to unmount an active drive mount',
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
+    await session.close();
+
+    expect(driveUnmountMock).toHaveBeenCalledTimes(2);
+    expect(driveUnmountMock).toHaveBeenNthCalledWith(
+      1,
+      '/workspace/mounted/drive',
+    );
+    expect(driveUnmountMock).toHaveBeenNthCalledWith(
+      2,
+      '/workspace/mounted/drive',
+    );
+    expect(deleteMock).toHaveBeenCalledOnce();
   });
 
   test('unmounts manifest mounts after resuming shared sandboxes', async () => {
@@ -1107,6 +1303,34 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test('scopes S3 credential files per sandbox session', async () => {
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountPath: 'mounted/logs',
+          mountStrategy: new BlaxelCloudBucketMountStrategy(),
+        },
+      },
+    });
+    const client = new BlaxelSandboxClient({
+      name: 'shared-sandbox',
+    } satisfies BlaxelSandboxClientOptions);
+
+    await client.create(manifest);
+    await client.create(manifest);
+
+    const credentialPaths = writeMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/tmp/s3fs-passwd-'));
+
+    expect(credentialPaths).toHaveLength(2);
+    expect(new Set(credentialPaths).size).toBe(2);
+  });
+
   test('does not prepend session environment exports to cloud bucket mount commands', async () => {
     const client = new BlaxelSandboxClient({
       env: {
@@ -1171,6 +1395,37 @@ describe('BlaxelSandboxClient', () => {
       .find((command) => command.includes('fusermount -u'));
     expect(unmountCommand).toBeDefined();
     expect(unmountCommand).not.toContain('INVALID-NAME');
+  });
+
+  test('runs mount maintenance commands from a stable working directory', async () => {
+    const client = new BlaxelSandboxClient();
+
+    const session = await client.create(
+      new Manifest({
+        root: '/workspace/project',
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+    await session.close();
+
+    const maintenanceCalls = processExecMock.mock.calls.filter(([params]) => {
+      const command = String(params.command);
+      return command.includes('s3fs') || command.includes('fusermount -u');
+    });
+
+    expect(maintenanceCalls.length).toBeGreaterThan(0);
+    for (const [params] of maintenanceCalls) {
+      expect(params.workingDir).toBe('/');
+    }
   });
 
   test('cleans S3 credential files when cloud bucket mount commands reject', async () => {
