@@ -808,6 +808,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     }
 
     const previousDevbox = this.devbox;
+    const previousActiveMountPaths = new Set(this.activeMountPaths);
     let devbox: RunloopDevboxLike;
     try {
       devbox = await this.sdk.devbox.createFromSnapshot(
@@ -853,6 +854,9 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
       this.activeMountPaths.clear();
+      for (const mountPath of previousActiveMountPaths) {
+        this.activeMountPaths.add(mountPath);
+      }
       invalidateRunloopRuntimeCaches(this.state);
       throw new SandboxProviderError(
         'RunloopSandboxClient native snapshot restore failed while rematerializing mounts.',
@@ -886,6 +890,9 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
       this.activeMountPaths.clear();
+      for (const mountPath of previousActiveMountPaths) {
+        this.activeMountPaths.add(mountPath);
+      }
       invalidateRunloopRuntimeCaches(this.state);
       throw new SandboxProviderError(
         'RunloopSandboxClient native snapshot restore created a replacement devbox, but shutting down the previous devbox failed.',

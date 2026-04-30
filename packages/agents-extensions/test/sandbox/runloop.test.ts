@@ -1959,6 +1959,44 @@ describe('RunloopSandboxClient', () => {
     expect(session.state.devboxId).toBe('devbox_test');
   });
 
+  test('preserves old mount tracking when snapshot replacement rollback restores the old devbox', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(
+      runloopCloudBucketManifest({ ephemeral: false }),
+    );
+    const snapshotBytes = await session.persistWorkspace();
+    execMock.mockClear();
+    shutdownMock
+      .mockRejectedValueOnce(new Error('shutdown failed'))
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+
+    await expect(session.hydrateWorkspace(snapshotBytes)).rejects.toMatchObject(
+      {
+        details: {
+          provider: 'runloop',
+          devboxId: 'devbox_test',
+          replacementDevboxId: 'devbox_restored',
+          cause: 'shutdown failed',
+        },
+      },
+    );
+
+    const unmountsAfterRollback = execMock.mock.calls.filter(([command]) =>
+      String(command).includes('fusermount3 -u'),
+    ).length;
+    expect(unmountsAfterRollback).toBeGreaterThan(0);
+
+    await session.close();
+
+    expect(
+      execMock.mock.calls.filter(([command]) =>
+        String(command).includes('fusermount3 -u'),
+      ).length,
+    ).toBeGreaterThan(unmountsAfterRollback);
+    expect(session.state.devboxId).toBe('devbox_test');
+  });
+
   test('fails tar hydration when Runloop archive command exit code is unknown', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopManifest());
