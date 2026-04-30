@@ -34,6 +34,41 @@
       "require": "./dist/ai-sdk-ui/index.js",
       "import": "./dist/ai-sdk-ui/index.mjs"
     },
+    "./sandbox/blaxel": {
+      "types": "./dist/sandbox/blaxel/index.d.ts",
+      "require": "./dist/sandbox/blaxel/index.js",
+      "import": "./dist/sandbox/blaxel/index.mjs"
+    },
+    "./sandbox/cloudflare": {
+      "types": "./dist/sandbox/cloudflare/index.d.ts",
+      "require": "./dist/sandbox/cloudflare/index.js",
+      "import": "./dist/sandbox/cloudflare/index.mjs"
+    },
+    "./sandbox/daytona": {
+      "types": "./dist/sandbox/daytona/index.d.ts",
+      "require": "./dist/sandbox/daytona/index.js",
+      "import": "./dist/sandbox/daytona/index.mjs"
+    },
+    "./sandbox/e2b": {
+      "types": "./dist/sandbox/e2b/index.d.ts",
+      "require": "./dist/sandbox/e2b/index.js",
+      "import": "./dist/sandbox/e2b/index.mjs"
+    },
+    "./sandbox/modal": {
+      "types": "./dist/sandbox/modal/index.d.ts",
+      "require": "./dist/sandbox/modal/index.js",
+      "import": "./dist/sandbox/modal/index.mjs"
+    },
+    "./sandbox/runloop": {
+      "types": "./dist/sandbox/runloop/index.d.ts",
+      "require": "./dist/sandbox/runloop/index.js",
+      "import": "./dist/sandbox/runloop/index.mjs"
+    },
+    "./sandbox/vercel": {
+      "types": "./dist/sandbox/vercel/index.d.ts",
+      "require": "./dist/sandbox/vercel/index.js",
+      "import": "./dist/sandbox/vercel/index.mjs"
+    },
     "./experimental/codex": {
       "types": "./dist/experimental/codex/index.d.ts",
       "require": "./dist/experimental/codex/index.js",
@@ -41,10 +76,17 @@
     }
   },
   "peerDependencies": {
-    "ai": "^6.0.0",
     "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
+    "@blaxel/core": "^0.2.78",
+    "@daytonaio/sdk": "^0.162.0",
+    "@e2b/code-interpreter": "^2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
+    "@runloop/api-client": "^1.16.2",
+    "@vercel/sandbox": "^1.9.3",
+    "ai": "^6.0.0",
+    "e2b": "^2.14.1",
+    "modal": "^0.7.4",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
   },
@@ -55,7 +97,28 @@
     "@ai-sdk/provider": {
       "optional": true
     },
+    "@blaxel/core": {
+      "optional": true
+    },
     "@openai/codex-sdk": {
+      "optional": true
+    },
+    "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@e2b/code-interpreter": {
+      "optional": true
+    },
+    "e2b": {
+      "optional": true
+    },
+    "modal": {
+      "optional": true
+    },
+    "@runloop/api-client": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
       "optional": true
     }
   },
@@ -67,15 +130,56 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "ai": "^6.0.42",
     "@ai-sdk/provider": "^3.0.0",
+    "@blaxel/core": "0.2.78",
+    "@daytonaio/sdk": "0.162.0",
+    "@e2b/code-interpreter": "2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.86.0",
+    "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.12",
+    "@vercel/sandbox": "1.9.3",
+    "ai": "^6.0.42",
+    "e2b": "^2.14.1",
+    "modal": "0.7.4",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
   },
   "files": [
     "dist"
-  ]
+  ],
+  "typesVersions": {
+    "*": {
+      "sandbox/blaxel": [
+        "dist/sandbox/blaxel/index.d.ts"
+      ],
+      "sandbox/cloudflare": [
+        "dist/sandbox/cloudflare/index.d.ts"
+      ],
+      "sandbox/daytona": [
+        "dist/sandbox/daytona/index.d.ts"
+      ],
+      "sandbox/e2b": [
+        "dist/sandbox/e2b/index.d.ts"
+      ],
+      "sandbox/modal": [
+        "dist/sandbox/modal/index.d.ts"
+      ],
+      "sandbox/runloop": [
+        "dist/sandbox/runloop/index.d.ts"
+      ],
+      "sandbox/vercel": [
+        "dist/sandbox/vercel/index.d.ts"
+      ],
+      "ai-sdk": [
+        "dist/ai-sdk/index.d.ts"
+      ],
+      "ai-sdk-ui": [
+        "dist/ai-sdk-ui/index.d.ts"
+      ],
+      "experimental/codex": [
+        "dist/experimental/codex/index.d.ts"
+      ]
+    }
+  }
 }

@@ -11,6 +11,11 @@ import {
 } from './zodJsonSchemaCompat';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
+import {
+  stripStrictNullsForJsonSchema,
+  stripStrictNullsForZodSchema,
+  toOpenAIStrictToolSchema,
+} from './strictToolSchema';
 
 // TypeScript struggles to infer the heavily generic types returned by the OpenAI
 // helpers, so we provide minimal wrappers that sidestep the deep instantiation.
@@ -95,6 +100,9 @@ export function toFunctionToolName(name: string): FunctionToolName {
 export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
   inputType: T,
   name: string,
+  options: {
+    strict?: boolean;
+  } = {},
 ): {
   schema: JsonObjectSchema<any>;
   parser: (input: string) => any;
@@ -106,8 +114,15 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
       const fallbackSchema = buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
         return {
-          schema: fallbackSchema,
-          parser: (rawInput: string) => inputType.parse(JSON.parse(rawInput)),
+          schema: options.strict
+            ? toOpenAIStrictToolSchema(fallbackSchema)
+            : fallbackSchema,
+          parser: (rawInput: string) =>
+            inputType.parse(
+              options.strict
+                ? stripStrictNullsForZodSchema(inputType, JSON.parse(rawInput))
+                : JSON.parse(rawInput),
+            ),
         };
       }
 
@@ -142,16 +157,28 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
         );
       }
       return {
-        schema: formattedFunction.parameters as JsonObjectSchema<any>,
-        parser: formattedFunction.$parseRaw,
+        schema: options.strict
+          ? toOpenAIStrictToolSchema(
+              formattedFunction.parameters as JsonObjectSchema<any>,
+            )
+          : (formattedFunction.parameters as JsonObjectSchema<any>),
+        parser: options.strict
+          ? (rawInput: string) =>
+              inputType.parse(
+                stripStrictNullsForZodSchema(inputType, JSON.parse(rawInput)),
+              )
+          : formattedFunction.$parseRaw,
       };
     }
 
     return useFallback();
   } else if (typeof inputType === 'object' && inputType !== null) {
     return {
-      schema: inputType,
-      parser,
+      schema: options.strict ? toOpenAIStrictToolSchema(inputType) : inputType,
+      parser: options.strict
+        ? (rawInput: string) =>
+            stripStrictNullsForJsonSchema(inputType, JSON.parse(rawInput))
+        : parser,
     };
   }
 

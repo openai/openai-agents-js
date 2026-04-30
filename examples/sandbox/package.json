@@ -1,0 +1,33 @@
+{
+  "private": true,
+  "name": "sandbox",
+  "type": "module",
+  "dependencies": {
+    "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "scripts": {
+    "build-check": "tsc --noEmit",
+    "start:basic": "tsx basic.ts",
+    "start:handoffs": "tsx handoffs.ts",
+    "start:coding-task": "tsx coding-task.ts",
+    "start:resume": "tsx resume.ts",
+    "start:memory": "tsx memory.ts",
+    "start:unix-local-pty": "tsx unix-local-pty.ts",
+    "start:unix-local-runner": "tsx unix-local-runner.ts",
+    "start:docker-runner": "tsx docker-runner.ts",
+    "start:memory-generation": "tsx memory-generation.ts",
+    "start:memory-multi-agent-multiturn": "tsx memory-multi-agent-multiturn.ts",
+    "start:sandbox-agent-capabilities": "tsx sandbox-agent-capabilities.ts",
+    "start:sandbox-agent-with-tools": "tsx sandbox-agent-with-tools.ts",
+    "start:sandbox-agents-as-tools": "tsx sandbox-agents-as-tools.ts",
+    "start:blaxel": "tsx extensions/blaxel-runner.ts",
+    "start:cloudflare": "tsx extensions/cloudflare-runner.ts",
+    "start:daytona": "tsx extensions/daytona-runner.ts",
+    "start:e2b": "tsx extensions/e2b-runner.ts",
+    "start:modal": "tsx extensions/modal-runner.ts",
+    "start:runloop": "tsx extensions/runloop-runner.ts",
+    "start:vercel": "tsx extensions/vercel-runner.ts"
+  }
+}

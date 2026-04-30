@@ -1,6 +1,6 @@
 import type { Agent, AgentOutputType } from '../agent';
 import type { RunState } from '../runState';
-import type { Runner, ToolErrorFormatter } from '../run';
+import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
 import { resolveInterruptedTurn } from './turnResolution';
@@ -63,9 +63,16 @@ export async function resumeInterruptedTurn<
   state: RunState<TContext, TAgent>;
   runner: Runner;
   toolErrorFormatter?: ToolErrorFormatter;
+  agentToolParentRunConfig?: Partial<RunConfig>;
   onStepItems?: (turnResult: SingleStepResult) => void;
 }): Promise<InterruptedTurnOutcome> {
-  const { state, runner, toolErrorFormatter, onStepItems } = options;
+  const {
+    state,
+    runner,
+    toolErrorFormatter,
+    agentToolParentRunConfig,
+    onStepItems,
+  } = options;
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
@@ -75,6 +82,7 @@ export async function resumeInterruptedTurn<
     runner,
     state,
     toolErrorFormatter,
+    agentToolParentRunConfig,
   );
 
   applyTurnResult({

@@ -54,9 +54,7 @@ const DECORATOR_WRAPPERS = new Set([
 const SIMPLE_TYPE_MAPPING: Record<string, JsonSchemaDefinitionEntry> = {
   string: { type: 'string' },
   number: { type: 'number' },
-  bigint: { type: 'integer' },
   boolean: { type: 'boolean' },
-  date: { type: 'string', format: 'date-time' },
 };
 
 export function hasJsonSchemaObjectShape(
@@ -286,10 +284,6 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
       return buildEnum(def);
     case 'record':
       return buildRecordSchema(def);
-    case 'map':
-      return buildMapSchema(def);
-    case 'set':
-      return buildSetSchema(def);
     case 'nullable':
       return buildNullableSchema(def);
     default:
@@ -349,22 +343,6 @@ function buildRecordSchema(
   const valueSchema = convertSchema(def?.valueType ?? def?.values);
   return valueSchema
     ? { type: 'object', additionalProperties: valueSchema }
-    : undefined;
-}
-
-function buildMapSchema(
-  def: Record<string, unknown> | undefined,
-): JsonSchemaDefinitionEntry | undefined {
-  const valueSchema = convertSchema(def?.valueType ?? def?.values);
-  return valueSchema ? { type: 'array', items: valueSchema } : undefined;
-}
-
-function buildSetSchema(
-  def: Record<string, unknown> | undefined,
-): JsonSchemaDefinitionEntry | undefined {
-  const valueSchema = convertSchema(def?.valueType);
-  return valueSchema
-    ? { type: 'array', items: valueSchema, uniqueItems: true }
     : undefined;
 }
 
@@ -459,6 +437,26 @@ function buildLiteral(
     | boolean
     | null
     | undefined;
+  if (literal === undefined && Array.isArray(def.values)) {
+    const values = def.values as Array<string | number | boolean | null>;
+    if (values.length === 1) {
+      const [value] = values;
+      return {
+        const: value,
+        type: value === null ? 'null' : typeof value,
+      };
+    }
+    if (values.length > 1) {
+      return {
+        enum: values,
+        type: [
+          ...new Set(
+            values.map((value) => (value === null ? 'null' : typeof value)),
+          ),
+        ],
+      };
+    }
+  }
   if (literal === undefined) {
     return undefined;
   }

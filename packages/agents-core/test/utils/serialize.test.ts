@@ -112,6 +112,38 @@ describe('serialize utilities', () => {
     });
   });
 
+  it('serializes function tools with reserved built-in names', () => {
+    const parameterSchema = {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    };
+
+    for (const name of [
+      'apply_patch',
+      'computer',
+      'computer_use_preview',
+      'shell',
+    ]) {
+      const t: any = {
+        type: 'function',
+        name,
+        description: `${name} compatibility wrapper`,
+        parameters: parameterSchema,
+        strict: true,
+      };
+
+      expect(serializeTool(t)).toEqual({
+        type: 'function',
+        name,
+        description: `${name} compatibility wrapper`,
+        parameters: parameterSchema,
+        strict: true,
+      });
+    }
+  });
+
   it('serializes hosted tools', () => {
     const t: any = { type: 'hosted_tool', name: 'bt', providerData: { a: 1 } };
     expect(serializeTool(t)).toEqual({

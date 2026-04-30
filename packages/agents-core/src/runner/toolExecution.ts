@@ -43,7 +43,7 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import { RunState } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
-import type { Runner, ToolErrorFormatter } from '../run';
+import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import {
   getFunctionToolQualifiedName,
   matchesFunctionToolName,
@@ -70,6 +70,7 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
+  agentToolParentRunConfig?: Partial<RunConfig>;
 };
 
 const REDACTED_TOOL_ERROR_MESSAGE =
@@ -172,12 +173,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   runner: Runner,
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
+  agentToolParentRunConfig?: Partial<RunConfig>,
 ): Promise<FunctionToolResult<TContext>[]> {
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
     runner,
     state,
     toolErrorFormatter,
+    agentToolParentRunConfig,
   };
 
   try {
@@ -350,7 +353,7 @@ async function runApprovedFunctionTool<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, runner, state } = deps;
+  const { agent, runner, state, agentToolParentRunConfig } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withToolFunctionSpan(runner, traceToolName, async (span) => {
@@ -389,7 +392,10 @@ async function runApprovedFunctionTool<TContext>(
           toolCall: toolRun.toolCall,
           resumeState,
         };
-        setAgentToolParentRunConfigOnDetails(toolDetails, runner.config);
+        setAgentToolParentRunConfigOnDetails(
+          toolDetails,
+          agentToolParentRunConfig ?? runner.config,
+        );
         toolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,

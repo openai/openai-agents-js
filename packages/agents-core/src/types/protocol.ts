@@ -683,6 +683,7 @@ export const ApplyPatchOperationUpdateFile = z.object({
   type: z.literal('update_file'),
   path: z.string(),
   diff: z.string(),
+  moveTo: z.string().min(1).optional(),
 });
 
 export type ApplyPatchOperationUpdateFile = z.infer<

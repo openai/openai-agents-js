@@ -5,7 +5,9 @@ packages:
 
 onlyBuiltDependencies:
   - '@tailwindcss/oxide'
+  - cbor-extract
   - esbuild
+  - protobufjs
   - sharp
   # used only in examples/memory
   - '@prisma/client'
