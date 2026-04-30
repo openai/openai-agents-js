@@ -1493,6 +1493,42 @@ describe('Runner.run', () => {
       );
     });
 
+    it('keeps the current agent span attached when an input guardrail trips', async () => {
+      setTracingDisabled(false);
+      const fakeModel = new FakeModel([
+        {
+          output: [fakeModelMessage('plain text')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'GuardrailSpan',
+        model: fakeModel,
+        inputGuardrails: [
+          {
+            name: 'tripwire',
+            runInParallel: false,
+            execute: async () => ({
+              tripwireTriggered: true,
+              outputInfo: { reason: 'blocked' },
+            }),
+          },
+        ],
+      });
+
+      try {
+        await run(agent, 'test');
+        throw new Error('Expected the input guardrail to trip.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InputGuardrailTripwireTriggered);
+        const tripwireError = error as InputGuardrailTripwireTriggered;
+        expect(tripwireError.state?._currentAgentSpan).toBeTruthy();
+        expect(tripwireError.state?._currentAgentSpan?.error).not.toBeNull();
+      } finally {
+        setTracingDisabled(true);
+      }
+    });
+
     it('output guardrail success', async () => {
       const guardrailFn = vi.fn(async () => ({
         tripwireTriggered: false,
@@ -4406,7 +4442,7 @@ describe('Runner.run', () => {
       };
     }
 
-    it('strips GPT-5-only settings when the runner model is not a GPT-5 string', async () => {
+    it('strips GPT-5-only settings when the RunConfig model is not a GPT-5 string', async () => {
       const modelResponse: ModelResponse = {
         output: [fakeModelMessage('Hello non GPT-5')],
         usage: new Usage(),

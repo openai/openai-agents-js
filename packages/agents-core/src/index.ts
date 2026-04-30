@@ -290,11 +290,18 @@ export { RequestUsage, Usage } from './usage';
 export type {
   Session,
   SessionInputCallback,
+  SessionHistoryMutation,
+  SessionHistoryRewriteArgs,
+  SessionHistoryRewriteAwareSession,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
   OpenAIResponsesCompactionResult,
 } from './memory/session';
-export { isOpenAIResponsesCompactionAwareSession } from './memory/session';
+export {
+  isOpenAIResponsesCompactionAwareSession,
+  isSessionHistoryRewriteAwareSession,
+} from './memory/session';
+export { applySessionHistoryMutations } from './memory/historyMutations';
 export { MemorySession } from './memory/memorySession';
 
 /**
