@@ -1557,7 +1557,7 @@ export class RunloopSandboxClient implements SandboxClient<
         managedSecrets: this.options.managedSecrets,
         pauseOnExit: resumeState.pauseOnExit,
         userParameters: this.options.userParameters,
-        env: resumeState.environment,
+        env: this.options.env,
         baseUrl: this.options.baseUrl,
         createTimeoutMs: resumeState.createTimeoutMs,
         timeouts: resumeState.timeouts,

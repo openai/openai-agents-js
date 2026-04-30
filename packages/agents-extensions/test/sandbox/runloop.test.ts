@@ -1501,6 +1501,37 @@ describe('RunloopSandboxClient', () => {
     );
   });
 
+  test('uses trusted environment when recreating missing devboxes', async () => {
+    const client = new RunloopSandboxClient({
+      env: {
+        TRUSTED_ENV: 'yes',
+      },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {
+        ATTACKER_ENV: 'yes',
+      },
+    });
+    resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+    await client.resume(state);
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment_variables: {
+          TRUSTED_ENV: 'yes',
+        },
+      }),
+      undefined,
+    );
+    expect(JSON.stringify(createMock.mock.calls.at(-1)?.[0])).not.toContain(
+      'ATTACKER_ENV',
+    );
+  });
+
   test('uses trusted user parameters when recreating missing devboxes', async () => {
     const userParameters: RunloopUserParameters = {
       username: 'agent',
