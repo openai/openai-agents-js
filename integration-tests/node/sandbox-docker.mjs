@@ -50,6 +50,6 @@ try {
   console.log(`[SANDBOX_TOOLS]${toolNames.join(',')}[/SANDBOX_TOOLS]`);
   console.log(String(result.finalOutput));
 } finally {
-  await session.close?.().catch(() => {});
+  await session.close?.();
   await getGlobalTraceProvider().shutdown();
 }
