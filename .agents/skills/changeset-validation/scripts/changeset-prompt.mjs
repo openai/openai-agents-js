@@ -275,7 +275,7 @@ function formatChangesetFiles(entries) {
     .map((entry) => {
       const header = `File: ${entry.path} (${entry.status || 'unknown'})`;
       const content = entry.content ? entry.content.trimEnd() : '(missing)';
-      return `${header}\n${content}`;
+      return `${header}\n\n\`\`\`md\n${content}\n\`\`\``;
     })
     .join('\n\n');
 }

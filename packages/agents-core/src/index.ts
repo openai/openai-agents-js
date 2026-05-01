@@ -28,6 +28,7 @@ export {
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
   ModelBehaviorError,
+  ModelRefusalError,
   OutputGuardrailTripwireTriggered,
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,

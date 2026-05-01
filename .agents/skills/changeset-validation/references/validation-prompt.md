@@ -37,10 +37,13 @@ Changed packages: {{CHANGED_PACKAGES}}
 
 Changed files: {{CHANGED_FILES}}
 
-Changeset files: {{CHANGESET_FILES}}
+Changeset files:
+
+{{CHANGESET_FILES}}
 
 Notes:
 
+- Only the content inside each fenced `md` block under "Changeset files" is the actual changeset file content.
 - The changeset file list includes only files present in the head commit; deleted or renamed source paths may be omitted.
 
 PR body (CI only; otherwise this may be "(not provided)"): {{PR_BODY}}

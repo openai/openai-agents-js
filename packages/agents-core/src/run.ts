@@ -263,7 +263,7 @@ type SharedRunOptions<
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   /**
-   * Error handlers keyed by error kind. Currently only maxTurns errors are supported.
+   * Error handlers keyed by error kind.
    */
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
 };
@@ -848,7 +848,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             await guardrailTracker.awaitCompletion();
 
-            const turnResult = await resolveTurnAfterModelResponse<TContext>(
+            const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,
               state._originalInput,
               state._generatedItems,
@@ -857,6 +857,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               this,
               state,
               toolErrorFormatter,
+              options.errorHandlers,
             );
 
             applyTurnResult({
@@ -1279,7 +1280,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             streamStepItemsToRunResult(result, processedResponse.newItems);
           }
 
-          const turnResult = await resolveTurnAfterModelResponse<TContext>(
+          const turnResult = await resolveTurnAfterModelResponse(
             currentAgent,
             result.state._originalInput,
             result.state._generatedItems,
@@ -1288,6 +1289,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             this,
             result.state,
             toolErrorFormatter,
+            options.errorHandlers,
           );
 
           applyTurnResult({

@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
-import { ModelBehaviorError } from '../errors';
+import { ModelBehaviorError, ModelRefusalError } from '../errors';
 import { RunItem, RunMessageOutputItem, RunToolApprovalItem } from '../items';
 import { ModelResponse } from '../model';
 import type { Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
-import { getTextFromOutputMessage } from '../utils/messages';
+import {
+  getRefusalFromOutputMessage,
+  getTextFromOutputMessage,
+} from '../utils/messages';
 import { getSchemaAndParserFromInputType } from '../utils/tools';
 import { safeExecute } from '../utils/safeExecute';
 import { addErrorToCurrentSpan } from '../tracing/context';
@@ -26,6 +29,13 @@ import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
 import type { FunctionToolResult } from '../tool';
 import { getFunctionToolQualifiedName } from '../toolIdentity';
+import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
+import {
+  createRunErrorFinalOutputItem,
+  formatRunErrorFinalOutput,
+  resolveRunErrorHandler,
+} from './errorHandlers';
+import { getTurnInput } from './items';
 
 type ApprovalItemLike =
   | RunToolApprovalItem
@@ -628,15 +638,19 @@ export async function resolveInterruptedTurn<TContext>(
  * Executes every follow-up action the model requested (function tools, computer actions, MCP flows),
  * appends their outputs to the run history, and determines the next step for the agent loop.
  */
-export async function resolveTurnAfterModelResponse<TContext>(
-  agent: Agent<TContext, any>,
+export async function resolveTurnAfterModelResponse<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+>(
+  agent: TAgent,
   originalInput: string | AgentInputItem[],
   originalPreStepItems: RunItem[],
   newResponse: ModelResponse,
   processedResponse: ProcessedResponse<TContext>,
   runner: Runner,
-  state: RunState<TContext, Agent<TContext, any>>,
+  state: RunState<TContext, TAgent>,
   toolErrorFormatter?: ToolErrorFormatter,
+  errorHandlers?: RunErrorHandlers<TContext, TAgent>,
 ): Promise<SingleStepResult> {
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
@@ -786,6 +800,59 @@ export async function resolveTurnAfterModelResponse<TContext>(
       ? getTextFromOutputMessage(messageItems[messageItems.length - 1].rawItem)
       : undefined;
 
+  // Keep looping if any tool output placeholders still require an approval follow-up.
+  const hasPendingToolsOrApprovals =
+    functionResults.some(
+      (result) => result.runItem instanceof RunToolApprovalItem,
+    ) || additionalInterruptions.length > 0;
+
+  if (!hasPendingToolsOrApprovals && messageItems.length > 0) {
+    const refusal = getRefusalFromOutputMessage(
+      messageItems[messageItems.length - 1].rawItem,
+    );
+    if (refusal && typeof potentialFinalOutput === 'undefined') {
+      const refusalError = new ModelRefusalError(refusal, state);
+      const generatedItems = preStepItems.concat(newItems);
+      const runData: RunErrorData<TContext, TAgent> = {
+        input: originalInput,
+        newItems: generatedItems,
+        history: getTurnInput(
+          originalInput,
+          generatedItems,
+          state._reasoningItemIdPolicy,
+        ),
+        output: getTurnInput([], generatedItems, state._reasoningItemIdPolicy),
+        rawResponses: state._modelResponses,
+        lastAgent: agent,
+        state,
+      };
+      const handlerResult = await resolveRunErrorHandler({
+        error: refusalError,
+        errorHandlers,
+        context: state._context,
+        runData,
+      });
+      if (!handlerResult) {
+        throw refusalError;
+      }
+
+      const outputText = formatRunErrorFinalOutput(
+        agent,
+        handlerResult.finalOutput,
+      );
+      if (handlerResult.includeInHistory !== false) {
+        newItems.push(createRunErrorFinalOutputItem(agent, outputText));
+      }
+      return new SingleStepResult(
+        originalInput,
+        newResponse,
+        preStepItems,
+        newItems,
+        { type: 'next_step_final_output', output: outputText },
+      );
+    }
+  }
+
   // if there is no output we just run again
   if (typeof potentialFinalOutput === 'undefined') {
     return new SingleStepResult(
@@ -796,12 +863,6 @@ export async function resolveTurnAfterModelResponse<TContext>(
       { type: 'next_step_run_again' },
     );
   }
-
-  // Keep looping if any tool output placeholders still require an approval follow-up.
-  const hasPendingToolsOrApprovals =
-    functionResults.some(
-      (result) => result.runItem instanceof RunToolApprovalItem,
-    ) || additionalInterruptions.length > 0;
 
   if (!hasPendingToolsOrApprovals) {
     if (agent.outputType === 'text') {

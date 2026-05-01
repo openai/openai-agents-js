@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getLastTextFromOutputMessage,
   getOutputText,
+  getRefusalFromOutputMessage,
   getTextFromOutputMessage,
 } from '../../src/utils/messages';
 import type { ResponseOutputItem } from '../../src/types';
@@ -52,6 +53,21 @@ describe('utils/messages', () => {
 
     expect(getTextFromOutputMessage(item)).toBe('part1part2');
     expect(getLastTextFromOutputMessage(item)).toBe('part2');
+  });
+
+  it('concatenates all assistant refusal segments', () => {
+    const item: ResponseOutputItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'refusal', refusal: 'part1' },
+        { type: 'output_text', text: 'ignored' },
+        { type: 'refusal', refusal: 'part2' },
+      ],
+    } as any;
+
+    expect(getRefusalFromOutputMessage(item)).toBe('part1part2');
   });
 
   it('getOutputText returns all assistant text', () => {

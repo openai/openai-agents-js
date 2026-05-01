@@ -4,6 +4,7 @@ import {
   Agent,
   AgentInputItem,
   MaxTurnsExceededError,
+  ModelRefusalError,
   run,
   Runner,
   setDefaultModelProvider,
@@ -28,7 +29,12 @@ import {
   RunState,
   shellTool,
 } from '../src';
-import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
+import {
+  FakeModel,
+  FakeModelProvider,
+  fakeModelMessage,
+  fakeModelRefusal,
+} from './stubs';
 import * as protocol from '../src/types/protocol';
 import * as sessionPersistence from '../src/runner/sessionPersistence';
 import type { GuardrailFunctionOutput } from '../src/guardrail';
@@ -1154,6 +1160,66 @@ describe('Runner.run (streaming)', () => {
     expect(runItemEvents[0].item).toBeInstanceOf(RunMessageOutputItem);
     if (runItemEvents[0].item instanceof RunMessageOutputItem) {
       expect(runItemEvents[0].item.content).toBe('summary');
+    }
+  });
+
+  it('handles model refusal errors with an error handler', async () => {
+    class RefusalStreamingModel implements Model {
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        return {
+          output: [fakeModelRefusal('I cannot help with that request.')],
+          usage: new Usage(),
+        };
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r_refusal',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'RefusalHandlerStream',
+      model: new RefusalStreamingModel(),
+    });
+    const result = await run(agent, 'x', {
+      stream: true,
+      errorHandlers: {
+        modelRefusal: ({ error }) => {
+          expect(error).toBeInstanceOf(ModelRefusalError);
+          return { finalOutput: 'safe fallback' };
+        },
+      },
+    });
+    const events: RunStreamEvent[] = [];
+    for await (const event of result.toStream()) {
+      events.push(event);
+    }
+    await result.completed;
+    expect(result.finalOutput).toBe('safe fallback');
+    const runItemEvents = events.filter(
+      (event): event is RunItemStreamEvent =>
+        event.type === 'run_item_stream_event',
+    );
+    expect(runItemEvents).toHaveLength(2);
+    expect(runItemEvents[1].name).toBe('message_output_created');
+    expect(runItemEvents[1].item).toBeInstanceOf(RunMessageOutputItem);
+    if (runItemEvents[1].item instanceof RunMessageOutputItem) {
+      expect(runItemEvents[1].item.content).toBe('safe fallback');
     }
   });
 

@@ -14,6 +14,7 @@ import {
   Agent,
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
+  ModelRefusalError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
   Session,
@@ -59,6 +60,8 @@ import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
   FakeModel,
+  fakeModelRefusal,
+  fakeModelMessageWithRefusal,
   fakeModelMessage,
   FakeModelProvider,
   FakeTracingExporter,
@@ -1920,6 +1923,147 @@ describe('Runner.run', () => {
       });
       expect(result.finalOutput).toBe('summary');
       expect(result.newItems).toHaveLength(0);
+    });
+
+    it('throws model refusal errors instead of retrying refusal-only messages', async () => {
+      const agent = new Agent({
+        name: 'Refusal',
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('I cannot help with that request.')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      await expect(run(agent, 'x', { maxTurns: 3 })).rejects.toMatchObject({
+        name: 'ModelRefusalError',
+        refusal: 'I cannot help with that request.',
+      });
+    });
+
+    it('throws model refusal errors before structured output parsing', async () => {
+      const agent = new Agent({
+        name: 'StructuredRefusalError',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('I cannot help with that request.')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      await expect(run(agent, 'x')).rejects.toBeInstanceOf(ModelRefusalError);
+    });
+
+    it('uses assistant text when a message also contains refusal content', async () => {
+      const agent = new Agent({
+        name: 'MixedTextRefusal',
+        model: new FakeModel([
+          {
+            output: [
+              fakeModelMessageWithRefusal(
+                'valid answer',
+                'I cannot help with a different part.',
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x');
+      expect(result.finalOutput).toBe('valid answer');
+    });
+
+    it('parses structured assistant text when refusal content is also present', async () => {
+      const agent = new Agent({
+        name: 'MixedStructuredRefusal',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [
+              fakeModelMessageWithRefusal(
+                '{"summary":"valid answer"}',
+                'I cannot help with a different part.',
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x');
+      expect(result.finalOutput).toEqual({ summary: 'valid answer' });
+    });
+
+    it('model refusal handler returns structured final output', async () => {
+      const agent = new Agent({
+        name: 'StructuredRefusal',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('I cannot help with that request.')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          modelRefusal: ({ error, runData }) => {
+            expect(error).toBeInstanceOf(ModelRefusalError);
+            expect((error as ModelRefusalError).refusal).toBe(
+              'I cannot help with that request.',
+            );
+            expect(runData.rawResponses).toHaveLength(1);
+            return { finalOutput: { summary: 'safe fallback' } };
+          },
+        },
+      });
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(extractAllTextOutput(result.newItems)).toBe(
+        '{"summary":"safe fallback"}',
+      );
+    });
+
+    it('model refusal handler can skip history updates', async () => {
+      const agent = new Agent({
+        name: 'RefusalNoHistory',
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('I cannot help with that request.')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          modelRefusal: () => ({
+            finalOutput: 'safe fallback',
+            includeInHistory: false,
+          }),
+        },
+      });
+      expect(result.finalOutput).toBe('safe fallback');
+      expect(extractAllTextOutput(result.newItems)).toBe('');
+    });
+
+    it('default error handler can handle model refusals', async () => {
+      const agent = new Agent({
+        name: 'DefaultRefusal',
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('I cannot help with that request.')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          default: ({ error }) => {
+            expect(error).toBeInstanceOf(ModelRefusalError);
+            return { finalOutput: 'safe fallback' };
+          },
+        },
+      });
+      expect(result.finalOutput).toBe('safe fallback');
     });
 
     it('enforces maxTurns across multiple model calls', async () => {
