@@ -1,5 +1,4 @@
 import { UserError } from '@openai/agents-core';
-import { randomUUID } from 'node:crypto';
 import {
   type Manifest,
   normalizeRelativePath,
@@ -12,6 +11,11 @@ import {
 import type { RemoteSandboxPathOptions } from './types';
 
 export { posixDirname, shellQuote };
+
+type RuntimeCrypto = {
+  randomUUID?: () => string;
+  getRandomValues?: (array: Uint32Array) => Uint32Array;
+};
 
 export type RemotePathCommandResult = {
   status: number;
@@ -182,6 +186,20 @@ fi
 printf 'workspace escape: %s\n' "$resolved_candidate" >&2
 exit 111`;
 
+function createRemotePathHelperId(): string {
+  const crypto = (globalThis as typeof globalThis & { crypto?: RuntimeCrypto })
+    .crypto;
+  if (typeof crypto?.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto?.getRandomValues === 'function') {
+    return Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) =>
+      value.toString(36),
+    ).join('-');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function resolveSandboxAbsolutePath(
   root: string,
   path?: string,
@@ -200,7 +218,7 @@ export async function validateRemoteSandboxPath({
   runCommand,
 }: ValidateRemoteSandboxPathArgs): Promise<string> {
   const candidate = resolveSandboxAbsolutePath(root, path, options);
-  const helperDir = `/tmp/openai-agents-resolve-path-${randomUUID()}`;
+  const helperDir = `/tmp/openai-agents-resolve-path-${createRemotePathHelperId()}`;
   const helperArgs = [
     root,
     candidate,
