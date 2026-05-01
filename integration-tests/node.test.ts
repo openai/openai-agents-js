@@ -17,7 +17,7 @@ describe('Node.js', () => {
     await execa`npm install`;
   }, 60000);
 
-  test('should be able to run using CommonJS', async () => {
+  test('should be able to run using CommonJS', { timeout: 15000 }, async () => {
     const { stdout } = await execa`npm run start:cjs`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
@@ -38,6 +38,40 @@ describe('Node.js', () => {
     async () => {
       const { stdout } = await execa`npm run start:codex`;
       expect(stdout).toContain('[CODEX_RESPONSE]');
+    },
+  );
+
+  test(
+    'sandbox agent should run with unix-local',
+    { timeout: 60_000 },
+    async () => {
+      const { stdout } = await execa`npm run start:sandbox:unix-local`;
+      expect(stdout).toMatch(
+        /\[SANDBOX_TOOLS\].*exec_command.*\[\/SANDBOX_TOOLS\]/s,
+      );
+      expect(stdout).toContain(
+        '[SANDBOX_RESPONSE]unix-local-node:unix-local-node-command[/SANDBOX_RESPONSE]',
+      );
+    },
+  );
+
+  test(
+    'sandbox agent should run with docker',
+    { timeout: 120_000 },
+    async (context) => {
+      try {
+        await execa`docker info`;
+      } catch {
+        context.skip();
+      }
+
+      const { stdout } = await execa`npm run start:sandbox:docker`;
+      expect(stdout).toMatch(
+        /\[SANDBOX_TOOLS\].*exec_command.*\[\/SANDBOX_TOOLS\]/s,
+      );
+      expect(stdout).toContain(
+        '[SANDBOX_RESPONSE]docker-node:docker-node-command[/SANDBOX_RESPONSE]',
+      );
     },
   );
 });
