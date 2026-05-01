@@ -56,7 +56,7 @@ function changesetBumpFromContent(content) {
 function changedChangesetFiles(baseSha, headSha) {
   const diff = execFileSync(
     'git',
-    ['diff', '--name-only', baseSha, headSha, '--', '.changeset'],
+    ['diff', '--name-only', `${baseSha}...${headSha}`, '--', '.changeset'],
     { encoding: 'utf8' },
   ).trim();
   return diff

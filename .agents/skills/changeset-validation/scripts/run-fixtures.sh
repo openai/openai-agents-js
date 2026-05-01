@@ -103,6 +103,57 @@ if [ "$output" != "Milestone would be set to 0.9.x." ]; then
 fi
 echo "OK: milestone assignment uses changeset release bump"
 
+STALE_REPO="$TMP_DIR/stale-repo"
+mkdir -p "$STALE_REPO"
+git -C "$STALE_REPO" init >/dev/null
+git -C "$STALE_REPO" config user.email test@example.com
+git -C "$STALE_REPO" config user.name "Test User"
+mkdir -p "$STALE_REPO/.changeset"
+cat > "$STALE_REPO/.changeset/stale.md" <<'MD'
+---
+'@openai/agents-core': minor
+---
+
+feat: old branch-local changeset
+MD
+git -C "$STALE_REPO" add .changeset/stale.md
+git -C "$STALE_REPO" commit -m "common" >/dev/null
+COMMON_SHA=$(git -C "$STALE_REPO" rev-parse HEAD)
+git -C "$STALE_REPO" checkout -b pr-head "$COMMON_SHA" >/dev/null 2>&1
+HEAD_SHA=$(git -C "$STALE_REPO" rev-parse HEAD)
+git -C "$STALE_REPO" checkout -b current-base "$COMMON_SHA" >/dev/null 2>&1
+git -C "$STALE_REPO" rm .changeset/stale.md >/dev/null
+git -C "$STALE_REPO" commit -m "remove stale changeset on base" >/dev/null
+BASE_SHA=$(git -C "$STALE_REPO" rev-parse HEAD)
+cat > "$TMP_DIR/stale-event.json" <<JSON
+{
+  "repository": {
+    "owner": { "login": "openai" },
+    "name": "openai-agents-js"
+  },
+  "pull_request": {
+    "number": 1210,
+    "base": { "sha": "$BASE_SHA" },
+    "head": { "sha": "$HEAD_SHA" }
+  }
+}
+JSON
+
+output=$(
+  cd "$STALE_REPO"
+  GITHUB_TOKEN=dummy \
+    GITHUB_EVENT_PATH="$TMP_DIR/stale-event.json" \
+    CHANGESET_ASSIGN_MILESTONE_DRY_RUN=1 \
+    CHANGESET_ASSIGN_MILESTONE_MILESTONES_JSON='[{"title":"0.8.x","number":6},{"title":"0.9.x","number":7}]' \
+    node "$SKILL_DIR/scripts/changeset-assign-milestone.mjs" "$PATCH_JSON"
+)
+if [ "$output" != "Milestone would be set to 0.8.x." ]; then
+  echo "FAIL: milestone assignment ignores base-only stale changesets"
+  echo "$output"
+  exit 1
+fi
+echo "OK: milestone assignment ignores base-only stale changesets"
+
 rm -rf "$TMP_DIR"
 rm -rf "$SKILL_DIR/tmp"
 
