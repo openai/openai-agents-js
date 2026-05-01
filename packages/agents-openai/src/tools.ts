@@ -150,6 +150,10 @@ export function fileSearchTool(
 export type CodeInterpreterTool = {
   type: 'code_interpreter';
   name?: 'code_interpreter' | (string & {});
+  /**
+   * Whether to include code interpreter outputs in the response.
+   */
+  includeOutputs?: boolean;
   container?:
     | string
     | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
@@ -176,6 +180,7 @@ export function codeInterpreterTool(
     type: 'code_interpreter',
     name: options.name ?? 'code_interpreter',
     container: options.container ?? { type: 'auto' },
+    include_outputs: options.includeOutputs,
   };
   return {
     type: 'hosted_tool',

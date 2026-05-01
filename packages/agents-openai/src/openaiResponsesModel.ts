@@ -1563,7 +1563,9 @@ function converTool<_TContext = unknown>(
           type: 'code_interpreter',
           container: tool.providerData.container,
         },
-        include: undefined,
+        include: tool.providerData.include_outputs
+          ? ['code_interpreter_call.outputs']
+          : undefined,
       };
     } else if (tool.providerData?.type === 'tool_search') {
       return {

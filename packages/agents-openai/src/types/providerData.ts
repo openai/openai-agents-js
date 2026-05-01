@@ -19,6 +19,7 @@ export type CodeInterpreterTool = Omit<
 > & {
   type: 'code_interpreter';
   name: 'code_interpreter' | (string & {});
+  include_outputs?: boolean;
 };
 
 export type ToolSearchTool = Omit<OpenAI.Responses.ToolSearchTool, 'type'> & {

@@ -1,6 +1,7 @@
 import { getClientToolSearchExecutor } from '@openai/agents-core';
 import { describe, it, expect } from 'vitest';
 import {
+  codeInterpreterTool,
   fileSearchTool,
   imageGenerationTool,
   toolSearchTool,
@@ -43,6 +44,20 @@ describe('Tool', () => {
     expect(t2).toBeDefined();
     expect(t2.type).toBe('hosted_tool');
     expect(t2.name).toBe('file_search');
+  });
+
+  it('codeInterpreterTool preserves include outputs option', () => {
+    const t = codeInterpreterTool({ includeOutputs: true });
+    expect(t).toMatchObject({
+      type: 'hosted_tool',
+      name: 'code_interpreter',
+      providerData: {
+        type: 'code_interpreter',
+        name: 'code_interpreter',
+        container: { type: 'auto' },
+        include_outputs: true,
+      },
+    });
   });
 
   it('imageGenerationTool with gpt-image-1', () => {

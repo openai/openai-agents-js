@@ -394,6 +394,20 @@ describe('converTool', () => {
       container: 'python',
     });
 
+    const codeWithOutputs = converTool({
+      type: 'hosted_tool',
+      providerData: {
+        type: 'code_interpreter',
+        container: 'python',
+        include_outputs: true,
+      },
+    } as any);
+    expect(codeWithOutputs.tool).toEqual({
+      type: 'code_interpreter',
+      container: 'python',
+    });
+    expect(codeWithOutputs.include).toEqual(['code_interpreter_call.outputs']);
+
     const toolSearch = converTool({
       type: 'hosted_tool',
       providerData: { type: 'tool_search' },
