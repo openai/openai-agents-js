@@ -61,6 +61,7 @@ import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
   FakeModel,
   fakeModelRefusal,
+  fakeModelMessageWithRefusal,
   fakeModelMessage,
   FakeModelProvider,
   FakeTracingExporter,
@@ -1952,6 +1953,45 @@ describe('Runner.run', () => {
         ]),
       });
       await expect(run(agent, 'x')).rejects.toBeInstanceOf(ModelRefusalError);
+    });
+
+    it('uses assistant text when a message also contains refusal content', async () => {
+      const agent = new Agent({
+        name: 'MixedTextRefusal',
+        model: new FakeModel([
+          {
+            output: [
+              fakeModelMessageWithRefusal(
+                'valid answer',
+                'I cannot help with a different part.',
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x');
+      expect(result.finalOutput).toBe('valid answer');
+    });
+
+    it('parses structured assistant text when refusal content is also present', async () => {
+      const agent = new Agent({
+        name: 'MixedStructuredRefusal',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [
+              fakeModelMessageWithRefusal(
+                '{"summary":"valid answer"}',
+                'I cannot help with a different part.',
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const result = await run(agent, 'x');
+      expect(result.finalOutput).toEqual({ summary: 'valid answer' });
     });
 
     it('model refusal handler returns structured final output', async () => {

@@ -810,7 +810,7 @@ export async function resolveTurnAfterModelResponse<
     const refusal = getRefusalFromOutputMessage(
       messageItems[messageItems.length - 1].rawItem,
     );
-    if (refusal) {
+    if (refusal && typeof potentialFinalOutput === 'undefined') {
       const refusalError = new ModelRefusalError(refusal, state);
       const generatedItems = preStepItems.concat(newItems);
       const runData: RunErrorData<TContext, TAgent> = {
