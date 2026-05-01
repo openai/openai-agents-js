@@ -79,6 +79,21 @@ describe('Deno', () => {
     },
   );
 
+  test(
+    'sandbox agent should run with unix-local',
+    { timeout: 60000 },
+    async () => {
+      const { stdout } =
+        await execa`deno --allow-all --reload=npm: sandbox-unix-local.ts`;
+      expect(stdout).toMatch(
+        /\[SANDBOX_TOOLS\].*exec_command.*\[\/SANDBOX_TOOLS\]/s,
+      );
+      expect(stdout).toContain(
+        '[SANDBOX_RESPONSE]unix-local-deno:unix-local-deno-command[/SANDBOX_RESPONSE]',
+      );
+    },
+  );
+
   afterAll(async () => {
     await rm(path.join(denoCwd, 'deno.lock'), { force: true });
     await rm(denoCacheDir, { recursive: true, force: true });
