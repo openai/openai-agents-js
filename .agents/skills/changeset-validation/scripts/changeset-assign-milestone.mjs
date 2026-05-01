@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 
 const { fetch, console, process } = globalThis;
 
@@ -19,8 +20,101 @@ function parseMilestoneTitle(title) {
   return { major: Number(match[1]), minor: Number(match[2]), title };
 }
 
-async function assignMilestone(requiredBump) {
-  if (requiredBump === 'none') {
+const bumpRanks = {
+  none: 0,
+  patch: 1,
+  minor: 2,
+  major: 3,
+};
+
+function maxBump(left, right) {
+  return bumpRanks[right] > bumpRanks[left] ? right : left;
+}
+
+function bumpFromChangesetLine(line) {
+  const match = line.match(
+    /^\s*['"]?[^'":]+['"]?\s*:\s*(patch|minor|major)\s*$/,
+  );
+  return match?.[1];
+}
+
+function changesetBumpFromContent(content) {
+  const parts = content.split('---');
+  if (parts.length < 3) {
+    return 'none';
+  }
+  let bump = 'none';
+  for (const line of parts[1].split(/\r?\n/)) {
+    const lineBump = bumpFromChangesetLine(line);
+    if (lineBump) {
+      bump = maxBump(bump, lineBump);
+    }
+  }
+  return bump;
+}
+
+function changedChangesetFiles(baseSha, headSha) {
+  const diff = execFileSync(
+    'git',
+    ['diff', '--name-only', baseSha, headSha, '--', '.changeset'],
+    { encoding: 'utf8' },
+  ).trim();
+  return diff
+    ? diff
+        .split(/\r?\n/)
+        .filter((file) => file.endsWith('.md') && !file.endsWith('README.md'))
+    : [];
+}
+
+function changesetBumpForEvent(event) {
+  const baseSha = event?.pull_request?.base?.sha;
+  const headSha = event?.pull_request?.head?.sha;
+  if (!baseSha || !headSha) {
+    return 'none';
+  }
+
+  let bump = 'none';
+  for (const file of changedChangesetFiles(baseSha, headSha)) {
+    let content;
+    try {
+      content = execFileSync('git', ['show', `${headSha}:${file}`], {
+        encoding: 'utf8',
+      });
+    } catch (_error) {
+      continue;
+    }
+    bump = maxBump(bump, changesetBumpFromContent(content));
+  }
+  return bump;
+}
+
+async function listOpenMilestones(owner, repo, token) {
+  if (process.env.CHANGESET_ASSIGN_MILESTONE_MILESTONES_JSON) {
+    return JSON.parse(process.env.CHANGESET_ASSIGN_MILESTONE_MILESTONES_JSON);
+  }
+
+  const milestonesResponse = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/milestones?state=open&per_page=100`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (!milestonesResponse.ok) {
+    console.warn(
+      `Milestone assignment skipped (failed to list milestones: ${milestonesResponse.status}).`,
+    );
+    return null;
+  }
+
+  return milestonesResponse.json();
+}
+
+async function assignMilestone(releaseBump) {
+  if (releaseBump === 'none') {
     console.log('Milestone assignment skipped (no package changes).');
     return;
   }
@@ -57,24 +151,11 @@ async function assignMilestone(requiredBump) {
     return;
   }
 
-  const milestonesResponse = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/milestones?state=open&per_page=100`,
-    {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${token}`,
-      },
-    },
-  );
-
-  if (!milestonesResponse.ok) {
-    console.warn(
-      `Milestone assignment skipped (failed to list milestones: ${milestonesResponse.status}).`,
-    );
+  const milestones = await listOpenMilestones(owner, repo, token);
+  if (!milestones) {
     return;
   }
 
-  const milestones = await milestonesResponse.json();
   const parsed = milestones
     .map((milestone) => ({
       milestone,
@@ -115,9 +196,9 @@ async function assignMilestone(requiredBump) {
   }
 
   let targetEntry;
-  if (requiredBump === 'major') {
+  if (releaseBump === 'major') {
     targetEntry = majorTarget;
-  } else if (requiredBump === 'minor') {
+  } else if (releaseBump === 'minor') {
     targetEntry = minorTarget;
   } else {
     targetEntry = patchTarget;
@@ -126,6 +207,11 @@ async function assignMilestone(requiredBump) {
     console.warn(
       'Milestone assignment skipped (not enough open milestones for selection).',
     );
+    return;
+  }
+
+  if (process.env.CHANGESET_ASSIGN_MILESTONE_DRY_RUN === '1') {
+    console.log(`Milestone would be set to ${targetEntry.milestone.title}.`);
     return;
   }
 
@@ -178,7 +264,19 @@ function main() {
     return;
   }
 
-  assignMilestone(requiredBump).catch((error) => {
+  let releaseBump = requiredBump;
+  if (process.env.GITHUB_EVENT_PATH) {
+    try {
+      const event = JSON.parse(
+        fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'),
+      );
+      releaseBump = maxBump(requiredBump, changesetBumpForEvent(event));
+    } catch (_error) {
+      releaseBump = requiredBump;
+    }
+  }
+
+  assignMilestone(releaseBump).catch((error) => {
     console.warn(`Milestone assignment skipped: ${error.message}`);
   });
 }
