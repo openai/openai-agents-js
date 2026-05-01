@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run index.ts",
     "start:aisdk": "bun run aisdk.ts",
-    "start:zod": "bun run zod.ts"
+    "start:zod": "bun run zod.ts",
+    "start:sandbox:unix-local": "bun run sandbox-unix-local.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -5,7 +5,9 @@
     "start:cjs": "node --no-experimental-require-module index.cjs",
     "start:esm": "node --no-experimental-require-module index.mjs",
     "start:aisdk:cjs": "node aisdk.cjs",
-    "start:codex": "node --no-experimental-require-module codex.mjs"
+    "start:codex": "node --no-experimental-require-module codex.mjs",
+    "start:sandbox:unix-local": "node --no-experimental-require-module sandbox-unix-local.mjs",
+    "start:sandbox:docker": "node --no-experimental-require-module sandbox-docker.mjs"
   },
   "dependencies": {
     "@openai/agents": "latest",
