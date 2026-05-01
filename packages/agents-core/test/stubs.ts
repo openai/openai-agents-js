@@ -51,6 +51,20 @@ export function fakeModelMessage(text: string): protocol.AssistantMessageItem {
   };
 }
 
+export function fakeModelRefusal(
+  refusal: string,
+): protocol.AssistantMessageItem {
+  return {
+    ...TEST_MODEL_MESSAGE,
+    content: [
+      {
+        type: 'refusal' as const,
+        refusal,
+      },
+    ],
+  };
+}
+
 export const TEST_MODEL_FUNCTION_CALL: protocol.FunctionCallItem = {
   id: '123',
   type: 'function_call' as const,

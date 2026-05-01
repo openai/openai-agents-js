@@ -3,6 +3,7 @@ import {
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
   ModelBehaviorError,
+  ModelRefusalError,
   OutputGuardrailTripwireTriggered,
   UserError,
   GuardrailExecutionError,
@@ -22,6 +23,11 @@ describe('errors', () => {
     expect(() => {
       throw new ModelBehaviorError('Test error', {} as any);
     }).toThrow('Test error');
+    const refusalError = new ModelRefusalError('No.', {} as any);
+    expect(refusalError.refusal).toBe('No.');
+    expect(() => {
+      throw refusalError;
+    }).toThrow('Model refused to produce output: No.');
     expect(() => {
       throw new UserError('Test error', {} as any);
     }).toThrow('Test error');
@@ -62,6 +68,9 @@ describe('errors', () => {
     );
     expect(new ModelBehaviorError('Test error', {} as any).name).toBe(
       'ModelBehaviorError',
+    );
+    expect(new ModelRefusalError('No.', {} as any).name).toBe(
+      'ModelRefusalError',
     );
     expect(new UserError('Test error', {} as any).name).toBe('UserError');
     expect(

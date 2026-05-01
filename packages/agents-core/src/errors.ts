@@ -38,6 +38,21 @@ export class SystemError extends AgentsError {}
 export class MaxTurnsExceededError extends AgentsError {}
 
 /**
+ * Error thrown when the model refuses to produce output.
+ */
+export class ModelRefusalError extends AgentsError {
+  /**
+   * The refusal text returned by the model.
+   */
+  refusal: string;
+
+  constructor(refusal: string, state?: RunState<any, Agent<any, any>>) {
+    super(`Model refused to produce output: ${refusal}`, state);
+    this.refusal = refusal;
+  }
+}
+
+/**
  * Error thrown when a model behavior is unexpected.
  */
 export class ModelBehaviorError extends AgentsError {}

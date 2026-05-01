@@ -65,6 +65,32 @@ export function getTextFromOutputMessage(
 }
 
 /**
+ * Get all refusal text from the output message.
+ * @param outputMessage
+ * @returns
+ */
+export function getRefusalFromOutputMessage(
+  outputMessage: ResponseOutputItem,
+): string | undefined {
+  const assistantMessage = getAssistantMessage(outputMessage);
+  if (!assistantMessage) {
+    return undefined;
+  }
+
+  let sawRefusal = false;
+  const refusal = assistantMessage.content.reduce((acc, item) => {
+    if (item.type !== 'refusal') {
+      return acc;
+    }
+
+    sawRefusal = true;
+    return acc + item.refusal;
+  }, '');
+
+  return sawRefusal ? refusal : undefined;
+}
+
+/**
  * Get the last text from the output message.
  * @param output
  * @returns
