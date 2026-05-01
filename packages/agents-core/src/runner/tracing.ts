@@ -1,6 +1,7 @@
 import { Agent } from '../agent';
 import { Handoff } from '../handoff';
 import { ModelTracing } from '../model';
+import type { RunState } from '../runState';
 import { Tool } from '../tool';
 import { setCurrentSpan } from '../tracing/context';
 import { createAgentSpan } from '../tracing';
@@ -103,6 +104,16 @@ export function applyTraceOverrides(
   }
 
   return { trace, currentSpan };
+}
+
+export function applyTraceRedactionPolicyToState(
+  state: RunState<any, any>,
+  traceIncludeSensitiveData: boolean,
+  isResumedState: boolean,
+): void {
+  if (!isResumedState || state._traceIncludeSensitiveDataNeedsConfigFallback) {
+    state.setTraceIncludeSensitiveData(traceIncludeSensitiveData);
+  }
 }
 
 /**

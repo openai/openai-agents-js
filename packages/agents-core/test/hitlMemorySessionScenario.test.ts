@@ -151,6 +151,50 @@ describe('MemorySession HITL scenario', () => {
       await (rehydrated ?? session).clearSession();
     }
   });
+
+  it('persists overridden function-call arguments in session history', async () => {
+    executeCounts.clear();
+    const session = new MemorySession();
+    const model = new ScenarioModel();
+    const agent = new Agent({
+      name: 'MemorySession Override',
+      instructions: `Always call ${TOOL_ECHO} before responding.`,
+      model,
+      tools: [approvalEchoTool, approvalNoteTool],
+      modelSettings: { toolChoice: TOOL_ECHO },
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+
+    try {
+      const firstRun = await run(agent, USER_MESSAGES[0], { session });
+      expect(firstRun.interruptions).toHaveLength(1);
+
+      firstRun.state.approve(firstRun.interruptions[0], {
+        overrideArguments: { query: 'Overridden query' },
+      });
+
+      const resumed = await run(agent, firstRun.state, { session });
+      expect(resumed.finalOutput).toBe('approved:Overridden query');
+
+      const items = await session.getItems();
+      const functionCalls = items.filter(
+        (item): item is protocol.FunctionCallItem =>
+          item.type === 'function_call',
+      );
+      const lastCall = findLastFunctionCall(items);
+      const lastResult = findLastFunctionCallResult(items);
+
+      expect(functionCalls).toHaveLength(1);
+      expect(lastCall?.arguments).toBe(
+        JSON.stringify({ query: 'Overridden query' }),
+      );
+      expect(extractToolOutputText(lastResult)).toBe(
+        'approved:Overridden query',
+      );
+    } finally {
+      await session.clearSession();
+    }
+  });
 });
 
 async function runScenarioStep(

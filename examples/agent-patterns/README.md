@@ -1,7 +1,6 @@
 # Agent Pattern Examples
 
-This directory contains small scripts that demonstrate different agent patterns.
-Run them with `pnpm` using the commands shown below.
+This directory contains small scripts that demonstrate different agent patterns. Run them with `pnpm` using the commands shown below.
 
 - `agents-as-tools.ts` – Orchestrate translator agents using them as tools.
   ```bash
@@ -23,11 +22,11 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F agent-patterns start:forcing-tool-use
   ```
-- `human-in-the-loop.ts` – Manually approve certain tool calls.
+- `human-in-the-loop.ts` – Manually approve certain tool calls and override approved arguments.
   ```bash
   pnpm examples:human-in-the-loop
   ```
-- `human-in-the-loop-stream.ts` – Streaming version of human approval.
+- `human-in-the-loop-stream.ts` – Streaming version of human approval with approved-argument overrides.
   ```bash
   pnpm examples:streamed:human-in-the-loop
   ```

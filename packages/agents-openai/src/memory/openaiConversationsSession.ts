@@ -1,8 +1,15 @@
 import OpenAI from 'openai';
-import type { AgentInputItem, Session } from '@openai/agents-core';
+import {
+  protocol,
+  SERVER_MANAGED_CONVERSATION_SESSION,
+} from '@openai/agents-core';
+import type {
+  AgentInputItem,
+  ServerManagedConversationSession,
+  Session,
+} from '@openai/agents-core';
 import { getDefaultOpenAIClient, getDefaultOpenAIKey } from '../defaults';
 import { convertToOutputItem, getInputItems } from '../openaiResponsesModel';
-import { protocol } from '@openai/agents-core';
 import type { ConversationItem as APIConversationItem } from 'openai/resources/conversations/items';
 import type { Message as APIConversationMessage } from 'openai/resources/conversations/conversations';
 import {
@@ -28,10 +35,14 @@ export async function startOpenAIConversationsSession(
 }
 
 export class OpenAIConversationsSession
-  implements Session, OpenAISessionApiTagged<'conversations'>
+  implements
+    Session,
+    ServerManagedConversationSession,
+    OpenAISessionApiTagged<'conversations'>
 {
   // Marks this session as backed by the Conversations API so Responses-only integrations can reject it.
   readonly [OPENAI_SESSION_API] = 'conversations' as const;
+  readonly [SERVER_MANAGED_CONVERSATION_SESSION] = true as const;
 
   #client: OpenAI;
   #conversationId?: string;

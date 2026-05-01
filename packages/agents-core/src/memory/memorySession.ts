@@ -1,8 +1,13 @@
 import { randomUUID } from '@openai/agents-core/_shims';
 
 import type { AgentInputItem } from '../types';
-import type { Session } from './session';
+import type {
+  Session,
+  SessionHistoryRewriteArgs,
+  SessionHistoryRewriteAwareSession,
+} from './session';
 import { logger, Logger } from '../logger';
+import { applySessionHistoryMutations } from './historyMutations';
 
 export type MemorySessionOptions = {
   sessionId?: string;
@@ -13,7 +18,9 @@ export type MemorySessionOptions = {
 /**
  * Simple in-memory session store intended for demos or tests. Not recommended for production use.
  */
-export class MemorySession implements Session {
+export class MemorySession
+  implements Session, SessionHistoryRewriteAwareSession
+{
   private readonly sessionId: string;
   private readonly logger: Logger;
 
@@ -77,6 +84,17 @@ export class MemorySession implements Session {
   async clearSession(): Promise<void> {
     this.logger.debug(`Clearing memory session (${this.sessionId})`);
     this.items = [];
+  }
+
+  async applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> {
+    if (args.mutations.length === 0) {
+      return;
+    }
+
+    this.logger.debug(
+      `Applying history mutations to memory session (${this.sessionId}): ${JSON.stringify(args.mutations)}`,
+    );
+    this.items = applySessionHistoryMutations(this.items, args.mutations);
   }
 }
 

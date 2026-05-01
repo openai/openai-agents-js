@@ -46,6 +46,83 @@ export interface Session {
 }
 
 /**
+ * Marker for session implementations whose conversation history is owned by a server-side system
+ * and therefore cannot be rewritten in place by the SDK.
+ */
+export const SERVER_MANAGED_CONVERSATION_SESSION: unique symbol = Symbol(
+  'SERVER_MANAGED_CONVERSATION_SESSION',
+);
+
+/**
+ * Session subtype whose persisted history is managed by a remote conversation service.
+ */
+export interface ServerManagedConversationSession extends Session {
+  readonly [SERVER_MANAGED_CONVERSATION_SESSION]: true;
+}
+
+export function isServerManagedConversationSession(
+  session: Session | undefined,
+): session is ServerManagedConversationSession {
+  return (
+    !!session &&
+    typeof session === 'object' &&
+    (session as ServerManagedConversationSession)[
+      SERVER_MANAGED_CONVERSATION_SESSION
+    ] === true
+  );
+}
+
+export type SessionFunctionCallItem = Extract<
+  AgentInputItem,
+  { type: 'function_call' }
+>;
+
+export type ReplaceFunctionCallSessionHistoryMutation = {
+  /**
+   * Replace the canonical persisted function call for this call id and drop any later duplicate
+   * function-call items with the same call id.
+   */
+  type: 'replace_function_call';
+  /**
+   * Stable tool call identifier shared by the function call and its output.
+   */
+  callId: string;
+  /**
+   * Canonical function-call item to keep in persisted history.
+   */
+  replacement: SessionFunctionCallItem;
+};
+
+export type SessionHistoryMutation = ReplaceFunctionCallSessionHistoryMutation;
+
+export type SessionHistoryRewriteArgs = {
+  /**
+   * Ordered history mutations to apply to the persisted session items.
+   */
+  mutations: SessionHistoryMutation[];
+};
+
+/**
+ * Session subtype that can rewrite previously persisted history items after a turn finishes.
+ */
+export interface SessionHistoryRewriteAwareSession extends Session {
+  /**
+   * Apply the provided history mutations to the persisted session items.
+   */
+  applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
+}
+
+export function isSessionHistoryRewriteAwareSession(
+  session: Session | undefined,
+): session is SessionHistoryRewriteAwareSession {
+  return (
+    !!session &&
+    typeof (session as SessionHistoryRewriteAwareSession)
+      .applyHistoryMutations === 'function'
+  );
+}
+
+/**
  * Session subtype that can run compaction logic after a completed turn is persisted.
  */
 export type OpenAIResponsesCompactionArgs = {
