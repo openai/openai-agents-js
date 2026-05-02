@@ -704,6 +704,16 @@ function emitToolEnd(
   }
 }
 
+function getToolCallKey(toolCall: protocol.ToolCallItem): string | undefined {
+  if ('callId' in toolCall && typeof toolCall.callId === 'string') {
+    return toolCall.callId;
+  }
+  if ('id' in toolCall && typeof toolCall.id === 'string') {
+    return toolCall.id;
+  }
+  return undefined;
+}
+
 export async function executeShellActions(
   agent: Agent<any, any>,
   actions: ToolRunShell[],
@@ -718,6 +728,7 @@ export async function executeShellActions(
   for (const action of actions) {
     const shellTool = action.shell;
     const toolCall = action.toolCall;
+    const toolCallKey = getToolCallKey(toolCall) ?? toolCall.callId;
     if (!shellTool.shell) {
       _logger.warn(
         `Skipping shell action for tool "${shellTool.name}" because no local shell implementation is configured.`,
@@ -732,12 +743,12 @@ export async function executeShellActions(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: shellTool.name,
-      callId: toolCall.callId,
+      callId: toolCallKey,
       approvalItem,
       needsApproval: await shellTool.needsApproval(
         runContext,
         toolCall.action,
-        toolCall.callId,
+        toolCallKey,
       ),
       onApproval: shellTool.onApproval,
       buildRejectionItem: async () => {
@@ -745,7 +756,7 @@ export async function executeShellActions(
           runContext,
           toolType: 'shell',
           toolName: shellTool.name,
-          callId: toolCall.callId,
+          callId: toolCallKey,
           toolErrorFormatter,
         });
         const rejectionOutput: protocol.ShellCallOutputContent = {
@@ -756,7 +767,7 @@ export async function executeShellActions(
         return new RunToolCallOutputItem(
           {
             type: 'shell_call_output',
-            callId: toolCall.callId,
+            callId: toolCallKey,
             output: [rejectionOutput],
           },
           agent,
@@ -828,7 +839,7 @@ export async function executeShellActions(
 
         const rawItem: protocol.ShellCallResultItem = {
           type: 'shell_call_output',
-          callId: toolCall.callId,
+          callId: toolCallKey,
           output: shellOutputs ?? [],
         };
 
@@ -864,6 +875,7 @@ export async function executeApplyPatchOperations(
   for (const action of actions) {
     const applyPatchTool = action.applyPatch;
     const toolCall = action.toolCall;
+    const toolCallKey = getToolCallKey(toolCall) ?? toolCall.callId;
     const editorContext = { runContext };
     const approvalItem = new RunToolApprovalItem(
       toolCall,
@@ -873,12 +885,12 @@ export async function executeApplyPatchOperations(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: applyPatchTool.name,
-      callId: toolCall.callId,
+      callId: toolCallKey,
       approvalItem,
       needsApproval: await applyPatchTool.needsApproval(
         runContext,
         toolCall.operation,
-        toolCall.callId,
+        toolCallKey,
       ),
       onApproval: applyPatchTool.onApproval,
       buildRejectionItem: async () => {
@@ -886,13 +898,13 @@ export async function executeApplyPatchOperations(
           runContext,
           toolType: 'apply_patch',
           toolName: applyPatchTool.name,
-          callId: toolCall.callId,
+          callId: toolCallKey,
           toolErrorFormatter,
         });
         return new RunToolCallOutputItem(
           {
             type: 'apply_patch_call_output',
-            callId: toolCall.callId,
+            callId: toolCallKey,
             status: 'failed',
             output: response,
           },
@@ -984,7 +996,7 @@ export async function executeApplyPatchOperations(
 
         const rawItem: protocol.ApplyPatchCallResultItem = {
           type: 'apply_patch_call_output',
-          callId: toolCall.callId,
+          callId: toolCallKey,
           status,
         };
 

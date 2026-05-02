@@ -354,6 +354,11 @@ export class SandboxRuntimeManager<TContext> {
           } catch (error) {
             cleanupPlan.deferredError = error;
           }
+        } else {
+          state._sandbox = undefined;
+          forgetLivePreservedOwnedSessions(state);
+          cleanupPlan.ownedSessionCloseTarget = undefined;
+          cleanupPlan.afterOwnedSessionClose = undefined;
         }
       } else if (closedLiveSessionAgentKeys.size > 0) {
         state._sandbox = undefined;

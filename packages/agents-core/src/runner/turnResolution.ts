@@ -211,10 +211,9 @@ function buildApprovedCallIdSet(
     if (!rawItem || rawItem.type !== type) {
       continue;
     }
-    if ('callId' in rawItem && rawItem.callId) {
-      callIds.add(rawItem.callId);
-    } else if ('id' in rawItem && rawItem.id) {
-      callIds.add(rawItem.id);
+    const callKey = getToolActionKey(rawItem);
+    if (callKey) {
+      callIds.add(callKey);
     }
   }
   return callIds;
@@ -247,18 +246,24 @@ function filterActionsByApproval<T extends { toolCall: { callId?: string } }>(
   if (allowedCallIds.size === 0) {
     return [];
   }
-  return actions.filter(
-    (action) =>
-      typeof action.toolCall.callId === 'string' &&
-      allowedCallIds.has(action.toolCall.callId),
-  );
+  return actions.filter((action) => {
+    const callKey = getToolActionKey(action.toolCall);
+    return typeof callKey === 'string' && allowedCallIds.has(callKey);
+  });
 }
 
-type ToolActionWithCallId = { toolCall: { callId?: string } };
+type ToolActionWithCallId = {
+  toolCall: { callId?: string; id?: string };
+};
 
 type OrderedShellOrApplyPatchAction =
   | { type: 'shell'; action: ToolRunShell }
   | { type: 'apply_patch'; action: ToolRunApplyPatch };
+
+type QueuedActionsByCallId<T> = {
+  byCallId: Map<string, T[]>;
+  withoutCallId: T[];
+};
 
 function filterPendingActions<T extends ToolActionWithCallId>(
   actions: T[],
@@ -286,18 +291,22 @@ function filterPendingActions<T extends ToolActionWithCallId>(
 
 function queueActionsByCallId<T extends ToolActionWithCallId>(
   actions: T[],
-): Map<string, T[]> {
-  const actionsByCallId = new Map<string, T[]>();
+): QueuedActionsByCallId<T> {
+  const queued: QueuedActionsByCallId<T> = {
+    byCallId: new Map<string, T[]>(),
+    withoutCallId: [],
+  };
   for (const action of actions) {
-    const callId = action.toolCall.callId;
-    if (!callId) {
+    const callKey = getToolActionKey(action.toolCall);
+    if (!callKey) {
+      queued.withoutCallId.push(action);
       continue;
     }
-    const queued = actionsByCallId.get(callId) ?? [];
-    queued.push(action);
-    actionsByCallId.set(callId, queued);
+    const actionsForCallId = queued.byCallId.get(callKey) ?? [];
+    actionsForCallId.push(action);
+    queued.byCallId.set(callKey, actionsForCallId);
   }
-  return actionsByCallId;
+  return queued;
 }
 
 function takeQueuedAction<T>(
@@ -333,16 +342,21 @@ function orderShellAndApplyPatchActions(
   for (const item of sourceItems) {
     const rawItem = item.rawItem;
     if (rawItem?.type === 'shell_call') {
-      const action = takeQueuedAction(shellActionsByCallId, rawItem.callId);
+      const callKey = getToolActionKey(rawItem);
+      const action = takeQueuedAction(
+        shellActionsByCallId.byCallId,
+        callKey ?? '',
+      );
       if (action) {
         orderedActions.push({ type: 'shell', action });
       }
       continue;
     }
     if (rawItem?.type === 'apply_patch_call') {
+      const callKey = getToolActionKey(rawItem);
       const action = takeQueuedAction(
-        applyPatchActionsByCallId,
-        rawItem.callId,
+        applyPatchActionsByCallId.byCallId,
+        callKey ?? '',
       );
       if (action) {
         orderedActions.push({ type: 'apply_patch', action });
@@ -351,7 +365,11 @@ function orderShellAndApplyPatchActions(
   }
 
   const remainingShellActions: ToolRunShell[] = [];
-  appendRemainingQueuedActions(remainingShellActions, shellActionsByCallId);
+  appendRemainingQueuedActions(
+    remainingShellActions,
+    shellActionsByCallId.byCallId,
+  );
+  remainingShellActions.push(...shellActionsByCallId.withoutCallId);
   for (const action of remainingShellActions) {
     orderedActions.push({ type: 'shell', action });
   }
@@ -359,13 +377,27 @@ function orderShellAndApplyPatchActions(
   const remainingApplyPatchActions: ToolRunApplyPatch[] = [];
   appendRemainingQueuedActions(
     remainingApplyPatchActions,
-    applyPatchActionsByCallId,
+    applyPatchActionsByCallId.byCallId,
   );
+  remainingApplyPatchActions.push(...applyPatchActionsByCallId.withoutCallId);
   for (const action of remainingApplyPatchActions) {
     orderedActions.push({ type: 'apply_patch', action });
   }
 
   return orderedActions;
+}
+
+function getToolActionKey(value: {
+  callId?: unknown;
+  id?: unknown;
+}): string | undefined {
+  if (typeof value.callId === 'string' && value.callId.length > 0) {
+    return value.callId;
+  }
+  if (typeof value.id === 'string' && value.id.length > 0) {
+    return value.id;
+  }
+  return undefined;
 }
 
 async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {

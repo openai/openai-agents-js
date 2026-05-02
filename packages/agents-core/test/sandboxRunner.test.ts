@@ -2832,7 +2832,7 @@ describe('sandbox runner integration', () => {
     expect(resumedResult.state._sandbox).toBeUndefined();
   });
 
-  it('skips preserved session adoption for non-sandbox interruption resumes', async () => {
+  it('clears preserved sandbox state for non-sandbox interruption resumes without a client', async () => {
     const plainAgent = new Agent({
       name: 'PlainAgent',
       model: new RecordingFakeModel([]),
@@ -2896,9 +2896,7 @@ describe('sandbox runner integration', () => {
     ).resolves.toBeUndefined();
     await manager.cleanup(state);
 
-    expect(state._sandbox?.sessionsByAgent.SandboxWorker).toMatchObject({
-      preservedOwnedSession: true,
-    });
+    expect(state._sandbox).toBeUndefined();
   });
 
   it('closes live preserved owned sessions on non-sandbox interruption cleanup', async () => {
