@@ -32,6 +32,8 @@ npm install @openai/agents
 
 For Docker-backed sandboxes, install Docker locally and use `DockerSandboxClient` from `@openai/agents/sandbox/local`.
 
+If you use interactive local PTY sessions with `tty: true`, the process running the SDK also needs Python 3 available as `python3`, or through `OPENAI_AGENTS_PYTHON`. Non-PTY shell commands do not require Python.
+
 ## Create a local sandbox agent
 
 This example stages a local repo under `repo/`, loads local skills lazily, and lets the runner create a Unix-local sandbox session for the run.

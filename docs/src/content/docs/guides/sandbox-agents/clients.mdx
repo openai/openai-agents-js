@@ -197,4 +197,6 @@ Declare the ports in the client options when you need a backend to enforce an al
 | Local snapshots | Supported | Supported |
 | Local/Docker mounts | Local bind-style support | Bind and Docker volume-style support |
 
+Local PTY support uses a small Python 3 bridge in the SDK process. The bridge is only used for `tty: true` sessions, where Node.js does not provide a built-in PTY API and the SDK needs standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to a Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.
+
 Hosted provider support varies by provider. Keep provider-specific docs close to the provider implementation so users can see exact options, environment variables, port behavior, PTY support, snapshot behavior, and cleanup behavior.
