@@ -276,7 +276,8 @@ function isNeverSentWebSocketError(error: unknown): boolean {
 function isAmbiguousWebSocketReplayError(error: unknown): boolean {
   if (
     error instanceof ResponsesWebSocketInternalError &&
-    error.code === 'connection_closed_before_terminal_response_event'
+    (error.code === 'connection_closed_before_terminal_response_event' ||
+      error.code === 'pong_timeout')
   ) {
     return true;
   }
@@ -288,7 +289,8 @@ function isAmbiguousWebSocketReplayError(error: unknown): boolean {
 
   return (
     errorCause instanceof ResponsesWebSocketInternalError &&
-    errorCause.code === 'connection_closed_before_terminal_response_event'
+    (errorCause.code === 'connection_closed_before_terminal_response_event' ||
+      errorCause.code === 'pong_timeout')
   );
 }
 

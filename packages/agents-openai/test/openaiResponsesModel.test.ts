@@ -772,6 +772,36 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('getRetryAdvice marks websocket pong timeouts as unsafe', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: new ResponsesWebSocketInternalError(
+          'pong_timeout',
+          'Responses websocket pong timeout.',
+        ),
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason: 'Responses websocket pong timeout.',
+    });
+  });
+
   it('getRetryAdvice allows non-streaming websocket retries when the request never left the client', () => {
     const fakeClient = {
       responses: { create: vi.fn() },

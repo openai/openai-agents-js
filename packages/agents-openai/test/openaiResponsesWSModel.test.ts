@@ -205,6 +205,36 @@ describe('OpenAIResponsesWSModel', () => {
     }
   });
 
+  it('does not reset an outstanding keepalive timeout before pong arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      TestWebSocket.onCreate = (socket) => {
+        socket.autoPong = false;
+      };
+
+      const connection = await ResponsesWebSocketConnection.connect(
+        'wss://proxy.example.test/v1/responses',
+        { Authorization: 'Bearer sk-test' },
+        undefined,
+        undefined,
+        undefined,
+        { pingIntervalMs: 500, pingTimeoutMs: 1000 },
+      );
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(TestWebSocket.instances[0]?.pings).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(connection.nextFrame(undefined)).rejects.toThrow(
+        'Responses websocket pong timeout.',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('passes model keepalive options to websocket connections', async () => {
     vi.useFakeTimers();
     const fakeClient = createFakeClient();

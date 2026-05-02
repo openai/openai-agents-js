@@ -25,6 +25,7 @@ export type ResponsesWebSocketKeepAliveOptions = {
 export type ResponsesWebSocketInternalErrorCode =
   | 'connection_closed_before_opening'
   | 'connection_closed_before_terminal_response_event'
+  | 'pong_timeout'
   | 'socket_not_open';
 
 export class ResponsesWebSocketInternalError extends Error {
@@ -472,10 +473,13 @@ export class ResponsesWebSocketConnection {
     }
 
     if (typeof this.#pingTimeoutMs === 'number') {
-      this.#clearKeepAliveTimeout();
+      if (this.#pingTimeoutTimer) {
+        return;
+      }
       this.#pingTimeoutTimer = setTimeout(() => {
+        this.#pingTimeoutTimer = undefined;
         this.#error = new ResponsesWebSocketInternalError(
-          'socket_not_open',
+          'pong_timeout',
           'Responses websocket pong timeout.',
         );
         try {
