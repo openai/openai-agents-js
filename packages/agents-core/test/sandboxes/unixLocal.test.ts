@@ -1043,6 +1043,83 @@ describe('UnixLocalSandboxClient', () => {
     expect(output).not.toContain('tty no');
   });
 
+  it('fails tty commands clearly when the Python PTY bridge is unavailable', async () => {
+    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
+    const missingPython = join(rootDir, 'missing-python3');
+    process.env.OPENAI_AGENTS_PYTHON = missingPython;
+
+    try {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      });
+      const session = await client.create(new Manifest());
+
+      await expect(
+        session.execCommand({
+          cmd: 'printf "hello\\n"',
+          shell: '/bin/sh',
+          login: false,
+          tty: true,
+          yieldTimeMs: 1_000,
+        }),
+      ).rejects.toMatchObject({
+        code: 'configuration_error',
+        message:
+          'PTY support requires Python 3. Install python3 or set OPENAI_AGENTS_PYTHON to a Python 3 executable.',
+        details: expect.objectContaining({
+          pythonExecutable: missingPython,
+        }),
+      });
+    } finally {
+      if (originalPython === undefined) {
+        delete process.env.OPENAI_AGENTS_PYTHON;
+      } else {
+        process.env.OPENAI_AGENTS_PYTHON = originalPython;
+      }
+    }
+  });
+
+  it('checks relative PTY Python executables from the command cwd', async () => {
+    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
+    const pythonPath = await whichPython();
+
+    try {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      });
+      const session = await client.create(new Manifest());
+      await symlink(
+        pythonPath,
+        join(session.state.workspaceRootPath, 'python3'),
+      );
+      process.env.OPENAI_AGENTS_PYTHON = './python3';
+
+      const output = await session.execCommand({
+        cmd: 'test -t 0 && printf "tty yes\\n" || printf "tty no\\n"',
+        shell: '/bin/sh',
+        login: false,
+        tty: true,
+        yieldTimeMs: 1_000,
+      });
+      const finalOutput = await collectActiveCommandOutput(
+        {
+          writeStdin: (args) => session.writeStdin(args),
+        },
+        output,
+      );
+
+      expect(finalOutput).toContain('Process exited with code 0');
+      expect(finalOutput).toContain('tty yes');
+      expect(finalOutput).not.toContain('tty no');
+    } finally {
+      if (originalPython === undefined) {
+        delete process.env.OPENAI_AGENTS_PYTHON;
+      } else {
+        process.env.OPENAI_AGENTS_PYTHON = originalPython;
+      }
+    }
+  });
+
   it('accepts absolute sandbox paths when the manifest root is slash', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
@@ -2158,6 +2235,11 @@ async function writeUntilExit(
   }
 
   return combinedOutput;
+}
+
+async function whichPython(): Promise<string> {
+  const { stdout } = await execFileAsync('which', ['python3']);
+  return stdout.trim();
 }
 
 async function collectActiveCommandOutput(
