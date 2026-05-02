@@ -1043,6 +1043,42 @@ describe('UnixLocalSandboxClient', () => {
     expect(output).not.toContain('tty no');
   });
 
+  it('fails tty commands clearly when the Python PTY bridge is unavailable', async () => {
+    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
+    const missingPython = join(rootDir, 'missing-python3');
+    process.env.OPENAI_AGENTS_PYTHON = missingPython;
+
+    try {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      });
+      const session = await client.create(new Manifest());
+
+      await expect(
+        session.execCommand({
+          cmd: 'printf "hello\\n"',
+          shell: '/bin/sh',
+          login: false,
+          tty: true,
+          yieldTimeMs: 1_000,
+        }),
+      ).rejects.toMatchObject({
+        code: 'configuration_error',
+        message:
+          'PTY support requires Python 3. Install python3 or set OPENAI_AGENTS_PYTHON to a Python 3 executable.',
+        details: expect.objectContaining({
+          pythonExecutable: missingPython,
+        }),
+      });
+    } finally {
+      if (originalPython === undefined) {
+        delete process.env.OPENAI_AGENTS_PYTHON;
+      } else {
+        process.env.OPENAI_AGENTS_PYTHON = originalPython;
+      }
+    }
+  });
+
   it('accepts absolute sandbox paths when the manifest root is slash', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,

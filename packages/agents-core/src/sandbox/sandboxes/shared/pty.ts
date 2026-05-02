@@ -1,7 +1,20 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process';
+import { SandboxConfigurationError } from '../../errors';
 
 const PTY_BRIDGE_UID_ENV = '__OPENAI_AGENTS_PTY_UID';
 const PTY_BRIDGE_GID_ENV = '__OPENAI_AGENTS_PTY_GID';
+const PTY_BRIDGE_PYTHON_CHECK_SCRIPT = String.raw`
+import pty
+import select
+import signal
+import sys
+
+sys.exit(0 if sys.version_info[0] >= 3 else 1)
+`;
 const PTY_BRIDGE_SCRIPT = String.raw`
 import errno
 import os
@@ -95,6 +108,8 @@ except ChildProcessError:
 sys.exit(exit_status)
 `;
 
+const checkedPtyBridgePythonExecutables = new Set<string>();
+
 type PseudoTerminalSpawnOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -108,6 +123,9 @@ export function spawnInPseudoTerminal(
   options: PseudoTerminalSpawnOptions = {},
 ): ChildProcessWithoutNullStreams {
   const env = { ...(options.env ?? process.env) };
+  const pythonExecutable = process.env.OPENAI_AGENTS_PYTHON ?? 'python3';
+  assertPtyBridgePythonAvailable(pythonExecutable, env);
+
   if (typeof options.uid === 'number') {
     env[PTY_BRIDGE_UID_ENV] = String(options.uid);
   }
@@ -116,7 +134,7 @@ export function spawnInPseudoTerminal(
   }
 
   return spawn(
-    process.env.OPENAI_AGENTS_PYTHON ?? 'python3',
+    pythonExecutable,
     ['-c', PTY_BRIDGE_SCRIPT, executable, ...args],
     {
       cwd: options.cwd,
@@ -124,4 +142,38 @@ export function spawnInPseudoTerminal(
       stdio: 'pipe',
     },
   );
+}
+
+function assertPtyBridgePythonAvailable(
+  pythonExecutable: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  const cacheKey = `${pythonExecutable}\0${env.PATH ?? ''}`;
+  if (checkedPtyBridgePythonExecutables.has(cacheKey)) {
+    return;
+  }
+
+  const result = spawnSync(
+    pythonExecutable,
+    ['-c', PTY_BRIDGE_PYTHON_CHECK_SCRIPT],
+    {
+      env,
+      stdio: 'pipe',
+    },
+  );
+  if (result.error || result.status !== 0) {
+    throw new SandboxConfigurationError(
+      'PTY support requires Python 3. Install python3 or set OPENAI_AGENTS_PYTHON to a Python 3 executable.',
+      {
+        pythonExecutable,
+        path: env.PATH,
+        status: result.status,
+        signal: result.signal,
+        error: result.error?.message,
+        stderr: result.stderr?.toString('utf8').trim() ?? '',
+      },
+    );
+  }
+
+  checkedPtyBridgePythonExecutables.add(cacheKey);
 }
