@@ -270,10 +270,18 @@ export class ResponsesWebSocketConnection {
       throw wrappedError;
     }
 
-    const connection = new ResponsesWebSocketConnection(
-      socket,
-      keepAliveOptions,
-    );
+    let connection: ResponsesWebSocketConnection;
+    try {
+      connection = new ResponsesWebSocketConnection(socket, keepAliveOptions);
+    } catch (error) {
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors for sockets that failed option validation.
+      }
+      throw error;
+    }
+
     try {
       await connection.waitForOpen(signal, timeoutMs, timeoutErrorMessage);
       connection.#startKeepAlive();

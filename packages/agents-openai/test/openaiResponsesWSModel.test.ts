@@ -235,6 +235,24 @@ describe('OpenAIResponsesWSModel', () => {
     }
   });
 
+  it('closes the websocket when keepalive options are invalid', async () => {
+    await expect(
+      ResponsesWebSocketConnection.connect(
+        'wss://proxy.example.test/v1/responses',
+        { Authorization: 'Bearer sk-test' },
+        undefined,
+        undefined,
+        undefined,
+        { pingIntervalMs: 0 },
+      ),
+    ).rejects.toThrow(
+      'Responses websocket pingIntervalMs must be a positive number of milliseconds or null.',
+    );
+
+    expect(TestWebSocket.instances).toHaveLength(1);
+    expect(TestWebSocket.instances[0]?.readyState).toBe(TestWebSocket.CLOSED);
+  });
+
   it('passes model keepalive options to websocket connections', async () => {
     vi.useFakeTimers();
     const fakeClient = createFakeClient();
