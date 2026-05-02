@@ -10,6 +10,12 @@ import select
 import signal
 import sys
 
+PTY_CHILD_SIGNAL_DEFAULTS = (signal.SIGINT, signal.SIGQUIT)
+
+def restore_pty_child_signal_defaults():
+    for signum in PTY_CHILD_SIGNAL_DEFAULTS:
+        signal.signal(signum, signal.SIG_DFL)
+
 executable = sys.argv[1]
 argv = sys.argv[1:]
 pid, fd = pty.fork()
@@ -22,6 +28,7 @@ if pid == 0:
             os.setgid(int(gid))
         if uid:
             os.setuid(int(uid))
+        restore_pty_child_signal_defaults()
         os.execvpe(executable, argv, os.environ)
     except BaseException as exc:
         os.write(2, (str(exc) + '\n').encode())
