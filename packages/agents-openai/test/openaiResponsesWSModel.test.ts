@@ -36,6 +36,8 @@ class TestWebSocket {
   readonly init: any;
   readyState = TestWebSocket.CONNECTING;
   sent: string[] = [];
+  pings = 0;
+  autoPong = true;
   private listeners = new Map<string, Set<Listener>>();
 
   constructor(url: string, init?: unknown) {
@@ -73,6 +75,13 @@ class TestWebSocket {
     this.emit('send', { data: String(data) });
   }
 
+  ping() {
+    this.pings += 1;
+    if (this.autoPong) {
+      this.emit('pong', { type: 'pong' });
+    }
+  }
+
   close() {
     if (this.readyState === TestWebSocket.CLOSED) {
       return;
@@ -80,6 +89,10 @@ class TestWebSocket {
 
     this.readyState = TestWebSocket.CLOSED;
     this.emit('close', { type: 'close' });
+  }
+
+  terminate() {
+    this.close();
   }
 
   queueJSON(payload: unknown) {
@@ -140,6 +153,111 @@ describe('OpenAIResponsesWSModel', () => {
       (globalThis as any).WebSocket = originalWebSocket;
     }
     TestWebSocket.reset();
+  });
+
+  it('sends keepalive pings and clears heartbeat timeouts on pong', async () => {
+    vi.useFakeTimers();
+    try {
+      const connection = await ResponsesWebSocketConnection.connect(
+        'wss://proxy.example.test/v1/responses',
+        { Authorization: 'Bearer sk-test' },
+        undefined,
+        undefined,
+        undefined,
+        { pingIntervalMs: 1000, pingTimeoutMs: 500 },
+      );
+
+      await vi.advanceTimersByTimeAsync(2500);
+
+      expect(TestWebSocket.instances).toHaveLength(1);
+      expect(TestWebSocket.instances[0]?.pings).toBe(2);
+
+      await connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the websocket when a keepalive pong times out', async () => {
+    vi.useFakeTimers();
+    try {
+      TestWebSocket.onCreate = (socket) => {
+        socket.autoPong = false;
+      };
+
+      const connection = await ResponsesWebSocketConnection.connect(
+        'wss://proxy.example.test/v1/responses',
+        { Authorization: 'Bearer sk-test' },
+        undefined,
+        undefined,
+        undefined,
+        { pingIntervalMs: 1000, pingTimeoutMs: 500 },
+      );
+
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(TestWebSocket.instances[0]?.pings).toBe(1);
+      await expect(connection.nextFrame(undefined)).rejects.toThrow(
+        'Responses websocket pong timeout.',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes model keepalive options to websocket connections', async () => {
+    vi.useFakeTimers();
+    const fakeClient = createFakeClient();
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
+      websocketOptions: { pingIntervalMs: 1000, pingTimeoutMs: null },
+    });
+
+    try {
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          socket.queueJSON({
+            type: 'response.created',
+            response: { id: 'resp_init' },
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+      const consumePromise = (async () => {
+        for await (const _event of model.getStreamedResponse(request as any)) {
+          // Consume stream until the test sends the terminal response.
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(2500);
+
+      expect(TestWebSocket.instances).toHaveLength(1);
+      expect(TestWebSocket.instances[0]?.pings).toBe(2);
+
+      TestWebSocket.instances[0]?.queueJSON({
+        type: 'response.completed',
+        response: {
+          id: 'resp_done',
+          output: [],
+          usage: {},
+        },
+        sequence_number: 1,
+      });
+      await consumePromise;
+    } finally {
+      await model.close();
+      vi.useRealTimers();
+    }
   });
 
   it('streams responses over websocket and maps events', async () => {

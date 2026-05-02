@@ -1,11 +1,16 @@
 import { Runner, type RunConfig } from '@openai/agents-core';
 import { OpenAIProvider, type OpenAIProviderOptions } from './openaiProvider';
+import type { OpenAIResponsesWebSocketOptions } from './openaiResponsesModel';
 
 export type ResponsesWebSocketSessionOptions = {
   /**
    * Options used to construct the session-scoped OpenAI provider.
    */
   providerOptions?: OpenAIProviderOptions;
+  /**
+   * Low-level keepalive options for the session-scoped Responses WebSocket transport.
+   */
+  responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
   /**
    * Runner configuration for the session. modelProvider is controlled by this helper.
    */
@@ -51,6 +56,9 @@ export async function withResponsesWebSocketSession<T>(
     ...(options.providerOptions ?? {}),
     useResponses: true,
     useResponsesWebSocket: true,
+    responsesWebSocketOptions:
+      options.responsesWebSocketOptions ??
+      options.providerOptions?.responsesWebSocketOptions,
   });
   const runner = new Runner({
     ...(options.runnerConfig ?? {}),

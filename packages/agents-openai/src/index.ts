@@ -7,6 +7,7 @@ export {
 export {
   OpenAIResponsesModel,
   OpenAIResponsesWSModel,
+  type OpenAIResponsesWebSocketOptions,
 } from './openaiResponsesModel';
 export { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
 export {

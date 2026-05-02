@@ -40,6 +40,7 @@ import {
   webSocketFrameToText,
   withAbortSignal,
   withTimeout,
+  type ResponsesWebSocketKeepAliveOptions,
   type WebSocketMessageValue,
 } from './responsesWebSocketConnection';
 import {
@@ -3229,7 +3230,17 @@ export class OpenAIResponsesModel implements Model {
 export type OpenAIResponsesWSModelOptions = {
   websocketBaseURL?: string;
   reuseConnection?: boolean;
+  websocketOptions?: OpenAIResponsesWebSocketOptions;
 };
+
+export type OpenAIResponsesWebSocketOptions =
+  ResponsesWebSocketKeepAliveOptions;
+
+function cloneResponsesWebSocketOptions(
+  options: OpenAIResponsesWebSocketOptions | undefined,
+): OpenAIResponsesWebSocketOptions {
+  return { ...(options ?? {}) };
+}
 
 /**
  * Model implementation that uses the OpenAI Responses API over a websocket transport.
@@ -3239,6 +3250,7 @@ export type OpenAIResponsesWSModelOptions = {
 export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   #websocketBaseURL?: string;
   #reuseConnection: boolean;
+  #websocketOptions: OpenAIResponsesWebSocketOptions;
   #wsConnection: ResponsesWebSocketConnection | undefined;
   #wsConnectionIdentity: string | undefined;
   #wsRequestLock: Promise<void> = Promise.resolve();
@@ -3251,6 +3263,9 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     super(client, model);
     this.#websocketBaseURL = options.websocketBaseURL;
     this.#reuseConnection = options.reuseConnection ?? true;
+    this.#websocketOptions = cloneResponsesWebSocketOptions(
+      options.websocketOptions,
+    );
   }
 
   override getRetryAdvice(
@@ -3653,6 +3668,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       signal,
       connectTimeout.timeoutMs,
       connectTimeout.errorMessage,
+      this.#websocketOptions,
     );
     this.#wsConnectionIdentity = identity;
     return { connection: this.#wsConnection, reused: false };

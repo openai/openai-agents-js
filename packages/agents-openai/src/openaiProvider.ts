@@ -9,6 +9,7 @@ import {
 } from './defaults';
 import {
   OpenAIResponsesModel,
+  type OpenAIResponsesWebSocketOptions,
   OpenAIResponsesWSModel,
 } from './openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
@@ -25,6 +26,7 @@ export type OpenAIProviderOptions = {
   project?: string;
   useResponses?: boolean;
   useResponsesWebSocket?: boolean;
+  responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
   openAIClient?: OpenAI;
 };
 
@@ -134,6 +136,7 @@ export class OpenAIProvider implements ModelProvider {
             websocketBaseURL:
               this.#getWebSocketBaseURLForResponsesModel(client),
             reuseConnection: shouldCacheModelWrapper,
+            websocketOptions: this.#options.responsesWebSocketOptions,
           })
         : new OpenAIResponsesModel(client, model);
     } else {

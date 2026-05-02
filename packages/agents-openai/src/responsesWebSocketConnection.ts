@@ -7,6 +7,21 @@ export type WebSocketMessageValue =
   | ArrayBuffer
   | ArrayBufferView;
 
+export type ResponsesWebSocketKeepAliveOptions = {
+  /**
+   * Time in milliseconds between keepalive pings sent by the client.
+   *
+   * Set to null to disable client keepalive pings.
+   */
+  pingIntervalMs?: number | null;
+  /**
+   * Time in milliseconds to wait for a pong response before closing the socket.
+   *
+   * Set to null to keep pings enabled but disable heartbeat timeouts.
+   */
+  pingTimeoutMs?: number | null;
+};
+
 export type ResponsesWebSocketInternalErrorCode =
   | 'connection_closed_before_opening'
   | 'connection_closed_before_terminal_response_event'
@@ -158,6 +173,33 @@ export function isWebSocketNotOpenError(error: unknown): boolean {
   return false;
 }
 
+type PingableWebSocket = WebSocket & {
+  ping?: () => void;
+  terminate?: () => void;
+  on?: (eventName: string, listener: (...args: any[]) => void) => unknown;
+  off?: (eventName: string, listener: (...args: any[]) => void) => unknown;
+  removeListener?: (
+    eventName: string,
+    listener: (...args: any[]) => void,
+  ) => unknown;
+};
+
+function normalizeKeepAliveDurationMs(
+  value: number | null | undefined,
+  fieldName: string,
+): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  throw new UserError(
+    `Responses websocket ${fieldName} must be a positive number of milliseconds or null.`,
+  );
+}
+
 export class ResponsesWebSocketConnection {
   #socket: WebSocket;
   #messages: WebSocketMessageValue[] = [];
@@ -169,9 +211,25 @@ export class ResponsesWebSocketConnection {
   #error: Error | undefined;
   #closedPromise: Promise<void>;
   #resolveClosed!: () => void;
+  #pingIntervalMs: number | undefined;
+  #pingTimeoutMs: number | undefined;
+  #pingIntervalTimer: ReturnType<typeof setInterval> | undefined;
+  #pingTimeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  #removePongListener: (() => void) | undefined;
 
-  constructor(socket: WebSocket) {
+  constructor(
+    socket: WebSocket,
+    keepAliveOptions: ResponsesWebSocketKeepAliveOptions = {},
+  ) {
     this.#socket = socket;
+    this.#pingIntervalMs = normalizeKeepAliveDurationMs(
+      keepAliveOptions.pingIntervalMs,
+      'pingIntervalMs',
+    );
+    this.#pingTimeoutMs = normalizeKeepAliveDurationMs(
+      keepAliveOptions.pingTimeoutMs,
+      'pingTimeoutMs',
+    );
     this.#closedPromise = new Promise<void>((resolve) => {
       this.#resolveClosed = resolve;
     });
@@ -179,6 +237,7 @@ export class ResponsesWebSocketConnection {
     this.#socket.addEventListener('message', this.#onMessage as any);
     this.#socket.addEventListener('error', this.#onError as any);
     this.#socket.addEventListener('close', this.#onClose as any);
+    this.#removePongListener = this.#addPongListener();
   }
 
   static async connect(
@@ -187,6 +246,7 @@ export class ResponsesWebSocketConnection {
     signal: AbortSignal | undefined,
     timeoutMs?: number,
     timeoutErrorMessage?: string,
+    keepAliveOptions: ResponsesWebSocketKeepAliveOptions = {},
   ): Promise<ResponsesWebSocketConnection> {
     const WebSocketCtor = (globalThis as any).WebSocket as
       | (new (url: string, init?: unknown) => WebSocket)
@@ -209,9 +269,13 @@ export class ResponsesWebSocketConnection {
       throw wrappedError;
     }
 
-    const connection = new ResponsesWebSocketConnection(socket);
+    const connection = new ResponsesWebSocketConnection(
+      socket,
+      keepAliveOptions,
+    );
     try {
       await connection.waitForOpen(signal, timeoutMs, timeoutErrorMessage);
+      connection.#startKeepAlive();
     } catch (error) {
       await connection.close();
       throw error;
@@ -315,6 +379,7 @@ export class ResponsesWebSocketConnection {
   }
 
   async close(): Promise<void> {
+    this.#stopKeepAlive();
     if (!this.#closed) {
       try {
         this.#socket.close();
@@ -346,6 +411,99 @@ export class ResponsesWebSocketConnection {
     );
   }
 
+  #addPongListener(): (() => void) | undefined {
+    const socket = this.#socket as PingableWebSocket;
+    if (typeof socket.on === 'function') {
+      socket.on('pong', this.#onPong);
+      return () => {
+        if (typeof socket.off === 'function') {
+          socket.off('pong', this.#onPong);
+        } else if (typeof socket.removeListener === 'function') {
+          socket.removeListener('pong', this.#onPong);
+        }
+      };
+    }
+
+    if (typeof socket.addEventListener === 'function') {
+      socket.addEventListener('pong' as any, this.#onPong as any);
+      return () => {
+        socket.removeEventListener('pong' as any, this.#onPong as any);
+      };
+    }
+
+    return undefined;
+  }
+
+  #startKeepAlive(): void {
+    if (typeof this.#pingIntervalMs !== 'number') {
+      return;
+    }
+
+    this.#pingIntervalTimer = setInterval(() => {
+      this.#sendKeepAlivePing();
+    }, this.#pingIntervalMs);
+  }
+
+  #stopKeepAlive(): void {
+    if (this.#pingIntervalTimer) {
+      clearInterval(this.#pingIntervalTimer);
+      this.#pingIntervalTimer = undefined;
+    }
+    this.#clearKeepAliveTimeout();
+    this.#removePongListener?.();
+    this.#removePongListener = undefined;
+  }
+
+  #clearKeepAliveTimeout(): void {
+    if (this.#pingTimeoutTimer) {
+      clearTimeout(this.#pingTimeoutTimer);
+      this.#pingTimeoutTimer = undefined;
+    }
+  }
+
+  #sendKeepAlivePing(): void {
+    if (this.#closed || this.#socket.readyState !== this.#socket.OPEN) {
+      return;
+    }
+
+    const socket = this.#socket as PingableWebSocket;
+    if (typeof socket.ping !== 'function') {
+      return;
+    }
+
+    if (typeof this.#pingTimeoutMs === 'number') {
+      this.#clearKeepAliveTimeout();
+      this.#pingTimeoutTimer = setTimeout(() => {
+        this.#error = new ResponsesWebSocketInternalError(
+          'socket_not_open',
+          'Responses websocket pong timeout.',
+        );
+        try {
+          if (typeof socket.terminate === 'function') {
+            socket.terminate();
+          } else {
+            socket.close();
+          }
+        } catch {
+          // Ignore close errors; waiters will be rejected by the stored error.
+        }
+      }, this.#pingTimeoutMs);
+    }
+
+    try {
+      socket.ping();
+    } catch (error) {
+      this.#clearKeepAliveTimeout();
+      this.#error = error instanceof Error ? error : new Error(String(error));
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors; waiters will be rejected by the stored error.
+      }
+      return;
+    }
+  }
+
   #onMessage = (event: MessageEvent) => {
     const data = event.data as WebSocketMessageValue;
 
@@ -356,6 +514,10 @@ export class ResponsesWebSocketConnection {
     }
 
     this.#messages.push(data);
+  };
+
+  #onPong = () => {
+    this.#clearKeepAliveTimeout();
   };
 
   #onError = (event: any) => {
@@ -377,6 +539,7 @@ export class ResponsesWebSocketConnection {
   };
 
   #onClose = () => {
+    this.#stopKeepAlive();
     this.#closed = true;
     this.#resolveClosed();
 
