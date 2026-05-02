@@ -124,7 +124,10 @@ export function spawnInPseudoTerminal(
 ): ChildProcessWithoutNullStreams {
   const env = { ...(options.env ?? process.env) };
   const pythonExecutable = process.env.OPENAI_AGENTS_PYTHON ?? 'python3';
-  assertPtyBridgePythonAvailable(pythonExecutable, env);
+  assertPtyBridgePythonAvailable(pythonExecutable, {
+    cwd: options.cwd,
+    env,
+  });
 
   if (typeof options.uid === 'number') {
     env[PTY_BRIDGE_UID_ENV] = String(options.uid);
@@ -146,9 +149,12 @@ export function spawnInPseudoTerminal(
 
 function assertPtyBridgePythonAvailable(
   pythonExecutable: string,
-  env: NodeJS.ProcessEnv,
+  options: {
+    cwd?: string;
+    env: NodeJS.ProcessEnv;
+  },
 ): void {
-  const cacheKey = `${pythonExecutable}\0${env.PATH ?? ''}`;
+  const cacheKey = `${pythonExecutable}\0${options.cwd ?? ''}\0${options.env.PATH ?? ''}`;
   if (checkedPtyBridgePythonExecutables.has(cacheKey)) {
     return;
   }
@@ -157,7 +163,8 @@ function assertPtyBridgePythonAvailable(
     pythonExecutable,
     ['-c', PTY_BRIDGE_PYTHON_CHECK_SCRIPT],
     {
-      env,
+      cwd: options.cwd,
+      env: options.env,
       stdio: 'pipe',
     },
   );
@@ -166,7 +173,8 @@ function assertPtyBridgePythonAvailable(
       'PTY support requires Python 3. Install python3 or set OPENAI_AGENTS_PYTHON to a Python 3 executable.',
       {
         pythonExecutable,
-        path: env.PATH,
+        cwd: options.cwd,
+        path: options.env.PATH,
         status: result.status,
         signal: result.signal,
         error: result.error?.message,
