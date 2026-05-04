@@ -19,6 +19,7 @@ import {
   assertCoreSnapshotUnsupported,
   assertTarWorkspacePersistence,
   assertResumeRecreateAllowed,
+  assertRunAsUnsupported,
   assertSandboxManifestMetadataSupported,
   SANDBOX_MANIFEST_METADATA_SUPPORT,
   closeRemoteSessionOnManifestError,
@@ -924,7 +925,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   }
 
   protected override assertFilesystemRunAs(_runAs?: string): void {
-    void _runAs;
+    assertRunAsUnsupported('RunloopSandboxClient', _runAs);
   }
 
   private async materializeMountEntry(

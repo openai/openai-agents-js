@@ -859,20 +859,16 @@ describe('RunloopSandboxClient', () => {
     });
   });
 
-  test('passes filesystem runAs through remote commands', async () => {
+  test('rejects filesystem runAs values', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create();
 
-    expect(() => session.createEditor('root')).not.toThrow();
-    execMock.mockClear();
-
-    await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
-
-    expect(
-      execMock.mock.calls.some(([command]) =>
-        String(command).includes("sudo -n -u 'root' -- sh -lc"),
-      ),
-    ).toBe(true);
+    expect(() => session.createEditor('root')).toThrow(
+      'RunloopSandboxClient does not support runAs yet.',
+    );
+    await expect(
+      session.pathExists('README.md', 'root'),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
   });
 
   test('upserts managed secrets and stores only secret references', async () => {

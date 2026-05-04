@@ -3,4 +3,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: support sandbox filesystem runAs across providers
+fix: support sandbox filesystem runAs for compatible providers
