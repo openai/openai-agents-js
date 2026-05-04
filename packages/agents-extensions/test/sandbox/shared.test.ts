@@ -1669,6 +1669,36 @@ describe('remote sandbox path helpers', () => {
     ).rejects.toThrow(/local_dir entries do not support symbolic links/);
   });
 
+  test('rejects symbolic link ancestors in local directory entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const realRoot = join(tempDir, 'real-root');
+    const linkedRoot = join(tempDir, 'linked-root');
+    const sourceDir = join(realRoot, 'source-dir');
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(join(sourceDir, 'safe.txt'), 'safe');
+    await symlink(realRoot, linkedRoot, 'dir');
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/project',
+        {
+          type: 'local_dir',
+          src: join(linkedRoot, 'source-dir'),
+        },
+        'test',
+      ),
+    ).rejects.toThrow(
+      /local_dir entries do not support symbolic link ancestors/,
+    );
+  });
+
   test('rejects symbolic links in local file entries', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
     tempDirs.push(tempDir);
@@ -1693,6 +1723,35 @@ describe('remote sandbox path helpers', () => {
         'test',
       ),
     ).rejects.toThrow(/local_file entries do not support symbolic links/);
+  });
+
+  test('rejects symbolic link ancestors in local file entries', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const realRoot = join(tempDir, 'real-root');
+    const linkedRoot = join(tempDir, 'linked-root');
+    await mkdir(realRoot);
+    await writeFile(join(realRoot, 'source.txt'), 'source');
+    await symlink(realRoot, linkedRoot, 'dir');
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/copied.txt',
+        {
+          type: 'local_file',
+          src: join(linkedRoot, 'source.txt'),
+        },
+        'test',
+      ),
+    ).rejects.toThrow(
+      /local_file entries do not support symbolic link ancestors/,
+    );
   });
 
   test('formats command output and truncates token output', () => {

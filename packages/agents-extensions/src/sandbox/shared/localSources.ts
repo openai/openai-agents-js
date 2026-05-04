@@ -15,7 +15,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { normalizeGitRepository } from './git';
 import { formatSandboxProcessError, runSandboxProcess } from './process';
 import {
@@ -216,6 +216,11 @@ async function resolveStableLocalDirectorySource(
   sourceDir: string,
   expectedSourceStat?: Stats,
 ): Promise<StableLocalDirectorySource> {
+  await assertNoLocalSourceSymlinkAncestors(
+    sourceDir,
+    'local_dir',
+    localDirectoryPathChangedError,
+  );
   const sourceStat = await statStableLocalSourcePath(sourceDir);
   if (sourceStat.isSymbolicLink()) {
     throw new UserError(
@@ -289,6 +294,11 @@ async function assertStableLocalDirectoryPath(
 }
 
 async function readStableLocalFile(sourcePath: string): Promise<Uint8Array> {
+  await assertNoLocalSourceSymlinkAncestors(
+    sourcePath,
+    'local_file',
+    localFilePathChangedError,
+  );
   const sourceStat = await statStableLocalSourcePath(
     sourcePath,
     localFilePathChangedError,
@@ -319,6 +329,37 @@ async function readStableLocalFile(sourcePath: string): Promise<Uint8Array> {
     return await handle.readFile();
   } finally {
     await handle.close();
+  }
+}
+
+async function assertNoLocalSourceSymlinkAncestors(
+  sourcePath: string,
+  entryType: 'local_dir' | 'local_file',
+  pathChangedError: (sourcePath: string) => UserError,
+): Promise<void> {
+  const resolvedPath = resolve(sourcePath);
+  let current = dirname(resolvedPath);
+
+  while (current !== dirname(current)) {
+    const parent = dirname(current);
+    if (parent === dirname(parent)) {
+      break;
+    }
+    let currentStat: Stats;
+    try {
+      currentStat = await lstat(current);
+    } catch (error) {
+      if (isPathChangedError(error)) {
+        throw pathChangedError(sourcePath);
+      }
+      throw error;
+    }
+    if (currentStat.isSymbolicLink()) {
+      throw new UserError(
+        `${entryType} entries do not support symbolic link ancestors: ${sourcePath}`,
+      );
+    }
+    current = parent;
   }
 }
 
