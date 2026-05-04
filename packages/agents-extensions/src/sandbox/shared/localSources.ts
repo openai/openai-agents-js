@@ -23,7 +23,9 @@ import {
   applyMaterializedManifestToState,
   materializeInlineManifestEntry,
   materializeManifestEntries,
+  resolveLocalDirFileConcurrency,
   resolveMaterializedChildPath,
+  runLimited,
 } from './manifest';
 import type { SandboxProcessResult } from './process';
 import type {
@@ -140,7 +142,7 @@ export async function materializeLocalSourceManifestEntry(
       );
       break;
     case 'local_dir':
-      await materializeLocalDirectory(writer, absolutePath, entry.src);
+      await materializeLocalDirectory(writer, absolutePath, entry.src, options);
       break;
     case 'git_repo':
       await materializeGitRepo(
@@ -149,6 +151,7 @@ export async function materializeLocalSourceManifestEntry(
         entry,
         entry.ref,
         providerLabel,
+        options,
       );
       break;
     default:
@@ -169,6 +172,7 @@ async function materializeLocalDirectory(
   writer: RemoteManifestWriter,
   absolutePath: string,
   sourceDir: string,
+  options: ManifestMaterializationOptions,
   expectedSourceStat?: Stats,
 ): Promise<void> {
   const source = await resolveStableLocalDirectorySource(
@@ -178,38 +182,43 @@ async function materializeLocalDirectory(
   await writer.mkdir(absolutePath);
   const entries = await readStableLocalDirectoryEntries(sourceDir, source.stat);
 
-  for (const entry of entries) {
-    const sourcePath = join(sourceDir, entry.name);
-    const destinationPath = `${absolutePath}/${entry.name}`;
+  await runLimited(
+    entries,
+    resolveLocalDirFileConcurrency(options.concurrencyLimits),
+    async (entry) => {
+      const sourcePath = join(sourceDir, entry.name);
+      const destinationPath = `${absolutePath}/${entry.name}`;
 
-    if (entry.isDirectory()) {
-      const childSourceStat = await assertStableLocalDirectoryChild(
-        source.root,
-        sourcePath,
-      );
-      await materializeLocalDirectory(
-        writer,
-        destinationPath,
-        sourcePath,
-        childSourceStat,
-      );
-      continue;
-    }
+      if (entry.isDirectory()) {
+        const childSourceStat = await assertStableLocalDirectoryChild(
+          source.root,
+          sourcePath,
+        );
+        await materializeLocalDirectory(
+          writer,
+          destinationPath,
+          sourcePath,
+          options,
+          childSourceStat,
+        );
+        return;
+      }
 
-    if (entry.isFile()) {
-      await writer.writeFile(
-        destinationPath,
-        await readStableLocalDirectoryFile(source.root, sourcePath),
-      );
-      continue;
-    }
+      if (entry.isFile()) {
+        await writer.writeFile(
+          destinationPath,
+          await readStableLocalDirectoryFile(source.root, sourcePath),
+        );
+        return;
+      }
 
-    if (entry.isSymbolicLink()) {
-      throw new UserError(
-        `local_dir entries do not support symbolic links: ${sourcePath}`,
-      );
-    }
-  }
+      if (entry.isSymbolicLink()) {
+        throw new UserError(
+          `local_dir entries do not support symbolic links: ${sourcePath}`,
+        );
+      }
+    },
+  );
 }
 
 async function resolveStableLocalDirectorySource(
@@ -505,6 +514,7 @@ async function materializeGitRepo(
   repository: string | { host?: string; repo: string; subpath?: string },
   ref: string | undefined,
   providerLabel: string,
+  options: ManifestMaterializationOptions,
 ): Promise<void> {
   const gitVersion = await runSandboxProcess('git', ['--version'], {
     timeoutMs: GIT_VERSION_TIMEOUT_MS,
@@ -542,7 +552,13 @@ async function materializeGitRepo(
         `git_repo subpath escapes the cloned repository: ${subpath}`,
       );
     }
-    await materializeGitRepoSource(writer, absolutePath, sourcePath, subpath);
+    await materializeGitRepoSource(
+      writer,
+      absolutePath,
+      sourcePath,
+      options,
+      subpath,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -627,11 +643,12 @@ async function materializeGitRepoSource(
   writer: RemoteManifestWriter,
   absolutePath: string,
   sourcePath: string,
+  options: ManifestMaterializationOptions,
   subpath?: string,
 ): Promise<void> {
   const sourceInfo = await lstat(sourcePath);
   if (sourceInfo.isDirectory()) {
-    await materializeLocalDirectory(writer, absolutePath, sourcePath);
+    await materializeLocalDirectory(writer, absolutePath, sourcePath, options);
     return;
   }
   if (sourceInfo.isFile()) {

@@ -11,6 +11,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type MaterializeEntryArgs,
@@ -70,7 +71,6 @@ import {
   validateRemoteSandboxPathForManifest,
 } from '../shared/paths';
 import {
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
@@ -133,17 +133,23 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   readonly state: CloudflareSandboxSessionState;
   private readonly apiKey?: string;
   private readonly ptyProcesses = new PtyProcessRegistry();
+  private readonly concurrencyLimits?: SandboxConcurrencyLimits;
   private readonly remotePathResolver: RemoteSandboxPathResolver = async (
     path,
     options,
   ) => await this.resolveRemotePath(path, options);
 
-  constructor(args: { state: CloudflareSandboxSessionState; apiKey?: string }) {
+  constructor(args: {
+    state: CloudflareSandboxSessionState;
+    apiKey?: string;
+    concurrencyLimits?: SandboxConcurrencyLimits;
+  }) {
     this.state = {
       ...args.state,
       sandboxId: normalizeCloudflarePersistedSandboxId(args.state.sandboxId),
     };
     this.apiKey = args.apiKey;
+    this.concurrencyLimits = args.concurrencyLimits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -372,7 +378,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         'cloudflare',
         this.writer(),
         this.remotePathResolver,
-        this.manifestMaterializationOptions,
+        this.manifestMaterializationOptions(),
       );
       return;
     }
@@ -384,7 +390,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       'cloudflare',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
   }
 
@@ -406,7 +412,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         'cloudflare',
         this.writer(),
         this.remotePathResolver,
-        this.manifestMaterializationOptions,
+        this.manifestMaterializationOptions(),
       );
       return;
     }
@@ -417,7 +423,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       'cloudflare',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
   }
 
@@ -585,9 +591,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     };
   }
 
-  private readonly manifestMaterializationOptions = {
-    materializeMount: this.materializeMountEntry.bind(this),
-  };
+  private manifestMaterializationOptions() {
+    return {
+      materializeMount: this.materializeMountEntry.bind(this),
+      concurrencyLimits: this.concurrencyLimits,
+    };
+  }
 
   private async materializeMountEntry(
     absolutePath: string,
@@ -890,10 +899,6 @@ export class CloudflareSandboxClient implements SandboxClient<
       'CloudflareSandboxClient',
       createArgs.snapshot,
     );
-    assertCoreConcurrencyLimitsUnsupported(
-      'CloudflareSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     const resolvedOptions = {
       ...this.options,
@@ -981,6 +986,7 @@ export class CloudflareSandboxClient implements SandboxClient<
 
         const session = new CloudflareSandboxSession({
           apiKey,
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest,
             workerUrl: normalizedWorkerUrl,

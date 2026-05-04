@@ -8,6 +8,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type Mount,
   type SandboxSessionState,
   type TypedMount,
@@ -15,7 +16,6 @@ import {
 } from '@openai/agents-core/sandbox';
 import { posix as pathPosix } from 'node:path';
 import {
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertTarWorkspacePersistence,
   assertResumeRecreateAllowed,
@@ -628,12 +628,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     state: RunloopSandboxSessionState;
     sdk: RunloopClientLike;
     devbox: RunloopDevboxLike;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     super({
       state: args.state,
       options: {
         providerName: 'RunloopSandboxClient',
         providerId: 'runloop',
+        concurrencyLimits: args.concurrencyLimits,
       },
     });
     this.sdk = args.sdk;
@@ -1321,10 +1323,6 @@ export class RunloopSandboxClient implements SandboxClient<
   ): Promise<RunloopSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('RunloopSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'RunloopSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const resolvedOptions: RunloopSandboxResolvedOptions = {
       ...this.options,
       ...createArgs.options,
@@ -1419,6 +1417,7 @@ export class RunloopSandboxClient implements SandboxClient<
         const session = new RunloopSandboxSession({
           sdk,
           devbox,
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest,
             devboxId: devbox.id,

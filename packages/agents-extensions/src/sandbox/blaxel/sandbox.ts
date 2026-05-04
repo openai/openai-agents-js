@@ -8,6 +8,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Mount,
@@ -18,7 +19,6 @@ import {
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertResumeRecreateAllowed,
   createPtyProcessEntry,
@@ -190,12 +190,14 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     sandbox: BlaxelSandboxLike;
     apiKey?: string;
     ownsSandbox?: boolean;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     super({
       state: args.state,
       options: {
         providerName: 'BlaxelSandboxClient',
         providerId: 'blaxel',
+        concurrencyLimits: args.concurrencyLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -755,10 +757,6 @@ export class BlaxelSandboxClient implements SandboxClient<
   ): Promise<BlaxelSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('BlaxelSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'BlaxelSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     const resolvedOptions = {
       ...this.options,
@@ -841,6 +839,7 @@ export class BlaxelSandboxClient implements SandboxClient<
           sandbox,
           apiKey: resolvedOptions.apiKey ?? loadEnv().BL_API_KEY,
           ownsSandbox,
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest,
             sandboxName,

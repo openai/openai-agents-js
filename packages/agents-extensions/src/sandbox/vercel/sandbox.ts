@@ -14,12 +14,12 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type SandboxSessionSerializationOptions,
   type SandboxSessionState,
   type WorkspaceArchiveData,
 } from '@openai/agents-core/sandbox';
 import {
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertSandboxManifestMetadataSupported,
   assertRunAsUnsupported,
@@ -172,6 +172,7 @@ export interface VercelSandboxSessionState extends SandboxSessionState {
 export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandboxSessionState> {
   private sandbox: VercelSandboxInstance;
   private readonly knownDirs: Set<string>;
+  private readonly pendingDirCreates = new Map<string, Promise<void>>();
   private closePromise?: Promise<void>;
   private closeCompleted = false;
   private readonly credentials: Pick<
@@ -186,12 +187,14 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       VercelSandboxClientOptions,
       'projectId' | 'teamId' | 'token'
     >;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     super({
       state: args.state,
       options: {
         providerName: 'VercelSandboxClient',
         providerId: 'vercel',
+        concurrencyLimits: args.concurrencyLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -583,6 +586,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
 
   private resetKnownDirs(): void {
     this.knownDirs.clear();
+    this.pendingDirCreates.clear();
     this.knownDirs.add(DEFAULT_VERCEL_WORKSPACE_ROOT);
   }
 
@@ -600,21 +604,34 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     if (path === '/' || path === '.' || this.knownDirs.has(path)) {
       return;
     }
-
-    const parent = posixDirname(path);
-    if (parent !== path && parent !== '/' && parent !== '.') {
-      await this.ensureDir(parent);
+    const pending = this.pendingDirCreates.get(path);
+    if (pending) {
+      await pending;
+      return;
     }
 
-    try {
-      await this.sandbox.mkDir(path);
-    } catch (error) {
-      if (!isVercelAlreadyExistsError(error)) {
-        throw error;
+    const create = (async () => {
+      const parent = posixDirname(path);
+      if (parent !== path && parent !== '/' && parent !== '.') {
+        await this.ensureDir(parent);
       }
-    }
 
-    this.knownDirs.add(path);
+      try {
+        await this.sandbox.mkDir(path);
+      } catch (error) {
+        if (!isVercelAlreadyExistsError(error)) {
+          throw error;
+        }
+      }
+
+      this.knownDirs.add(path);
+    })();
+    this.pendingDirCreates.set(path, create);
+    try {
+      await create;
+    } finally {
+      this.pendingDirCreates.delete(path);
+    }
   }
 
   protected override async runRemoteCommand(
@@ -700,10 +717,6 @@ export class VercelSandboxClient implements SandboxClient<
   ): Promise<VercelSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('VercelSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'VercelSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     const resolvedOptions = {
       ...this.options,
@@ -760,6 +773,7 @@ export class VercelSandboxClient implements SandboxClient<
         const session = new VercelSandboxSession({
           sandbox,
           credentials: { ...resolvedOptions, ...credentials },
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.sandboxId,

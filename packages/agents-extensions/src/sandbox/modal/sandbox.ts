@@ -7,6 +7,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Entry,
@@ -24,7 +25,6 @@ import {
 } from '@openai/agents-core/sandbox';
 import { posix as pathPosix } from 'node:path';
 import {
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   imageOutputFromBytes,
   RemoteSandboxEditor,
@@ -311,6 +311,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     path,
     options,
   ) => await this.resolveRemotePath(path, options);
+  private readonly concurrencyLimits?: SandboxConcurrencyLimits;
   private nextProcessId = 1;
 
   constructor(args: {
@@ -321,6 +322,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     ownsSandbox?: boolean;
     cloudBucketMounts?: Record<string, ModalCloudBucketMountLike>;
     cloudBucketMountsProvider?: ModalCloudBucketMountsProvider;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     this.state = args.state;
     this.modal = args.modal;
@@ -330,6 +332,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     this.state.ownsSandbox = this.ownsSandbox;
     this.cloudBucketMounts = args.cloudBucketMounts;
     this.cloudBucketMountsProvider = args.cloudBucketMountsProvider;
+    this.concurrencyLimits = args.concurrencyLimits;
     this.cloudBucketMountsResolved =
       args.cloudBucketMounts !== undefined || !args.cloudBucketMountsProvider;
   }
@@ -551,7 +554,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       'modal',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
     this.invalidateCloudBucketMounts();
   }
@@ -570,7 +573,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       'modal',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
     this.invalidateCloudBucketMounts();
   }
@@ -951,14 +954,17 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     );
   }
 
-  private readonly manifestMaterializationOptions = {
-    materializeMount: async (
-      absolutePath: string,
-      _entry: Mount | TypedMount,
-    ) => {
-      throwModalLiveMountsUnsupported([absolutePath]);
-    },
-  };
+  private manifestMaterializationOptions() {
+    return {
+      materializeMount: async (
+        absolutePath: string,
+        _entry: Mount | TypedMount,
+      ) => {
+        throwModalLiveMountsUnsupported([absolutePath]);
+      },
+      concurrencyLimits: this.concurrencyLimits,
+    };
+  }
 
   private invalidateCloudBucketMounts(): void {
     if (!this.cloudBucketMountsProvider) {
@@ -1153,10 +1159,6 @@ export class ModalSandboxClient implements SandboxClient<
       manifestOptions as ModalSandboxClientOptions | undefined,
     );
     assertCoreSnapshotUnsupported('ModalSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'ModalSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     const resolvedOptions = resolveOptions(
       this.options,
@@ -1294,6 +1296,7 @@ export class ModalSandboxClient implements SandboxClient<
           ownsSandbox: !resolvedOptions.sandbox,
           state: sessionState,
           cloudBucketMounts,
+          concurrencyLimits: createArgs.concurrencyLimits,
           cloudBucketMountsProvider: async () =>
             await modalCloudBucketMountsForManifest({
               modalModule,

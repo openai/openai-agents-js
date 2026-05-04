@@ -144,12 +144,6 @@ describe('VercelSandboxClient', () => {
         snapshot: { type: 'remote' },
       }),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
-    await expect(
-      client.create({
-        manifest: new Manifest(),
-        concurrencyLimits: { manifestEntries: 2 },
-      }),
-    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
     expect(createMock).not.toHaveBeenCalled();
   });
 

@@ -622,6 +622,85 @@ describe('remote sandbox path helpers', () => {
     });
   });
 
+  test('applies manifest entry concurrency limits to local source manifests', async () => {
+    const state = {
+      manifest: new Manifest({ root: '/workspace' }),
+      environment: {},
+    };
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+
+    await applyLocalSourceManifestToState(
+      state,
+      new Manifest({
+        entries: {
+          'a.txt': file({ content: 'a' }),
+          'b.txt': file({ content: 'b' }),
+          'c.txt': file({ content: 'c' }),
+        },
+      }),
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async () => {
+          activeWrites += 1;
+          maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          activeWrites -= 1;
+        },
+      },
+      async (path) => `/workspace/${path}`,
+      {
+        concurrencyLimits: {
+          manifestEntries: 2,
+        },
+      },
+    );
+
+    expect(maxActiveWrites).toBe(2);
+  });
+
+  test('applies local_dir file concurrency limits to local source manifests', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-local-dir-'));
+    tempDirs.push(tempDir);
+    await writeFile(join(tempDir, 'a.txt'), 'a');
+    await writeFile(join(tempDir, 'b.txt'), 'b');
+    await writeFile(join(tempDir, 'c.txt'), 'c');
+    const state = {
+      manifest: new Manifest({ root: '/workspace' }),
+      environment: {},
+    };
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+
+    await applyLocalSourceManifestToState(
+      state,
+      new Manifest({
+        entries: {
+          copied: localDir({ src: tempDir }),
+        },
+      }),
+      'fake-provider',
+      {
+        mkdir: vi.fn(),
+        writeFile: async () => {
+          activeWrites += 1;
+          maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          activeWrites -= 1;
+        },
+      },
+      async (path) => `/workspace/${path}`,
+      {
+        concurrencyLimits: {
+          localDirFiles: 2,
+        },
+      },
+    );
+
+    expect(maxActiveWrites).toBe(2);
+  });
+
   test('applies single local source entries to remote state', async () => {
     const written = new Map<string, string | Uint8Array>();
     const state = {

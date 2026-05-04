@@ -6,6 +6,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Mount,
@@ -18,7 +19,6 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertResumeRecreateAllowed,
   assertTarWorkspacePersistence,
@@ -202,12 +202,14 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   constructor(args: {
     state: E2BSandboxSessionState;
     sandbox: E2BSandboxInstance;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     super({
       state: args.state,
       options: {
         providerName: 'E2BSandboxClient',
         providerId: 'e2b',
+        concurrencyLimits: args.concurrencyLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -845,10 +847,6 @@ export class E2BSandboxClient implements SandboxClient<
   ): Promise<E2BSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('E2BSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'E2BSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     return await withSandboxSpan(
       'sandbox.start',
@@ -881,6 +879,7 @@ export class E2BSandboxClient implements SandboxClient<
 
         const session = new E2BSandboxSession({
           sandbox,
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest,
             sandboxId: sandbox.sandboxId,

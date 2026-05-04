@@ -8,6 +8,7 @@ import {
   normalizeRelativePath,
   normalizePosixPath,
   relativePosixPathWithinRoot,
+  type SandboxConcurrencyLimits,
   SandboxUnsupportedFeatureError,
   serializeManifestRecord,
   type Entry,
@@ -163,6 +164,7 @@ export type ManifestMaterializationOptions = {
     entry: Mount | TypedMount,
   ) => Promise<void>;
   applyMetadata?: (absolutePath: string, entry: Entry) => Promise<void>;
+  concurrencyLimits?: SandboxConcurrencyLimits;
   resolvePath?: RemoteSandboxPathResolver;
   logicalPath?: string;
 };
@@ -313,25 +315,31 @@ export async function materializeManifestEntries<TOptions extends object>(
     skipMountEntries: true,
   } as TOptions;
 
-  for (const [path, entry] of Object.entries(manifest.entries)) {
-    if (isMount(entry)) {
-      continue;
-    }
-    const logicalPath = normalizeRelativePath(path);
-    const absolutePath = await resolvePath(logicalPath, { forWrite: true });
-    const entryOptions = {
-      ...deferredOptions,
-      resolvePath,
-      logicalPath,
-    };
-    await materializeEntry(
-      writer,
-      absolutePath,
-      entry,
-      providerLabel,
-      entryOptions as TOptions,
-    );
-  }
+  const entries = Object.entries(manifest.entries).filter(
+    ([, entry]) => !isMount(entry),
+  );
+  await runLimited(
+    entries,
+    resolveManifestEntryConcurrency(
+      (options as ManifestMaterializationOptions).concurrencyLimits,
+    ),
+    async ([path, entry]) => {
+      const logicalPath = normalizeRelativePath(path);
+      const absolutePath = await resolvePath(logicalPath, { forWrite: true });
+      const entryOptions = {
+        ...deferredOptions,
+        resolvePath,
+        logicalPath,
+      };
+      await materializeEntry(
+        writer,
+        absolutePath,
+        entry,
+        providerLabel,
+        entryOptions as TOptions,
+      );
+    },
+  );
 
   for (const {
     mountPath,
@@ -341,6 +349,53 @@ export async function materializeManifestEntries<TOptions extends object>(
     const absolutePath = await resolvePath(logicalPath, { forWrite: true });
     await materializeEntry(writer, absolutePath, entry, providerLabel, options);
   }
+}
+
+export async function runLimited<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex++];
+        await fn(item);
+      }
+    },
+  );
+  await Promise.all(workers);
+}
+
+export function resolveManifestEntryConcurrency(
+  limits?: SandboxConcurrencyLimits,
+): number {
+  return normalizeConcurrencyLimit(limits?.manifestEntries, 4);
+}
+
+export function resolveLocalDirFileConcurrency(
+  limits?: SandboxConcurrencyLimits,
+): number {
+  return normalizeConcurrencyLimit(limits?.localDirFiles, 4);
+}
+
+function normalizeConcurrencyLimit(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isFinite(value) || value < 1) {
+    throw new UserError('Sandbox concurrency limits must be positive numbers.');
+  }
+  return Math.floor(value);
 }
 
 export async function materializeInlineManifestEntry(

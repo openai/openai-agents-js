@@ -6,6 +6,7 @@ import {
   type Manifest,
   type MaterializeEntryArgs,
   type ReadFileArgs,
+  type SandboxConcurrencyLimits,
   SandboxProviderError,
   type SandboxSession,
   type SandboxSessionState,
@@ -78,6 +79,7 @@ export type RemoteSandboxCommandResult = {
 export type RemoteSandboxSessionBaseOptions = {
   providerName: string;
   providerId: string;
+  concurrencyLimits?: SandboxConcurrencyLimits;
 };
 
 export abstract class RemoteSandboxSessionBase<
@@ -86,6 +88,7 @@ export abstract class RemoteSandboxSessionBase<
   readonly state: TState;
   protected readonly providerName: string;
   protected readonly providerId: string;
+  private readonly concurrencyLimits?: SandboxConcurrencyLimits;
   protected readonly remotePathResolver: RemoteSandboxPathResolver = async (
     path,
     options,
@@ -98,6 +101,7 @@ export abstract class RemoteSandboxSessionBase<
     this.state = args.state;
     this.providerName = args.options.providerName;
     this.providerId = args.options.providerId;
+    this.concurrencyLimits = args.options.concurrencyLimits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -591,7 +595,10 @@ export abstract class RemoteSandboxSessionBase<
   private manifestMaterializationOptionsWithMetadata(
     runAs?: string,
   ): ManifestMaterializationOptions {
-    const options = this.manifestMaterializationOptions();
+    const options = {
+      ...this.manifestMaterializationOptions(),
+      concurrencyLimits: this.concurrencyLimits,
+    };
     const support = this.manifestMetadataSupport();
     if (!support?.entryGroups && !support?.entryPermissions && !runAs) {
       return options;

@@ -7,6 +7,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type MaterializeEntryArgs,
@@ -20,7 +21,6 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
-  assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
@@ -196,15 +196,18 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     options,
   ) => await this.resolveRemotePath(path, options);
   private readonly activeMountPaths = new Set<string>();
+  private readonly concurrencyLimits?: SandboxConcurrencyLimits;
   private stopPromise?: Promise<void>;
   private deletePromise?: Promise<void>;
 
   constructor(args: {
     state: DaytonaSandboxSessionState;
     sandbox: DaytonaSandboxLike;
+    concurrencyLimits?: SandboxConcurrencyLimits;
   }) {
     this.state = args.state;
     this.sandbox = args.sandbox;
+    this.concurrencyLimits = args.concurrencyLimits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -463,7 +466,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       'daytona',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
   }
 
@@ -486,7 +489,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       'daytona',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
   }
 
@@ -496,7 +499,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       manifest,
       'daytona',
       this.remotePathResolver,
-      this.manifestMaterializationOptions,
+      this.manifestMaterializationOptions(),
     );
   }
 
@@ -631,9 +634,12 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     };
   }
 
-  private readonly manifestMaterializationOptions = {
-    materializeMount: this.materializeMountEntry.bind(this),
-  };
+  private manifestMaterializationOptions() {
+    return {
+      materializeMount: this.materializeMountEntry.bind(this),
+      concurrencyLimits: this.concurrencyLimits,
+    };
+  }
 
   private async materializeMountEntry(
     absolutePath: string,
@@ -933,10 +939,6 @@ export class DaytonaSandboxClient implements SandboxClient<
   ): Promise<DaytonaSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('DaytonaSandboxClient', createArgs.snapshot);
-    assertCoreConcurrencyLimitsUnsupported(
-      'DaytonaSandboxClient',
-      createArgs.concurrencyLimits,
-    );
     const manifest = createArgs.manifest;
     const resolvedOptions = {
       ...this.options,
@@ -1003,6 +1005,7 @@ export class DaytonaSandboxClient implements SandboxClient<
 
         const session = new DaytonaSandboxSession({
           sandbox,
+          concurrencyLimits: createArgs.concurrencyLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.id,
