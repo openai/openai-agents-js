@@ -16,6 +16,7 @@ import {
   type ExecCommandArgs,
   type MaterializeEntryArgs,
   type Mount,
+  type ReadFileArgs,
   type SandboxSession,
   type SandboxSessionState,
   type TypedMount,
@@ -72,11 +73,17 @@ import {
 } from '../shared/paths';
 import {
   assertCoreSnapshotUnsupported,
-  assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
   withProviderError,
   withSandboxSpan,
 } from '../shared/session';
+import {
+  createRunAsRemoteEditor,
+  manifestMaterializationOptionsWithRunAs,
+  readRunAsRemoteFile,
+  runAsRemotePathExists,
+  sandboxUserShellCommand,
+} from '../shared/runAs';
 import {
   deserializeRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
@@ -153,7 +160,16 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
-    assertRunAsUnsupported('CloudflareSandboxClient', runAs);
+    if (runAs) {
+      return createRunAsRemoteEditor({
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+        runAs,
+        resolvePath: this.remotePathResolver,
+        runCommand: this.runAsCommandRunner.bind(this),
+        writer: this.writer(),
+      });
+    }
     return new RemoteSandboxEditor({
       resolvePath: this.remotePathResolver,
       pathExists: async (path) => await this.pathExists(path),
@@ -193,13 +209,15 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     if (args.tty) {
       return await this.execPtyCommand(args);
     }
-    assertRunAsUnsupported('CloudflareSandboxClient', args.runAs);
 
     const start = Date.now();
-    const wrapped = buildShellCommand(
-      args.cmd,
-      this.state.environment,
-      resolveSandboxWorkdir(this.state.manifest.root, args.workdir),
+    const wrapped = sandboxUserShellCommand(
+      buildShellCommand(
+        args.cmd,
+        this.state.environment,
+        resolveSandboxWorkdir(this.state.manifest.root, args.workdir),
+      ),
+      args.runAs,
     );
     const result = await this.execShell(wrapped);
     const output = truncateOutput(result.output, args.maxOutputTokens);
@@ -224,7 +242,6 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   private async execPtyCommand(args: ExecCommandArgs): Promise<string> {
-    assertRunAsUnsupported('CloudflareSandboxClient', args.runAs);
     const start = Date.now();
     const entry = createPtyProcessEntry({ tty: true });
     let readyPromise: Promise<void> = Promise.resolve();
@@ -279,10 +296,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     try {
       const command = shellCommandForPty({
         ...args,
-        cmd: buildShellCommand(
-          args.cmd,
-          this.state.environment,
-          resolveSandboxWorkdir(this.state.manifest.root, args.workdir),
+        cmd: sandboxUserShellCommand(
+          buildShellCommand(
+            args.cmd,
+            this.state.environment,
+            resolveSandboxWorkdir(this.state.manifest.root, args.workdir),
+          ),
+          args.runAs,
         ),
       });
       await entry.sendInput(`${command}\n`);
@@ -311,17 +331,49 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    assertRunAsUnsupported('CloudflareSandboxClient', args.runAs);
     const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = await this.readFileBytes(absolutePath);
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'CloudflareSandboxClient',
+          providerId: 'cloudflare',
+          path: absolutePath,
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readFileBytes(absolutePath);
     return imageOutputFromBytes(args.path, bytes);
   }
 
+  async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    const absolutePath = await this.resolveRemotePath(args.path);
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'CloudflareSandboxClient',
+          providerId: 'cloudflare',
+          path: absolutePath,
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readFileBytes(absolutePath);
+    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
+      return bytes.subarray(0, args.maxBytes);
+    }
+    return bytes;
+  }
+
   async pathExists(path: string, runAs?: string): Promise<boolean> {
-    assertRunAsUnsupported('CloudflareSandboxClient', runAs);
     const absolutePath = await this.resolveRemotePath(path);
-    const result = await this.execShell(`test -e ${shellQuote(absolutePath)}`);
-    return result.exitCode === 0;
+    if (!runAs) {
+      const result = await this.execShell(
+        `test -e ${shellQuote(absolutePath)}`,
+      );
+      return result.exitCode === 0;
+    }
+    return await runAsRemotePathExists(
+      absolutePath,
+      runAs,
+      this.runAsCommandRunner.bind(this),
+    );
   }
 
   async running(): Promise<boolean> {
@@ -361,7 +413,6 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    assertRunAsUnsupported('CloudflareSandboxClient', args.runAs);
     assertSandboxEntryMetadataSupported(
       'CloudflareSandboxClient',
       args.path,
@@ -378,7 +429,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         'cloudflare',
         this.writer(),
         this.remotePathResolver,
-        this.manifestMaterializationOptions(),
+        this.manifestMaterializationOptions(args.runAs),
       );
       return;
     }
@@ -390,12 +441,11 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       'cloudflare',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(args.runAs),
     );
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
-    assertRunAsUnsupported('CloudflareSandboxClient', runAs);
     assertCloudflareManifestRoot(manifest);
     assertSandboxManifestMetadataSupported(
       'CloudflareSandboxClient',
@@ -412,7 +462,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         'cloudflare',
         this.writer(),
         this.remotePathResolver,
-        this.manifestMaterializationOptions(),
+        this.manifestMaterializationOptions(runAs),
       );
       return;
     }
@@ -423,7 +473,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       'cloudflare',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(runAs),
     );
   }
 
@@ -591,11 +641,18 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     };
   }
 
-  private manifestMaterializationOptions() {
-    return {
-      materializeMount: this.materializeMountEntry.bind(this),
-      concurrencyLimits: this.concurrencyLimits,
-    };
+  private manifestMaterializationOptions(runAs?: string) {
+    return manifestMaterializationOptionsWithRunAs({
+      providerName: 'CloudflareSandboxClient',
+      providerId: 'cloudflare',
+      runAs,
+      runCommand: this.runAsCommandRunner.bind(this),
+      options: {
+        materializeMount: this.materializeMountEntry.bind(this),
+        concurrencyLimits: this.concurrencyLimits,
+      },
+      support: MOUNT_MANIFEST_METADATA_SUPPORT,
+    });
   }
 
   private async materializeMountEntry(
@@ -731,6 +788,20 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       output: [stdout.trimEnd(), stderr.trimEnd()]
         .filter((value) => value.length > 0)
         .join('\n'),
+    };
+  }
+
+  private async runAsCommandRunner(
+    command: string,
+    options: { runAs?: string } = {},
+  ) {
+    const result = await this.execShell(
+      sandboxUserShellCommand(command, options.runAs),
+    );
+    return {
+      status: result.exitCode,
+      stdout: result.output,
+      stderr: '',
     };
   }
 

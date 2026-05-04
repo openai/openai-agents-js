@@ -365,6 +365,25 @@ describe('ModalSandboxClient', () => {
     expect(output).toContain('README.md');
   });
 
+  test('passes filesystem runAs through sandbox exec operations', async () => {
+    const client = new ModalSandboxClient();
+    const session = await client.create(new Manifest(), {
+      appName: 'sandbox-tests',
+    } satisfies ModalSandboxClientOptions);
+    sandboxExecMock.mockClear();
+
+    expect(() => session.createEditor('root')).not.toThrow();
+    await expect(
+      session.pathExists('/workspace/README.md', 'root'),
+    ).resolves.toBe(true);
+
+    expect(
+      sandboxExecMock.mock.calls.some(([command]) =>
+        command.join(' ').includes("target_user='root'"),
+      ),
+    ).toBe(true);
+  });
+
   test('clears exec yield timers when commands finish before timeout', async () => {
     vi.useFakeTimers();
     try {

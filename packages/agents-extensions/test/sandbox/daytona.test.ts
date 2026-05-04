@@ -140,6 +140,21 @@ describe('DaytonaSandboxClient', () => {
     expect(output).toContain('README.md');
   });
 
+  test('passes filesystem runAs through remote shell operations', async () => {
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(new Manifest());
+    executeCommandMock.mockClear();
+
+    expect(() => session.createEditor('root')).not.toThrow();
+    await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
+
+    expect(
+      executeCommandMock.mock.calls.some(([command]) =>
+        String(command).includes("target_user='root'"),
+      ),
+    ).toBe(true);
+  });
+
   test('cleans up when workspace root preparation fails', async () => {
     executeCommandMock.mockResolvedValueOnce({
       exitCode: 1,

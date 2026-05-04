@@ -291,6 +291,25 @@ describe('CloudflareSandboxClient', () => {
     );
   });
 
+  test('passes filesystem runAs through worker exec operations', async () => {
+    const client = new CloudflareSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workerUrl: 'https://worker.example.com',
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    expect(() => session.createEditor('root')).not.toThrow();
+    await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
+
+    expect(
+      vi
+        .mocked(global.fetch)
+        .mock.calls.some(([, init]) =>
+          String(init?.body).includes("target_user='root'"),
+        ),
+    ).toBe(true);
+  });
+
   test('rejects invalid sandbox ids returned by create', async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       jsonResponse({ id: '../cf_test' }),

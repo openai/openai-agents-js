@@ -84,6 +84,16 @@ export {
   withSandboxSpan,
 } from './session';
 export {
+  createRunAsRemoteEditor,
+  manifestMaterializationOptionsWithRunAs,
+  readRunAsRemoteFile,
+  runAsRemotePathExists,
+  sandboxUserShellCommand,
+  writeRunAsRemoteText,
+  type RemoteRunAsCommandResult,
+  type RemoteRunAsCommandRunner,
+} from './runAs';
+export {
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandKind,
   type RemoteSandboxCommandOptions,

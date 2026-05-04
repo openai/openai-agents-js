@@ -15,6 +15,7 @@ import {
   type MaterializeEntryArgs,
   type Mount,
   normalizePosixPath,
+  type ReadFileArgs,
   relativePosixPathWithinRoot,
   type SandboxSession,
   type SandboxSessionState,
@@ -32,14 +33,15 @@ import {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
   MOUNT_MANIFEST_METADATA_SUPPORT,
-  assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
+  createRunAsRemoteEditor,
   decodeNativeSnapshotRef,
   deserializeRemoteSandboxSessionStateValues,
   elapsedSeconds,
   encodeNativeSnapshotRef,
   formatExecResponse,
   hydrateRemoteWorkspaceTar,
+  manifestMaterializationOptionsWithRunAs,
   materializeEnvironment,
   persistRemoteWorkspaceTar,
   assertConfiguredExposedPort,
@@ -49,6 +51,9 @@ import {
   resolveSandboxRelativePath,
   resolveSandboxWorkdir,
   cloneManifestWithoutMountEntries,
+  readRunAsRemoteFile,
+  runAsRemotePathExists,
+  sandboxUserShellCommand,
   serializeRemoteSandboxSessionState,
   truncateOutput,
   validateRemoteSandboxPathForManifest,
@@ -338,7 +343,16 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
-    assertRunAsUnsupported('ModalSandboxClient', runAs);
+    if (runAs) {
+      return createRunAsRemoteEditor({
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+        runAs,
+        resolvePath: this.remotePathResolver,
+        runCommand: this.runAsCommandRunner.bind(this),
+        writer: this.writer(),
+      });
+    }
     return new RemoteSandboxEditor({
       resolvePath: this.remotePathResolver,
       pathExists: async (path) => await this.pathExists(path),
@@ -358,9 +372,11 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async execCommand(args: ExecCommandArgs): Promise<string> {
-    assertRunAsUnsupported('ModalSandboxClient', args.runAs);
     const start = Date.now();
-    const command = buildShellCommand(args);
+    const command = buildShellCommand({
+      ...args,
+      cmd: sandboxUserShellCommand(args.cmd, args.runAs),
+    });
     const process = await this.sandbox.exec(command, {
       mode: 'text',
       workdir: this.resolveWorkdir(args.workdir),
@@ -451,22 +467,52 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    assertRunAsUnsupported('ModalSandboxClient', args.runAs);
     const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = await this.readSandboxFile(absolutePath);
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'ModalSandboxClient',
+          providerId: 'modal',
+          path: absolutePath,
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readSandboxFile(absolutePath);
     return imageOutputFromBytes(args.path, bytes);
   }
 
+  async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    const absolutePath = await this.resolveRemotePath(args.path);
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'ModalSandboxClient',
+          providerId: 'modal',
+          path: absolutePath,
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readSandboxFile(absolutePath);
+    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
+      return bytes.subarray(0, args.maxBytes);
+    }
+    return bytes;
+  }
+
   async pathExists(path: string, runAs?: string): Promise<boolean> {
-    assertRunAsUnsupported('ModalSandboxClient', runAs);
     const absolutePath = await this.resolveRemotePath(path);
-    const process = await this.sandbox.exec(['test', '-e', absolutePath], {
-      mode: 'text',
-      workdir: this.state.manifest.root,
-      stdout: 'ignore',
-      stderr: 'pipe',
-    });
-    return (await process.wait()) === 0;
+    if (!runAs) {
+      const process = await this.sandbox.exec(['test', '-e', absolutePath], {
+        mode: 'text',
+        workdir: this.state.manifest.root,
+        stdout: 'ignore',
+        stderr: 'pipe',
+      });
+      return (await process.wait()) === 0;
+    }
+    return await runAsRemotePathExists(
+      absolutePath,
+      runAs,
+      this.runAsCommandRunner.bind(this),
+    );
   }
 
   async running(): Promise<boolean> {
@@ -535,7 +581,6 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    assertRunAsUnsupported('ModalSandboxClient', args.runAs);
     assertSandboxEntryMetadataSupported(
       'ModalSandboxClient',
       args.path,
@@ -554,13 +599,12 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       'modal',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(args.runAs),
     );
     this.invalidateCloudBucketMounts();
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
-    assertRunAsUnsupported('ModalSandboxClient', runAs);
     assertSandboxManifestMetadataSupported(
       'ModalSandboxClient',
       manifest,
@@ -573,7 +617,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       'modal',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(runAs),
     );
     this.invalidateCloudBucketMounts();
   }
@@ -954,16 +998,23 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     );
   }
 
-  private manifestMaterializationOptions() {
-    return {
-      materializeMount: async (
-        absolutePath: string,
-        _entry: Mount | TypedMount,
-      ) => {
-        throwModalLiveMountsUnsupported([absolutePath]);
+  private manifestMaterializationOptions(runAs?: string) {
+    return manifestMaterializationOptionsWithRunAs({
+      providerName: 'ModalSandboxClient',
+      providerId: 'modal',
+      runAs,
+      runCommand: this.runAsCommandRunner.bind(this),
+      options: {
+        materializeMount: async (
+          absolutePath: string,
+          _entry: Mount | TypedMount,
+        ) => {
+          throwModalLiveMountsUnsupported([absolutePath]);
+        },
+        concurrencyLimits: this.concurrencyLimits,
       },
-      concurrencyLimits: this.concurrencyLimits,
-    };
+      support: MOUNT_MANIFEST_METADATA_SUPPORT,
+    });
   }
 
   private invalidateCloudBucketMounts(): void {
@@ -1077,6 +1128,32 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
 
   async removeSandboxPath(path: string): Promise<void> {
     await this.runDirectCommand(['rm', '-f', '--', path]);
+  }
+
+  private async runAsCommandRunner(
+    command: string,
+    options: { runAs?: string } = {},
+  ) {
+    const process = await this.sandbox.exec(
+      ['/bin/sh', '-lc', sandboxUserShellCommand(command, options.runAs)],
+      {
+        mode: 'text',
+        workdir: this.state.manifest.root,
+        env: this.state.environment,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      readStreamText(process.stdout),
+      readStreamText(process.stderr),
+      process.wait(),
+    ]);
+    return {
+      status: exitCode,
+      stdout,
+      stderr,
+    };
   }
 
   private writer(): RemoteManifestWriter {

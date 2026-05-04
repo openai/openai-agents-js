@@ -12,6 +12,7 @@ import {
   type ExecCommandArgs,
   type MaterializeEntryArgs,
   type Mount,
+  type ReadFileArgs,
   type SandboxSession,
   type SandboxSessionState,
   type TypedMount,
@@ -29,9 +30,9 @@ import {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
   MOUNT_MANIFEST_METADATA_SUPPORT,
-  assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
   cloneManifestWithRoot,
+  createRunAsRemoteEditor,
   deserializeRemoteSandboxSessionStateValues,
   elapsedSeconds,
   formatExecResponse,
@@ -39,6 +40,7 @@ import {
   hydrateRemoteWorkspaceTar,
   assertResumeRecreateAllowed,
   materializeEnvironment,
+  manifestMaterializationOptionsWithRunAs,
   persistRemoteWorkspaceTar,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
@@ -48,6 +50,7 @@ import {
   resolveSandboxWorkdir,
   posixDirname,
   shellQuote,
+  sandboxUserShellCommand,
   shellCommandForPty,
   serializeRemoteSandboxSessionState,
   truncateOutput,
@@ -63,8 +66,10 @@ import {
   writePtyStdin,
   PtyProcessRegistry,
   type RemoteManifestWriter,
+  readRunAsRemoteFile,
   type RemoteSandboxPathOptions,
   type RemoteSandboxPathResolver,
+  runAsRemotePathExists,
 } from '../shared';
 import {
   mountRcloneCloudBucket,
@@ -211,7 +216,16 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
-    assertRunAsUnsupported('DaytonaSandboxClient', runAs);
+    if (runAs) {
+      return createRunAsRemoteEditor({
+        providerName: 'DaytonaSandboxClient',
+        providerId: 'daytona',
+        runAs,
+        resolvePath: this.remotePathResolver,
+        runCommand: this.runAsCommandRunner.bind(this),
+        writer: this.writer(),
+      });
+    }
     return new RemoteSandboxEditor({
       resolvePath: this.remotePathResolver,
       pathExists: async (path) => await this.pathExists(path),
@@ -238,11 +252,10 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     if (args.tty) {
       return await this.execPtyCommand(args);
     }
-    assertRunAsUnsupported('DaytonaSandboxClient', args.runAs);
 
     const start = Date.now();
     const result = await this.sandbox.process.executeCommand(
-      args.cmd,
+      commandForDaytonaUser(args.cmd, args.runAs),
       resolveSandboxWorkdir(this.state.manifest.root, args.workdir),
       this.state.environment,
     );
@@ -269,7 +282,6 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   private async execPtyCommand(args: ExecCommandArgs): Promise<string> {
-    assertRunAsUnsupported('DaytonaSandboxClient', args.runAs);
     if (!this.sandbox.process.createPty) {
       throw new SandboxUnsupportedFeatureError(
         'DaytonaSandboxClient tty=true requires Daytona SDK PTY support.',
@@ -342,7 +354,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         exitCodeFromDaytonaResult(error) ??
         exitCodeFromDaytonaResult(handle),
     );
-    await entry.sendInput(`${command}\n`);
+    await entry.sendInput(`${commandForDaytonaUser(command, args.runAs)}\n`);
 
     return await formatPtyExecUpdate({
       registry: this.ptyProcesses,
@@ -381,21 +393,50 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    assertRunAsUnsupported('DaytonaSandboxClient', args.runAs);
-    const bytes = await this.readFileBytes(args.path);
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'DaytonaSandboxClient',
+          providerId: 'daytona',
+          path: await this.resolveRemotePath(args.path),
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readFileBytes(args.path);
     return imageOutputFromBytes(args.path, bytes);
   }
 
+  async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    const bytes = args.runAs
+      ? await readRunAsRemoteFile({
+          providerName: 'DaytonaSandboxClient',
+          providerId: 'daytona',
+          path: await this.resolveRemotePath(args.path),
+          runAs: args.runAs,
+          runCommand: this.runAsCommandRunner.bind(this),
+        })
+      : await this.readFileBytes(args.path);
+    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
+      return bytes.subarray(0, args.maxBytes);
+    }
+    return bytes;
+  }
+
   async pathExists(path: string, runAs?: string): Promise<boolean> {
-    assertRunAsUnsupported('DaytonaSandboxClient', runAs);
     const absolutePath = await this.resolveRemotePath(path);
-    const result = await this.sandbox.process.executeCommand(
-      `test -e ${shellQuote(absolutePath)}`,
-      this.state.manifest.root,
-      this.state.environment,
-      5,
+    if (!runAs) {
+      const result = await this.sandbox.process.executeCommand(
+        `test -e ${shellQuote(absolutePath)}`,
+        this.state.manifest.root,
+        this.state.environment,
+        5,
+      );
+      return result.exitCode === 0;
+    }
+    return await runAsRemotePathExists(
+      absolutePath,
+      runAs,
+      this.runAsCommandRunner.bind(this),
     );
-    return result.exitCode === 0;
   }
 
   async running(): Promise<boolean> {
@@ -452,7 +493,6 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    assertRunAsUnsupported('DaytonaSandboxClient', args.runAs);
     assertSandboxEntryMetadataSupported(
       'DaytonaSandboxClient',
       args.path,
@@ -466,12 +506,11 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       'daytona',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(args.runAs),
     );
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
-    assertRunAsUnsupported('DaytonaSandboxClient', runAs);
     const resolvedManifest = resolveManifestRoot(manifest);
     if (resolvedManifest.root !== this.state.manifest.root) {
       throw new UserError(
@@ -489,7 +528,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       'daytona',
       this.writer(),
       this.remotePathResolver,
-      this.manifestMaterializationOptions(),
+      this.manifestMaterializationOptions(runAs),
     );
   }
 
@@ -634,11 +673,18 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     };
   }
 
-  private manifestMaterializationOptions() {
-    return {
-      materializeMount: this.materializeMountEntry.bind(this),
-      concurrencyLimits: this.concurrencyLimits,
-    };
+  private manifestMaterializationOptions(runAs?: string) {
+    return manifestMaterializationOptionsWithRunAs({
+      providerName: 'DaytonaSandboxClient',
+      providerId: 'daytona',
+      runAs,
+      runCommand: this.runAsCommandRunner.bind(this),
+      options: {
+        materializeMount: this.materializeMountEntry.bind(this),
+        concurrencyLimits: this.concurrencyLimits,
+      },
+      support: MOUNT_MANIFEST_METADATA_SUPPORT,
+    });
   }
 
   private async materializeMountEntry(
@@ -710,6 +756,23 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         stdout: result.artifacts?.stdout ?? result.result ?? '',
         stderr: '',
       };
+    };
+  }
+
+  private async runAsCommandRunner(
+    command: string,
+    options: { runAs?: string } = {},
+  ) {
+    const result = await this.sandbox.process.executeCommand(
+      commandForDaytonaUser(command, options.runAs),
+      this.state.manifest.root,
+      this.state.environment,
+      this.state.timeoutSec,
+    );
+    return {
+      status: result.exitCode,
+      stdout: result.artifacts?.stdout ?? result.result ?? '',
+      stderr: '',
     };
   }
 
@@ -1301,21 +1364,7 @@ function resolveManifestRoot(manifest: Manifest): Manifest {
 }
 
 function commandForDaytonaUser(command: string, user?: string): string {
-  if (!user) {
-    return command;
-  }
-  return [
-    `target_user=${shellQuote(user)}`,
-    'current_uid="$(id -u)"',
-    'current_user="$(id -un 2>/dev/null || id -u)"',
-    'if [ "$current_uid" = "$target_user" ] || [ "$current_user" = "$target_user" ]; then',
-    `  sh -lc ${shellQuote(command)}`,
-    'elif [ "$current_uid" -eq 0 ]; then',
-    `  su -s /bin/sh "$target_user" -c ${shellQuote(command)}`,
-    'else',
-    `  sudo -n -u "$target_user" -- sh -lc ${shellQuote(command)}`,
-    'fi',
-  ].join('\n');
+  return sandboxUserShellCommand(command, user);
 }
 
 async function deleteDaytonaSandboxWithRetry(

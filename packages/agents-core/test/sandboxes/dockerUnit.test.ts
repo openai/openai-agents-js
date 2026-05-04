@@ -7,13 +7,18 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxProcessResult } from '../../src/sandbox/sandboxes/shared/runProcess';
 
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
+}));
+const childProcessMocks = vi.hoisted(() => ({
+  spawn: vi.fn(),
 }));
 
 vi.mock('../../src/sandbox/sandboxes/shared/runProcess', () => ({
@@ -21,6 +26,13 @@ vi.mock('../../src/sandbox/sandboxes/shared/runProcess', () => ({
   formatSandboxProcessError: (result: SandboxProcessResult) =>
     result.stderr || result.stdout || result.error?.message || 'process failed',
 }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: childProcessMocks.spawn,
+  };
+});
 
 import {
   dockerVolumeMountStrategy,
@@ -45,12 +57,43 @@ const failure = (stderr: string): SandboxProcessResult => ({
   timedOut: false,
 });
 
+function dockerSpawnResult(args: {
+  stdout?: string;
+  stderr?: string;
+  status?: number;
+}) {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+  };
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = {
+    write: vi.fn(),
+    end: vi.fn(),
+  };
+  queueMicrotask(() => {
+    if (args.stdout) {
+      child.stdout.write(args.stdout);
+    }
+    if (args.stderr) {
+      child.stderr.write(args.stderr);
+    }
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', args.status ?? 0);
+  });
+  return child;
+}
+
 describe('DockerSandboxClient unit behavior', () => {
   let rootDir: string;
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), 'agents-core-docker-unit-test-'));
     processMocks.runSandboxProcess.mockReset();
+    childProcessMocks.spawn.mockReset();
   });
 
   afterEach(async () => {
@@ -473,7 +516,7 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(stat(workspaceRootPath)).rejects.toThrow();
   });
 
-  it('rejects filesystem runAs instead of resolving container users on the host', async () => {
+  it('uses docker exec for filesystem runAs instead of host user lookup', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -485,14 +528,31 @@ describe('DockerSandboxClient unit behavior', () => {
         return failure('unexpected docker command');
       },
     );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ stdout: '', status: 0 }),
+    );
     const client = new DockerSandboxClient({
       workspaceBaseDir: rootDir,
     });
 
     const session = await client.create(new Manifest());
 
-    await expect(session.pathExists('notes.txt', 'node')).rejects.toThrow(
-      /does not support runAs for filesystem operations/,
+    await expect(session.pathExists('notes.txt', 'node')).resolves.toBe(true);
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        '-w',
+        '/',
+        '-u',
+        'node',
+        'container-123',
+        '/bin/sh',
+        '-lc',
+        "test -e '/workspace/notes.txt'",
+      ]),
+      { stdio: 'pipe' },
     );
   });
 
