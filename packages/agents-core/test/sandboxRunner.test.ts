@@ -8,10 +8,15 @@ import type {
   ApplyPatchResult,
   Editor,
 } from '../src/editor';
-import { type Model, type ModelRequest } from '../src/model';
+import {
+  type Model,
+  type ModelRequest,
+  type ModelResponse,
+} from '../src/model';
 import { RunContext } from '../src/runContext';
 import {
   run,
+  RunItemStreamEvent,
   RunState,
   Runner,
   setDefaultModelProvider,
@@ -94,6 +99,39 @@ class RecordingFakeModel extends FakeModel {
   override async getResponse(request: ModelRequest) {
     this.requests.push(request);
     return await super.getResponse(request);
+  }
+}
+
+class RecordingStreamingModel implements Model {
+  public readonly requests: ModelRequest[] = [];
+
+  constructor(private readonly responses: ModelResponse[]) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    throw new Error('Use getStreamedResponse for this test model.');
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<protocol.StreamEvent> {
+    this.requests.push(request);
+    const response = this.responses.shift();
+    if (!response) {
+      throw new Error('No response found');
+    }
+    yield {
+      type: 'response_done',
+      response: {
+        id: `stream-${this.requests.length}`,
+        usage: {
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        output: response.output,
+      },
+    } as protocol.StreamEvent;
   }
 }
 
@@ -1811,6 +1849,174 @@ describe('sandbox runner integration', () => {
     expect(toolsByName.get('shell')).toBe('function');
   });
 
+  it('uses the public sandbox agent for filters, hooks, and run items', async () => {
+    const client = new FakeSandboxClient();
+    const seenFilterAgents: unknown[] = [];
+    const runnerStartAgents: unknown[] = [];
+    const runnerEndAgents: unknown[] = [];
+    const runnerToolStartAgents: unknown[] = [];
+    const runnerToolEndAgents: unknown[] = [];
+    const agentStartAgents: unknown[] = [];
+    let agentToolStarts = 0;
+    let agentToolEnds = 0;
+    const sandboxTool = tool({
+      name: 'sandbox_tool',
+      description: 'Sandbox tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'tool result',
+    });
+    const sandboxModel = new RecordingFakeModel([
+      {
+        output: [
+          {
+            id: 'fc_sandbox_tool',
+            type: 'function_call',
+            name: 'sandbox_tool',
+            callId: 'call_sandbox_tool',
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      {
+        output: [fakeModelMessage('sandbox done')],
+        usage: new Usage(),
+      },
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: sandboxModel,
+      tools: [sandboxTool],
+      defaultManifest: new Manifest({ root: '/workspace' }),
+    });
+    const runner = new Runner();
+    runner.on('agent_start', (_context, agent) => {
+      runnerStartAgents.push(agent);
+    });
+    runner.on('agent_end', (_context, agent) => {
+      runnerEndAgents.push(agent);
+    });
+    runner.on('agent_tool_start', (_context, agent) => {
+      runnerToolStartAgents.push(agent);
+    });
+    runner.on('agent_tool_end', (_context, agent) => {
+      runnerToolEndAgents.push(agent);
+    });
+    sandboxAgent.on('agent_start', (_context, agent) => {
+      agentStartAgents.push(agent);
+    });
+    sandboxAgent.on('agent_tool_start', () => {
+      agentToolStarts += 1;
+    });
+    sandboxAgent.on('agent_tool_end', () => {
+      agentToolEnds += 1;
+    });
+
+    const result = await runner.run(sandboxAgent, 'Hello', {
+      sandbox: {
+        client,
+      },
+      callModelInputFilter: ({ agent, modelData }) => {
+        seenFilterAgents.push(agent);
+        return modelData;
+      },
+    });
+
+    expect(result.finalOutput).toBe('sandbox done');
+    expect(seenFilterAgents).toEqual([sandboxAgent, sandboxAgent]);
+    expect(runnerStartAgents).toEqual([sandboxAgent]);
+    expect(runnerEndAgents).toEqual([sandboxAgent]);
+    expect(runnerToolStartAgents).toEqual([sandboxAgent]);
+    expect(runnerToolEndAgents).toEqual([sandboxAgent]);
+    expect(agentStartAgents).toEqual([sandboxAgent]);
+    expect(agentToolStarts).toBe(1);
+    expect(agentToolEnds).toBe(1);
+    expect(result.lastAgent).toBe(sandboxAgent);
+    expect(result.newItems.length).toBeGreaterThan(0);
+    const resultItemsWithAgents = result.newItems.filter(
+      (item): item is typeof item & { agent: unknown } => 'agent' in item,
+    );
+    expect(resultItemsWithAgents).toHaveLength(result.newItems.length);
+    expect(
+      resultItemsWithAgents.every((item) => item.agent === sandboxAgent),
+    ).toBe(true);
+  });
+
+  it('uses the public sandbox agent for streamed filters and item events', async () => {
+    const client = new FakeSandboxClient();
+    const seenFilterAgents: unknown[] = [];
+    const sandboxTool = tool({
+      name: 'sandbox_tool',
+      description: 'Sandbox tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'tool result',
+    });
+    const sandboxModel = new RecordingStreamingModel([
+      {
+        output: [
+          {
+            type: 'reasoning',
+            id: 'rs_sandbox',
+            content: [{ type: 'input_text', text: 'reasoning trace' }],
+          } satisfies protocol.ReasoningItem,
+          {
+            id: 'fc_sandbox_tool',
+            type: 'function_call',
+            name: 'sandbox_tool',
+            callId: 'call_sandbox_tool',
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      {
+        output: [fakeModelMessage('streamed sandbox done')],
+        usage: new Usage(),
+      },
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'StreamedSandboxWorker',
+      model: sandboxModel,
+      tools: [sandboxTool],
+      defaultManifest: new Manifest({ root: '/workspace' }),
+    });
+
+    const result = await run(sandboxAgent, 'Hello', {
+      stream: true,
+      sandbox: {
+        client,
+      },
+      callModelInputFilter: ({ agent, modelData }) => {
+        seenFilterAgents.push(agent);
+        return modelData;
+      },
+    });
+    const events = [];
+    for await (const event of result.toStream()) {
+      events.push(event);
+    }
+    await result.completed;
+    const itemEvents = events.filter(
+      (event): event is RunItemStreamEvent =>
+        event instanceof RunItemStreamEvent,
+    );
+
+    expect(result.finalOutput).toBe('streamed sandbox done');
+    expect(result.currentAgent).toBe(sandboxAgent);
+    expect(seenFilterAgents).toEqual([sandboxAgent, sandboxAgent]);
+    expect(itemEvents.length).toBeGreaterThan(0);
+    const itemEventsWithAgents = itemEvents.filter(
+      (event): event is RunItemStreamEvent & { item: { agent: unknown } } =>
+        'agent' in event.item,
+    );
+    expect(itemEventsWithAgents).toHaveLength(itemEvents.length);
+    expect(
+      itemEventsWithAgents.every((event) => event.item.agent === sandboxAgent),
+    ).toBe(true);
+  });
+
   it('clears prior sandbox state when a resumed turn does not touch sandbox agents', async () => {
     const agent = new Agent<unknown, any>({ name: 'PlainAgent' });
     const state = new RunState<unknown, Agent<unknown, any>>(
@@ -2675,6 +2881,7 @@ describe('sandbox runner integration', () => {
     });
 
     expect(firstResult.interruptions).toHaveLength(1);
+    expect(firstResult.interruptions?.[0]?.agent).toBe(sandboxAgent);
     expect(firstResult.state._sandbox).toMatchObject({
       sessionsByAgent: {
         SandboxWorker: {
@@ -2698,6 +2905,7 @@ describe('sandbox runner integration', () => {
     });
 
     expect(resumedResult.finalOutput).toBe('sandbox done');
+    expect(resumedResult.lastAgent).toBe(sandboxAgent);
     expect(client.createCalls).toHaveLength(1);
     expect(client.resumeCalls).toHaveLength(0);
     expect(client.closeCalls).toEqual(['session-1']);

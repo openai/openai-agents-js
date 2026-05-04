@@ -1678,7 +1678,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     const { modelInput, sourceItems, persistedItems, filterApplied } =
       await applyCallModelInputFilter(
-        executionAgent,
+        state._currentAgent,
         options.callModelInputFilter,
         state._context,
         turnInput,
