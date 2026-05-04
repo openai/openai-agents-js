@@ -149,6 +149,7 @@ export async function writeRunAsRemoteText(args: {
         `chown ${shellQuote(args.runAs)}:${shellQuote(args.runAs)} -- ${shellQuote(tempPath)}`,
       ].join(' && '),
       `prepare temporary file ${tempPath}`,
+      'root',
     );
     await runCheckedRunAsRemoteCommand(
       args.providerName,
@@ -159,7 +160,9 @@ export async function writeRunAsRemoteText(args: {
       args.runAs,
     );
   } finally {
-    await args.runCommand(`rm -f -- ${shellQuote(tempPath)}`).catch(() => {});
+    await args
+      .runCommand(`rm -f -- ${shellQuote(tempPath)}`, { runAs: 'root' })
+      .catch(() => {});
   }
 }
 
@@ -230,6 +233,7 @@ async function applyRunAsManifestEntryMetadata(args: {
     args.runCommand,
     commands.join(' && '),
     `apply metadata to ${args.absolutePath}`,
+    'root',
   );
 }
 

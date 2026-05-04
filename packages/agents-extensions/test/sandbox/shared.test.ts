@@ -30,6 +30,7 @@ import {
   materializeEnvironment,
   materializeInlineManifest,
   materializeInlineManifestEntry,
+  manifestMaterializationOptionsWithRunAs,
   mergeManifestDelta,
   mergeMaterializedEnvironment,
   normalizeGitRepository,
@@ -49,6 +50,7 @@ import {
   validateRemoteSandboxPathForManifest,
   validateWorkspaceTarArchive,
   withSandboxSpan,
+  writeRunAsRemoteText,
   workspaceTarExcludeArgs,
 } from '../../src/sandbox/shared';
 import {
@@ -925,6 +927,86 @@ describe('remote sandbox path helpers', () => {
     expect(mkdirMock).toHaveBeenCalledWith('src');
     expect(mkdirMock).toHaveBeenCalledWith('renamed');
     expect(files.has('renamed/new.txt')).toBe(false);
+  });
+
+  test('prepares runAs remote writes with privileged ownership commands', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+
+    await writeRunAsRemoteText({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      path: '/workspace/notes.txt',
+      content: 'hello',
+      runAs: 'sandbox-user',
+      writer,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        return { status: 0, stdout: '' };
+      },
+    });
+
+    expect(writer.writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/openai-agents-/u),
+      'hello',
+    );
+    expect(commands[0]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[1]).toMatchObject({
+      command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[2]).toMatchObject({
+      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+      options: { runAs: 'root' },
+    });
+  });
+
+  test('applies runAs manifest metadata with privileged ownership commands', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const options = manifestMaterializationOptionsWithRunAs({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      runAs: 'sandbox-user',
+      runCommand: async (command, commandOptions) => {
+        commands.push({ command, options: commandOptions });
+        return { status: 0, stdout: '' };
+      },
+      support: {
+        entryGroups: true,
+        entryPermissions: true,
+      },
+    });
+
+    await options.applyMetadata?.('/workspace/notes.txt', {
+      type: 'file',
+      content: 'hello',
+      group: { name: 'sandbox-group' },
+      permissions: '-rw-r-----',
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[0]?.command).toContain(
+      "chgrp 'sandbox-group' -- '/workspace/notes.txt'",
+    );
+    expect(commands[0]?.command).toContain(
+      "chmod 0640 -- '/workspace/notes.txt'",
+    );
   });
 
   test('validates remote sandbox paths against resolved realpaths', async () => {
