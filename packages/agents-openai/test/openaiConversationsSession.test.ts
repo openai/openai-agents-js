@@ -467,7 +467,6 @@ describe('OpenAIConversationsSession', () => {
         type: 'message',
         role: 'user',
         content: [],
-        // model should be stripped, but other providerData should stay if present
         providerData: { extra: 'keep-me' },
       },
     ];
@@ -505,11 +504,17 @@ describe('OpenAIConversationsSession', () => {
       }),
     );
     expect(createMock).toHaveBeenCalledWith('conv-123', {
-      items: converted,
+      items: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [],
+        },
+      ],
     });
   });
 
-  it('keeps providerData for hosted tool calls', async () => {
+  it('strips persistence metadata after converting hosted tool calls', async () => {
     const createMock = vi.fn();
     const inputItems = [
       {
@@ -563,7 +568,14 @@ describe('OpenAIConversationsSession', () => {
       }),
     );
     expect(createMock).toHaveBeenCalledWith('conv-123', {
-      items: converted,
+      items: [
+        {
+          type: 'function_call',
+          name: 'search',
+          call_id: 'call-1',
+          arguments: '{}',
+        },
+      ],
     });
   });
 

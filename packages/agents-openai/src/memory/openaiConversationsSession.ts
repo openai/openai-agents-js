@@ -184,9 +184,12 @@ export class OpenAIConversationsSession
     }
 
     const conversationId = await this.getSessionId();
-    const sanitizedItems = stripIdsAndProviderData(items);
+    const normalizedItems = stripProviderModelForConversationPersistence(items);
+    const sanitizedItems = stripConversationPersistenceMetadata(
+      getInputItems(normalizedItems),
+    );
     await this.#client.conversations.items.create(conversationId, {
-      items: getInputItems(sanitizedItems),
+      items: sanitizedItems,
     });
   }
 
@@ -221,13 +224,14 @@ export class OpenAIConversationsSession
 //  Internals
 // --------------------------------------------------------------
 
-function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
+function stripProviderModelForConversationPersistence(
+  items: AgentInputItem[],
+): AgentInputItem[] {
   return items.map((item) => {
     if (Array.isArray(item) || item === null || typeof item !== 'object') {
       return item;
     }
     // Conversations API rejects unknown top-level fields (e.g., model merged from providerData).
-    // Only strip providerData.model from message-like items; keep IDs intact for tool linkage.
     const rest = { ...(item as Record<string, unknown>) };
     const providerData = (item as { providerData?: unknown }).providerData;
 
@@ -242,6 +246,24 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
         Object.keys(pdRest).length > 0 ? pdRest : undefined;
     }
     return rest as AgentInputItem;
+  });
+}
+
+function stripConversationPersistenceMetadata(
+  items: OpenAI.Responses.ResponseInputItem[],
+): OpenAI.Responses.ResponseInputItem[] {
+  return items.map((item) => {
+    if (Array.isArray(item) || item === null || typeof item !== 'object') {
+      return item;
+    }
+    const record = item as unknown as Record<string, unknown>;
+    const {
+      id: _id,
+      providerData: _providerData,
+      provider_data: _provider_data,
+      ...rest
+    } = record;
+    return rest as unknown as OpenAI.Responses.ResponseInputItem;
   });
 }
 
