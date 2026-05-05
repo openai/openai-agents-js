@@ -146,6 +146,7 @@ When a run includes deferred tools, add `toolSearchTool()` to the same agent and
 | `maxTokens` | `number` | Maximum tokens in the response. |
 | `store` | `boolean` | Persist the response for retrieval / RAG workflows. |
 | `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls provider prompt-cache retention when supported. |
+| `contextManagement` | `ModelSettingsContextManagement` | Controls provider context management, such as server-side compaction. |
 | `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models. |
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
