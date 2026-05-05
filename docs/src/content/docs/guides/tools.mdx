@@ -16,7 +16,7 @@ import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts
 import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
 
-Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a computer. The JavaScript/TypeScript SDK supports six categories:
+Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a computer. The JavaScript/TypeScript SDK supports seven categories:
 
 > Read this page after [Agents](/openai-agents-js/guides/agents) once you know which agent should own the task and you want to give it capabilities. If you are still deciding between delegation patterns, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
@@ -25,7 +25,8 @@ Tools let an Agent **take actions** – fetch data, call external APIs, execute 
 3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 4. **Agents as tools** – expose an entire Agent as a callable tool.
 5. **MCP servers** – attach a Model Context Protocol server (local or remote).
-6. **Experimental: Codex tool** – wrap the Codex SDK as a function tool to run workspace-aware tasks.
+6. **Sandbox capabilities** – attach workspace-scoped shell, filesystem, skills, memory, or compaction tools to a `SandboxAgent`.
+7. **Experimental: Codex tool** – wrap the Codex SDK as a function tool to run workspace-aware tasks.
 
 ---
 
@@ -68,8 +69,11 @@ These tools are built into the SDK, but execution happens outside the model resp
 - **Computer use** – implement the `Computer` interface and pass it to `computerTool()`. This always runs against a local `Computer` implementation that you provide.
 - **Shell** – either provide a local `Shell` implementation, or configure a hosted container environment with `shellTool({ environment })`.
 - **Apply patch** – implement the `Editor` interface and pass it to `applyPatchTool()`. This always runs against a local `Editor` implementation that you provide.
+- **Sandbox shell and filesystem tools** – use `shell()`, `filesystem()`, `skills()`, `memory()`, or `compaction()` on a `SandboxAgent` when those actions should run inside a sandbox workspace.
 
 The tool calls are still requested by the model, but your application or configured execution environment performs the work.
+
+Sandbox capability tools are different from process-wide built-in tools: they are bound to the live sandbox session for the current `SandboxAgent` run. Use [Sandbox agents](/openai-agents-js/guides/sandbox-agents) when the tool should operate on the agent's isolated workspace instead of your application process.
 
 <Code
   lang="typescript"

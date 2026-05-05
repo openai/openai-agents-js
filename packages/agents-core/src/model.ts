@@ -67,6 +67,25 @@ export interface ModelSettingsText {
   verbosity?: 'low' | 'medium' | 'high' | null;
 }
 
+export type ModelSettingsContextManagement = Array<{
+  /**
+   * The context-management strategy to apply.
+   */
+  type: 'compaction' | (string & {});
+
+  /**
+   * Rendered-token threshold that triggers server-side compaction.
+   */
+  compactThreshold?: number;
+
+  /**
+   * Rendered-token threshold that triggers server-side compaction.
+   */
+  compact_threshold?: number;
+
+  [key: string]: unknown;
+}>;
+
 export type RetryDecision =
   | boolean
   | {
@@ -280,6 +299,13 @@ export type ModelSettings = {
    * See https://platform.openai.com/docs/guides/prompt-caching#prompt-cache-retention for the available options.
    */
   promptCacheRetention?: 'in-memory' | '24h' | null;
+
+  /**
+   * Context-management strategies to apply when calling the model.
+   * This setting is available on OpenAI Responses requests, including server-side compaction.
+   * See https://developers.openai.com/api/docs/guides/compaction.
+   */
+  contextManagement?: ModelSettingsContextManagement;
 
   /**
    * The reasoning settings to use when calling the model.

@@ -147,6 +147,7 @@ export {
   ModelRequest,
   ModelResponse,
   ModelSettings,
+  ModelSettingsContextManagement,
   ModelSettingsToolChoice,
   RetryDecision,
   RetryPolicy,

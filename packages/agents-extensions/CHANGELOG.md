@@ -1,5 +1,37 @@
 # @openai/agents-extensions
 
+## 0.9.0
+
+### Minor Changes
+
+- 00b4032: fix: align sandbox mounts with Python and protect rclone credentials
+- 2e1d626: feat: add Blaxel sandbox provider
+- 2e1d626: feat: add Cloudflare sandbox provider
+- 2e1d626: feat: add Daytona sandbox provider
+- 2e1d626: feat: add E2B sandbox provider
+- 2e1d626: feat: add Modal sandbox provider
+- 2e1d626: feat: add Runloop sandbox provider
+- 2e1d626: feat: add Vercel sandbox provider
+- 6e50eca: fix: narrow sandbox public entrypoint
+
+### Patch Changes
+
+- 42aec36: fix: reject symlink ancestors in remote local sources
+- 2e1d626: feat: add sandbox agents core runtime and extension provider package groundwork
+- d60993c: fix: support remote sandbox concurrency limits
+- 2d2501a: fix: support sandbox filesystem runAs for compatible providers
+- Updated dependencies [00b4032]
+- Updated dependencies [2e1d626]
+- Updated dependencies [16c26e7]
+- Updated dependencies [21de64d]
+- Updated dependencies [2d2501a]
+- Updated dependencies [6e50eca]
+- Updated dependencies [a34f506]
+- Updated dependencies [30681be]
+- Updated dependencies [4a879bb]
+  - @openai/agents-core@0.9.0
+  - @openai/agents@0.9.0
+
 ## 0.8.5
 
 ### Patch Changes

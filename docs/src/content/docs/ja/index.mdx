@@ -4,48 +4,51 @@ description: The OpenAI Agents SDK for TypeScript enables you to build agentic A
 ---
 
 import { LinkCard } from '@astrojs/starlight/components';
-import { Code } from '@astrojs/starlight/components';
+import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 import Hero from '../../../components/Hero.astro';
 
 import helloWorldExample from '../../../../../examples/docs/hello-world.ts?raw';
+import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandboxAgent.ts?raw';
 
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    少数の基本コンポーネントで、テキストおよび音声エージェントを構築します。
+    少数の基本コンポーネントで、sandbox・テキスト・音声エージェントを構築できます。
   </Fragment>
   <Fragment slot="cta">はじめる</Fragment>
 </Hero>
 
 ## 概要
 
-[TypeScript 向け OpenAI Agents SDK](https://github.com/openai/openai-agents-js) を使うと、抽象化を最小限に抑えた軽量で使いやすいパッケージで、エージェント型 AI アプリを構築できます。これは、以前のエージェント向け実験である [Swarm](https://github.com/openai/swarm/tree/main) を本番利用向けに強化したもので、[Python 版](https://github.com/openai/openai-agents-python) も提供されています。Agents SDK には、ごく少数の基本コンポーネントがあります。
+[TypeScript 向け OpenAI Agents SDK](https://github.com/openai/openai-agents-js) を使うと、ごく少ない抽象化で、軽量かつ使いやすいパッケージによって agentic AI アプリを構築できます。これは、以前のエージェント向け実験的プロジェクトである [Swarm](https://github.com/openai/swarm/tree/main) を本番利用向けに強化したもので、[Python 版](https://github.com/openai/openai-agents-python) も利用できます。Agents SDK には、ごく少数の基本コンポーネントがあります。
 
 - **エージェント**: instructions と tools を備えた LLM
-- **Agents as tools / ハンドオフ**: 特定のタスクをほかのエージェントに委譲できる仕組み
+- **Sandbox エージェント**: エージェントを分離されたファイルシステムワークスペース、シェルコマンド、ファイル編集、スナップショット、sandbox セッション状態と組み合わせたもの
+- **Agents as tools / ハンドオフ**: エージェントが特定のタスクをほかのエージェントに委任できる仕組み
 - **ガードレール**: エージェントへの入力を検証できる仕組み
 
-TypeScript と組み合わせることで、これらの基本コンポーネントはツールとエージェントの複雑な関係を表現するのに十分な力を発揮し、学習コストを大きくかけずに実用的なアプリケーションを構築できます。さらに、SDK には組み込みの **トレーシング** が用意されており、エージェントフローの可視化やデバッグに加え、評価や、アプリケーション向けのモデルのファインチューニングまで行えます。
+これらの基本コンポーネントを TypeScript と組み合わせることで、ツールとエージェントの複雑な関係を表現でき、必要なときにはエージェントに実際のワークスペースを与えつつ、急な学習コストなしで実用的なアプリケーションを構築できます。さらに、SDK には組み込みの **トレーシング** があり、agentic なフローを可視化・デバッグできるほか、評価の実行や、アプリケーション向けのモデルのファインチューニングまで行えます。
 
 ## Agents SDK を使う理由
 
-SDK には、次の 2 つの設計原則があります。
+この SDK には、2 つの中核となる設計原則があります。
 
-1. 使う価値があるだけの十分な機能を備えつつ、すばやく学べるよう基本コンポーネントは少なくする
-2. そのままですぐに使えて、しかも動作を必要なだけ正確にカスタマイズできる
+1. 使う価値があるだけの十分な機能を備えつつ、学習を素早く始められるよう基本コンポーネント数は少なくすること
+2. そのままですぐに優れた動作をしつつ、何が起きるかを正確にカスタマイズできること
 
 SDK の主な機能は次のとおりです。
 
 - **エージェントループ**: ツール呼び出しを処理し、結果を LLM に返し、タスク完了まで継続する組み込みのエージェントループ
-- **TypeScript ファースト**: 新しい抽象化を学ぶことなく、TypeScript 本来の言語機能でエージェントをオーケストレーションし、連結できます
-- **Agents as tools / ハンドオフ**: 複数のエージェント間で作業を調整し委譲するための強力な仕組み
-- **ガードレール**: 入力検証と安全性チェックをエージェント実行と並行して実行し、チェックを通過しない場合は即座に失敗させます
-- **関数ツール**: 任意の TypeScript 関数を、自動スキーマ生成と Zod ベースの検証付きツールに変換します
-- **MCP サーバーツール呼び出し**: 関数ツールと同じ方法で使える、組み込みの MCP サーバーツール連携
-- **セッション**: エージェントループ内で作業コンテキストを維持するための永続的なメモリレイヤー
-- **Human in the loop (人間の介入)**: エージェント実行全体で人間を関与させるための組み込みメカニズム
-- **トレーシング**: ワークフローの可視化、デバッグ、監視のための組み込みトレーシング。OpenAI の評価、ファインチューニング、蒸留ツール群にも対応しています
-- **リアルタイムエージェント**: 自動割り込み検出、コンテキスト管理、ガードレールなどの機能を備えた強力な音声エージェントを構築できます
+- **Sandbox 実行**: 作業にワークスペースが必要な場合に、分離されたファイルシステムワークスペース、シェルコマンド、ファイル編集、スナップショット、sandbox セッション状態を使ってエージェントを実行
+- **TypeScript ファースト**: 新しい抽象化を学ばなくても、TypeScript のネイティブな言語機能でエージェントをオーケストレーションし、連結可能
+- **Agents as tools / ハンドオフ**: 複数のエージェント間で作業を調整・委任するための強力な仕組み
+- **ガードレール**: 入力検証と安全性チェックをエージェント実行と並行して行い、チェック不合格時には早期に失敗
+- **関数ツール**: 自動スキーマ生成と Zod ベースの検証により、任意の TypeScript 関数をツール化
+- **MCP サーバーツール呼び出し**: 関数ツールと同じ方法で使える組み込みの MCP サーバーツール連携
+- **セッション**: エージェントループ内で作業コンテキストを維持するための永続メモリレイヤー
+- **Human in the loop (人間の介入)**: 複数のエージェント実行にまたがって人間を関与させるための組み込み機構
+- **トレーシング**: ワークフローの可視化・デバッグ・監視のための組み込みトレーシング。OpenAI の評価、ファインチューニング、蒸留ツール群をサポート
+- **リアルタイムエージェント**: 自動割り込み検出、コンテキスト管理、ガードレールなどの機能を備えた強力な音声エージェントを構築
 
 ## インストール
 
@@ -53,54 +56,78 @@ SDK の主な機能は次のとおりです。
 npm install @openai/agents zod
 ```
 
-この SDK には Zod v4 が必要です。npm 経由で `zod` をインストールすると、最新の v4 リリースが取得されます。
+SDK には Zod v4 が必要です。npm で `zod` をインストールすると、最新の v4 リリースが取得されます。
 
 ## 開始ポイントの選択
 
-初めて使うほとんどのユーザーは、次のいずれか 1 つのエントリーポイントだけで十分です。
+初めて使うユーザーの多くは、次のいずれか 1 つのエントリーポイントだけで十分です。
 
 | Start with | Use it when | Notes |
 | --- | --- | --- |
-| `@openai/agents` | ほとんどのテキストまたは音声アプリケーションを構築する場合 | 推奨のデフォルトです。OpenAI provider のセットアップが含まれており、音声 API は `@openai/agents/realtime` で利用できます |
+| `@openai/agents` | テキスト、sandbox、または音声アプリケーションの大半を構築する場合 | 推奨のデフォルトです。OpenAI provider のセットアップ、`@openai/agents/sandbox` 配下の sandbox エージェント API、`@openai/agents/realtime` 配下の音声 API が含まれます |
 | `@openai/agents-realtime` | スタンドアロンの Realtime パッケージだけが必要な場合 | ブラウザ専用の音声アプリや、より狭いパッケージ境界にしたい場合に便利です |
-| Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | より低レベルな構成、カスタム provider の接続、または特定の連携が必要な場合 | 多くの新規ユーザーは、具体的な必要性が出るまでこれらは無視して問題ありません |
+| 下位レベルのパッケージ (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | より低レベルな構成、カスタム provider の配線、または特定の連携が必要な場合 | 具体的な必要性が出るまでは、多くの新規ユーザーはこれらを無視して問題ありません |
 
-## Hello world の例
+## Hello world のコード例
 
-<Code lang="typescript" code={helloWorldExample} title="Hello World" />
+エージェントがファイルシステム上で作業する必要がある場合は、Sandbox エージェントから始めてください。ワークフローに sandbox ワークスペースや sandbox ライフサイクルが不要な場合は、通常の `Agent` も利用できます。
 
-(_これを実行する場合は、`OPENAI_API_KEY` 環境変数を設定していることを確認してください_)
+<Tabs>
+  <TabItem label="Sandbox Agent">
+    <Code
+      lang="typescript"
+      code={helloWorldSandboxExample}
+      title="Hello World with a sandbox"
+    />
+  </TabItem>
+  <TabItem label="Without Sandbox">
+    <Code
+      lang="typescript"
+      code={helloWorldExample}
+      title="Hello World without a sandbox"
+    />
+  </TabItem>
+</Tabs>
+
+(_これを実行する場合は、`OPENAI_API_KEY` 環境変数を設定してください_)
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-## ここから開始
+## まずはこちら
 
-まず 1 つの進め方を選んで、最初から最後まで動かしてみてください。その後で、より詳しいガイドに戻るのがおすすめです。
+まずは 1 つのパスを選び、エンドツーエンドで動かしてみてから、必要に応じてより詳しいガイドに戻ってください。
 
 <LinkCard
   title="Quickstart"
   href="/openai-agents-js/ja/guides/quickstart"
-  description="最初のテキストベースのエージェントを構築し、SDK の基本ワークフローを学びます。"
+  description="はじめてのテキストベースのエージェントを構築し、SDK の中核ワークフローを学びます。"
 />
 
 <LinkCard
   title="Voice Agents Quickstart"
   href="/openai-agents-js/ja/guides/voice-agents/quickstart"
-  description="音声によるやり取りを構築する場合は、Realtime の音声パスから始めます。"
+  description="音声での対話を構築する場合は、Realtime の音声パスから始めます。"
+/>
+
+<LinkCard
+  title="Sandbox agents"
+  href="/openai-agents-js/ja/guides/sandbox-agents"
+  description="ファイル、シェルコマンド、パッチ、または再開可能な sandbox 状態が必要な場合は、sandbox エージェントを開始します。"
 />
 
 ## パスの選択
 
-やりたい作業は分かっているものの、どのページを見ればよいか分からないときは、この表を使ってください。
+やりたいことは決まっているものの、どのページに説明があるかわからない場合は、この表を使ってください。
 
 | Goal | Start here |
 | --- | --- |
-| 最初のテキストエージェントを構築し、1 回の完全な実行を確認する | [クイックスタート](/openai-agents-js/guides/quickstart) |
+| 最初のテキストエージェントを構築し、1 回の完全な実行を確認する | [Quickstart](/openai-agents-js/guides/quickstart) |
 | 関数ツール、組み込みツール（Hosted）、または Agents as tools を追加する | [ツール](/openai-agents-js/guides/tools) |
-| ハンドオフとマネージャー型オーケストレーションのどちらにするか判断する | [エージェントオーケストレーション](/openai-agents-js/guides/multi-agent) |
+| エージェントに分離されたファイルシステムとシェルのワークスペースを与える | [Sandbox agents](/openai-agents-js/guides/sandbox-agents) |
+| ハンドオフとマネージャースタイルのオーケストレーションのどちらにするか決める | [エージェントオーケストレーション](/openai-agents-js/guides/multi-agent) |
 | ターンをまたいでメモリを保持する | [エージェントの実行](/openai-agents-js/guides/running-agents) と [セッション](/openai-agents-js/guides/sessions) |
 | OpenAI モデル、websocket トランスポート、または非 OpenAI provider を使う | [モデル](/openai-agents-js/guides/models) |
-| outputs、run items、割り込み、再開状態を確認する | [エージェントの実行結果](/openai-agents-js/guides/results) |
-| 低遅延の音声エージェントを構築する | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
+| 出力、実行アイテム、割り込み、再開状態を確認する | [エージェントの実行結果](/openai-agents-js/guides/results) |
+| 低レイテンシの音声エージェントを構築する | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |

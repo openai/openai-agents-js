@@ -1083,6 +1083,40 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('sends context management settings to the Responses API', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = { id: 'res-context', usage: {}, output: [] };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-context');
+
+      const request = {
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          contextManagement: [{ type: 'compaction', compactThreshold: 200000 }],
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      await model.getResponse(request as any);
+
+      const [args] = createMock.mock.calls[0];
+      expect(args.context_management).toEqual([
+        {
+          type: 'compaction',
+          compact_threshold: 200000,
+        },
+      ]);
+    });
+  });
+
   it('still sends an empty tools array when no prompt is provided', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-no-prompt', usage: {}, output: [] };

@@ -1,0 +1,202 @@
+---
+title: Sandbox clients
+description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import developerOwnedSessionExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
+import dockerClientExample from '../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
+import exposedPortsExample from '../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
+import manifestConcurrencyExample from '../../../../../../examples/docs/sandbox-agents/manifest-concurrency.ts?raw';
+import resumeSessionStateExample from '../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
+import selectLocalClientExample from '../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
+
+Use this page to choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
+
+<Aside type="caution" title="Beta feature">
+  Sandbox agents are in beta. API details, defaults, and supported capabilities
+  may change before general availability, and more advanced features are
+  expected over time.
+</Aside>
+
+## Decision guide
+
+| Goal | Start with | Why |
+| --- | --- | --- |
+| Fastest local iteration on macOS or Linux | `UnixLocalSandboxClient` | No extra service dependency and a simple local filesystem workflow. |
+| Basic container isolation | `DockerSandboxClient` | Runs work inside Docker with a specific image. |
+| Hosted execution or production-style isolation | A hosted sandbox client | Moves the workspace boundary to a provider-managed environment. |
+
+## Local clients
+
+For most users, start with one of these two sandbox clients:
+
+| Client | Install | Choose it when |
+| --- | --- | --- |
+| `UnixLocalSandboxClient` | none | Fastest local iteration on macOS or Linux. Good default for local development. |
+| `DockerSandboxClient` | Docker CLI available locally | You want container isolation or a specific image for local parity. |
+
+Unix-local is the easiest way to start developing against a local filesystem. Move to Docker or a hosted provider when you need stronger environment isolation or production-style parity.
+
+To switch from Unix-local to Docker, keep the agent definition the same and change only the client:
+
+<Code lang="typescript" code={dockerClientExample} title="Use Docker" />
+
+The same agent can usually run with either local client:
+
+<Code
+  lang="typescript"
+  code={selectLocalClientExample}
+  title="Switch between local clients"
+/>
+
+### Session ownership
+
+There are two lifecycle styles.
+
+| Style | What you pass | Who closes the session | Use it when |
+| --- | --- | --- | --- |
+| SDK-owned | `sandbox: { client }` | The runner | The sandbox only needs to live for one run. |
+| Developer-owned | `sandbox: { session }` | Your code | You need to inspect files afterward, reuse the same live session, or coordinate multiple runs. |
+
+When you create a session yourself, close it yourself:
+
+<Code
+  lang="typescript"
+  code={developerOwnedSessionExample}
+  title="Own the sandbox session lifecycle"
+/>
+
+### Resume and snapshots
+
+Sandbox state and conversation state are separate:
+
+- SDK conversation state lives in `result.history`, an SDK `Session`, `conversationId`, or `previousResponseId`.
+- Sandbox state lives in the live sandbox session, serialized `sessionState`, `RunState` sandbox payloads, or snapshots.
+
+Use `sessionState` when you want to reconnect to the same backend session through a sandbox client. Use a snapshot when you want a fresh session seeded from saved workspace contents.
+
+<Code
+  lang="typescript"
+  code={resumeSessionStateExample}
+  title="Serialize and resume sandbox state"
+/>
+
+`RunState` can also preserve runner-managed sandbox state when you pause or resume a larger workflow. Use explicit `sessionState` when the sandbox lifecycle is managed outside a serialized run.
+
+### Manifest materialization
+
+Manifest entries are prepared before the agent runs. You can tune materialization concurrency per run or per client create call:
+
+<Code
+  lang="typescript"
+  code={manifestConcurrencyExample}
+  title="Tune manifest materialization concurrency"
+/>
+
+`manifestEntries` limits parallel top-level entry work. `localDirFiles` limits file copy concurrency inside `localDir()` entries.
+
+## Mounts and remote storage
+
+Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. Import the built-in mount entries and generic strategies from `@openai/agents/sandbox`.
+
+Common mount options:
+
+- `mountPath`: where the storage appears in the sandbox. Relative paths are resolved under the manifest root; absolute paths are used as-is.
+- `readOnly`: set this when the sandbox should not write back to the mounted storage.
+- `mountStrategy`: use a strategy that matches both the mount entry and the sandbox backend.
+
+Mounts are treated as ephemeral workspace entries. Snapshot and persistence flows detach or skip mounted paths instead of copying mounted remote storage into the saved workspace.
+
+Generic local/container strategies:
+
+| Strategy or pattern | Use it when | Notes |
+| --- | --- | --- |
+| `inContainerMountStrategy(...)` | The sandbox image can run a mount command such as `rclone`, `mount-s3`, or `blobfuse2`. | Available as a generic strategy; support depends on the backend. |
+| `dockerVolumeMountStrategy(...)` | Docker should attach a volume-driver-backed mount before the container starts. | Docker-only. |
+| `localBindMountStrategy()` | A local backend should bind an absolute local path into the workspace. | Supported by local workspace materialization where allowed. |
+
+Backend support is intentionally explicit:
+
+| Backend | Mount notes |
+| --- | --- |
+| `UnixLocalSandboxClient` | Supports local bind-style mounts through the local workspace model. |
+| `DockerSandboxClient` | Supports local bind mounts and Docker volume-style strategies where Docker can attach the storage. |
+| Hosted providers | Provider-specific strategies live with provider implementations and should be documented with those provider branches or extension packages. |
+
+Do not assume a mount entry works on every backend. If a client cannot enforce manifest metadata, identity, or mount behavior, it should fail early instead of silently ignoring that part of the manifest.
+
+## Supported hosted platforms
+
+When you need a hosted environment, the same `SandboxAgent` definition usually carries over and only the sandbox client changes in the `sandbox` run option.
+
+Hosted provider implementations live in `@openai/agents-extensions` provider subpaths. Provider-specific docs and examples should add exact environment variable notes, runnable examples, port behavior, PTY support, snapshot behavior, and cleanup behavior alongside the provider code.
+
+The TypeScript hosted clients are expected to live in `@openai/agents-extensions` provider subpaths, matching the provider branches. Install `@openai/agents-extensions` and satisfy its package-level peers; each provider may also require a provider SDK package or backend setup:
+
+| Client | Import path | Provider requirement |
+| --- | --- | --- |
+| `BlaxelSandboxClient` | `@openai/agents-extensions/sandbox/blaxel` | npm peer: `@blaxel/core` |
+| `CloudflareSandboxClient` | `@openai/agents-extensions/sandbox/cloudflare` | Cloudflare Sandbox bridge Worker URL and Worker auth |
+| `DaytonaSandboxClient` | `@openai/agents-extensions/sandbox/daytona` | npm peer: `@daytonaio/sdk` |
+| `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm peer: `e2b` or `@e2b/code-interpreter` |
+| `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm peer: `modal` |
+| `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm peer: `@runloop/api-client` |
+| `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm peer: `@vercel/sandbox` |
+
+`CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
+
+Hosted sandbox clients expose provider-specific mount strategies. Choose the backend and mount strategy that best fit your storage provider:
+
+| Backend | Mount notes |
+| --- | --- |
+| Docker | Supports `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `boxMount()`, and `s3FilesMount()` with local strategies such as `inContainerMountStrategy()` and `dockerVolumeMountStrategy()`. |
+| `ModalSandboxClient` | Supports cloud bucket mounts with `ModalCloudBucketMountStrategy` on S3, R2, and HMAC-authenticated GCS mount entries. |
+| `CloudflareSandboxClient` | Supports Cloudflare bucket mounts with `CloudflareBucketMountStrategy` on S3, R2, and HMAC-authenticated GCS mount entries. |
+| `BlaxelSandboxClient` | Supports cloud bucket mounts with `BlaxelCloudBucketMountStrategy` on S3, R2, and GCS mount entries. It also supports persistent Blaxel Drives with `BlaxelDriveMount` and `BlaxelDriveMountStrategy`. |
+| `DaytonaSandboxClient` | Supports rclone-backed mounts with `DaytonaCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
+| `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
+| `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
+| `VercelSandboxClient` | No hosted-specific mount strategy is currently exposed. Use manifest files, repos, snapshots, or other workspace inputs instead. |
+
+The table below summarizes which remote storage entries each backend can mount directly:
+
+| Backend | AWS S3 | Cloudflare R2 | GCS | Azure Blob Storage | Box | S3 Files |
+| --- | --- | --- | --- | --- | --- | --- |
+| Docker | yes | yes | yes | yes | yes | yes |
+| `ModalSandboxClient` | yes | yes | yes | no | no | no |
+| `CloudflareSandboxClient` | yes | yes | yes | no | no | no |
+| `BlaxelSandboxClient` | yes | yes | yes | no | no | no |
+| `DaytonaSandboxClient` | yes | yes | yes | yes | yes | no |
+| `E2BSandboxClient` | yes | yes | yes | yes | yes | no |
+| `RunloopSandboxClient` | yes | yes | yes | yes | yes | no |
+| `VercelSandboxClient` | no | no | no | no | no | no |
+
+### Exposed ports
+
+Sandbox clients can expose endpoints through `resolveExposedPort(port)` when the backend supports it.
+
+| Client | Behavior |
+| --- | --- |
+| `UnixLocalSandboxClient` | Resolves configured ports to `127.0.0.1`. |
+| `DockerSandboxClient` | Publishes configured container ports and resolves their host endpoints. |
+
+Declare the ports in the client options when you need a backend to enforce an allowlist:
+
+<Code lang="typescript" code={exposedPortsExample} title="Expose a port" />
+
+### Capability support matrix
+
+| Capability | Unix-local | Docker |
+| --- | --- | --- |
+| `exec_command` | Supported | Supported |
+| PTY `write_stdin` | Supported | Supported |
+| `apply_patch` | Supported | Supported through workspace file APIs |
+| `view_image` | Supported | Supported through workspace file APIs |
+| `runAs` for commands | Supported when the host can resolve and switch to the user | Limited by container/user setup |
+| Local snapshots | Supported | Supported |
+| Local/Docker mounts | Local bind-style support | Bind and Docker volume-style support |
+
+Local PTY support uses a small Python 3 bridge in the SDK process. The bridge is only used for `tty: true` sessions, where Node.js does not provide a built-in PTY API and the SDK needs standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to a Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.
+
+Hosted provider support varies by provider. Keep provider-specific docs close to the provider implementation so users can see exact options, environment variables, port behavior, PTY support, snapshot behavior, and cleanup behavior.

@@ -1,0 +1,66 @@
+---
+title: 快速上手
+description: Create your first sandbox agent with an isolated workspace, filesystem tools, shell commands, and sandbox session state.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+
+<Aside type="caution" title="Beta 功能">
+  Sandbox agents 目前处于测试版。在正式发布之前，API 细节、默认设置和支持的能力
+  可能会发生变化，并且预计会随着时间推移提供更多高级功能。
+</Aside>
+
+现代智能体在能够对文件系统中的真实文件进行操作时效果最佳。Agents SDK 中的 **Sandbox Agents** 为模型提供了一个持久化工作区，使其可以搜索大型文档集、编辑文件、运行命令、生成产物，并从已保存的 sandbox 状态中继续工作。
+
+SDK 为您提供了这套执行基础设施，而无需您自己拼装文件暂存、文件系统工具、shell 访问、sandbox 生命周期、快照以及特定提供商的胶水代码。您仍然保持常规的 `Agent` 和 `Runner` 流程，然后再添加工作区的 `Manifest`、用于 sandbox 原生工具的 capabilities，以及用于指定工作运行位置的 `sandbox` 运行选项。
+
+## 前提条件
+
+- Node.js 22 或更高版本。
+- 对 OpenAI Agents SDK 有基本了解。
+- 一个 sandbox client。对于本地开发，建议从 `UnixLocalSandboxClient` 开始。
+
+## 安装
+
+如果您尚未安装 SDK：
+
+```bash
+npm install @openai/agents
+```
+
+对于基于 Docker 的 sandbox，请在本地安装 Docker，并使用来自 `@openai/agents/sandbox/local` 的 `DockerSandboxClient`。
+
+如果您使用带有 `tty: true` 的交互式本地 PTY 会话，运行 SDK 的进程还需要能以 `python3` 的形式使用 Python 3，或通过 `OPENAI_AGENTS_PYTHON` 指定。非 PTY shell 命令不需要 Python。
+
+## 本地 sandbox 智能体的创建
+
+此示例会将本地仓库暂存到 `repo/` 下，延迟加载本地 skills，并让 runner 为本次运行创建一个 Unix 本地 sandbox 会话。
+
+<Code
+  lang="typescript"
+  code={basicExample}
+  title="Create a local sandbox agent"
+/>
+
+该示例特意设计得类似 Python SDK 的快速开始：智能体定义拥有 manifest 和 capabilities，而运行配置仅为本次运行选择 sandbox client。
+
+## 关键选择
+
+当基础运行成功后，大多数人接下来会关注这些选择：
+
+- `defaultManifest`：为新的 sandbox 会话提供的文件、仓库、目录和挂载。
+- `instructions`：应在各个提示之间统一适用的简短工作流规则。
+- `baseInstructions`：用于替换 SDK sandbox 提示的高级兜底选项。
+- `capabilities`：sandbox 原生工具，例如文件系统编辑/图像检查、shell、skills、memory 和 compaction。
+- `runAs`：供面向模型的工具使用的 sandbox 用户身份。
+- `sandbox.client`：sandbox 后端。
+- `sandbox.session`、`sandbox.sessionState` 或 `sandbox.snapshot`：后续运行如何重新连接到先前的工作。
+
+## 后续阅读
+
+- [Concepts](/openai-agents-js/zh/guides/sandbox-agents/concepts)：了解 manifest、capabilities、权限、快照、运行配置和组合模式。
+- [Sandbox clients](/openai-agents-js/zh/guides/sandbox-agents/clients)：选择 Unix 本地、Docker、托管提供商和挂载策略。
+- [Agent memory](/openai-agents-js/zh/guides/sandbox-agents/memory)：保留并复用先前 sandbox 运行中的经验。
+
+如果 shell 访问只是偶尔使用的单一工具，请先从[工具](/openai-agents-js/zh/guides/tools)指南中的托管 shell 开始。当工作区隔离、sandbox client 的选择或 sandbox 会话恢复行为是设计的一部分时，再考虑使用 sandbox 智能体。

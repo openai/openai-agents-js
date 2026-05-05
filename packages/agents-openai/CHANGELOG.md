@@ -1,5 +1,22 @@
 # @openai/agents-openai
 
+## 0.9.0
+
+### Patch Changes
+
+- 6148ed2: feat: expose Responses WebSocket keepalive options
+- a34f506: feat: add model settings support for context management
+- 5eddaaa: fix: #1212 add code interpreter output include option
+- Updated dependencies [00b4032]
+- Updated dependencies [2e1d626]
+- Updated dependencies [16c26e7]
+- Updated dependencies [2d2501a]
+- Updated dependencies [6e50eca]
+- Updated dependencies [a34f506]
+- Updated dependencies [30681be]
+- Updated dependencies [4a879bb]
+  - @openai/agents-core@0.9.0
+
 ## 0.8.5
 
 ### Patch Changes

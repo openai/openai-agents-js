@@ -137,6 +137,52 @@ const sidebar = [
         },
       },
       {
+        label: 'Sandbox agents',
+        translations: {
+          ja: 'サンドボックスエージェント',
+          zh: '沙盒智能体',
+          ko: '샌드박스 에이전트',
+        },
+        items: [
+          {
+            label: 'Quickstart',
+            link: '/guides/sandbox-agents',
+            translations: {
+              ja: 'クイックスタート',
+              zh: '快速入门',
+              ko: '빠른 시작',
+            },
+          },
+          {
+            label: 'Concepts',
+            link: '/guides/sandbox-agents/concepts',
+            translations: {
+              ja: 'コンセプト',
+              zh: '概念',
+              ko: '개념',
+            },
+          },
+          {
+            label: 'Sandbox clients',
+            link: '/guides/sandbox-agents/clients',
+            translations: {
+              ja: 'サンドボックスクライアント',
+              zh: '沙盒客户端',
+              ko: '샌드박스 클라이언트',
+            },
+          },
+          {
+            label: 'Agent memory',
+            link: '/guides/sandbox-agents/memory',
+            translations: {
+              ja: 'エージェントメモリ',
+              zh: '智能体记忆',
+              ko: '에이전트 메모리',
+            },
+          },
+        ],
+      },
+      {
         label: 'Models',
         link: '/guides/models',
         translations: {

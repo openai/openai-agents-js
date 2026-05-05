@@ -1,0 +1,67 @@
+---
+title: Quickstart
+description: Create your first sandbox agent with an isolated workspace, filesystem tools, shell commands, and sandbox session state.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import basicExample from '../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+
+<Aside type="caution" title="Beta feature">
+  Sandbox agents are in beta. API details, defaults, and supported capabilities
+  may change before general availability, and more advanced features are
+  expected over time.
+</Aside>
+
+Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** in the Agents SDK give the model a persistent workspace where it can search large document sets, edit files, run commands, generate artifacts, and pick work back up from saved sandbox state.
+
+The SDK gives you that execution harness without making you wire together file staging, filesystem tools, shell access, sandbox lifecycle, snapshots, and provider-specific glue yourself. You keep the normal `Agent` and `Runner` flow, then add a `Manifest` for the workspace, capabilities for sandbox-native tools, and the `sandbox` run option for where the work runs.
+
+## Prerequisites
+
+- Node.js 22 or higher.
+- Basic familiarity with the OpenAI Agents SDK.
+- A sandbox client. For local development, start with `UnixLocalSandboxClient`.
+
+## Installation
+
+If you have not already installed the SDK:
+
+```bash
+npm install @openai/agents
+```
+
+For Docker-backed sandboxes, install Docker locally and use `DockerSandboxClient` from `@openai/agents/sandbox/local`.
+
+If you use interactive local PTY sessions with `tty: true`, the process running the SDK also needs Python 3 available as `python3`, or through `OPENAI_AGENTS_PYTHON`. Non-PTY shell commands do not require Python.
+
+## Create a local sandbox agent
+
+This example stages a local repo under `repo/`, loads local skills lazily, and lets the runner create a Unix-local sandbox session for the run.
+
+<Code
+  lang="typescript"
+  code={basicExample}
+  title="Create a local sandbox agent"
+/>
+
+The example is intentionally shaped like the Python SDK quickstart: the agent definition owns the manifest and capabilities, while the run config only chooses the sandbox client for this run.
+
+## Key choices
+
+Once the basic run works, the choices most people reach for next are:
+
+- `defaultManifest`: the files, repos, directories, and mounts for fresh sandbox sessions.
+- `instructions`: short workflow rules that should apply across prompts.
+- `baseInstructions`: an advanced escape hatch for replacing the SDK sandbox prompt.
+- `capabilities`: sandbox-native tools such as filesystem editing/image inspection, shell, skills, memory, and compaction.
+- `runAs`: the sandbox user identity for model-facing tools.
+- `sandbox.client`: the sandbox backend.
+- `sandbox.session`, `sandbox.sessionState`, or `sandbox.snapshot`: how later runs reconnect to prior work.
+
+## Where to go next
+
+- [Concepts](/openai-agents-js/guides/sandbox-agents/concepts): understand manifests, capabilities, permissions, snapshots, run config, and composition patterns.
+- [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients): choose Unix-local, Docker, hosted providers, and mount strategies.
+- [Agent memory](/openai-agents-js/guides/sandbox-agents/memory): preserve and reuse lessons from previous sandbox runs.
+
+If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace isolation, sandbox client choice, or sandbox-session resume behavior are part of the design.

@@ -1,5 +1,29 @@
 # @openai/agents
 
+## 0.9.0
+
+### Minor Changes
+
+- 00b4032: fix: align sandbox mounts with Python and protect rclone credentials
+- 2e1d626: feat: add sandbox agents core runtime and extension provider package groundwork
+
+### Patch Changes
+
+- 21de64d: docs: highlight sandbox agents in the package README.
+- Updated dependencies [00b4032]
+- Updated dependencies [6148ed2]
+- Updated dependencies [2e1d626]
+- Updated dependencies [16c26e7]
+- Updated dependencies [2d2501a]
+- Updated dependencies [6e50eca]
+- Updated dependencies [a34f506]
+- Updated dependencies [5eddaaa]
+- Updated dependencies [30681be]
+- Updated dependencies [4a879bb]
+  - @openai/agents-core@0.9.0
+  - @openai/agents-openai@0.9.0
+  - @openai/agents-realtime@0.9.0
+
 ## 0.8.5
 
 ### Patch Changes

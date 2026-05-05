@@ -1,0 +1,66 @@
+---
+title: 빠른 시작
+description: Create your first sandbox agent with an isolated workspace, filesystem tools, shell commands, and sandbox session state.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+
+<Aside type="caution" title="베타 기능">
+  Sandbox agents는 베타입니다. API 세부 사항, 기본값, 지원 기능은 정식 출시 전에
+  변경될 수 있으며, 시간이 지나면서 더 고급 기능이 추가될 예정입니다.
+</Aside>
+
+현대적인 에이전트는 파일시스템의 실제 파일을 대상으로 작업할 수 있을 때 가장 잘 동작합니다. Agents SDK의 **Sandbox Agents**는 모델에 지속적인 워크스페이스를 제공하여 대규모 문서 집합 검색, 파일 편집, 명령 실행, 아티팩트 생성, 저장된 sandbox 상태에서 작업 재개를 가능하게 합니다.
+
+SDK는 파일 스테이징, 파일시스템 도구, 셸 접근, sandbox 수명 주기, 스냅샷, 제공자별 연결 코드를 직접 조합하지 않아도 이 실행 하네스를 제공합니다. 일반적인 `Agent` 및 `Runner` 흐름은 그대로 유지하면서, 워크스페이스용 `Manifest`, sandbox 네이티브 도구용 capabilities, 그리고 작업 실행 위치를 지정하는 `sandbox` 실행 옵션만 추가하면 됩니다.
+
+## 사전 요구 사항
+
+- Node.js 22 이상
+- OpenAI Agents SDK에 대한 기본적인 이해
+- sandbox 클라이언트. 로컬 개발에서는 `UnixLocalSandboxClient`로 시작하세요
+
+## 설치
+
+아직 SDK를 설치하지 않았다면 다음을 실행하세요:
+
+```bash
+npm install @openai/agents
+```
+
+Docker 기반 sandbox를 사용하려면 로컬에 Docker를 설치하고 `@openai/agents/sandbox/local`의 `DockerSandboxClient`를 사용하세요.
+
+`tty: true`로 대화형 로컬 PTY 세션을 사용하는 경우, SDK를 실행하는 프로세스에도 `python3`로 사용할 수 있는 Python 3 또는 `OPENAI_AGENTS_PYTHON`을 통한 Python 3가 필요합니다. PTY가 아닌 셸 명령에는 Python이 필요하지 않습니다.
+
+## 로컬 sandbox 에이전트 생성
+
+이 예제는 `repo/` 아래의 로컬 리포지토리를 스테이징하고, 로컬 skills를 지연 로드하며, runner가 실행을 위해 Unix-local sandbox 세션을 생성하도록 합니다.
+
+<Code
+  lang="typescript"
+  code={basicExample}
+  title="로컬 sandbox 에이전트 생성"
+/>
+
+이 예제는 의도적으로 Python SDK 빠른 시작과 유사한 형태로 구성되어 있습니다. 에이전트 정의가 manifest와 capabilities를 소유하고, 실행 구성은 이번 실행에 사용할 sandbox 클라이언트만 선택합니다.
+
+## 주요 선택 사항
+
+기본 실행이 동작하면, 대부분의 사용자가 다음으로 선택하는 항목은 다음과 같습니다:
+
+- `defaultManifest`: 새 sandbox 세션에 사용할 파일, 리포지토리, 디렉터리, 마운트
+- `instructions`: 프롬프트 전반에 적용할 짧은 워크플로 규칙
+- `baseInstructions`: SDK sandbox 프롬프트를 대체하기 위한 고급 escape hatch
+- `capabilities`: 파일시스템 편집/이미지 검사, 셸, skills, 메모리, compaction 같은 sandbox 네이티브 도구
+- `runAs`: 모델 대상 도구에 사용할 sandbox 사용자 ID
+- `sandbox.client`: sandbox 백엔드
+- `sandbox.session`, `sandbox.sessionState`, 또는 `sandbox.snapshot`: 이후 실행이 이전 작업에 다시 연결하는 방법
+
+## 다음 단계
+
+- [Concepts](/openai-agents-js/ko/guides/sandbox-agents/concepts): manifest, capabilities, 권한, 스냅샷, 실행 구성, 조합 패턴을 이해합니다
+- [Sandbox clients](/openai-agents-js/ko/guides/sandbox-agents/clients): Unix-local, Docker, 호스티드 제공자, 마운트 전략 중에서 선택합니다
+- [Agent memory](/openai-agents-js/ko/guides/sandbox-agents/memory): 이전 sandbox 실행에서 얻은 교훈을 보존하고 재사용합니다
+
+셸 접근이 가끔 사용하는 도구 하나에 불과하다면 [도구](/openai-agents-js/ko/guides/tools)에서 호스티드 셸로 시작하세요. 워크스페이스 격리, sandbox 클라이언트 선택, 또는 sandbox 세션 재개 동작이 설계의 일부라면 sandbox 에이전트를 선택하세요.
