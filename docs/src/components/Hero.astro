@@ -1,5 +1,6 @@
 ---
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import helloWorldSandboxExample from '../../../examples/docs/toppage/sandboxAgent.ts?raw';
 import helloWorldExample from '../../../examples/docs/toppage/textAgent.ts?raw';
 import helloWorldVoiceExample from '../../../examples/docs/toppage/voiceAgent.ts?raw';
 const path = Astro.url.pathname;
@@ -22,6 +23,9 @@ const pathPrefix =
     </div>
     <div class="openai-hero-code flex-1 overflow-x-scroll">
       <Tabs>
+        <TabItem label="Sandbox Agent">
+          <Code lang="typescript" code={helloWorldSandboxExample} />
+        </TabItem>
         <TabItem label="Text Agent">
           <Code lang="typescript" code={helloWorldExample} />
         </TabItem>
