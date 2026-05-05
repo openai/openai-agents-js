@@ -74,4 +74,28 @@ describe('Node.js', () => {
       );
     },
   );
+
+  test(
+    'sandbox storage mounts should run against local emulators',
+    { timeout: 300_000 },
+    async (context) => {
+      if (process.env.OPENAI_AGENTS_RUN_STORAGE_MOUNT_INTEGRATION !== '1') {
+        context.skip();
+      }
+
+      try {
+        await execa`docker info`;
+      } catch {
+        context.skip();
+      }
+
+      const { stdout } = await execa`npm run start:sandbox:storage-mounts`;
+      expect(stdout).toContain(
+        '[STORAGE_MOUNT_RESPONSE]azure:ok[/STORAGE_MOUNT_RESPONSE]',
+      );
+      expect(stdout).toContain(
+        '[STORAGE_MOUNT_RESPONSE]s3:ok[/STORAGE_MOUNT_RESPONSE]',
+      );
+    },
+  );
 });
