@@ -4,6 +4,7 @@ import { DockerSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Workspace reviewer',
+  model: 'gpt-5.5',
   instructions: 'Inspect the sandbox workspace before answering.',
 });
 

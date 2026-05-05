@@ -25,6 +25,7 @@ const manifest = new Manifest({
 
 const agent = new SandboxAgent({
   name: 'Sandbox engineer',
+  model: 'gpt-5.5',
   instructions:
     'Read `repo/task.md` before editing files. Load the `$invoice-total-fixer` skill before changing code. Stay grounded in the repository, preserve existing behavior, and mention the exact verification command you ran. If you edit files with apply_patch, paths are relative to the sandbox workspace root.',
   defaultManifest: manifest,

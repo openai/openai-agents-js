@@ -5,6 +5,7 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 const manifest = new Manifest();
 const agent = new SandboxAgent({
   name: 'Workspace reviewer',
+  model: 'gpt-5.5',
   instructions: 'Inspect the sandbox workspace before answering.',
 });
 

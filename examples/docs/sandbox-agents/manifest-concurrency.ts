@@ -4,6 +4,7 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Repository inspector',
+  model: 'gpt-5.5',
   instructions: 'Inspect the repository before answering.',
 });
 
