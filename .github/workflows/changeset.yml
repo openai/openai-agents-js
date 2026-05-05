@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Resolve PR context
         id: pr
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -56,7 +56,7 @@ jobs:
         with:
           run_install: false
       - name: Setup Node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 22
 
@@ -84,12 +84,13 @@ jobs:
       - name: Run Codex changeset validation
         id: run_codex
         if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
-        uses: openai/codex-action@c25d10f3f498316d4b2496cc4c6dd58057a7b031
+        uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1
         with:
           openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
           prompt-file: .github/codex/prompts/changeset-validation.generated.md
           output-file: .github/codex/outputs/changeset-validation.json
           output-schema-file: .github/codex/schemas/changeset-validation.json
+          allow-bots: true
           # Keep the legacy Linux sandbox path until the default bubblewrap path
           # works reliably on GitHub-hosted Ubuntu runners.
           codex-args: '["--full-auto","--enable","use_legacy_landlock"]'
@@ -109,7 +110,7 @@ jobs:
 
       - name: Sync package labels
         if: ${{ steps.run_codex.conclusion == 'success' || github.actor == 'dependabot[bot]' || steps.pr.outputs.is_fork == 'true' }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
