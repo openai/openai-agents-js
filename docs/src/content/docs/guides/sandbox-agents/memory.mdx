@@ -52,7 +52,7 @@ Memory can become stale. Agents are instructed to treat memories as guidance onl
 
 ## Generate memory
 
-After a run finishes, the sandbox runtime appends that run segment to a conversation file. Accumulated conversation files are processed when the sandbox session closes.
+After a run finishes, the sandbox runtime appends that run segment to a conversation file. Accumulated conversation files are processed when the sandbox session closes. These conversation files can include user input, assistant and tool items, interruptions, and final outputs, so use an appropriate memory store and retention policy for sensitive workloads.
 
 Memory generation has two phases:
 

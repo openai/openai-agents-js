@@ -130,7 +130,7 @@ Do not assume a mount entry works on every backend. If a client cannot enforce m
 
 When you need a hosted environment, the same `SandboxAgent` definition usually carries over and only the sandbox client changes in the `sandbox` run option.
 
-The core docs branch does not include the provider implementations yet. The provider branches should add exact environment variable notes, runnable examples, port behavior, PTY support, snapshot behavior, and cleanup behavior alongside the provider code.
+Hosted provider implementations live in `@openai/agents-extensions` provider subpaths. Provider-specific docs and examples should add exact environment variable notes, runnable examples, port behavior, PTY support, snapshot behavior, and cleanup behavior alongside the provider code.
 
 The TypeScript hosted clients are expected to live in `@openai/agents-extensions` provider subpaths, matching the provider branches. Install `@openai/agents-extensions` and satisfy its package-level peers; each provider may also require a provider SDK package or backend setup:
 

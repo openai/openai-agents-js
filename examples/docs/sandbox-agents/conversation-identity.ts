@@ -1,11 +1,18 @@
 import { MemorySession, run } from '@openai/agents';
-import { Manifest, SandboxAgent } from '@openai/agents/sandbox';
+import {
+  filesystem,
+  Manifest,
+  memory,
+  SandboxAgent,
+  shell,
+} from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const manifest = new Manifest();
 const agent = new SandboxAgent({
   name: 'Memory-enabled reviewer',
   instructions: 'Inspect the workspace before answering.',
+  capabilities: [filesystem(), shell(), memory()],
 });
 
 const conversation = new MemorySession({ sessionId: 'workspace-review' });

@@ -28,13 +28,13 @@ You define the workspace around the data the agent needs. It can start from GitH
 
 - `SandboxAgent` defines the agent itself: the usual agent configuration plus sandbox-specific defaults like `defaultManifest`, `baseInstructions`, `runAs`, and capabilities such as filesystem tools, shell access, skills, memory, or compaction.
 - `Manifest` declares the desired starting contents and layout for a fresh sandbox workspace, including files, repos, mounts, and environment.
-- A sandbox session is the live isolated environment where commands run and files change.
+- A sandbox session is the live execution environment where commands run and files change.
 - The `sandbox` run option decides how the run gets that sandbox session, for example by injecting one directly, reconnecting from serialized sandbox session state, or creating a fresh sandbox session through a sandbox client.
 - Saved sandbox state and snapshots let later runs reconnect to prior work or seed a fresh sandbox session from saved contents.
 
 `Manifest` is the fresh-session workspace contract, not the full source of truth for every live sandbox. The effective workspace for a run can instead come from a reused sandbox session, serialized sandbox session state, or a snapshot chosen at run time.
 
-Throughout this page, "sandbox session" means the live execution environment managed by a sandbox client. It is different from the SDK's conversational `Session` interfaces described in [Sessions](/openai-agents-js/guides/sessions).
+Throughout this page, "sandbox session" means the live execution environment managed by a sandbox client. The exact boundary depends on the client: Unix-local sessions run in a local workspace on the host, while Docker and hosted clients provide stronger environment isolation. This is different from the SDK's conversational `Session` interfaces described in [Sessions](/openai-agents-js/guides/sessions).
 
 The outer runtime still owns approvals, tracing, handoffs, and resume bookkeeping. The sandbox session owns commands, file changes, and environment isolation. That split is a core part of the model.
 
@@ -192,6 +192,8 @@ By default, `SandboxAgent.capabilities` uses `Capabilities.default()`, which inc
 ### Manifest
 
 A `Manifest` describes the workspace for a fresh sandbox session. It can set the workspace `root`, declare files and directories, copy in local files, clone Git repos, attach remote storage mounts, set environment variables, define users or groups, and grant access to specific absolute paths outside the workspace.
+
+Manifest environment values are persisted by default. Use ephemeral entries such as `{ value: "...", ephemeral: true }` for API keys, access tokens, or other short-lived credentials that should not be saved with sandbox state.
 
 Manifest entry paths are workspace-relative. They cannot be absolute paths or escape the workspace with `..`, which keeps the workspace contract portable across local, Docker, and hosted clients.
 
