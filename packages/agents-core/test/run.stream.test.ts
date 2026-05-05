@@ -60,6 +60,53 @@ function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
   return Array.isArray(request.input) ? request.input : [];
 }
 
+class AbortAfterStreamedFunctionCallModel implements Model {
+  public requests: ModelRequest[] = [];
+
+  constructor(private readonly responseId: string) {}
+
+  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request);
+    return {
+      output: [fakeModelMessage('reconciled')],
+      usage: new Usage(),
+      responseId: 'resp-reconciled',
+    };
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    this.requests.push(request);
+    yield {
+      type: 'model',
+      event: {
+        type: 'response.created',
+        response: {
+          id: this.responseId,
+        },
+      },
+    };
+    yield {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'function_call',
+          id: 'fc_abort',
+          call_id: 'call_abort',
+          name: 'slow_tool',
+          arguments: '{}',
+          status: 'completed',
+        },
+      },
+    };
+    const error = new Error('aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
 // Test for unhandled rejection when stream loop throws
 
 describe('Runner.run (streaming)', () => {
@@ -210,6 +257,52 @@ describe('Runner.run (streaming)', () => {
     await result.completed;
 
     expect(getEventListeners(retainedSignals[0], 'abort').length).toBe(0);
+  });
+
+  it('reconciles streamed function calls on abort with conversationId', async () => {
+    const model = new AbortAfterStreamedFunctionCallModel('resp-aborted');
+    const agent = new Agent({ name: 'AbortReconcile', model });
+
+    const result = await run(agent, 'hi', {
+      stream: true,
+      conversationId: 'conv-abort',
+    });
+
+    await result.completed;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1].conversationId).toBe('conv-abort');
+    expect(model.requests[1].signal).toBeUndefined();
+    expect(getRequestInputItems(model.requests[1])).toEqual([
+      expect.objectContaining({
+        type: 'function_call_result',
+        callId: 'call_abort',
+        name: 'slow_tool',
+        status: 'incomplete',
+        output: { type: 'text', text: 'aborted' },
+      }),
+    ]);
+  });
+
+  it('uses the streamed response id when reconciling previousResponseId-only aborts', async () => {
+    const model = new AbortAfterStreamedFunctionCallModel('resp-aborted');
+    const agent = new Agent({ name: 'AbortPreviousResponse', model });
+
+    const result = await run(agent, 'hi', {
+      stream: true,
+      previousResponseId: 'resp-before-abort',
+    });
+
+    await result.completed;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1].conversationId).toBeUndefined();
+    expect(model.requests[1].previousResponseId).toBe('resp-aborted');
+    expect(getRequestInputItems(model.requests[1])[0]).toMatchObject({
+      type: 'function_call_result',
+      callId: 'call_abort',
+      status: 'incomplete',
+    });
   });
 
   it('emits agent_updated_stream_event with new agent on handoff', async () => {

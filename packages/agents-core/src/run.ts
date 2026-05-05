@@ -93,6 +93,14 @@ import {
   prepareSandboxInterruptedTurnResume,
   type SandboxMemoryPersistenceContext,
 } from './runner/sandbox';
+import {
+  buildAbortReconciliationInput,
+  createStreamAbortReconciliationState,
+  getAbortReconciliationPreviousResponseId,
+  markAbortReconciliationComplete,
+  recordStreamEventForAbortReconciliation,
+  shouldReconcileStreamAbort,
+} from './runner/streamReconciliation';
 
 export type {
   CallModelInputFilter,
@@ -1247,6 +1255,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           guardrailTracker.throwIfError();
 
           let finalResponse: ModelResponse | undefined = undefined;
+          const abortReconciliationState =
+            createStreamAbortReconciliationState();
           let inputMarked = false;
           const markInputOnce = () => {
             if (inputMarked || !serverConversationTracker) {
@@ -1265,6 +1275,63 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               },
             );
             inputMarked = true;
+          };
+          const reconcileStreamAbortIfNeeded = async () => {
+            if (
+              !serverConversationTracker ||
+              !shouldReconcileStreamAbort(abortReconciliationState)
+            ) {
+              return;
+            }
+
+            const reconciliationInput = buildAbortReconciliationInput(
+              abortReconciliationState,
+            );
+            try {
+              const reconciliationResponse = await getResponseWithRetry(
+                preparedCall.model,
+                {
+                  systemInstructions: preparedCall.modelInput.instructions,
+                  prompt: preparedCall.prompt,
+                  ...(preparedCall.explictlyModelSet
+                    ? { overridePromptModel: true }
+                    : {}),
+                  input: reconciliationInput,
+                  previousResponseId: getAbortReconciliationPreviousResponseId(
+                    abortReconciliationState,
+                    preparedCall,
+                  ),
+                  conversationId: preparedCall.conversationId,
+                  modelSettings: preparedCall.modelSettings,
+                  tools: preparedCall.serializedTools,
+                  toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+                  handoffs: preparedCall.serializedHandoffs,
+                  outputType: convertAgentOutputTypeToSerializable(
+                    currentAgent.outputType,
+                  ),
+                  tracing: getTracing(
+                    this.config.tracingDisabled,
+                    this.config.traceIncludeSensitiveData,
+                  ),
+                },
+              );
+              markAbortReconciliationComplete(
+                abortReconciliationState,
+                reconciliationResponse,
+              );
+              serverConversationTracker.trackServerItems(
+                reconciliationResponse,
+              );
+              result.state.setConversationContext(
+                serverConversationTracker.conversationId,
+                serverConversationTracker.previousResponseId,
+              );
+            } catch (error) {
+              logger.debug(
+                'Failed to reconcile streamed function calls after abort.',
+                error,
+              );
+            }
           };
 
           sentInputToModel = true;
@@ -1301,6 +1368,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             )) {
               guardrailTracker.throwIfError();
               markInputOnce();
+              recordStreamEventForAbortReconciliation(
+                abortReconciliationState,
+                event,
+              );
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1315,6 +1386,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
                 await awaitGuardrailsAndPersistInput();
+                await reconcileStreamAbortIfNeeded();
                 return;
               }
               result._addItem(new RunRawModelStreamEvent(event));
@@ -1325,6 +1397,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 markInputOnce();
               }
               await awaitGuardrailsAndPersistInput();
+              await reconcileStreamAbortIfNeeded();
               return;
             }
             throw error;
