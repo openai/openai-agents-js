@@ -302,6 +302,8 @@ export type ModelSettings = {
 
   /**
    * Context-management strategies to apply when calling the model.
+   * This setting is available on OpenAI Responses requests, including server-side compaction.
+   * See https://developers.openai.com/api/docs/guides/compaction.
    */
   contextManagement?: ModelSettingsContextManagement;
 
