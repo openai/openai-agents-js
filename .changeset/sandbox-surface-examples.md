@@ -1,6 +1,5 @@
 ---
 '@openai/agents-core': minor
-'@openai/agents': minor
 '@openai/agents-extensions': minor
 ---
 
