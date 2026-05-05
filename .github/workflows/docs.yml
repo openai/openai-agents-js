@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
       - name: Install pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d
         with:
@@ -31,7 +31,7 @@ jobs:
       - name: Run build
         run: pnpm build:ci
       - name: Install, build, and upload your site
-        uses: withastro/action@44706356b4eb735f8b9035699eb4796241a040c4
+        uses: withastro/action@b7d53628f8b666036b0238aadb0b984a2a489f26
         with:
           path: docs
           # with:

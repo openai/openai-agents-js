@@ -17,7 +17,7 @@ jobs:
     steps:
       - name: Determine whether CI should run
         id: filter
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             const IGNORED_PREFIXES = [
@@ -112,7 +112,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
@@ -160,7 +160,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 22
           cache: 'pnpm'
@@ -200,7 +200,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 22
           cache: 'pnpm'
