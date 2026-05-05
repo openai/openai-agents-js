@@ -16,6 +16,7 @@ import type {
   SerializedTool,
   ModelRequest,
   ModelResponse,
+  ModelSettingsContextManagement,
   ModelSettingsToolChoice,
   ResponseStreamEvent,
   SerializedOutputType,
@@ -698,6 +699,16 @@ function getResponseFormat(
     ...otherProperties,
     format: outputType,
   };
+}
+
+function getContextManagement(
+  contextManagement: ModelSettingsContextManagement | undefined,
+): unknown {
+  if (!contextManagement) {
+    return undefined;
+  }
+
+  return contextManagement.map((entry) => camelOrSnakeToSnakeCase(entry));
 }
 
 function normalizeFunctionCallOutputForRequest(
@@ -3026,6 +3037,9 @@ export class OpenAIResponsesModel implements Model {
       text: responseFormat,
       store: request.modelSettings.store,
       prompt_cache_retention: request.modelSettings.promptCacheRetention,
+      context_management: getContextManagement(
+        request.modelSettings.contextManagement,
+      ),
       ...restOfProviderData,
     };
 
