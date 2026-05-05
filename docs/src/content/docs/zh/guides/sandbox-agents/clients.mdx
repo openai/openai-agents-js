@@ -1,0 +1,201 @@
+---
+title: 沙盒客户端
+description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import developerOwnedSessionExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
+import dockerClientExample from '../../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
+import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
+import manifestConcurrencyExample from '../../../../../../../examples/docs/sandbox-agents/manifest-concurrency.ts?raw';
+import resumeSessionStateExample from '../../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
+import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
+
+使用本页来选择沙盒工作应在何处运行。在大多数情况下，`SandboxAgent` 定义保持不变，而沙盒客户端和客户端特定选项会在 `sandbox` 运行选项中变化。
+
+<Aside type="caution" title="Beta 功能">
+  沙盒智能体目前处于测试版。在正式可用之前，API 细节、默认值和支持的能力
+  可能会发生变化，并且预计会随着时间推移提供更多高级功能。
+</Aside>
+
+## 决策指南
+
+| 目标 | 起步选择 | 原因 |
+| --- | --- | --- |
+| 在 macOS 或 Linux 上进行最快的本地迭代 | `UnixLocalSandboxClient` | 无需额外的服务依赖，且本地文件系统工作流简单。 |
+| 基础容器隔离 | `DockerSandboxClient` | 在 Docker 内使用指定镜像运行工作。 |
+| 托管执行或生产环境风格的隔离 | 托管沙盒客户端 | 将工作区边界转移到由提供商管理的环境中。 |
+
+## 本地客户端
+
+对于大多数用户，建议从以下两个沙盒客户端之一开始：
+
+| 客户端 | 安装 | 适用场景 |
+| --- | --- | --- |
+| `UnixLocalSandboxClient` | 无 | 在 macOS 或 Linux 上进行最快的本地迭代。适合作为本地开发的默认选择。 |
+| `DockerSandboxClient` | 本地可用 Docker CLI | 您希望获得容器隔离，或使用特定镜像以实现本地环境一致性。 |
+
+Unix 本地方式是基于本地文件系统开始开发的最简单方式。当您需要更强的环境隔离或生产环境风格的一致性时，再切换到 Docker 或托管提供商。
+
+要从 Unix 本地切换到 Docker，请保持智能体定义不变，仅更改客户端：
+
+<Code lang="typescript" code={dockerClientExample} title="使用 Docker" />
+
+同一个智能体通常可以使用任一本地客户端运行：
+
+<Code
+  lang="typescript"
+  code={selectLocalClientExample}
+  title="在本地客户端之间切换"
+/>
+
+### 会话归属
+
+有两种生命周期风格。
+
+| 风格 | 传入内容 | 由谁关闭会话 | 适用场景 |
+| --- | --- | --- | --- |
+| SDK 持有 | `sandbox: { client }` | runner | 沙盒只需要在一次运行期间存活。 |
+| 开发者持有 | `sandbox: { session }` | 您的代码 | 您需要在之后检查文件、复用同一个活动会话，或协调多次运行。 |
+
+当您自行创建会话时，也需要自行关闭它：
+
+<Code
+  lang="typescript"
+  code={developerOwnedSessionExample}
+  title="自行管理沙盒会话生命周期"
+/>
+
+### 恢复与快照
+
+沙盒状态与会话状态是分离的：
+
+- SDK 会话状态保存在 `result.history`、SDK `Session`、`conversationId` 或 `previousResponseId` 中。
+- 沙盒状态保存在活动沙盒会话、序列化后的 `sessionState`、`RunState` 沙盒负载或快照中。
+
+当您希望通过某个沙盒客户端重新连接到同一个后端会话时，请使用 `sessionState`。当您希望基于已保存的工作区内容初始化一个新会话时，请使用快照。
+
+<Code
+  lang="typescript"
+  code={resumeSessionStateExample}
+  title="序列化并恢复沙盒状态"
+/>
+
+当您暂停或恢复更大的工作流时，`RunState` 也可以保留由 runner 管理的沙盒状态。当沙盒生命周期是在序列化运行之外管理时，请使用显式的 `sessionState`。
+
+### 清单实体化
+
+清单条目会在智能体运行前准备好。您可以按每次运行或每次客户端创建调用来调整实体化并发度：
+
+<Code
+  lang="typescript"
+  code={manifestConcurrencyExample}
+  title="调整清单实体化并发度"
+/>
+
+`manifestEntries` 限制顶层条目的并行工作数量。`localDirFiles` 限制 `localDir()` 条目中文件复制的并发度。
+
+## 挂载与远程存储
+
+挂载条目描述要暴露哪些存储；挂载策略描述沙盒后端如何附加这些存储。从 `@openai/agents/sandbox` 导入内置挂载条目和通用策略。
+
+常见挂载选项：
+
+- `mountPath`：存储在沙盒中出现的位置。相对路径会解析到清单根目录下；绝对路径会按原样使用。
+- `readOnly`：当沙盒不应回写到挂载存储时设置此项。
+- `mountStrategy`：使用同时匹配挂载条目和沙盒后端的策略。
+
+挂载会被视为临时工作区条目。快照和持久化流程会分离或跳过挂载路径，而不是将已挂载的远程存储复制到保存的工作区中。
+
+通用本地/容器策略：
+
+| 策略或模式 | 适用场景 | 说明 |
+| --- | --- | --- |
+| `inContainerMountStrategy(...)` | 沙盒镜像可以运行挂载命令，例如 `rclone`、`mount-s3` 或 `blobfuse2`。 | 作为通用策略提供；是否支持取决于后端。 |
+| `dockerVolumeMountStrategy(...)` | Docker 应在容器启动前附加由卷驱动支持的挂载。 | 仅适用于 Docker。 |
+| `localBindMountStrategy()` | 本地后端应将绝对本地路径绑定到工作区中。 | 在允许的情况下，受本地工作区实体化支持。 |
+
+后端支持是有意显式定义的：
+
+| 后端 | 挂载说明 |
+| --- | --- |
+| `UnixLocalSandboxClient` | 通过本地工作区模型支持本地 bind 风格挂载。 |
+| `DockerSandboxClient` | 支持本地 bind 挂载，以及 Docker 可附加存储时的 Docker volume 风格策略。 |
+| 托管提供商 | 提供商特定策略与提供商实现一起提供，并应在这些提供商分支或扩展包中记录。 |
+
+不要假设某个挂载条目可在所有后端上使用。如果客户端无法强制执行清单元数据、身份或挂载行为，应尽早失败，而不是静默忽略清单的该部分。
+
+## 支持的托管平台
+
+当您需要托管环境时，通常可以沿用同一个 `SandboxAgent` 定义，只需在 `sandbox` 运行选项中更换沙盒客户端。
+
+托管提供商实现位于 `@openai/agents-extensions` 的提供商子路径中。提供商特定文档和示例应在提供商代码旁补充准确的环境变量说明、可运行示例、端口行为、PTY 支持、快照行为和清理行为。
+
+TypeScript 托管客户端预计位于 `@openai/agents-extensions` 的提供商子路径中，并与提供商分支保持一致。安装 `@openai/agents-extensions` 并满足其包级别的 peer 依赖；每个提供商还可能要求提供商 SDK 包或后端设置：
+
+| 客户端 | 导入路径 | 提供商要求 |
+| --- | --- | --- |
+| `BlaxelSandboxClient` | `@openai/agents-extensions/sandbox/blaxel` | npm peer：`@blaxel/core` |
+| `CloudflareSandboxClient` | `@openai/agents-extensions/sandbox/cloudflare` | Cloudflare Sandbox bridge Worker URL 和 Worker 认证 |
+| `DaytonaSandboxClient` | `@openai/agents-extensions/sandbox/daytona` | npm peer：`@daytonaio/sdk` |
+| `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm peer：`e2b` 或 `@e2b/code-interpreter` |
+| `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm peer：`modal` |
+| `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm peer：`@runloop/api-client` |
+| `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm peer：`@vercel/sandbox` |
+
+`CloudflareSandboxClient` 不会导入 Cloudflare npm SDK。它会通过 HTTP 与已部署的 Cloudflare Sandbox bridge Worker 通信。
+
+托管沙盒客户端会暴露提供商特定的挂载策略。请选择最适合您的存储提供商的后端和挂载策略：
+
+| 后端 | 挂载说明 |
+| --- | --- |
+| Docker | 支持在 `s3Mount()`、`gcsMount()`、`r2Mount()`、`azureBlobMount()`、`boxMount()` 和 `s3FilesMount()` 上使用 `inContainerMountStrategy()` 和 `dockerVolumeMountStrategy()` 等本地策略。 |
+| `ModalSandboxClient` | 支持使用 `ModalCloudBucketMountStrategy` 挂载云存储桶，适用于 S3、R2 和使用 HMAC 认证的 GCS 挂载条目。 |
+| `CloudflareSandboxClient` | 支持使用 `CloudflareBucketMountStrategy` 挂载 Cloudflare 存储桶，适用于 S3、R2 和使用 HMAC 认证的 GCS 挂载条目。 |
+| `BlaxelSandboxClient` | 支持使用 `BlaxelCloudBucketMountStrategy` 挂载云存储桶，适用于 S3、R2 和 GCS 挂载条目。它还支持通过 `BlaxelDriveMount` 和 `BlaxelDriveMountStrategy` 挂载持久化 Blaxel Drives。 |
+| `DaytonaSandboxClient` | 支持使用 `DaytonaCloudBucketMountStrategy` 挂载基于 rclone 的存储，适用于 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
+| `E2BSandboxClient` | 支持使用 `E2BCloudBucketMountStrategy` 挂载基于 rclone 的存储，适用于 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
+| `RunloopSandboxClient` | 支持使用 `RunloopCloudBucketMountStrategy` 挂载基于 rclone 的存储，适用于 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
+| `VercelSandboxClient` | 当前未暴露托管特定的挂载策略。请改用清单文件、仓库、快照或其他工作区输入。 |
+
+下表汇总了各后端可直接挂载的远程存储条目：
+
+| 后端 | AWS S3 | Cloudflare R2 | GCS | Azure Blob Storage | Box | S3 Files |
+| --- | --- | --- | --- | --- | --- | --- |
+| Docker | 是 | 是 | 是 | 是 | 是 | 是 |
+| `ModalSandboxClient` | 是 | 是 | 是 | 否 | 否 | 否 |
+| `CloudflareSandboxClient` | 是 | 是 | 是 | 否 | 否 | 否 |
+| `BlaxelSandboxClient` | 是 | 是 | 是 | 否 | 否 | 否 |
+| `DaytonaSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
+| `E2BSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
+| `RunloopSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
+| `VercelSandboxClient` | 否 | 否 | 否 | 否 | 否 | 否 |
+
+### 暴露端口
+
+当后端支持时，沙盒客户端可以通过 `resolveExposedPort(port)` 暴露端点。
+
+| 客户端                   | 行为                                     |
+| ------------------------ | ---------------------------------------- |
+| `UnixLocalSandboxClient` | 将已配置端口解析为 `127.0.0.1`。         |
+| `DockerSandboxClient`    | 发布已配置的容器端口，并解析其主机端点。 |
+
+当您需要后端强制执行允许列表时，请在客户端选项中声明这些端口：
+
+<Code lang="typescript" code={exposedPortsExample} title="暴露端口" />
+
+### 能力支持矩阵
+
+| 能力 | Unix 本地 | Docker |
+| --- | --- | --- |
+| `exec_command` | 支持 | 支持 |
+| PTY `write_stdin` | 支持 | 支持 |
+| `apply_patch` | 支持 | 通过工作区文件 API 支持 |
+| `view_image` | 支持 | 通过工作区文件 API 支持 |
+| 命令的 `runAs` | 当宿主机可以解析并切换到该用户时支持 | 受容器/用户设置限制 |
+| 本地快照 | 支持 | 支持 |
+| 本地/Docker 挂载 | 本地 bind 风格支持 | bind 和 Docker volume 风格支持 |
+
+本地 PTY 支持在 SDK 进程中使用一个小型 Python 3 桥接程序。该桥接仅用于 `tty: true` 会话，因为 Node.js 不提供内置 PTY API，而 SDK 需要标准 POSIX PTY 行为来支持交互式 stdin、信号处理和退出状态报告。请在运行 SDK 代码的环境中安装 `python3`，或将 `OPENAI_AGENTS_PYTHON` 设置为某个 Python 3 可执行文件。这与 Docker 沙盒镜像内部安装的 Python 版本（如果有）是分开的。
+
+托管提供商支持因提供商而异。请将提供商特定文档放在提供商实现附近，以便用户查看准确的选项、环境变量、端口行为、PTY 支持、快照行为和清理行为。

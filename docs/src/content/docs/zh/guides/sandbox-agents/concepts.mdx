@@ -1,0 +1,405 @@
+---
+title: 概念
+description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import harnessWithCompute from '../../../../../assets/images/harness_with_compute.png';
+import basicExample from '../../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+import developerOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
+import manifestExample from '../../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
+import sdkOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
+
+<Aside type="caution" title="Beta 功能">
+  沙盒智能体目前处于 Beta 阶段。API 细节、默认值和支持的能力
+  可能会在正式可用前发生变化，未来也预计会逐步加入 更高级的功能。
+</Aside>
+
+现代智能体在能够操作文件系统中的真实文件时效果最佳。**Sandbox Agents** 可以使用专门的工具和 shell 命令，对大型文档集合进行搜索和处理、编辑文件、生成产物以及运行命令。沙盒为模型提供了一个持久化工作区，智能体可以利用它代表您完成工作。Agents SDK 中的 Sandbox Agents 可帮助您运行与沙盒环境配对的智能体，使文件进入文件系统以及大规模编排沙盒的启动、停止和恢复任务变得更加容易。
+
+您可以围绕智能体所需的数据来定义工作区。它可以从 GitHub 仓库、本地文件和目录、合成任务文件、远程文件系统（如 S3 或 Azure Blob Storage）以及您提供的其他沙盒输入开始。
+
+<figure class="sandbox-harness-image">
+  <img src={harnessWithCompute.src} alt="带计算能力的沙盒智能体运行框架" />
+</figure>
+
+`SandboxAgent` 本质上仍然是一个 `Agent`。它保留了常规智能体接口，例如 `instructions`、`tools`、`handoffs`、`mcpServers`、`modelSettings`、输出类型、护栏和 hooks，并且仍然通过标准的 `run()` 和 `Runner` API 运行。变化之处在于执行边界：
+
+- `SandboxAgent` 定义智能体本身：包括常规智能体配置，以及诸如 `defaultManifest`、`baseInstructions`、`runAs` 等沙盒专属默认值，还有文件系统工具、shell 访问、skills、memory 或 compaction 等能力。
+- `Manifest` 声明一个全新沙盒工作区期望具备的初始内容和布局，包括文件、仓库、挂载和环境。
+- 沙盒会话（sandbox session）是命令运行和文件发生变化的实时执行环境。
+- `sandbox` 运行选项决定本次运行如何获得该沙盒会话，例如直接注入、通过序列化的沙盒会话状态重新连接，或通过沙盒客户端创建一个新的沙盒会话。
+- 保存的沙盒状态和快照可让后续运行重新连接到先前的工作，或从已保存内容为新的沙盒会话提供初始数据。
+
+`Manifest` 是新会话工作区的契约，而不是每个实时沙盒的完整事实来源。一次运行的实际工作区也可能来自复用的沙盒会话、序列化的沙盒会话状态，或在运行时选择的快照。
+
+在本页中，"沙盒会话"指的是由沙盒客户端管理的实时执行环境。其确切边界取决于客户端：Unix 本地会话在主机上的本地工作区中运行，而 Docker 和托管客户端则提供更强的环境隔离。这与 SDK 在[会话](/openai-agents-js/zh/guides/sessions)中描述的对话式 `Session` 接口不同。
+
+外层运行时仍然负责审批、追踪、交接以及恢复相关的记录管理。沙盒会话负责命令、文件变更和环境隔离。这种职责划分是该模型的核心部分。
+
+### 组件关系
+
+一次沙盒运行会将智能体定义与每次运行的沙盒配置组合起来。运行器会准备智能体，将其绑定到一个实时沙盒会话，并且可以为后续运行保存状态。
+
+<div
+  class="sandbox-flow-diagram"
+  aria-label="SandboxAgent 和沙盒运行配置流向运行器，运行器使用沙盒会话并可保存状态或快照。"
+>
+  <div>
+    <strong>SandboxAgent</strong>
+    <span>智能体加沙盒默认值</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Runner</strong>
+    <span>准备 instructions 并绑定能力工具</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Sandbox session</strong>
+    <span>命令运行和文件变更所在的工作区</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Saved state</strong>
+    <span>稍后恢复或重新开始</span>
+  </div>
+</div>
+
+沙盒专属默认值保留在 `SandboxAgent` 上。每次运行的沙盒会话选择保留在 `sandbox` 运行选项中。
+
+可以将生命周期分为三个阶段来看：
+
+1. 使用 `SandboxAgent`、`Manifest` 和 capabilities 定义智能体及新工作区契约。
+2. 通过为 `run()` 或 `Runner` 提供 `sandbox` 运行选项来执行运行，该选项可注入、恢复或创建沙盒会话。
+3. 之后通过由运行器管理的 `RunState`、显式的沙盒 `sessionState` 或保存的工作区快照继续执行。
+
+如果 shell 访问只是偶尔使用的一种工具，请先从[工具](/openai-agents-js/zh/guides/tools)指南中的 hosted shell 开始。如果工作区隔离、沙盒客户端选择或沙盒会话恢复行为本身就是设计的一部分，则应使用沙盒智能体。
+
+## 适用场景
+
+沙盒智能体非常适合以工作区为中心的工作流，例如：
+
+- 编码与调试，例如在 GitHub 仓库中编排针对 issue 报告的自动修复并运行定向测试。
+- 文档处理与编辑，例如从用户的财务文档中提取信息并创建一份已填写的税表草稿。
+- 基于文件的审查或分析，例如在回答前检查入职材料、生成的报告或产物包。
+- 隔离式多智能体模式，例如为每个审查智能体或编码子智能体分配独立工作区。
+- 多步骤工作区任务，例如在一次运行中修复 bug，之后再添加回归测试，或从快照或沙盒会话状态恢复。
+
+如果您不需要访问文件或一个活跃的文件系统，请继续使用 `Agent`。如果 shell 访问只是偶尔需要的能力，可以添加 hosted shell；如果工作区边界本身就是功能的一部分，请使用沙盒智能体。
+
+## 选择沙盒客户端
+
+本地开发时，从 `UnixLocalSandboxClient` 开始。当您需要容器隔离或镜像一致性时，改用 `DockerSandboxClient`。当您需要由提供商管理执行环境时，改用托管提供商。
+
+在大多数情况下，`SandboxAgent` 的定义保持不变，变化的是 `sandbox` 运行选项中的沙盒客户端及其选项。请参见[沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients)了解本地、Docker、托管和远程挂载选项。
+
+## 核心组成
+
+| 层级 | 主要 SDK 组件 | 解决的问题 |
+| --- | --- | --- |
+| 智能体定义 | `SandboxAgent`、`Manifest`、capabilities | 将运行什么智能体，以及它应从什么样的新会话工作区契约开始？ |
+| 沙盒执行 | `sandbox` 运行选项、沙盒客户端和实时沙盒会话 | 本次运行如何获得一个实时沙盒会话，工作又会在何处执行？ |
+| 已保存的沙盒状态 | `RunState` 的沙盒载荷、`sessionState` 和快照 | 该工作流如何重新连接到先前的沙盒工作，或从已保存内容为新的沙盒会话提供初始数据？ |
+
+主要 SDK 组件与这些层级的映射关系如下：
+
+| 组件 | 负责内容 | 请问自己这个问题 |
+| --- | --- | --- |
+| `SandboxAgent` | 智能体定义 | 这个智能体应该做什么，哪些默认值应随它一起传递？ |
+| `Manifest` | 新会话工作区中的文件和文件夹 | 当运行开始时，文件系统中应该有哪些文件和文件夹？ |
+| `Capability` | 沙盒原生行为 | 哪些工具、instruction 片段或运行时行为应附加到该智能体上？ |
+| `sandbox` 运行选项 | 每次运行的沙盒客户端和沙盒会话来源 | 本次运行应注入、恢复还是创建一个沙盒会话？ |
+| `RunState` | 由运行器管理的已保存沙盒状态 | 我是否正在恢复一个先前由运行器管理的工作流，并自动延续其沙盒状态？ |
+| `sandbox.sessionState` | 显式序列化的沙盒会话状态 | 我是否想从自己在 `RunState` 之外已序列化的沙盒状态恢复？ |
+| `sandbox.snapshot` | 用于新沙盒会话的已保存工作区内容 | 新沙盒会话是否应从已保存的文件和产物开始？ |
+
+一种实用的设计顺序是：
+
+1. 用 `Manifest` 定义新会话工作区契约。
+2. 用 `SandboxAgent` 定义智能体。
+3. 添加内置或自定义 capabilities。
+4. 决定每次运行应如何在 `run(agent, input, { sandbox: ... })` 或 `new Runner({ sandbox: ... })` 中获取其沙盒会话。
+
+## 沙盒运行的准备方式
+
+在运行时，运行器会将该定义转换为一次具体的、由沙盒支持的运行：
+
+1. 它从 `sandbox` 运行选项中解析沙盒会话。
+2. 它确定本次运行的实际工作区输入。
+3. 它让 capabilities 处理生成的 manifest。
+4. 它按固定顺序构建最终 instructions：SDK 的默认沙盒提示，或者如果您显式覆盖则使用 `baseInstructions`，然后是 `instructions`，再然后是 capability 的 instruction 片段，接着是任何远程挂载策略文本，最后是渲染出的文件系统树。
+5. 它将 capability 工具绑定到实时沙盒会话，并通过标准的 `run()` 和 `Runner` API 运行准备好的智能体。
+
+沙盒化不会改变一个 turn 的含义。turn 仍然是模型的一步，而不是单个 shell 命令或沙盒操作。沙盒侧操作与 turn 之间不存在固定的一对一映射。实际规则是，只有当智能体运行时在沙盒工作发生后还需要模型再给出一次响应时，才会消耗下一个 turn。
+
+## `SandboxAgent` 选项
+
+这些是在常规 `Agent` 字段之上新增的沙盒专属选项：
+
+| 选项 | 最佳用途 |
+| --- | --- |
+| `defaultManifest` | 由运行器创建的新沙盒会话的默认工作区。 |
+| `instructions` | 附加在 SDK 沙盒提示之后的额外角色、工作流和成功标准。 |
+| `baseInstructions` | 用于替换 SDK 沙盒提示的高级逃生口。 |
+| `capabilities` | 应随该智能体一起传递的沙盒原生工具和行为。 |
+| `runAs` | 面向模型的沙盒工具（如 shell 命令、文件读取和补丁）所使用的用户身份。 |
+
+沙盒客户端的选择、沙盒会话复用、manifest 覆盖和快照选择都属于 `sandbox` 运行选项，而不应放在智能体上。
+
+### `defaultManifest`
+
+`defaultManifest` 是当运行器为该智能体创建一个新的沙盒会话时所使用的默认 `Manifest`。用它来定义智能体通常应具备的初始文件、仓库、辅助材料、输出目录和挂载。
+
+这只是默认值。一次运行可以用 `sandbox.manifest` 覆盖它，而被复用或恢复的沙盒会话会保留其现有工作区状态。
+
+<Code lang="typescript" code={manifestExample} title="定义 manifest" />
+
+### `instructions` 和 `baseInstructions`
+
+对那些应跨不同提示保留下来的简短规则，请使用 `instructions`。在 `SandboxAgent` 中，这些 instructions 会追加在 SDK 的沙盒基础提示之后，因此您既保留了内置的沙盒指导，也能加入自己的角色、工作流和成功标准。
+
+只有当您想替换 SDK 的沙盒基础提示时，才使用 `baseInstructions`。大多数智能体都不应设置它。
+
+| 放在这里... | 用途 | 示例 |
+| --- | --- | --- |
+| `instructions` | 智能体的稳定角色、工作流规则和成功标准。 | "检查入职文档，然后交接。"、"将最终文件写入 `output/`。" |
+| `baseInstructions` | 完整替换 SDK 的沙盒基础提示。 | 自定义低层级沙盒包装提示。 |
+| 用户提示 | 本次运行的一次性请求。 | "总结这个工作区。" |
+| manifest 中的工作区文件 | 更长的任务规格、仓库本地 instructions 或有界参考材料。 | `repo/task.md`、文档包、样例材料。 |
+
+避免将用户的一次性任务复制到 `instructions` 中，避免把应放入 manifest 的长篇参考资料嵌入其中，避免重复描述内置 capabilities 已经注入的工具文档，也不要混入模型在运行时并不需要的本地安装说明。
+
+### `capabilities`
+
+Capabilities 会将沙盒原生行为附加到 `SandboxAgent` 上。它们可以在运行开始前塑造工作区，追加沙盒专属 instructions，暴露绑定到实时沙盒会话的工具，并调整该智能体的模型行为或输入处理方式。
+
+内置 capabilities 包括：
+
+| Capability | 适合添加的场景 | 说明 |
+| --- | --- | --- |
+| `shell()` | 智能体需要 shell 访问。 | 添加 `exec_command`，并在沙盒客户端支持 PTY 交互时添加 `write_stdin`。 |
+| `filesystem()` | 智能体需要编辑文件或查看本地图像。 | 添加 `apply_patch` 和 `view_image`；补丁路径相对于工作区根目录。 |
+| `skills()` | 您希望在沙盒中进行 skill 发现和实例化。 | 对于沙盒本地 `SKILL.md` skills，优先使用它，而不是手动挂载 `.agents` 或 `.agents/skills`。 |
+| `memory()` | 后续运行应读取或生成 memory 产物。 | 需要 `shell()`；实时更新还需要 `filesystem()`。 |
+| `compaction()` | 长时间运行的流程需要在压缩项之后裁剪上下文。 | 会调整模型采样和输入处理。 |
+
+默认情况下，`SandboxAgent.capabilities` 使用 `Capabilities.default()`，其中包括 `filesystem()`、`shell()` 和 `compaction()`。如果您传入 `capabilities: [...]`，该列表会替换默认值，因此请把您仍然需要的默认 capability 也包含进去。
+
+## 概念
+
+### Manifest
+
+`Manifest` 描述一个新沙盒会话的工作区。它可以设置工作区 `root`，声明文件和目录，复制本地文件，克隆 Git 仓库，附加远程存储挂载，设置环境变量，定义用户或组，并授予对工作区外特定绝对路径的访问权限。
+
+Manifest 中的环境值默认会被持久化。对于 API 密钥、访问令牌或其他不应与沙盒状态一起保存的短期凭证，请使用诸如 `{ value: "...", ephemeral: true }` 这样的临时条目。
+
+Manifest 条目的路径是相对于工作区的。它们不能是绝对路径，也不能通过 `..` 逃出工作区，这保证了工作区契约能够在本地、Docker 和托管客户端之间保持可移植性。
+
+对于智能体在开始工作前就需要的材料，请使用 manifest 条目：
+
+| Manifest 条目 | 用途 |
+| --- | --- |
+| `file()`、`dir()` | 小型合成输入、辅助文件或输出目录。 |
+| `localFile()`、`localDir()` | 应实例化到沙盒中的主机文件或目录。 |
+| `gitRepo()` | 应抓取到工作区中的仓库。 |
+| 如 `s3Mount()`、`gcsMount()`、`r2Mount()`、`azureBlobMount()`、`s3FilesMount()` 等挂载 | 应出现在沙盒中的外部存储。 |
+
+挂载条目描述要暴露什么存储；挂载策略描述沙盒后端如何附加该存储。有关挂载选项和提供商支持，请参见[沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients#mounts-and-remote-storage)。
+
+### 权限
+
+`Permissions` 控制 manifest 条目的文件系统权限。它针对的是沙盒实例化出来的文件，而不是模型权限、审批策略或 API 凭证。
+
+用户是可以在沙盒中执行工作的身份。当您希望某个身份存在于沙盒中时，请将用户添加到 manifest 中；然后在面向模型的沙盒工具（如 shell 命令、文件读取和补丁）应以该用户身份运行时，设置 `SandboxAgent.runAs`。
+
+如果您还需要文件级共享规则，可以将用户与 manifest 中的组以及条目的 `group` 元数据结合使用。`runAs` 用户控制谁来执行沙盒原生操作；`Permissions` 控制在沙盒实例化工作区后，该用户可以读取、写入或执行哪些文件。
+
+### SnapshotSpec
+
+`SnapshotSpec` 告诉一个新的沙盒会话应从哪里恢复已保存的工作区内容，以及将内容持久化回哪里。它是沙盒工作区的快照策略，而 `sessionState` 则是用于恢复某个具体沙盒后端的序列化连接状态。
+
+当您需要本地持久快照时，请使用本地快照；当您的应用提供远程快照客户端时，请使用远程快照。挂载路径和临时路径不会作为持久工作区内容被复制到快照中。
+
+### 沙盒生命周期
+
+有两种生命周期模式：**SDK 管理**和**开发者管理**。
+
+<div
+  class="sandbox-lifecycle-diagram"
+  aria-label="SDK 管理的生命周期允许运行器创建并关闭沙盒。开发者管理的生命周期则将创建和清理保留在应用代码中。"
+>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>SDK 管理</strong>
+      <span>Runner 管理实时沙盒。</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <p>
+          传入 <code>sandbox.client</code>。
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <p>Runner 创建或恢复一个沙盒会话。</p>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <p>智能体运行，并且由快照支持的工作区状态可以持久化。</p>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <p>Runner 关闭由其管理的资源。</p>
+      </li>
+    </ol>
+  </section>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>开发者管理</strong>
+      <span>您的应用管理实时沙盒。</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <p>
+          创建一个 <code>session</code>。
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <p>
+          将 <code>sandbox.session</code> 传入运行。
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <p>智能体使用现有工作区。</p>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <p>自行检查、复用，然后关闭该会话。</p>
+      </li>
+    </ol>
+  </section>
+</div>
+
+当沙盒只需要存活一次运行时，使用 SDK 管理的生命周期。传入一个 `client`、可选的 `manifest`、可选的 `snapshot` 和客户端 `options`；运行器会创建或恢复沙盒、运行智能体、持久化由快照支持的工作区状态，并让客户端清理由运行器管理的资源。
+
+<Code
+  lang="typescript"
+  code={sdkOwnedLifecycleExample}
+  title="让运行器管理沙盒会话"
+/>
+
+当您希望提前创建沙盒、在多次运行中复用同一个实时沙盒、在运行后检查文件、对自己创建的沙盒进行流式处理，或精确决定清理时机时，请使用开发者管理的生命周期。传入 `session` 会告诉运行器使用该实时沙盒，但不会替您关闭它。
+
+<Code
+  lang="typescript"
+  code={developerOwnedLifecycleExample}
+  title="自行管理沙盒会话"
+/>
+
+## `sandbox` 运行选项
+
+`sandbox` 运行选项保存的是每次运行的配置，这些配置决定沙盒会话从哪里来，以及新会话应如何初始化。
+
+### 沙盒来源
+
+这些选项决定运行器应复用、恢复还是创建沙盒会话：
+
+| 选项 | 适用场景 | 说明 |
+| --- | --- | --- |
+| `client` | 您希望运行器为您创建、恢复并清理沙盒会话。 | 除非您提供一个实时沙盒 `session`，否则必需。 |
+| `session` | 您已经自己创建了一个实时沙盒会话。 | 生命周期由调用方负责；运行器会复用该实时沙盒会话。 |
+| `sessionState` | 您有序列化的沙盒会话状态，但没有实时沙盒会话对象。 | 需要 `client`；运行器会以拥有型会话的方式从该显式状态恢复。 |
+
+### 新会话输入
+
+这些选项只有在运行器创建一个新的沙盒会话时才有意义：
+
+| 选项 | 适用场景 | 说明 |
+| --- | --- | --- |
+| `manifest` | 您希望一次性覆盖新会话工作区。 | 省略时回退到 `agent.defaultManifest`。 |
+| `snapshot` | 新沙盒会话应从一个快照初始化。 | 适合类似恢复的流程或远程快照客户端。 |
+| `options` | 沙盒客户端在创建时需要额外选项。 | 常见于 Docker 镜像、提供商超时以及类似的客户端专属设置。 |
+
+`concurrencyLimits` 控制有多少沙盒实例化工作可以并行运行。当大型 manifest 或本地目录复制需要更严格的资源控制时，可使用 `manifestEntries` 和 `localDirFiles`。
+
+### 实例化控制
+
+实例化控制有意设计为每次运行级别。将它们放在 `sandbox` 运行选项附近，这样同一个 `SandboxAgent` 就可以在大型本地目录复制时使用保守限制，而在小型 manifest 时使用更宽松的限制。
+
+当 manifest 中有很多彼此独立的条目（如文件、目录、仓库和挂载）时，使用 `concurrencyLimits.manifestEntries`。当 `localDir()` 条目中包含大量文件，且需要限制本地复制压力时，使用 `concurrencyLimits.localDirFiles`。
+
+## 完整示例：编码任务
+
+这个偏编码风格的示例是一个很好的默认起点：
+
+<Code lang="typescript" code={basicExample} title="沙盒编码任务" />
+
+## 常见模式
+
+请从上面的完整示例开始。在很多情况下，可以保持同一个 `SandboxAgent` 不变，只调整沙盒客户端、沙盒会话来源或工作区来源。
+
+### 切换沙盒客户端
+
+保持智能体定义不变，只修改运行配置。当您需要容器隔离或镜像一致性时使用 Docker；当您希望由提供商管理执行时使用托管提供商。示例和提供商选项请参见[沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients)。
+
+### 覆盖工作区
+
+保持智能体定义不变，只通过 `sandbox: { client, manifest }` 替换新会话 manifest。当同一智能体角色需要针对不同仓库、资料包或任务包运行，而无需重建智能体时，这种方式很适合。
+
+### 注入沙盒会话
+
+当您需要显式生命周期控制、运行后检查或复制输出时，可注入一个实时沙盒会话。为该次运行使用 `sandbox: { session }`，并在您的应用代码中关闭该会话。
+
+### 从会话状态恢复
+
+如果您已经在 `RunState` 之外序列化了沙盒状态，可以通过 `sandbox: { client, sessionState }` 让运行器从该状态重新连接。当沙盒状态存储在您自己的存储或作业系统中，并且您希望 `Runner` 直接从中恢复时，这种方式很适合。
+
+### 从快照开始
+
+通过 `sandbox: { client, snapshot }` 使用已保存的文件和产物为新的沙盒提供初始内容。当新运行应从已保存的工作区内容开始，而不仅仅依赖 `agent.defaultManifest` 时，这种方式很适合。
+
+### 从 Git 加载 skills
+
+通过 `skills({ from: gitRepo(...) })` 将本地 skill 来源替换为基于仓库的来源。当 skill 包本身有自己的发布节奏，或应在多个沙盒之间共享时，这种方式很适合。
+
+### 作为工具暴露
+
+工具智能体可以拥有自己的沙盒边界，也可以复用父运行中的实时沙盒。复用适合快速的只读探索型智能体：它可以检查父级正在使用的确切工作区，而无需再为另一个沙盒支付创建、填充或快照的成本。
+
+如果工具智能体确实需要真正的隔离，请通过 `sandboxAgent.asTool(...)` 为它提供自己的 `runConfig`。当工具智能体需要自由修改、运行不受信任的命令，或使用不同的后端或镜像时，请使用独立的沙盒。
+
+### 与本地工具和 MCP 结合
+
+在保留沙盒工作区的同时，仍然可以在同一个智能体上使用普通工具。沙盒 capabilities 可以与 `tools`、`mcpServers`、交接、模型设置和输出配置共存。
+
+## 记忆
+
+当未来的沙盒智能体运行应从先前运行中学习时，请使用 `memory()` capability。Memory 与 SDK 的对话式 `Session` memory 是分开的：它会将经验提炼为沙盒工作区中的文件，后续运行则可以读取这些文件。
+
+有关设置、读取/生成行为、多轮对话和布局隔离，请参见[智能体记忆](/openai-agents-js/zh/guides/sandbox-agents/memory)。
+
+## 组合模式
+
+当单智能体模式已经清晰后，下一个设计问题就是：在更大的系统中，沙盒边界应放在哪里。
+
+沙盒智能体仍然可以与 SDK 的其他部分组合使用：
+
+- [交接](/openai-agents-js/zh/guides/handoffs)：将文档密集型工作从非沙盒的接收智能体交给沙盒审查智能体。
+- [Agents as tools](/openai-agents-js/zh/guides/tools#agents-as-tools)：将多个沙盒智能体作为工具暴露，通常是在每次 `asTool(...)` 调用时传入一个沙盒运行配置，使每个工具都有自己的沙盒边界。
+- [MCP 集成](/openai-agents-js/zh/guides/mcp) 和普通函数工具：沙盒 capabilities 可以与 `mcpServers` 和普通工具共存。
+- [运行智能体](/openai-agents-js/zh/guides/running-agents)：沙盒运行仍然使用标准的 `run()` 和 `Runner` API。
+
+使用 handoff 时，仍然只有一个顶层运行和一个顶层 turn 循环。活动智能体会变化，但运行不会变成嵌套结构。
+
+而使用 `asTool(...)` 时，关系就不同了。外层编排器会用一个外层 turn 来决定调用该工具，而该工具调用会为沙盒智能体启动一个嵌套运行。这个嵌套运行有自己的 turn 循环、`maxTurns`、审批机制，并且通常也有自己的沙盒运行配置。从外层编排器的视角来看，所有这些工作仍然都隐藏在一次工具调用之后，因此嵌套 turn 不会增加外层运行的 turn 计数器。
+
+## 延伸阅读
+
+- [快速入门](/openai-agents-js/zh/guides/sandbox-agents)：运行您的第一个沙盒智能体。
+- [沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients)：选择本地、Docker、托管和挂载选项。
+- [智能体记忆](/openai-agents-js/zh/guides/sandbox-agents/memory)：保留并复用先前沙盒运行中的经验。

@@ -1,0 +1,411 @@
+---
+title: 개념
+description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import harnessWithCompute from '../../../../../assets/images/harness_with_compute.png';
+import basicExample from '../../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
+import developerOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
+import manifestExample from '../../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
+import sdkOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
+
+<Aside type="caution" title="베타 기능">
+  샌드박스 에이전트는 베타입니다. API 세부 사항, 기본값, 지원되는 기능은 정식
+  출시 전에 변경될 수 있으며, 더 고급 기능도 시간이 지나며 추가될 예정입니다.
+</Aside>
+
+현대적인 에이전트는 파일시스템의 실제 파일을 대상으로 작업할 수 있을 때 가장 잘 동작합니다. **Sandbox Agents** 는 특수한 도구와 셸 명령을 활용해 대규모 문서 집합을 검색하고 조작하고, 파일을 편집하고, 아티팩트를 생성하고, 명령을 실행할 수 있습니다. 샌드박스는 모델에 지속되는 워크스페이스를 제공하며, 에이전트는 이를 사용해 사용자를 대신해 작업할 수 있습니다. Agents SDK 의 샌드박스 에이전트는 샌드박스 환경과 연결된 에이전트를 실행할 수 있게 해 주며, 파일시스템에 올바른 파일을 쉽게 준비하고 샌드박스를 오케스트레이션하여 대규모로 작업을 시작, 중지, 재개할 수 있게 합니다.
+
+워크스페이스는 에이전트에 필요한 데이터를 중심으로 정의합니다. GitHub 리포지토리, 로컬 파일 및 디렉터리, 합성 작업 파일, S3 또는 Azure Blob Storage 같은 원격 파일시스템, 그리고 사용자가 제공하는 기타 샌드박스 입력에서 시작할 수 있습니다.
+
+<figure class="sandbox-harness-image">
+  <img
+    src={harnessWithCompute.src}
+    alt="컴퓨팅이 포함된 샌드박스 에이전트 하니스"
+  />
+</figure>
+
+`SandboxAgent` 는 여전히 `Agent` 입니다. `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, 출력 타입, 가드레일, 훅 같은 일반적인 에이전트 표면을 그대로 유지하며, 여전히 일반적인 `run()` 및 `Runner` API 를 통해 실행됩니다. 달라지는 점은 실행 경계입니다.
+
+- `SandboxAgent` 는 에이전트 자체를 정의합니다. 즉, 일반적인 에이전트 설정에 더해 `defaultManifest`, `baseInstructions`, `runAs` 같은 샌드박스 전용 기본값과 파일시스템 도구, 셸 접근, 스킬, 메모리, compaction 같은 기능을 포함합니다.
+- `Manifest` 는 파일, 리포지토리, 마운트, 환경을 포함해 새로운 샌드박스 워크스페이스의 원하는 시작 콘텐츠와 레이아웃을 선언합니다.
+- 샌드박스 세션은 명령이 실행되고 파일이 변경되는 실제 실행 환경입니다.
+- `sandbox` 실행 옵션은 실행이 이 샌드박스 세션을 어떻게 얻을지를 결정합니다. 예를 들어 세션을 직접 주입하거나, 직렬화된 샌드박스 세션 상태에서 재연결하거나, 샌드박스 클라이언트를 통해 새로운 샌드박스 세션을 생성할 수 있습니다.
+- 저장된 샌드박스 상태와 스냅샷을 사용하면 이후 실행에서 이전 작업에 다시 연결하거나 저장된 콘텐츠로부터 새로운 샌드박스 세션을 시작할 수 있습니다.
+
+`Manifest` 는 새로운 세션용 워크스페이스 계약이지, 모든 실제 샌드박스의 전체 단일 진실 공급원은 아닙니다. 실행의 실제 워크스페이스는 대신 재사용된 샌드박스 세션, 직렬화된 샌드박스 세션 상태, 또는 실행 시점에 선택된 스냅샷에서 올 수 있습니다.
+
+이 페이지 전체에서 "샌드박스 세션"은 샌드박스 클라이언트가 관리하는 실제 실행 환경을 의미합니다. 정확한 경계는 클라이언트에 따라 달라집니다. Unix 로컬 세션은 호스트의 로컬 워크스페이스에서 실행되며, Docker 및 호스티드 클라이언트는 더 강한 환경 격리를 제공합니다. 이는 [세션](/openai-agents-js/ko/guides/sessions)에서 설명하는 SDK 의 대화형 `Session` 인터페이스와는 다릅니다.
+
+바깥쪽 런타임은 여전히 승인, 트레이싱, 핸드오프, 재개 bookkeeping 을 소유합니다. 샌드박스 세션은 명령, 파일 변경, 환경 격리를 소유합니다. 이 분리는 모델의 핵심 요소입니다.
+
+### 구성 요소 결합 방식
+
+샌드박스 실행은 에이전트 정의와 실행별 샌드박스 설정을 결합합니다. 러너는 에이전트를 준비하고, 실제 샌드박스 세션에 바인딩하며, 이후 실행을 위해 상태를 저장할 수 있습니다.
+
+<div
+  class="sandbox-flow-diagram"
+  aria-label="SandboxAgent 및 샌드박스 실행 설정이 러너로 전달되고, 러너는 샌드박스 세션을 사용하며 상태 또는 스냅샷을 저장할 수 있습니다."
+>
+  <div>
+    <strong>SandboxAgent</strong>
+    <span>에이전트와 샌드박스 기본값</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>Runner</strong>
+    <span>instructions 준비 및 기능 도구 바인딩</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>샌드박스 세션</strong>
+    <span>명령이 실행되고 파일이 변경되는 워크스페이스</span>
+  </div>
+  <span aria-hidden="true">→</span>
+  <div>
+    <strong>저장된 상태</strong>
+    <span>이후 재개 또는 새로 시작</span>
+  </div>
+</div>
+
+샌드박스 전용 기본값은 `SandboxAgent` 에 유지됩니다. 실행별 샌드박스 세션 선택은 `sandbox` 실행 옵션에 유지됩니다.
+
+수명 주기는 세 단계로 생각하면 됩니다.
+
+1. `SandboxAgent`, `Manifest`, 기능으로 에이전트와 새로운 워크스페이스 계약을 정의합니다.
+2. `run()` 또는 `Runner` 에 샌드박스 세션을 주입, 재개, 생성하는 `sandbox` 실행 옵션을 제공해 실행합니다.
+3. 러너가 관리하는 `RunState`, 명시적인 샌드박스 `sessionState`, 또는 저장된 워크스페이스 스냅샷에서 이후 계속 진행합니다.
+
+셸 접근이 가끔 사용하는 도구 하나에 불과하다면 [도구 가이드](/openai-agents-js/ko/guides/tools)의 hosted shell 로 시작하세요. 워크스페이스 격리, 샌드박스 클라이언트 선택, 또는 샌드박스 세션 재개 동작이 설계의 일부일 때 샌드박스 에이전트를 사용하세요.
+
+## 사용 시점
+
+샌드박스 에이전트는 워크스페이스 중심 워크플로에 적합합니다. 예를 들면 다음과 같습니다.
+
+- 코딩 및 디버깅. 예를 들어 GitHub 리포지토리의 이슈 보고서에 대한 자동 수정 작업을 오케스트레이션하고 대상 테스트를 실행하는 경우
+- 문서 처리 및 편집. 예를 들어 사용자의 재무 문서에서 정보를 추출하고 작성 완료된 세금 신고서 초안을 만드는 경우
+- 파일 기반 검토 또는 분석. 예를 들어 온보딩 패킷, 생성된 보고서, 또는 아티팩트 번들을 확인한 뒤 응답하는 경우
+- 격리된 멀티 에이전트 패턴. 예를 들어 각 검토자나 코딩 하위 에이전트에 자체 워크스페이스를 부여하는 경우
+- 다단계 워크스페이스 작업. 예를 들어 한 실행에서 버그를 수정하고 나중에 회귀 테스트를 추가하거나, 스냅샷 또는 샌드박스 세션 상태에서 재개하는 경우
+
+파일이나 살아 있는 파일시스템에 접근할 필요가 없다면 계속 `Agent` 를 사용하세요. 셸 접근이 가끔 필요한 기능 하나라면 hosted shell 을 추가하고, 워크스페이스 경계 자체가 기능의 일부라면 샌드박스 에이전트를 사용하세요.
+
+## 샌드박스 클라이언트 선택
+
+로컬 개발은 `UnixLocalSandboxClient` 로 시작하세요. 컨테이너 격리나 이미지 동일성이 필요하면 `DockerSandboxClient` 로 옮기세요. 공급자 관리 실행이 필요하면 호스티드 공급자로 옮기세요.
+
+대부분의 경우 `SandboxAgent` 정의는 그대로 유지되고, `sandbox` 실행 옵션에서 샌드박스 클라이언트와 해당 옵션만 바뀝니다. 로컬, Docker, hosted, 원격 마운트 옵션은 [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients)를 참고하세요.
+
+## 핵심 구성 요소
+
+| 계층 | 주요 SDK 구성 요소 | 답하는 질문 |
+| --- | --- | --- |
+| 에이전트 정의 | `SandboxAgent`, `Manifest`, 기능 | 어떤 에이전트가 실행되며, 어떤 새로운 세션 워크스페이스 계약에서 시작해야 하는가? |
+| 샌드박스 실행 | `sandbox` 실행 옵션, 샌드박스 클라이언트, 실제 샌드박스 세션 | 이 실행은 실제 샌드박스 세션을 어떻게 얻고, 작업은 어디에서 실행되는가? |
+| 저장된 샌드박스 상태 | `RunState` 샌드박스 payload, `sessionState`, 스냅샷 | 이 워크플로는 이전 샌드박스 작업에 어떻게 다시 연결하거나 저장된 콘텐츠로 새로운 샌드박스 세션을 시작하는가? |
+
+주요 SDK 구성 요소는 다음과 같이 해당 계층에 매핑됩니다.
+
+| 구성 요소 | 소유 범위 | 던져볼 질문 |
+| --- | --- | --- |
+| `SandboxAgent` | 에이전트 정의 | 이 에이전트는 무엇을 해야 하며, 어떤 기본값이 함께 이동해야 하는가? |
+| `Manifest` | 새로운 세션 워크스페이스 파일 및 폴더 | 실행 시작 시 파일시스템에 어떤 파일과 폴더가 있어야 하는가? |
+| `Capability` | 샌드박스 고유 동작 | 어떤 도구, instruction 조각, 또는 런타임 동작이 이 에이전트에 연결되어야 하는가? |
+| `sandbox` 실행 옵션 | 실행별 샌드박스 클라이언트 및 샌드박스 세션 소스 | 이 실행은 샌드박스 세션을 주입, 재개, 생성해야 하는가? |
+| `RunState` | 러너가 관리하는 저장된 샌드박스 상태 | 이전에 러너가 관리한 워크플로를 재개하면서 그 샌드박스 상태를 자동으로 이어받고 있는가? |
+| `sandbox.sessionState` | 명시적으로 직렬화된 샌드박스 세션 상태 | 이미 `RunState` 밖에서 직렬화한 샌드박스 상태에서 재개하고 싶은가? |
+| `sandbox.snapshot` | 새로운 샌드박스 세션용 저장된 워크스페이스 콘텐츠 | 새 샌드박스 세션을 저장된 파일과 아티팩트로 시작해야 하는가? |
+
+실무적인 설계 순서는 다음과 같습니다.
+
+1. `Manifest` 로 새로운 세션 워크스페이스 계약을 정의합니다.
+2. `SandboxAgent` 로 에이전트를 정의합니다.
+3. 내장 또는 사용자 정의 기능을 추가합니다.
+4. 각 실행이 `run(agent, input, { sandbox: ... })` 또는 `new Runner({ sandbox: ... })` 에서 샌드박스 세션을 어떻게 얻을지 결정합니다.
+
+## 샌드박스 실행 준비 방식
+
+실행 시점에 러너는 해당 정의를 구체적인 샌드박스 기반 실행으로 바꿉니다.
+
+1. `sandbox` 실행 옵션에서 샌드박스 세션을 확인합니다.
+2. 실행에 대한 실제 워크스페이스 입력을 결정합니다.
+3. 기능이 결과 manifest 를 처리하도록 합니다.
+4. 고정된 순서로 최종 instructions 를 구성합니다. SDK 의 기본 샌드박스 프롬프트 또는 명시적으로 재정의한 경우 `baseInstructions`, 그다음 `instructions`, 그다음 기능 instruction 조각, 그다음 원격 마운트 정책 텍스트, 마지막으로 렌더링된 파일시스템 트리 순서입니다.
+5. 기능 도구를 실제 샌드박스 세션에 바인딩하고, 준비된 에이전트를 일반적인 `run()` 및 `Runner` API 를 통해 실행합니다.
+
+샌드박싱은 턴의 의미를 바꾸지 않습니다. 턴은 여전히 단일 셸 명령이나 샌드박스 작업이 아니라 모델 단계입니다. 샌드박스 측 작업과 턴 사이에는 고정된 1:1 매핑이 없습니다. 실무적으로는 샌드박스 작업이 일어난 후 에이전트 런타임이 또 다른 모델 응답을 필요로 할 때만 추가 턴이 소비됩니다.
+
+## `SandboxAgent` 옵션
+
+다음은 일반적인 `Agent` 필드 위에 추가되는 샌드박스 전용 옵션입니다.
+
+| 옵션 | 가장 적합한 용도 |
+| --- | --- |
+| `defaultManifest` | 러너가 생성하는 새로운 샌드박스 세션의 기본 워크스페이스 |
+| `instructions` | SDK 샌드박스 프롬프트 뒤에 추가되는 역할, 워크플로, 성공 기준 |
+| `baseInstructions` | SDK 샌드박스 프롬프트를 대체하는 고급 escape hatch |
+| `capabilities` | 이 에이전트와 함께 이동해야 하는 샌드박스 고유 도구 및 동작 |
+| `runAs` | 셸 명령, 파일 읽기, 패치 같은 모델 대상 샌드박스 도구의 사용자 정체성 |
+
+샌드박스 클라이언트 선택, 샌드박스 세션 재사용, manifest 재정의, 스냅샷 선택은 에이전트가 아니라 `sandbox` 실행 옵션에 속합니다.
+
+### `defaultManifest`
+
+`defaultManifest` 는 러너가 이 에이전트를 위해 새로운 샌드박스 세션을 생성할 때 사용하는 기본 `Manifest` 입니다. 에이전트가 보통 시작해야 하는 파일, 리포지토리, 보조 자료, 출력 디렉터리, 마운트에 사용하세요.
+
+이것은 기본값일 뿐입니다. 실행은 `sandbox.manifest` 로 이를 재정의할 수 있으며, 재사용되거나 재개된 샌드박스 세션은 기존 워크스페이스 상태를 유지합니다.
+
+<Code lang="typescript" code={manifestExample} title="manifest 정의" />
+
+### `instructions` 및 `baseInstructions`
+
+`instructions` 는 서로 다른 프롬프트에서도 유지되어야 하는 짧은 규칙에 사용하세요. `SandboxAgent` 에서 이러한 instructions 는 SDK 의 샌드박스 기본 프롬프트 뒤에 추가되므로, 내장된 샌드박스 가이드를 유지하면서 자체 역할, 워크플로, 성공 기준을 더할 수 있습니다.
+
+`baseInstructions` 는 SDK 샌드박스 기본 프롬프트를 교체하려는 경우에만 사용하세요. 대부분의 에이전트는 이를 설정할 필요가 없습니다.
+
+| 넣을 위치 | 용도 | 예시 |
+| --- | --- | --- |
+| `instructions` | 에이전트의 안정적인 역할, 워크플로 규칙, 성공 기준 | "온보딩 문서를 검토한 뒤 핸드오프하세요.", "`output/` 에 최종 파일을 작성하세요." |
+| `baseInstructions` | SDK 샌드박스 기본 프롬프트의 전체 대체 | 사용자 정의 저수준 샌드박스 래퍼 프롬프트 |
+| 사용자 프롬프트 | 이번 실행의 일회성 요청 | "이 워크스페이스를 요약하세요." |
+| manifest 의 워크스페이스 파일 | 더 긴 작업 명세, 리포지토리 로컬 instructions, 또는 제한된 참조 자료 | `repo/task.md`, 문서 번들, 샘플 패킷 |
+
+사용자의 일회성 작업을 `instructions` 에 복사해 넣거나, manifest 에 있어야 할 긴 참조 자료를 포함하거나, 내장 기능이 이미 주입하는 도구 문서를 다시 설명하거나, 모델이 실행 시점에 필요하지 않은 로컬 설치 메모를 섞는 것은 피하세요.
+
+### `capabilities`
+
+기능은 샌드박스 고유 동작을 `SandboxAgent` 에 연결합니다. 실행 시작 전에 워크스페이스를 조정하고, 샌드박스 전용 instructions 를 추가하고, 실제 샌드박스 세션에 바인딩되는 도구를 노출하고, 해당 에이전트의 모델 동작이나 입력 처리를 조정할 수 있습니다.
+
+내장 기능은 다음과 같습니다.
+
+| 기능 | 추가할 시점 | 참고 |
+| --- | --- | --- |
+| `shell()` | 에이전트에 셸 접근이 필요할 때 | `exec_command` 를 추가하며, 샌드박스 클라이언트가 PTY 상호작용을 지원하면 `write_stdin` 도 추가합니다 |
+| `filesystem()` | 에이전트가 파일을 편집하거나 로컬 이미지를 검사해야 할 때 | `apply_patch` 와 `view_image` 를 추가합니다. 패치 경로는 워크스페이스 루트 기준 상대 경로입니다 |
+| `skills()` | 샌드박스에서 스킬 검색 및 materialization 이 필요할 때 | 샌드박스 로컬 `SKILL.md` 스킬을 위해 `.agents` 또는 `.agents/skills` 를 수동 마운트하는 대신 이것을 권장합니다 |
+| `memory()` | 후속 실행이 메모리 아티팩트를 읽거나 생성해야 할 때 | `shell()` 이 필요하며, 실시간 업데이트에는 `filesystem()` 도 필요합니다 |
+| `compaction()` | 장기 실행 흐름이 compaction 항목 뒤에서 컨텍스트 trimming 이 필요할 때 | 모델 샘플링과 입력 처리를 조정합니다 |
+
+기본적으로 `SandboxAgent.capabilities` 는 `Capabilities.default()` 를 사용하며, 여기에는 `filesystem()`, `shell()`, `compaction()` 이 포함됩니다. `capabilities: [...]` 를 전달하면 해당 목록이 기본값을 대체하므로, 여전히 원하는 기본 기능이 있다면 함께 포함해야 합니다.
+
+## 개념
+
+### Manifest
+
+`Manifest` 는 새로운 샌드박스 세션용 워크스페이스를 설명합니다. 워크스페이스 `root` 를 설정하고, 파일과 디렉터리를 선언하고, 로컬 파일을 복사해 넣고, Git 리포지토리를 클론하고, 원격 스토리지 마운트를 연결하고, 환경 변수를 설정하고, 사용자나 그룹을 정의하고, 워크스페이스 밖의 특정 절대 경로에 대한 접근 권한을 부여할 수 있습니다.
+
+Manifest 환경 값은 기본적으로 유지됩니다. API 키, 액세스 토큰, 또는 저장된 샌드박스 상태와 함께 보존되면 안 되는 기타 단기 자격 증명에는 `{ value: "...", ephemeral: true }` 같은 일시적 항목을 사용하세요.
+
+Manifest 항목 경로는 워크스페이스 기준 상대 경로입니다. 절대 경로일 수 없고 `..` 로 워크스페이스를 벗어날 수도 없으므로, 워크스페이스 계약을 로컬, Docker, hosted 클라이언트 전반에서 이식 가능하게 유지할 수 있습니다.
+
+작업 시작 전에 에이전트가 필요로 하는 자료에는 manifest 항목을 사용하세요.
+
+| Manifest 항목 | 용도 |
+| --- | --- |
+| `file()`, `dir()` | 작은 합성 입력, 보조 파일, 또는 출력 디렉터리 |
+| `localFile()`, `localDir()` | 샌드박스 안에 materialize 되어야 하는 호스트 파일 또는 디렉터리 |
+| `gitRepo()` | 워크스페이스로 가져와야 하는 리포지토리 |
+| `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `s3FilesMount()` 같은 mounts | 샌드박스 내부에 표시되어야 하는 외부 스토리지 |
+
+마운트 항목은 어떤 스토리지를 노출할지 설명하고, 마운트 전략은 샌드박스 백엔드가 그 스토리지를 어떻게 연결할지 설명합니다. 마운트 옵션과 공급자 지원은 [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients#mounts-and-remote-storage)를 참고하세요.
+
+### 권한
+
+`Permissions` 는 manifest 항목의 파일시스템 권한을 제어합니다. 이는 샌드박스가 materialize 하는 파일에 관한 것이지, 모델 권한, 승인 정책, 또는 API 자격 증명에 관한 것이 아닙니다.
+
+사용자는 작업을 실행할 수 있는 샌드박스 정체성입니다. 해당 정체성이 샌드박스 안에 존재해야 한다면 manifest 에 사용자를 추가한 뒤, 셸 명령, 파일 읽기, 패치 같은 모델 대상 샌드박스 도구가 그 사용자로 실행되어야 할 때 `SandboxAgent.runAs` 를 설정하세요.
+
+파일 수준의 공유 규칙도 필요하다면, 사용자와 manifest 그룹 및 항목 `group` 메타데이터를 조합하세요. `runAs` 사용자는 누가 샌드박스 고유 작업을 실행하는지를 제어하고, `Permissions` 는 워크스페이스가 샌드박스에 materialize 된 후 해당 사용자가 어떤 파일을 읽고, 쓰고, 실행할 수 있는지를 제어합니다.
+
+### SnapshotSpec
+
+`SnapshotSpec` 은 새로운 샌드박스 세션에 대해 저장된 워크스페이스 콘텐츠를 어디에서 복원하고 다시 어디에 저장할지 알려줍니다. 이는 샌드박스 워크스페이스의 스냅샷 정책이며, `sessionState` 는 특정 샌드박스 백엔드를 재개하기 위한 직렬화된 연결 상태입니다.
+
+로컬 durable 스냅샷에는 로컬 스냅샷을 사용하고, 앱이 원격 스냅샷 클라이언트를 제공하는 경우에는 원격 스냅샷을 사용하세요. 마운트된 경로와 ephemeral 경로는 durable 워크스페이스 콘텐츠로 스냅샷에 복사되지 않습니다.
+
+### 샌드박스 수명 주기
+
+수명 주기 모드는 두 가지입니다. **SDK 소유** 와 **개발자 소유** 입니다.
+
+<div
+  class="sandbox-lifecycle-diagram"
+  aria-label="SDK 소유 수명 주기에서는 러너가 샌드박스를 생성하고 종료합니다. 개발자 소유 수명 주기에서는 생성과 정리를 애플리케이션 코드가 담당합니다."
+>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>SDK 소유</strong>
+      <span>러너가 실제 샌드박스를 소유합니다.</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <p>
+          <code>sandbox.client</code> 를 전달합니다.
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <p>러너가 샌드박스 세션을 생성하거나 재개합니다.</p>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <p>
+          에이전트가 실행되고 스냅샷 기반 워크스페이스 상태가 유지될 수
+          있습니다.
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <p>러너가 러너 소유 리소스를 종료합니다.</p>
+      </li>
+    </ol>
+  </section>
+  <section>
+    <div class="sandbox-lifecycle-heading">
+      <strong>개발자 소유</strong>
+      <span>애플리케이션이 실제 샌드박스를 소유합니다.</span>
+    </div>
+    <ol>
+      <li>
+        <span aria-hidden="true">1</span>
+        <p>
+          <code>session</code> 을 생성합니다.
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">2</span>
+        <p>
+          실행에 <code>sandbox.session</code> 을 전달합니다.
+        </p>
+      </li>
+      <li>
+        <span aria-hidden="true">3</span>
+        <p>에이전트가 기존 워크스페이스를 사용합니다.</p>
+      </li>
+      <li>
+        <span aria-hidden="true">4</span>
+        <p>직접 검사하고, 재사용한 뒤, 세션을 종료합니다.</p>
+      </li>
+    </ol>
+  </section>
+</div>
+
+샌드박스가 한 번의 실행 동안만 살아 있으면 SDK 소유 수명 주기를 사용하세요. `client`, 선택적인 `manifest`, 선택적인 `snapshot`, 클라이언트 `options` 를 전달하면 러너가 샌드박스를 생성 또는 재개하고, 에이전트를 실행하고, 스냅샷 기반 워크스페이스 상태를 유지하며, 클라이언트가 러너 소유 리소스를 정리하도록 합니다.
+
+<Code
+  lang="typescript"
+  code={sdkOwnedLifecycleExample}
+  title="러너가 샌드박스 세션을 관리하도록 하기"
+/>
+
+샌드박스를 미리 생성하고 싶거나, 여러 실행에서 하나의 실제 샌드박스를 재사용하고 싶거나, 실행 후 파일을 검사하고 싶거나, 직접 생성한 샌드박스에 대해 스트리밍하고 싶거나, 정리 시점을 정확히 제어하고 싶다면 개발자 소유 수명 주기를 사용하세요. `session` 을 전달하면 러너는 해당 실제 샌드박스를 사용하지만, 이를 대신 종료하지는 않습니다.
+
+<Code
+  lang="typescript"
+  code={developerOwnedLifecycleExample}
+  title="샌드박스 세션 직접 관리하기"
+/>
+
+## `sandbox` 실행 옵션
+
+`sandbox` 실행 옵션은 샌드박스 세션이 어디서 오는지와 새로운 세션을 어떻게 초기화할지를 결정하는 실행별 옵션을 담습니다.
+
+### 샌드박스 소스
+
+다음 옵션은 러너가 샌드박스 세션을 재사용, 재개, 생성해야 하는지를 결정합니다.
+
+| 옵션 | 사용할 때 | 참고 |
+| --- | --- | --- |
+| `client` | 러너가 샌드박스 세션을 대신 생성, 재개, 정리하게 하고 싶을 때 | 실제 샌드박스 `session` 을 제공하지 않는 한 필수입니다 |
+| `session` | 이미 직접 실제 샌드박스 세션을 생성했을 때 | 호출자가 수명 주기를 소유하며, 러너는 해당 실제 샌드박스 세션을 재사용합니다 |
+| `sessionState` | 직렬화된 샌드박스 세션 상태는 있지만 실제 샌드박스 세션 객체는 없을 때 | `client` 가 필요하며, 러너는 해당 명시적 상태에서 소유 세션으로 재개합니다 |
+
+### 새로운 세션 입력
+
+다음 옵션은 러너가 새로운 샌드박스 세션을 생성할 때만 중요합니다.
+
+| 옵션 | 사용할 때 | 참고 |
+| --- | --- | --- |
+| `manifest` | 일회성 새로운 세션 워크스페이스 재정의가 필요할 때 | 생략하면 `agent.defaultManifest` 로 대체됩니다 |
+| `snapshot` | 새로운 샌드박스 세션을 스냅샷에서 시드해야 할 때 | 재개와 유사한 흐름이나 원격 스냅샷 클라이언트에 유용합니다 |
+| `options` | 샌드박스 클라이언트에 생성 시점 옵션이 필요할 때 | Docker 이미지, 공급자 타임아웃, 유사한 클라이언트별 설정에 일반적입니다 |
+
+`concurrencyLimits` 는 샌드박스 materialization 작업이 얼마나 병렬로 실행될 수 있는지를 제어합니다. 큰 manifest 나 로컬 디렉터리 복사에서 더 엄격한 리소스 제어가 필요하면 `manifestEntries` 와 `localDirFiles` 를 사용하세요.
+
+### Materialization 제어
+
+Materialization 제어는 의도적으로 실행별입니다. 큰 로컬 디렉터리 복사에는 보수적인 제한을, 작은 manifest 에는 더 느슨한 제한을 동일한 `SandboxAgent` 에 적용할 수 있도록 `sandbox` 실행 옵션 가까이에 두세요.
+
+manifest 에 파일, 디렉터리, 리포지토리, 마운트처럼 독립적인 항목이 많다면 `concurrencyLimits.manifestEntries` 를 사용하세요. `localDir()` 항목에 파일이 많고 로컬 복사 부하를 제한해야 한다면 `concurrencyLimits.localDirFiles` 를 사용하세요.
+
+## 전체 예제: 코딩 작업
+
+이 코딩 스타일 예제는 좋은 기본 시작점입니다.
+
+<Code lang="typescript" code={basicExample} title="샌드박스 코딩 작업" />
+
+## 일반적인 패턴
+
+위의 전체 예제에서 시작하세요. 많은 경우 동일한 `SandboxAgent` 를 그대로 유지한 채, 샌드박스 클라이언트, 샌드박스 세션 소스, 또는 워크스페이스 소스만 바꾸면 됩니다.
+
+### 샌드박스 클라이언트 전환
+
+에이전트 정의는 그대로 두고 실행 설정만 바꾸세요. 컨테이너 격리나 이미지 동일성이 필요하면 Docker 를 사용하고, 공급자 관리 실행이 필요하면 호스티드 공급자를 사용하세요. 예제와 공급자 옵션은 [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients)를 참고하세요.
+
+### 워크스페이스 재정의
+
+에이전트 정의는 그대로 두고 `sandbox: { client, manifest }` 로 새로운 세션 manifest 만 교체하세요. 에이전트를 다시 만들지 않고도 동일한 에이전트 역할을 서로 다른 리포지토리, 패킷, 또는 작업 번들에 대해 실행해야 할 때 유용합니다.
+
+### 샌드박스 세션 주입
+
+명시적인 수명 주기 제어, 실행 후 검사, 또는 출력 복사가 필요할 때 실제 샌드박스 세션을 주입하세요. 해당 실행에는 `sandbox: { session }` 을 사용하고, 세션 종료는 애플리케이션 코드에서 수행하세요.
+
+### 세션 상태에서 재개
+
+이미 `RunState` 밖에서 샌드박스 상태를 직렬화했다면, `sandbox: { client, sessionState }` 로 러너가 해당 상태에서 다시 연결하게 하세요. 샌드박스 상태가 자체 스토리지나 작업 시스템에 있고 `Runner` 가 거기서 직접 재개하길 원할 때 유용합니다.
+
+### 스냅샷에서 시작
+
+`sandbox: { client, snapshot }` 으로 저장된 파일과 아티팩트에서 새 샌드박스를 시드하세요. 새 실행이 `agent.defaultManifest` 만이 아니라 저장된 워크스페이스 콘텐츠에서 시작해야 할 때 유용합니다.
+
+### Git 에서 스킬 로드
+
+`skills({ from: gitRepo(...) })` 로 로컬 스킬 소스를 리포지토리 기반 소스로 교체하세요. 스킬 번들이 자체 릴리스 주기를 갖거나 샌드박스 간에 공유되어야 할 때 유용합니다.
+
+### 도구로 노출
+
+도구 에이전트는 자체 샌드박스 경계를 가질 수도 있고, 상위 실행의 실제 샌드박스를 재사용할 수도 있습니다. 재사용은 빠른 읽기 전용 탐색 에이전트에 유용합니다. 다른 샌드박스를 생성, hydrate, 스냅샷하는 비용 없이 상위가 사용하는 정확한 워크스페이스를 검사할 수 있습니다.
+
+도구 에이전트에 실제 격리가 필요하다면 `sandboxAgent.asTool(...)` 에 자체 `runConfig` 를 제공하세요. 도구 에이전트가 자유롭게 변경해야 하거나, 신뢰할 수 없는 명령을 실행해야 하거나, 다른 백엔드나 이미지를 사용해야 한다면 별도의 샌드박스를 사용하세요.
+
+### 로컬 도구 및 MCP 와 결합
+
+동일한 에이전트에서 일반 도구를 계속 사용하면서 샌드박스 워크스페이스를 유지하세요. 샌드박스 기능은 `tools`, `mcpServers`, 핸드오프, 모델 설정, 출력 설정과 공존할 수 있습니다.
+
+## 메모리
+
+향후 샌드박스 에이전트 실행이 이전 실행에서 학습해야 한다면 `memory()` 기능을 사용하세요. 메모리는 SDK 의 대화형 `Session` 메모리와는 별개입니다. 샌드박스 워크스페이스 내부 파일로 교훈을 추출하고, 이후 실행이 그 파일을 읽을 수 있게 합니다.
+
+설정, 읽기/생성 동작, 멀티턴 대화, 레이아웃 격리는 [에이전트 메모리](/openai-agents-js/ko/guides/sandbox-agents/memory)를 참고하세요.
+
+## 구성 패턴
+
+단일 에이전트 패턴이 명확해지면, 다음 설계 질문은 더 큰 시스템에서 샌드박스 경계를 어디에 둘지입니다.
+
+샌드박스 에이전트는 여전히 SDK 의 나머지 부분과 조합할 수 있습니다.
+
+- [핸드오프](/openai-agents-js/ko/guides/handoffs): 샌드박스가 없는 intake 에이전트에서 문서 비중이 큰 작업을 샌드박스 검토자에게 넘깁니다
+- [Agents as tools](/openai-agents-js/ko/guides/tools#agents-as-tools): 여러 샌드박스 에이전트를 도구로 노출합니다. 보통 각 `asTool(...)` 호출에 샌드박스 실행 설정을 전달해 각 도구가 자체 샌드박스 경계를 갖게 합니다
+- [MCP](/openai-agents-js/ko/guides/mcp) 및 일반 함수 도구: 샌드박스 기능은 `mcpServers` 및 일반 도구와 공존할 수 있습니다
+- [에이전트 실행](/openai-agents-js/ko/guides/running-agents): 샌드박스 실행도 여전히 일반적인 `run()` 및 `Runner` API 를 사용합니다
+
+핸드오프에서는 여전히 하나의 최상위 실행과 하나의 최상위 턴 루프가 있습니다. 활성 에이전트는 바뀌지만 실행이 중첩되지는 않습니다.
+
+`asTool(...)` 에서는 관계가 다릅니다. 바깥 오케스트레이터는 도구 호출을 결정하기 위해 하나의 바깥 턴을 사용하고, 그 도구 호출은 샌드박스 에이전트에 대한 중첩 실행을 시작합니다. 중첩 실행은 자체 턴 루프, `maxTurns`, 승인, 그리고 보통 자체 샌드박스 실행 설정을 가집니다. 바깥 오케스트레이터 관점에서는 이 모든 작업이 여전히 하나의 도구 호출 뒤에 있으므로, 중첩된 턴은 바깥 실행의 턴 카운터를 증가시키지 않습니다.
+
+## 추가 읽을거리
+
+- [빠른 시작](/openai-agents-js/ko/guides/sandbox-agents): 샌드박스 에이전트 하나를 실행합니다
+- [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients): 로컬, Docker, hosted, 마운트 옵션을 선택합니다
+- [에이전트 메모리](/openai-agents-js/ko/guides/sandbox-agents/memory): 이전 샌드박스 실행의 교훈을 보존하고 재사용합니다
