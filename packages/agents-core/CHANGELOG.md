@@ -1,5 +1,21 @@
 # @openai/agents-core
 
+## 0.9.0
+
+### Minor Changes
+
+- 00b4032: fix: align sandbox mounts with Python and protect rclone credentials
+- 2e1d626: feat: add sandbox agents core runtime and extension provider package groundwork
+- 6e50eca: fix: narrow sandbox public entrypoint
+
+### Patch Changes
+
+- 16c26e7: fix: keep public sandbox agent identity in model filters
+- 2d2501a: fix: support sandbox filesystem runAs for compatible providers
+- a34f506: feat: add model settings support for context management
+- 30681be: fix: surface model refusals during run resolution
+- 4a879bb: feat: add tool item convenience accessors
+
 ## 0.8.5
 
 ## 0.8.4

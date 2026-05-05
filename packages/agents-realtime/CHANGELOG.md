@@ -1,5 +1,19 @@
 # @openai/agents-realtime
 
+## 0.9.0
+
+### Patch Changes
+
+- Updated dependencies [00b4032]
+- Updated dependencies [2e1d626]
+- Updated dependencies [16c26e7]
+- Updated dependencies [2d2501a]
+- Updated dependencies [6e50eca]
+- Updated dependencies [a34f506]
+- Updated dependencies [30681be]
+- Updated dependencies [4a879bb]
+  - @openai/agents-core@0.9.0
+
 ## 0.8.5
 
 ### Patch Changes
