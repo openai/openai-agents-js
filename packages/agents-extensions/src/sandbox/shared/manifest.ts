@@ -1,20 +1,22 @@
 import { UserError } from '@openai/agents-core';
 import {
   isMount,
-  deserializeManifest,
   Manifest,
-  mergeManifestDelta,
-  mergeManifestEntryDelta,
   normalizeRelativePath,
-  normalizePosixPath,
-  relativePosixPathWithinRoot,
   type SandboxConcurrencyLimits,
   SandboxUnsupportedFeatureError,
-  serializeManifestRecord,
   type Entry,
   type Mount,
   type TypedMount,
 } from '@openai/agents-core/sandbox';
+import {
+  deserializeManifest,
+  mergeManifestDelta,
+  mergeManifestEntryDelta,
+  normalizePosixPath,
+  relativePosixPathWithinRoot,
+  serializeManifestRecord,
+} from '@openai/agents-core/sandbox/internal';
 import { mergeMaterializedEnvironment } from './environment';
 import { resolveSandboxRelativePath } from './paths';
 import type { RemoteManifestWriter } from './types';

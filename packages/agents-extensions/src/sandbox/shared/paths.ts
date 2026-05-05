@@ -2,12 +2,11 @@ import { UserError } from '@openai/agents-core';
 import {
   type Manifest,
   normalizeRelativePath,
-  posixDirname,
   type SandboxPathGrant,
   SandboxPathResolutionError,
-  shellQuote,
   WorkspacePathPolicy,
 } from '@openai/agents-core/sandbox';
+import { posixDirname, shellQuote } from '@openai/agents-core/sandbox/internal';
 import type { RemoteSandboxPathOptions } from './types';
 
 export { posixDirname, shellQuote };

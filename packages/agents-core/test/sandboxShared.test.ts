@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { Manifest, dir, file, mount } from '../src/sandbox';
 import {
-  imageOutputFromBytes,
-  MAX_VIEW_IMAGE_BYTES,
-  Manifest,
   deserializeManifest,
   deserializePersistedEnvironmentForRuntime,
-  dir,
-  file,
-  mount,
+  imageOutputFromBytes,
   materializeEnvironment,
   materializeStaticEnvironment,
+  MAX_VIEW_IMAGE_BYTES,
   mergeManifestDelta,
   mergeManifestEntryDelta,
   mergeMaterializedEnvironment,
@@ -19,7 +16,7 @@ import {
   serializeRuntimeEnvironmentForPersistence,
   sniffImageMediaType,
   truncateOutput,
-} from '../src/sandbox';
+} from '../src/sandbox/internal';
 import {
   stableJsonPrettyStringify,
   stableJsonStringify,

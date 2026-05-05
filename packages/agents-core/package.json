@@ -44,6 +44,11 @@
       "require": "./dist/sandbox/local.js",
       "import": "./dist/sandbox/local.mjs"
     },
+    "./sandbox/internal": {
+      "types": "./dist/sandbox/internal.d.ts",
+      "require": "./dist/sandbox/internal.js",
+      "import": "./dist/sandbox/internal.mjs"
+    },
     "./types": {
       "types": "./dist/types/index.d.ts",
       "require": "./dist/types/index.js",
@@ -108,6 +113,9 @@
       ],
       "sandbox/local": [
         "dist/sandbox/local.d.ts"
+      ],
+      "sandbox/internal": [
+        "dist/sandbox/internal.d.ts"
       ],
       "types": [
         "dist/types/index.d.ts"

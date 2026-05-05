@@ -14,9 +14,7 @@ import {
   isMount,
   type MaterializeEntryArgs,
   type Mount,
-  normalizePosixPath,
   type ReadFileArgs,
-  relativePosixPathWithinRoot,
   type SandboxSession,
   type SandboxSessionState,
   type TypedMount,
@@ -24,6 +22,10 @@ import {
   type WriteStdinArgs,
   type WorkspaceArchiveData,
 } from '@openai/agents-core/sandbox';
+import {
+  normalizePosixPath,
+  relativePosixPathWithinRoot,
+} from '@openai/agents-core/sandbox/internal';
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,

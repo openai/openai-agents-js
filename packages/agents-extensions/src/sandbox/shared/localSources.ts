@@ -1,9 +1,6 @@
 import { UserError } from '@openai/agents-core';
-import {
-  isHostPathStrictlyWithinRoot,
-  type Entry,
-  type Manifest,
-} from '@openai/agents-core/sandbox';
+import { type Entry, type Manifest } from '@openai/agents-core/sandbox';
+import { isHostPathStrictlyWithinRoot } from '@openai/agents-core/sandbox/internal';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import {
   lstat,

@@ -10,6 +10,10 @@ const testAliases = {
     rootDir,
     'packages/agents-core/src/sandbox/local.ts',
   ),
+  '@openai/agents-core/sandbox/internal': resolve(
+    rootDir,
+    'packages/agents-core/src/sandbox/internal.ts',
+  ),
   '@openai/agents-core/sandbox': resolve(
     rootDir,
     'packages/agents-core/src/sandbox/index.ts',

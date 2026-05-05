@@ -7,4 +7,4 @@ export {
   mergeStaticMaterializedEnvironment,
   serializeManifestEnvironment,
   serializeRuntimeEnvironmentForPersistence,
-} from '@openai/agents-core/sandbox';
+} from '@openai/agents-core/sandbox/internal';

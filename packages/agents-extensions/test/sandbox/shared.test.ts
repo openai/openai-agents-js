@@ -73,18 +73,20 @@ import {
   boxMount,
   file,
   gitRepo,
-  isHostPathStrictlyWithinRoot,
-  isHostPathWithinRoot,
   localDir,
   localFile,
   mount,
-  relativeHostPathEscapesRoot,
-  relativeHostPathEscapesRootOrSelf,
   type AzureBlobMount,
   type GCSMount,
   type R2Mount,
   type S3Mount,
 } from '@openai/agents-core/sandbox';
+import {
+  isHostPathStrictlyWithinRoot,
+  isHostPathWithinRoot,
+  relativeHostPathEscapesRoot,
+  relativeHostPathEscapesRootOrSelf,
+} from '@openai/agents-core/sandbox/internal';
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
