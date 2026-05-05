@@ -1,18 +1,17 @@
 # OpenAI Agents SDK (JavaScript/TypeScript)
 
-[![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents)
-[![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
+[![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents) [![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
 
 The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. It is provider-agnostic, supporting OpenAI APIs and more.
 
 <img src="https://cdn.openai.com/API/docs/images/orchestration.png" alt="Image of the Agents Tracing UI" style="max-height: 803px;">
 
-> [!NOTE]
-> Looking for the Python version? Check out [OpenAI Agents SDK Python](https://github.com/openai/openai-agents-python).
+> [!NOTE] Looking for the Python version? Check out [OpenAI Agents SDK Python](https://github.com/openai/openai-agents-python).
 
 ## Core concepts
 
 1. [**Agents**](https://openai.github.io/openai-agents-js/guides/agents): LLMs configured with instructions, tools, guardrails, and handoffs
+1. [**Sandbox Agents**](https://openai.github.io/openai-agents-js/guides/sandbox-agents): Agents paired with a filesystem workspace and sandbox environment for longer-running work
 1. **[Agents as tools](https://openai.github.io/openai-agents-js/guides/tools/#4-agents-as-tools) / [Handoffs](https://openai.github.io/openai-agents-js/guides/handoffs/)**: Delegating to other agents for specific tasks
 1. [**Tools**](https://openai.github.io/openai-agents-js/guides/tools/): Various Tools let agents take actions (functions, MCP, hosted tools)
 1. [**Guardrails**](https://openai.github.io/openai-agents-js/guides/guardrails/): Configurable safety checks for input and output validation
@@ -43,7 +42,47 @@ Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/e
 npm install @openai/agents zod
 ```
 
-### Run your first agent
+### Run your first Sandbox Agent
+
+[Sandbox Agents](https://openai.github.io/openai-agents-js/guides/sandbox-agents) are in beta. A sandbox agent can inspect files, run commands, apply patches, and carry workspace state across longer tasks.
+
+```js
+import { run } from '@openai/agents';
+import { gitRepo, Manifest, SandboxAgent } from '@openai/agents/sandbox';
+import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
+
+const agent = new SandboxAgent({
+  name: 'Workspace Assistant',
+  instructions: 'Inspect the sandbox workspace before answering.',
+  defaultManifest: new Manifest({
+    entries: {
+      repo: gitRepo({
+        repo: 'openai/openai-agents-js',
+        ref: 'main',
+      }),
+    },
+  }),
+});
+
+const result = await run(
+  agent,
+  'Inspect repo/README.md and summarize what this project does.',
+  {
+    sandbox: {
+      client: new UnixLocalSandboxClient(),
+    },
+  },
+);
+
+console.log(result.finalOutput);
+// This project provides a JavaScript/TypeScript SDK for building agent workflows.
+```
+
+(_If running this, ensure you set the `OPENAI_API_KEY` environment variable_)
+
+### Run an agent without a sandbox
+
+You can still use a regular `Agent` when your workflow does not need a filesystem workspace or sandbox lifecycle.
 
 ```js
 import { Agent, run } from '@openai/agents';
@@ -62,8 +101,6 @@ console.log(result.finalOutput);
 // Functions calling themselves,
 // Infinite loop's dance.
 ```
-
-(_If running this, ensure you set the `OPENAI_API_KEY` environment variable_)
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
