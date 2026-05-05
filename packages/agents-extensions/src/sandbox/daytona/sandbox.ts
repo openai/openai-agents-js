@@ -712,6 +712,10 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
       runCommand: this.mountCommandRunner(),
+      writeFile: async (path, content) => {
+        await this.ensureParentDir(path);
+        await this.sandbox.fs.uploadFile(Buffer.from(content), path);
+      },
       packageManagers: ['apt', 'apk'],
     });
     this.activeMountPaths.add(mountPath);

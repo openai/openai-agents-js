@@ -80,6 +80,9 @@ import {
   mount,
   relativeHostPathEscapesRoot,
   relativeHostPathEscapesRootOrSelf,
+  type AzureBlobMount,
+  type GCSMount,
+  type R2Mount,
   type S3Mount,
 } from '@openai/agents-core/sandbox';
 
@@ -95,9 +98,24 @@ afterEach(async () => {
   );
 });
 
+function recordMountWrite(writes: Map<string, string>) {
+  return async (path: string, content: string | Uint8Array) => {
+    writes.set(
+      path,
+      typeof content === 'string' ? content : Buffer.from(content).toString(),
+    );
+  };
+}
+
+function onlyMountWrite(writes: Map<string, string>): string {
+  expect(writes.size).toBe(1);
+  return [...writes.values()][0]!;
+}
+
 describe('remote sandbox path helpers', () => {
   test('mounts Box entries through the shared rclone helper', async () => {
     const commands: string[] = [];
+    const writes = new Map<string, string>();
     const entry = boxMount({
       path: '/Shared/Docs',
       clientId: 'box-client-id',
@@ -116,8 +134,9 @@ describe('remote sandbox path helpers', () => {
         pattern: {
           type: 'rclone',
           mode: 'fuse',
-          remote: 'boxremote',
-          args: ['--vfs-cache-mode', 'writes'],
+          remoteName: 'boxremote',
+          configFilePath: '/workspace/rclone.conf',
+          extraArgs: ['--vfs-cache-mode', 'writes'],
         },
       },
     });
@@ -135,39 +154,45 @@ describe('remote sandbox path helpers', () => {
       pattern: {
         type: 'rclone',
         mode: 'fuse',
-        remote: 'boxremote',
-        args: ['--vfs-cache-mode', 'writes'],
+        remoteName: 'boxremote',
+        configFilePath: '/workspace/rclone.conf',
+        extraArgs: ['--vfs-cache-mode', 'writes'],
       },
       runCommand: async (command) => {
         commands.push(command);
         if (command === 'id -u; id -g') {
           return { status: 0, stdout: '1000\n1000\n' };
         }
+        if (command === "cat -- '/workspace/rclone.conf'") {
+          return { status: 0, stdout: '[boxremote]\nexisting = true\n' };
+        }
         return { status: 0 };
       },
+      writeFile: recordMountWrite(writes),
     });
 
-    const configCommand = commands.find((command) =>
-      command.includes('printf %s'),
-    );
+    const configText = onlyMountWrite(writes);
     const mountCommand = commands.find((command) =>
       command.startsWith("'rclone' 'mount'"),
     );
+    const commandText = commands.join('\n');
 
-    expect(configCommand).toContain('[boxremote]');
-    expect(configCommand).toContain('type = box');
-    expect(configCommand).toContain('client_id = box-client-id');
-    expect(configCommand).toContain('client_secret = box-client-secret');
-    expect(configCommand).toContain('box_config_file = /run/secrets/box.json');
-    expect(configCommand).toContain(
-      'config_credentials = {"boxAppSettings":{}}',
-    );
-    expect(configCommand).toContain('access_token = box-access-token');
-    expect(configCommand).toContain('token = {"access_token":"token"}');
-    expect(configCommand).toContain('box_sub_type = enterprise');
-    expect(configCommand).toContain('root_folder_id = root-id');
-    expect(configCommand).toContain('impersonate = 123456');
-    expect(configCommand).toContain('owned_by = owner@example.com');
+    expect(configText).toContain('[boxremote]');
+    expect(configText).toContain('existing = true');
+    expect(configText).toContain('type = box');
+    expect(configText).toContain('client_id = box-client-id');
+    expect(configText).toContain('client_secret = box-client-secret');
+    expect(configText).toContain('box_config_file = /run/secrets/box.json');
+    expect(configText).toContain('config_credentials = {"boxAppSettings":{}}');
+    expect(configText).toContain('access_token = box-access-token');
+    expect(configText).toContain('token = {"access_token":"token"}');
+    expect(configText).toContain('box_sub_type = enterprise');
+    expect(configText).toContain('root_folder_id = root-id');
+    expect(configText).toContain('impersonate = 123456');
+    expect(configText).toContain('owned_by = owner@example.com');
+    expect(commandText).not.toContain('client_secret = box-client-secret');
+    expect(commandText).not.toContain('access_token = box-access-token');
+    expect(commandText).not.toContain('token = {"access_token":"token"}');
     expect(mountCommand).toContain("'boxremote:Shared/Docs'");
     expect(mountCommand).toContain("'/workspace/box docs'");
     expect(mountCommand).toContain("'--uid' '1000' '--gid' '1000'");
@@ -198,6 +223,184 @@ describe('remote sandbox path helpers', () => {
       "openai_agents_kill_pidfile $pidfile 'rclone' 'serve' 'nfs'",
     );
     expect(commands[0]).not.toContain('kill "$(cat "$pidfile")"');
+  });
+
+  test('passes S3 provider through the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      s3Provider: 'Minio',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('type = s3');
+    expect(configText).toContain('provider = Minio');
+  });
+
+  test('falls back to S3 env auth for partial credentials in the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('env_auth = true');
+    expect(configText).not.toContain('access_key_id = access-key');
+  });
+
+  test('falls back to native GCS rclone config for partial HMAC credentials in the shared helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: GCSMount = {
+      type: 'gcs_mount',
+      bucket: 'agent-logs',
+      accessId: 'gcs-access-id',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('type = google cloud storage');
+    expect(configText).toContain('env_auth = true');
+    expect(configText).not.toContain('access_key_id = gcs-access-id');
+  });
+
+  test('rejects shared R2 rclone mounts without accountId even with customDomain', async () => {
+    const entry: R2Mount = {
+      type: 'r2_mount',
+      bucket: 'agent-logs',
+      customDomain: 'https://r2.example.test',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    } as any;
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/accountId/);
+  });
+
+  test('accepts Azure Blob endpoint aliases in the shared rclone helper', async () => {
+    const commands: string[] = [];
+    const writes = new Map<string, string>();
+    const entry: AzureBlobMount = {
+      type: 'azure_blob_mount',
+      account: 'account-name',
+      container: 'container-name',
+      endpoint: 'https://blob.alias.example.test',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'azure',
+        },
+      },
+    };
+
+    await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/azure',
+      runCommand: async (command) => {
+        commands.push(command);
+        if (command === 'id -u; id -g') {
+          return { status: 0, stdout: '1000\n1000\n' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(writes),
+    });
+
+    const configText = onlyMountWrite(writes);
+    expect(configText).toContain('type = azureblob');
+    expect(configText).toContain('account = account-name');
+    expect(configText).toContain('endpoint = https://blob.alias.example.test');
   });
 
   test('validates rclone NFS pidfiles during failed mount cleanup', async () => {
@@ -234,6 +437,7 @@ describe('remote sandbox path helpers', () => {
           }
           return { status: 0, stdout: '' };
         },
+        writeFile: recordMountWrite(new Map<string, string>()),
       }),
     ).rejects.toThrow(
       'TestSandboxClient cloud bucket mount failed while trying to mount rclone nfs client.',

@@ -17,6 +17,7 @@ import {
   type ManifestEntries,
   type Mount,
   type R2Mount,
+  type S3FilesMount,
   type S3Mount,
 } from '../src/sandbox';
 
@@ -338,6 +339,17 @@ describe('Manifest', () => {
           ownedBy: 'owner@example.com',
           accessToken: 'secret-token',
         },
+        s3files: {
+          type: 's3_files_mount',
+          fileSystemId: 'fs-123',
+          subpath: '/reports',
+          mountTargetIp: '10.0.0.5',
+          accessPoint: 'ap-123',
+          region: 'us-east-1',
+          extraOptions: {
+            allow_other: null,
+          },
+        },
       },
     });
     const data = manifest.entries.data as S3Mount;
@@ -384,6 +396,16 @@ describe('Manifest', () => {
     expect((manifest.entries.box as BoxMount).config).not.toHaveProperty(
       'accessToken',
     );
+    expect((manifest.entries.s3files as S3FilesMount).config).toMatchObject({
+      fileSystemId: 'fs-123',
+      subpath: '/reports',
+      mountTargetIp: '10.0.0.5',
+      accessPoint: 'ap-123',
+      region: 'us-east-1',
+      extraOptions: {
+        allow_other: null,
+      },
+    });
   });
 
   it('clones manifests without sharing entries or environment values', () => {
@@ -568,6 +590,70 @@ describe('Manifest', () => {
           },
         }),
     ).toThrow('snake_case key "driver_options" is not supported');
+
+    expect(
+      () =>
+        new Manifest({
+          entries: {
+            data: {
+              type: 'mount',
+              mountStrategy: {
+                type: 'in_container',
+                pattern: {
+                  type: 'rclone',
+                  remote_name: 'custom',
+                },
+              },
+            } as any,
+          },
+        }),
+    ).toThrow('snake_case key "remote_name" is not supported');
+
+    expect(
+      () =>
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'bucket',
+              mountStrategy: {
+                type: 'in_container',
+                pattern: {
+                  type: 'mountpoint',
+                  options: {
+                    endpoint_url: 'https://s3.example.test',
+                  },
+                },
+              },
+            } as any,
+          },
+        }),
+    ).toThrow('snake_case key "endpoint_url" is not supported');
+
+    expect(
+      () =>
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_files_mount',
+              file_system_id: 'fs-123',
+            } as any,
+          },
+        }),
+    ).toThrow('snake_case key "file_system_id" is not supported');
+
+    expect(
+      () =>
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'bucket',
+              s3_provider: 'Minio',
+            } as any,
+          },
+        }),
+    ).toThrow('snake_case key "s3_provider" is not supported');
 
     expect(
       () =>

@@ -44,6 +44,9 @@ export type MountPattern = {
 export type RcloneMountPattern = MountPattern & {
   type: 'rclone';
   mode?: 'fuse' | 'nfs' | (string & {});
+  remoteName?: string;
+  extraArgs?: string[];
+  configFilePath?: string;
   remote?: string;
   args?: string[];
   nfsAddr?: string;
@@ -53,16 +56,38 @@ export type RcloneMountPattern = MountPattern & {
 export type FuseMountPattern = MountPattern & {
   type: 'fuse';
   command?: string | string[];
+  allowOther?: boolean;
+  logType?: string;
+  logLevel?: string;
+  cacheType?: 'block_cache' | 'file_cache' | (string & {});
+  cachePath?: string;
+  cacheSizeMb?: number;
+  blockCacheBlockSizeMb?: number;
+  blockCacheDiskTimeoutSec?: number;
+  fileCacheTimeoutSec?: number;
+  fileCacheMaxSizeMb?: number;
+  attrCacheTimeoutSec?: number;
+  entryCacheTimeoutSec?: number;
+  negativeEntryCacheTimeoutSec?: number;
 };
 
 export type MountpointMountPattern = MountPattern & {
   type: 'mountpoint';
-  args?: string[];
+  options?: {
+    prefix?: string;
+    region?: string;
+    endpointUrl?: string;
+  };
 };
 
 export type S3FilesMountPattern = MountPattern & {
-  type: 's3_files';
-  args?: string[];
+  type: 's3files';
+  options?: {
+    mountTargetIp?: string;
+    accessPoint?: string;
+    region?: string;
+    extraOptions?: Record<string, string | null>;
+  };
 };
 
 export type InContainerMountStrategy = {
@@ -118,6 +143,7 @@ export type S3Mount = MountBase & {
   prefix?: string;
   region?: string;
   endpointUrl?: string;
+  s3Provider?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;
@@ -140,7 +166,7 @@ export type R2Mount = MountBase & {
   type: 'r2_mount';
   bucket: string;
   prefix?: string;
-  accountId?: string;
+  accountId: string;
   customDomain?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -152,6 +178,7 @@ export type AzureBlobMount = MountBase & {
   prefix?: string;
   account?: string;
   accountName?: string;
+  endpoint?: string;
   endpointUrl?: string;
   identityClientId?: string;
   accountKey?: string;
@@ -174,9 +201,12 @@ export type BoxMount = MountBase & {
 
 export type S3FilesMount = MountBase & {
   type: 's3_files_mount';
-  bucket: string;
-  prefix?: string;
+  fileSystemId: string;
+  subpath?: string;
+  mountTargetIp?: string;
+  accessPoint?: string;
   region?: string;
+  extraOptions?: Record<string, string | null>;
 };
 
 export type TypedMount =

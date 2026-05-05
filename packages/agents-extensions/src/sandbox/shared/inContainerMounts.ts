@@ -29,6 +29,11 @@ export type RemoteMountCommand = (
   options?: RemoteMountCommandOptions,
 ) => Promise<RemoteMountCommandResult>;
 
+export type RemoteMountFileWriter = (
+  path: string,
+  content: string | Uint8Array,
+) => Promise<void>;
+
 export type RcloneCloudBucketMountOptions = {
   providerName: string;
   providerId: string;
@@ -37,6 +42,7 @@ export type RcloneCloudBucketMountOptions = {
   mountPath: string;
   pattern?: RcloneMountPattern;
   runCommand: RemoteMountCommand;
+  writeFile: RemoteMountFileWriter;
   packageManagers?: Array<'apt' | 'apk'>;
   installRcloneViaScript?: boolean;
 };
@@ -139,18 +145,23 @@ export async function mountRcloneCloudBucket(
     await ensureFuseSupport(options);
   }
   await ensureRclone(options);
-  const config = buildRcloneMountConfig(options.entry, {
-    remoteName,
-  });
+  const config = await resolveRcloneMountConfig(options, pattern, remoteName);
   const configPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.conf`;
 
   await runRequiredMountCommand(options, {
-    label: 'write rclone config',
+    label: 'prepare rclone config',
     command: [
       `mkdir -p -- ${shellQuote(options.mountPath)}`,
-      `printf %s ${shellQuote(config.configText)} > ${shellQuote(configPath)}`,
+      `rm -f -- ${shellQuote(configPath)}`,
+      `touch ${shellQuote(configPath)}`,
       `chmod 600 ${shellQuote(configPath)}`,
     ].join(' && '),
+    timeoutMs: 30_000,
+  });
+  await options.writeFile(configPath, config.configText);
+  await runRequiredMountCommand(options, {
+    label: 'protect rclone config',
+    command: `chmod 600 ${shellQuote(configPath)}`,
     timeoutMs: 30_000,
   });
 
@@ -224,7 +235,7 @@ async function mountRcloneFuse(
     '--allow-other',
     ...(userIds ? ['--uid', userIds.uid, '--gid', userIds.gid] : []),
     ...(config.readOnly ? ['--read-only'] : []),
-    ...(pattern.args ?? []),
+    ...rclonePatternArgs(pattern),
   ];
 
   try {
@@ -270,7 +281,7 @@ async function mountRcloneNfs(
     '--config',
     configPath,
     ...(config.readOnly ? ['--read-only'] : []),
-    ...(pattern.args ?? []),
+    ...rclonePatternArgs(pattern),
   ];
   await runRequiredMountCommand(options, {
     label: 'start rclone nfs server',
@@ -323,7 +334,7 @@ function buildRcloneMountConfig(
         configText: [
           `[${options.remoteName}]`,
           'type = s3',
-          'provider = AWS',
+          `provider = ${entry.s3Provider ?? 'AWS'}`,
           ...(entry.endpointUrl ? [`endpoint = ${entry.endpointUrl}`] : []),
           ...(entry.region ? [`region = ${entry.region}`] : []),
           ...s3CredentialLines(entry),
@@ -339,9 +350,9 @@ function buildRcloneMountConfig(
         accessKeyId: readOptionalString(entry, 'accessKeyId'),
         secretAccessKey: readOptionalString(entry, 'secretAccessKey'),
       });
-      if (!entry.accountId && !readOptionalString(entry, 'customDomain')) {
+      if (!entry.accountId) {
         throw new SandboxMountError(
-          'R2 cloud bucket mounts require accountId or customDomain.',
+          'R2 cloud bucket mounts require accountId.',
           {
             mountType: entry.type,
           },
@@ -381,18 +392,88 @@ function buildRcloneMountConfig(
   }
 }
 
+async function resolveRcloneMountConfig(
+  options: RcloneCloudBucketMountOptions,
+  pattern: RcloneMountPattern,
+  remoteName: string,
+): Promise<RcloneMountConfig> {
+  const config = buildRcloneMountConfig(options.entry as RcloneBucketMount, {
+    remoteName,
+  });
+  const configFilePath = rclonePatternString(pattern, 'configFilePath');
+  if (!configFilePath) {
+    return config;
+  }
+  const result = await options.runCommand(
+    `cat -- ${shellQuote(configFilePath)}`,
+    {
+      timeoutMs: 30_000,
+    },
+  );
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      `${options.providerName} failed to read rclone config file.`,
+      {
+        provider: options.providerId,
+        mountType: config.mountType,
+        path: configFilePath,
+        stderr: result.stderr,
+      },
+    );
+  }
+  return {
+    ...config,
+    configText: supplementRcloneConfigText(
+      result.stdout ?? '',
+      remoteName,
+      config.configText,
+      config.mountType,
+      options,
+    ),
+  };
+}
+
+function supplementRcloneConfigText(
+  configText: string,
+  remoteName: string,
+  requiredConfigText: string,
+  mountType: string,
+  options: RcloneCloudBucketMountOptions,
+): string {
+  const escapedRemote = remoteName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const sectionPattern = new RegExp(`^\\s*\\[${escapedRemote}\\]\\s*$`, 'mu');
+  const match = sectionPattern.exec(configText);
+  if (!match) {
+    throw new SandboxMountError(
+      `${options.providerName} rclone config file is missing the required remote section.`,
+      {
+        provider: options.providerId,
+        mountType,
+        remoteName,
+      },
+    );
+  }
+  const sectionStart = match.index;
+  const sectionEnd = match.index + match[0].length;
+  const nextSection = /^\s*\[.+\]\s*$/mu.exec(configText.slice(sectionEnd));
+  const sectionBodyEnd = nextSection
+    ? sectionEnd + nextSection.index
+    : configText.length;
+  const before = configText.slice(0, sectionStart);
+  const sectionBody = configText.slice(sectionStart, sectionBodyEnd).trimEnd();
+  const after = configText.slice(sectionBodyEnd);
+  const requiredLines = requiredConfigText.trimEnd().split('\n').slice(1);
+  const supplement =
+    requiredLines.length > 0 ? `\n${requiredLines.join('\n')}` : '';
+  return `${before}${sectionBody}${supplement}\n${after}`;
+}
+
 function buildGcsRcloneMountConfig(
   entry: GCSMount,
   remoteName: string,
 ): RcloneMountConfig {
   const accessId = readOptionalString(entry, 'accessId');
   const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
-  validateCredentialPair({
-    provider: 'GCS',
-    mountType: entry.type,
-    accessKeyId: accessId,
-    secretAccessKey,
-  });
   if (accessId && secretAccessKey) {
     return {
       remoteName,
@@ -458,7 +539,9 @@ function buildAzureBlobRcloneMountConfig(
       `[${remoteName}]`,
       'type = azureblob',
       `account = ${account}`,
-      ...(entry.endpointUrl ? [`endpoint = ${entry.endpointUrl}`] : []),
+      ...(azureBlobEndpoint(entry)
+        ? [`endpoint = ${azureBlobEndpoint(entry)}`]
+        : []),
       ...(entry.accountKey
         ? [`key = ${entry.accountKey}`]
         : [
@@ -472,6 +555,10 @@ function buildAzureBlobRcloneMountConfig(
     readOnly: entry.readOnly ?? true,
     mountType: entry.type,
   };
+}
+
+function azureBlobEndpoint(entry: AzureBlobMount): string | undefined {
+  return entry.endpointUrl ?? entry.endpoint;
 }
 
 function buildBoxRcloneMountConfig(
@@ -501,12 +588,6 @@ function buildBoxRcloneMountConfig(
 function s3CredentialLines(entry: S3Mount): string[] {
   const accessKeyId = readOptionalString(entry, 'accessKeyId');
   const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
-  validateCredentialPair({
-    provider: 'S3',
-    mountType: entry.type,
-    accessKeyId,
-    secretAccessKey,
-  });
   if (!accessKeyId || !secretAccessKey) {
     return ['env_auth = true'];
   }
@@ -728,20 +809,23 @@ function resolveRcloneRemoteName(
   pattern: RcloneMountPattern,
   options: RcloneCloudBucketMountOptions,
 ): string {
-  if (typeof pattern.remote !== 'undefined') {
+  const remoteName =
+    rclonePatternString(pattern, 'remoteName') ??
+    rclonePatternString(pattern, 'remote');
+  if (typeof remoteName !== 'undefined') {
     if (
-      typeof pattern.remote !== 'string' ||
-      !/^[A-Za-z0-9_-]+$/u.test(pattern.remote)
+      typeof remoteName !== 'string' ||
+      !/^[A-Za-z0-9_-]+$/u.test(remoteName)
     ) {
       throw new SandboxMountError(
-        `${options.providerName} cloud bucket mounts require pattern.remote to contain only letters, numbers, underscores, and hyphens.`,
+        `${options.providerName} cloud bucket mounts require remoteName to contain only letters, numbers, underscores, and hyphens.`,
         {
           provider: options.providerId,
-          remoteName: pattern.remote,
+          remoteName,
         },
       );
     }
-    return pattern.remote;
+    return remoteName;
   }
 
   return `sandbox_${sanitizeRemoteName(options.providerId)}_${sanitizeRemoteName(options.mountPath)}`;
@@ -796,6 +880,13 @@ function rclonePatternStringArray(
     value.every((item): item is string => typeof item === 'string')
     ? value
     : undefined;
+}
+
+function rclonePatternArgs(pattern: RcloneMountPattern): string[] {
+  return [
+    ...(rclonePatternStringArray(pattern, 'args') ?? []),
+    ...(rclonePatternStringArray(pattern, 'extraArgs') ?? []),
+  ];
 }
 
 function isRcloneBucketMount(entry: Entry): entry is RcloneBucketMount {

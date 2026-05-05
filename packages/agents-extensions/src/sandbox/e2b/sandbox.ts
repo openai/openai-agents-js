@@ -767,6 +767,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
       runCommand: this.mountCommandRunner(),
+      writeFile: this.writeRemoteFile.bind(this),
       packageManagers: ['apt'],
       installRcloneViaScript: true,
     });

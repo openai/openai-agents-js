@@ -143,9 +143,9 @@ describe('sandbox entry helpers', () => {
       boxSubType: 'enterprise',
     });
     expectTypeOf(boxMount()).toMatchTypeOf<BoxMount>();
-    expect(s3FilesMount({ bucket: 'bucket' })).toMatchObject({
+    expect(s3FilesMount({ fileSystemId: 'fs-123' })).toMatchObject({
       type: 's3_files_mount',
-      bucket: 'bucket',
+      fileSystemId: 'fs-123',
     });
     expect(inContainerMountStrategy()).toEqual({ type: 'in_container' });
     expect(

@@ -1,6 +1,8 @@
 import {
   lstat,
+  mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -14,6 +16,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxProcessResult } from '../../src/sandbox/sandboxes/shared/runProcess';
 
+const dockerStdinWrites: Array<string | Uint8Array> = [];
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
 }));
@@ -37,6 +40,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import {
   dockerVolumeMountStrategy,
   DockerSandboxClient,
+  inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
 } from '../../src/sandbox/local';
@@ -70,7 +74,9 @@ function dockerSpawnResult(args: {
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.stdin = {
-    write: vi.fn(),
+    write: vi.fn((chunk: string | Uint8Array) => {
+      dockerStdinWrites.push(chunk);
+    }),
     end: vi.fn(),
   };
   queueMicrotask(() => {
@@ -92,6 +98,7 @@ describe('DockerSandboxClient unit behavior', () => {
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), 'agents-core-docker-unit-test-'));
+    dockerStdinWrites.length = 0;
     processMocks.runSandboxProcess.mockReset();
     childProcessMocks.spawn.mockReset();
   });
@@ -390,6 +397,963 @@ describe('DockerSandboxClient unit behavior', () => {
       ['volume', 'rm', '-f', expect.stringContaining('logs')],
       { timeoutMs: 10_000 },
     );
+  });
+
+  it('starts Docker with fuse privileges and applies in-container command mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      expect(args).toEqual(
+        expect.arrayContaining(['exec', '-i', '-w', '/', '-u', 'root']),
+      );
+      expect(args.join(' ')).toContain('OPENAI_AGENTS_MOUNT_PATH=');
+      expect(args.join(' ')).toContain('OPENAI_AGENTS_MOUNT_SOURCE=');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          mounted: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command:
+                  'printf mounted > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--device',
+        '/dev/fuse',
+        '--cap-add',
+        'SYS_ADMIN',
+        '--security-opt',
+        'apparmor:unconfined',
+      ]),
+    );
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('routes filesystem reads in in-container mounts through Docker', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      if (command.includes('test -e')) {
+        return dockerSpawnResult({ status: 0 });
+      }
+      if (command.includes('base64 --')) {
+        return dockerSpawnResult({
+          stdout: Buffer.from('container-data').toString('base64'),
+          status: 0,
+        });
+      }
+      if (command.includes('find ')) {
+        return dockerSpawnResult({
+          stdout: 'f\tfile.txt\nd\tnested\nl\tlink\n',
+          status: 0,
+        });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          mounted: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command: 'true',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    await expect(session.pathExists('mounted/file.txt')).resolves.toBe(true);
+    await expect(
+      session.readFile({ path: 'mounted/file.txt' }),
+    ).resolves.toEqual(Buffer.from('container-data'));
+    await expect(session.listDir({ path: 'mounted' })).resolves.toEqual([
+      { name: 'file.txt', path: 'mounted/file.txt', type: 'file' },
+      { name: 'nested', path: 'mounted/nested', type: 'dir' },
+      { name: 'link', path: 'mounted/link', type: 'other' },
+    ]);
+    await expect(
+      session.createEditor().createFile({
+        type: 'create_file',
+        path: 'mounted/host-only.txt',
+        diff: '+hidden\n',
+      }),
+    ).rejects.toThrow(/in-container mount path/);
+
+    const filesystemCommands = childProcessMocks.spawn.mock.calls
+      .map(([, args]) => (args as string[]).join(' '))
+      .filter(
+        (command) =>
+          command.includes('test -e') ||
+          command.includes('base64 --') ||
+          command.includes('find '),
+      );
+    expect(filesystemCommands).toHaveLength(3);
+    for (const command of filesystemCommands) {
+      expect(command).toContain('exec -i');
+      expect(command).toContain('container-123');
+    }
+
+    await session.close();
+  });
+
+  it('removes the container and workspace when in-container mount application fails during create', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ stderr: 'mount failed', status: 1 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            mounted: {
+              type: 'mount',
+              source: 'memory://fixture',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command: 'false',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/mount failed/);
+
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-123'],
+      { timeoutMs: 30_000 },
+    );
+    expect(
+      (await readdir(rootDir)).filter((name) =>
+        name.startsWith('openai-agents-docker-sandbox-'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('applies Azure Blob blobfuse options for Docker in-container mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('blobfuse2');
+      expect(command).toContain('--read-only');
+      expect(command).toContain('trap');
+      expect(command).toContain('rm -rf');
+      expect(command).not.toContain('account-key');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          azure: {
+            type: 'azure_blob_mount',
+            account: 'account-name',
+            container: 'container-name',
+            endpointUrl: 'https://blob.example.test',
+            accountKey: 'account-key',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                cacheType: 'file_cache',
+                cachePath: 'cache/blobfuse',
+                cacheSizeMb: 123,
+                fileCacheTimeoutSec: 77,
+                attrCacheTimeoutSec: 42,
+                entryCacheTimeoutSec: 9,
+                negativeEntryCacheTimeoutSec: 3,
+                logLevel: 'log_warning',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const configInput = dockerStdinWrites.join('\n');
+    expect(configInput).toContain('allow-other: true');
+    expect(configInput).toContain('- file_cache');
+    expect(configInput).toContain('level: log_warning');
+    expect(configInput).toContain('entry-expiration-sec: 9');
+    expect(configInput).toContain('negative-entry-expiration-sec: 3');
+    expect(configInput).toContain('timeout-sec: 42');
+    expect(configInput).toContain('path: /workspace/cache/blobfuse');
+    expect(configInput).toContain('timeout-sec: 77');
+    expect(configInput).toContain('max-size-mb: 123');
+    expect(configInput).toContain('account-name: account-name');
+    expect(configInput).toContain('container: container-name');
+    expect(configInput).toContain('endpoint: https://blob.example.test');
+    expect(configInput).toContain('auth-type: key');
+    expect(configInput).toContain('account-key: account-key');
+
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--device',
+        '/dev/fuse',
+        '--cap-add',
+        'SYS_ADMIN',
+        '--security-opt',
+        'apparmor:unconfined',
+      ]),
+    );
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects blobfuse cache paths inside the mount path', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            azure: {
+              type: 'azure_blob_mount',
+              account: 'account-name',
+              container: 'container-name',
+              mountPath: 'azure',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  cachePath: 'azure/cache',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/cachePath must be outside the mount path/);
+    expect(
+      childProcessMocks.spawn.mock.calls.every(([, args]) =>
+        (args as string[]).join(' ').includes('fusermount3'),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects blobfuse cache paths with parent segments', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            azure: {
+              type: 'azure_blob_mount',
+              account: 'account-name',
+              container: 'container-name',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  cachePath: 'cache/..',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/cachePath must be relative/);
+    expect(
+      childProcessMocks.spawn.mock.calls.every(([, args]) =>
+        (args as string[]).join(' ').includes('fusermount3'),
+      ),
+    ).toBe(true);
+  });
+
+  it('starts Docker with sysadmin privileges and applies S3 Files mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('mount');
+      expect(command).toContain('s3files');
+      expect(command).toContain('fs-123:/reports');
+      expect(command).toContain('mounttargetip=10.0.0.5');
+      expect(command).toContain('accesspoint=ap-123');
+      expect(command).toContain('region=us-east-1');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          s3files: {
+            type: 's3_files_mount',
+            fileSystemId: 'fs-123',
+            subpath: '/reports',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 's3files',
+                options: {
+                  mountTargetIp: '10.0.0.5',
+                  accessPoint: 'ap-123',
+                  region: 'us-east-1',
+                },
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--cap-add',
+        'SYS_ADMIN',
+        '--security-opt',
+        'apparmor:unconfined',
+      ]),
+    );
+    expect(runCall?.[1]).not.toContain('/dev/fuse');
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('applies mountpoint options for Docker in-container mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('mount-s3');
+      expect(command).toContain('--prefix');
+      expect(command).toContain('reports');
+      expect(command).toContain('--region');
+      expect(command).toContain('us-west-2');
+      expect(command).toContain('--endpoint-url');
+      expect(command).toContain('https://s3.example.test');
+      expect(command).not.toContain('secret-key');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          s3: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'mountpoint',
+                options: {
+                  prefix: 'reports',
+                  region: 'us-west-2',
+                  endpointUrl: 'https://s3.example.test',
+                },
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--device',
+        '/dev/fuse',
+        '--cap-add',
+        'SYS_ADMIN',
+        '--security-opt',
+        'apparmor:unconfined',
+      ]),
+    );
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+    const envInput = dockerStdinWrites.join('\n');
+    expect(envInput).toContain('AWS_ACCESS_KEY_ID');
+    expect(envInput).toContain('secret-key');
+  });
+
+  it('uses the GCS endpoint default for Docker mountpoint mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('mount-s3');
+      expect(command).toContain('--endpoint-url');
+      expect(command).toContain('https://storage.googleapis.com');
+      expect(command).toContain('--upload-checksums');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          gcs: {
+            type: 'gcs_mount',
+            bucket: 'gcs-logs',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'mountpoint',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('reads rclone config files and applies remoteName and extraArgs for Docker mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      if (command.includes('base64')) {
+        expect(command).toContain('/workspace/rclone.conf');
+        return dockerSpawnResult({
+          stdout: Buffer.from('[custom]\ncustom_option = true\n').toString(
+            'base64',
+          ),
+          status: 0,
+        });
+      }
+      expect(command).toContain('--allow-other');
+      expect(command).toContain('--vfs-cache-mode');
+      expect(command).toContain('writes');
+      expect(command).toContain('trap');
+      expect(command).toContain('rm -rf');
+      expect(command).not.toContain('/tmp/openai-agents-docker-custom.conf');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          'rclone.conf': {
+            type: 'file',
+            content: '[custom]\ncustom_option = true\n',
+          },
+          s3: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+                remoteName: 'custom',
+                configFilePath: 'rclone.conf',
+                extraArgs: ['--vfs-cache-mode', 'writes'],
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledTimes(2);
+    const configInput = dockerStdinWrites.join('\n');
+    expect(configInput).toContain('[custom]');
+    expect(configInput).toContain('custom_option = true');
+    expect(configInput).toContain('provider = AWS');
+  });
+
+  it('honors R2 prefixes in Docker in-container rclone mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('rclone');
+      expect(command).toContain('r2remote:r2-logs/2026/04');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          r2logs: {
+            type: 'r2_mount',
+            bucket: 'r2-logs',
+            prefix: '/2026/04/',
+            accountId: 'account-id',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+                remoteName: 'r2remote',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it('rejects rclone config files outside the Docker workspace policy', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            s3: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'rclone',
+                  remoteName: 'custom',
+                  configFilePath: '/etc/rclone.conf',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/escapes the workspace root/);
+  });
+
+  it('builds syntactically valid Docker rclone NFS mount commands', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('rclone');
+      expect(command).toContain('serve');
+      expect(command).toContain('nfs');
+      expect(command).toContain('& printf %s "$!" >');
+      expect(command).toContain('{ mounted=0; for i in 1 2 3; do if');
+      expect(command).toContain('openai-agents-rclone-nfs');
+      expect(command).not.toContain('pkill -f');
+      expect(command).not.toContain('do; if');
+      expect(command).not.toContain('& &&');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          s3: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+                mode: 'nfs',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('applies Azure Blob prefix when building Docker rclone mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain(':container-name/prefix/path');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          azure: {
+            type: 'azure_blob_mount',
+            accountName: 'account-name',
+            container: 'container-name',
+            endpoint: 'https://blob.alias.example.test',
+            prefix: '/prefix/path/',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+    const configInput = dockerStdinWrites.join('\n');
+    expect(configInput).toContain('type = azureblob');
+    expect(configInput).toContain('account = account-name');
+    expect(configInput).toContain('endpoint = https://blob.alias.example.test');
+  });
+
+  it('passes custom S3 providers through Docker rclone mounts', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          s3: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            s3Provider: 'Minio',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const configInput = dockerStdinWrites.join('\n');
+    expect(configInput).toContain('type = s3');
+    expect(configInput).toContain('provider = Minio');
+  });
+
+  it('falls back to native Docker GCS rclone config for partial HMAC credentials', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('rclone');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          gcs: {
+            type: 'gcs_mount',
+            bucket: 'gcs-logs',
+            accessId: 'gcs-access-id',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'rclone',
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+    const configInput = dockerStdinWrites.join('\n');
+    expect(configInput).toContain('type = google cloud storage');
+    expect(configInput).toContain('env_auth = true');
+    expect(configInput).not.toContain('access_key_id = gcs-access-id');
+  });
+
+  it('rejects R2 Docker rclone mounts without accountId even with customDomain', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            r2: {
+              type: 'r2_mount',
+              bucket: 'r2-logs',
+              customDomain: 'https://r2.example.test',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'rclone',
+                },
+              }),
+            } as any,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/accountId/);
   });
 
   it('hydrates workspace archives with Docker volume mount entries', async () => {
@@ -696,6 +1660,285 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(session.pathExists(rootDir)).resolves.toBe(true);
   });
 
+  it('rejects applying in-container mounts that need missing Docker privileges', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          entries: {
+            s3files: {
+              type: 's3_files_mount',
+              fileSystemId: 'fs-123',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 's3files',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/requires Docker privileges/);
+  });
+
+  it('creates and chowns absolute in-container mount paths before runAs apply', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          bootstrap: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command: 'true',
+              },
+            }),
+          },
+        },
+      }),
+    );
+    childProcessMocks.spawn.mockClear();
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = (args as string[]).join(' ');
+      if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/failed'")) {
+        return dockerSpawnResult({ stderr: 'mount failed', status: 1 });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+
+    await session.applyManifest(
+      new Manifest({
+        entries: {
+          mounted: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountPath: '/mnt/absolute',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command: 'true',
+              },
+            }),
+          },
+        },
+      }),
+      'node',
+    );
+
+    const commands = childProcessMocks.spawn.mock.calls.map(([, args]) =>
+      (args as string[]).join(' '),
+    );
+    const mkdirIndex = commands.findIndex((command) =>
+      command.includes("mkdir -p -- '/mnt/absolute'"),
+    );
+    const chownIndex = commands.findIndex((command) =>
+      command.includes("chown -R 'node':'node' -- '/mnt/absolute'"),
+    );
+    const mountIndex = commands.findIndex((command) =>
+      command.includes("OPENAI_AGENTS_MOUNT_PATH='/mnt/absolute'"),
+    );
+    expect(mkdirIndex).toBeGreaterThanOrEqual(0);
+    expect(chownIndex).toBeGreaterThan(mkdirIndex);
+    expect(mountIndex).toBeGreaterThan(chownIndex);
+  });
+
+  it('unmounts applied in-container mounts when applyManifest later fails', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/second'")) {
+        return dockerSpawnResult({ stderr: 'second failed', status: 1 });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          bootstrap: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command: 'true',
+              },
+            }),
+          },
+        },
+      }),
+    );
+    childProcessMocks.spawn.mockClear();
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          entries: {
+            first: {
+              type: 'mount',
+              source: 'memory://fixture',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command: 'true',
+                },
+              }),
+            },
+            second: {
+              type: 'mount',
+              source: 'memory://fixture',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command: 'false',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/second failed/);
+
+    const commands = childProcessMocks.spawn.mock.calls.map(([, args]) =>
+      (args as string[]).join(' '),
+    );
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("umount -l '/workspace/second'") &&
+          command.includes('fusermount3'),
+      ),
+    ).toBe(true);
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("umount -l '/workspace/first'") &&
+          command.includes('fusermount3'),
+      ),
+    ).toBe(true);
+  });
+
+  it('rolls back environment state when applyManifest fails', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          KEEP: 'old',
+        },
+        entries: {
+          bootstrap: {
+            type: 'mount',
+            source: 'memory://fixture',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                command: 'true',
+              },
+            }),
+          },
+        },
+      }),
+    );
+    childProcessMocks.spawn.mockClear();
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = (args as string[]).join(' ');
+      if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/failed'")) {
+        return dockerSpawnResult({ stderr: 'mount failed', status: 1 });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          environment: {
+            SECRET: {
+              value: 'new-secret',
+              ephemeral: true,
+            },
+          },
+          entries: {
+            failed: {
+              type: 'mount',
+              source: 'memory://fixture',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command: 'false',
+                },
+              }),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/mount failed/);
+
+    expect(session.state.environment).toEqual({
+      KEEP: 'old',
+    });
+  });
+
   it('starts a new container when resumed container state is stopped', async () => {
     const workspaceRootPath = await mkdtemp(join(rootDir, 'workspace-'));
     processMocks.runSandboxProcess.mockImplementation(
@@ -801,6 +2044,97 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(lstat(join(secondSnapshot.path, 'link'))).rejects.toThrow();
     await expect(
       readFile(join(secondSnapshot.path, 'link'), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('excludes blobfuse cache and config directories from Docker snapshots', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: rootDir,
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          azure: {
+            type: 'azure_blob_mount',
+            account: 'account-name',
+            container: 'container-name',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'fuse',
+                cachePath: 'cache/blobfuse',
+              },
+            }),
+          },
+        },
+      }),
+    );
+    await mkdir(
+      join(session.state.workspaceRootPath, '.sandbox-blobfuse-config'),
+      {
+        recursive: true,
+      },
+    );
+    await writeFile(
+      join(
+        session.state.workspaceRootPath,
+        '.sandbox-blobfuse-config',
+        'secret.yaml',
+      ),
+      'account-key: secret\n',
+      'utf8',
+    );
+    await mkdir(
+      join(session.state.workspaceRootPath, '.sandbox-blobfuse-cache'),
+      {
+        recursive: true,
+      },
+    );
+    await writeFile(
+      join(session.state.workspaceRootPath, '.sandbox-blobfuse-cache', 'data'),
+      'cache\n',
+      'utf8',
+    );
+    await mkdir(join(session.state.workspaceRootPath, 'cache', 'blobfuse'), {
+      recursive: true,
+    });
+    await writeFile(
+      join(session.state.workspaceRootPath, 'cache', 'blobfuse', 'data'),
+      'custom cache\n',
+      'utf8',
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    const snapshot = serialized.snapshot as {
+      type: 'local';
+      path: string;
+    };
+
+    await expect(
+      stat(join(snapshot.path, '.sandbox-blobfuse-config')),
+    ).rejects.toThrow();
+    await expect(
+      stat(join(snapshot.path, '.sandbox-blobfuse-cache')),
+    ).rejects.toThrow();
+    await expect(
+      stat(join(snapshot.path, 'cache', 'blobfuse')),
     ).rejects.toThrow();
   });
 

@@ -635,6 +635,39 @@ function normalizeMountStrategy(strategy: unknown): MountStrategy {
     type: strategy.type.trim(),
   };
   rejectKnownSnakeCaseKeys(normalized, ['driver_options'], 'mount strategy');
+  if (isRecord(normalized.pattern)) {
+    rejectKnownSnakeCaseKeys(
+      normalized.pattern,
+      [
+        'remote_name',
+        'extra_args',
+        'config_file_path',
+        'nfs_addr',
+        'nfs_mount_options',
+        'allow_other',
+        'log_type',
+        'log_level',
+        'cache_type',
+        'cache_path',
+        'cache_size_mb',
+        'block_cache_block_size_mb',
+        'block_cache_disk_timeout_sec',
+        'file_cache_timeout_sec',
+        'file_cache_max_size_mb',
+        'attr_cache_timeout_sec',
+        'entry_cache_timeout_sec',
+        'negative_entry_cache_timeout_sec',
+      ],
+      'mount strategy pattern',
+    );
+    if (isRecord(normalized.pattern.options)) {
+      rejectKnownSnakeCaseKeys(
+        normalized.pattern.options,
+        ['endpoint_url', 'mount_target_ip', 'access_point', 'extra_options'],
+        'mount strategy pattern options',
+      );
+    }
+  }
 
   return normalized as MountStrategy;
 }
@@ -655,6 +688,7 @@ function normalizeTypedMountProvider(entry: Entry): void {
             prefix: entry.prefix,
             region: entry.region,
             endpointUrl: entry.endpointUrl,
+            s3Provider: entry.s3Provider,
           },
         ),
       );
@@ -697,6 +731,7 @@ function normalizeTypedMountProvider(entry: Entry): void {
             prefix: entry.prefix,
             account: entry.account,
             accountName: entry.accountName,
+            endpoint: entry.endpoint,
             endpointUrl: entry.endpointUrl,
           },
         ),
@@ -723,10 +758,13 @@ function normalizeTypedMountProvider(entry: Entry): void {
         entry,
         's3_files',
         typedMountConfig(
-          { bucket: entry.bucket },
+          { fileSystemId: entry.fileSystemId },
           {
-            prefix: entry.prefix,
+            subpath: entry.subpath,
+            mountTargetIp: entry.mountTargetIp,
+            accessPoint: entry.accessPoint,
             region: entry.region,
+            extraOptions: entry.extraOptions,
           },
         ),
       );
@@ -750,11 +788,11 @@ function setTypedMountProviderConfig(
 
 function typedMountConfig(
   required: Record<string, string>,
-  optional: Record<string, string | undefined> = {},
+  optional: Record<string, unknown | undefined> = {},
 ): Record<string, unknown> {
   const config: Record<string, unknown> = { ...required };
   for (const [key, value] of Object.entries(optional)) {
-    if (value) {
+    if (value !== undefined) {
       config[key] = value;
     }
   }
@@ -770,10 +808,24 @@ function rejectKnownSnakeCaseMountKeys(entry: Entry): void {
       'mount_strategy',
       'client_id',
       'client_secret',
+      'access_id',
+      'access_key_id',
       'access_token',
+      'secret_access_key',
+      'session_token',
+      'service_account_credentials',
+      'service_account_file',
       'endpoint_url',
       'account_id',
       'account_name',
+      'account_key',
+      'custom_domain',
+      'file_system_id',
+      'mount_target_ip',
+      'access_point',
+      'extra_options',
+      's3_provider',
+      'identity_client_id',
       'box_config_file',
       'config_credentials',
       'box_sub_type',

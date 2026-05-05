@@ -52,6 +52,7 @@ export type LocalSnapshotFingerprint = {
 type LocalSnapshotState = {
   workspaceRootPath: string;
   manifest: Manifest;
+  snapshotExcludedPaths?: Iterable<string>;
   snapshotSpec?: SnapshotSpec | null;
   snapshot?: LocalSandboxSnapshot | null;
   snapshotFingerprint?: string | null;
@@ -66,7 +67,7 @@ export async function createLocalSnapshot(
   await copyDirectory(
     state.workspaceRootPath,
     snapshotPath,
-    state.manifest.ephemeralPersistencePaths(),
+    localSnapshotExcludedPaths(state),
   );
   return {
     id: randomUUID(),
@@ -81,7 +82,7 @@ export async function createRemoteSnapshot(
 ): Promise<RemoteSnapshot> {
   const data = await createWorkspaceArchive(
     state.workspaceRootPath,
-    state.manifest.ephemeralPersistencePaths(),
+    localSnapshotExcludedPaths(state),
   );
   const saved = await spec.store.save({
     id: spec.id,
@@ -285,12 +286,20 @@ export async function computeLocalSnapshotFingerprint(
   await hashDirectory(
     hash,
     state.workspaceRootPath,
-    state.manifest.ephemeralPersistencePaths(),
+    localSnapshotExcludedPaths(state),
   );
   return {
     fingerprint: hash.digest('hex'),
     version: LOCAL_SNAPSHOT_FINGERPRINT_VERSION,
   };
+}
+
+function localSnapshotExcludedPaths(state: LocalSnapshotState): Set<string> {
+  const paths = state.manifest.ephemeralPersistencePaths();
+  for (const path of state.snapshotExcludedPaths ?? []) {
+    paths.add(path);
+  }
+  return paths;
 }
 
 export async function copyDirectory(

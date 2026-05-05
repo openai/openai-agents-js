@@ -956,6 +956,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
       runCommand: this.mountCommandRunner(),
+      writeFile: this.writeRemoteFile.bind(this),
       packageManagers: ['apt'],
       installRcloneViaScript: true,
     });

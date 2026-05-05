@@ -3,7 +3,11 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { DockerSandboxClient, Manifest } from '../../src/sandbox/local';
+import {
+  DockerSandboxClient,
+  inContainerMountStrategy,
+  Manifest,
+} from '../../src/sandbox/local';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
   Buffer.from(
@@ -103,6 +107,66 @@ describe('DockerSandboxClient', () => {
       expect(envOutput).toContain('updated:present');
       expect(ttyOutput).toContain('tty yes');
       expect(ttyOutput).not.toContain('tty no');
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'applies in-container command mounts inside Docker',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+      });
+      const session = await client.create(
+        new Manifest({
+          entries: {
+            mounted: {
+              type: 'mount',
+              source: 'memory://initial',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command:
+                    'printf initial > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
+                },
+              }),
+            },
+          },
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+
+      const initialOutput = await session.execCommand({
+        cmd: 'cat mounted/marker.txt',
+      });
+      expect(initialOutput).toContain('initial');
+
+      await session.applyManifest(
+        new Manifest({
+          entries: {
+            applied: {
+              type: 'mount',
+              source: 'memory://applied',
+              mountStrategy: inContainerMountStrategy({
+                pattern: {
+                  type: 'fuse',
+                  command:
+                    'printf applied > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
+                },
+              }),
+            },
+          },
+        }),
+      );
+
+      const appliedOutput = await session.execCommand({
+        cmd: 'cat applied/marker.txt',
+      });
+      expect(appliedOutput).toContain('applied');
     },
     DOCKER_TEST_TIMEOUT_MS,
   );

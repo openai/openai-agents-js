@@ -1677,6 +1677,7 @@ describe('CloudflareSandboxClient', () => {
           data: {
             type: 'r2_mount',
             bucket: 'logs',
+            accountId: 'account-id',
             customDomain: 'https://logs.example.com',
             mountPath: 'mounted/logs',
             mountStrategy: new CloudflareBucketMountStrategy(),
