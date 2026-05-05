@@ -697,6 +697,28 @@ describe('prepareInputItemsWithSession', () => {
     async clearSession(): Promise<void> {}
   }
 
+  class AssistantReplaySanitizingSession extends StubSession {
+    prepareHistoryItemForModelInput(item: AgentInputItem): AgentInputItem {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        Array.isArray(item) ||
+        item.type !== 'message' ||
+        item.role !== 'assistant'
+      ) {
+        return item;
+      }
+
+      const {
+        id: _id,
+        providerData: _providerData,
+        provider_data: _provider_data,
+        ...rest
+      } = item as Record<string, unknown>;
+      return rest as AgentInputItem;
+    }
+  }
+
   it('concatenates session history with array inputs when no callback is provided', async () => {
     const historyItem: AgentInputItem = {
       type: 'message',
@@ -736,6 +758,171 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems).toEqual(newItems);
     expect(sessionItems[0]).toBe(newItems[0]);
     expect(sessionItems[1]).toBe(newItems[1]);
+  });
+
+  it('sanitizes assistant history items before model input when the session requests it', async () => {
+    const userHistoryItem: AgentInputItem = {
+      id: 'conv-user',
+      type: 'message',
+      role: 'user',
+      content: 'user history',
+      providerData: { server: 'metadata' },
+    };
+    const assistantHistoryItem: AgentInputItem = {
+      id: 'conv-assistant',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: 'assistant history',
+        },
+      ],
+      providerData: { server: 'metadata' },
+    };
+    const functionCallItem: AgentInputItem = {
+      id: 'conv-call',
+      type: 'function_call',
+      name: 'lookup',
+      callId: 'call-history',
+      arguments: '{}',
+      status: 'completed',
+    };
+    const functionCallOutputItem: AgentInputItem = {
+      id: 'conv-output',
+      type: 'function_call_result',
+      name: 'lookup',
+      callId: 'call-history',
+      output: 'ok',
+      status: 'completed',
+    };
+    const session = new AssistantReplaySanitizingSession([
+      userHistoryItem,
+      assistantHistoryItem,
+      functionCallItem,
+      functionCallOutputItem,
+    ]);
+
+    const result = await prepareInputItemsWithSession('new', session);
+
+    expect(result.preparedInput).toEqual([
+      userHistoryItem,
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'assistant history',
+          },
+        ],
+      },
+      functionCallItem,
+      functionCallOutputItem,
+      ...toAgentInputList('new'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('new'));
+  });
+
+  it('matches sanitized assistant history returned by callbacks without re-persisting it', async () => {
+    const assistantHistoryItem: AgentInputItem = {
+      id: 'conv-assistant',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: 'assistant history',
+        },
+      ],
+      providerData: { server: 'metadata' },
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new AssistantReplaySanitizingSession([
+      assistantHistoryItem,
+    ]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        const {
+          id: _id,
+          providerData: _providerData,
+          ...historyCopy
+        } = history[0] as Record<string, unknown>;
+        return [historyCopy as AgentInputItem, { ...newItems[0] }];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'assistant history',
+          },
+        ],
+      },
+      newItem,
+    ]);
+    expect(result.sessionItems).toEqual([newItem]);
+  });
+
+  it('keeps sanitized user history distinct when callbacks remove its id', async () => {
+    const userHistoryItem: AgentInputItem = {
+      id: 'conv-user',
+      type: 'message',
+      role: 'user',
+      content: 'user history',
+      providerData: { server: 'metadata' },
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new AssistantReplaySanitizingSession([userHistoryItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        const {
+          id: _id,
+          providerData: _providerData,
+          ...historyCopy
+        } = history[0] as Record<string, unknown>;
+        return [historyCopy as AgentInputItem, { ...newItems[0] }];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'user history',
+      },
+      newItem,
+    ]);
+    expect(result.sessionItems).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: 'user history',
+      },
+      newItem,
+    ]);
   });
 
   it('only persists new inputs when callbacks prepend history duplicates', async () => {

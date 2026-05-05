@@ -174,6 +174,10 @@ export class OpenAIConversationsSession
     return orderedItems;
   }
 
+  prepareHistoryItemForModelInput(item: AgentInputItem): AgentInputItem {
+    return stripAssistantReplayMetadata(item);
+  }
+
   async addItems(items: AgentInputItem[]): Promise<void> {
     if (!items.length) {
       return;
@@ -239,6 +243,25 @@ function stripIdsAndProviderData(items: AgentInputItem[]): AgentInputItem[] {
     }
     return rest as AgentInputItem;
   });
+}
+
+function stripAssistantReplayMetadata(item: AgentInputItem): AgentInputItem {
+  if (Array.isArray(item) || item === null || typeof item !== 'object') {
+    return item;
+  }
+
+  const record = item as Record<string, unknown>;
+  if (record.type !== 'message' || record.role !== 'assistant') {
+    return item;
+  }
+
+  const {
+    id: _id,
+    providerData: _providerData,
+    provider_data: _provider_data,
+    ...rest
+  } = record;
+  return rest as AgentInputItem;
 }
 
 const INPUT_CONTENT_TYPES = new Set([

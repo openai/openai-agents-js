@@ -39,6 +39,14 @@ export interface Session {
   getItems(limit?: number): Promise<AgentInputItem[]>;
 
   /**
+   * Optionally rewrite a stored history item before it is sent back to the model.
+   *
+   * Session implementations can use this to strip provider-managed replay metadata while
+   * preserving their public `getItems()` shape for UI and deletion workflows.
+   */
+  prepareHistoryItemForModelInput?(item: AgentInputItem): AgentInputItem;
+
+  /**
    * Append new items to the conversation history.
    *
    * @param items - Items to add to the session history.
