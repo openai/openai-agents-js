@@ -117,7 +117,7 @@ The main SDK pieces map onto those layers like this:
 
 A practical design order is:
 
-1. Define the fresh-session workspace contract with `Manifest`.
+1. Define the fresh-session workspace contract with a `Manifest` or manifest init object.
 2. Define the agent with `SandboxAgent`.
 3. Add built-in or custom capabilities.
 4. Decide how each run should obtain its sandbox session in `run(agent, input, { sandbox: ... })` or `new Runner({ sandbox: ... })`.
@@ -150,7 +150,7 @@ Sandbox client choice, sandbox-session reuse, manifest override, and snapshot se
 
 ### `defaultManifest`
 
-`defaultManifest` is the default `Manifest` used when the runner creates a fresh sandbox session for this agent. Use it for the files, repos, helper material, output directories, and mounts the agent should usually start with.
+`defaultManifest` is the default workspace used when the runner creates a fresh sandbox session for this agent. Pass either a `Manifest` instance or the same init object you would pass to `new Manifest(...)`. Use it for the files, repos, helper material, output directories, and mounts the agent should usually start with.
 
 This is only the default. A run can override it with `sandbox.manifest`, and a reused or resumed sandbox session keeps its existing workspace state.
 
@@ -332,7 +332,7 @@ These options only matter when the runner is creating a fresh sandbox session:
 
 | Option | Use it when | Notes |
 | --- | --- | --- |
-| `manifest` | You want a one-off fresh-session workspace override. | Falls back to `agent.defaultManifest` when omitted. |
+| `manifest` | You want a one-off fresh-session workspace override. | Accepts a `Manifest` or manifest init object. Falls back to `agent.defaultManifest` when omitted. |
 | `snapshot` | A fresh sandbox session should be seeded from a snapshot. | Useful for resume-like flows or remote snapshot clients. |
 | `options` | The sandbox client needs creation-time options. | Common for Docker images, provider timeouts, and similar client-specific settings. |
 

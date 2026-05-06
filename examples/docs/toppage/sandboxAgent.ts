@@ -1,14 +1,14 @@
 import { run } from '@openai/agents';
-import { gitRepo, Manifest, SandboxAgent } from '@openai/agents/sandbox';
+import { gitRepo, SandboxAgent } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Workspace Assistant',
   model: 'gpt-5.5',
   instructions: 'Inspect the repo before changing files.',
-  defaultManifest: new Manifest({
+  defaultManifest: {
     entries: { repo: gitRepo({ repo: 'openai/openai-agents-js' }) },
-  }),
+  },
 });
 
 const result = await run(
