@@ -37,6 +37,7 @@ const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   [/^gpt-5\.4-pro(?:-\d{4}-\d{2}-\d{2})?$/, 'medium'],
   [/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.4-nano(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.5(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
 ];
 
 function getDefaultReasoningEffort(

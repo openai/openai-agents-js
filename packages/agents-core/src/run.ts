@@ -53,6 +53,7 @@ import {
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
+import { getDefaultModelSettings } from './defaultModel';
 import {
   getResponseWithRetry,
   getStreamedResponseWithRetry,
@@ -121,6 +122,19 @@ export { getTurnInput } from './runner/items';
 export type { ReasoningItemIdPolicy } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
+
+function getImplicitModelSettingsForResolvedModel(
+  explictlyModelSet: boolean,
+  resolvedModelName?: string,
+): ModelSettings {
+  if (resolvedModelName && resolvedModelName.trim().length > 0) {
+    return getDefaultModelSettings(resolvedModelName);
+  }
+  if (explictlyModelSet) {
+    return {};
+  }
+  return getDefaultModelSettings();
+}
 
 // --------------------------------------------------------------
 //  Configuration
@@ -1726,13 +1740,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const { model, explictlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
 
+    const hasExplicitAgentModelSettings =
+      executionAgent.hasExplicitModelSettings();
+    const agentModelSettings = hasExplicitAgentModelSettings
+      ? executionAgent.modelSettings
+      : undefined;
+    const implicitModelSettings = hasExplicitAgentModelSettings
+      ? undefined
+      : getImplicitModelSettingsForResolvedModel(
+          explictlyModelSet,
+          resolvedModelName,
+        );
+
     let modelSettings = mergeModelSettings(
+      implicitModelSettings,
       this.config.modelSettings,
-      executionAgent.modelSettings,
     );
+    modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
     modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
       explictlyModelSet,
-      executionAgent.modelSettings,
+      agentModelSettings ?? implicitModelSettings ?? {},
       model,
       modelSettings,
       resolvedModelName,

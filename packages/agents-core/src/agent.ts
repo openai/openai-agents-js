@@ -398,6 +398,18 @@ export type AgentOptions<
     Partial<AgentConfiguration<TContext, TOutput>>
 >;
 
+function getInitialModelSettingsForAgentModel(
+  model: string | Model | undefined,
+): ModelSettings {
+  if (typeof model === 'string' && model !== Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings(model);
+  }
+  if (model !== undefined) {
+    return {};
+  }
+  return getDefaultModelSettings();
+}
+
 /**
  * An agent is an AI model configured with instructions, tools, guardrails, handoffs and more.
  *
@@ -494,6 +506,7 @@ export class Agent<
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
   private readonly _toolsExplicitlyConfigured: boolean;
+  private readonly _modelSettingsExplicitlyConfigured: boolean;
 
   constructor(config: AgentOptions<TContext, TOutput>) {
     super();
@@ -506,7 +519,11 @@ export class Agent<
     this.handoffDescription = config.handoffDescription ?? '';
     this.handoffs = config.handoffs ?? [];
     this.model = config.model ?? '';
-    this.modelSettings = config.modelSettings ?? getDefaultModelSettings();
+    this._modelSettingsExplicitlyConfigured =
+      config.modelSettings !== undefined;
+    this.modelSettings =
+      config.modelSettings ??
+      getInitialModelSettingsForAgentModel(config.model);
     this.tools = config.tools ?? [];
     this._toolsExplicitlyConfigured = config.tools !== undefined;
     this.mcpServers = config.mcpServers ?? [];
@@ -556,6 +573,11 @@ export class Agent<
         }
       }
     }
+  }
+
+  /** @internal */
+  hasExplicitModelSettings(): boolean {
+    return this._modelSettingsExplicitlyConfigured;
   }
 
   /**

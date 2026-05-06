@@ -71,6 +71,55 @@ describe('Agent', () => {
     expect(agent.resetToolChoice).toBe(false);
   });
 
+  it.each([
+    ['gpt-5', { reasoning: { effort: 'low' }, text: { verbosity: 'low' } }],
+    ['gpt-5.1', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    ['gpt-5.2', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.2-codex',
+      { reasoning: { effort: 'low' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.2-pro',
+      { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.3-codex',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    ['gpt-5.4', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.4-mini',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.4-pro',
+      { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
+    ],
+    ['gpt-5.5', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    ['gpt-5-mini', { text: { verbosity: 'low' } }],
+    ['gpt-5-chat-latest', {}],
+  ])(
+    'uses model-specific defaults when the agent model is %s',
+    (model, expected) => {
+      const agent = new Agent({
+        name: 'ExplicitModelAgent',
+        model,
+      });
+
+      expect(agent.modelSettings).toEqual(expected);
+    },
+  );
+
+  it('uses generic defaults when an explicit model is not a GPT-5 model name', () => {
+    const agent = new Agent({
+      name: 'ExplicitGpt4Agent',
+      model: 'gpt-4.1',
+    });
+
+    expect(agent.modelSettings).toEqual({});
+  });
+
   it('should clone an agent with modified values', () => {
     const originalAgent = new Agent({
       name: 'OriginalAgent',

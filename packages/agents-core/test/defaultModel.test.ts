@@ -169,6 +169,14 @@ describe('getDefaultModelSettings', () => {
       reasoning: { effort: 'medium' },
       text: { verbosity: 'low' },
     });
+    expect(getDefaultModelSettings('gpt-5.5')).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
+    expect(getDefaultModelSettings('gpt-5.5-2026-05-05')).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
   });
 
   test('omits reasoning defaults for GPT-5 variants without confirmed support', () => {
