@@ -15,8 +15,12 @@ import {
   type GCSMount,
   type LocalDir,
   type ManifestEntries,
+  type ManifestInput,
   type Mount,
   type R2Mount,
+  type SandboxAgentOptions,
+  type SandboxClientCreateArgs,
+  type SandboxRunConfig,
   type S3FilesMount,
   type S3Mount,
 } from '../src/sandbox';
@@ -78,6 +82,59 @@ describe('Manifest', () => {
     expectTypeOf(inlineManifest.entries['inline.txt']).toMatchTypeOf<File>();
   });
 
+  it('accepts Manifest instances and init objects at public config surfaces', () => {
+    const manifestInstance = new Manifest({
+      entries: {
+        'instance.txt': {
+          type: 'file',
+          content: 'instance',
+        },
+      },
+    });
+    const manifestInit = {
+      entries: {
+        'init.txt': {
+          type: 'file' as const,
+          content: 'init',
+        },
+      },
+    };
+
+    expectTypeOf(manifestInstance).toMatchTypeOf<ManifestInput>();
+    expectTypeOf(manifestInit).toMatchTypeOf<ManifestInput>();
+
+    const agentOptions = [
+      {
+        name: 'instance',
+        defaultManifest: manifestInstance,
+      },
+      {
+        name: 'init',
+        defaultManifest: manifestInit,
+      },
+    ] satisfies SandboxAgentOptions[];
+    const runConfigs = [
+      {
+        manifest: manifestInstance,
+      },
+      {
+        manifest: manifestInit,
+      },
+    ] satisfies SandboxRunConfig[];
+    const createArgs = [
+      {
+        manifest: manifestInstance,
+      },
+      {
+        manifest: manifestInit,
+      },
+    ] satisfies SandboxClientCreateArgs[];
+
+    expect(agentOptions).toHaveLength(2);
+    expect(runConfigs).toHaveLength(2);
+    expect(createArgs).toHaveLength(2);
+  });
+
   it('rejects nested child paths with parent segments', () => {
     expect(
       () =>
@@ -131,6 +188,45 @@ describe('Manifest', () => {
       ephemeral: true,
       description: 'loaded at runtime',
     });
+  });
+
+  it('accepts environment resolver shorthand', async () => {
+    const manifest = new Manifest({
+      environment: {
+        TOKEN: () => 'resolved-token',
+      },
+    });
+    const cloned = cloneManifest(manifest);
+
+    await expect(manifest.resolveEnvironment()).resolves.toEqual({
+      TOKEN: 'resolved-token',
+    });
+    await expect(cloned.resolveEnvironment()).resolves.toEqual({
+      TOKEN: 'resolved-token',
+    });
+    expect(manifest.environment.TOKEN.normalized()).toEqual({
+      value: '',
+    });
+  });
+
+  it('accepts string shorthand for users and group users', () => {
+    const manifest = new Manifest({
+      users: [' sandbox-user '],
+      groups: [
+        {
+          name: ' operators ',
+          users: [' reviewer ', { name: ' maintainer ' }],
+        },
+      ],
+    });
+
+    expect(manifest.users).toEqual([{ name: 'sandbox-user' }]);
+    expect(manifest.groups).toEqual([
+      {
+        name: 'operators',
+        users: [{ name: 'reviewer' }, { name: 'maintainer' }],
+      },
+    ]);
   });
 
   it('rejects backslash-separated paths before host resolution', () => {
