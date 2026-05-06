@@ -143,6 +143,49 @@ describe('Agent', () => {
     expect(clonedAgent.resetToolChoice).toBe(originalAgent.resetToolChoice);
   });
 
+  it('recomputes implicit model settings when cloning to another model', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+    });
+
+    const gpt4Clone = originalAgent.clone({ model: 'gpt-4.1' });
+    const gpt5Clone = originalAgent.clone({ model: 'gpt-5' });
+
+    expect(gpt4Clone.modelSettings).toEqual({});
+    expect(gpt5Clone.modelSettings).toEqual({
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    });
+  });
+
+  it('preserves explicit model settings when cloning to another model', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+      modelSettings: { temperature: 0.7 },
+    });
+
+    const clonedAgent = originalAgent.clone({ model: 'gpt-5' });
+
+    expect(clonedAgent.modelSettings).toEqual({ temperature: 0.7 });
+  });
+
+  it('allows clone config to clear explicit model settings', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+      modelSettings: { temperature: 0.7 },
+    });
+
+    const clonedAgent = originalAgent.clone({
+      model: 'gpt-5',
+      modelSettings: undefined,
+    });
+
+    expect(clonedAgent.modelSettings).toEqual({
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    });
+  });
+
   it('should return static instructions as system prompt', async () => {
     const agent = new Agent({
       name: 'StaticPromptAgent',

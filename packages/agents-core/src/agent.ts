@@ -401,13 +401,13 @@ export type AgentOptions<
 function getInitialModelSettingsForAgentModel(
   model: string | Model | undefined,
 ): ModelSettings {
+  if (model === undefined || model === Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings();
+  }
   if (typeof model === 'string' && model !== Agent.DEFAULT_MODEL_PLACEHOLDER) {
     return getDefaultModelSettings(model);
   }
-  if (model !== undefined) {
-    return {};
-  }
-  return getDefaultModelSettings();
+  return {};
 }
 
 /**
@@ -538,6 +538,7 @@ export class Agent<
     if (
       // The user sets a non-default model
       config.model !== undefined &&
+      config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER &&
       // The default model is gpt-5
       isGpt5Default() &&
       // However, the specified model is not a gpt-5 model
@@ -608,9 +609,17 @@ export class Agent<
   clone(
     config: Partial<AgentConfiguration<TContext, TOutput>>,
   ): Agent<TContext, TOutput> {
+    const modelSettings =
+      'modelSettings' in config
+        ? config.modelSettings
+        : this.hasExplicitModelSettings()
+          ? this.modelSettings
+          : undefined;
+
     return new Agent({
       ...this,
       ...config,
+      modelSettings,
     });
   }
 
