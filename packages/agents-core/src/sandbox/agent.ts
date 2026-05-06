@@ -3,7 +3,7 @@ import type { RunContext } from '../runContext';
 import { TextOutput, UnknownContext } from '../types';
 import { SANDBOX_AGENT_BRAND } from './brand';
 import { type Capability, Capabilities } from './capabilities';
-import { cloneManifest, Manifest } from './manifest';
+import { cloneManifest, Manifest, type ManifestInput } from './manifest';
 import { normalizeUser, type SandboxUser } from './users';
 
 export type SandboxBaseInstructions<
@@ -20,7 +20,7 @@ export type SandboxAgentOptions<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
 > = AgentOptions<TContext, TOutput> & {
-  defaultManifest?: Manifest;
+  defaultManifest?: ManifestInput;
   baseInstructions?: SandboxBaseInstructions<TContext, TOutput>;
   capabilities?: Capability[];
   runAs?: string | SandboxUser;

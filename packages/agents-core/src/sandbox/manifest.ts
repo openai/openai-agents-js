@@ -19,7 +19,9 @@ import {
   normalizeGroup,
   normalizeUser,
   type SandboxGroup,
+  type SandboxGroupInit,
   type SandboxUser,
+  type SandboxUserInit,
 } from './users';
 import { DEFAULT_REMOTE_MOUNT_COMMAND_ALLOWLIST } from './shared/remoteMountCommandAllowlist';
 import {
@@ -39,7 +41,7 @@ export type EnvValue = {
   description?: string;
 };
 
-export type EnvEntry = string | EnvValue | Environment;
+export type EnvEntry = string | EnvResolver | EnvValue | Environment;
 
 export type RenderManifestDescriptionOptions = {
   depth?: number | null;
@@ -73,6 +75,14 @@ export class Environment {
     if (typeof entry === 'string') {
       this.value = entry;
       this.resolver = undefined;
+      this.ephemeral = false;
+      this.description = undefined;
+      return;
+    }
+
+    if (typeof entry === 'function') {
+      this.value = '';
+      this.resolver = entry;
       this.ephemeral = false;
       this.description = undefined;
       return;
@@ -116,8 +126,8 @@ export type ManifestInit<
   root?: string;
   entries?: TEntries;
   environment?: TEnvironment;
-  users?: SandboxUser[];
-  groups?: SandboxGroup[];
+  users?: SandboxUserInit[];
+  groups?: SandboxGroupInit[];
   extraPathGrants?: SandboxPathGrantInit[];
   remoteMountCommandAllowlist?: string[];
 };
@@ -295,7 +305,12 @@ export class Manifest<
   }
 }
 
-export function cloneManifest(manifest: Manifest | ManifestInit): Manifest {
+export type ManifestInput<
+  TEntries extends ManifestEntries = ManifestEntries,
+  TEnvironment extends ManifestEnvironment = ManifestEnvironment,
+> = Manifest<TEntries, TEnvironment> | ManifestInit<TEntries, TEnvironment>;
+
+export function cloneManifest(manifest: ManifestInput): Manifest {
   return new Manifest({
     version: manifest.version,
     root: manifest.root,

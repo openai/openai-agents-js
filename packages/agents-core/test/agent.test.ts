@@ -29,7 +29,10 @@ describe('Agent', () => {
     expect(agent.handoffDescription).toBe('');
     expect(agent.handoffs).toEqual([]);
     expect(agent.model).toBe('');
-    expect(agent.modelSettings).toEqual({});
+    expect(agent.modelSettings).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
     expect(agent.tools).toEqual([]);
     expect(agent.mcpServers).toEqual([]);
     expect(agent.inputGuardrails).toEqual([]);
@@ -68,6 +71,55 @@ describe('Agent', () => {
     expect(agent.resetToolChoice).toBe(false);
   });
 
+  it.each([
+    ['gpt-5', { reasoning: { effort: 'low' }, text: { verbosity: 'low' } }],
+    ['gpt-5.1', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    ['gpt-5.2', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.2-codex',
+      { reasoning: { effort: 'low' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.2-pro',
+      { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.3-codex',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    ['gpt-5.4', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.4-mini',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.4-pro',
+      { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
+    ],
+    ['gpt-5.5', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    ['gpt-5-mini', { text: { verbosity: 'low' } }],
+    ['gpt-5-chat-latest', {}],
+  ])(
+    'uses model-specific defaults when the agent model is %s',
+    (model, expected) => {
+      const agent = new Agent({
+        name: 'ExplicitModelAgent',
+        model,
+      });
+
+      expect(agent.modelSettings).toEqual(expected);
+    },
+  );
+
+  it('uses generic defaults when an explicit model is not a GPT-5 model name', () => {
+    const agent = new Agent({
+      name: 'ExplicitGpt4Agent',
+      model: 'gpt-4.1',
+    });
+
+    expect(agent.modelSettings).toEqual({});
+  });
+
   it('should clone an agent with modified values', () => {
     const originalAgent = new Agent({
       name: 'OriginalAgent',
@@ -89,6 +141,49 @@ describe('Agent', () => {
     expect(clonedAgent.outputType).toBe(originalAgent.outputType);
     expect(clonedAgent.toolUseBehavior).toBe(originalAgent.toolUseBehavior);
     expect(clonedAgent.resetToolChoice).toBe(originalAgent.resetToolChoice);
+  });
+
+  it('recomputes implicit model settings when cloning to another model', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+    });
+
+    const gpt4Clone = originalAgent.clone({ model: 'gpt-4.1' });
+    const gpt5Clone = originalAgent.clone({ model: 'gpt-5' });
+
+    expect(gpt4Clone.modelSettings).toEqual({});
+    expect(gpt5Clone.modelSettings).toEqual({
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    });
+  });
+
+  it('preserves explicit model settings when cloning to another model', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+      modelSettings: { temperature: 0.7 },
+    });
+
+    const clonedAgent = originalAgent.clone({ model: 'gpt-5' });
+
+    expect(clonedAgent.modelSettings).toEqual({ temperature: 0.7 });
+  });
+
+  it('allows clone config to clear explicit model settings', () => {
+    const originalAgent = new Agent({
+      name: 'OriginalAgent',
+      modelSettings: { temperature: 0.7 },
+    });
+
+    const clonedAgent = originalAgent.clone({
+      model: 'gpt-5',
+      modelSettings: undefined,
+    });
+
+    expect(clonedAgent.modelSettings).toEqual({
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    });
   });
 
   it('should return static instructions as system prompt', async () => {

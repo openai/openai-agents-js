@@ -321,7 +321,7 @@ export interface AgentConfiguration<
    * The model implementation to use when invoking the LLM.
    *
    * By default, if not set, the agent will use the default model returned by
-   * getDefaultModel (currently "gpt-4.1").
+   * getDefaultModel (currently "gpt-5.4-mini").
    */
   model: string | Model;
 
@@ -397,6 +397,18 @@ export type AgentOptions<
   Pick<AgentConfiguration<TContext, TOutput>, 'name'> &
     Partial<AgentConfiguration<TContext, TOutput>>
 >;
+
+function getInitialModelSettingsForAgentModel(
+  model: string | Model | undefined,
+): ModelSettings {
+  if (model === undefined || model === Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings();
+  }
+  if (typeof model === 'string' && model !== Agent.DEFAULT_MODEL_PLACEHOLDER) {
+    return getDefaultModelSettings(model);
+  }
+  return {};
+}
 
 /**
  * An agent is an AI model configured with instructions, tools, guardrails, handoffs and more.
@@ -494,6 +506,7 @@ export class Agent<
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
   private readonly _toolsExplicitlyConfigured: boolean;
+  private readonly _modelSettingsExplicitlyConfigured: boolean;
 
   constructor(config: AgentOptions<TContext, TOutput>) {
     super();
@@ -506,7 +519,11 @@ export class Agent<
     this.handoffDescription = config.handoffDescription ?? '';
     this.handoffs = config.handoffs ?? [];
     this.model = config.model ?? '';
-    this.modelSettings = config.modelSettings ?? getDefaultModelSettings();
+    this._modelSettingsExplicitlyConfigured =
+      config.modelSettings !== undefined;
+    this.modelSettings =
+      config.modelSettings ??
+      getInitialModelSettingsForAgentModel(config.model);
     this.tools = config.tools ?? [];
     this._toolsExplicitlyConfigured = config.tools !== undefined;
     this.mcpServers = config.mcpServers ?? [];
@@ -521,6 +538,7 @@ export class Agent<
     if (
       // The user sets a non-default model
       config.model !== undefined &&
+      config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER &&
       // The default model is gpt-5
       isGpt5Default() &&
       // However, the specified model is not a gpt-5 model
@@ -558,6 +576,11 @@ export class Agent<
     }
   }
 
+  /** @internal */
+  hasExplicitModelSettings(): boolean {
+    return this._modelSettingsExplicitlyConfigured;
+  }
+
   /**
    * Output schema name.
    */
@@ -586,9 +609,17 @@ export class Agent<
   clone(
     config: Partial<AgentConfiguration<TContext, TOutput>>,
   ): Agent<TContext, TOutput> {
+    const modelSettings =
+      'modelSettings' in config
+        ? config.modelSettings
+        : this.hasExplicitModelSettings()
+          ? this.modelSettings
+          : undefined;
+
     return new Agent({
       ...this,
       ...config,
+      modelSettings,
     });
   }
 

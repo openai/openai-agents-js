@@ -4649,6 +4649,53 @@ describe('Runner.run', () => {
       expect(requestSettings.reasoning?.summary).toBe('detailed');
       expect(requestSettings.text?.verbosity).toBe('medium');
     });
+
+    it('uses model-specific defaults when the RunConfig model is explicit', async () => {
+      const modelResponse: ModelResponse = {
+        output: [fakeModelMessage('Hello explicit runner GPT-5')],
+        usage: new Usage(),
+      };
+      const inspectableModel = new InspectableModel(modelResponse);
+      const runner = new Runner({
+        model: 'gpt-5',
+        modelProvider: new InspectableModelProvider(inspectableModel),
+      });
+      const agent = new Agent({ name: 'RunnerModelAgent' });
+
+      const result = await runner.run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
+      expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+      });
+    });
+
+    it('lets RunConfig modelSettings override implicit model defaults', async () => {
+      const modelResponse: ModelResponse = {
+        output: [fakeModelMessage('Hello runner override')],
+        usage: new Usage(),
+      };
+      const inspectableModel = new InspectableModel(modelResponse);
+      const runner = new Runner({
+        model: 'gpt-5',
+        modelProvider: new InspectableModelProvider(inspectableModel),
+        modelSettings: {
+          reasoning: { effort: 'medium' },
+          temperature: 0.7,
+        },
+      });
+      const agent = new Agent({ name: 'RunnerModelSettingsAgent' });
+
+      const result = await runner.run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('Hello runner override');
+      expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
+        reasoning: { effort: 'medium' },
+        text: { verbosity: 'low' },
+        temperature: 0.7,
+      });
+    });
   });
 
   describe('server-managed conversation state', () => {

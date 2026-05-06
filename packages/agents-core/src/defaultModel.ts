@@ -37,6 +37,7 @@ const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   [/^gpt-5\.4-pro(?:-\d{4}-\d{2}-\d{2})?$/, 'medium'],
   [/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.4-nano(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.5(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
 ];
 
 function getDefaultReasoningEffort(
@@ -67,7 +68,7 @@ export function isGpt5Default(): boolean {
 export function getDefaultModel(): string {
   const env = loadEnv();
   return (
-    env[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]?.toLowerCase() ?? 'gpt-4.1'
+    env[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]?.toLowerCase() ?? 'gpt-5.4-mini'
   );
 }
 

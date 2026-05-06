@@ -1,4 +1,4 @@
-import { Manifest } from './manifest';
+import { cloneManifest, Manifest, type ManifestInput } from './manifest';
 import type { SandboxSessionLike, SandboxSessionState } from './session';
 import { isRecord } from './shared/typeGuards';
 import type { SnapshotSpec } from './snapshot';
@@ -14,7 +14,7 @@ export type SandboxClientCreateArgs<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
 > = {
   snapshot?: SnapshotSpec;
-  manifest?: Manifest;
+  manifest?: ManifestInput;
   options?: TOptions;
   concurrencyLimits?: SandboxConcurrencyLimits;
 };
@@ -82,7 +82,7 @@ export type SandboxRunConfig<
   options?: TOptions;
   session?: SandboxSessionLike<TSessionState>;
   sessionState?: TSessionState;
-  manifest?: Manifest;
+  manifest?: ManifestInput;
   snapshot?: SnapshotSpec;
   concurrencyLimits?: SandboxConcurrencyLimits;
 };
@@ -102,8 +102,14 @@ export function normalizeSandboxClientCreateArgs<
     };
   }
 
+  const manifest = args?.manifest;
+
   return {
-    manifest: args?.manifest ?? new Manifest(),
+    manifest: manifest
+      ? manifest instanceof Manifest
+        ? manifest
+        : cloneManifest(manifest)
+      : new Manifest(),
     options: args?.options,
     snapshot: args?.snapshot,
     concurrencyLimits: args?.concurrencyLimits,

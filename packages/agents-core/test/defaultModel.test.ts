@@ -35,9 +35,9 @@ describe('gpt5ReasoningSettingsRequired', () => {
   });
 });
 describe('getDefaultModel', () => {
-  test('falls back to gpt-4.1 when env var missing', () => {
+  test('falls back to gpt-5.4-mini when env var missing', () => {
     mockedLoadEnv.mockReturnValue({});
-    expect(getDefaultModel()).toBe('gpt-4.1');
+    expect(getDefaultModel()).toBe('gpt-5.4-mini');
   });
   test('lowercases provided env value', () => {
     mockedLoadEnv.mockReturnValue({
@@ -47,6 +47,11 @@ describe('getDefaultModel', () => {
   });
 });
 describe('isGpt5Default', () => {
+  test('returns true for the built-in GPT-5 default model', () => {
+    mockedLoadEnv.mockReturnValue({});
+    expect(isGpt5Default()).toBe(true);
+  });
+
   test('returns true only when env points to GPT-5', () => {
     mockedLoadEnv.mockReturnValue({
       [OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]: 'gpt-5.4',
@@ -59,6 +64,14 @@ describe('isGpt5Default', () => {
   });
 });
 describe('getDefaultModelSettings', () => {
+  test('returns GPT-5.4 mini defaults when no model is specified', () => {
+    mockedLoadEnv.mockReturnValue({});
+    expect(getDefaultModelSettings()).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
+  });
+
   test('returns none reasoning defaults for GPT-5.1 models', () => {
     expect(getDefaultModelSettings('gpt-5.1')).toEqual({
       reasoning: { effort: 'none' },
@@ -154,6 +167,14 @@ describe('getDefaultModelSettings', () => {
     });
     expect(getDefaultModelSettings('gpt-5.4-pro-2026-03-05')).toEqual({
       reasoning: { effort: 'medium' },
+      text: { verbosity: 'low' },
+    });
+    expect(getDefaultModelSettings('gpt-5.5')).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
+    expect(getDefaultModelSettings('gpt-5.5-2026-05-05')).toEqual({
+      reasoning: { effort: 'none' },
       text: { verbosity: 'low' },
     });
   });

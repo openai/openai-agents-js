@@ -118,7 +118,7 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(compact).toHaveBeenCalledTimes(1);
     const [request] = compact.mock.calls[0] ?? [];
-    expect(request).toMatchObject({ model: 'gpt-4.1' });
+    expect(request).toMatchObject({ model: 'gpt-5.4-mini' });
     expect(request.previous_response_id).toBeUndefined();
     expect(request.input).toHaveLength(2);
     expect(request.input[0]).toMatchObject({
@@ -196,7 +196,7 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(compact).toHaveBeenCalledTimes(1);
     const [request] = compact.mock.calls[0] ?? [];
-    expect(request).toMatchObject({ model: 'gpt-4.1' });
+    expect(request).toMatchObject({ model: 'gpt-5.4-mini' });
     expect(request.previous_response_id).toBeUndefined();
     expect(request.input).toHaveLength(2);
   });
@@ -301,7 +301,7 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).toHaveBeenCalledTimes(1);
     expect(compact).toHaveBeenCalledWith({
       previous_response_id: 'resp_2',
-      model: 'gpt-4.1',
+      model: 'gpt-5.4-mini',
     });
     expect(decisionHistoryLengths).toEqual([1]);
 
@@ -412,7 +412,7 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(compact).toHaveBeenCalledWith({
       previous_response_id: 'resp_store',
-      model: 'gpt-4.1',
+      model: 'gpt-5.4-mini',
     });
     expect(await session.getItems()).toEqual([
       {
@@ -437,7 +437,7 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).toHaveBeenCalledTimes(2);
     expect(compact).toHaveBeenLastCalledWith({
       previous_response_id: 'resp_store',
-      model: 'gpt-4.1',
+      model: 'gpt-5.4-mini',
     });
     expect(await session.getItems()).toEqual([
       {
