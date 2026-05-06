@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { mcpToFunctionTool, MCPServer } from '../src/mcp';
+import type { MCPToolMetaContext } from '../src/mcpUtil';
 import { RunContext } from '../src/runContext';
 import { withTrace } from '../src/tracing';
 import { withCustomSpan } from '../src/tracing/createSpans';
@@ -184,6 +185,57 @@ describe('mcpToFunctionTool', () => {
     expect(metaContext.serverName).toBe('stub');
     expect(metaContext.toolName).toBe('meta');
     expect(metaContext.arguments).toEqual({ foo: 'bar' });
+  });
+
+  it('can expose an override name while invoking the original MCP tool name', async () => {
+    const callTool = vi.fn(
+      async (
+        _toolName: string,
+        _args: Record<string, unknown> | null,
+        _meta?: Record<string, unknown> | null,
+      ) => [{ type: 'text', text: 'ok' }],
+    );
+
+    const toolMetaResolver = vi.fn((_context: MCPToolMetaContext) => ({
+      request_id: 'req-123',
+    }));
+
+    const server: MCPServer = {
+      name: 'docs',
+      cacheToolsList: false,
+      toolMetaResolver,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+
+    const tool = mcpToFunctionTool(
+      {
+        name: 'search',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+      { toolNameOverride: 'mcp_docs__search' },
+    );
+
+    expect(tool.name).toBe('mcp_docs__search');
+    await tool.invoke(new RunContext({}), '{}');
+
+    expect(callTool).toHaveBeenCalledWith(
+      'search',
+      {},
+      { request_id: 'req-123' },
+    );
+    expect(toolMetaResolver.mock.calls[0][0].toolName).toBe('search');
   });
 
   it('uses server errorFunction for tool failures', async () => {

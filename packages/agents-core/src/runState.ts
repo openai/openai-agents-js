@@ -1771,6 +1771,7 @@ function getAgentIdentitySignature(agent: Agent<any, any>): string {
           },
     ),
     mcpServers: agent.mcpServers.map(summarizeIdentityValue),
+    mcpConfig: summarizeIdentityValue(agent.mcpConfig),
     inputGuardrails: agent.inputGuardrails.map(summarizeIdentityValue),
     outputGuardrails: agent.outputGuardrails.map(summarizeIdentityValue),
     outputType: summarizeIdentityValue(agent.outputType),

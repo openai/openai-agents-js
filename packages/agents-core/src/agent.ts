@@ -1,6 +1,10 @@
 import type { InputGuardrail, OutputGuardrail } from './guardrail';
 import { AgentHooks } from './lifecycle';
-import { getAllMcpTools, type MCPServer } from './mcp';
+import {
+  getAllMcpTools,
+  type MCPServer,
+  type MCPToolErrorFunction,
+} from './mcp';
 import type { Model, ModelSettings, Prompt } from './model';
 import {
   getDefaultModelSettings,
@@ -348,6 +352,27 @@ export interface AgentConfiguration<
   mcpServers: MCPServer[];
 
   /**
+   * Configuration for MCP servers used by this agent.
+   */
+  mcpConfig: {
+    /**
+     * Try to convert MCP tool schemas to strict JSON schema.
+     */
+    convertSchemasToStrict?: boolean;
+    /**
+     * Optional function to convert MCP tool failures into model-visible messages.
+     * Set to null to rethrow errors instead of converting them.
+     * Server-level errorFunction values take precedence.
+     */
+    errorFunction?: MCPToolErrorFunction | null;
+    /**
+     * Prefix local MCP tool names with their server name before exposing them to the model.
+     * The SDK still invokes the original MCP tool name on the original server.
+     */
+    includeServerInToolNames?: boolean;
+  };
+
+  /**
    * A list of checks that run in parallel to the agent by default; set `runInParallel` to false to
    * block LLM/tool calls until the guardrail completes. Runs only if the agent is the first agent
    * in the chain.
@@ -500,6 +525,7 @@ export class Agent<
   modelSettings: ModelSettings;
   tools: Tool<TContext>[];
   mcpServers: MCPServer[];
+  mcpConfig: AgentConfiguration<TContext, TOutput>['mcpConfig'];
   inputGuardrails: InputGuardrail[];
   outputGuardrails: OutputGuardrail<AgentOutputType, TContext>[];
   outputType: TOutput = 'text' as TOutput;
@@ -527,6 +553,7 @@ export class Agent<
     this.tools = config.tools ?? [];
     this._toolsExplicitlyConfigured = config.tools !== undefined;
     this.mcpServers = config.mcpServers ?? [];
+    this.mcpConfig = config.mcpConfig ?? {};
     this.inputGuardrails = config.inputGuardrails ?? [];
     this.outputGuardrails = config.outputGuardrails ?? [];
     if (config.outputType) {
@@ -966,15 +993,41 @@ export class Agent<
     runContext: RunContext<TContext>,
   ): Promise<Tool<TContext>[]> {
     if (this.mcpServers.length > 0) {
+      const includeServerInToolNames =
+        this.mcpConfig.includeServerInToolNames === true;
       return getAllMcpTools({
         mcpServers: this.mcpServers,
         runContext,
         agent: this,
-        convertSchemasToStrict: false,
+        convertSchemasToStrict: this.mcpConfig.convertSchemasToStrict === true,
+        errorFunction: this.mcpConfig.errorFunction,
+        includeServerInToolNames,
+        reservedToolNames: includeServerInToolNames
+          ? await this.getMcpToolReservedNames(runContext)
+          : undefined,
       });
     }
 
     return [];
+  }
+
+  private async getMcpToolReservedNames(
+    runContext: RunContext<TContext>,
+  ): Promise<Set<string>> {
+    const reservedToolNames = new Set(
+      this.tools
+        .filter(
+          (tool): tool is FunctionTool<TContext> => tool.type === 'function',
+        )
+        .map((tool) => tool.name),
+    );
+
+    const enabledHandoffs = await this.getEnabledHandoffs(runContext);
+    for (const handoff of enabledHandoffs) {
+      reservedToolNames.add(handoff.toolName);
+    }
+
+    return reservedToolNames;
   }
 
   /**

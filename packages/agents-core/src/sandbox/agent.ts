@@ -70,6 +70,7 @@ export class SandboxAgent<
       modelSettings: config.modelSettings ?? this.modelSettings,
       tools: config.tools ?? this.tools,
       mcpServers: config.mcpServers ?? this.mcpServers,
+      mcpConfig: config.mcpConfig ?? this.mcpConfig,
       inputGuardrails: config.inputGuardrails ?? this.inputGuardrails,
       outputGuardrails: config.outputGuardrails ?? this.outputGuardrails,
       outputType: config.outputType ?? this.outputType,

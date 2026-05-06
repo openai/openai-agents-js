@@ -121,6 +121,7 @@ export {
   MCPTextResourceContent,
   GetAllMcpToolsOptions,
   MCPToolCacheKeyGenerator,
+  MCPToolErrorFunction,
 } from './mcp';
 export {
   MCPServers,

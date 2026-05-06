@@ -39,10 +39,22 @@ export const DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME =
 export const DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:sse-mcp-client';
 
-type MCPToolErrorFunction = (args: {
+export type MCPToolErrorFunction = (args: {
   context: RunContext;
   error: Error | unknown;
 }) => Promise<string> | string;
+
+const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
+const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
+
+type PrefixedToolNameCandidate = {
+  batchKey: string;
+  baseName: string;
+  seed: string;
+  initialName: string;
+  serverIndex: number;
+  toolIndex: number;
+};
 
 /**
  * Interface for MCP server implementations.
@@ -575,21 +587,19 @@ export const defaultMCPToolCacheKey: MCPToolCacheKeyGenerator = ({
 };
 
 /**
- * Fetches all function tools from a single MCP server.
+ * Fetches and filters raw MCP tools from a single MCP server.
  */
-async function getFunctionToolsFromServer<TContext = UnknownContext>({
+async function getMcpToolsFromServer<TContext = UnknownContext>({
   server,
-  convertSchemasToStrict,
   runContext,
   agent,
   generateMCPToolCacheKey,
 }: {
   server: MCPServer;
-  convertSchemasToStrict: boolean;
   runContext?: RunContext<TContext>;
   agent?: Agent<any, any>;
   generateMCPToolCacheKey?: MCPToolCacheKeyGenerator;
-}): Promise<FunctionTool<TContext, any, unknown>[]> {
+}): Promise<MCPTool[]> {
   const cacheKey = (generateMCPToolCacheKey || defaultMCPToolCacheKey)({
     server,
     agent,
@@ -597,14 +607,12 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
   });
   // Use cache key generator injected from the outside, or the default if absent.
   if (server.cacheToolsList && _cachedTools[cacheKey]) {
-    return _cachedTools[cacheKey].map((t) =>
-      mcpToFunctionTool(t, server, convertSchemasToStrict),
-    );
+    return _cachedTools[cacheKey];
   }
 
   const listToolsForServer = async (
     span?: Span<MCPListToolsSpanData>,
-  ): Promise<FunctionTool<TContext, any, unknown>[]> => {
+  ): Promise<MCPTool[]> => {
     const fetchedMcpTools = await server.listTools();
     let mcpTools: MCPTool[] = fetchedMcpTools;
 
@@ -657,9 +665,6 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
     if (span) {
       span.spanData.result = mcpTools.map((t) => t.name);
     }
-    const tools: FunctionTool<TContext, any, string>[] = mcpTools.map((t) =>
-      mcpToFunctionTool(t, server, convertSchemasToStrict),
-    );
     // Cache store
     if (server.cacheToolsList) {
       _cachedTools[cacheKey] = mcpTools;
@@ -668,7 +673,7 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
       }
       _cachedToolKeysByServer[server.name].add(cacheKey);
     }
-    return tools;
+    return mcpTools;
   };
 
   if (!getCurrentTrace()) {
@@ -677,6 +682,59 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
 
   return withMCPListToolsSpan(listToolsForServer, {
     data: { server: server.name },
+  });
+}
+
+function convertMcpToolsToFunctionTools<TContext = UnknownContext>({
+  mcpTools,
+  server,
+  convertSchemasToStrict,
+  toolNameOverrides,
+  errorFunction,
+}: {
+  mcpTools: MCPTool[];
+  server: MCPServer;
+  convertSchemasToStrict: boolean;
+  toolNameOverrides?: Array<string | undefined>;
+  errorFunction?: MCPToolErrorFunction | null;
+}): FunctionTool<TContext, any, unknown>[] {
+  return mcpTools.map((mcpTool, index) =>
+    mcpToFunctionTool(mcpTool, server, convertSchemasToStrict, {
+      toolNameOverride: toolNameOverrides?.[index],
+      errorFunction,
+    }),
+  );
+}
+
+/**
+ * Fetches all function tools from a single MCP server.
+ */
+async function getFunctionToolsFromServer<TContext = UnknownContext>({
+  server,
+  convertSchemasToStrict,
+  runContext,
+  agent,
+  generateMCPToolCacheKey,
+  errorFunction,
+}: {
+  server: MCPServer;
+  convertSchemasToStrict: boolean;
+  runContext?: RunContext<TContext>;
+  agent?: Agent<any, any>;
+  generateMCPToolCacheKey?: MCPToolCacheKeyGenerator;
+  errorFunction?: MCPToolErrorFunction | null;
+}): Promise<FunctionTool<TContext, any, unknown>[]> {
+  const mcpTools = await getMcpToolsFromServer({
+    server,
+    runContext,
+    agent,
+    generateMCPToolCacheKey,
+  });
+  return convertMcpToolsToFunctionTools({
+    mcpTools,
+    server,
+    convertSchemasToStrict,
+    errorFunction,
   });
 }
 
@@ -689,6 +747,9 @@ export type GetAllMcpToolsOptions<TContext> = {
   runContext?: RunContext<TContext>;
   agent?: Agent<TContext, any>;
   generateMCPToolCacheKey?: MCPToolCacheKeyGenerator;
+  errorFunction?: MCPToolErrorFunction | null;
+  includeServerInToolNames?: boolean;
+  reservedToolNames?: Set<string>;
 };
 
 /**
@@ -716,9 +777,57 @@ export async function getAllMcpTools<TContext = UnknownContext>(
     runContext: runContextFromOpts,
     agent: agentFromOpts,
     generateMCPToolCacheKey,
+    errorFunction,
+    includeServerInToolNames = false,
+    reservedToolNames,
   } = opts;
   const allTools: Tool<TContext>[] = [];
   const toolNames = new Set<string>();
+
+  if (includeServerInToolNames) {
+    const serverToolBatches = await Promise.all(
+      mcpServers.map(async (server, serverIndex) => ({
+        server,
+        serverIndex,
+        mcpTools: await getMcpToolsFromServer({
+          server,
+          runContext: runContextFromOpts,
+          agent: agentFromOpts,
+          generateMCPToolCacheKey,
+        }),
+      })),
+    );
+    const toolNameOverrides = buildPrefixedToolNameOverrides(
+      serverToolBatches,
+      new Set(reservedToolNames ?? []),
+    );
+
+    for (const { server, serverIndex, mcpTools } of serverToolBatches) {
+      const serverTools = convertMcpToolsToFunctionTools<TContext>({
+        mcpTools,
+        server,
+        convertSchemasToStrict: convertSchemasToStrictFromOpts,
+        errorFunction,
+        toolNameOverrides: mcpTools.map((_, toolIndex) =>
+          toolNameOverrides.get(getToolNameOverrideKey(serverIndex, toolIndex)),
+        ),
+      });
+      const serverToolNames = new Set(serverTools.map((t) => t.name));
+      const intersection = [...serverToolNames]
+        .filter((n) => toolNames.has(n))
+        .sort();
+      if (intersection.length > 0) {
+        throw new UserError(
+          `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
+        );
+      }
+      for (const t of serverTools) {
+        toolNames.add(t.name);
+        allTools.push(t);
+      }
+    }
+    return allTools;
+  }
 
   for (const server of mcpServers) {
     const serverTools = await getFunctionToolsFromServer({
@@ -727,9 +836,12 @@ export async function getAllMcpTools<TContext = UnknownContext>(
       runContext: runContextFromOpts,
       agent: agentFromOpts,
       generateMCPToolCacheKey,
+      errorFunction,
     });
     const serverToolNames = new Set(serverTools.map((t) => t.name));
-    const intersection = [...serverToolNames].filter((n) => toolNames.has(n));
+    const intersection = [...serverToolNames]
+      .filter((n) => toolNames.has(n))
+      .sort();
     if (intersection.length > 0) {
       throw new UserError(
         `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
@@ -741,6 +853,209 @@ export async function getAllMcpTools<TContext = UnknownContext>(
     }
   }
   return allTools;
+}
+
+function getToolNameOverrideKey(
+  serverIndex: number,
+  toolIndex: number,
+): string {
+  return `${serverIndex}:${toolIndex}`;
+}
+
+function getSafeToolNamePart(value: string, fallback: string): string {
+  const safe = Array.from(value)
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code <= 127 && /[A-Za-z0-9_-]/.test(char) ? char : '_';
+    })
+    .join('')
+    .replace(/^[_-]+|[_-]+$/g, '');
+  return safe || fallback;
+}
+
+function getUtf8Bytes(value: string): number[] {
+  const encoded = encodeURIComponent(value);
+  const bytes: number[] = [];
+  for (let index = 0; index < encoded.length; index += 1) {
+    if (encoded[index] === '%') {
+      bytes.push(Number.parseInt(encoded.slice(index + 1, index + 3), 16));
+      index += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(index));
+    }
+  }
+  return bytes;
+}
+
+function rotateLeft(value: number, bits: number): number {
+  return ((value << bits) | (value >>> (32 - bits))) >>> 0;
+}
+
+function getSha1Hex(value: string): string {
+  const bytes = getUtf8Bytes(value);
+  const bitLength = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) {
+    bytes.push(0);
+  }
+
+  for (let shift = 56; shift >= 0; shift -= 8) {
+    bytes.push(Math.floor(bitLength / 2 ** shift) & 0xff);
+  }
+
+  let h0 = 0x67452301;
+  let h1 = 0xefcdab89;
+  let h2 = 0x98badcfe;
+  let h3 = 0x10325476;
+  let h4 = 0xc3d2e1f0;
+
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    const words = new Array<number>(80).fill(0);
+    for (let index = 0; index < 16; index += 1) {
+      const byteOffset = offset + index * 4;
+      words[index] =
+        ((bytes[byteOffset] ?? 0) << 24) |
+        ((bytes[byteOffset + 1] ?? 0) << 16) |
+        ((bytes[byteOffset + 2] ?? 0) << 8) |
+        (bytes[byteOffset + 3] ?? 0);
+    }
+    for (let index = 16; index < 80; index += 1) {
+      words[index] = rotateLeft(
+        words[index - 3] ^
+          words[index - 8] ^
+          words[index - 14] ^
+          words[index - 16],
+        1,
+      );
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+
+    for (let index = 0; index < 80; index += 1) {
+      let f: number;
+      let k: number;
+      if (index < 20) {
+        f = (b & c) | (~b & d);
+        k = 0x5a827999;
+      } else if (index < 40) {
+        f = b ^ c ^ d;
+        k = 0x6ed9eba1;
+      } else if (index < 60) {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8f1bbcdc;
+      } else {
+        f = b ^ c ^ d;
+        k = 0xca62c1d6;
+      }
+      const temp = (rotateLeft(a, 5) + f + e + k + (words[index] ?? 0)) >>> 0;
+      e = d;
+      d = c;
+      c = rotateLeft(b, 30);
+      b = a;
+      a = temp;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4]
+    .map((word) => word.toString(16).padStart(8, '0'))
+    .join('');
+}
+
+function shortenToolName(
+  baseName: string,
+  seed: string,
+  forceHash = false,
+): string {
+  if (!forceHash && baseName.length <= MCP_FUNCTION_TOOL_NAME_MAX_LENGTH) {
+    return baseName;
+  }
+
+  const hashSuffix = getSha1Hex(seed).slice(0, MCP_FUNCTION_TOOL_HASH_LENGTH);
+  const suffix = `_${hashSuffix}`;
+  const stemLength = MCP_FUNCTION_TOOL_NAME_MAX_LENGTH - suffix.length;
+  const stem = baseName.slice(0, stemLength).replace(/[_-]+$/g, '') || 'mcp';
+  return `${stem}${suffix}`;
+}
+
+function buildPrefixedToolBaseName(
+  serverName: string,
+  toolName: string,
+): string {
+  const serverPart = getSafeToolNamePart(serverName, 'server');
+  const toolPart = getSafeToolNamePart(toolName, 'tool');
+  return `mcp_${serverPart}__${toolPart}`;
+}
+
+function buildPrefixedToolNameOverrides(
+  serverToolBatches: Array<{
+    server: MCPServer;
+    serverIndex: number;
+    mcpTools: MCPTool[];
+  }>,
+  reservedNames: Set<string>,
+): Map<string, string> {
+  const baseNameCounts = new Map<string, number>();
+  for (const { server, mcpTools } of serverToolBatches) {
+    for (const mcpTool of mcpTools) {
+      const baseName = buildPrefixedToolBaseName(server.name, mcpTool.name);
+      baseNameCounts.set(baseName, (baseNameCounts.get(baseName) ?? 0) + 1);
+    }
+  }
+
+  const candidates: PrefixedToolNameCandidate[] = [];
+  for (const { server, serverIndex, mcpTools } of serverToolBatches) {
+    mcpTools.forEach((mcpTool, toolIndex) => {
+      const baseName = buildPrefixedToolBaseName(server.name, mcpTool.name);
+      const seed = `${server.name}\0${mcpTool.name}`;
+      const forceHash =
+        (baseNameCounts.get(baseName) ?? 0) > 1 || reservedNames.has(baseName);
+      candidates.push({
+        batchKey: getToolNameOverrideKey(serverIndex, toolIndex),
+        baseName,
+        seed,
+        initialName: shortenToolName(baseName, seed, forceHash),
+        serverIndex,
+        toolIndex,
+      });
+    });
+  }
+
+  const usedNames = new Set(reservedNames);
+  const overrides = new Map<string, string>();
+  for (const candidate of candidates.sort((left, right) => {
+    return (
+      left.initialName.localeCompare(right.initialName) ||
+      left.seed.localeCompare(right.seed) ||
+      left.serverIndex - right.serverIndex ||
+      left.toolIndex - right.toolIndex
+    );
+  })) {
+    let publicName = candidate.initialName;
+    let collisionIndex = 1;
+    while (usedNames.has(publicName)) {
+      publicName = shortenToolName(
+        candidate.baseName,
+        `${candidate.seed}\0${collisionIndex}`,
+        true,
+      );
+      collisionIndex += 1;
+    }
+
+    usedNames.add(publicName);
+    overrides.set(candidate.batchKey, publicName);
+  }
+
+  return overrides;
 }
 
 async function resolveMcpToolMeta<TContext>(
@@ -776,17 +1091,28 @@ async function resolveMcpToolMeta<TContext>(
 /**
  * Converts an MCP tool definition to a function tool for the Agents SDK.
  */
+export type MCPFunctionToolConversionOptions = {
+  toolNameOverride?: string;
+  errorFunction?: MCPToolErrorFunction | null;
+};
+
 export function mcpToFunctionTool(
   mcpTool: MCPTool,
   server: MCPServer,
   convertSchemasToStrict: boolean,
+  options: MCPFunctionToolConversionOptions = {},
 ) {
+  const toolName = options.toolNameOverride ?? mcpTool.name;
   const serverErrorFunction = server.errorFunction;
+  const mcpErrorFunction =
+    serverErrorFunction !== undefined
+      ? serverErrorFunction
+      : options.errorFunction;
   const errorFunction =
-    typeof serverErrorFunction === 'function'
+    typeof mcpErrorFunction === 'function'
       ? (context: RunContext, error: Error | unknown) =>
-          serverErrorFunction({ context, error })
-      : serverErrorFunction;
+          mcpErrorFunction({ context, error })
+      : mcpErrorFunction;
   async function invoke(input: any, runContext?: RunContext<any>) {
     let args = {};
     if (typeof input === 'string' && input) {
@@ -820,7 +1146,7 @@ export function mcpToFunctionTool(
     try {
       const strictSchema = ensureStrictJsonSchema(schema);
       return tool({
-        name: mcpTool.name,
+        name: toolName,
         description: mcpTool.description || '',
         parameters: strictSchema,
         strict: true,
@@ -837,7 +1163,7 @@ export function mcpToFunctionTool(
     additionalProperties: true,
   };
   return tool({
-    name: mcpTool.name,
+    name: toolName,
     description: mcpTool.description || '',
     parameters: nonStrictSchema,
     strict: false,
