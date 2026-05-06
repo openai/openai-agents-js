@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.9.1
+
+### Patch Changes
+
+- 06f425a: fix: avoid replaying assistant conversation item IDs from OpenAI Conversations history
+- dde1037: fix: preserve duplicate-name agent identity in RunState serialization
+- a081190: fix: #1190 reconcile streamed function calls when server-managed runs abort
+
 ## 0.9.0
 
 ### Minor Changes

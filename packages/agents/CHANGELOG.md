@@ -1,5 +1,17 @@
 # @openai/agents
 
+## 0.9.1
+
+### Patch Changes
+
+- dde1037: fix: preserve duplicate-name agent identity in RunState serialization
+- Updated dependencies [06f425a]
+- Updated dependencies [dde1037]
+- Updated dependencies [a081190]
+  - @openai/agents-core@0.9.1
+  - @openai/agents-openai@0.9.1
+  - @openai/agents-realtime@0.9.1
+
 ## 0.9.0
 
 ### Minor Changes

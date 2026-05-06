@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.9.1
+
+### Patch Changes
+
+- 06f425a: fix: avoid replaying assistant conversation item IDs from OpenAI Conversations history
+- Updated dependencies [06f425a]
+- Updated dependencies [dde1037]
+- Updated dependencies [a081190]
+  - @openai/agents-core@0.9.1
+
 ## 0.9.0
 
 ### Patch Changes
