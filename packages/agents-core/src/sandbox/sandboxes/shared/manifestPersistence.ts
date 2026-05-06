@@ -1,5 +1,5 @@
 import { isMount, type Entry } from '../../entries';
-import { Manifest } from '../../manifest';
+import { Manifest, type EnvValue } from '../../manifest';
 import {
   mergeNamedObjects,
   mergePathKeyedObjects,
@@ -90,8 +90,8 @@ export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
       ...structuredClone(update.entries),
     },
     environment: {
-      ...serializeManifestEnvironment(base),
-      ...serializeManifestEnvironment(update),
+      ...cloneManifestEnvironment(base),
+      ...cloneManifestEnvironment(update),
     },
     users: mergeNamedObjects(base.users, update.users),
     groups: mergeNamedObjects(base.groups, update.groups),
@@ -103,6 +103,17 @@ export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
       ? update.remoteMountCommandAllowlist
       : base.remoteMountCommandAllowlist,
   });
+}
+
+function cloneManifestEnvironment(
+  manifest: Manifest,
+): Record<string, EnvValue> {
+  return Object.fromEntries(
+    Object.entries(manifest.environment).map(([key, value]) => [
+      key,
+      value.init(),
+    ]),
+  );
 }
 
 export function mergeManifestEntryDelta(

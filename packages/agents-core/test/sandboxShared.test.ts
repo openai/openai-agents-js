@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Manifest, dir, file, mount } from '../src/sandbox';
 import {
   deserializeManifest,
@@ -362,6 +362,38 @@ describe('sandbox shared helpers', () => {
     ).toEqual({
       CLIENT_ONLY: 'client',
       TOKEN: 'next',
+    });
+  });
+
+  it('keeps resolver-backed environment values materialized after manifest merges', async () => {
+    const resolveToken = vi.fn(async () => 'resolved-token');
+    const previous = new Manifest({
+      environment: {
+        TOKEN: {
+          value: 'placeholder-token',
+          resolve: resolveToken,
+        },
+        STATIC: 'old-static',
+      },
+    });
+    const currentEnvironment = await materializeEnvironment(previous);
+    const next = mergeManifestDelta(
+      previous,
+      new Manifest({
+        environment: {
+          STATIC: 'new-static',
+        },
+      }),
+    );
+
+    await expect(
+      mergeMaterializedEnvironment(previous, next, currentEnvironment),
+    ).resolves.toEqual({
+      TOKEN: 'resolved-token',
+      STATIC: 'new-static',
+    });
+    await expect(next.resolveEnvironment()).resolves.toMatchObject({
+      TOKEN: 'resolved-token',
     });
   });
 
