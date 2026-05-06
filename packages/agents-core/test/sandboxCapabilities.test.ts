@@ -214,6 +214,52 @@ describe('SandboxAgent', () => {
     );
   });
 
+  it('accepts default manifest instances and init objects', () => {
+    const instanceManifest = new Manifest({
+      entries: {
+        'instance.txt': {
+          type: 'file',
+          content: 'instance',
+        },
+      },
+    });
+    const initManifest = {
+      entries: {
+        'init.txt': {
+          type: 'file' as const,
+          content: 'init',
+        },
+      },
+    };
+    const instanceAgent = new SandboxAgent({
+      name: 'instance',
+      defaultManifest: instanceManifest,
+    });
+    const initAgent = new SandboxAgent({
+      name: 'init',
+      defaultManifest: initManifest,
+    });
+
+    (instanceManifest.entries['instance.txt'] as { content: string }).content =
+      'mutated-instance';
+    (initManifest.entries['init.txt'] as { content: string }).content =
+      'mutated-init';
+
+    expect(instanceAgent.defaultManifest).toBeInstanceOf(Manifest);
+    expect(initAgent.defaultManifest).toBeInstanceOf(Manifest);
+    expect(
+      (
+        instanceAgent.defaultManifest?.entries['instance.txt'] as {
+          content: string;
+        }
+      ).content,
+    ).toBe('instance');
+    expect(
+      (initAgent.defaultManifest?.entries['init.txt'] as { content: string })
+        .content,
+    ).toBe('init');
+  });
+
   it('accepts typed runAs users', () => {
     const agent = new SandboxAgent({
       name: 'sandbox',

@@ -20,6 +20,7 @@ export default tseslint.config(
     '**/dist/**',
     '**/node_modules/**',
     '**/.tmp/**',
+    '**/.cache/**',
     '**/docs/.astro/**',
     'examples/realtime-next/**',
     'examples/realtime-demo/**',
