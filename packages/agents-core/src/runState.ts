@@ -1558,12 +1558,16 @@ export async function rehydrateProcessedResponseTools<
     return;
   }
 
+  const agentIdentity = buildAgentIdentityMap(initialAgent);
+  const serializedProcessedResponse = serializeProcessedResponse(
+    state._lastProcessedResponse,
+    agentIdentity.byAgent,
+  );
+
   state._lastProcessedResponse = await deserializeProcessedResponse(
-    buildAgentIdentityMap(initialAgent).byIdentity,
+    agentIdentity.byIdentity,
     state as RunState<TContext, Agent<any, any>>,
-    state._lastProcessedResponse as unknown as z.infer<
-      typeof serializedProcessedResponseSchema
-    >,
+    serializedProcessedResponse,
     {
       executionTools,
       allowSerializedExecutionToolPlaceholder: false,

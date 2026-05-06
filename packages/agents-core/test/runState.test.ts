@@ -4,6 +4,7 @@ import {
   buildAgentMap,
   deserializeModelResponse,
   deserializeItem,
+  rehydrateProcessedResponseTools,
   CURRENT_SCHEMA_VERSION,
 } from '../src/runState';
 import { processedResponseRequiresExecutionToolRehydration } from '../src/sandbox/runtime/toolRehydration';
@@ -674,6 +675,44 @@ describe('RunState', () => {
     expect(restored.getInterruptions()[0]?.agent).toBe(childB);
     expect(
       (restored._lastProcessedResponse?.newItems[0] as ToolApprovalItem).agent,
+    ).toBe(childB);
+  });
+
+  it('preserves live duplicate-name processed response ownership during tool rehydration', async () => {
+    const childA = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha child',
+    });
+    const childB = new Agent({
+      name: 'SharedSkill',
+      instructions: 'bravo child',
+    });
+    const root = new Agent({ name: 'Root', handoffs: [childA, childB] });
+    const approvalCall = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'approval-call',
+      status: 'completed',
+      arguments: '{}',
+    } satisfies protocol.FunctionCallItem;
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._currentAgent = childB;
+    state._lastProcessedResponse = {
+      newItems: [new ToolApprovalItem(approvalCall, childB)],
+      toolsUsed: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await rehydrateProcessedResponseTools(root, state, []);
+
+    expect(
+      (state._lastProcessedResponse?.newItems[0] as ToolApprovalItem).agent,
     ).toBe(childB);
   });
 
