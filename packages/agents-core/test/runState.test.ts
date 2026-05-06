@@ -16,6 +16,7 @@ import {
   RunReasoningItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunHandoffOutputItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../src/items';
@@ -193,7 +194,7 @@ describe('RunState', () => {
     expect(restored._context.toolInput).toEqual(context.toolInput);
   });
 
-  it('serializes sandbox state with schema version 1.9', async () => {
+  it('serializes sandbox state with the current schema version', async () => {
     const context = new RunContext({ foo: 'bar' });
     const agent = new Agent({ name: 'SandboxStateAgent' });
     const state = new RunState(context, 'input', agent, 1);
@@ -549,30 +550,166 @@ describe('RunState', () => {
     expect(JSON.parse(str)).toEqual(json);
   });
 
-  it('toJSON throws when handoff agents have duplicate names', () => {
-    const childA = new Agent({ name: 'SharedSkill' });
-    const childB = new Agent({ name: 'SharedSkill' });
+  it('serializes duplicate-name agents with stable identities', async () => {
+    const childA = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha child',
+    });
+    const childB = new Agent({
+      name: 'SharedSkill',
+      instructions: 'bravo child',
+    });
     const agentA = new Agent({ name: 'AgentA', handoffs: [childA] });
     const agentB = new Agent({ name: 'AgentB', handoffs: [childB] });
     const root = new Agent({ name: 'Root', handoffs: [agentA, agentB] });
     const state = new RunState(new RunContext(), 'input', root, 2);
     state._currentAgent = childB;
 
-    expect(() => state.toJSON()).toThrow(
-      'Duplicate agent name "SharedSkill" detected. Use unique agent names when serializing RunState.',
-    );
+    const json = state.toJSON();
+
+    expect(json.currentAgent).toEqual({
+      name: 'SharedSkill',
+      identity: 'SharedSkill#2',
+    });
+
+    const restored = await RunState.fromString(root, JSON.stringify(json));
+    expect(restored._currentAgent).toBe(childB);
   });
 
-  it('fromString throws when deserializing with duplicate agent names', async () => {
+  it('keeps literal identity suffixes from colliding with generated identities', () => {
+    const duplicateA = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha child',
+    });
+    const literalSuffix = new Agent({ name: 'SharedSkill#2' });
+    const duplicateB = new Agent({
+      name: 'SharedSkill',
+      instructions: 'bravo child',
+    });
+    const root = new Agent({
+      name: 'Root',
+      handoffs: [duplicateA, literalSuffix, duplicateB],
+    });
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._currentAgent = duplicateB;
+
+    const json = state.toJSON();
+
+    expect(json.currentAgent).toEqual({
+      name: 'SharedSkill',
+      identity: 'SharedSkill#3',
+    });
+  });
+
+  it('restores duplicate-name run item ownership by identity', async () => {
+    const childA = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha child',
+    });
+    const childB = new Agent({
+      name: 'SharedSkill',
+      instructions: 'bravo child',
+    });
+    const root = new Agent({ name: 'Root', handoffs: [childA, childB] });
+    const approvalCall = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'approval-call',
+      status: 'completed',
+      arguments: '{}',
+    } satisfies protocol.FunctionCallItem;
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._currentAgent = childB;
+    state._generatedItems = [
+      new ToolApprovalItem(approvalCall, childB),
+      new RunHandoffOutputItem(
+        {
+          type: 'function_call_result',
+          name: 'transfer_to_sharedskill',
+          callId: 'handoff-call',
+          status: 'completed',
+          output: '{"assistant":"SharedSkill"}',
+        },
+        childA,
+        childB,
+      ),
+    ];
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [state._generatedItems[0]] },
+    };
+    state._lastProcessedResponse = {
+      newItems: [state._generatedItems[0]],
+      toolsUsed: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const json = state.toJSON();
+    expect(json.generatedItems[0]).toMatchObject({
+      type: 'tool_approval_item',
+      agent: { name: 'SharedSkill', identity: 'SharedSkill#2' },
+    });
+    expect(json.generatedItems[1]).toMatchObject({
+      type: 'handoff_output_item',
+      sourceAgent: { name: 'SharedSkill' },
+      targetAgent: { name: 'SharedSkill', identity: 'SharedSkill#2' },
+    });
+
+    const restored = await RunState.fromString(root, JSON.stringify(json));
+    expect((restored._generatedItems[0] as ToolApprovalItem).agent).toBe(
+      childB,
+    );
+    expect(
+      (restored._generatedItems[1] as RunHandoffOutputItem).sourceAgent,
+    ).toBe(childA);
+    expect(
+      (restored._generatedItems[1] as RunHandoffOutputItem).targetAgent,
+    ).toBe(childB);
+    expect(restored.getInterruptions()[0]?.agent).toBe(childB);
+    expect(
+      (restored._lastProcessedResponse?.newItems[0] as ToolApprovalItem).agent,
+    ).toBe(childB);
+  });
+
+  it('rejects duplicate-name states when a saved identity is missing', async () => {
+    const childA = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha child',
+    });
+    const childB = new Agent({
+      name: 'SharedSkill',
+      instructions: 'bravo child',
+    });
+    const root = new Agent({ name: 'Root', handoffs: [childA, childB] });
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._currentAgent = childB;
+    const json = state.toJSON();
+    json.currentAgent = { name: 'SharedSkill', identity: 'SharedSkill#99' };
+
+    await expect(() =>
+      RunState.fromString(root, JSON.stringify(json)),
+    ).rejects.toThrow('Agent identity SharedSkill#99 not found');
+  });
+
+  it('keeps legacy duplicate-name payloads rejected', async () => {
     const childA = new Agent({ name: 'SharedSkill' });
     const childB = new Agent({ name: 'SharedSkill' });
     const agentA = new Agent({ name: 'AgentA', handoffs: [childA] });
     const agentB = new Agent({ name: 'AgentB', handoffs: [childB] });
     const root = new Agent({ name: 'Root', handoffs: [agentA, agentB] });
     const state = new RunState(new RunContext(), 'input', childB, 2);
+    const json = state.toJSON();
+    json.$schemaVersion = '1.9';
+    json.currentAgent = { name: 'SharedSkill' };
 
     await expect(() =>
-      RunState.fromString(root, state.toString()),
+      RunState.fromString(root, JSON.stringify(json)),
     ).rejects.toThrow(
       'Duplicate agent name "SharedSkill" detected. Use unique agent names when serializing RunState.',
     );

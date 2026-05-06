@@ -30,10 +30,12 @@ export class AgentToolUseTracker {
     return this.#agentToTools.has(agent);
   }
 
-  toJSON(): Record<string, string[]> {
+  toJSON(
+    options: { agentIdentityKeys?: ReadonlyMap<Agent<any, any>, string> } = {},
+  ): Record<string, string[]> {
     return Object.fromEntries(
       Array.from(this.#agentToTools.entries()).map(([agent, toolNames]) => {
-        return [agent.name, toolNames];
+        return [options.agentIdentityKeys?.get(agent) ?? agent.name, toolNames];
       }),
     );
   }

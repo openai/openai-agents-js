@@ -78,7 +78,7 @@ The human-in-the-loop flow is designed to be interruptible for longer periods of
 
 You can serialize the state using `result.state.toString()` (or `JSON.stringify(result.state)`) and resume later on by passing the serialized state into `RunState.fromString(agent, serializedState)` where `agent` is the instance of the agent that triggered the overall run.
 
-If you serialize `RunState`, use unique `name` values for every agent in the handoff and `Agent.asTool()` graph. Agent names are used to resolve serialized agents during resume, and duplicate names raise an error when the state is serialized or deserialized.
+When `RunState` is serialized, the SDK records stable agent identities for the handoff and `Agent.asTool()` graph. This lets paused runs resume even when distinct agents share the same `name`, as long as the process that resumes the run rebuilds the same agent graph.
 
 If the resumed process needs to inject a fresh context object, use `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })` instead.
 
