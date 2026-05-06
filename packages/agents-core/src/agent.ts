@@ -321,7 +321,7 @@ export interface AgentConfiguration<
    * The model implementation to use when invoking the LLM.
    *
    * By default, if not set, the agent will use the default model returned by
-   * getDefaultModel (currently "gpt-4.1").
+   * getDefaultModel (currently "gpt-5.4-mini").
    */
   model: string | Model;
 

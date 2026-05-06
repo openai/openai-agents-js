@@ -3,7 +3,7 @@ import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
 
 export const DEFAULT_OPENAI_API = 'responses';
-export const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_OPENAI_RESPONSES_TRANSPORT = 'http';
 
 let _defaultOpenAIAPI = DEFAULT_OPENAI_API;

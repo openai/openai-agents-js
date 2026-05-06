@@ -29,7 +29,10 @@ describe('Agent', () => {
     expect(agent.handoffDescription).toBe('');
     expect(agent.handoffs).toEqual([]);
     expect(agent.model).toBe('');
-    expect(agent.modelSettings).toEqual({});
+    expect(agent.modelSettings).toEqual({
+      reasoning: { effort: 'none' },
+      text: { verbosity: 'low' },
+    });
     expect(agent.tools).toEqual([]);
     expect(agent.mcpServers).toEqual([]);
     expect(agent.inputGuardrails).toEqual([]);
