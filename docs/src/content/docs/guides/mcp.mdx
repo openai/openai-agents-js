@@ -125,6 +125,33 @@ In this example the `GOOGLE_CALENDAR_AUTHORIZATION` environment variable holds a
 
 Fully working samples (Hosted tools/Streamable HTTP/stdio + Streaming, HITL, onApproval) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
 
+## Agent-level MCP configuration
+
+In addition to choosing a transport, you can tune how local MCP tools are prepared by setting `Agent.mcpConfig`.
+
+```ts
+const agent = new Agent({
+  name: 'Assistant',
+  mcpServers: [server],
+  mcpConfig: {
+    // Try to convert MCP tool schemas to strict JSON schema.
+    convertSchemasToStrict: true,
+    // Set to null to raise MCP tool failures instead of returning model-visible error text.
+    errorFunction: null,
+    // Prefix local MCP tool names with their server name.
+    includeServerInToolNames: true,
+  },
+});
+```
+
+Notes:
+
+- `convertSchemasToStrict` is best-effort. If a schema cannot be converted, the original schema is used.
+- `errorFunction` controls how MCP tool call failures are surfaced to the model.
+- When `errorFunction` is unset, the SDK uses the default tool error formatter.
+- Server-level `errorFunction` values override `Agent.mcpConfig.errorFunction` for that server.
+- `includeServerInToolNames` is opt-in. When enabled, each local MCP tool is exposed to the model with a deterministic server-prefixed name, which helps avoid collisions when multiple MCP servers publish tools with the same name.
+
 ## 2. Streamable HTTP MCP servers
 
 When your Agent talks directly to a Streamable HTTP MCP server—local or remote—instantiate `MCPServerStreamableHttp` with the server `url`, `name`, and any optional settings:
@@ -245,6 +272,26 @@ For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may 
 Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance. If you are using shared MCP tool caching via `getAllMcpTools(...)`, you can also invalidate by server name with `invalidateServerToolsCache(serverName)`.
 
 For advanced cases, `getAllMcpTools({ generateMCPToolCacheKey })` lets you customize cache partitioning (for example, by server + agent + run context).
+
+### Server-prefixed tool names
+
+By default, local MCP tools keep the tool name reported by the MCP server. If two local MCP servers expose the same tool name, the SDK raises a duplicate tool name error because the model cannot safely choose between them.
+
+To opt in to deterministic server-prefixed names, set `mcpConfig.includeServerInToolNames: true` on the agent:
+
+```ts
+const agent = new Agent({
+  name: 'Assistant',
+  mcpServers: [docsServer, calendarServer],
+  mcpConfig: {
+    includeServerInToolNames: true,
+  },
+});
+```
+
+With this setting, a `search` tool from a `docs` server is exposed to the model as `mcp_docs__search`, while a `search` tool from a `calendar` server is exposed as `mcp_calendar__search`. The SDK still invokes the original MCP tool name on the original server.
+
+Generated names are ASCII-safe, stay within the function-tool name limit, and avoid local function tool names and enabled handoff names on the same agent. The setting only affects local Streamable HTTP and stdio MCP tools; hosted MCP tools keep their hosted server labels and tool metadata.
 
 ### Tool filtering
 
