@@ -2401,6 +2401,161 @@ describe('executeShellActions', () => {
       expect(invokeSpy).toHaveBeenCalled();
     });
 
+    it('starts all function tool calls by default', async () => {
+      let activeCount = 0;
+      let maxSeenCount = 0;
+      const t = tool({
+        name: 'hi',
+        description: 'tracked tool',
+        parameters: z.object({ value: z.number() }),
+        execute: vi.fn(async ({ value }) => {
+          activeCount += 1;
+          maxSeenCount = Math.max(maxSeenCount, activeCount);
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            return `ok-${value}`;
+          } finally {
+            activeCount -= 1;
+          }
+        }),
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [1, 2, 3].map((value) => ({
+            toolCall: {
+              ...toolCall,
+              callId: `c${value}`,
+              arguments: JSON.stringify({ value }),
+            },
+            tool: t,
+          })),
+          runner,
+          state,
+        ),
+      );
+
+      expect(activeCount).toBe(0);
+      expect(maxSeenCount).toBe(3);
+      expect(
+        res.map((result) => {
+          expect(result.type).toBe('function_output');
+          return result.type === 'function_output' ? result.output : undefined;
+        }),
+      ).toEqual(['ok-1', 'ok-2', 'ok-3']);
+    });
+
+    it('limits function tool concurrency and preserves output order', async () => {
+      let activeCount = 0;
+      let maxSeenCount = 0;
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { maxFunctionToolConcurrency: 2 },
+      });
+      const t = tool({
+        name: 'hi',
+        description: 'tracked tool',
+        parameters: z.object({ value: z.number() }),
+        execute: vi.fn(async ({ value }) => {
+          activeCount += 1;
+          maxSeenCount = Math.max(maxSeenCount, activeCount);
+          try {
+            await new Promise((resolve) =>
+              setTimeout(resolve, value === 1 ? 30 : 1),
+            );
+            return `ok-${value}`;
+          } finally {
+            activeCount -= 1;
+          }
+        }),
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [1, 2, 3].map((value) => ({
+            toolCall: {
+              ...toolCall,
+              callId: `c${value}`,
+              arguments: JSON.stringify({ value }),
+            },
+            tool: t,
+          })),
+          runner,
+          state,
+        ),
+      );
+
+      expect(activeCount).toBe(0);
+      expect(maxSeenCount).toBe(2);
+      expect(
+        res.map((result) => {
+          expect(result.type).toBe('function_output');
+          return result.type === 'function_output' ? result.output : undefined;
+        }),
+      ).toEqual(['ok-1', 'ok-2', 'ok-3']);
+    });
+
+    it('does not start queued function tool calls after a capped failure', async () => {
+      const startedTools: string[] = [];
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { maxFunctionToolConcurrency: 1 },
+      });
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'failing tool',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          startedTools.push('failing_tool');
+          throw new Error('boom');
+        }),
+      }) as unknown as FunctionTool;
+      const queuedTool = tool({
+        name: 'queued_tool',
+        description: 'queued tool',
+        parameters: z.object({}),
+        execute: vi.fn(async () => {
+          startedTools.push('queued_tool');
+          return 'should-not-run';
+        }),
+      }) as unknown as FunctionTool;
+
+      await expect(
+        withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [
+              {
+                toolCall: {
+                  ...toolCall,
+                  name: 'failing_tool',
+                  callId: 'c1',
+                  arguments: '{}',
+                },
+                tool: failingTool,
+              },
+              {
+                toolCall: {
+                  ...toolCall,
+                  name: 'queued_tool',
+                  callId: 'c2',
+                  arguments: '{}',
+                },
+                tool: queuedTool,
+              },
+            ],
+            runner,
+            state,
+          ),
+        ),
+      ).rejects.toThrow(/Failed to run function tools/);
+
+      expect(startedTools).toEqual(['failing_tool']);
+    });
+
     it('does not expose parentRunConfig on public tool callback details', async () => {
       const circularProvider: Record<string, unknown> = {};
       circularProvider.self = circularProvider;

@@ -31,6 +31,7 @@ import {
   BatchTraceProcessor,
   user,
   assistant,
+  type ToolExecutionConfig,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { ServerConversationTracker } from '../src/runner/conversation';
@@ -103,6 +104,38 @@ describe('Runner.run', () => {
   });
 
   describe('basic', () => {
+    it('accepts public tool execution config', () => {
+      const toolExecution = {
+        maxFunctionToolConcurrency: 2,
+      } satisfies ToolExecutionConfig;
+
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolExecution,
+      });
+
+      expect(runner.config.toolExecution).toBe(toolExecution);
+    });
+
+    it('rejects invalid function tool concurrency config', () => {
+      expect(
+        () =>
+          new Runner({
+            tracingDisabled: true,
+            toolExecution: { maxFunctionToolConcurrency: 0 },
+          }),
+      ).toThrow(UserError);
+      expect(
+        () =>
+          new Runner({
+            tracingDisabled: true,
+            toolExecution: { maxFunctionToolConcurrency: 1.5 },
+          }),
+      ).toThrow(
+        'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
+      );
+    });
+
     it('does not persist nested agent-tool metadata when resuming a RunState', async () => {
       const agent = new Agent({
         name: 'ReusedNestedStateAgent',

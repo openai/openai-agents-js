@@ -180,6 +180,7 @@ export type {
   CallModelInputFilterArgs,
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
+  ToolExecutionConfig,
   ReasoningItemIdPolicy,
   RunErrorData,
   RunErrorHandler,

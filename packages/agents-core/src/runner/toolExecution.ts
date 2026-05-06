@@ -183,26 +183,32 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     agentToolParentRunConfig,
   };
 
+  const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
+    const parseResult = parseToolArguments(toolRun);
+
+    // Handle parse errors gracefully instead of crashing.
+    if (!parseResult.success) {
+      return buildParseErrorResult(deps, toolRun, parseResult.error);
+    }
+
+    const approvalOutcome = await handleFunctionApproval(
+      deps,
+      toolRun,
+      parseResult.args,
+    );
+    if (approvalOutcome !== 'approved') {
+      return approvalOutcome;
+    }
+    return runApprovedFunctionTool(deps, toolRun);
+  };
+
   try {
-    const results = await Promise.all(
-      toolRuns.map(async (toolRun) => {
-        const parseResult = parseToolArguments(toolRun);
-
-        // Handle parse errors gracefully instead of crashing
-        if (!parseResult.success) {
-          return buildParseErrorResult(deps, toolRun, parseResult.error);
-        }
-
-        const approvalOutcome = await handleFunctionApproval(
-          deps,
-          toolRun,
-          parseResult.args,
-        );
-        if (approvalOutcome !== 'approved') {
-          return approvalOutcome;
-        }
-        return runApprovedFunctionTool(deps, toolRun);
-      }),
+    const results = await executeToolRunsWithConcurrency(
+      toolRuns,
+      getMaxFunctionToolConcurrency(
+        agentToolParentRunConfig?.toolExecution ?? runner.config.toolExecution,
+      ),
+      executeToolRun,
     );
     return results;
   } catch (e: unknown) {
@@ -217,6 +223,55 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       state,
     );
   }
+}
+
+function getMaxFunctionToolConcurrency(
+  toolExecution: RunConfig['toolExecution'] | undefined,
+): number | undefined {
+  return toolExecution?.maxFunctionToolConcurrency ?? undefined;
+}
+
+async function executeToolRunsWithConcurrency<TContext>(
+  toolRuns: ToolRunFunction<TContext>[],
+  maxConcurrency: number | undefined,
+  executeToolRun: (
+    toolRun: ToolRunFunction<TContext>,
+  ) => Promise<FunctionToolResult<TContext>>,
+): Promise<FunctionToolResult<TContext>[]> {
+  if (
+    maxConcurrency === undefined ||
+    maxConcurrency >= toolRuns.length ||
+    toolRuns.length <= 1
+  ) {
+    return Promise.all(toolRuns.map((toolRun) => executeToolRun(toolRun)));
+  }
+
+  const results: FunctionToolResult<TContext>[] = [];
+  let nextIndex = 0;
+  let firstError: unknown;
+
+  const worker = async () => {
+    while (nextIndex < toolRuns.length && firstError === undefined) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      try {
+        results[currentIndex] = await executeToolRun(toolRuns[currentIndex]);
+      } catch (error) {
+        firstError ??= error;
+        break;
+      }
+    }
+  };
+
+  const workerCount = Math.min(maxConcurrency, toolRuns.length);
+  await Promise.allSettled(
+    Array.from({ length: workerCount }, async () => worker()),
+  );
+
+  if (firstError !== undefined) {
+    throw firstError;
+  }
+  return results;
 }
 
 function parseToolArguments<TContext>(

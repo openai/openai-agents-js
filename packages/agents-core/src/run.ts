@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { ModelBehaviorError } from './errors';
+import { ModelBehaviorError, UserError } from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -175,6 +175,33 @@ export type ToolErrorFormatter<TContext = unknown> = (
 ) => Promise<string | undefined> | string | undefined;
 
 /**
+ * SDK-side execution settings for local tool calls.
+ */
+export type ToolExecutionConfig = {
+  /**
+   * Maximum number of local function tool calls to execute concurrently.
+   * Set to `null` or leave unset to start all function tool calls emitted in a turn.
+   * This does not change provider-side `parallelToolCalls` behavior.
+   */
+  maxFunctionToolConcurrency?: number | null;
+};
+
+function validateToolExecutionConfig(
+  config: ToolExecutionConfig | undefined,
+): ToolExecutionConfig | undefined {
+  const maxConcurrency = config?.maxFunctionToolConcurrency;
+  if (maxConcurrency == null) {
+    return config;
+  }
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+    throw new UserError(
+      'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
+    );
+  }
+  return config;
+}
+
+/**
  * Configures settings for the entire agent run.
  */
 export type RunConfig = {
@@ -257,6 +284,11 @@ export type RunConfig = {
   sandbox?: SandboxRunConfig;
 
   /**
+   * SDK-side execution settings for local tool calls.
+   */
+  toolExecution?: ToolExecutionConfig;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -299,6 +331,7 @@ type SharedRunOptions<
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
+  toolExecution?: ToolExecutionConfig;
   /**
    * Error handlers keyed by error kind.
    */
@@ -412,6 +445,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       traceMetadata: config.traceMetadata,
       tracing: config.tracing,
       sandbox: config.sandbox,
+      toolExecution: validateToolExecutionConfig(config.toolExecution),
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
@@ -491,6 +525,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolErrorFormatter =
       resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const reasoningItemIdPolicy = resolvedOptions.reasoningItemIdPolicy;
+    const toolExecution = validateToolExecutionConfig(
+      resolvedOptions.toolExecution ?? this.config.toolExecution,
+    );
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const traceOverrides = {
@@ -505,6 +542,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       callModelInputFilter,
       toolErrorFormatter,
       reasoningItemIdPolicy,
+      toolExecution,
     };
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
@@ -687,12 +725,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     TContext,
     TAgent extends Agent<TContext, AgentOutputType>,
   >(options: SharedRunOptions<TContext, TAgent>): Partial<RunConfig> {
-    return typeof options.sandbox === 'undefined'
-      ? this.config
-      : {
-          ...this.config,
-          sandbox: options.sandbox,
-        };
+    const hasSandboxOverride = typeof options.sandbox !== 'undefined';
+    const hasToolExecutionOverride =
+      typeof options.toolExecution !== 'undefined';
+    if (!hasSandboxOverride && !hasToolExecutionOverride) {
+      return this.config;
+    }
+    return {
+      ...this.config,
+      ...(hasSandboxOverride ? { sandbox: options.sandbox } : {}),
+      ...(hasToolExecutionOverride
+        ? { toolExecution: options.toolExecution }
+        : {}),
+    };
   }
 
   /**
