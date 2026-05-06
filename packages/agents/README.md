@@ -48,20 +48,20 @@ npm install @openai/agents zod
 
 ```js
 import { run } from '@openai/agents';
-import { gitRepo, Manifest, SandboxAgent } from '@openai/agents/sandbox';
+import { gitRepo, SandboxAgent } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Workspace Assistant',
   instructions: 'Inspect the sandbox workspace before answering.',
-  defaultManifest: new Manifest({
+  defaultManifest: {
     entries: {
       repo: gitRepo({
         repo: 'openai/openai-agents-js',
         ref: 'main',
       }),
     },
-  }),
+  },
 });
 
 const result = await run(

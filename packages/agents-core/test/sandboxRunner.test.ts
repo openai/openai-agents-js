@@ -716,6 +716,115 @@ describe('sandbox runner integration', () => {
     expect(client.createCalls[0]?.manifest.root).toBe('/workspace');
   });
 
+  it('accepts manifest instances and init objects in per-run sandbox config', async () => {
+    const client = new FakeSandboxClient();
+    const manifestInstance = new Manifest({
+      entries: {
+        'instance.txt': {
+          type: 'file',
+          content: 'instance',
+        },
+      },
+    });
+    const manifestInit = {
+      entries: {
+        'init.txt': {
+          type: 'file' as const,
+          content: 'init',
+        },
+      },
+    };
+
+    for (const [name, manifest] of [
+      ['instance', manifestInstance],
+      ['init', manifestInit],
+    ] as const) {
+      const sandboxAgent = new SandboxAgent({
+        name: `SandboxWorker-${name}`,
+        model: new RecordingFakeModel([
+          {
+            output: [fakeModelMessage(`${name} sandbox done`)],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(sandboxAgent, 'Hello', {
+        sandbox: {
+          client,
+          manifest,
+        },
+      });
+
+      expect(result.finalOutput).toBe(`${name} sandbox done`);
+    }
+
+    (manifestInstance.entries['instance.txt'] as { content: string }).content =
+      'mutated-instance';
+    (manifestInit.entries['init.txt'] as { content: string }).content =
+      'mutated-init';
+
+    expect(client.createCalls).toHaveLength(2);
+    expect(
+      (
+        client.createCalls[0]?.manifest.entries['instance.txt'] as {
+          content: string;
+        }
+      ).content,
+    ).toBe('instance');
+    expect(
+      (
+        client.createCalls[1]?.manifest.entries['init.txt'] as {
+          content: string;
+        }
+      ).content,
+    ).toBe('init');
+  });
+
+  it('normalizes manifest instances and init objects in sandbox client create args', () => {
+    const manifestInstance = new Manifest({
+      entries: {
+        'instance.txt': {
+          type: 'file',
+          content: 'instance',
+        },
+      },
+    });
+    const manifestInit = {
+      entries: {
+        'init.txt': {
+          type: 'file' as const,
+          content: 'init',
+        },
+      },
+    };
+
+    const normalizedInstance = normalizeSandboxClientCreateArgs({
+      manifest: manifestInstance,
+    });
+    const normalizedInit = normalizeSandboxClientCreateArgs({
+      manifest: manifestInit,
+    });
+    (manifestInstance.entries['instance.txt'] as { content: string }).content =
+      'mutated-instance';
+    (manifestInit.entries['init.txt'] as { content: string }).content =
+      'mutated-init';
+
+    expect(normalizedInstance.manifest).toBe(manifestInstance);
+    expect(normalizedInit.manifest).toBeInstanceOf(Manifest);
+    expect(
+      (
+        normalizedInstance.manifest.entries['instance.txt'] as {
+          content: string;
+        }
+      ).content,
+    ).toBe('mutated-instance');
+    expect(
+      (normalizedInit.manifest.entries['init.txt'] as { content: string })
+        .content,
+    ).toBe('init');
+  });
+
   it('passes object RunConfig model overrides into sandbox capability sampling', async () => {
     const client = new FakeSandboxClient();
     const samplingRecorder = new SamplingRecorderCapability();
