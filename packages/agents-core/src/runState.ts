@@ -587,11 +587,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _trace: Trace | null = null;
   /**
-   * Runtime-only tool_search-loaded tools, scoped by agent name and preserved across turns for
+   * Runtime-only tool_search-loaded tools, scoped by agent object and preserved across turns for
    * the lifetime of this in-memory run.
    */
-  public _toolSearchRuntimeToolsByAgentName = new Map<
-    string,
+  public _toolSearchRuntimeToolsByAgent = new Map<
+    Agent<any, any>,
     ToolSearchRuntimeToolState<TContext>
   >();
   /**
@@ -651,16 +651,16 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   private getOrCreateToolSearchRuntimeToolState(
-    agentName: string,
+    agent: Agent<any, any>,
   ): ToolSearchRuntimeToolState<TContext> {
-    let state = this._toolSearchRuntimeToolsByAgentName.get(agentName);
+    let state = this._toolSearchRuntimeToolsByAgent.get(agent);
     if (!state) {
       state = {
         anonymousEntries: [],
         keyedEntries: new Map(),
         nextOrder: 0,
       };
-      this._toolSearchRuntimeToolsByAgentName.set(agentName, state);
+      this._toolSearchRuntimeToolsByAgent.set(agent, state);
     }
     return state;
   }
@@ -670,7 +670,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     toolSearchOutput: protocol.ToolSearchOutputItem,
     tools: Tool<TContext>[],
   ): void {
-    const runtimeState = this.getOrCreateToolSearchRuntimeToolState(agent.name);
+    const runtimeState = this.getOrCreateToolSearchRuntimeToolState(agent);
     const entry: ToolSearchRuntimeToolEntry<TContext> = {
       order: runtimeState.nextOrder++,
       tools,
@@ -685,9 +685,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   public getToolSearchRuntimeTools(agent: Agent<any, any>): Tool<TContext>[] {
-    const runtimeState = this._toolSearchRuntimeToolsByAgentName.get(
-      agent.name,
-    );
+    const runtimeState = this._toolSearchRuntimeToolsByAgent.get(agent);
     if (!runtimeState) {
       return [];
     }
@@ -1259,10 +1257,10 @@ function assertRuntimeToolKeysMatch<TContext>(args: {
 async function getConfiguredAgentTools<TContext>(args: {
   agent: Agent<TContext, any>;
   context: RunContext<TContext>;
-  configuredToolsByAgentName: Map<string, Tool<TContext>[]>;
+  configuredToolsByAgent: Map<Agent<TContext, any>, Tool<TContext>[]>;
 }): Promise<Tool<TContext>[]> {
-  const { agent, context, configuredToolsByAgentName } = args;
-  const existing = configuredToolsByAgentName.get(agent.name);
+  const { agent, context, configuredToolsByAgent } = args;
+  const existing = configuredToolsByAgent.get(agent);
   if (existing) {
     return existing;
   }
@@ -1270,7 +1268,7 @@ async function getConfiguredAgentTools<TContext>(args: {
   const configuredTools = (await agent.getAllTools(
     context,
   )) as Tool<TContext>[];
-  configuredToolsByAgentName.set(agent.name, configuredTools);
+  configuredToolsByAgent.set(agent, configuredTools);
   return configuredTools;
 }
 
@@ -1278,14 +1276,20 @@ async function rehydrateToolSearchRuntimeTools<
   TContext,
   TAgent extends Agent<any, any>,
 >(state: RunState<TContext, TAgent>): Promise<void> {
-  const configuredToolsByAgentName = new Map<string, Tool<TContext>[]>();
+  const configuredToolsByAgent = new Map<
+    Agent<TContext, any>,
+    Tool<TContext>[]
+  >();
   const pendingToolSearchCalls = new Map<
-    string,
-    {
-      agent: Agent<TContext, any>;
-      toolSearchCall: protocol.ToolSearchCallItem;
-      runtimeTools?: Tool<TContext>[];
-    }
+    Agent<TContext, any>,
+    Map<
+      string,
+      {
+        agent: Agent<TContext, any>;
+        toolSearchCall: protocol.ToolSearchCallItem;
+        runtimeTools?: Tool<TContext>[];
+      }
+    >
   >();
 
   for (const item of state._generatedItems) {
@@ -1295,10 +1299,22 @@ async function rehydrateToolSearchRuntimeTools<
       }
 
       const callId = resolveToolSearchCallId(item.rawItem);
-      pendingToolSearchCalls.set(`${item.agent.name}:${callId}`, {
+      const agent = item.agent as Agent<TContext, any>;
+      const pendingCallsById =
+        pendingToolSearchCalls.get(agent) ??
+        new Map<
+          string,
+          {
+            agent: Agent<TContext, any>;
+            toolSearchCall: protocol.ToolSearchCallItem;
+            runtimeTools?: Tool<TContext>[];
+          }
+        >();
+      pendingCallsById.set(callId, {
         agent: item.agent as Agent<TContext, any>,
         toolSearchCall: item.rawItem,
       });
+      pendingToolSearchCalls.set(agent, pendingCallsById);
       continue;
     }
 
@@ -1313,7 +1329,7 @@ async function rehydrateToolSearchRuntimeTools<
     const configuredTools = await getConfiguredAgentTools({
       agent: item.agent as Agent<TContext, any>,
       context: state._context,
-      configuredToolsByAgentName,
+      configuredToolsByAgent,
     });
     const configuredToolKeys = getRuntimeToolKeys(configuredTools, {
       allowUnsupported: true,
@@ -1328,9 +1344,9 @@ async function rehydrateToolSearchRuntimeTools<
     }
 
     const callId = resolveToolSearchCallId(item.rawItem);
-    const pendingCall = pendingToolSearchCalls.get(
-      `${item.agent.name}:${callId}`,
-    );
+    const pendingCall = pendingToolSearchCalls
+      .get(item.agent as Agent<TContext, any>)
+      ?.get(callId);
     if (!pendingCall) {
       throw new UserError(
         `RunState cannot resume custom client tool_search output ${callId} for agent ${item.agent.name} because the serialized state is missing the matching tool_search call item.`,

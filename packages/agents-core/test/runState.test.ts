@@ -22,6 +22,7 @@ import {
   RunToolSearchOutputItem,
 } from '../src/items';
 import {
+  attachClientToolSearchExecutor,
   applyPatchTool,
   computerTool,
   shellTool,
@@ -1047,6 +1048,166 @@ describe('RunState', () => {
     expect(restored._generatedItems[0]).toBeInstanceOf(RunToolSearchCallItem);
     expect(restored._generatedItems[1]).toBeInstanceOf(RunToolSearchOutputItem);
     expect(restored.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it('rehydrates duplicate-name client tool_search calls by agent identity', async () => {
+    const alphaLookup = tool({
+      name: 'lookup_alpha',
+      description: 'Look up alpha data.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'alpha',
+    });
+    const betaLookup = tool({
+      name: 'lookup_beta',
+      description: 'Look up beta data.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'beta',
+    });
+    let alphaExecuteCount = 0;
+    let betaExecuteCount = 0;
+    const alphaToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      async () => {
+        alphaExecuteCount += 1;
+        return alphaLookup;
+      },
+    );
+    const betaToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      async () => {
+        betaExecuteCount += 1;
+        return betaLookup;
+      },
+    );
+    const alphaAgent = new Agent({
+      name: 'SharedSkill',
+      instructions: 'alpha agent',
+      tools: [alphaToolSearch],
+    });
+    const betaAgent = new Agent({
+      name: 'SharedSkill',
+      instructions: 'beta agent',
+      tools: [betaToolSearch],
+    });
+    const root = new Agent({
+      name: 'Root',
+      handoffs: [alphaAgent, betaAgent],
+    });
+    const state = new RunState(new RunContext(), 'input1', root, 2);
+    const sharedCallId = 'call_tool_search_shared';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_alpha',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: sharedCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        alphaAgent,
+      ),
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_beta',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: sharedCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        betaAgent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_alpha',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_alpha',
+              description: 'Look up alpha data.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: {
+            call_id: sharedCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        alphaAgent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_beta',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_beta',
+              description: 'Look up beta data.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: {
+            call_id: sharedCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        betaAgent,
+      ),
+    );
+
+    const restored = await RunState.fromString(root, state.toString());
+
+    expect(alphaExecuteCount).toBe(1);
+    expect(betaExecuteCount).toBe(1);
+    expect(restored.getToolSearchRuntimeTools(alphaAgent)).toEqual([
+      alphaLookup,
+    ]);
+    expect(restored.getToolSearchRuntimeTools(betaAgent)).toEqual([betaLookup]);
   });
 
   it('accepts schema version 1.7 payloads when non-item context data mentions tool_search types', async () => {
