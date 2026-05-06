@@ -316,7 +316,7 @@ export class StreamedRunResult<
   /**
    * The maximum number of turns that can be run
    */
-  public maxTurns: number | undefined;
+  public maxTurns: number | null | undefined;
 
   #error: unknown = null;
   #combinedSignal?: AbortSignal;

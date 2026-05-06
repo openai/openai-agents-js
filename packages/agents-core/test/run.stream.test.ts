@@ -1222,6 +1222,83 @@ describe('Runner.run (streaming)', () => {
     );
   });
 
+  it('does not enforce maxTurns for streamed runs when maxTurns is null', async () => {
+    const testTool = tool({
+      name: 'test_tool',
+      description: 'A test tool',
+      parameters: z.object({}),
+      execute: async () => 'result',
+    });
+    const responses: ModelResponse[] = [
+      ...Array.from({ length: 12 }, (_, index) => ({
+        output: [
+          {
+            type: 'function_call' as const,
+            id: `fc_${index}`,
+            callId: `call_${index}`,
+            name: 'test_tool',
+            status: 'completed' as const,
+            arguments: '{}',
+            providerData: {},
+          } as protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      })),
+      {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      },
+    ];
+
+    class LongStreamingModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
+        const response = responses[this.#callCount++];
+        if (!response) {
+          throw new Error('No response found');
+        }
+        return response;
+      }
+
+      async *getStreamedResponse(
+        req: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(req);
+        yield {
+          type: 'response_done',
+          response: {
+            id: `r_${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'NoMaxTurnsStream',
+      model: new LongStreamingModel(),
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    const result = await run(agent, 'hi', { stream: true, maxTurns: null });
+    for await (const _event of result.toStream()) {
+      // Consume stream.
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('done');
+    expect(result.maxTurns).toBeNull();
+    expect(result.state._currentTurn).toBe(13);
+  });
+
   it('handles maxTurns errors with an error handler', async () => {
     const agent = new Agent({
       name: 'MaxTurnsHandlerStream',

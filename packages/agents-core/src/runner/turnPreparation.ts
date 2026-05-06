@@ -72,7 +72,7 @@ export async function prepareTurn<
     continuingInterruptedTurn,
   });
 
-  if (state._currentTurn > state._maxTurns) {
+  if (state._maxTurns !== null && state._currentTurn > state._maxTurns) {
     state._currentAgentSpan?.setError({
       message: 'Max turns exceeded',
       data: { max_turns: state._maxTurns },

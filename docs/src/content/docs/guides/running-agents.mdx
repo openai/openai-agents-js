@@ -38,7 +38,7 @@ The runner then runs a loop:
    - **Final output** → return.
    - **Handoff** → switch to the new agent, keep the accumulated conversation history, go to 1.
    - **Tool calls** → execute tools, append their results to the conversation, go to 1.
-3. Throw [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) once `maxTurns` is reached.
+3. Throw [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) once `maxTurns` is reached, unless `maxTurns` is `null`.
 
 <Aside type="note">
   The rule for whether the LLM output is considered as a "final output" is that
@@ -61,7 +61,7 @@ The additional options are:
 | --- | --- | --- |
 | `stream` | `false` | If `true` the call returns a `StreamedRunResult` and emits events as they arrive from the model. |
 | `context` | – | Context object forwarded to every tool / guardrail / handoff. Learn more in the [context guide](/openai-agents-js/guides/context). |
-| `maxTurns` | `10` | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached. |
+| `maxTurns` | `10` | Safety limit – throws [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) when reached. Pass `null` to disable the limit. |
 | `signal` | – | `AbortSignal` for cancellation. |
 | `session` | – | Session persistence implementation. See the [sessions guide](/openai-agents-js/guides/sessions). |
 | `sessionInputCallback` | – | Custom merge logic for session history and new input; runs before the model call. See [sessions](/openai-agents-js/guides/sessions). |

@@ -1922,6 +1922,80 @@ describe('Runner.run', () => {
       );
     });
 
+    it('does not enforce maxTurns when maxTurns is null', async () => {
+      const toolResponses = Array.from({ length: 12 }, (_, index) => ({
+        output: [
+          {
+            ...TEST_MODEL_FUNCTION_CALL,
+            id: `fc_${index}`,
+            callId: `call_${index}`,
+            arguments: JSON.stringify({ test: 'input' }),
+          },
+        ],
+        usage: new Usage(),
+      }));
+      const agent = new Agent({
+        name: 'NoMaxTurns',
+        model: new FakeModel([
+          ...toolResponses,
+          { output: [fakeModelMessage('done')], usage: new Usage() },
+        ]),
+        tools: [TEST_TOOL],
+      });
+
+      const result = await run(agent, 'x', { maxTurns: null });
+
+      expect(result.finalOutput).toBe('done');
+      expect(result.state._maxTurns).toBeNull();
+      expect(result.state._currentTurn).toBe(13);
+    });
+
+    it('allows resumed states to disable maxTurns with null', async () => {
+      const responses = [
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'fc_1',
+              callId: 'call_1',
+              arguments: JSON.stringify({ test: 'first' }),
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'fc_2',
+              callId: 'call_2',
+              arguments: JSON.stringify({ test: 'second' }),
+            },
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ];
+      const agent = new Agent({
+        name: 'NoMaxTurnsResume',
+        model: new FakeModel(responses),
+        tools: [TEST_TOOL],
+      });
+      const error = await run(agent, 'x', { maxTurns: 1 }).catch((err) => err);
+      expect(error).toBeInstanceOf(MaxTurnsExceededError);
+      const state = (error as MaxTurnsExceededError).state as RunState<
+        unknown,
+        typeof agent
+      >;
+
+      const result = await run(agent, state, {
+        maxTurns: null,
+      });
+
+      expect(result.finalOutput).toBe('done');
+      expect(result.state._maxTurns).toBeNull();
+    });
+
     it('max turn handler returns final output', async () => {
       const agent = new Agent({
         name: 'MaxSummary',

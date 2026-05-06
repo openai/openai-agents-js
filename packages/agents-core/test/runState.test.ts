@@ -552,6 +552,18 @@ describe('RunState', () => {
     expect(JSON.parse(str)).toEqual(json);
   });
 
+  it('serializes null maxTurns', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'NoMaxTurns' });
+    const state = new RunState(context, 'input1', agent, null);
+
+    const json = state.toJSON();
+    expect(json.maxTurns).toBeNull();
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._maxTurns).toBeNull();
+  });
+
   it('serializes duplicate-name agents with stable identities', async () => {
     const childA = new Agent({
       name: 'SharedSkill',
@@ -576,6 +588,12 @@ describe('RunState', () => {
 
     const restored = await RunState.fromString(root, JSON.stringify(json));
     expect(restored._currentAgent).toBe(childB);
+
+    const restoredFromSchema110 = await RunState.fromString(
+      root,
+      JSON.stringify({ ...json, $schemaVersion: '1.10' as const }),
+    );
+    expect(restoredFromSchema110._currentAgent).toBe(childB);
   });
 
   it('keeps literal identity suffixes from colliding with generated identities', () => {
@@ -906,7 +924,7 @@ describe('RunState', () => {
     );
   });
 
-  it('accepts schema version 1.8 payloads with tool_search items during deserialization', async () => {
+  it('accepts schema versions with tool_search support during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent18' });
     const state = new RunState(context, 'input1', agent, 2);
@@ -939,10 +957,19 @@ describe('RunState', () => {
       ),
     );
 
-    const restored = await RunState.fromString(agent, state.toString());
+    for (const $schemaVersion of ['1.8', '1.10'] as const) {
+      const jsonVersion = state.toJSON() as any;
+      jsonVersion.$schemaVersion = $schemaVersion;
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(jsonVersion),
+      );
 
-    expect(restored._generatedItems[0]).toBeInstanceOf(RunToolSearchCallItem);
-    expect(restored._generatedItems[1]).toBeInstanceOf(RunToolSearchOutputItem);
+      expect(restored._generatedItems[0]).toBeInstanceOf(RunToolSearchCallItem);
+      expect(restored._generatedItems[1]).toBeInstanceOf(
+        RunToolSearchOutputItem,
+      );
+    }
   });
 
   it('preserves raw tool_search call_id and execution fields through RunState serialization', async () => {

@@ -88,8 +88,9 @@ import {
  *   envelope for sandbox-agent resume.
  * - 1.10: Adds optional stable agent identity keys so duplicate-name agent graphs can
  *   serialize and resume without ambiguous name resolution.
+ * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  */
-export const CURRENT_SCHEMA_VERSION = '1.10' as const;
+export const CURRENT_SCHEMA_VERSION = '1.11' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -101,6 +102,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.7',
   '1.8',
   '1.9',
+  '1.10',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -408,7 +410,7 @@ export const SerializedRunState = z.object({
     toolInput: z.any().optional(),
   }),
   toolUseTracker: z.record(z.string(), z.array(z.string())),
-  maxTurns: z.number(),
+  maxTurns: z.number().nullable(),
   currentAgentSpan: SerializedSpan.nullable().optional(),
   noActiveAgentRun: z.boolean(),
   inputGuardrailResults: z.array(inputGuardrailResultSchema),
@@ -543,7 +545,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   /**
    * Maximum allowed turns before forcing termination.
    */
-  public _maxTurns: number;
+  public _maxTurns: number | null;
   /**
    * Whether the run has an active agent step in progress.
    */
@@ -603,7 +605,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     context: RunContext<TContext>,
     originalInput: string | AgentInputItem[],
     startingAgent: TAgent,
-    maxTurns: number,
+    maxTurns: number | null,
   ) {
     this._context = context;
     this._agentToolInvocation = undefined;
@@ -1045,6 +1047,7 @@ function assertSchemaVersionSupportsToolSearch(
   if (
     schemaVersion === '1.8' ||
     schemaVersion === '1.9' ||
+    schemaVersion === '1.10' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1062,7 +1065,7 @@ function assertSchemaVersionSupportsToolSearch(
 function schemaVersionSupportsAgentIdentity(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === CURRENT_SCHEMA_VERSION;
+  return schemaVersion === '1.10' || schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 function containsSerializedToolSearchState(
