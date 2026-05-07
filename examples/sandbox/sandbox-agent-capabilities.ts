@@ -111,7 +111,11 @@ Use relative paths because the shell starts in the workspace root.`,
       ...Capabilities.default(),
       skills({
         lazyFrom: {
-          source: { type: 'local_dir', src: skillsRoot },
+          source: {
+            type: 'local_dir',
+            src: skillsRoot,
+            allowOutsideBaseDir: true,
+          },
           index: [
             {
               name: 'capability-proof',

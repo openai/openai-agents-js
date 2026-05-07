@@ -19,7 +19,7 @@ const hostSkillsDir = join(exampleDir, 'skills');
 
 const manifest = new Manifest({
   entries: {
-    repo: localDir({ src: hostRepoDir }),
+    repo: localDir({ src: hostRepoDir, allowOutsideBaseDir: true }),
   },
 });
 
@@ -32,7 +32,10 @@ const agent = new SandboxAgent({
   capabilities: [
     ...Capabilities.default(),
     skills({
-      lazyFrom: localDirLazySkillSource(hostSkillsDir),
+      lazyFrom: localDirLazySkillSource({
+        src: hostSkillsDir,
+        allowOutsideBaseDir: true,
+      }),
     }),
   ],
 });

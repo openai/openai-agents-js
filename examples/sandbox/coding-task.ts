@@ -112,14 +112,22 @@ async function main() {
       'Inspect the repo, make the smallest correct change, run the most relevant checks, and summarize the file changes and risks. Read `repo/task.md` before editing files, stay grounded in the repository, use the `$credit-note-fixer` skill before editing files, prefer apply_patch for file edits when available, remember that apply_patch paths are relative to the sandbox workspace root, and use relative shell paths because the shell already starts in the workspace root.',
     defaultManifest: new Manifest({
       entries: {
-        repo: { type: 'local_dir', src: REPO_DIR },
+        repo: {
+          type: 'local_dir',
+          src: REPO_DIR,
+          allowOutsideBaseDir: true,
+        },
       },
     }),
     capabilities: [
       ...Capabilities.default(),
       skills({
         lazyFrom: {
-          source: { type: 'local_dir', src: SKILLS_DIR },
+          source: {
+            type: 'local_dir',
+            src: SKILLS_DIR,
+            allowOutsideBaseDir: true,
+          },
           index: [
             {
               name: 'credit-note-fixer',
