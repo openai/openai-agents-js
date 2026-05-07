@@ -17,6 +17,7 @@ import {
   toolQualifiedName,
 } from '../toolIdentity';
 import { serializeTool } from '../utils/serialize';
+import { normalizeHostedMcpRequireApproval } from '../utils/mcpApproval';
 import { resolveToolSearchCallId } from '../utils/toolSearch';
 
 type BuiltInClientToolSearchArguments = {
@@ -379,10 +380,9 @@ function normalizeHostedMcpProviderData(
   const normalized: Record<string, unknown> = {
     type: 'mcp',
     server_label: candidate.server_label,
-    require_approval:
-      candidate.require_approval === undefined
-        ? 'never'
-        : candidate.require_approval,
+    require_approval: normalizeHostedMcpRequireApproval(
+      candidate.require_approval,
+    ),
   };
 
   if (typeof candidate.server_url === 'string') {

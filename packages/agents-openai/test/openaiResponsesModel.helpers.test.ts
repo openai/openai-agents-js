@@ -525,6 +525,23 @@ describe('converTool', () => {
     });
   });
 
+  it('rejects invalid MCP approval policies before converting tools', () => {
+    expect(() =>
+      converTool({
+        type: 'hosted_tool',
+        providerData: {
+          type: 'mcp',
+          server_label: 'scoped',
+          server_url: 'https://mcp.example.com',
+          require_approval: {
+            never: { tool_names: ['alpha'] },
+            always: { tool_names: ['alpha'] },
+          },
+        },
+      } as any),
+    ).toThrow(UserError);
+  });
+
   it('preserves explicit false external web access on web search tools', () => {
     const web = converTool({
       type: 'hosted_tool',

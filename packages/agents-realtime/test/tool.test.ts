@@ -91,4 +91,16 @@ describe('realtime tool helpers', () => {
       toRealtimeToolDefinition({ ...functionTool, type: 'computer' } as any),
     ).toThrowError(/Invalid tool type/);
   });
+
+  it('rejects invalid hosted MCP approval policies for realtime tools', () => {
+    expect(() =>
+      toRealtimeToolDefinition({
+        ...hostedMcpTool,
+        providerData: {
+          ...hostedMcpTool.providerData,
+          require_approval: { delete: 'alwyas' },
+        },
+      } as any),
+    ).toThrowError(/Invalid hosted MCP requireApproval/);
+  });
 });

@@ -1951,6 +1951,33 @@ describe('processModelResponse', () => {
     });
   });
 
+  it('rejects invalid hosted MCP approval policies from tool_search output', () => {
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shopify',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          require_approval: {
+            always: { tool_names: ['delete'] },
+            never: { tool_names: ['delete'] },
+          },
+        },
+      ],
+    } as any;
+    const response: ModelResponse = {
+      output: [toolSearchOutput],
+      usage: new Usage(),
+    };
+
+    expect(() => processModelResponse(response, TEST_AGENT, [], [])).toThrow(
+      UserError,
+    );
+  });
+
   it('captures reasoning items', () => {
     const reasoning: protocol.ReasoningItem = {
       id: 'r1',

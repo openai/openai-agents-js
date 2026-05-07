@@ -68,6 +68,7 @@ import {
   encodeUint8ArrayToBase64,
   getToolSearchExecution,
   getToolSearchProviderCallId,
+  normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
 
 type ToolChoice =
@@ -1643,17 +1644,18 @@ function converTool<_TContext = unknown>(
 function convertMCPRequireApproval(
   requireApproval: ProviderData.HostedMCPTool['require_approval'],
 ): OpenAI.Responses.Tool.Mcp.McpToolApprovalFilter | 'always' | 'never' | null {
-  if (requireApproval === 'never' || requireApproval === undefined) {
+  const normalized = normalizeHostedMcpRequireApproval(requireApproval);
+  if (normalized === 'never') {
     return 'never';
   }
 
-  if (requireApproval === 'always') {
+  if (normalized === 'always') {
     return 'always';
   }
 
   return {
-    never: { tool_names: requireApproval.never?.tool_names },
-    always: { tool_names: requireApproval.always?.tool_names },
+    never: { tool_names: normalized.never?.tool_names },
+    always: { tool_names: normalized.always?.tool_names },
   };
 }
 

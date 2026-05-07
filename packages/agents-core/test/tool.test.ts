@@ -601,6 +601,55 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.providerData.server_description).toBe('Repository operations');
     expect(t.providerData.defer_loading).toBe(true);
   });
+
+  it('rejects invalid MCP approval string policies', () => {
+    expect(() =>
+      hostedMcpTool({
+        serverLabel: 'gitmcp',
+        serverUrl: 'https://gitmcp.io/openai/codex',
+        requireApproval: 'alwyas',
+      } as any),
+    ).toThrowError(/Invalid hosted MCP requireApproval/);
+  });
+
+  it('rejects unsupported MCP approval object keys', () => {
+    expect(() =>
+      hostedMcpTool({
+        serverLabel: 'gitmcp',
+        serverUrl: 'https://gitmcp.io/openai/codex',
+        requireApproval: { delete: 'alwyas' },
+      } as any),
+    ).toThrowError(/unsupported key "delete"/);
+  });
+
+  it('rejects MCP approval policies with overlapping tool names', () => {
+    expect(() =>
+      hostedMcpTool({
+        serverLabel: 'gitmcp',
+        serverUrl: 'https://gitmcp.io/openai/codex',
+        requireApproval: {
+          always: { toolNames: ['delete'] },
+          never: { toolNames: ['delete'] },
+        },
+      }),
+    ).toThrowError(/cannot be listed in both always and never/);
+  });
+
+  it('normalizes MCP approval tool name filters', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: {
+        always: { toolNames: ['delete'] },
+        never: { toolNames: ['search'] },
+      },
+    });
+
+    expect(t.providerData.require_approval).toEqual({
+      always: { tool_names: ['delete'] },
+      never: { tool_names: ['search'] },
+    });
+  });
 });
 
 describe('tool.invoke', () => {

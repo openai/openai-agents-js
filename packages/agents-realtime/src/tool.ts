@@ -4,6 +4,7 @@ import {
   Tool,
   UserError,
 } from '@openai/agents-core';
+import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import { RealtimeToolDefinition } from './clientMessages';
 
 export const BACKGROUND_RESULT_SYMBOL = Symbol('backgroundResult');
@@ -56,7 +57,9 @@ export function toRealtimeToolDefinition(
       server_url: serverUrl,
       headers: tool.providerData.headers,
       allowed_tools: tool.providerData.allowed_tools,
-      require_approval: tool.providerData.require_approval,
+      require_approval: normalizeHostedMcpRequireApproval(
+        tool.providerData.require_approval,
+      ),
     };
   }
 
