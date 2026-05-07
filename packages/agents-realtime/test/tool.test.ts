@@ -104,6 +104,21 @@ describe('realtime tool helpers', () => {
     ).toThrowError(/Invalid hosted MCP requireApproval/);
   });
 
+  it('omits hosted MCP approval policy when provider data leaves it undefined', () => {
+    const mcpDef = toRealtimeToolDefinition({
+      ...hostedMcpTool,
+      providerData: {
+        ...hostedMcpTool.providerData,
+        require_approval: undefined,
+      },
+    } as any);
+
+    if (mcpDef.type !== 'mcp') {
+      throw new Error('Expected mcp definition');
+    }
+    expect(mcpDef).not.toHaveProperty('require_approval');
+  });
+
   it('preserves read-only hosted MCP approval filters for realtime tools', () => {
     const mcpDef = toRealtimeToolDefinition({
       ...hostedMcpTool,
