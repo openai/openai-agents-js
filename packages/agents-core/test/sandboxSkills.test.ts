@@ -334,7 +334,10 @@ describe('Skills', () => {
       );
 
       const capability = skills({
-        lazyFrom: localDirLazySkillSource(skillsRoot),
+        lazyFrom: localDirLazySkillSource({
+          src: skillsRoot,
+          allowOutsideBaseDir: true,
+        }),
       });
       const instructions = await capability.instructions(new Manifest());
 
@@ -362,10 +365,40 @@ describe('Skills', () => {
           entry: {
             type: 'local_dir',
             src: `${skillsRoot}/sheet-tools`,
+            allowOutsideBaseDir: true,
           },
           runAs: undefined,
         },
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not discover lazy local directory metadata outside the base directory by default', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agents-skills-outside-'));
+    try {
+      const skillsRoot = join(root, 'skills');
+      const skillDir = join(skillsRoot, 'hidden-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: hidden-skill',
+          'description: Outside the base directory',
+          '---',
+          '# Hidden skill',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const capability = skills({
+        lazyFrom: localDirLazySkillSource(skillsRoot),
+      });
+      const instructions = await capability.instructions(new Manifest());
+
+      expect(instructions).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -392,6 +425,7 @@ describe('Skills', () => {
         lazyFrom: localDirLazySkillSource({
           src: 'skills',
           baseDir: root,
+          allowOutsideBaseDir: true,
         }),
       });
       const session = new FakeSkillsSession();
@@ -414,6 +448,7 @@ describe('Skills', () => {
           entry: {
             type: 'local_dir',
             src: `${root}/skills/relative-skill`,
+            allowOutsideBaseDir: true,
           },
           runAs: undefined,
         },

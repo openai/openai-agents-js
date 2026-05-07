@@ -167,6 +167,7 @@ export type ManifestMaterializationOptions = {
   ) => Promise<void>;
   applyMetadata?: (absolutePath: string, entry: Entry) => Promise<void>;
   concurrencyLimits?: SandboxConcurrencyLimits;
+  localSourceBaseDir?: string;
   resolvePath?: RemoteSandboxPathResolver;
   logicalPath?: string;
 };

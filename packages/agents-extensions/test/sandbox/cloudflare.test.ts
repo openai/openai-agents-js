@@ -405,6 +405,7 @@ describe('CloudflareSandboxClient', () => {
             'local.txt': {
               type: 'local_file',
               src: sourceFile,
+              allowOutsideBaseDir: true,
             },
           },
         }),

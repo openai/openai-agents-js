@@ -287,6 +287,7 @@ describe('UnixLocalSandboxClient', () => {
             data: {
               type: 'local_dir',
               src: sourceDir,
+              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -311,6 +312,7 @@ describe('UnixLocalSandboxClient', () => {
             copied: {
               type: 'local_file',
               src: linkFile,
+              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -335,6 +337,7 @@ describe('UnixLocalSandboxClient', () => {
             copied: {
               type: 'local_file',
               src: join(rootDir, 'link', 'sub', 'secret.txt'),
+              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -361,6 +364,7 @@ describe('UnixLocalSandboxClient', () => {
             data: {
               type: 'local_dir',
               src: join(rootDir, 'link', 'sub'),
+              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -405,6 +409,95 @@ describe('UnixLocalSandboxClient', () => {
         }),
       ),
     ).rejects.toThrow(/Sandbox concurrency limits must be positive numbers/);
+  });
+
+  it('rejects local_file sources outside the local source base directory', async () => {
+    const base = join(rootDir, 'base');
+    const outside = join(rootDir, 'outside');
+    const workspaceRootPath = join(rootDir, 'workspace');
+    await mkdir(base);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    await expect(
+      materializeLocalWorkspaceManifest(
+        new Manifest({
+          entries: {
+            copied: {
+              type: 'local_file',
+              src: join(outside, 'secret.txt'),
+            },
+          },
+        }),
+        workspaceRootPath,
+        {
+          localSourceBaseDir: base,
+        },
+      ),
+    ).rejects.toThrow(/local_file source must stay within/);
+
+    await expect(
+      readFile(join(workspaceRootPath, 'copied'), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('rejects relative local_dir sources that escape the local source base directory', async () => {
+    const base = join(rootDir, 'base');
+    const outside = join(rootDir, 'outside');
+    const workspaceRootPath = join(rootDir, 'workspace');
+    await mkdir(base);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    await expect(
+      materializeLocalWorkspaceManifest(
+        new Manifest({
+          entries: {
+            copied: {
+              type: 'local_dir',
+              src: '../outside',
+            },
+          },
+        }),
+        workspaceRootPath,
+        {
+          localSourceBaseDir: base,
+        },
+      ),
+    ).rejects.toThrow(/local_dir source must stay within/);
+
+    await expect(
+      readFile(join(workspaceRootPath, 'copied', 'secret.txt'), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('allows explicit local_dir sources outside the local source base directory', async () => {
+    const base = join(rootDir, 'base');
+    const outside = join(rootDir, 'outside');
+    const workspaceRootPath = join(rootDir, 'workspace');
+    await mkdir(base);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    await materializeLocalWorkspaceManifest(
+      new Manifest({
+        entries: {
+          copied: {
+            type: 'local_dir',
+            src: outside,
+            allowOutsideBaseDir: true,
+          },
+        },
+      }),
+      workspaceRootPath,
+      {
+        localSourceBaseDir: base,
+      },
+    );
+
+    await expect(
+      readFile(join(workspaceRootPath, 'copied', 'secret.txt'), 'utf8'),
+    ).resolves.toBe('secret');
   });
 
   it('applies explicit entry permissions during materialization', async () => {
@@ -2165,6 +2258,7 @@ void main();
         source: {
           type: 'local_dir',
           src: skillsRoot,
+          allowOutsideBaseDir: true,
         },
         index: [
           {

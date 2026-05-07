@@ -1,6 +1,9 @@
 import { UserError } from '@openai/agents-core';
 import { type Entry, type Manifest } from '@openai/agents-core/sandbox';
-import { isHostPathStrictlyWithinRoot } from '@openai/agents-core/sandbox/internal';
+import {
+  isHostPathStrictlyWithinRoot,
+  isHostPathWithinRoot,
+} from '@openai/agents-core/sandbox/internal';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import {
   lstat,
@@ -135,11 +138,28 @@ export async function materializeLocalSourceManifestEntry(
     case 'local_file':
       await writer.writeFile(
         absolutePath,
-        await readStableLocalFile(entry.src),
+        await readStableLocalFile(
+          resolveLocalSourcePath(
+            'local_file',
+            entry.src,
+            Boolean(entry.allowOutsideBaseDir),
+            options.localSourceBaseDir,
+          ),
+        ),
       );
       break;
     case 'local_dir':
-      await materializeLocalDirectory(writer, absolutePath, entry.src, options);
+      await materializeLocalDirectory(
+        writer,
+        absolutePath,
+        resolveLocalSourcePath(
+          'local_dir',
+          entry.src,
+          Boolean(entry.allowOutsideBaseDir),
+          options.localSourceBaseDir,
+        ),
+        options,
+      );
       break;
     case 'git_repo':
       await materializeGitRepo(
@@ -163,6 +183,22 @@ export async function materializeLocalSourceManifestEntry(
   }
 
   await options.applyMetadata?.(absolutePath, entry);
+}
+
+function resolveLocalSourcePath(
+  entryType: 'local_dir' | 'local_file',
+  sourcePath: string,
+  allowOutsideBaseDir: boolean,
+  baseDir: string = process.cwd(),
+): string {
+  const base = resolve(baseDir);
+  const resolvedSourcePath = resolve(base, sourcePath);
+  if (!allowOutsideBaseDir && !isHostPathWithinRoot(base, resolvedSourcePath)) {
+    throw new UserError(
+      `${entryType} source must stay within the local source base directory: ${resolvedSourcePath} (base: ${base})`,
+    );
+  }
+  return resolvedSourcePath;
 }
 
 async function materializeLocalDirectory(

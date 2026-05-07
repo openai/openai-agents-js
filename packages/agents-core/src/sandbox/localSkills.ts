@@ -6,6 +6,7 @@ import {
   type SkillIndexEntry,
 } from './capabilities/skills';
 import { localDir } from './entries';
+import { isHostPathWithinRoot } from './shared/hostPath';
 
 export type LocalDirLazySkillSourceOptions = {
   /**
@@ -17,6 +18,10 @@ export type LocalDirLazySkillSourceOptions = {
    * Defaults to the current working directory.
    */
   baseDir?: string;
+  /**
+   * Allow reading skill metadata and materializing skills outside the local source base directory.
+   */
+  allowOutsideBaseDir?: boolean;
 };
 
 export function localDirLazySkillSource(
@@ -26,7 +31,10 @@ export function localDirLazySkillSource(
     typeof srcOrOptions === 'string' ? { src: srcOrOptions } : srcOrOptions;
   const sourceRoot = resolve(options.baseDir ?? process.cwd(), options.src);
   return {
-    source: localDir({ src: sourceRoot }),
+    source: localDir({
+      src: sourceRoot,
+      ...(options.allowOutsideBaseDir ? { allowOutsideBaseDir: true } : {}),
+    }),
     index: discoverLocalDirSkillIndex(options),
   };
 }
@@ -34,7 +42,11 @@ export function localDirLazySkillSource(
 function discoverLocalDirSkillIndex(
   options: LocalDirLazySkillSourceOptions,
 ): SkillIndexEntry[] {
-  const root = resolve(options.baseDir ?? process.cwd(), options.src);
+  const base = resolve(options.baseDir ?? process.cwd());
+  const root = resolve(base, options.src);
+  if (!options.allowOutsideBaseDir && !isHostPathWithinRoot(base, root)) {
+    return [];
+  }
   if (!isDirectory(root)) {
     return [];
   }

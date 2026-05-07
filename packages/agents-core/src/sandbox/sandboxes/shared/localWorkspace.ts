@@ -55,6 +55,7 @@ const LOCAL_SOURCE_DIRECTORY_READ_FLAGS =
 type MaterializeLocalWorkspaceOptions = {
   concurrencyLimits?: SandboxConcurrencyLimits;
   manifestRoot?: string;
+  localSourceBaseDir?: string;
   allowLocalBindMounts?: boolean;
   allowIdentityMetadata?: boolean;
   supportsMount?: (entry: Mount | TypedMount) => boolean;
@@ -189,6 +190,7 @@ export async function materializeLocalWorkspaceManifestEntry(
         destination,
         entry,
         logicalPath,
+        options,
       );
       break;
     case 'local_dir':
@@ -573,6 +575,7 @@ async function materializeLocalFileEntry(
   destination: string,
   entry: LocalFile,
   logicalPath: string,
+  options: MaterializeLocalWorkspaceOptions,
 ): Promise<void> {
   await createMaterializationParentDirectory(
     workspaceRootPath,
@@ -583,7 +586,14 @@ async function materializeLocalFileEntry(
     workspaceRootPath,
     destination,
     logicalPath,
-    await readStableLocalFile(entry.src),
+    await readStableLocalFile(
+      resolveLocalSourcePath(
+        'local_file',
+        entry.src,
+        Boolean(entry.allowOutsideBaseDir),
+        options.localSourceBaseDir,
+      ),
+    ),
   );
 }
 
@@ -595,12 +605,33 @@ async function materializeLocalDirEntry(
   options: MaterializeLocalWorkspaceOptions,
 ): Promise<void> {
   await copyLocalDirectory(
-    entry.src,
+    resolveLocalSourcePath(
+      'local_dir',
+      entry.src,
+      Boolean(entry.allowOutsideBaseDir),
+      options.localSourceBaseDir,
+    ),
     destination,
     options,
     workspaceRootPath,
     logicalPath,
   );
+}
+
+function resolveLocalSourcePath(
+  entryType: 'local_dir' | 'local_file',
+  sourcePath: string,
+  allowOutsideBaseDir: boolean,
+  baseDir: string = process.cwd(),
+): string {
+  const base = resolve(baseDir);
+  const resolvedSourcePath = resolve(base, sourcePath);
+  if (!allowOutsideBaseDir && !isHostPathWithinRoot(base, resolvedSourcePath)) {
+    throw new UserError(
+      `${entryType} source must stay within the local source base directory: ${resolvedSourcePath} (base: ${base})`,
+    );
+  }
+  return resolvedSourcePath;
 }
 
 async function copyLocalDirectory(

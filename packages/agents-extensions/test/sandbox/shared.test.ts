@@ -885,7 +885,7 @@ describe('remote sandbox path helpers', () => {
       state,
       new Manifest({
         entries: {
-          copied: localDir({ src: tempDir }),
+          copied: localDir({ src: tempDir, allowOutsideBaseDir: true }),
         },
       }),
       'fake-provider',
@@ -1722,6 +1722,7 @@ describe('remote sandbox path helpers', () => {
           ' ./copied//source.txt ': {
             type: 'local_file',
             src: sourceFile,
+            allowOutsideBaseDir: true,
           },
         },
       }),
@@ -1878,6 +1879,7 @@ describe('remote sandbox path helpers', () => {
           'copied/source.txt': {
             type: 'local_file',
             src: sourceFile,
+            allowOutsideBaseDir: true,
           },
           parent: mount({
             source: 's3://bucket/parent',
@@ -2011,10 +2013,12 @@ describe('remote sandbox path helpers', () => {
           'local.txt': {
             type: 'local_file',
             src: sourceFile,
+            allowOutsideBaseDir: true,
           },
           data: {
             type: 'local_dir',
             src: sourceDir,
+            allowOutsideBaseDir: true,
           },
         },
       },
@@ -2043,6 +2047,77 @@ describe('remote sandbox path helpers', () => {
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
   });
 
+  test('rejects local source entries outside the local source base directory', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const base = join(tempDir, 'base');
+    const outside = join(tempDir, 'outside');
+    await mkdir(base);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/copied.txt',
+        {
+          type: 'local_file',
+          src: join(outside, 'secret.txt'),
+        },
+        'test',
+        {
+          localSourceBaseDir: base,
+        },
+      ),
+    ).rejects.toThrow(/local_file source must stay within/);
+
+    expect(files.size).toBe(0);
+  });
+
+  test('allows explicit local source entries outside the local source base directory', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const base = join(tempDir, 'base');
+    const outside = join(tempDir, 'outside');
+    await mkdir(base);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    const files = new Map<string, string | Uint8Array>();
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (path: string, content: string | Uint8Array) => {
+        files.set(path, content);
+      },
+    };
+
+    await materializeLocalSourceManifestEntry(
+      writer,
+      '/workspace/copied.txt',
+      {
+        type: 'local_file',
+        src: join(outside, 'secret.txt'),
+        allowOutsideBaseDir: true,
+      },
+      'test',
+      {
+        localSourceBaseDir: base,
+      },
+    );
+
+    expect(Buffer.from(files.get('/workspace/copied.txt')!)).toEqual(
+      Buffer.from('secret'),
+    );
+  });
+
   test('rejects symbolic links inside local directory entries', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
     tempDirs.push(tempDir);
@@ -2065,6 +2140,7 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_dir',
           src: sourceDir,
+          allowOutsideBaseDir: true,
         },
         'test',
       ),
@@ -2093,6 +2169,7 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_dir',
           src: join(linkedRoot, 'source-dir'),
+          allowOutsideBaseDir: true,
         },
         'test',
       ),
@@ -2121,6 +2198,7 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_file',
           src: linkFile,
+          allowOutsideBaseDir: true,
         },
         'test',
       ),
@@ -2148,6 +2226,7 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_file',
           src: join(linkedRoot, 'source.txt'),
+          allowOutsideBaseDir: true,
         },
         'test',
       ),
