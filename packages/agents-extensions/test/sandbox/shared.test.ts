@@ -1312,6 +1312,41 @@ describe('remote sandbox path helpers', () => {
     expect(() =>
       validateWorkspaceTarArchive(symlinkArchive, { allowSymlinks: false }),
     ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(symlinkArchive, {
+        allowExternalSymlinkTargets: false,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'link', type: '2', linkName: '/tmp/outside' }]),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'link', type: '2', linkName: '/tmp/outside' }]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).toThrow(/absolute symlink target not allowed/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'nested', type: '5' },
+          { name: 'nested/link', type: '2', linkName: '../../outside' },
+        ]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).toThrow(/symlink target escapes archive root/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'nested', type: '5' },
+          { name: 'nested/link', type: '2', linkName: '../safe/file.txt' },
+        ]),
+        { allowExternalSymlinkTargets: false },
+      ),
+    ).not.toThrow();
   });
 
   test('rejects symbolic links before hydrating tar archives', async () => {

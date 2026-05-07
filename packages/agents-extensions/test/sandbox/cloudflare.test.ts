@@ -1588,6 +1588,27 @@ describe('CloudflareSandboxClient', () => {
     );
   });
 
+  test('rejects external symlink targets before hydrating workspace archives', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.resume({
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'link', type: '2', linkName: '/tmp/outside' }]),
+      ),
+    ).rejects.toThrow(/absolute symlink target not allowed/);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('rejects unsupported manifest metadata during resume', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',

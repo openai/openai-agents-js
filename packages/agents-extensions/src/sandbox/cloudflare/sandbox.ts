@@ -569,7 +569,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
     assertTarWorkspacePersistence('CloudflareSandboxClient', 'tar');
     const archive = toWorkspaceArchiveBytes(data);
-    validateWorkspaceTarArchive(archive);
+    validateWorkspaceTarArchive(archive, {
+      allowExternalSymlinkTargets: false,
+    });
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/hydrate`,
       {

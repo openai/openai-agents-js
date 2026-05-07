@@ -23,6 +23,7 @@ export type RemoteWorkspaceTarIo = RemoteManifestWriter & {
 
 export type WorkspaceTarValidationOptions = {
   allowSymlinks?: boolean;
+  allowExternalSymlinkTargets?: boolean;
   rejectSymlinkRelPaths?: Iterable<string>;
   skipRelPaths?: Iterable<string>;
   rootName?: string;
@@ -250,6 +251,7 @@ export function validateWorkspaceTarArchive(
           readTarString(header, 0, 100),
           readTarString(header, 345, 155),
         );
+      const linkName = pendingPax?.linkpath ?? readTarString(header, 157, 100);
       pendingPax = undefined;
       pendingLongName = undefined;
 
@@ -262,7 +264,7 @@ export function validateWorkspaceTarArchive(
         continue;
       }
 
-      const member = validateTarMember(name, rawType, options);
+      const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
       }
@@ -343,6 +345,7 @@ function validateTarMember(
   name: string,
   typeFlag: string,
   options: WorkspaceTarValidationOptions,
+  linkName: string,
 ): TarMember | null {
   const relPath = safeTarMemberRelPath(name);
   if (relPath === null) {
@@ -368,6 +371,7 @@ function validateTarMember(
     ) {
       throw tarError(name, `symlink member not allowed: ${relPath}`);
     }
+    validateSymlinkTarget(name, relPath, linkName, options);
     return { rawName: name, path: relPath, type: 'symlink' };
   }
   if (typeFlag === '5') {
@@ -378,6 +382,28 @@ function validateTarMember(
   }
 
   throw tarError(name, 'unsupported member type');
+}
+
+function validateSymlinkTarget(
+  name: string,
+  relPath: string,
+  linkName: string,
+  options: WorkspaceTarValidationOptions,
+): void {
+  if (options.allowExternalSymlinkTargets !== false) {
+    return;
+  }
+  if (linkName.startsWith('/')) {
+    throw tarError(name, `absolute symlink target not allowed: ${linkName}`);
+  }
+
+  const parent = parentPath(relPath);
+  if (
+    normalizePosixPathWithoutRoot(parent ? `${parent}/${linkName}` : linkName)
+  ) {
+    return;
+  }
+  throw tarError(name, `symlink target escapes archive root: ${linkName}`);
 }
 
 function safeTarMemberRelPath(name: string): string | null {
@@ -449,6 +475,29 @@ function parentPaths(path: string): string[] {
     parents.push(parts.slice(0, index).join('/'));
   }
   return parents;
+}
+
+function parentPath(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index < 0 ? '' : path.slice(0, index);
+}
+
+function normalizePosixPathWithoutRoot(path: string): string[] | null {
+  const normalized: string[] = [];
+  for (const part of path.split('/')) {
+    if (part === '' || part === '.') {
+      continue;
+    }
+    if (part === '..') {
+      if (normalized.length === 0) {
+        return null;
+      }
+      normalized.pop();
+      continue;
+    }
+    normalized.push(part);
+  }
+  return normalized;
 }
 
 function parsePaxPayload(payload: Uint8Array): Record<string, string> {
