@@ -188,6 +188,29 @@ describe('OpenAIRealtimeBase helpers', () => {
     ]);
   });
 
+  it('omits mcp require_approval when realtime config leaves it undefined', () => {
+    const base = new TestBase();
+    const payload = (base as any)._getMergedSessionConfig({
+      instructions: 'hi',
+      model: 'gpt-realtime-1.5',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'deepwiki',
+          server_url: 'https://mcp.deepwiki.com/sse',
+        },
+      ],
+    });
+
+    expect(payload.tools).toEqual([
+      {
+        type: 'mcp',
+        server_label: 'deepwiki',
+        server_url: 'https://mcp.deepwiki.com/sse',
+      },
+    ]);
+  });
+
   it('sendFunctionCallOutput emits item_update and response.create', () => {
     const base = new TestBase();
     const updates: any[] = [];
