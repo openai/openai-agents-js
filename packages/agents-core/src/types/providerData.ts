@@ -31,8 +31,8 @@ export type HostedMCPTool<Context = UnknownContext> = {
         require_approval:
           | 'always'
           | {
-              never?: { tool_names: string[] };
-              always?: { tool_names: string[] };
+              never?: { tool_names?: string[]; read_only?: boolean };
+              always?: { tool_names?: string[]; read_only?: boolean };
             };
         on_approval?: HostedMCPApprovalFunction<Context>;
       }

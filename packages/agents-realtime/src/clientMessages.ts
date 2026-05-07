@@ -289,6 +289,10 @@ export type HostedToolFilter = {
   tool_names?: string[];
 };
 
+export type HostedMCPApprovalFilter = HostedToolFilter & {
+  read_only?: boolean;
+};
+
 // TODO unify this with the core types
 export type HostedMCPToolDefinition = {
   type: 'mcp';
@@ -300,8 +304,8 @@ export type HostedMCPToolDefinition = {
     | 'never'
     | 'always'
     | {
-        never?: HostedToolFilter;
-        always?: HostedToolFilter;
+        never?: HostedMCPApprovalFilter;
+        always?: HostedMCPApprovalFilter;
       };
 };
 

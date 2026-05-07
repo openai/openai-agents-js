@@ -6,10 +6,15 @@ type HostedMcpRequireApproval = Exclude<
   undefined
 >;
 
-type ToolNamesFilter = { tool_names: string[] };
+type McpApprovalFilter = { tool_names?: string[]; read_only?: boolean };
 
 const REQUIRE_APPROVAL_POLICY_KEYS = new Set(['always', 'never']);
 const TOOL_NAMES_KEYS = new Set(['toolNames', 'tool_names']);
+const READ_ONLY_KEYS = new Set(['readOnly', 'read_only']);
+const MCP_APPROVAL_FILTER_KEYS = new Set([
+  ...TOOL_NAMES_KEYS,
+  ...READ_ONLY_KEYS,
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -19,16 +24,18 @@ function invalidRequireApproval(message: string): UserError {
   return new UserError(`Invalid hosted MCP requireApproval: ${message}`);
 }
 
-function normalizeToolNamesFilter(
+function normalizeApprovalFilter(
   value: unknown,
   path: string,
-): ToolNamesFilter {
+): McpApprovalFilter {
   if (!isRecord(value)) {
-    throw invalidRequireApproval(`${path} must be an object with toolNames.`);
+    throw invalidRequireApproval(
+      `${path} must be an object with toolNames or readOnly.`,
+    );
   }
 
   const keys = Object.keys(value);
-  const unknownKeys = keys.filter((key) => !TOOL_NAMES_KEYS.has(key));
+  const unknownKeys = keys.filter((key) => !MCP_APPROVAL_FILTER_KEYS.has(key));
   if (unknownKeys.length > 0) {
     throw invalidRequireApproval(
       `${path} has unsupported key "${unknownKeys[0]}".`,
@@ -41,27 +48,52 @@ function normalizeToolNamesFilter(
     );
   }
 
+  if ('readOnly' in value && 'read_only' in value) {
+    throw invalidRequireApproval(
+      `${path} must not specify both readOnly and read_only.`,
+    );
+  }
+
+  const normalized: McpApprovalFilter = {};
   const toolNames = value.toolNames ?? value.tool_names;
-  if (!Array.isArray(toolNames)) {
+  if (typeof toolNames !== 'undefined' && !Array.isArray(toolNames)) {
     throw invalidRequireApproval(`${path}.toolNames must be an array.`);
   }
 
-  for (const toolName of toolNames) {
-    if (typeof toolName !== 'string' || toolName.length === 0) {
-      throw invalidRequireApproval(
-        `${path}.toolNames must contain only non-empty strings.`,
-      );
+  if (Array.isArray(toolNames)) {
+    for (const toolName of toolNames) {
+      if (typeof toolName !== 'string' || toolName.length === 0) {
+        throw invalidRequireApproval(
+          `${path}.toolNames must contain only non-empty strings.`,
+        );
+      }
     }
+    normalized.tool_names = [...toolNames];
   }
 
-  return { tool_names: [...toolNames] };
+  const readOnly = value.readOnly ?? value.read_only;
+  if (typeof readOnly !== 'undefined') {
+    if (typeof readOnly !== 'boolean') {
+      throw invalidRequireApproval(`${path}.readOnly must be a boolean.`);
+    }
+    normalized.read_only = readOnly;
+  }
+
+  if (
+    typeof normalized.tool_names === 'undefined' &&
+    typeof normalized.read_only === 'undefined'
+  ) {
+    throw invalidRequireApproval(`${path} must include toolNames or readOnly.`);
+  }
+
+  return normalized;
 }
 
 function findOverlappingToolName(
-  always?: ToolNamesFilter,
-  never?: ToolNamesFilter,
+  always?: McpApprovalFilter,
+  never?: McpApprovalFilter,
 ): string | undefined {
-  if (!always || !never) {
+  if (!always?.tool_names || !never?.tool_names) {
     return undefined;
   }
 
@@ -112,13 +144,13 @@ export function normalizeHostedMcpRequireApproval(
 
   const normalized: Exclude<HostedMcpRequireApproval, 'always' | 'never'> = {};
   if (typeof requireApproval.always !== 'undefined') {
-    normalized.always = normalizeToolNamesFilter(
+    normalized.always = normalizeApprovalFilter(
       requireApproval.always,
       'always',
     );
   }
   if (typeof requireApproval.never !== 'undefined') {
-    normalized.never = normalizeToolNamesFilter(requireApproval.never, 'never');
+    normalized.never = normalizeApprovalFilter(requireApproval.never, 'never');
   }
 
   const overlap = findOverlappingToolName(normalized.always, normalized.never);

@@ -920,8 +920,8 @@ export function hostedMcpTool<Context = UnknownContext>(
           requireApproval:
             | 'always'
             | {
-                never?: { toolNames: string[] };
-                always?: { toolNames: string[] };
+                never?: { toolNames?: string[]; readOnly?: boolean };
+                always?: { toolNames?: string[]; readOnly?: boolean };
               };
           onApproval?: HostedMCPApprovalFunction<Context>;
         }
@@ -1981,8 +1981,8 @@ function buildRequireApproval(
   requireApproval:
     | 'always'
     | {
-        never?: { toolNames: string[] };
-        always?: { toolNames: string[] };
+        never?: { toolNames?: string[]; readOnly?: boolean };
+        always?: { toolNames?: string[]; readOnly?: boolean };
       },
 ): Exclude<
   ProviderData.HostedMCPTool['require_approval'],

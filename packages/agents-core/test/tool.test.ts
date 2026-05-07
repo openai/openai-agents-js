@@ -650,6 +650,22 @@ describe('create a tool using hostedMcpTool utility', () => {
       never: { tool_names: ['search'] },
     });
   });
+
+  it('normalizes MCP approval read-only filters', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: {
+        always: { readOnly: false },
+        never: { toolNames: ['search'], readOnly: true },
+      },
+    });
+
+    expect(t.providerData.require_approval).toEqual({
+      always: { read_only: false },
+      never: { tool_names: ['search'], read_only: true },
+    });
+  });
 });
 
 describe('tool.invoke', () => {

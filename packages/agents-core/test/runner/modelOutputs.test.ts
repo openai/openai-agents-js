@@ -1978,6 +1978,54 @@ describe('processModelResponse', () => {
     );
   });
 
+  it('accepts read-only hosted MCP approval filters from tool_search output', () => {
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shopify',
+      status: 'completed',
+      tools: [
+        {
+          type: 'mcp',
+          server_label: 'shopify',
+          server_url: 'https://mcp.example.com/shopify',
+          require_approval: {
+            always: { read_only: false },
+            never: { tool_names: ['search'], read_only: true },
+          },
+        },
+      ],
+    } as any;
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_shopify',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'shopify',
+        name: 'mcp_approval_request',
+        id: 'mcpr_shopify',
+        arguments: {},
+      },
+    };
+    const response: ModelResponse = {
+      output: [toolSearchOutput, hostedCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(response, TEST_AGENT, [], []);
+
+    expect(result.mcpApprovalRequests[0].mcpTool.providerData).toMatchObject({
+      type: 'mcp',
+      server_label: 'shopify',
+      server_url: 'https://mcp.example.com/shopify',
+      require_approval: {
+        always: { read_only: false },
+        never: { tool_names: ['search'], read_only: true },
+      },
+    });
+  });
+
   it('captures reasoning items', () => {
     const reasoning: protocol.ReasoningItem = {
       id: 'r1',

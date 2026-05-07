@@ -1654,8 +1654,8 @@ function convertMCPRequireApproval(
   }
 
   return {
-    never: { tool_names: normalized.never?.tool_names },
-    always: { tool_names: normalized.always?.tool_names },
+    never: normalized.never,
+    always: normalized.always,
   };
 }
 

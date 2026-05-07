@@ -103,4 +103,25 @@ describe('realtime tool helpers', () => {
       } as any),
     ).toThrowError(/Invalid hosted MCP requireApproval/);
   });
+
+  it('preserves read-only hosted MCP approval filters for realtime tools', () => {
+    const mcpDef = toRealtimeToolDefinition({
+      ...hostedMcpTool,
+      providerData: {
+        ...hostedMcpTool.providerData,
+        require_approval: {
+          always: { read_only: false },
+          never: { tool_names: ['search'], read_only: true },
+        },
+      },
+    } as any);
+
+    if (mcpDef.type !== 'mcp') {
+      throw new Error('Expected mcp definition');
+    }
+    expect(mcpDef.require_approval).toEqual({
+      always: { read_only: false },
+      never: { tool_names: ['search'], read_only: true },
+    });
+  });
 });
