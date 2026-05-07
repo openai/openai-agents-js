@@ -339,17 +339,27 @@ export class OpenAIResponsesCompactionSession
     }
 
     await this.restoreUnderlyingSessionItems(previousItems, error, {
-      clearExistingItems: false,
+      popExistingItemCount: currentItems.length,
     });
   }
 
   private async restoreUnderlyingSessionItems(
     previousItems: AgentInputItem[],
     error: unknown,
-    options: { clearExistingItems?: boolean } = {},
+    options: {
+      clearExistingItems?: boolean;
+      popExistingItemCount?: number;
+    } = {},
   ): Promise<void> {
     try {
-      if (options.clearExistingItems !== false) {
+      if (options.popExistingItemCount !== undefined) {
+        for (let i = 0; i < options.popExistingItemCount; i += 1) {
+          const popped = await this.underlyingSession.popItem();
+          if (!popped) {
+            break;
+          }
+        }
+      } else if (options.clearExistingItems !== false) {
         await this.underlyingSession.clearSession();
       }
       if (previousItems.length > 0) {
