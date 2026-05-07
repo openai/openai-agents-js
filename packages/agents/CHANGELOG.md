@@ -1,5 +1,26 @@
 # @openai/agents
 
+## 0.10.0
+
+### Minor Changes
+
+- 2e7e48a: feat: switch the default model to gpt-5.4-mini
+
+### Patch Changes
+
+- 3546add: feat: allow maxTurns null to disable turn limits
+- 0e7cbf0: feat: add function tool execution concurrency config
+- d31526b: feat: accept manifest init shorthands in sandbox configuration
+- 0630108: feat: align local MCP config with the Python SDK
+- Updated dependencies [3546add]
+- Updated dependencies [0e7cbf0]
+- Updated dependencies [2e7e48a]
+- Updated dependencies [d31526b]
+- Updated dependencies [0630108]
+  - @openai/agents-core@0.10.0
+  - @openai/agents-openai@0.10.0
+  - @openai/agents-realtime@0.10.0
+
 ## 0.9.1
 
 ### Patch Changes

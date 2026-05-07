@@ -1,5 +1,20 @@
 # @openai/agents-openai
 
+## 0.10.0
+
+### Minor Changes
+
+- 2e7e48a: feat: switch the default model to gpt-5.4-mini
+
+### Patch Changes
+
+- Updated dependencies [3546add]
+- Updated dependencies [0e7cbf0]
+- Updated dependencies [2e7e48a]
+- Updated dependencies [d31526b]
+- Updated dependencies [0630108]
+  - @openai/agents-core@0.10.0
+
 ## 0.9.1
 
 ### Patch Changes
