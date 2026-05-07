@@ -1,4 +1,10 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   parseSkillFrontmatter,
@@ -44,7 +50,11 @@ function discoverLocalDirSkillIndex(
 ): SkillIndexEntry[] {
   const base = resolve(options.baseDir ?? process.cwd());
   const root = resolve(base, options.src);
-  if (!options.allowOutsideBaseDir && !isHostPathWithinRoot(base, root)) {
+  if (
+    !options.allowOutsideBaseDir &&
+    (!isHostPathWithinRoot(base, root) ||
+      !isResolvedLocalSourceWithinBase(base, root))
+  ) {
     return [];
   }
   if (!isDirectory(root)) {
@@ -56,7 +66,7 @@ function discoverLocalDirSkillIndex(
     .sort((left, right) => left.name.localeCompare(right.name))
     .flatMap((entry) => {
       const skillMarkdownPath = join(root, entry.name, 'SKILL.md');
-      if (!isFile(skillMarkdownPath)) {
+      if (!isRegularFileWithoutSymlink(skillMarkdownPath)) {
         return [];
       }
 
@@ -78,6 +88,14 @@ function discoverLocalDirSkillIndex(
     });
 }
 
+function isResolvedLocalSourceWithinBase(base: string, root: string): boolean {
+  try {
+    return isHostPathWithinRoot(realpathSync(base), realpathSync(root));
+  } catch {
+    return false;
+  }
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -86,9 +104,9 @@ function isDirectory(path: string): boolean {
   }
 }
 
-function isFile(path: string): boolean {
+function isRegularFileWithoutSymlink(path: string): boolean {
   try {
-    return statSync(path).isFile();
+    return lstatSync(path).isFile();
   } catch {
     return false;
   }
