@@ -70,6 +70,7 @@ The additional options are:
 | `reasoningItemIdPolicy` | – | Controls whether reasoning-item `id`s are preserved or omitted when prior run items are turned back into model input. See [Reasoning item ID policy](#reasoning-item-id-policy). |
 | `tracing` | – | Per-run tracing configuration overrides (for example, export API key). |
 | `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
+| `toolExecution` | – | SDK-side execution settings for local tool calls. Use `toolExecution.maxFunctionToolConcurrency` to limit how many function tools run at once. |
 | `errorHandlers` | – | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers). |
 | `conversationId` | – | Reuse a server-side conversation (OpenAI Responses API + Conversations API only). |
 | `previousResponseId` | – | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only). |
@@ -101,6 +102,9 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `toolErrorFormatter` | `ToolErrorFormatter` | Global hook to customize tool approval rejection messages returned to the model. |
 | `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | Default policy for preserving or omitting reasoning-item `id`s when replaying generated items into later model calls. |
 | `sandbox` | `SandboxRunConfig` | Default sandbox runtime configuration for `SandboxAgent` runs. |
+| `toolExecution` | `ToolExecutionConfig` | Default SDK-side execution settings for local tool calls. `maxFunctionToolConcurrency` caps local function tool concurrency for each turn; unset or `null` starts all function tool calls emitted in a turn. |
+
+`toolExecution.maxFunctionToolConcurrency` must be an integer greater than or equal to `1`. This setting only limits SDK-side execution of local function tools. It does not change provider-side `modelSettings.parallelToolCalls`.
 
 ## State and conversation management
 
