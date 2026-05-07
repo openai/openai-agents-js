@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.10.1
+
+### Patch Changes
+
+- 0cd060f: fix: validate hosted MCP approval policies
+
 ## 0.10.0
 
 ### Minor Changes

@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.10.1
+
+### Patch Changes
+
+- 4dc2614: fix: restore session history when responses compaction replacement fails
+- 0cd060f: fix: validate hosted MCP approval policies
+- Updated dependencies [0cd060f]
+  - @openai/agents-core@0.10.1
+
 ## 0.10.0
 
 ### Minor Changes
