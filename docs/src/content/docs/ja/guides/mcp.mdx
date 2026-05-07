@@ -14,77 +14,81 @@ import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
 import mcpServersExample from '../../../../../../examples/docs/mcp/mcpServers.ts?raw';
 
-[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールやコンテキストを提供する方法を標準化するオープンプロトコルです。MCP のドキュメントより:
+[**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールやコンテキストを提供する方法を標準化するオープンプロトコルです。 MCP のドキュメントより:
 
-> MCP は、アプリケーションが LLM にコンテキストを提供する方法を標準化するオープンプロトコルです。MCP は AI アプリケーション向けの USB-C ポートのようなものだと考えてください。USB-C がデバイスをさまざまな周辺機器やアクセサリーに接続するための標準化された方法を提供するのと同様に、MCP は AI モデルをさまざまなデータソースやツールに接続するための標準化された方法を提供します。
+> MCP は、アプリケーションが LLM にコンテキストを提供する方法を標準化するオープンプロトコルです。 MCP は AI アプリケーション向けの USB-C ポートのようなものだと考えてください。 USB-C がさまざまな周辺機器やアクセサリーにデバイスを接続するための標準化された方法を提供するのと同じように、MCP は AI モデルをさまざまなデータソースやツールに接続するための標準化された方法を提供します。
 
-この SDK がサポートする MCP サーバーは 3 種類あります:
+この SDK は、次の 3 種類の MCP サーバーをサポートしています:
 
-1. **リモート MCP サーバーツール** – [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) がツールとして使用するリモート MCP サーバー
+1. **リモート MCP サーバーツール** – [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp) によってツールとして使用されるリモート MCP サーバー
 2. **Streamable HTTP MCP サーバー** – [Streamable HTTP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http) を実装するローカルまたはリモートのサーバー
 3. **Stdio MCP サーバー** – 標準入出力経由でアクセスするサーバー（もっともシンプルな選択肢）
 
-> 注: SDK には旧来の Server‑Sent Events transport 向けの `MCPServerSSE` も含まれていますが、SSE は MCP プロジェクトで非推奨になっています。新しい連携では Streamable HTTP または stdio を優先してください。
+> 注: SDK には、従来の Server‑Sent Events トランスポート向けに `MCPServerSSE` も含まれていますが、SSE は MCP プロジェクトで非推奨になっています。 新しい連携では、Streamable HTTP または stdio を優先してください。
 
-ユースケースに応じてサーバータイプを選んでください:
+ユースケースに応じてサーバータイプを選択してください:
 
 | 必要なもの | 推奨オプション |
 | --- | --- |
-| 一般公開されているリモートサーバーをデフォルトの OpenAI responses モデルで呼び出したい | **1. Hosted MCP tools** |
-| 一般公開されているリモートサーバーを使いたいが、ツール呼び出しはローカルでトリガーしたい | **2. Streamable HTTP** |
-| ローカルで動作している Streamable HTTP サーバーを使いたい | **2. Streamable HTTP** |
-| OpenAI Responses 以外のモデルで任意の Streamable HTTP サーバーを使いたい | **2. Streamable HTTP** |
+| デフォルトの OpenAI responses モデルで、公開されているリモートサーバーを呼び出したい | **1. リモート MCP ツール** |
+| 公開されているリモートサーバーを使いたいが、ツール呼び出しはローカルでトリガーしたい | **2. Streamable HTTP** |
+| ローカルで動作する Streamable HTTP サーバーを使いたい | **2. Streamable HTTP** |
+| OpenAI Responses 以外のモデルで Streamable HTTP サーバーを使いたい | **2. Streamable HTTP** |
 | 標準 I/O プロトコルのみをサポートするローカル MCP サーバーを扱いたい | **3. Stdio** |
 
 ## 1. リモート MCP サーバーツール
 
-Hosted tool は往復処理全体をモデル側に委ねます。コードが MCP サーバーを呼び出す代わりに、OpenAI Responses API がリモートツールエンドポイントを呼び出し、その結果をモデルにストリーミングで返します。
+Hosted tool では、往復処理全体がモデル内で行われます。 あなたのコードが MCP サーバーを呼び出す代わりに、OpenAI Responses API がリモートツールエンドポイントを呼び出し、その結果をモデルにストリーミングで返します。
 
-以下は Hosted MCP tool を使うもっともシンプルな例です。リモート MCP サーバーのラベルと URL を `hostedMcpTool` ユーティリティ関数に渡せます。これは Hosted MCP サーバーツールを作成する際に便利です。
+以下は、リモート MCP ツールを使うもっともシンプルな例です。 `hostedMcpTool` ユーティリティ関数にリモート MCP サーバーのラベルと URL を渡せます。 これは、リモート MCP サーバーツールを作成する際に便利です。
 
 <Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
 
-次に、`run` 関数（または独自にカスタマイズした `Runner` インスタンスの `run` メソッド）で Agent を実行できます:
+その後、`run` 関数（または独自にカスタマイズした `Runner` インスタンスの `run` メソッド）で Agent を実行できます:
 
-<Code lang="typescript" code={hostedExample} title="Hosted MCP tools で実行" />
+<Code
+  lang="typescript"
+  code={hostedExample}
+  title="Run with hosted MCP tools"
+/>
 
-増分の MCP 結果をストリーミングするには、`Agent` の実行時に `stream: true` を渡します:
+増分の MCP 結果をストリーミングするには、`Agent` を実行するときに `stream: true` を渡します:
 
 <Code
   lang="typescript"
   code={hostedStreamExample}
-  title="Hosted MCP tools で実行（ストリーミング）"
+  title="Run with hosted MCP tools (streaming)"
 />
 
-### 承認フロー（オプション）
+### 任意の承認フロー
 
-機密性の高い操作では、個々のツール呼び出しに人間の承認を必須にできます。`requireApproval: 'always'` を渡すか、ツール名ごとに `'never'` / `'always'` を対応付ける細かなオブジェクトを渡してください。
+機密性の高い操作では、個々のツール呼び出しに人間の承認を必須にできます。 `requireApproval: 'always'` を渡すか、ツール名ごとに `'never'` / `'always'` を割り当てる詳細なオブジェクトを渡してください。
 
-ツール呼び出しが安全かどうかをプログラムで判定できる場合は、[`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) を使ってツール呼び出しを承認または拒否できます。人間の承認が必要な場合は、ローカル関数ツールと同様に `interruptions` を使った同じ [human-in-the-loop (HITL) アプローチ](/openai-agents-js/guides/human-in-the-loop/) を使用できます。
+ツール呼び出しが安全かどうかをプログラムで判定できる場合は、[`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)を使って、ツール呼び出しを承認または拒否できます。 人間の承認が必要な場合は、ローカル関数ツールと同様に、`interruptions` を使った同じ[human-in-the-loop (HITL) アプローチ](/openai-agents-js/ja/guides/human-in-the-loop/)を利用できます。
 
 <Code
   lang="typescript"
   code={hostedHITLExample}
-  title="Hosted MCP tools での Human in the loop"
+  title="Human in the loop with hosted MCP tools"
 />
 
-### Hosted MCP オプションリファレンス
+### リモート MCP オプションのリファレンス
 
-`hostedMcpTool(...)` は、MCP サーバー URL とコネクターバックのサーバーの両方をサポートします:
+`hostedMcpTool(...)` は、MCP サーバー URL とコネクターバックエンドのサーバーの両方をサポートしています:
 
-| オプション | 型 | 注記 |
+| オプション | 型 | 備考 |
 | --- | --- | --- |
-| `serverLabel` | `string` | 必須。イベントやトレース内で Hosted MCP サーバーを識別するラベル |
-| `serverUrl` | `string` | リモート MCP サーバー URL（通常の Hosted MCP サーバーではこれを使用） |
-| `connectorId` | `string` | OpenAI connector id（コネクターバックの Hosted サーバーでは `serverUrl` の代わりに使用） |
-| `authorization` | `string` | 任意。Hosted MCP バックエンドに送信する認可トークン |
+| `serverLabel` | `string` | 必須のラベルです。イベントやトレース内でリモート MCP サーバーを識別します |
+| `serverUrl` | `string` | リモート MCP サーバーの URL です（通常のリモート MCP サーバーではこれを使います） |
+| `connectorId` | `string` | OpenAI connector id です（コネクターバックエンドのリモートサーバーでは `serverUrl` の代わりにこれを使います） |
+| `authorization` | `string` | 任意の認可トークンです。リモート MCP バックエンドに送信されます |
 | `headers` | `Record<string, string>` | 任意の追加リクエストヘッダー |
-| `allowedTools` | `string[] \| object` | モデルに公開するツール名の許可リスト。`string[]` または `{ toolNames?: string[] }` を渡します |
-| `deferLoading` | `boolean` | Hosted MCP tools 向けの Responses 専用遅延読み込み。同じ Agent 内で `toolSearchTool()` が必要です |
-| `requireApproval` | `'never' \| 'always' \| object` | Hosted MCP tool 呼び出しの承認ポリシー。ツールごとの上書きにはオブジェクト形式を使用します。デフォルトは `'never'` です |
-| `onApproval` | Approval callback | 任意。`requireApproval` で承認処理が必要な場合に、プログラムで承認 / 拒否するためのコールバック |
+| `allowedTools` | `string[] \| object` | モデルに公開するツール名の許可リストです。 `string[]` または `{ toolNames?: string[] }` を渡します |
+| `deferLoading` | `boolean` | リモート MCP ツール向けの Responses 専用遅延ロードです。 同じエージェント内で `toolSearchTool()` が必要です |
+| `requireApproval` | `'never' \| 'always' \| object` | リモート MCP ツール呼び出しの承認ポリシーです。 ツールごとの上書きにはオブジェクト形式を使います。 デフォルトは `'never'` です |
+| `onApproval` | Approval callback | `requireApproval` で承認処理が必要な場合に使う、プログラムによる承認 / 拒否用の任意のコールバック |
 
-モデルに Hosted MCP サーバーのツール定義を最初から公開するのではなく、tool search 経由で必要時に読み込ませたい場合は、`deferLoading: true` を設定します。これは OpenAI Responses API でのみ動作し、同じリクエスト内で `toolSearchTool()` が必要で、GPT-5.4 以降のサポート対象モデルリリースで使う必要があります。遅延読み込みの完全な設定については [ツール](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) ガイドを参照してください。
+モデルに最初から公開するのではなく、ツール検索経由で必要になったときにリモート MCP サーバーのツール定義をロードしたい場合は、`deferLoading: true` を設定してください。 これは OpenAI Responses API でのみ機能し、同じリクエスト内で `toolSearchTool()` が必要で、GPT-5.4 以降のサポート対象モデルリリースで使用する必要があります。 遅延ロードの完全な設定については、[ツール](/openai-agents-js/ja/guides/tools#deferred-tool-loading-with-tool-search)ガイドを参照してください。
 
 `requireApproval` のオブジェクト形式:
 
@@ -107,114 +111,145 @@ async function onApproval(
 }> {}
 ```
 
-### コネクターバックの Hosted サーバー
+### コネクターバックエンドのリモートサーバー
 
-Hosted MCP は OpenAI connector もサポートします。`serverUrl` を指定する代わりに、connector の `connectorId` と `authorization` トークンを渡します。すると Responses API が認証を処理し、Hosted MCP インターフェース経由で connector のツールを公開します。
+Hosted MCP は OpenAI connector もサポートしています。 `serverUrl` を指定する代わりに、コネクターの `connectorId` と `authorization` トークンを渡します。 すると Responses API が認証を処理し、コネクターのツールをリモート MCP インターフェース経由で公開します。
 
 <Code
   lang="typescript"
   code={hostedConnectorExample}
-  title="コネクターバックの Hosted MCP tool"
+  title="Connector-backed hosted MCP tool"
 />
 
-この例では、`GOOGLE_CALENDAR_AUTHORIZATION` 環境変数に Google OAuth Playground から取得した OAuth トークンが入っており、これによってコネクターバックのサーバーが Calendar API を呼び出せるようになります。ストリーミングも含めた実行可能なサンプルについては [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors) を参照してください。
+この例では、`GOOGLE_CALENDAR_AUTHORIZATION` 環境変数に Google OAuth Playground から取得した OAuth トークンが格納されており、これによってコネクターバックエンドのサーバーが Calendar API を呼び出せるよう認可されます。 ストリーミングも示す実行可能なサンプルについては、[`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)を参照してください。
 
-完全に動作するサンプル（Hosted tools / Streamable HTTP / stdio + ストリーミング、HITL、onApproval）は、GitHub リポジトリの [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
+完全に動作するサンプル（Hosted tools / Streamable HTTP / stdio + Streaming、HITL、onApproval）は、GitHub リポジトリ内の [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
+
+## エージェントレベルの MCP 設定
+
+トランスポートの選択に加えて、`Agent.mcpConfig` を設定することで、ローカル MCP ツールの準備方法を調整できます。
+
+```ts
+const agent = new Agent({
+  name: 'Assistant',
+  mcpServers: [server],
+  mcpConfig: {
+    // Try to convert MCP tool schemas to strict JSON schema.
+    convertSchemasToStrict: true,
+    // Set to null to raise MCP tool failures instead of returning model-visible error text.
+    errorFunction: null,
+    // Prefix local MCP tool names with their server name.
+    includeServerInToolNames: true,
+  },
+});
+```
+
+注:
+
+- `convertSchemasToStrict` はベストエフォートです。 スキーマを変換できない場合は、元のスキーマが使われます
+- `errorFunction` は、MCP ツール呼び出しの失敗をモデルにどのように見せるかを制御します
+- `errorFunction` が未設定の場合、SDK はデフォルトのツールエラーフォーマッターを使用します
+- サーバーレベルの `errorFunction` の値は、そのサーバーについて `Agent.mcpConfig.errorFunction` を上書きします
+- `includeServerInToolNames` はオプトインです。 有効にすると、各ローカル MCP ツールは決定的なサーバープレフィックス付きの名前でモデルに公開されます。 これにより、複数の MCP サーバーが同じ名前のツールを公開している場合の衝突を避けやすくなります
 
 ## 2. Streamable HTTP MCP サーバー
 
-Agent が Streamable HTTP MCP サーバー（ローカルまたはリモート）と直接やり取りする場合は、サーバーの `url`、`name`、および必要に応じたオプションを指定して `MCPServerStreamableHttp` を生成します:
+Agent が Streamable HTTP MCP サーバー（ローカルまたはリモート）と直接やり取りする場合は、サーバーの `url`、`name`、および任意の設定を指定して `MCPServerStreamableHttp` を生成してください:
 
 <Code
   lang="typescript"
   code={streamableHttpExample}
-  title="Streamable HTTP MCP サーバーで実行"
+  title="Run with Streamable HTTP MCP servers"
 />
 
 コンストラクターオプション:
 
-| オプション | 型 | 注記 |
+| オプション | 型 | 備考 |
 | --- | --- | --- |
-| `url` | `string` | Streamable HTTP サーバー URL |
+| `url` | `string` | Streamable HTTP サーバーの URL |
 | `name` | `string` | サーバーの任意ラベル |
-| `cacheToolsList` | `boolean` | レイテンシ削減のためにツール一覧をキャッシュ |
+| `cacheToolsList` | `boolean` | レイテンシーを減らすためにツール一覧をキャッシュします |
 | `clientSessionTimeoutSeconds` | `number` | MCP クライアントセッションのタイムアウト |
-| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | 利用可能なツールをフィルタリング |
-| `toolMetaResolver` | `MCPToolMetaResolver` | 呼び出しごとの MCP `_meta` リクエストフィールドを注入 |
-| `errorFunction` | `MCPToolErrorFunction \| null` | MCP 呼び出し失敗をモデルに見えるテキストへマッピング |
+| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | 利用可能なツールをフィルタリングします |
+| `toolMetaResolver` | `MCPToolMetaResolver` | 呼び出しごとの MCP `_meta` リクエストフィールドを挿入します |
+| `errorFunction` | `MCPToolErrorFunction \| null` | MCP 呼び出し失敗をモデルに見えるテキストへマッピングします |
 | `timeout` | `number` | リクエストごとのタイムアウト（ミリ秒） |
 | `logger` | `Logger` | カスタムロガー |
-| `authProvider` | `OAuthClientProvider` | MCP TypeScript SDK の OAuth プロバイダー |
+| `authProvider` | `OAuthClientProvider` | MCP TypeScript SDK の OAuth provider |
 | `requestInit` | `RequestInit` | リクエスト用の Fetch 初期化オプション |
 | `fetch` | `FetchLike` | カスタム fetch 実装 |
-| `reconnectionOptions` | `StreamableHTTPReconnectionOptions` | 再接続調整オプション |
-| `sessionId` | `string` | MCP 接続用の明示的な session id |
+| `reconnectionOptions` | `StreamableHTTPReconnectionOptions` | 再接続の調整オプション |
+| `sessionId` | `string` | MCP 接続用の明示的なセッション id |
 
-このコンストラクターは、`authProvider`、`requestInit`、`fetch`、`reconnectionOptions`、`sessionId` などの追加の MCP TypeScript‑SDK オプションも受け付けます。詳細は [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) とそのドキュメントを参照してください。
+このコンストラクターは、`authProvider`、`requestInit`、`fetch`、`reconnectionOptions`、`sessionId` などの追加の MCP TypeScript‑SDK オプションも受け取れます。 詳細は、[MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) とそのドキュメントを参照してください。
 
 ## 3. Stdio MCP サーバー
 
-標準 I/O のみを公開するサーバーでは、`fullCommand` を指定して `MCPServerStdio` を生成します:
+標準 I/O のみを公開するサーバーでは、`fullCommand` を指定して `MCPServerStdio` を生成してください:
 
-<Code lang="typescript" code={stdioExample} title="Stdio MCP サーバーで実行" />
+<Code
+  lang="typescript"
+  code={stdioExample}
+  title="Run with Stdio MCP servers"
+/>
 
 コンストラクターオプション:
 
-| オプション | 型 | 注記 |
+| オプション | 型 | 備考 |
 | --- | --- | --- |
-| `command` / `args` | `string` / `string[]` | stdio サーバー向けのコマンド + 引数 |
-| `fullCommand` | `string` | `command` + `args` の代替となる完全なコマンド文字列 |
+| `command` / `args` | `string` / `string[]` | stdio サーバー用のコマンド + 引数 |
+| `fullCommand` | `string` | `command` + `args` の代わりとなる完全なコマンド文字列 |
 | `env` | `Record<string, string>` | サーバープロセス用の環境変数 |
 | `cwd` | `string` | サーバープロセスの作業ディレクトリ |
-| `cacheToolsList` | `boolean` | レイテンシ削減のためにツール一覧をキャッシュ |
+| `cacheToolsList` | `boolean` | レイテンシーを減らすためにツール一覧をキャッシュします |
 | `clientSessionTimeoutSeconds` | `number` | MCP クライアントセッションのタイムアウト |
 | `name` | `string` | サーバーの任意ラベル |
 | `encoding` | `string` | stdio ストリームのエンコーディング |
 | `encodingErrorHandler` | `'strict' \| 'ignore' \| 'replace'` | エンコーディングエラー時の戦略 |
-| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | 利用可能なツールをフィルタリング |
-| `toolMetaResolver` | `MCPToolMetaResolver` | 呼び出しごとの MCP `_meta` リクエストフィールドを注入 |
-| `errorFunction` | `MCPToolErrorFunction \| null` | MCP 呼び出し失敗をモデルに見えるテキストへマッピング |
+| `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | 利用可能なツールをフィルタリングします |
+| `toolMetaResolver` | `MCPToolMetaResolver` | 呼び出しごとの MCP `_meta` リクエストフィールドを挿入します |
+| `errorFunction` | `MCPToolErrorFunction \| null` | MCP 呼び出し失敗をモデルに見えるテキストへマッピングします |
 | `timeout` | `number` | リクエストごとのタイムアウト（ミリ秒） |
 | `logger` | `Logger` | カスタムロガー |
 
-## MCP サーバーライフサイクル管理
+## MCP サーバーライフサイクルの管理
 
-複数の MCP サーバーを扱う場合は、`connectMcpServers` を使ってまとめて接続し、失敗を追跡し、1 か所で閉じることができます。このヘルパーは `active`、`failed`、`errors` の各コレクションを持つ `MCPServers` インスタンスを返すので、正常なサーバーだけを Agent に渡せます。
+複数の MCP サーバーを扱う場合は、`connectMcpServers` を使ってまとめて接続し、失敗を追跡し、一か所で閉じることができます。 このヘルパーは `active`、`failed`、`errors` のコレクションを持つ `MCPServers` インスタンスを返すため、健全なサーバーだけをエージェントに渡せます。
 
 <Code
   lang="typescript"
   code={mcpServersExample}
-  title="複数の MCP サーバーを管理"
+  title="Manage multiple MCP servers"
 />
 
 ユースケース:
 
-- **複数サーバーを同時に扱う**: すべてを並列接続し、Agent には `mcpServers.active` を使用
-- **部分的な失敗の処理**: `failed` と `errors` を確認し、続行するか再試行するかを判断
-- **失敗したサーバーの再試行**: `mcpServers.reconnect()` を呼び出し（デフォルトでは失敗したサーバーのみ再試行）
+- **複数サーバーを同時に扱う**: すべてを並列接続し、エージェントには `mcpServers.active` を使います
+- **部分的な失敗の処理**: `failed` と `errors` を確認し、続行するか再試行するかを判断します
+- **失敗したサーバーの再試行**: `mcpServers.reconnect()` を呼び出します（デフォルトでは失敗したサーバーのみを再試行します）
 
 厳密な「すべて成功か、すべて失敗か」の接続や異なるタイムアウトが必要な場合は、`connectMcpServers(servers, options)` を使い、環境に合わせてオプションを調整してください。
 
 `connectMcpServers` のオプション:
 
-| オプション | 型 | デフォルト | 注記 |
+| オプション | 型 | デフォルト | 備考 |
 | --- | --- | --- | --- |
-| `connectTimeoutMs` | `number \| null` | `10000` | 各サーバー `connect()` のタイムアウト。無効化するには `null` を使用 |
-| `closeTimeoutMs` | `number \| null` | `10000` | 各サーバー `close()` のタイムアウト。無効化するには `null` を使用 |
-| `dropFailed` | `boolean` | `true` | 失敗したサーバーを `active` から除外 |
-| `strict` | `boolean` | `false` | いずれかのサーバー接続が失敗した場合に例外を投げる |
-| `suppressAbortError` | `boolean` | `true` | 中断系のエラーは無視しつつ、失敗したサーバーの追跡は継続 |
-| `connectInParallel` | `boolean` | `false` | 順次ではなく、すべてのサーバーを同時接続 |
+| `connectTimeoutMs` | `number \| null` | `10000` | 各サーバーの `connect()` のタイムアウト。 無効化するには `null` を使います |
+| `closeTimeoutMs` | `number \| null` | `10000` | 各サーバーの `close()` のタイムアウト。 無効化するには `null` を使います |
+| `dropFailed` | `boolean` | `true` | 失敗したサーバーを `active` から除外します |
+| `strict` | `boolean` | `false` | いずれかのサーバー接続に失敗したら例外を投げます |
+| `suppressAbortError` | `boolean` | `true` | failed サーバーの追跡は続けつつ、abort 類似エラーを無視します |
+| `connectInParallel` | `boolean` | `false` | 順次ではなく、すべてのサーバーを同時に接続します |
 
 `mcpServers.reconnect(options)` がサポートするオプション:
 
-| オプション | 型 | デフォルト | 注記 |
+| オプション | 型 | デフォルト | 備考 |
 | --- | --- | --- | --- |
-| `failedOnly` | `boolean` | `true` | 失敗したサーバーのみ再試行（`true`）またはすべてのサーバーを再接続（`false`） |
+| `failedOnly` | `boolean` | `true` | 失敗したサーバーのみ再試行する（`true`）か、すべてのサーバーを再接続する（`false`）か |
 
-### 非同期破棄（オプション）
+### 非同期破棄（任意）
 
-ランタイムが `Symbol.asyncDispose` をサポートしている場合、`MCPServers` は `await using` パターンもサポートします。TypeScript では、`tsconfig.json` で `esnext.disposable` を有効にしてください:
+実行環境が `Symbol.asyncDispose` をサポートしている場合、`MCPServers` は `await using` パターンもサポートします。 TypeScript では、`tsconfig.json` で `esnext.disposable` を有効にしてください:
 
 ```json
 {
@@ -232,19 +267,39 @@ await using mcpServers = await connectMcpServers(servers);
 
 ## その他の注意点
 
-**Streamable HTTP** と **Stdio** サーバーでは、`Agent` が実行されるたびに利用可能なツールを検出するために `list_tools()` を呼び出す場合があります。この往復処理は、特にリモートサーバーではレイテンシの増加につながるため、`MCPServerStdio` または `MCPServerStreamableHttp` に `cacheToolsList: true` を渡して、結果をメモリ内にキャッシュできます。
+**Streamable HTTP** および **Stdio** サーバーでは、`Agent` が実行されるたびに、利用可能なツールを検出するために `list_tools()` を呼び出す場合があります。 この往復処理は、とくにリモートサーバーではレイテンシーを増やす可能性があるため、`MCPServerStdio` または `MCPServerStreamableHttp` に `cacheToolsList: true` を渡すことで、結果をメモリにキャッシュできます。
 
-これを有効にするのは、ツール一覧が変わらないと確信できる場合だけにしてください。あとでキャッシュを無効化するには、サーバーインスタンスの `invalidateToolsCache()` を呼び出します。`getAllMcpTools(...)` による共有 MCP ツールキャッシュを使っている場合は、`invalidateServerToolsCache(serverName)` によりサーバー名で無効化することもできます。
+これを有効にするのは、ツール一覧が変わらないと確信できる場合だけにしてください。 後からキャッシュを無効化するには、サーバーインスタンスで `invalidateToolsCache()` を呼び出します。 `getAllMcpTools(...)` による共有 MCP ツールキャッシュを使っている場合は、`invalidateServerToolsCache(serverName)` でサーバー名ごとに無効化することもできます。
 
-高度なケースでは、`getAllMcpTools({ generateMCPToolCacheKey })` によってキャッシュの分割方法をカスタマイズできます（たとえば、サーバー + Agent + 実行コンテキストごとなど）。
+高度なケースでは、`getAllMcpTools({ generateMCPToolCacheKey })` を使うことで、キャッシュの分割方法をカスタマイズできます（たとえば、サーバー + エージェント + 実行コンテキスト単位など）。
+
+### サーバープレフィックス付きツール名
+
+デフォルトでは、ローカル MCP ツールは MCP サーバーが報告したツール名をそのまま保持します。 2 つのローカル MCP サーバーが同じツール名を公開している場合、モデルは安全に選択できないため、SDK は重複ツール名エラーを発生させます。
+
+決定的なサーバープレフィックス付き名前を有効にするには、エージェントで `mcpConfig.includeServerInToolNames: true` を設定してください:
+
+```ts
+const agent = new Agent({
+  name: 'Assistant',
+  mcpServers: [docsServer, calendarServer],
+  mcpConfig: {
+    includeServerInToolNames: true,
+  },
+});
+```
+
+この設定では、`docs` サーバーの `search` ツールはモデルに `mcp_docs__search` として公開され、`calendar` サーバーの `search` ツールは `mcp_calendar__search` として公開されます。 SDK は引き続き、元のサーバー上の元の MCP ツール名を呼び出します。
+
+生成される名前は ASCII セーフで、関数ツール名の制限内に収まり、同じエージェント上のローカル関数ツール名や有効なハンドオフ名との衝突を避けます。 この設定が影響するのは、ローカルの Streamable HTTP および stdio MCP ツールのみです。 リモート MCP ツールは、引き続き Hosted サーバーラベルとツールメタデータを保持します。
 
 ### ツールフィルタリング
 
-各サーバーから公開するツールを制限するには、`createMCPToolStaticFilter` による静的フィルター、またはカスタム関数のいずれかを渡します。以下は両方のアプローチを組み合わせた例です:
+各サーバーから公開するツールを制限するには、`createMCPToolStaticFilter` による静的フィルター、またはカスタム関数のいずれかを渡します。 以下は、両方のアプローチをまとめて示す例です:
 
-<Code lang="typescript" code={toolFilterExample} title="ツールフィルタリング" />
+<Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
 
-## 参考資料
+## 関連資料
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – 公式仕様
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上で参照した実行可能なデモ
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上記で参照した実行可能なデモ
