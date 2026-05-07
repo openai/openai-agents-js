@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { WorkspacePathPolicy } from '../src/sandbox';
+import {
+  SandboxInvalidManifestPathError,
+  WorkspacePathPolicy,
+} from '../src/sandbox';
 
 describe('WorkspacePathPolicy', () => {
   it('resolves workspace-relative and absolute in-root paths', () => {
@@ -75,6 +78,9 @@ describe('WorkspacePathPolicy', () => {
     expect(() => policy.resolve('/tmp/secret.txt')).toThrow(
       /escapes the workspace root/,
     );
+    expect(() => policy.resolve('/tmp/secret.txt')).toThrow(
+      SandboxInvalidManifestPathError,
+    );
   });
 
   it('rejects malformed sandbox paths and roots', () => {
@@ -87,6 +93,9 @@ describe('WorkspacePathPolicy', () => {
     );
     expect(() => policy.resolve('/../secret.txt')).toThrow(
       /must not escape root/i,
+    );
+    expect(() => policy.resolve('/../secret.txt')).toThrow(
+      SandboxInvalidManifestPathError,
     );
     expect(() => policy.resolve('../secret.txt')).toThrow(
       /must not escape root/i,

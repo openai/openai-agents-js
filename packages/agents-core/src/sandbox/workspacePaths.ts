@@ -1,4 +1,5 @@
 import { UserError } from '../errors';
+import { SandboxInvalidManifestPathError } from './errors';
 import {
   normalizePathGrant,
   type SandboxPathGrant,
@@ -93,7 +94,7 @@ export class WorkspacePathPolicy {
       };
     }
 
-    throw new UserError(
+    throw new SandboxInvalidManifestPathError(
       `Sandbox path "${originalPath}" escapes the workspace root.`,
     );
   }
@@ -119,7 +120,9 @@ function normalizeSandboxPath(path: string, originalPath: string): string {
     );
   }
   if (hasEscapingParentPathSegment(path)) {
-    throw new UserError(`Sandbox path "${originalPath}" must not escape root.`);
+    throw new SandboxInvalidManifestPathError(
+      `Sandbox path "${originalPath}" must not escape root.`,
+    );
   }
   return normalizePosixPath(path);
 }

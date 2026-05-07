@@ -4,6 +4,8 @@ import {
   Manifest,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  SandboxWorkspaceArchiveReadError,
+  SandboxWorkspaceReadNotFoundError,
   normalizeSandboxClientCreateArgs,
   type SandboxClient,
   type SandboxClientCreateArgs,
@@ -377,7 +379,9 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       command: `mkdir -p -- ${shellQuote(this.state.manifest.root)}`,
       workingDir: '/',
       waitForCompletion: true,
-      timeout: this.state.timeouts?.fastOperationTimeoutMs,
+      timeout: toBlaxelTimeoutSeconds(
+        this.state.timeouts?.fastOperationTimeoutMs,
+      ),
     });
     if ((result.exitCode ?? 1) !== 0) {
       throw new SandboxProviderError(
@@ -423,6 +427,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   async delete(): Promise<void> {
     await this.ptyProcesses.terminateAll();
     if (this.closed) {
+      return;
+    }
+    if (this.state.pauseOnExit) {
+      this.closed = true;
       return;
     }
     await withSandboxSpan(
@@ -562,10 +570,11 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         command,
         workingDir: '/',
         waitForCompletion: true,
-        timeout:
+        timeout: toBlaxelTimeoutSeconds(
           options.timeoutMs ??
-          this.state.timeouts?.fastOperationTimeoutMs ??
-          this.state.timeoutMs,
+            this.state.timeouts?.fastOperationTimeoutMs ??
+            this.state.timeoutMs,
+        ),
       });
       return {
         status: result.exitCode ?? 1,
@@ -609,7 +618,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       command: commandForUser,
       workingDir: options.workdir,
       waitForCompletion: true,
-      timeout: this.timeoutForCommand(options),
+      timeout: toBlaxelTimeoutSeconds(this.timeoutForCommand(options)),
     });
     return {
       status: result.exitCode ?? 1,
@@ -623,21 +632,29 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   }
 
   protected override async readRemoteText(path: string): Promise<string> {
-    return await withBlaxelOperationTimeout(
-      this.sandbox.fs.read(path),
-      this.state.timeouts?.fileDownloadTimeoutMs,
-      'read file',
-    );
+    try {
+      return await withBlaxelOperationTimeout(
+        this.sandbox.fs.read(path),
+        this.state.timeouts?.fileDownloadTimeoutMs,
+        'read file',
+      );
+    } catch (error) {
+      throw blaxelReadError(path, error);
+    }
   }
 
   protected override async readRemoteFile(path: string): Promise<Uint8Array> {
-    return await toUint8Array(
-      await withBlaxelOperationTimeout(
-        this.sandbox.fs.readBinary(path),
-        this.state.timeouts?.fileDownloadTimeoutMs,
-        'read binary file',
-      ),
-    );
+    try {
+      return await toUint8Array(
+        await withBlaxelOperationTimeout(
+          this.sandbox.fs.readBinary(path),
+          this.state.timeouts?.fileDownloadTimeoutMs,
+          'read binary file',
+        ),
+      );
+    } catch (error) {
+      throw blaxelReadError(path, error);
+    }
   }
 
   protected override async writeRemoteFile(
@@ -663,7 +680,9 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         command: `mv -f -- ${shellQuote(tempPath)} ${shellQuote(path)}`,
         workingDir: '/',
         waitForCompletion: true,
-        timeout: this.state.timeouts?.fileUploadTimeoutMs,
+        timeout: toBlaxelTimeoutSeconds(
+          this.state.timeouts?.fileUploadTimeoutMs,
+        ),
       });
       if ((result.exitCode ?? 1) === 0) {
         return;
@@ -1317,6 +1336,42 @@ function adaptBlaxelDriveApi(drives: unknown): BlaxelDriveApi | undefined {
 
 function unknownErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function blaxelReadError(path: string, error: unknown): Error {
+  if (error instanceof SandboxProviderError) {
+    return error;
+  }
+  const cause = unknownErrorMessage(error);
+  const details = { provider: 'blaxel', path, cause };
+  if (isBlaxelReadNotFoundError(cause)) {
+    return new SandboxWorkspaceReadNotFoundError(
+      `Blaxel sandbox file not found: ${path}`,
+      details,
+    );
+  }
+  return new SandboxWorkspaceArchiveReadError(
+    `Blaxel sandbox failed to read file: ${path}`,
+    details,
+  );
+}
+
+function isBlaxelReadNotFoundError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('no such file or directory') ||
+    lower.includes('not found') ||
+    lower.includes('enoent')
+  );
+}
+
+function toBlaxelTimeoutSeconds(
+  timeoutMs: number | undefined,
+): number | undefined {
+  if (timeoutMs === undefined) {
+    return undefined;
+  }
+  return Math.ceil(timeoutMs / 1000);
 }
 
 function buildShellCommand(

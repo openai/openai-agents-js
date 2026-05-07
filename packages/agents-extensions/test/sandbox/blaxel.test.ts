@@ -1,5 +1,7 @@
 import {
   Manifest,
+  SandboxWorkspaceArchiveReadError,
+  SandboxWorkspaceReadNotFoundError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   type Mount,
@@ -383,7 +385,7 @@ describe('BlaxelSandboxClient', () => {
     expect(processExecMock).toHaveBeenCalledWith(
       expect.objectContaining({
         command: "mkdir -p -- '/workspace'",
-        timeout: 404,
+        timeout: 1,
       }),
     );
 
@@ -392,16 +394,58 @@ describe('BlaxelSandboxClient', () => {
       command: 'ls',
       workingDir: '/workspace',
       waitForCompletion: true,
-      timeout: 202,
+      timeout: 1,
     });
 
     await expect(session.persistWorkspace()).rejects.toThrow();
     expect(
       processExecMock.mock.calls.some((call) => {
         const params = call[0] as { command?: string; timeout?: number };
-        return params.command?.includes('tar') && params.timeout === 303;
+        return params.command?.includes('tar') && params.timeout === 1;
       }),
     ).toBe(true);
+  });
+
+  test('converts provider exec timeouts from milliseconds to Blaxel seconds', async () => {
+    const client = new BlaxelSandboxClient({
+      timeouts: {
+        execTimeoutMs: 2501,
+      },
+    });
+    const session = await client.create(new Manifest());
+
+    await session.execCommand({ cmd: 'sleep 30' });
+
+    expect(processExecMock).toHaveBeenLastCalledWith({
+      command: 'sleep 30',
+      workingDir: '/workspace',
+      waitForCompletion: true,
+      timeout: 3,
+    });
+  });
+
+  test('wraps missing file reads into typed sandbox not-found errors', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(new Manifest());
+    readBinaryMock.mockRejectedValueOnce(
+      new Error(
+        '{"error":"stat /workspace/missing.txt: no such file or directory","status":"error"}',
+      ),
+    );
+
+    await expect(
+      session.readFile({ path: 'missing.txt' }),
+    ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+  });
+
+  test('wraps other file read failures into typed archive read errors', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(new Manifest());
+    readBinaryMock.mockRejectedValueOnce(new Error('read transport failed'));
+
+    await expect(
+      session.readFile({ path: 'README.md' }),
+    ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
   });
 
   test('enforces Blaxel file operation timeouts locally', async () => {
@@ -894,7 +938,7 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  test('delete terminates even when pauseOnExit is enabled', async () => {
+  test('delete preserves sandboxes when pauseOnExit is enabled', async () => {
     const client = new BlaxelSandboxClient({
       pauseOnExit: true,
     } satisfies BlaxelSandboxClientOptions);
@@ -902,7 +946,7 @@ describe('BlaxelSandboxClient', () => {
 
     await session.delete();
 
-    expect(deleteMock).toHaveBeenCalledOnce();
+    expect(deleteMock).not.toHaveBeenCalled();
   });
 
   test('recreates by sandbox name when resume lookup reports missing sandbox', async () => {
