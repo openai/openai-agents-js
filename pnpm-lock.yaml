@@ -612,8 +612,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.2
       '@blaxel/core':
-        specifier: 0.2.78
-        version: 0.2.78(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)
+        specifier: 0.2.82
+        version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)
       '@daytonaio/sdk':
         specifier: 0.162.0
         version: 0.162.0(debug@4.4.1)(ws@8.18.2)
@@ -1023,8 +1023,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@blaxel/core@0.2.78':
-    resolution: {integrity: sha512-U9Zbn3Bv8qyXI2qXftcnZlU9Gpr5eYilo7bmblcCcIIEmQS7Wkf2sSn2tzmNhpP8wXLVhgUok4INOHM9cDLZ/Q==}
+  '@blaxel/core@0.2.82':
+    resolution: {integrity: sha512-h6chpMNGr2ybIjQTVSAxSaXMjIQv+165szfWG4WjtsrNp8qvYLcwYXmgPeud/dyWYLeMFenWWFQCBiAelrcMKg==}
     engines: {node: '>=18'}
 
   '@bufbuild/protobuf@2.11.0':
@@ -5427,9 +5427,6 @@ packages:
   lodash@4.17.21:
     resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
 
-  lodash@4.17.23:
-    resolution: {integrity: sha512-LgVTMpQtIopCi79SJeDiP0TfWi5CNEc/L/aRdTh3yIvmZXTnheWpKjSZhnvMl8iXbC1tFg9gdHHDMLoV7CnG+w==}
-
   lodash@4.18.1:
     resolution: {integrity: sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==}
 
@@ -7597,11 +7594,6 @@ packages:
     resolution: {integrity: sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw==}
     engines: {node: '>=18'}
 
-  yaml@2.8.2:
-    resolution: {integrity: sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==}
-    engines: {node: '>= 14.6'}
-    hasBin: true
-
   yaml@2.8.3:
     resolution: {integrity: sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg==}
     engines: {node: '>= 14.6'}
@@ -8345,7 +8337,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@blaxel/core@0.2.78(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)':
+  '@blaxel/core@0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)':
     dependencies:
       '@hey-api/client-fetch': 0.10.2(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))
       '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
@@ -8358,7 +8350,7 @@ snapshots:
       toml: 3.0.0
       uuid: 11.1.0
       ws: 8.18.2
-      yaml: 2.8.2
+      yaml: 2.8.3
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -11148,7 +11140,7 @@ snapshots:
       graceful-fs: 4.2.11
       is-stream: 2.0.1
       lazystream: 1.0.1
-      lodash: 4.17.23
+      lodash: 4.18.1
       normalize-path: 3.0.0
       readable-stream: 4.7.0
 
@@ -13330,8 +13322,6 @@ snapshots:
 
   lodash@4.17.21: {}
 
-  lodash@4.17.23: {}
-
   lodash@4.18.1: {}
 
   long@5.3.2: {}
@@ -13928,7 +13918,7 @@ snapshots:
 
   minimatch@5.1.9:
     dependencies:
-      brace-expansion: 2.0.2
+      brace-expansion: 2.1.0
 
   minimatch@7.4.6:
     dependencies:
@@ -15965,8 +15955,6 @@ snapshots:
   y18n@5.0.8: {}
 
   yallist@5.0.0: {}
-
-  yaml@2.8.2: {}
 
   yaml@2.8.3: {}
 

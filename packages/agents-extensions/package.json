@@ -77,7 +77,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
-    "@blaxel/core": "^0.2.78",
+    "@blaxel/core": "^0.2.82",
     "@daytonaio/sdk": "^0.162.0",
     "@e2b/code-interpreter": "^2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
@@ -131,7 +131,7 @@
   "license": "MIT",
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.0",
-    "@blaxel/core": "0.2.78",
+    "@blaxel/core": "0.2.82",
     "@daytonaio/sdk": "0.162.0",
     "@e2b/code-interpreter": "2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
