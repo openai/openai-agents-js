@@ -1,17 +1,13 @@
-import {
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  statSync,
-} from 'node:fs';
-import { join, resolve } from 'node:path';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import {
   parseSkillFrontmatter,
   type LocalDirLazySkillSource,
   type SkillIndexEntry,
 } from './capabilities/skills';
 import { localDir } from './entries';
+import type { Manifest } from './manifest';
+import type { SandboxPathGrant } from './pathGrants';
 import { isHostPathWithinRoot } from './shared/hostPath';
 
 export type LocalDirLazySkillSourceOptions = {
@@ -24,10 +20,6 @@ export type LocalDirLazySkillSourceOptions = {
    * Defaults to the current working directory.
    */
   baseDir?: string;
-  /**
-   * Allow reading skill metadata and materializing skills outside the local source base directory.
-   */
-  allowOutsideBaseDir?: boolean;
 };
 
 export function localDirLazySkillSource(
@@ -37,27 +29,24 @@ export function localDirLazySkillSource(
     typeof srcOrOptions === 'string' ? { src: srcOrOptions } : srcOrOptions;
   const sourceRoot = resolve(options.baseDir ?? process.cwd(), options.src);
   return {
-    source: localDir({
-      src: sourceRoot,
-      ...(options.allowOutsideBaseDir ? { allowOutsideBaseDir: true } : {}),
-    }),
-    index: discoverLocalDirSkillIndex(options),
+    source: localDir({ src: sourceRoot }),
+    getIndex: (manifest: Manifest) =>
+      discoverLocalDirSkillIndex(options, manifest.extraPathGrants),
   };
 }
 
 function discoverLocalDirSkillIndex(
   options: LocalDirLazySkillSourceOptions,
+  sourceGrants: SandboxPathGrant[] = [],
 ): SkillIndexEntry[] {
   const base = resolve(options.baseDir ?? process.cwd());
-  const root = resolve(base, options.src);
-  if (
-    !options.allowOutsideBaseDir &&
-    (!isHostPathWithinRoot(base, root) ||
-      !isResolvedLocalSourceWithinBase(base, root))
-  ) {
+  let root: string;
+  try {
+    root = resolveLocalSkillSourcePath(options.src, base, sourceGrants);
+  } catch {
     return [];
   }
-  if (!isDirectory(root)) {
+  if (hasLocalSourceSymlinkAncestor(root) || !isDirectory(root)) {
     return [];
   }
 
@@ -88,20 +77,50 @@ function discoverLocalDirSkillIndex(
     });
 }
 
-function isResolvedLocalSourceWithinBase(base: string, root: string): boolean {
+function resolveLocalSkillSourcePath(
+  sourcePath: string,
+  base: string,
+  sourceGrants: SandboxPathGrant[],
+): string {
+  const resolvedSourcePath = resolve(base, sourcePath);
+  if (
+    isHostPathWithinRoot(base, resolvedSourcePath) ||
+    sourceGrants.some((grant) =>
+      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+    )
+  ) {
+    return resolvedSourcePath;
+  }
+  throw new Error('local skill source is outside base directory');
+}
+
+function isDirectory(path: string): boolean {
   try {
-    return isHostPathWithinRoot(realpathSync(base), realpathSync(root));
+    return lstatSync(path).isDirectory();
   } catch {
     return false;
   }
 }
 
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
+function hasLocalSourceSymlinkAncestor(path: string): boolean {
+  const resolvedPath = resolve(path);
+  let current = dirname(resolvedPath);
+
+  while (current !== dirname(current)) {
+    const parent = dirname(current);
+    if (parent === dirname(parent)) {
+      break;
+    }
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    current = parent;
   }
+  return false;
 }
 
 function isRegularFileWithoutSymlink(path: string): boolean {

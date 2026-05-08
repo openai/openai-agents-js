@@ -3,4 +3,4 @@
 '@openai/agents-extensions': minor
 ---
 
-fix: constrain local sandbox artifact sources to the source base directory by default
+fix: require extra path grants for local sandbox sources outside the base directory

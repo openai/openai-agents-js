@@ -283,11 +283,11 @@ describe('UnixLocalSandboxClient', () => {
     await expect(
       client.create(
         new Manifest({
+          extraPathGrants: [{ path: sourceDir, readOnly: true }],
           entries: {
             data: {
               type: 'local_dir',
               src: sourceDir,
-              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -308,11 +308,11 @@ describe('UnixLocalSandboxClient', () => {
     await expect(
       client.create(
         new Manifest({
+          extraPathGrants: [{ path: rootDir, readOnly: true }],
           entries: {
             copied: {
               type: 'local_file',
               src: linkFile,
-              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -333,11 +333,11 @@ describe('UnixLocalSandboxClient', () => {
     await expect(
       client.create(
         new Manifest({
+          extraPathGrants: [{ path: rootDir, readOnly: true }],
           entries: {
             copied: {
               type: 'local_file',
               src: join(rootDir, 'link', 'sub', 'secret.txt'),
-              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -360,11 +360,11 @@ describe('UnixLocalSandboxClient', () => {
     await expect(
       client.create(
         new Manifest({
+          extraPathGrants: [{ path: rootDir, readOnly: true }],
           entries: {
             data: {
               type: 'local_dir',
               src: join(rootDir, 'link', 'sub'),
-              allowOutsideBaseDir: true,
             },
           },
         }),
@@ -411,11 +411,9 @@ describe('UnixLocalSandboxClient', () => {
     ).rejects.toThrow(/Sandbox concurrency limits must be positive numbers/);
   });
 
-  it('rejects local_file sources outside the local source base directory', async () => {
-    const base = join(rootDir, 'base');
+  it('rejects local_file sources outside the local source base directory without a grant', async () => {
     const outside = join(rootDir, 'outside');
     const workspaceRootPath = join(rootDir, 'workspace');
-    await mkdir(base);
     await mkdir(outside);
     await writeFile(join(outside, 'secret.txt'), 'secret');
 
@@ -430,9 +428,6 @@ describe('UnixLocalSandboxClient', () => {
           },
         }),
         workspaceRootPath,
-        {
-          localSourceBaseDir: base,
-        },
       ),
     ).rejects.toThrow(/local_file source must stay within/);
 
@@ -441,51 +436,43 @@ describe('UnixLocalSandboxClient', () => {
     ).rejects.toThrow();
   });
 
-  it('rejects relative local_dir sources that escape the local source base directory', async () => {
-    const base = join(rootDir, 'base');
-    const outside = join(rootDir, 'outside');
+  it('allows local_file sources outside the local source base directory with a grant', async () => {
+    const outside = join(rootDir, 'outside-granted');
     const workspaceRootPath = join(rootDir, 'workspace');
-    await mkdir(base);
     await mkdir(outside);
     await writeFile(join(outside, 'secret.txt'), 'secret');
 
-    await expect(
-      materializeLocalWorkspaceManifest(
-        new Manifest({
-          entries: {
-            copied: {
-              type: 'local_dir',
-              src: '../outside',
-            },
+    await materializeLocalWorkspaceManifest(
+      new Manifest({
+        extraPathGrants: [{ path: outside, readOnly: true }],
+        entries: {
+          copied: {
+            type: 'local_file',
+            src: join(outside, 'secret.txt'),
           },
-        }),
-        workspaceRootPath,
-        {
-          localSourceBaseDir: base,
         },
-      ),
-    ).rejects.toThrow(/local_dir source must stay within/);
+      }),
+      workspaceRootPath,
+    );
 
     await expect(
-      readFile(join(workspaceRootPath, 'copied', 'secret.txt'), 'utf8'),
-    ).rejects.toThrow();
+      readFile(join(workspaceRootPath, 'copied'), 'utf8'),
+    ).resolves.toBe('secret');
   });
 
-  it('allows explicit local_dir sources outside the local source base directory', async () => {
+  it('allows local_dir sources inside the local source base directory without a grant', async () => {
     const base = join(rootDir, 'base');
-    const outside = join(rootDir, 'outside');
+    const source = join(base, 'source');
     const workspaceRootPath = join(rootDir, 'workspace');
-    await mkdir(base);
-    await mkdir(outside);
-    await writeFile(join(outside, 'secret.txt'), 'secret');
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, 'safe.txt'), 'safe');
 
     await materializeLocalWorkspaceManifest(
       new Manifest({
         entries: {
           copied: {
             type: 'local_dir',
-            src: outside,
-            allowOutsideBaseDir: true,
+            src: source,
           },
         },
       }),
@@ -493,6 +480,30 @@ describe('UnixLocalSandboxClient', () => {
       {
         localSourceBaseDir: base,
       },
+    );
+
+    await expect(
+      readFile(join(workspaceRootPath, 'copied', 'safe.txt'), 'utf8'),
+    ).resolves.toBe('safe');
+  });
+
+  it('allows local_dir sources outside the local source base directory with a grant', async () => {
+    const outside = join(rootDir, 'absolute-outside');
+    const workspaceRootPath = join(rootDir, 'workspace');
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret');
+
+    await materializeLocalWorkspaceManifest(
+      new Manifest({
+        extraPathGrants: [{ path: outside, readOnly: true }],
+        entries: {
+          copied: {
+            type: 'local_dir',
+            src: outside,
+          },
+        },
+      }),
+      workspaceRootPath,
     );
 
     await expect(
@@ -2252,13 +2263,16 @@ void main();
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
     });
-    const session = await client.create(new Manifest());
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [{ path: skillsRoot, readOnly: true }],
+      }),
+    );
     const capability = skills({
       lazyFrom: {
         source: {
           type: 'local_dir',
           src: skillsRoot,
-          allowOutsideBaseDir: true,
         },
         index: [
           {

@@ -286,6 +286,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       this.state.workspaceRootPath,
       logicalPath,
       args.entry,
+      {
+        localSourceGrants: this.state.manifest.extraPathGrants,
+      },
     );
     await this.chownContainerPath(
       this.resolveContainerFilesystemPath(args.path),

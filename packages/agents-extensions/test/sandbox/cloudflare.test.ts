@@ -4,7 +4,6 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { CloudflareSandboxClient } from '../../src/sandbox/cloudflare';
@@ -394,7 +393,9 @@ describe('CloudflareSandboxClient', () => {
   });
 
   test('materializes local file entries through the Node local source path', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'agents-cloudflare-test-'));
+    const tempDir = await mkdtemp(
+      join(process.cwd(), '.tmp-agents-cloudflare-test-'),
+    );
     const sourceFile = join(tempDir, 'local.txt');
     await writeFile(sourceFile, 'local source\n');
     try {
@@ -405,7 +406,6 @@ describe('CloudflareSandboxClient', () => {
             'local.txt': {
               type: 'local_file',
               src: sourceFile,
-              allowOutsideBaseDir: true,
             },
           },
         }),

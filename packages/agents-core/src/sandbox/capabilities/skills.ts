@@ -27,6 +27,7 @@ export type SkillIndexEntry = {
 export type LocalDirLazySkillSource = {
   source: Dir | LocalDir | GitRepo;
   index?: SkillIndexEntry[];
+  getIndex?: (manifest: Manifest, skillsPath: string) => SkillIndexEntry[];
 };
 
 export type SkillDescriptor = {
@@ -99,7 +100,11 @@ class SkillsCapability extends Capability {
           skill_name: string;
           path: string;
         }> => {
-          const match = resolveLazySkillMatch(this, skill_name);
+          const match = resolveLazySkillMatch(
+            this,
+            skill_name,
+            session.state.manifest,
+          );
           const relativeSkillPath = normalizeRelativePath(
             match.path ?? match.name,
           );
@@ -190,6 +195,7 @@ class SkillsCapability extends Capability {
     const metadata = resolveSkillsMetadata(
       this,
       await this.resolveRuntimeMetadata(manifest),
+      manifest,
     );
     if (metadata.length === 0 && this.from) {
       return renderSkillsDiscoveryInstructions(this.skillsPath);
@@ -378,6 +384,7 @@ function normalizeSkillContent(
 function resolveSkillsMetadata(
   capability: SkillsCapability,
   runtimeMetadata: SkillIndexEntry[] = [],
+  manifest?: Manifest,
 ): SkillIndexEntry[] {
   if (capability.skills.length > 0) {
     return capability.skills
@@ -390,7 +397,11 @@ function resolveSkillsMetadata(
   }
 
   const configuredIndex =
-    resolveLazySkillIndex(capability.lazyFrom) ??
+    resolveLazySkillIndex(
+      capability.lazyFrom,
+      manifest,
+      capability.skillsPath,
+    ) ??
     capability.index ??
     (runtimeMetadata.length > 0 ? runtimeMetadata : undefined) ??
     deriveIndexFromDirEntry(capability.from);
@@ -453,12 +464,18 @@ function unquoteFrontmatterValue(value: string): string {
 
 function resolveLazySkillIndex(
   lazySource: LocalDirLazySkillSource | undefined,
+  manifest?: Manifest,
+  skillsPath: string = '.agents',
 ): SkillIndexEntry[] | undefined {
   if (!lazySource) {
     return undefined;
   }
   if (lazySource.index) {
     return lazySource.index;
+  }
+  if (lazySource.getIndex && manifest) {
+    const derivedIndex = lazySource.getIndex(manifest, skillsPath);
+    return derivedIndex.length > 0 ? derivedIndex : undefined;
   }
 
   const derivedIndex = deriveIndexFromDirEntry(lazySource.source);
@@ -529,9 +546,16 @@ ${lazyLoadingSection}${usageInstructions}
 function resolveLazySkillMatch(
   capability: SkillsCapability,
   skillName: string,
+  manifest: Manifest,
 ): SkillIndexEntry {
   const index =
-    resolveLazySkillIndex(capability.lazyFrom) ?? capability.index ?? [];
+    resolveLazySkillIndex(
+      capability.lazyFrom,
+      manifest,
+      capability.skillsPath,
+    ) ??
+    capability.index ??
+    [];
   const matches = index.filter((skill) => {
     const relativePath = normalizeRelativePath(skill.path ?? skill.name);
     const pathBaseName = relativePath.split('/').pop() ?? relativePath;

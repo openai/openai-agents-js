@@ -168,6 +168,7 @@ export type ManifestMaterializationOptions = {
   applyMetadata?: (absolutePath: string, entry: Entry) => Promise<void>;
   concurrencyLimits?: SandboxConcurrencyLimits;
   localSourceBaseDir?: string;
+  localSourceGrants?: Manifest['extraPathGrants'];
   resolvePath?: RemoteSandboxPathResolver;
   logicalPath?: string;
 };

@@ -60,8 +60,9 @@ When loaded, use these exact verification values:
   );
 }
 
-function buildManifest() {
+function buildManifest(skillsRoot: string) {
   return new Manifest({
+    extraPathGrants: [{ path: skillsRoot, readOnly: true }],
     entries: {
       'README.md': {
         type: 'file',
@@ -91,7 +92,7 @@ async function main() {
   const skillsRoot = join(tempDir, 'skills');
   await writeSkill(skillsRoot);
 
-  const manifest = buildManifest();
+  const manifest = buildManifest(skillsRoot);
   const client = new UnixLocalSandboxClient();
   const session = await client.create(manifest);
   const agent = new SandboxAgent({
@@ -114,7 +115,6 @@ Use relative paths because the shell starts in the workspace root.`,
           source: {
             type: 'local_dir',
             src: skillsRoot,
-            allowOutsideBaseDir: true,
           },
           index: [
             {

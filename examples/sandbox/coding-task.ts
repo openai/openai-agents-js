@@ -115,7 +115,6 @@ async function main() {
         repo: {
           type: 'local_dir',
           src: REPO_DIR,
-          allowOutsideBaseDir: true,
         },
       },
     }),
@@ -126,7 +125,6 @@ async function main() {
           source: {
             type: 'local_dir',
             src: SKILLS_DIR,
-            allowOutsideBaseDir: true,
           },
           index: [
             {

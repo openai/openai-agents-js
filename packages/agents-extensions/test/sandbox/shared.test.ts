@@ -8,7 +8,7 @@ import {
 } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
@@ -884,8 +884,9 @@ describe('remote sandbox path helpers', () => {
     await applyLocalSourceManifestToState(
       state,
       new Manifest({
+        extraPathGrants: [{ path: tempDir, readOnly: true }],
         entries: {
-          copied: localDir({ src: tempDir, allowOutsideBaseDir: true }),
+          copied: localDir({ src: tempDir }),
         },
       }),
       'fake-provider',
@@ -1718,11 +1719,11 @@ describe('remote sandbox path helpers', () => {
     await materializeLocalSourceManifest(
       writer,
       new Manifest({
+        extraPathGrants: [{ path: dirname(sourceFile), readOnly: true }],
         entries: {
           ' ./copied//source.txt ': {
             type: 'local_file',
             src: sourceFile,
-            allowOutsideBaseDir: true,
           },
         },
       }),
@@ -1870,6 +1871,7 @@ describe('remote sandbox path helpers', () => {
     await materializeLocalSourceManifest(
       writer,
       new Manifest({
+        extraPathGrants: [{ path: dirname(sourceFile), readOnly: true }],
         entries: {
           child: mount({
             source: 's3://bucket/child',
@@ -1879,7 +1881,6 @@ describe('remote sandbox path helpers', () => {
           'copied/source.txt': {
             type: 'local_file',
             src: sourceFile,
-            allowOutsideBaseDir: true,
           },
           parent: mount({
             source: 's3://bucket/parent',
@@ -2013,16 +2014,20 @@ describe('remote sandbox path helpers', () => {
           'local.txt': {
             type: 'local_file',
             src: sourceFile,
-            allowOutsideBaseDir: true,
           },
           data: {
             type: 'local_dir',
             src: sourceDir,
-            allowOutsideBaseDir: true,
           },
         },
       },
       'test',
+      {
+        localSourceGrants: [
+          { path: dirname(sourceFile), readOnly: true },
+          { path: sourceDir, readOnly: true },
+        ],
+      },
     );
 
     expect(directories).toContain('/workspace/project');
@@ -2047,12 +2052,10 @@ describe('remote sandbox path helpers', () => {
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
   });
 
-  test('rejects local source entries outside the local source base directory', async () => {
+  test('rejects local source entries outside the local source base directory without a grant', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
     tempDirs.push(tempDir);
-    const base = join(tempDir, 'base');
     const outside = join(tempDir, 'outside');
-    await mkdir(base);
     await mkdir(outside);
     await writeFile(join(outside, 'secret.txt'), 'secret');
 
@@ -2073,21 +2076,16 @@ describe('remote sandbox path helpers', () => {
           src: join(outside, 'secret.txt'),
         },
         'test',
-        {
-          localSourceBaseDir: base,
-        },
       ),
     ).rejects.toThrow(/local_file source must stay within/);
 
     expect(files.size).toBe(0);
   });
 
-  test('allows explicit local source entries outside the local source base directory', async () => {
+  test('allows local source entries outside the local source base directory with a grant', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
     tempDirs.push(tempDir);
-    const base = join(tempDir, 'base');
     const outside = join(tempDir, 'outside');
-    await mkdir(base);
     await mkdir(outside);
     await writeFile(join(outside, 'secret.txt'), 'secret');
 
@@ -2105,11 +2103,10 @@ describe('remote sandbox path helpers', () => {
       {
         type: 'local_file',
         src: join(outside, 'secret.txt'),
-        allowOutsideBaseDir: true,
       },
       'test',
       {
-        localSourceBaseDir: base,
+        localSourceGrants: [{ path: outside, readOnly: true }],
       },
     );
 
@@ -2140,9 +2137,11 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_dir',
           src: sourceDir,
-          allowOutsideBaseDir: true,
         },
         'test',
+        {
+          localSourceGrants: [{ path: sourceDir, readOnly: true }],
+        },
       ),
     ).rejects.toThrow(/local_dir entries do not support symbolic links/);
   });
@@ -2169,9 +2168,11 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_dir',
           src: join(linkedRoot, 'source-dir'),
-          allowOutsideBaseDir: true,
         },
         'test',
+        {
+          localSourceGrants: [{ path: linkedRoot, readOnly: true }],
+        },
       ),
     ).rejects.toThrow(
       /local_dir entries do not support symbolic link ancestors/,
@@ -2198,9 +2199,11 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_file',
           src: linkFile,
-          allowOutsideBaseDir: true,
         },
         'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
       ),
     ).rejects.toThrow(/local_file entries do not support symbolic links/);
   });
@@ -2226,9 +2229,11 @@ describe('remote sandbox path helpers', () => {
         {
           type: 'local_file',
           src: join(linkedRoot, 'source.txt'),
-          allowOutsideBaseDir: true,
         },
         'test',
+        {
+          localSourceGrants: [{ path: linkedRoot, readOnly: true }],
+        },
       ),
     ).rejects.toThrow(
       /local_file entries do not support symbolic link ancestors/,

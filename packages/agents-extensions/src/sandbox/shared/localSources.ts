@@ -23,6 +23,7 @@ import {
   applyMaterializedManifestToState,
   materializeInlineManifestEntry,
   materializeManifestEntries,
+  mergeManifestDelta,
   resolveLocalDirFileConcurrency,
   resolveMaterializedChildPath,
   runLimited,
@@ -65,7 +66,10 @@ export async function applyLocalSourceManifestEntryToState(
     writer,
     resolvePath,
     materializeLocalSourceManifestEntry,
-    options,
+    {
+      ...options,
+      localSourceGrants: state.manifest.extraPathGrants,
+    },
   );
 }
 
@@ -77,6 +81,7 @@ export async function applyLocalSourceManifestToState(
   resolvePath: RemoteSandboxPathResolver,
   options: ManifestMaterializationOptions = {},
 ): Promise<void> {
+  const sourceManifest = mergeManifestDelta(state.manifest, manifest);
   await applyMaterializedManifestToState(
     state,
     manifest,
@@ -84,7 +89,10 @@ export async function applyLocalSourceManifestToState(
     writer,
     resolvePath,
     materializeLocalSourceManifestEntry,
-    options,
+    {
+      ...options,
+      localSourceGrants: sourceManifest.extraPathGrants,
+    },
   );
 }
 
@@ -101,7 +109,10 @@ export async function materializeLocalSourceManifest(
     providerLabel,
     resolvePath,
     materializeLocalSourceManifestEntry,
-    options,
+    {
+      ...options,
+      localSourceGrants: manifest.extraPathGrants,
+    },
   );
 }
 
@@ -139,12 +150,7 @@ export async function materializeLocalSourceManifestEntry(
       await writer.writeFile(
         absolutePath,
         await readStableLocalFile(
-          resolveLocalSourcePath(
-            'local_file',
-            entry.src,
-            Boolean(entry.allowOutsideBaseDir),
-            options.localSourceBaseDir,
-          ),
+          resolveLocalSourcePath('local_file', entry.src, options),
         ),
       );
       break;
@@ -152,12 +158,7 @@ export async function materializeLocalSourceManifestEntry(
       await materializeLocalDirectory(
         writer,
         absolutePath,
-        resolveLocalSourcePath(
-          'local_dir',
-          entry.src,
-          Boolean(entry.allowOutsideBaseDir),
-          options.localSourceBaseDir,
-        ),
+        resolveLocalSourcePath('local_dir', entry.src, options),
         options,
       );
       break;
@@ -188,17 +189,22 @@ export async function materializeLocalSourceManifestEntry(
 function resolveLocalSourcePath(
   entryType: 'local_dir' | 'local_file',
   sourcePath: string,
-  allowOutsideBaseDir: boolean,
-  baseDir: string = process.cwd(),
+  options: ManifestMaterializationOptions,
 ): string {
-  const base = resolve(baseDir);
+  const base = resolve(options.localSourceBaseDir ?? process.cwd());
   const resolvedSourcePath = resolve(base, sourcePath);
-  if (!allowOutsideBaseDir && !isHostPathWithinRoot(base, resolvedSourcePath)) {
-    throw new UserError(
-      `${entryType} source must stay within the local source base directory: ${resolvedSourcePath} (base: ${base})`,
-    );
+  if (
+    isHostPathWithinRoot(base, resolvedSourcePath) ||
+    (options.localSourceGrants ?? []).some((grant) =>
+      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+    )
+  ) {
+    return resolvedSourcePath;
   }
-  return resolvedSourcePath;
+
+  throw new UserError(
+    `${entryType} source must stay within the local source base directory or manifest.extraPathGrants: ${resolvedSourcePath} (base: ${base})`,
+  );
 }
 
 async function materializeLocalDirectory(

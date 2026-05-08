@@ -13,6 +13,7 @@ import type {
 } from '../../entries';
 import { isMount } from '../../entries';
 import { Manifest, normalizeRelativePath } from '../../manifest';
+import type { SandboxPathGrant } from '../../pathGrants';
 import { permissionsForSandboxEntry } from '../../permissions';
 import { WorkspacePathPolicy } from '../../workspacePaths';
 import { formatSandboxProcessError, runSandboxProcess } from './runProcess';
@@ -56,6 +57,7 @@ type MaterializeLocalWorkspaceOptions = {
   concurrencyLimits?: SandboxConcurrencyLimits;
   manifestRoot?: string;
   localSourceBaseDir?: string;
+  localSourceGrants?: SandboxPathGrant[];
   allowLocalBindMounts?: boolean;
   allowIdentityMetadata?: boolean;
   supportsMount?: (entry: Mount | TypedMount) => boolean;
@@ -98,6 +100,7 @@ export async function materializeLocalWorkspaceManifest(
   await materializeEntries(workspaceRootPath, manifest.entries, '', {
     ...options,
     manifestRoot: manifest.root,
+    localSourceGrants: manifest.extraPathGrants,
     skipMountEntries: true,
   });
   await materializeLocalWorkspaceManifestMounts(
@@ -249,6 +252,7 @@ export async function materializeLocalWorkspaceManifestMounts(
       {
         ...options,
         manifestRoot: manifest.root,
+        localSourceGrants: manifest.extraPathGrants,
       },
     );
   }
@@ -587,12 +591,7 @@ async function materializeLocalFileEntry(
     destination,
     logicalPath,
     await readStableLocalFile(
-      resolveLocalSourcePath(
-        'local_file',
-        entry.src,
-        Boolean(entry.allowOutsideBaseDir),
-        options.localSourceBaseDir,
-      ),
+      resolveLocalSourcePath('local_file', entry.src, options),
     ),
   );
 }
@@ -605,12 +604,7 @@ async function materializeLocalDirEntry(
   options: MaterializeLocalWorkspaceOptions,
 ): Promise<void> {
   await copyLocalDirectory(
-    resolveLocalSourcePath(
-      'local_dir',
-      entry.src,
-      Boolean(entry.allowOutsideBaseDir),
-      options.localSourceBaseDir,
-    ),
+    resolveLocalSourcePath('local_dir', entry.src, options),
     destination,
     options,
     workspaceRootPath,
@@ -621,17 +615,22 @@ async function materializeLocalDirEntry(
 function resolveLocalSourcePath(
   entryType: 'local_dir' | 'local_file',
   sourcePath: string,
-  allowOutsideBaseDir: boolean,
-  baseDir: string = process.cwd(),
+  options: MaterializeLocalWorkspaceOptions,
 ): string {
-  const base = resolve(baseDir);
+  const base = resolve(options.localSourceBaseDir ?? process.cwd());
   const resolvedSourcePath = resolve(base, sourcePath);
-  if (!allowOutsideBaseDir && !isHostPathWithinRoot(base, resolvedSourcePath)) {
-    throw new UserError(
-      `${entryType} source must stay within the local source base directory: ${resolvedSourcePath} (base: ${base})`,
-    );
+  if (
+    isHostPathWithinRoot(base, resolvedSourcePath) ||
+    (options.localSourceGrants ?? []).some((grant) =>
+      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+    )
+  ) {
+    return resolvedSourcePath;
   }
-  return resolvedSourcePath;
+
+  throw new UserError(
+    `${entryType} source must stay within the local source base directory or manifest.extraPathGrants: ${resolvedSourcePath} (base: ${base})`,
+  );
 }
 
 async function copyLocalDirectory(

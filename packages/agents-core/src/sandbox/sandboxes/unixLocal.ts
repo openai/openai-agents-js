@@ -380,6 +380,9 @@ export class UnixLocalSandboxSession<
       this.state.workspaceRootPath,
       logicalPath,
       args.entry,
+      {
+        localSourceGrants: this.state.manifest.extraPathGrants,
+      },
     );
     if (runAs) {
       await applyOwnershipRecursive(

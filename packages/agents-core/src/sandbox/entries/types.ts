@@ -21,19 +21,11 @@ export type File = EntryBase & {
 export type LocalFile = EntryBase & {
   type: 'local_file';
   src: string;
-  /**
-   * Allow reading a host source path outside the local source base directory.
-   */
-  allowOutsideBaseDir?: boolean;
 };
 
 export type LocalDir = EntryBase & {
   type: 'local_dir';
   src: string;
-  /**
-   * Allow reading a host source path outside the local source base directory.
-   */
-  allowOutsideBaseDir?: boolean;
 };
 
 export type GitRepo = EntryBase & {
