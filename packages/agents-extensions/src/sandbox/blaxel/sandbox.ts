@@ -14,6 +14,7 @@ import {
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Mount,
+  type SandboxSessionLifecycleOptions,
   type SandboxSessionState,
   type TypedMount,
   type WriteStdinArgs,
@@ -420,16 +421,16 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     this.closed = true;
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(_options?: SandboxSessionLifecycleOptions): Promise<void> {
     await this.close();
   }
 
-  async delete(): Promise<void> {
+  async delete(options?: SandboxSessionLifecycleOptions): Promise<void> {
     await this.ptyProcesses.terminateAll();
     if (this.closed) {
       return;
     }
-    if (this.state.pauseOnExit) {
+    if (this.shouldPreserveOnCleanup(options)) {
       this.closed = true;
       return;
     }
@@ -447,6 +448,17 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       },
     );
     this.closed = true;
+  }
+
+  private shouldPreserveOnCleanup(
+    options?: SandboxSessionLifecycleOptions,
+  ): boolean {
+    return (
+      options?.reason === 'cleanup' &&
+      options.preserveOwnedSessions === true &&
+      this.state.pauseOnExit &&
+      this.ownsSandbox
+    );
   }
 
   async rehydrateActiveMountPathsFromManifest(): Promise<void> {

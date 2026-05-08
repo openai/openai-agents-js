@@ -776,7 +776,14 @@ describe('BlaxelSandboxClient', () => {
     } satisfies BlaxelSandboxClientOptions);
 
     const session = await client.create(new Manifest());
-    await session.delete();
+    await session.shutdown({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
     await client.resume(session.state);
 
     expect(session.state.sandboxIdentity).toContain('2026-04-28T00:00:00.000Z');
@@ -971,7 +978,7 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  test('delete preserves sandboxes when pauseOnExit is enabled', async () => {
+  test('delete terminates even when pauseOnExit is enabled', async () => {
     const client = new BlaxelSandboxClient({
       pauseOnExit: true,
     } satisfies BlaxelSandboxClientOptions);
@@ -979,7 +986,37 @@ describe('BlaxelSandboxClient', () => {
 
     await session.delete();
 
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
+  test('cleanup lifecycle preserves pauseOnExit sandboxes when requested', async () => {
+    const client = new BlaxelSandboxClient({
+      pauseOnExit: true,
+    } satisfies BlaxelSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.shutdown({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+    await session.delete({
+      reason: 'cleanup',
+      preserveOwnedSessions: true,
+    });
+
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  test('cleanup lifecycle kills pauseOnExit sandboxes unless preservation is requested', async () => {
+    const client = new BlaxelSandboxClient({
+      pauseOnExit: true,
+    } satisfies BlaxelSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    await session.shutdown({ reason: 'cleanup' });
+    await session.delete({ reason: 'cleanup' });
+
+    expect(deleteMock).toHaveBeenCalledOnce();
   });
 
   test('recreates by sandbox name when resume lookup reports missing sandbox', async () => {
