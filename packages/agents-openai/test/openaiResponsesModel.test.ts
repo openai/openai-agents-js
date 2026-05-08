@@ -1079,7 +1079,7 @@ describe('OpenAIResponsesModel', () => {
       await model.getResponse(request as any);
 
       const [args] = createMock.mock.calls[0];
-      expect(args.prompt_cache_retention).toBe('in-memory');
+      expect(args.prompt_cache_retention).toBe('in_memory');
     });
   });
 

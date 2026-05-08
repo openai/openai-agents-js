@@ -25,6 +25,8 @@ export {
 export {
   RealtimeClientMessage,
   RealtimeAudioFormat,
+  RealtimeReasoningConfig,
+  RealtimeReasoningEffort,
   RealtimeSessionConfig,
 } from './clientMessages';
 

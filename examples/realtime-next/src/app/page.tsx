@@ -43,15 +43,13 @@ const weatherTool = tool({
 });
 
 // To invoke this tool, you can ask a question like "What is the special number?"
-const secretTool = tool({
-  name: 'secret',
-  description: 'A secret tool to tell the special number',
+const specialNumberTool = tool({
+  name: 'special_number',
+  description: 'Retrieve the demo special number.',
   parameters: z.object({
     question: z
       .string()
-      .describe(
-        'The question to ask the secret tool; mainly about the special number.',
-      ),
+      .describe('The user question about the demo special number.'),
   }),
   execute: async ({ question }) => {
     return `The answer to ${question} is 42.`;
@@ -69,10 +67,11 @@ const weatherExpert = new RealtimeAgent({
 
 const agent = new RealtimeAgent({
   name: 'Greeter',
-  instructions: 'You are a greeter',
+  instructions:
+    'You are a greeter. If the user asks for the special number, use the special_number tool.',
   tools: [
     refundBackchannel,
-    secretTool,
+    specialNumberTool,
     hostedMcpTool({
       serverLabel: 'deepwiki',
     }),

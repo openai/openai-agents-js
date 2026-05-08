@@ -29,13 +29,19 @@ export default function Home() {
       const token = await getToken();
       await connection.current?.connect({
         apiKey: token,
-        model: 'gpt-4o-mini-realtime-preview',
+        model: 'gpt-realtime-2',
         initialSessionConfig: {
           instructions: 'Speak like a pirate',
           voice: 'marin',
-          modalities: ['text', 'audio'],
-          inputAudioFormat: 'pcm16',
-          outputAudioFormat: 'pcm16',
+          outputModalities: ['audio'],
+          audio: {
+            input: {
+              format: 'pcm16',
+            },
+            output: {
+              format: 'pcm16',
+            },
+          },
         },
       });
       setIsConnected(true);

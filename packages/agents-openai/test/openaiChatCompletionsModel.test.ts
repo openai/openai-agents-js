@@ -279,7 +279,7 @@ describe('OpenAIChatCompletionsModel', () => {
     const req: any = {
       input: 'u',
       modelSettings: {
-        promptCacheRetention: '24h',
+        promptCacheRetention: 'in-memory',
       },
       tools: [],
       outputType: 'text',
@@ -291,7 +291,7 @@ describe('OpenAIChatCompletionsModel', () => {
 
     expect(client.chat.completions.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt_cache_retention: '24h',
+        prompt_cache_retention: 'in_memory',
       }),
       { headers: HEADERS, signal: undefined },
     );

@@ -105,7 +105,7 @@ fastify.register(async (scopedFastify: FastifyInstance) => {
 
       const session = new RealtimeSession(agent, {
         transport: twilioTransportLayer,
-        model: 'gpt-realtime-1.5',
+        model: 'gpt-realtime-2',
         config: {
           audio: {
             output: {

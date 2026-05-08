@@ -36,6 +36,7 @@ import {
 } from './openaiChatCompletionsConverter';
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
+import { normalizePromptCacheRetention } from './utils/modelSettings';
 
 export const FAKE_ID = 'FAKE_ID';
 
@@ -380,7 +381,9 @@ export class OpenAIChatCompletionsModel implements Model {
       stream: stream ? true : false,
       stream_options: stream ? { include_usage: true } : undefined,
       store: request.modelSettings.store,
-      prompt_cache_retention: request.modelSettings.promptCacheRetention,
+      prompt_cache_retention: normalizePromptCacheRetention(
+        request.modelSettings.promptCacheRetention,
+      ),
       ...providerData,
     };
 

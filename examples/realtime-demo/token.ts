@@ -8,7 +8,7 @@ async function generateToken() {
   const session = await openai.realtime.clientSecrets.create({
     session: {
       type: 'realtime',
-      model: 'gpt-realtime-1.5',
+      model: 'gpt-realtime-2',
     },
   });
 

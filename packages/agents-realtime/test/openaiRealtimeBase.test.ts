@@ -67,6 +67,26 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(config.audio?.output?.voice).toBeUndefined();
   });
 
+  it('uses gpt-realtime-2 as the default model', () => {
+    const base = new TestBase();
+    const config = (base as any)._getMergedSessionConfig({});
+
+    expect(config.model).toBe('gpt-realtime-2');
+  });
+
+  it('maps reasoning-capable realtime session settings', () => {
+    const base = new TestBase();
+    const config = (base as any)._getMergedSessionConfig({
+      model: 'gpt-realtime-2',
+      parallelToolCalls: false,
+      reasoning: { effort: 'low' },
+    });
+
+    expect(config.model).toBe('gpt-realtime-2');
+    expect(config.parallel_tool_calls).toBe(false);
+    expect(config.reasoning).toEqual({ effort: 'low' });
+  });
+
   it('preserves explicit null audio input config values', () => {
     const base = new TestBase();
     const config = (base as any)._getMergedSessionConfig({

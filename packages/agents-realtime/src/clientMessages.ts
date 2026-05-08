@@ -121,12 +121,25 @@ export type RealtimeAudioConfig = {
   output?: RealtimeAudioOutputConfig;
 };
 
+export type RealtimeReasoningEffort =
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh';
+
+export type RealtimeReasoningConfig = {
+  effort?: RealtimeReasoningEffort;
+};
+
 // Shared/common fields across both config shapes
 export type RealtimeSessionConfigCommon = {
   model: string;
   instructions: string;
   toolChoice: ModelSettingsToolChoice;
   tools: RealtimeToolDefinition[];
+  parallelToolCalls?: boolean;
+  reasoning?: RealtimeReasoningConfig;
   tracing?: RealtimeTracingConfig | null;
   providerData?: Record<string, any>;
   prompt?: Prompt;
@@ -224,6 +237,8 @@ export function toNewSessionConfig(
       instructions: config.instructions,
       toolChoice: config.toolChoice,
       tools: config.tools,
+      parallelToolCalls: config.parallelToolCalls,
+      reasoning: config.reasoning,
       tracing: config.tracing,
       providerData: config.providerData,
       prompt: config.prompt,
@@ -243,6 +258,8 @@ export function toNewSessionConfig(
     instructions: config.instructions,
     toolChoice: config.toolChoice,
     tools: config.tools,
+    parallelToolCalls: config.parallelToolCalls,
+    reasoning: config.reasoning,
     tracing: config.tracing,
     providerData: config.providerData,
     prompt: config.prompt,

@@ -9,7 +9,7 @@ export const METADATA = {
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^6.26.0"
+    "openai": "^6.35.0"
   }
 };
 

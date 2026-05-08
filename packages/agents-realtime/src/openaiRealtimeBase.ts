@@ -43,6 +43,7 @@ import { EventEmitterDelegate } from '@openai/agents-core/utils';
 export type OpenAIRealtimeModels =
   | 'gpt-realtime'
   | 'gpt-realtime-1.5'
+  | 'gpt-realtime-2'
   | 'gpt-realtime-2025-08-28'
   | 'gpt-4o-realtime-preview'
   | 'gpt-4o-realtime-preview-2024-10-01'
@@ -59,7 +60,7 @@ export type OpenAIRealtimeModels =
  * The default model that is used during the connection if no model is provided.
  */
 export const DEFAULT_OPENAI_REALTIME_MODEL: OpenAIRealtimeModels =
-  'gpt-realtime-1.5';
+  'gpt-realtime-2';
 
 /**
  * The default session config that gets send over during session connection unless overridden
@@ -603,6 +604,10 @@ export abstract class OpenAIRealtimeBase
       tool_choice:
         newConfig.toolChoice ??
         DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.toolChoice,
+      ...(typeof newConfig.parallelToolCalls === 'undefined'
+        ? {}
+        : { parallel_tool_calls: newConfig.parallelToolCalls }),
+      ...(newConfig.reasoning ? { reasoning: newConfig.reasoning } : {}),
       // We don't set tracing here to make sure that we don't try to override it on every
       // session.update as it might lead to errors
       ...(newConfig.providerData ?? {}),

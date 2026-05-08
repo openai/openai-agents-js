@@ -63,6 +63,7 @@ import {
   camelOrSnakeToSnakeCase,
   getSnakeCasedProviderDataWithoutReservedKeys,
 } from './utils/providerData';
+import { normalizePromptCacheRetention } from './utils/modelSettings';
 import { ProviderData } from '@openai/agents-core/types';
 import {
   encodeUint8ArrayToBase64,
@@ -3038,7 +3039,9 @@ export class OpenAIResponsesModel implements Model {
       stream,
       text: responseFormat,
       store: request.modelSettings.store,
-      prompt_cache_retention: request.modelSettings.promptCacheRetention,
+      prompt_cache_retention: normalizePromptCacheRetention(
+        request.modelSettings.promptCacheRetention,
+      ),
       context_management: getContextManagement(
         request.modelSettings.contextManagement,
       ),
