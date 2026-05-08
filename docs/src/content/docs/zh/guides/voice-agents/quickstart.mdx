@@ -8,12 +8,12 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 <Aside type="note">
   本快速开始使用
-  `@openai/agents`，这是大多数应用推荐的默认选择。如果您更倾向于使用独立的
-  Realtime 包，请安装 `@openai/agents-realtime`，并将下面示例中从
+  `@openai/agents`，这是大多数应用推荐的默认包。如果您更偏好独立的 Realtime
+  包，请安装 `@openai/agents-realtime`，并将下面示例中从
   `@openai/agents/realtime` 导入的内容替换为 `@openai/agents-realtime`。
 </Aside>
 
-## 项目设置与凭据
+## 项目设置与凭证
 
 <Steps>
 
@@ -33,7 +33,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 3. **生成客户端临时令牌**
 
-   由于该应用将在用户的浏览器中运行，我们需要一种安全的方式，通过 Realtime API 连接到模型。推荐流程与官方的 [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/) 指南一致：由您的后端创建一个短期有效的临时客户端令牌，然后浏览器使用该令牌建立 WebRTC 连接。出于测试目的，您也可以使用 `curl` 和常规的 OpenAI API 密钥生成令牌。
+   由于该应用将在用户的浏览器中运行，我们需要一种安全的方式，通过 Realtime API 连接到模型。推荐流程与官方的 [使用 WebRTC 的 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/) 指南一致：您的后端创建一个短期有效的临时客户端令牌，然后浏览器使用该令牌建立 WebRTC 连接。出于测试目的，您也可以使用 `curl` 和常规的 OpenAI API 密钥来生成令牌。
 
    ```bash
    export OPENAI_API_KEY="sk-proj-...(your own key here)"
@@ -43,19 +43,19 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
       -d '{
         "session": {
           "type": "realtime",
-          "model": "gpt-realtime"
+          "model": "gpt-realtime-2"
         }
       }'
    ```
 
-   响应中包含一个顶层 `value` 字段，其值以 `ek_` 前缀开头，同时还包含实际生效的 `session` 对象。建立 WebRTC 连接时，请将 `value` 用作客户端密钥。该令牌的有效期较短，因此您的后端应在需要时生成新的令牌。如果您的浏览器会话需要带有 `authorization` 或自定义 `headers` 的远程 MCP 工具，请将这些远程 MCP 配置包含在发送到 `POST /v1/realtime/client_secrets` 的服务端 `session` 负载中，而不是将这些凭据暴露在浏览器代码里。
+   响应中包含一个顶层 `value` 字段，其值以 `ek_` 前缀开头，另外还包含生效的 `session` 对象。建立 WebRTC 连接时，请将 `value` 用作客户端密钥。该令牌的有效期很短，因此后端应在需要时签发新的令牌。如果您的浏览器会话需要带有 `authorization` 或自定义 `headers` 的远程 MCP 服务器工具，请将该托管 MCP 配置包含在发送到 `POST /v1/realtime/client_secrets` 的服务端 `session` 负载中，而不是在浏览器代码中暴露这些凭证。
 
 </Steps>
 
 <Aside type="note">
-  生产环境中的浏览器流程：浏览器向您的后端请求新的临时令牌，后端使用服务器 API
-  密钥调用 `POST /v1/realtime/client_secrets`，然后浏览器将返回的 `ek_...`
-  令牌传给 `session.connect(...)`。
+  生产环境中的浏览器流程：浏览器向您的后端请求一个新的临时令牌，后端使用服务器
+  API 密钥调用 `POST /v1/realtime/client_secrets`，然后浏览器将返回的 `ek_...`
+  令牌传递给 `session.connect(...)`。
 </Aside>
 
 ## 语音智能体的创建与连接
@@ -64,7 +64,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 1. **创建您的第一个 Agent**
 
-   创建新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规的 [`Agent`](/openai-agents-js/guides/agents) 非常相似。
+   创建一个新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规的 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents/realtime';
@@ -77,17 +77,17 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **创建会话**
 
-   与常规智能体不同，语音智能体会持续运行在 `RealtimeSession` 中，由它处理对话以及与模型的长期连接。这个会话还会管理音频处理、中断，以及您稍后将配置的更广泛的对话生命周期。
+   与常规智能体不同，语音智能体会持续运行在 `RealtimeSession` 中，随着时间推移处理对话以及与模型的连接。该会话还管理音频处理、中断以及更广泛的对话生命周期，您稍后将对其进行配置。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
 
    const session = new RealtimeSession(agent, {
-     model: 'gpt-realtime-1.5',
+     model: 'gpt-realtime-2',
    });
    ```
 
-   `RealtimeSession` 构造函数的第一个参数接收一个 `agent`。这个智能体将是用户最先与之交互的智能体。
+   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。该智能体将是用户首先与之交互的智能体。
 
 3. **连接到会话**
 
@@ -97,12 +97,12 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
    await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
-   在浏览器中，这会通过 WebRTC 连接到 Realtime API，并自动为您配置麦克风采集和音频播放。在默认的 WebRTC 路径下，SDK 会在数据通道打开后立即发送初始会话配置，并尽量在 `connect()` 完成前等待对应的 `session.updated` 确认；如果该确认始终未到达，则会在超时后回退。如果您在诸如 Node.js 之类的服务器运行时中运行 `RealtimeSession`，SDK 会自动回退为使用 WebSocket；在 WebSocket 路径下，`connect()` 会在套接字打开且初始配置已发送后完成，因此 `session.updated` 可能会稍晚到达。您可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中进一步了解传输方式的选择。
+   在浏览器中，这会使用 WebRTC 连接到 Realtime API，并自动为您配置麦克风采集和音频播放。在默认的 WebRTC 路径下，SDK 会在数据通道打开后立即发送初始会话配置，并尝试在 `connect()` 返回前等待匹配的 `session.updated` 确认；如果该确认始终未到达，则会在超时后继续返回。如果您在 Node.js 等服务器运行时中运行 `RealtimeSession`，SDK 会自动回退到 WebSocket；在 WebSocket 路径下，`connect()` 会在套接字打开且初始配置已发送后返回，因此 `session.updated` 可能会稍晚到达。您可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中了解更多关于传输选择的信息。
 
 </Steps>
 
 <Aside type="note">
-  如果您想对对等连接或原始传输事件进行更底层的控制，请参阅
+  如果您希望对对等连接或原始传输事件进行更底层的控制，请参阅
   [`examples/realtime-next` 中的 `/raw-client` 示例
   ](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)。
 </Aside>
@@ -111,13 +111,13 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 <Steps>
 
-1. **整合所有内容**
+1. **整体整合**
 
    <Code lang="typescript" code={helloWorldExample} />
 
 2. **启动应用并开始对话**
 
-   启动您的 Web 服务器并打开包含新 Realtime Agent 代码的页面。您应该会看到麦克风权限请求。授予访问权限后，您就可以开始与智能体对话了。
+   启动您的 Web 服务器，并打开包含新 Realtime Agent 代码的页面。您应该会看到麦克风权限请求。授予访问权限后，您就可以开始与智能体对话了。
 
    ```bash
    npm run dev
@@ -127,9 +127,9 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 ## 后续步骤
 
-接下来，您可以开始设计并构建自己的语音智能体：
+接下来，您可以开始设计和构建自己的语音智能体：
 
 - 添加[工具](/openai-agents-js/zh/guides/voice-agents/build#tools)、[交接](/openai-agents-js/zh/guides/voice-agents/build#handoffs)和[护栏](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
-- 了解[轮次检测与语音活动检测](/openai-agents-js/zh/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)以及[手动响应控制](/openai-agents-js/zh/guides/voice-agents/build#manual-response-control)如何影响对话循环。
+- 了解[轮次检测与语音活动检测](/openai-agents-js/zh/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)和[手动响应控制](/openai-agents-js/zh/guides/voice-agents/build#manual-response-control)如何影响对话循环。
 - 添加[文本输入](/openai-agents-js/zh/guides/voice-agents/build#text-input)、[图像输入](/openai-agents-js/zh/guides/voice-agents/build#image-input)和[会话历史管理](/openai-agents-js/zh/guides/voice-agents/build#conversation-history-management)。
 - 为您的部署选择合适的传输方式：[WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#webrtc-is-the-default-browser-choice)、[WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#websocket-is-the-default-server-choice)或[自定义传输](/openai-agents-js/zh/guides/voice-agents/transport#bring-your-own-transport)。
