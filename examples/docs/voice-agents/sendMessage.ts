@@ -5,7 +5,7 @@ const agent = new RealtimeAgent({
 });
 
 const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime-1.5',
+  model: 'gpt-realtime-2',
 });
 
 session.sendMessage('Hello, how are you?');

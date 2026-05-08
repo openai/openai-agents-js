@@ -8,7 +8,7 @@ const agent = new RealtimeAgent({
 async function main() {
   // define which agent you want to start your session with
   const session = new RealtimeSession(agent, {
-    model: 'gpt-realtime-1.5',
+    model: 'gpt-realtime-2',
   });
   // start your session
   await session.connect({ apiKey: '<your api key>' });

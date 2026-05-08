@@ -5,7 +5,7 @@ const audioBuffer = new ArrayBuffer(0);
 
 await client.connect({
   apiKey: '<api key>',
-  model: 'gpt-realtime-1.5',
+  model: 'gpt-realtime-2',
   initialSessionConfig: {
     instructions: 'Speak like a pirate',
     outputModalities: ['audio'],

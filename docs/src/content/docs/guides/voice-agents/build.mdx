@@ -53,6 +53,8 @@ Under the hood, the SDK normalizes this configuration into the Realtime [`sessio
 
 Prefer the newer SDK config shape with `outputModalities`, `audio.input`, and `audio.output`. Older SDK aliases such as `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, and `turnDetection` are still normalized for backwards compatibility, but new code should use the nested `audio` structure shown here.
 
+For reasoning-capable Realtime models such as `gpt-realtime-2`, set `reasoning.effort` on the session config. Higher reasoning effort can increase latency and token usage. You can also set `parallelToolCalls` when you want to control whether the model may call multiple tools in parallel.
+
 For speech-to-speech sessions, the usual choice is `outputModalities: ['audio']`, which gives you audio output plus transcripts. Switch to `['text']` only when you want text-only responses.
 
 For parameters that are new and do not have a matching parameter in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), you can use `providerData`. Anything passed in `providerData` is forwarded as part of the raw `session` object.

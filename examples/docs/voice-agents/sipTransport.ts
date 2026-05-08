@@ -18,7 +18,7 @@ const agent = new RealtimeAgent({
 });
 
 const sessionOptions: Partial<RealtimeSessionOptions> = {
-  model: 'gpt-realtime-1.5',
+  model: 'gpt-realtime-2',
   config: {
     audio: {
       input: {
