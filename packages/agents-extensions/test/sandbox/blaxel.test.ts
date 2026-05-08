@@ -750,6 +750,39 @@ describe('BlaxelSandboxClient', () => {
     expect(getMock).toHaveBeenCalledWith(session.state.sandboxName);
   });
 
+  test('uses canonical sandbox metadata for owned pauseOnExit resume identity', async () => {
+    createSandboxMock.mockResolvedValueOnce(
+      makeSandbox({
+        metadata: {
+          name: 'blaxel-test',
+          createdAt: '2026-04-28T00:00:00.123Z',
+          workspace: 'test-workspace',
+          createdBy: 'test-user',
+        },
+      }),
+    );
+    getMock.mockResolvedValue(
+      makeSandbox({
+        metadata: {
+          name: 'blaxel-test',
+          createdAt: '2026-04-28T00:00:00.000Z',
+          workspace: 'test-workspace',
+          createdBy: 'test-user',
+        },
+      }),
+    );
+    const client = new BlaxelSandboxClient({
+      pauseOnExit: true,
+    } satisfies BlaxelSandboxClientOptions);
+
+    const session = await client.create(new Manifest());
+    await session.delete();
+    await client.resume(session.state);
+
+    expect(session.state.sandboxIdentity).toContain('2026-04-28T00:00:00.000Z');
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
   test('rejects owned resume when sandbox identity cannot be verified', async () => {
     const client = new BlaxelSandboxClient({
       pauseOnExit: true,
@@ -955,6 +988,7 @@ describe('BlaxelSandboxClient', () => {
     } satisfies BlaxelSandboxClientOptions);
     const session = await client.create(new Manifest());
     createSandboxMock.mockClear();
+    getMock.mockClear();
     getMock.mockRejectedValueOnce(new Error('sandbox missing'));
 
     const recreated = await client.resume(session.state);
@@ -970,6 +1004,7 @@ describe('BlaxelSandboxClient', () => {
     } satisfies BlaxelSandboxClientOptions);
     const session = await client.create(new Manifest());
     createSandboxMock.mockClear();
+    getMock.mockClear();
     getMock.mockRejectedValueOnce(new Error('sandbox missing'));
     createSandboxMock.mockRejectedValueOnce(sandboxAlreadyExistsError());
 
@@ -987,6 +1022,7 @@ describe('BlaxelSandboxClient', () => {
     } satisfies BlaxelSandboxClientOptions);
     const session = await client.create(new Manifest());
     createSandboxMock.mockClear();
+    getMock.mockClear();
     getMock.mockResolvedValueOnce(
       makeSandbox({
         name: session.state.sandboxName,
@@ -1013,6 +1049,7 @@ describe('BlaxelSandboxClient', () => {
     } satisfies BlaxelSandboxClientOptions);
     const session = await client.create(new Manifest());
     createSandboxMock.mockClear();
+    getMock.mockClear();
     getMock.mockResolvedValueOnce(
       makeSandbox({
         name: session.state.sandboxName,
@@ -1036,6 +1073,7 @@ describe('BlaxelSandboxClient', () => {
       } satisfies BlaxelSandboxClientOptions);
       const session = await client.create(new Manifest());
       createSandboxMock.mockClear();
+      getMock.mockClear();
       getMock.mockResolvedValueOnce(
         makeSandbox({
           name: session.state.sandboxName,
