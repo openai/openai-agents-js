@@ -1,6 +1,61 @@
 import { chromium, Browser, Page } from 'playwright';
 import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
 
+const HEADLESS = process.env.COMPUTER_USE_HEADLESS !== '0';
+const START_URL = process.env.COMPUTER_USE_START_URL;
+const DEMO_PAGE_HTML = `<!doctype html>
+<html>
+  <head>
+    <title>Tokyo Weather Demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 40px;
+      }
+      section {
+        max-width: 520px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 12px;
+      }
+    </style>
+    <script>
+      function refreshForecast() {
+        document.querySelector('[data-testid="status"]').textContent =
+          'Forecast refreshed at demo time.';
+        document.querySelector('[data-testid="current"]').textContent =
+          'Current conditions: partly cloudy, 22C.';
+        document.querySelector('[data-testid="details"]').textContent =
+          'Wind: 37 km/h. Visibility: 10 km. Precipitation: 0.1 mm.';
+        document.querySelector('[data-testid="outlook"]').hidden = false;
+      }
+    </script>
+  </head>
+  <body>
+    <section>
+      <h1>Tokyo Weather Demo</h1>
+      <p data-testid="status">Forecast pending.</p>
+      <button type="button" onclick="refreshForecast()">Refresh forecast</button>
+      <p data-testid="current">Current conditions: not loaded.</p>
+      <p data-testid="details">Details: not loaded.</p>
+      <div data-testid="outlook" hidden>
+        <h2>Today</h2>
+        <ul>
+          <li>Morning: partly cloudy, 19C.</li>
+          <li>Noon: sunny, 20C.</li>
+          <li>Evening: partly cloudy, 20C.</li>
+          <li>Night: clear, 19C.</li>
+        </ul>
+      </div>
+    </section>
+  </body>
+</html>`;
+const AGENT_INSTRUCTIONS =
+  'You are a helpful agent. Use the browser computer tool to inspect web pages.';
+const WEATHER_PROMPT =
+  'Use the browser computer tool to click the Refresh forecast button, then summarize the Tokyo weather shown on the page.';
+
 async function singletonComputer() {
   // If your app never runs multiple computer using agents at the same time,
   // you can create a singleton computer and use it in all your agents.
@@ -9,15 +64,12 @@ async function singletonComputer() {
     const agent = new Agent({
       name: 'Browser user',
       model: 'gpt-5.4',
-      instructions:
-        'You are a helpful agent. Find the current weather in Tokyo.',
+      instructions: AGENT_INSTRUCTIONS,
+      modelSettings: { toolChoice: 'required' },
       tools: [computerTool({ computer })],
     });
     await withTrace('CUA Example', async () => {
-      const result = await run(
-        agent,
-        'What is the weather in Tokyo right now?',
-      );
+      const result = await run(agent, WEATHER_PROMPT);
       console.log(`\nFinal response:\n${result.finalOutput}`);
     });
   } finally {
@@ -31,7 +83,8 @@ async function computerPerRequest() {
   const agent = new Agent({
     name: 'Browser user',
     model: 'gpt-5.4',
-    instructions: 'You are a helpful agent. Find the current weather in Tokyo.',
+    instructions: AGENT_INSTRUCTIONS,
+    modelSettings: { toolChoice: 'required' },
     tools: [
       computerTool({
         // initialize a new computer for each run and dispose it after the run is complete
@@ -49,7 +102,7 @@ async function computerPerRequest() {
     ],
   });
   await withTrace('CUA Example', async () => {
-    const result = await run(agent, 'What is the weather in Tokyo right now?');
+    const result = await run(agent, WEATHER_PROMPT);
     console.log(`\nFinal response:\n${result.finalOutput}`);
   });
 }
@@ -111,12 +164,16 @@ class LocalPlaywrightComputer implements Computer {
   async _get_browser_and_page(): Promise<[Browser, Page]> {
     const [width, height] = this.dimensions;
     const browser = await chromium.launch({
-      headless: false,
+      headless: HEADLESS,
       args: [`--window-size=${width},${height}`],
     });
     const page = await browser.newPage();
     await page.setViewportSize({ width, height });
-    await page.goto('https://www.bing.com/');
+    if (START_URL) {
+      await page.goto(START_URL, { waitUntil: 'domcontentloaded' });
+    } else {
+      await page.setContent(DEMO_PAGE_HTML, { waitUntil: 'domcontentloaded' });
+    }
     return [browser, page];
   }
 

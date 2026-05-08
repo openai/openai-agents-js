@@ -1,5 +1,17 @@
 # @openai/agents-realtime
 
+## 0.11.0
+
+### Minor Changes
+
+- 295229c: fix: upgrade realtime defaults and model support for gpt-realtime-2
+
+### Patch Changes
+
+- Updated dependencies [eb81397]
+- Updated dependencies [295229c]
+  - @openai/agents-core@0.11.0
+
 ## 0.10.1
 
 ### Patch Changes

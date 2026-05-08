@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.11.0
+
+### Minor Changes
+
+- eb81397: fix: require extra path grants for local sandbox sources outside the base directory
+- 295229c: fix: upgrade realtime defaults and model support for gpt-realtime-2
+
 ## 0.10.1
 
 ### Patch Changes
