@@ -8,6 +8,7 @@ import harnessWithCompute from '../../../../assets/images/harness_with_compute.p
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 import developerOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
 import manifestExample from '../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
+import pathGrantsExample from '../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
 import sdkOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
 
 <Aside type="caution" title="Beta feature">
@@ -205,6 +206,16 @@ Use manifest entries for the material the agent needs before work begins:
 | `localFile()`, `localDir()` | Host files or directories that should be materialized into the sandbox. |
 | `gitRepo()` | A repository that should be fetched into the workspace. |
 | mounts such as `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `s3FilesMount()` | External storage that should appear inside the sandbox. |
+
+For local materialization, `localFile()` and `localDir()` source paths must stay inside the local source base directory. The default base is the current working directory of your Node process, and local sandbox clients may provide a client-specific base when they materialize entries. If a source must come from another absolute host directory, add the smallest necessary `Manifest.extraPathGrants` entry.
+
+`extraPathGrants` is also used by local lazy skill discovery. A `localDirLazySkillSource()` that points outside the source base directory is ignored unless the manifest grants that directory. Prefer `readOnly: true` for input bundles such as shared skills, datasets, and reference repositories.
+
+<Code
+  lang="typescript"
+  code={pathGrantsExample}
+  title="Grant a shared local source"
+/>
 
 Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients#mounts-and-remote-storage) for mount options and provider support.
 
