@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.11.0
+
+### Minor Changes
+
+- eb81397: fix: require extra path grants for local sandbox sources outside the base directory
+
+### Patch Changes
+
+- Updated dependencies [eb81397]
+- Updated dependencies [295229c]
+  - @openai/agents-core@0.11.0
+
 ## 0.10.1
 
 ### Patch Changes
