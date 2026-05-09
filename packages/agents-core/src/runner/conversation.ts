@@ -231,7 +231,11 @@ export class ServerConversationTracker {
     const hasResponses = modelResponses.length > 0;
 
     const serverItemKeys = new Set<string>();
+    let latestResponseId: string | undefined;
     for (const response of modelResponses) {
+      if (response.responseId) {
+        latestResponseId = response.responseId;
+      }
       for (const item of response.output) {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
@@ -251,9 +255,9 @@ export class ServerConversationTracker {
       this.remainingInitialInput = null;
     }
 
-    const latestResponse = modelResponses[modelResponses.length - 1];
-    if (!this.conversationId && latestResponse?.responseId) {
-      this.previousResponseId = latestResponse.responseId;
+    // Mirror live tracking by preserving the last response that actually carried an id.
+    if (!this.conversationId && latestResponseId) {
+      this.previousResponseId = latestResponseId;
     }
 
     if (hasResponses) {

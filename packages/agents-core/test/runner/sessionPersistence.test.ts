@@ -87,6 +87,33 @@ describe('ServerConversationTracker', () => {
     });
   });
 
+  it('uses the latest non-empty responseId when resuming without conversationId', () => {
+    const tracker = new ServerConversationTracker({});
+
+    tracker.primeFromState({
+      originalInput: [],
+      generatedItems: [],
+      modelResponses: [
+        {
+          output: [],
+          usage: new Usage(),
+          responseId: 'resp_first',
+        },
+        {
+          output: [],
+          usage: new Usage(),
+          responseId: 'resp_second',
+        },
+        {
+          output: [],
+          usage: new Usage(),
+        },
+      ],
+    });
+
+    expect(tracker.previousResponseId).toBe('resp_second');
+  });
+
   it('applies reasoningItemIdPolicy when preparing generated reasoning items', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv-3',
