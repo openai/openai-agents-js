@@ -54,6 +54,7 @@ export const conversationItemContentSchema = z.object({
     z.literal('input_audio'),
     z.literal('item_reference'),
     z.literal('output_text'),
+    z.literal('audio'),
     z.literal('output_audio'),
   ]),
 });

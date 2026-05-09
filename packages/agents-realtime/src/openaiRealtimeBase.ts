@@ -118,6 +118,29 @@ export type OpenAIRealtimeEventTypes = {
  */
 export type RealtimeSessionPayload = { type: 'realtime' } & Record<string, any>;
 
+function normalizeRealtimeMessageContent(
+  role: string | undefined,
+  content: unknown,
+): unknown {
+  if (role !== 'assistant' || !Array.isArray(content)) {
+    return content;
+  }
+  return content.map((part) => {
+    if (
+      part &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'audio'
+    ) {
+      return {
+        ...part,
+        type: 'output_audio',
+      };
+    }
+    return part;
+  });
+}
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -340,7 +363,10 @@ export abstract class OpenAIRealtimeBase
           previousItemId,
           type: parsed.item.type,
           role: parsed.item.role,
-          content: parsed.item.content,
+          content: normalizeRealtimeMessageContent(
+            parsed.item.role,
+            parsed.item.content,
+          ),
           status: parsed.item.status,
         });
         this.emit('item_update', item);
@@ -455,7 +481,10 @@ export abstract class OpenAIRealtimeBase
           itemId: parsed.item.id,
           type: parsed.item.type,
           role: parsed.item.role,
-          content: parsed.item.content,
+          content: normalizeRealtimeMessageContent(
+            parsed.item.role,
+            parsed.item.content,
+          ),
           status:
             parsed.type === 'response.output_item.done'
               ? (item.status ?? 'completed')

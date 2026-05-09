@@ -571,6 +571,89 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(updates.find((u) => (u as any).itemId === 'mcp1')).toBeTruthy();
   });
 
+  it('preserves GA output_audio content on output item messages', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (i) => updates.push(i));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.added',
+        event_id: 'o3',
+        response_id: 'r5',
+        output_index: 0,
+        item: {
+          id: 'audio1',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_audio',
+              audio: 'base64data',
+              transcript: 'hi',
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(updates[0]).toMatchObject({
+      itemId: 'audio1',
+      type: 'message',
+      role: 'assistant',
+      status: 'in_progress',
+      content: [
+        {
+          type: 'output_audio',
+          audio: 'base64data',
+          transcript: 'hi',
+        },
+      ],
+    });
+  });
+
+  it('normalizes legacy audio content on output item messages', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (i) => updates.push(i));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'o4',
+        response_id: 'r6',
+        output_index: 0,
+        item: {
+          id: 'audio2',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'audio',
+              audio: 'legacydata',
+              transcript: 'hello',
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(updates[0]).toMatchObject({
+      itemId: 'audio2',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_audio',
+          audio: 'legacydata',
+          transcript: 'hello',
+        },
+      ],
+    });
+  });
+
   it('retrieves MCP tool call items on in-progress signals', () => {
     const base = new TestBase();
 
