@@ -46,9 +46,7 @@ export class PrismaSession implements Session {
     const ordered = take ? [...records].reverse() : records;
     const result: AgentInputItem[] = [];
     for (const record of ordered) {
-      const raw =
-        typeof record.item === 'string' ? JSON.parse(record.item) : record.item;
-      const item = coerceAgentItem(raw);
+      const item = parseStoredAgentItem(record.item);
       if (item) {
         result.push(item);
       }
@@ -89,18 +87,21 @@ export class PrismaSession implements Session {
   async popItem(): Promise<AgentInputItem | undefined> {
     const sessionId = await this.getSessionId();
     return await this.#withClient(async (client) => {
-      const latest = await client.sessionItem.findFirst({
-        where: { sessionId },
-        select: { id: true, item: true },
-        orderBy: { position: 'desc' },
-      });
-      if (!latest?.id) {
-        return undefined;
+      while (true) {
+        const latest = await client.sessionItem.findFirst({
+          where: { sessionId },
+          select: { id: true, item: true },
+          orderBy: { position: 'desc' },
+        });
+        if (!latest?.id) {
+          return undefined;
+        }
+        await client.sessionItem.delete({ where: { id: latest.id } });
+        const item = parseStoredAgentItem(latest.item);
+        if (item) {
+          return item;
+        }
       }
-      await client.sessionItem.delete({ where: { id: latest.id } });
-      const raw =
-        typeof latest.item === 'string' ? JSON.parse(latest.item) : latest.item;
-      return coerceAgentItem(raw) ?? undefined;
     });
   }
 
@@ -163,6 +164,17 @@ function coerceAgentItem(raw: unknown): AgentInputItem | undefined {
     return undefined;
   }
   return parsed.data as AgentInputItem;
+}
+
+function parseStoredAgentItem(raw: unknown): AgentInputItem | undefined {
+  if (typeof raw !== 'string') {
+    return coerceAgentItem(raw);
+  }
+  try {
+    return coerceAgentItem(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
 }
 
 export type { PrismaClient } from '@prisma/client';
