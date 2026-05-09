@@ -31,6 +31,7 @@ import {
   relativePosixPathWithinRoot,
 } from './shared/posixPath';
 import { isRecord } from './shared/typeGuards';
+import { SandboxGitSubpathError } from './errors';
 
 export type EnvResolver = () => string | Promise<string>;
 
@@ -352,6 +353,42 @@ export function normalizeRelativePath(path: string): string {
   return normalized === '.' ? '' : normalized;
 }
 
+function normalizeGitRepoSubpath(repo: string, subpath: string): string {
+  const trimmed = subpath.trim();
+  let reason:
+    | 'absolute'
+    | 'empty'
+    | 'parent_traversal'
+    | 'windows_path'
+    | undefined;
+
+  if (subpath === '') {
+    return '';
+  }
+
+  if (!trimmed || normalizePosixPath(trimmed) === '.') {
+    reason = 'empty';
+  } else if (
+    hasBackslashPathSeparator(subpath) ||
+    /^[A-Za-z]:($|\/)/.test(trimmed)
+  ) {
+    reason = 'windows_path';
+  } else if (trimmed.startsWith('/')) {
+    reason = 'absolute';
+  } else if (hasParentPathSegment(subpath)) {
+    reason = 'parent_traversal';
+  }
+
+  if (reason) {
+    throw new SandboxGitSubpathError(
+      `git_repo subpath must be a relative path inside the repository: ${subpath}`,
+      { repo, subpath, reason },
+    );
+  }
+
+  return normalizePosixPath(trimmed);
+}
+
 export function renderManifestDescription(
   manifest: Manifest,
   options: RenderManifestDescriptionOptions = {},
@@ -592,7 +629,10 @@ function normalizeEntry(
     normalized.repo = repo.trim();
     normalized.host = normalizeGitHost(normalized.host);
     if (normalized.subpath !== undefined) {
-      normalized.subpath = normalizeRelativePath(normalized.subpath);
+      normalized.subpath = normalizeGitRepoSubpath(
+        normalized.repo,
+        normalized.subpath,
+      );
     }
   }
   if (isMount(normalized)) {

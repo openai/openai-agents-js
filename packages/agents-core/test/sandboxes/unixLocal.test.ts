@@ -1298,6 +1298,44 @@ describe('UnixLocalSandboxClient', () => {
     expect(await session.pathExists('deps/app/README.md')).toBe(true);
   }, 10_000);
 
+  it('treats empty git repository subpaths as the repository root', async () => {
+    const repository = join(rootDir, 'empty-subpath-repo');
+    await mkdir(repository, { recursive: true });
+    await execFileAsync('git', ['init'], { cwd: repository });
+    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], {
+      cwd: repository,
+    });
+    await execFileAsync('git', ['config', 'user.name', 'Test User'], {
+      cwd: repository,
+    });
+    await writeFile(join(repository, 'README.md'), 'repo root\n', 'utf8');
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repository });
+
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          app: {
+            type: 'git_repo',
+            repo: `file://${repository}`,
+            subpath: '',
+          },
+        },
+      }),
+    );
+
+    const output = await session.execCommand({
+      cmd: 'cat /workspace/app/README.md',
+      shell: '/bin/sh',
+      login: false,
+      yieldTimeMs: 2_000,
+    });
+    expect(output).toContain('repo root');
+  }, 10_000);
+
   it('checks out commit SHA refs when cloning git repositories', async () => {
     const repository = join(rootDir, 'commit-repo');
     await mkdir(repository, { recursive: true });

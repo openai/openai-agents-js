@@ -35,6 +35,7 @@ export type SandboxErrorCode =
   | 'local_checksum_error'
   | 'git_missing_in_image'
   | 'git_clone_error'
+  | 'git_subpath_error'
   | 'git_copy_error'
   | 'mount_missing_tool'
   | 'mount_failed'
@@ -342,7 +343,10 @@ export class SandboxGitArtifactError extends SandboxArtifactError {
     message: string,
     code: Extract<
       SandboxErrorCode,
-      'git_missing_in_image' | 'git_clone_error' | 'git_copy_error'
+      | 'git_missing_in_image'
+      | 'git_clone_error'
+      | 'git_subpath_error'
+      | 'git_copy_error'
     >,
     details?: Record<string, unknown>,
   ) {
@@ -359,6 +363,12 @@ export class SandboxGitMissingInImageError extends SandboxGitArtifactError {
 export class SandboxGitCloneError extends SandboxGitArtifactError {
   constructor(message: string, details?: Record<string, unknown>) {
     super(message, 'git_clone_error', details);
+  }
+}
+
+export class SandboxGitSubpathError extends SandboxGitArtifactError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 'git_subpath_error', details);
   }
 }
 

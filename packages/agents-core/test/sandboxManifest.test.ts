@@ -7,6 +7,7 @@ import {
   normalizeRelativePath,
   Permissions,
   renderManifestDescription,
+  SandboxGitSubpathError,
   type Dir,
   type File,
   type GitRepo,
@@ -389,6 +390,64 @@ describe('Manifest', () => {
     expect(repo.repo).toBe('openai/openai-agents-js');
     expect(repo.subpath).toBe('packages/agents-core');
   });
+
+  it('allows an empty GitRepo subpath as the repository root', () => {
+    const manifest = new Manifest({
+      entries: {
+        repo: {
+          type: 'git_repo',
+          repo: 'openai/openai-agents-js',
+          subpath: '',
+        },
+      },
+    });
+    const repo = manifest.entries.repo as GitRepo;
+
+    expect(repo.subpath).toBe('');
+  });
+
+  it.each([
+    ['.', 'empty'],
+    ['./', 'empty'],
+    ['/docs', 'absolute'],
+    ['../outside', 'parent_traversal'],
+    ['docs/../../outside', 'parent_traversal'],
+    ['C:/repo', 'windows_path'],
+    ['docs\\outside', 'windows_path'],
+  ])(
+    'rejects invalid GitRepo subpath %j before materialization',
+    (subpath, reason) => {
+      expect(() => {
+        new Manifest({
+          entries: {
+            repo: {
+              type: 'git_repo',
+              repo: 'openai/openai-agents-js',
+              subpath,
+            },
+          },
+        });
+      }).toThrow(SandboxGitSubpathError);
+
+      try {
+        new Manifest({
+          entries: {
+            repo: {
+              type: 'git_repo',
+              repo: 'openai/openai-agents-js',
+              subpath,
+            },
+          },
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(SandboxGitSubpathError);
+        expect((error as SandboxGitSubpathError).details).toMatchObject({
+          subpath,
+          reason,
+        });
+      }
+    },
+  );
 
   it('normalizes typed mount config and defaults', () => {
     const manifest = new Manifest({
