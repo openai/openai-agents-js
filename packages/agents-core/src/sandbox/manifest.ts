@@ -362,11 +362,11 @@ function normalizeGitRepoSubpath(repo: string, subpath: string): string {
     | 'windows_path'
     | undefined;
 
-  if (subpath === '') {
+  if (subpath === '' || normalizePosixPath(trimmed) === '.') {
     return '';
   }
 
-  if (!trimmed || normalizePosixPath(trimmed) === '.') {
+  if (!trimmed) {
     reason = 'empty';
   } else if (
     hasBackslashPathSeparator(subpath) ||

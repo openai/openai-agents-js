@@ -406,9 +406,25 @@ describe('Manifest', () => {
     expect(repo.subpath).toBe('');
   });
 
+  it.each(['.', './', './.', ' ./ '])(
+    'preserves GitRepo root subpath alias %j',
+    (subpath) => {
+      const manifest = new Manifest({
+        entries: {
+          repo: {
+            type: 'git_repo',
+            repo: 'openai/openai-agents-js',
+            subpath,
+          },
+        },
+      });
+      const repo = manifest.entries.repo as GitRepo;
+
+      expect(repo.subpath).toBe('');
+    },
+  );
+
   it.each([
-    ['.', 'empty'],
-    ['./', 'empty'],
     ['/docs', 'absolute'],
     ['../outside', 'parent_traversal'],
     ['docs/../../outside', 'parent_traversal'],
