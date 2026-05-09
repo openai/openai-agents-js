@@ -16,7 +16,5 @@ onlyBuiltDependencies:
 
 publishBranch: main
 minimumReleaseAge: 10080
-minimumReleaseAgeExclude:
-  - '@blaxel/core'
 blockExoticSubdeps: true
 strictDepBuilds: true
