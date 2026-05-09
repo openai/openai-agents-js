@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RealtimeClientMessage } from '../src/clientMessages';
-import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
+import {
+  DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
+  OpenAIRealtimeBase,
+} from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
 
 class TestBase extends OpenAIRealtimeBase {
@@ -102,6 +105,29 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(config.audio?.input?.noise_reduction).toBeNull();
     expect(config.audio?.input?.transcription).toBeNull();
     expect(config.audio?.input?.turn_detection).toBeNull();
+  });
+
+  it('treats null audio channels as unset when building config', () => {
+    const base = new TestBase();
+    const config = (base as any)._getMergedSessionConfig({
+      audio: {
+        input: null,
+        output: null,
+      },
+    });
+
+    expect(config.audio?.input?.format).toEqual(
+      DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.format,
+    );
+    expect(config.audio?.input?.transcription).toEqual(
+      DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
+    );
+    expect(config.audio?.output?.format).toEqual(
+      DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.output?.format,
+    );
+    expect(config.audio?.output?.speed).toEqual(
+      DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.output?.speed,
+    );
   });
 
   it('preserves falsy turn detection values when building payload', () => {

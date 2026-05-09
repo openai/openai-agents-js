@@ -117,8 +117,8 @@ export type RealtimeAudioOutputConfig = {
 };
 
 export type RealtimeAudioConfig = {
-  input?: RealtimeAudioInputConfig;
-  output?: RealtimeAudioOutputConfig;
+  input?: RealtimeAudioInputConfig | null;
+  output?: RealtimeAudioOutputConfig | null;
 };
 
 export type RealtimeReasoningEffort =
@@ -213,22 +213,24 @@ export function toNewSessionConfig(
   config: Partial<RealtimeSessionConfig>,
 ): Partial<RealtimeSessionConfigDefinition> {
   if (!isDeprecatedConfig(config)) {
-    const inputConfig = config.audio?.input
+    const audioInput = config.audio?.input ?? undefined;
+    const audioOutput = config.audio?.output ?? undefined;
+    const inputConfig = audioInput
       ? {
-          format: normalizeAudioFormat(config.audio.input.format),
-          noiseReduction: config.audio.input.noiseReduction ?? null,
-          transcription: config.audio.input.transcription,
-          turnDetection: config.audio.input.turnDetection,
+          format: normalizeAudioFormat(audioInput?.format),
+          noiseReduction: audioInput?.noiseReduction ?? null,
+          transcription: audioInput?.transcription,
+          turnDetection: audioInput?.turnDetection,
         }
       : undefined;
 
-    const requestedOutputVoice = config.audio?.output?.voice ?? config.voice;
+    const requestedOutputVoice = audioOutput?.voice ?? config.voice;
     const outputConfig =
-      config.audio?.output || typeof requestedOutputVoice !== 'undefined'
+      audioOutput || typeof requestedOutputVoice !== 'undefined'
         ? {
-            format: normalizeAudioFormat(config.audio?.output?.format),
+            format: normalizeAudioFormat(audioOutput?.format),
             voice: requestedOutputVoice,
-            speed: config.audio?.output?.speed,
+            speed: audioOutput?.speed,
           }
         : undefined;
 
