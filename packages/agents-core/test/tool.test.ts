@@ -261,6 +261,31 @@ describe('Tool', () => {
     expect(initSpy).not.toHaveBeenCalled();
   });
 
+  it('resolveComputer treats computer instances with create methods as static instances', async () => {
+    const create = vi.fn();
+    const staticComp = {
+      environment: 'mac' as const,
+      dimensions: [1, 1] as [number, number],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+      create,
+    };
+    const t = computerTool({ computer: staticComp });
+    const ctx = new RunContext();
+
+    const resolved = await resolveComputer({ tool: t, runContext: ctx });
+
+    expect(resolved).toBe(staticComp);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('supports lifecycle initializers with dispose per run context', async () => {
     let counter = 0;
     const makeComputer = (label: string) =>

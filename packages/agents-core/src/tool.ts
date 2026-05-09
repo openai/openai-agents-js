@@ -366,10 +366,33 @@ export type ComputerConfig<
 function isComputerProvider<Context, TComputer extends Computer>(
   candidate: unknown,
 ): candidate is ComputerProvider<Context, TComputer> {
+  if (isComputerInstance(candidate)) {
+    return false;
+  }
+
   return (
     !!candidate &&
     typeof candidate === 'object' &&
     typeof (candidate as { create?: unknown }).create === 'function'
+  );
+}
+
+function isComputerInstance(candidate: unknown): candidate is Computer {
+  if (!candidate || typeof candidate !== 'object') {
+    return false;
+  }
+
+  const maybeComputer = candidate as Partial<Record<keyof Computer, unknown>>;
+  return (
+    typeof maybeComputer.screenshot === 'function' &&
+    typeof maybeComputer.click === 'function' &&
+    typeof maybeComputer.doubleClick === 'function' &&
+    typeof maybeComputer.drag === 'function' &&
+    typeof maybeComputer.keypress === 'function' &&
+    typeof maybeComputer.move === 'function' &&
+    typeof maybeComputer.scroll === 'function' &&
+    typeof maybeComputer.type === 'function' &&
+    typeof maybeComputer.wait === 'function'
   );
 }
 
