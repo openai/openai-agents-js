@@ -52,6 +52,7 @@ description: Run examples:start-all in auto mode with parallel execution, per-sc
 - `EXAMPLES_INTERACTIVE_MODE=auto`
 - `AUTO_APPROVE_MCP=1`, `APPLY_PATCH_AUTO_APPROVE=1`, `AUTO_APPROVE_HITL=1` (set in runner)
 - `EXAMPLES_CONCURRENCY=4`
+  - `sandbox:start:memory-generation` is still serialized by the runner because its pre-stop memory generation can contend with shared local resources. Other hosted, Unix-local, and Docker sandbox examples remain parallelized.
 - `EXAMPLES_EXECA_TIMEOUT_MS=300000` (5m)  
   `financial-research-agent` and `computer-use` use 10m inside the script.
 - Includes interactive; excludes server/audio/external by default:
@@ -61,6 +62,11 @@ description: Run examples:start-all in auto mode with parallel execution, per-sc
 - `EXAMPLES_INCLUDE_EXTERNAL=0`
   - This means `realtime-*` / `nextjs` (tagged as server/audio) are skipped unless you opt in with `--include-server` / `--include-audio` or the corresponding env flags.
 - Auto-skip list: `EXAMPLES_AUTO_SKIP` (comma/space separated) overrides the built-in defaults used by both `run.sh` and `run-example-starts.mjs`. Defaults include `agent-patterns:start:llm-as-a-judge`, `agent-patterns:start:routing`, `customer-service:start`, `connectors:start`, `mcp:start:hosted-mcp-on-approval`, `mcp:start:hosted-mcp-human-in-the-loop`.
+
+## Codex execution environment
+
+- When Codex invokes `start` or `rerun`, run the command outside the Codex sandbox by default (`sandbox_permissions=require_escalated`). Several examples start nested sandboxes, browsers, npm helpers, or local service processes; running from inside the Codex sandbox can produce environment-only failures such as Playwright browser launch permission errors, npm cache permission errors, or nested sandbox setup errors.
+- Use sandboxed execution only when the user explicitly asks for it or when running a narrow dry-run / log inspection command that does not execute examples.
 
 ## Cancellation / cleanup
 

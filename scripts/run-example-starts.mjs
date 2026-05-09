@@ -127,6 +127,8 @@ const TRANSIENT_PNPM_WORKSPACE_STATE_PATTERNS = [
   /loadWorkspaceState/i,
 ];
 
+const SERIALIZED_EXAMPLE_STARTS = new Set(['sandbox:start:memory-generation']);
+
 const parseArgs = (args) => {
   let dryRun = false;
   let filter = null;
@@ -671,6 +673,26 @@ const runStarts = async (
     return start;
   };
 
+  let serializedStartTail = Promise.resolve();
+  const acquireSerializedStart = async (start) => {
+    const name = `${start.packageName}:${start.scriptName}`;
+    if (!SERIALIZED_EXAMPLE_STARTS.has(name)) {
+      return () => {};
+    }
+
+    const previous = serializedStartTail;
+    let release = () => {};
+    serializedStartTail = new Promise((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    console.log(
+      `   [serialized] ${name} runs one at a time to avoid shared sandbox memory generation conflicts.`,
+    );
+    return release;
+  };
+
   const worker = async () => {
     while (true) {
       const start = next();
@@ -728,99 +750,149 @@ const runStarts = async (
         continue;
       }
 
-      let logFile;
-      let logStream;
-      const flushLogStream = () =>
-        new Promise((resolve) => {
-          if (!logStream) {
-            resolve();
-            return;
-          }
-          if (logStream.closed) {
-            resolve();
-            return;
-          }
-          logStream.end(() => resolve());
-        });
+      const releaseSerializedStart = await acquireSerializedStart(start);
       try {
-        const key = `${start.packageName}:${start.scriptName}`;
-        const dirKey = `${path.basename(start.dir)}:${start.scriptName}`;
-        const resolvedAutoInput =
-          DEFAULT_INTERACTIVE_INPUTS.get(key) ??
-          DEFAULT_INTERACTIVE_INPUTS.get(dirKey) ??
-          process.env.EXAMPLES_INTERACTIVE_DEFAULT_INPUT;
-        const autoInput =
-          interactiveMode === 'auto' && resolvedAutoInput
-            ? resolvedAutoInput
-            : undefined;
+        let logFile;
+        let logStream;
+        const flushLogStream = () =>
+          new Promise((resolve) => {
+            if (!logStream) {
+              resolve();
+              return;
+            }
+            if (logStream.closed) {
+              resolve();
+              return;
+            }
+            logStream.end(() => resolve());
+          });
+        try {
+          const key = `${start.packageName}:${start.scriptName}`;
+          const dirKey = `${path.basename(start.dir)}:${start.scriptName}`;
+          const resolvedAutoInput =
+            DEFAULT_INTERACTIVE_INPUTS.get(key) ??
+            DEFAULT_INTERACTIVE_INPUTS.get(dirKey) ??
+            process.env.EXAMPLES_INTERACTIVE_DEFAULT_INPUT;
+          const autoInput =
+            interactiveMode === 'auto' && resolvedAutoInput
+              ? resolvedAutoInput
+              : undefined;
 
-        if (interactiveMode === 'auto') {
-          const label =
-            autoInput && start.tags.has('interactive')
-              ? '[auto-input enabled]'
-              : start.tags.has('interactive')
-                ? '[interactive: no auto-input configured]'
-                : autoInput
-                  ? '[auto-input enabled]'
-                  : '[auto-input not found for this script]';
-          console.log(`   ${label}`);
-        }
+          if (interactiveMode === 'auto') {
+            const label =
+              autoInput && start.tags.has('interactive')
+                ? '[auto-input enabled]'
+                : start.tags.has('interactive')
+                  ? '[interactive: no auto-input configured]'
+                  : autoInput
+                    ? '[auto-input enabled]'
+                    : '[auto-input not found for this script]';
+            console.log(`   ${label}`);
+          }
 
-        const timeout =
-          start.packageName === 'financial-research-agent'
-            ? 600_000
-            : start.scriptName.includes('computer-use')
+          const timeout =
+            start.packageName === 'financial-research-agent'
               ? 600_000
-              : baseTimeoutMs;
+              : start.scriptName.includes('computer-use')
+                ? 600_000
+                : baseTimeoutMs;
 
-        const childEnv = { ...process.env };
-        if (interactiveMode === 'auto' && start.tags.has('interactive')) {
-          childEnv.AUTO_APPROVE_HITL =
-            childEnv.AUTO_APPROVE_HITL ?? (autoInput ? '1' : '1');
-        }
-        if (start.scriptName.includes('apply-patch')) {
-          childEnv.APPLY_PATCH_AUTO_APPROVE =
-            childEnv.APPLY_PATCH_AUTO_APPROVE ?? '1';
-        }
-        if (start.scriptName.includes('shell')) {
-          childEnv.SHELL_AUTO_APPROVE =
-            childEnv.SHELL_AUTO_APPROVE ?? childEnv.AUTO_APPROVE_HITL ?? '1';
-        }
-        if (start.packageName === 'mcp') {
-          childEnv.AUTO_APPROVE_MCP =
-            childEnv.AUTO_APPROVE_MCP ?? childEnv.AUTO_APPROVE_HITL ?? '1';
-        }
+          const childEnv = { ...process.env };
+          if (interactiveMode === 'auto' && start.tags.has('interactive')) {
+            childEnv.AUTO_APPROVE_HITL =
+              childEnv.AUTO_APPROVE_HITL ?? (autoInput ? '1' : '1');
+          }
+          if (start.scriptName.includes('apply-patch')) {
+            childEnv.APPLY_PATCH_AUTO_APPROVE =
+              childEnv.APPLY_PATCH_AUTO_APPROVE ?? '1';
+          }
+          if (start.scriptName.includes('shell')) {
+            childEnv.SHELL_AUTO_APPROVE =
+              childEnv.SHELL_AUTO_APPROVE ?? childEnv.AUTO_APPROVE_HITL ?? '1';
+          }
+          if (start.packageName === 'mcp') {
+            childEnv.AUTO_APPROVE_MCP =
+              childEnv.AUTO_APPROVE_MCP ?? childEnv.AUTO_APPROVE_HITL ?? '1';
+          }
 
-        logFile = path.join(
-          logsDir,
-          `${start.packageName.replace(/[^\w.-]/g, '_')}__${start.scriptName.replace(/[^\w.-]/g, '_')}.log`,
-        );
-        console.log(`   log: ${path.relative(rootDir, logFile)}`);
-
-        let attempt = 1;
-        while (true) {
-          // Truncate per-script log on each attempt so only the latest execution remains.
-          logStream = createWriteStream(logFile, { flags: 'w' });
-          const child = execa(
-            'pnpm',
-            ['-C', start.dir, 'run', start.scriptName],
-            {
-              stdio: 'pipe',
-              input: autoInput,
-              env: childEnv,
-              timeout,
-            },
+          logFile = path.join(
+            logsDir,
+            `${start.packageName.replace(/[^\w.-]/g, '_')}__${start.scriptName.replace(/[^\w.-]/g, '_')}.log`,
           );
-          if (child.stdout) {
-            child.stdout.pipe(logStream);
+          console.log(`   log: ${path.relative(rootDir, logFile)}`);
+
+          let attempt = 1;
+          while (true) {
+            // Truncate per-script log on each attempt so only the latest execution remains.
+            logStream = createWriteStream(logFile, { flags: 'w' });
+            const child = execa(
+              'pnpm',
+              ['-C', start.dir, 'run', start.scriptName],
+              {
+                stdio: 'pipe',
+                input: autoInput,
+                env: childEnv,
+                timeout,
+              },
+            );
+            if (child.stdout) {
+              child.stdout.pipe(logStream);
+            }
+            if (child.stderr) {
+              child.stderr.pipe(logStream);
+            }
+            running.add(child);
+            try {
+              await child;
+              await flushLogStream();
+              executed += 1;
+              const validation = await validateLog({
+                start,
+                logFile,
+                exitCode: 0,
+              });
+              if (validation.status === 'unexpected') {
+                unexpected += 1;
+              } else if (validation.status === 'unknown') {
+                validationUnknown += 1;
+              }
+              results.push({
+                start,
+                status: 'passed',
+                logFile,
+                usedAutoInput: Boolean(autoInput),
+                validation,
+              });
+              break;
+            } catch (error) {
+              await flushLogStream();
+              const exitCode =
+                typeof error?.exitCode === 'number'
+                  ? error.exitCode
+                  : 'unknown';
+              const shouldRetry =
+                attempt < 2 &&
+                (await shouldRetryTransientPnpmFailure({ exitCode, logFile }));
+              if (shouldRetry) {
+                console.warn(
+                  `   !! ${start.packageName}:${start.scriptName} hit transient pnpm workspace state parsing; retrying once`,
+                );
+                attempt += 1;
+                continue;
+              }
+              throw error;
+            } finally {
+              running.delete(child);
+              if (logStream && !logStream.closed) {
+                logStream.end();
+              }
+            }
           }
-          if (child.stderr) {
-            child.stderr.pipe(logStream);
-          }
-          running.add(child);
-          try {
-            await child;
-            await flushLogStream();
+        } catch (error) {
+          const exitCode =
+            typeof error?.exitCode === 'number' ? error.exitCode : 'unknown';
+          await flushLogStream();
+          if (exitCode === 0) {
             executed += 1;
             const validation = await validateLog({
               start,
@@ -836,47 +908,34 @@ const runStarts = async (
               start,
               status: 'passed',
               logFile,
-              usedAutoInput: Boolean(autoInput),
               validation,
+              usedAutoInput: Boolean(
+                interactiveMode === 'auto' &&
+                (start.tags.has('interactive') ||
+                  DEFAULT_INTERACTIVE_INPUTS.has(
+                    `${start.packageName}:${start.scriptName}`,
+                  )),
+              ),
             });
-            break;
-          } catch (error) {
-            await flushLogStream();
-            const exitCode =
-              typeof error?.exitCode === 'number' ? error.exitCode : 'unknown';
-            const shouldRetry =
-              attempt < 2 &&
-              (await shouldRetryTransientPnpmFailure({ exitCode, logFile }));
-            if (shouldRetry) {
-              console.warn(
-                `   !! ${start.packageName}:${start.scriptName} hit transient pnpm workspace state parsing; retrying once`,
-              );
-              attempt += 1;
-              continue;
-            }
-            throw error;
-          } finally {
-            running.delete(child);
-            if (logStream && !logStream.closed) {
-              logStream.end();
-            }
+            continue;
           }
-        }
-      } catch (error) {
-        const exitCode =
-          typeof error?.exitCode === 'number' ? error.exitCode : 'unknown';
-        await flushLogStream();
-        if (exitCode === 0) {
-          executed += 1;
-          const validation = await validateLog({ start, logFile, exitCode: 0 });
-          if (validation.status === 'unexpected') {
+          failed += 1;
+          console.error(
+            `   !! ${start.packageName}:${start.scriptName} exited with ${exitCode}`,
+          );
+
+          const validation = await validateLog({ start, logFile, exitCode });
+          if (validation.status === 'expected-failure') {
+            expectedFailures += 1;
+          } else if (validation.status === 'unexpected') {
             unexpected += 1;
           } else if (validation.status === 'unknown') {
             validationUnknown += 1;
           }
           results.push({
             start,
-            status: 'passed',
+            status: 'failed',
+            exitCode,
             logFile,
             validation,
             usedAutoInput: Boolean(
@@ -887,39 +946,13 @@ const runStarts = async (
                 )),
             ),
           });
-          continue;
+          if (failFast) {
+            requestCancel('fail-fast');
+            return;
+          }
         }
-        failed += 1;
-        console.error(
-          `   !! ${start.packageName}:${start.scriptName} exited with ${exitCode}`,
-        );
-
-        const validation = await validateLog({ start, logFile, exitCode });
-        if (validation.status === 'expected-failure') {
-          expectedFailures += 1;
-        } else if (validation.status === 'unexpected') {
-          unexpected += 1;
-        } else if (validation.status === 'unknown') {
-          validationUnknown += 1;
-        }
-        results.push({
-          start,
-          status: 'failed',
-          exitCode,
-          logFile,
-          validation,
-          usedAutoInput: Boolean(
-            interactiveMode === 'auto' &&
-            (start.tags.has('interactive') ||
-              DEFAULT_INTERACTIVE_INPUTS.has(
-                `${start.packageName}:${start.scriptName}`,
-              )),
-          ),
-        });
-        if (failFast) {
-          requestCancel('fail-fast');
-          return;
-        }
+      } finally {
+        releaseSerializedStart();
       }
       if (cancelled) {
         return;
