@@ -4,7 +4,7 @@ import logger from '../logger';
 import { MultiTracingProcessor, TracingProcessor } from './processor';
 import { NoopSpan, Span, SpanData, SpanOptions } from './spans';
 import { NoopTrace, Trace, TraceOptions } from './traces';
-import { generateTraceId } from './utils';
+import { generateTraceId, NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 export type CreateSpanOptions<TData extends SpanData> = Omit<
   SpanOptions<TData>,
@@ -88,6 +88,11 @@ export class TraceProvider {
       return new NoopSpan(spanOptions.data, this.#multiProcessor);
     }
 
+    if (spanOptions.spanId === NOOP_TRACE_OR_SPAN_ID) {
+      logger.debug('Span id is no-op, returning NoopSpan');
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
     let parentId;
     let traceId;
     let tracingApiKey: string | undefined;
@@ -98,7 +103,7 @@ export class TraceProvider {
       const currentSpan = getCurrentSpan();
 
       if (!currentTrace) {
-        logger.error(
+        logger.debug(
           'No active trace. Make sure to start a trace with `withTrace()` first. Returning NoopSpan.',
         );
         return new NoopSpan(spanOptions.data, this.#multiProcessor);
@@ -106,7 +111,9 @@ export class TraceProvider {
 
       if (
         currentSpan instanceof NoopSpan ||
-        currentTrace instanceof NoopTrace
+        currentSpan?.spanId === NOOP_TRACE_OR_SPAN_ID ||
+        currentTrace instanceof NoopTrace ||
+        currentTrace.traceId === NOOP_TRACE_OR_SPAN_ID
       ) {
         logger.debug(
           `Parent ${currentSpan} or ${currentTrace} is no-op, returning NoopSpan`,
@@ -127,7 +134,10 @@ export class TraceProvider {
         );
       }
     } else if (parent instanceof Trace) {
-      if (parent instanceof NoopTrace) {
+      if (
+        parent instanceof NoopTrace ||
+        parent.traceId === NOOP_TRACE_OR_SPAN_ID
+      ) {
         logger.debug('Parent trace is no-op, returning NoopSpan');
         return new NoopSpan(spanOptions.data, this.#multiProcessor);
       }
@@ -136,7 +146,11 @@ export class TraceProvider {
       tracingApiKey = parent.tracingApiKey;
       traceMetadata = parent.metadata;
     } else if (parent instanceof Span) {
-      if (parent instanceof NoopSpan) {
+      if (
+        parent instanceof NoopSpan ||
+        parent.spanId === NOOP_TRACE_OR_SPAN_ID ||
+        parent.traceId === NOOP_TRACE_OR_SPAN_ID
+      ) {
         logger.debug('Parent span is no-op, returning NoopSpan');
         return new NoopSpan(spanOptions.data, this.#multiProcessor);
       }
@@ -147,7 +161,7 @@ export class TraceProvider {
       traceMetadata = parent.traceMetadata;
     }
 
-    if (!traceId) {
+    if (!traceId || traceId === NOOP_TRACE_OR_SPAN_ID) {
       logger.error(
         'No traceId found. Make sure to start a trace with `withTrace()` first. Returning NoopSpan.',
       );

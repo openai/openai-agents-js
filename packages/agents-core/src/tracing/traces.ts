@@ -1,5 +1,5 @@
 import { defaultProcessor, TracingProcessor } from './processor';
-import { generateTraceId } from './utils';
+import { generateTraceId, NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 export type TraceOptions = {
   traceId?: string;
@@ -85,7 +85,7 @@ export class Trace {
 
 export class NoopTrace extends Trace {
   constructor() {
-    super({});
+    super({ traceId: NOOP_TRACE_OR_SPAN_ID });
   }
 
   async start(): Promise<void> {

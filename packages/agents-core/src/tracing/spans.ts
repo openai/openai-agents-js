@@ -1,6 +1,11 @@
 import logger from '../logger';
 import { TracingProcessor } from './processor';
-import { generateSpanId, removePrivateFields, timeIso } from './utils';
+import {
+  generateSpanId,
+  NOOP_TRACE_OR_SPAN_ID,
+  removePrivateFields,
+  timeIso,
+} from './utils';
 
 type SpanDataBase = {
   type: string;
@@ -271,7 +276,14 @@ export class Span<TData extends SpanData> {
 
 export class NoopSpan<TSpanData extends SpanData> extends Span<TSpanData> {
   constructor(data: TSpanData, processor: TracingProcessor) {
-    super({ traceId: 'no-op', spanId: 'no-op', data }, processor);
+    super(
+      {
+        traceId: NOOP_TRACE_OR_SPAN_ID,
+        spanId: NOOP_TRACE_OR_SPAN_ID,
+        data,
+      },
+      processor,
+    );
   }
 
   start() {

@@ -1,5 +1,7 @@
 import { randomUUID } from '@openai/agents-core/_shims';
 
+export const NOOP_TRACE_OR_SPAN_ID = 'no-op';
+
 /**
  * Generate an ISO 8601 timestamp of the current time.
  * @returns An ISO 8601 timestamp.
