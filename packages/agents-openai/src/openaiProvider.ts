@@ -26,6 +26,12 @@ export type OpenAIProviderOptions = {
   project?: string;
   useResponses?: boolean;
   useResponsesWebSocket?: boolean;
+  /**
+   * When false, Chat Completions models warn and ignore Responses-only
+   * features such as previousResponseId, conversationId, and prompt. When true,
+   * they raise UserError instead.
+   */
+  strictFeatureValidation?: boolean;
   responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
   openAIClient?: OpenAI;
 };
@@ -140,7 +146,9 @@ export class OpenAIProvider implements ModelProvider {
           })
         : new OpenAIResponsesModel(client, model);
     } else {
-      resolvedModel = new OpenAIChatCompletionsModel(this.#getClient(), model);
+      resolvedModel = new OpenAIChatCompletionsModel(this.#getClient(), model, {
+        strictFeatureValidation: this.#options.strictFeatureValidation,
+      });
     }
 
     if (shouldCacheModelWrapper) {

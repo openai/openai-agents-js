@@ -171,6 +171,28 @@ describe('OpenAIProvider', () => {
     expect(OpenAIMock).not.toHaveBeenCalled();
   });
 
+  it('passes strict feature validation to chat completions models', async () => {
+    const provider = new OpenAIProvider({
+      openAIClient: new FakeClient() as any,
+      useResponses: false,
+      strictFeatureValidation: true,
+    });
+
+    const model = await provider.getModel('gpt-4o');
+
+    await expect(
+      model.getResponse({
+        input: 'hi',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        previousResponseId: 'resp_123',
+      } as any),
+    ).rejects.toThrow('server-managed conversation state');
+  });
+
   it('caches model wrappers so websocket transport can reuse a connection', async () => {
     const provider = new OpenAIProvider({
       openAIClient: new FakeClient() as any,
