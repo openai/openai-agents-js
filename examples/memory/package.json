@@ -3,7 +3,8 @@
   "name": "memory",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "@prisma/client": "^6.18.0"
+    "@prisma/client": "^6.18.0",
+    "zod": "^4.0.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

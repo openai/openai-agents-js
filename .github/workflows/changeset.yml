@@ -52,7 +52,7 @@ jobs:
             "https://github.com/${PR_HEAD_REPO}.git" \
             "${PR_HEAD_SHA}"
       - name: Install pnpm
-        uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d
+        uses: pnpm/action-setup@91ab88e2619ed1f46221f0ba42d1492c02baf788
         with:
           run_install: false
       - name: Setup Node

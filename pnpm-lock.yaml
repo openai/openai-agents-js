@@ -129,6 +129,9 @@ importers:
       chalk:
         specifier: ^5.4.1
         version: 5.4.1
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/ai-sdk:
     dependencies:
@@ -239,6 +242,12 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      openai:
+        specifier: ^6.35.0
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/connectors:
     dependencies:
@@ -254,6 +263,9 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../../packages/agents-core
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/docs:
     dependencies:
@@ -275,6 +287,9 @@ importers:
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../../packages/agents-realtime
+      openai:
+        specifier: ^6.35.0
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -291,6 +306,9 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/handoffs:
     dependencies:
@@ -300,6 +318,9 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../../packages/agents-core
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/mcp:
     dependencies:
@@ -321,6 +342,9 @@ importers:
       '@prisma/client':
         specifier: ^6.18.0
         version: 6.19.0(prisma@6.19.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
     devDependencies:
       prisma:
         specifier: ^6.18.0
@@ -331,6 +355,12 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      openai:
+        specifier: ^6.35.0
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/nextjs:
     dependencies:
@@ -370,6 +400,9 @@ importers:
       wavtools:
         specifier: ^0.1.5
         version: 0.1.5
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -401,9 +434,15 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.1.7
         version: 4.1.10(vite@6.4.2(@types/node@22.19.13)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
+      openai:
+        specifier: ^6.35.0
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
       tailwindcss:
         specifier: ^4.1.7
         version: 4.1.10
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
     devDependencies:
       typescript:
         specifier: ~5.8.3
@@ -487,6 +526,9 @@ importers:
       ws:
         specifier: ^8.18.1
         version: 8.18.2
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/realtime-twilio-sip:
     dependencies:
@@ -510,13 +552,19 @@ importers:
         version: 5.0.0
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.6)
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/research-bot:
     dependencies:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   examples/sandbox:
     dependencies:
@@ -547,9 +595,15 @@ importers:
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
+      openai:
+        specifier: ^6.35.0
+        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
       playwright:
         specifier: ^1.55.1
         version: 1.57.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
 
   packages/agents:
     dependencies:
@@ -644,6 +698,9 @@ importers:
       modal:
         specifier: 0.7.4
         version: 0.7.4
+      undici-types:
+        specifier: 6.21.0
+        version: 6.21.0
       ws:
         specifier: ^8.18.1
         version: 8.18.2
@@ -14138,11 +14195,6 @@ snapshots:
     optionalDependencies:
       ws: 8.18.2
       zod: 4.3.5
-
-  openai@6.35.0(ws@8.18.2)(zod@4.3.6):
-    optionalDependencies:
-      ws: 8.18.2
-      zod: 4.3.6
 
   openapi-fetch@0.14.1:
     dependencies:

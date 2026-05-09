@@ -3,7 +3,8 @@
   "name": "handoffs",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "@openai/agents-core": "workspace:*"
+    "@openai/agents-core": "workspace:*",
+    "zod": "^4.0.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

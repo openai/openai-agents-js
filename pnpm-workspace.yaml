@@ -3,16 +3,19 @@ packages:
   - examples/*
   - docs
 
-onlyBuiltDependencies:
-  - '@tailwindcss/oxide'
-  - cbor-extract
-  - esbuild
-  - protobufjs
-  - sharp
+allowBuilds:
+  '@tailwindcss/oxide': true
+  cbor-extract: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
   # used only in examples/memory
-  - '@prisma/client'
-  - '@prisma/engines'
-  - 'prisma'
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true
+
+overrides:
+  '@types/node': 22.19.13
 
 publishBranch: main
 minimumReleaseAge: 10080

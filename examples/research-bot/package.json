@@ -2,7 +2,8 @@
   "private": true,
   "name": "research-bot",
   "dependencies": {
-    "@openai/agents": "workspace:*"
+    "@openai/agents": "workspace:*",
+    "zod": "^4.0.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

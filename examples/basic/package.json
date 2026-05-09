@@ -2,7 +2,9 @@
   "private": true,
   "name": "basic",
   "dependencies": {
-    "@openai/agents": "workspace:*"
+    "@openai/agents": "workspace:*",
+    "openai": "^6.35.0",
+    "zod": "^4.0.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

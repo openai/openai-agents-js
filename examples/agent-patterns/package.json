@@ -3,7 +3,8 @@
   "name": "agent-patterns",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "chalk": "^5.4.1"
+    "chalk": "^5.4.1",
+    "zod": "^4.0.0"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
