@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: declare direct Twilio transport type dependency
+fix: declare missing undici-types dependency
