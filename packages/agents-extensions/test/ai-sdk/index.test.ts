@@ -3184,6 +3184,68 @@ describe('Extended thinking / Reasoning support', () => {
       });
     });
 
+    test('does not duplicate signed reasoning across parallel tool calls', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'Plan both calls.' }],
+          providerData: { anthropic: { signature: 'sig_parallel' } },
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'call_1',
+          name: 'search',
+          arguments: '{}',
+        } as any,
+        {
+          type: 'function_call',
+          callId: 'call_2',
+          name: 'search',
+          arguments: '{}',
+        } as any,
+      ];
+
+      const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+
+      expect(msgs).toHaveLength(2);
+      const reasoningAssistant = msgs[0];
+      const toolAssistant = msgs[1];
+      if (
+        reasoningAssistant.role !== 'assistant' ||
+        toolAssistant.role !== 'assistant'
+      ) {
+        throw new Error('Expected assistant messages');
+      }
+      const reasoningParts = [
+        ...reasoningAssistant.content,
+        ...toolAssistant.content,
+      ].filter((part) => part.type === 'reasoning');
+      expect(reasoningParts).toHaveLength(1);
+      expect(reasoningAssistant.content).toEqual([
+        {
+          type: 'reasoning',
+          text: 'Plan both calls.',
+          providerOptions: { anthropic: { signature: 'sig_parallel' } },
+        },
+      ]);
+      expect(toolAssistant.content).toEqual([
+        {
+          type: 'tool-call',
+          toolCallId: 'call_1',
+          toolName: 'search',
+          input: {},
+          providerOptions: {},
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_2',
+          toolName: 'search',
+          input: {},
+          providerOptions: {},
+        },
+      ]);
+    });
+
     test('omits providerOptions when providerData model does not match target model', () => {
       const items: protocol.ModelItem[] = [
         {

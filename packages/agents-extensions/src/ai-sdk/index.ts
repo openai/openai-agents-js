@@ -205,20 +205,30 @@ export function itemsToLanguageV2Messages(
     | { text: string; providerOptions: Record<string, any> }
     | undefined;
   const collapsedItems = collapseReplacedToolSearchOutputs(items);
-  const flushPendingReasonerReasoningToMessages = () => {
+  const consumePendingReasonerReasoning = () => {
     if (
       !(
         shouldIncludeReasoningContent(model, modelSettings) &&
         pendingReasonerReasoning
       )
     ) {
+      return undefined;
+    }
+
+    const pending = pendingReasonerReasoning;
+    pendingReasonerReasoning = undefined;
+    return pending;
+  };
+  const flushPendingReasonerReasoningToMessages = () => {
+    const pendingReasoning = consumePendingReasonerReasoning();
+    if (!pendingReasoning) {
       return;
     }
 
     const reasoningPart: LanguageModelV2ReasoningPart = {
       type: 'reasoning',
-      text: pendingReasonerReasoning.text,
-      providerOptions: pendingReasonerReasoning.providerOptions,
+      text: pendingReasoning.text,
+      providerOptions: pendingReasoning.providerOptions,
     };
 
     if (
@@ -228,18 +238,41 @@ export function itemsToLanguageV2Messages(
     ) {
       currentAssistantMessage.content.unshift(reasoningPart);
       currentAssistantMessage.providerOptions = {
-        ...pendingReasonerReasoning.providerOptions,
+        ...pendingReasoning.providerOptions,
         ...currentAssistantMessage.providerOptions,
       };
     } else {
       messages.push({
         role: 'assistant',
         content: [reasoningPart],
-        providerOptions: pendingReasonerReasoning.providerOptions,
+        providerOptions: pendingReasoning.providerOptions,
       });
     }
+  };
+  const appendPendingReasonerReasoningToCurrentAssistant = () => {
+    if (
+      !currentAssistantMessage ||
+      !Array.isArray(currentAssistantMessage.content) ||
+      currentAssistantMessage.role !== 'assistant'
+    ) {
+      return;
+    }
 
-    pendingReasonerReasoning = undefined;
+    const pendingReasoning = consumePendingReasonerReasoning();
+    if (!pendingReasoning) {
+      return;
+    }
+
+    // Signed reasoning blocks must be attached once before parallel tool calls.
+    currentAssistantMessage.content.push({
+      type: 'reasoning',
+      text: pendingReasoning.text,
+      providerOptions: pendingReasoning.providerOptions,
+    });
+    currentAssistantMessage.providerOptions = {
+      ...pendingReasoning.providerOptions,
+      ...currentAssistantMessage.providerOptions,
+    };
   };
 
   for (const item of collapsedItems) {
@@ -387,21 +420,7 @@ export function itemsToLanguageV2Messages(
         currentAssistantMessage.role === 'assistant'
       ) {
         // Reasoner models (e.g., DeepSeek Reasoner) require reasoning_content on tool-call messages.
-        if (
-          shouldIncludeReasoningContent(model, modelSettings) &&
-          pendingReasonerReasoning
-        ) {
-          currentAssistantMessage.content.push({
-            type: 'reasoning',
-            text: pendingReasonerReasoning.text,
-            providerOptions: pendingReasonerReasoning.providerOptions,
-          });
-          currentAssistantMessage.providerOptions = {
-            ...pendingReasonerReasoning.providerOptions,
-            ...currentAssistantMessage.providerOptions,
-          };
-          pendingReasonerReasoning = undefined;
-        }
+        appendPendingReasonerReasoningToCurrentAssistant();
         const toolName = getAiSdkToolName(item);
         toolCallNamesById.set(item.callId, toolName);
         const content: LanguageModelV2ToolCallPart = {
@@ -448,21 +467,7 @@ export function itemsToLanguageV2Messages(
         Array.isArray(currentAssistantMessage.content) &&
         currentAssistantMessage.role === 'assistant'
       ) {
-        if (
-          shouldIncludeReasoningContent(model, modelSettings) &&
-          pendingReasonerReasoning
-        ) {
-          currentAssistantMessage.content.push({
-            type: 'reasoning',
-            text: pendingReasonerReasoning.text,
-            providerOptions: pendingReasonerReasoning.providerOptions,
-          });
-          currentAssistantMessage.providerOptions = {
-            ...pendingReasonerReasoning.providerOptions,
-            ...currentAssistantMessage.providerOptions,
-          };
-          pendingReasonerReasoning = undefined;
-        }
+        appendPendingReasonerReasoningToCurrentAssistant();
         const toolCallId = resolveToolSearchCallId(item, () => {
           generatedToolSearchCallId += 1;
           return `tool_search_${generatedToolSearchCallId}`;
