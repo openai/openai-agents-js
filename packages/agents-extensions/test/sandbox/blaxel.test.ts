@@ -790,6 +790,22 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
+  test('rejects owned pauseOnExit creation when canonical identity lookup fails', async () => {
+    getMock.mockRejectedValueOnce(new Error('lookup failed'));
+    const client = new BlaxelSandboxClient({
+      name: 'blaxel-test',
+      pauseOnExit: true,
+    } satisfies BlaxelSandboxClientOptions);
+
+    await expect(client.create(new Manifest())).rejects.toThrow(
+      'cannot be safely preserved because its identity could not be verified after create',
+    );
+
+    expect(createSandboxMock).toHaveBeenCalledOnce();
+    expect(getMock).toHaveBeenCalledWith('blaxel-test');
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
   test('rejects owned resume when sandbox identity cannot be verified', async () => {
     const client = new BlaxelSandboxClient({
       pauseOnExit: true,
