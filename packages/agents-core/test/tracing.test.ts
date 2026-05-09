@@ -657,6 +657,50 @@ describe('BatchTraceProcessor', () => {
     vi.useRealTimers();
   });
 
+  it('continues scheduled exports after an exporter exception', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    try {
+      let exportCalls = 0;
+      const exported: Array<(Trace | Span<any>)[]> = [];
+      const flakyExporter: TracingExporter = {
+        export: async (items) => {
+          exportCalls += 1;
+          if (exportCalls === 1) {
+            throw new Error('simulated exporter failure');
+          }
+          exported.push([...items]);
+        },
+      };
+      const processor = new BatchTraceProcessor(flakyExporter, {
+        maxQueueSize: 10,
+        maxBatchSize: 1,
+        scheduleDelay: 50,
+      });
+      const failed = new Trace({ name: 'failed' });
+      const recovered = new Trace({ name: 'recovered' });
+
+      await processor.onTraceStart(failed);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(exportCalls).toBe(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Tracing exporter failed to export batch',
+        expect.any(Error),
+      );
+
+      await processor.onTraceStart(recovered);
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(exportCalls).toBe(2);
+      expect(exported).toEqual([[recovered]]);
+
+      await processor.shutdown();
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('waits while an export is in progress during shutdown', async () => {
     vi.useFakeTimers();
     try {

@@ -184,17 +184,24 @@ export class BatchTraceProcessor implements TracingProcessor {
       `Exporting batches. Force: ${force}. Buffer size: ${this.#buffer.length}`,
     );
 
+    const exportBatch = async (batch: Array<Trace | Span>): Promise<void> => {
+      this.#exportInProgress = true;
+      try {
+        await this.#exporter.export(batch);
+      } catch (error) {
+        logger.error('Tracing exporter failed to export batch', error);
+      } finally {
+        this.#exportInProgress = false;
+      }
+    };
+
     if (force || this.#buffer.length < this.#maxBatchSize) {
       const toExport = [...this.#buffer];
       this.#buffer = [];
-      this.#exportInProgress = true;
-      await this.#exporter.export(toExport);
-      this.#exportInProgress = false;
+      await exportBatch(toExport);
     } else if (this.#buffer.length > 0) {
       const batch = this.#buffer.splice(0, this.#maxBatchSize);
-      this.#exportInProgress = true;
-      await this.#exporter.export(batch);
-      this.#exportInProgress = false;
+      await exportBatch(batch);
     }
   }
 
