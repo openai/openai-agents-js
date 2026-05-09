@@ -216,6 +216,58 @@ describe('runOutputGuardrails', () => {
     expect(state._outputGuardrailResults).toHaveLength(1);
   });
 
+  it('awaits sibling output guardrails before surfacing a tripwire', async () => {
+    const agent = makeAgent({ name: 'TripOutputAwait' });
+    const state = makeState(agent);
+    let releaseSlowGuardrail!: () => void;
+    let markSlowStarted!: () => void;
+    let slowGuardrailFinished = false;
+    const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+      releaseSlowGuardrail = resolve;
+    });
+    const slowGuardrailStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const slowGuardrail = defineOutputGuardrail({
+      name: 'slow',
+      execute: async () => {
+        markSlowStarted();
+        await slowGuardrailCanFinish;
+        slowGuardrailFinished = true;
+        return {
+          tripwireTriggered: false,
+          outputInfo: { slow: true },
+        };
+      },
+    });
+    const tripwireGuardrail = defineOutputGuardrail({
+      name: 'trip',
+      execute: async () => {
+        await slowGuardrailStarted;
+        releaseSlowGuardrail();
+        return {
+          tripwireTriggered: true,
+          outputInfo: { reason: 'bad' },
+        };
+      },
+    });
+
+    await expect(
+      withTrace('guardrails-output-trip-await-sibling', () =>
+        runOutputGuardrails(
+          state,
+          [slowGuardrail as any, tripwireGuardrail as any],
+          'ok',
+        ),
+      ),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+    expect(slowGuardrailFinished).toBe(true);
+    expect(state._outputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'slow',
+      'trip',
+    ]);
+  });
+
   it('wraps errors from guardrails without recording results', async () => {
     const agent = makeAgent({ name: 'OutError' });
     const state = makeState(agent);

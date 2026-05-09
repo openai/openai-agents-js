@@ -123,6 +123,8 @@ async function runGuardrailsWithTripwire<
   } = options;
 
   try {
+    // Keep tripwire handling behind this await-all barrier so sibling guardrails
+    // can finish cleanup before the tripwire error is surfaced.
     const results = await Promise.all(
       guardrails.map(async (guardrail) => {
         return withGuardrailSpan(
