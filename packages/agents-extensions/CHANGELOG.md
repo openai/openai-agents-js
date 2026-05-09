@@ -1,5 +1,14 @@
 # @openai/agents-extensions
 
+## 0.11.1
+
+### Patch Changes
+
+- e4a7557: fix: align Blaxel sandbox errors, timeouts, and pause-on-exit behavior
+- Updated dependencies [e4a7557]
+- Updated dependencies [1a61a5c]
+  - @openai/agents-core@0.11.1
+
 ## 0.11.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.11.1
+
+### Patch Changes
+
+- e4a7557: fix: align Blaxel sandbox errors, timeouts, and pause-on-exit behavior
+- 1a61a5c: fix: preserve sandbox environment resolvers across manifest merges
+
 ## 0.11.0
 
 ### Minor Changes
