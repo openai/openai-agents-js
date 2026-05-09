@@ -8,11 +8,19 @@ import logger from '../src/logger';
 const agent = new Agent({ name: 'A' });
 
 describe('handoff()', () => {
-  it('throws UserError when only onHandoff or inputType provided', () => {
-    expect(() => handoff(agent, { onHandoff: () => {} })).toThrow(UserError);
+  it('throws UserError when inputType is provided without onHandoff', () => {
     expect(() => handoff(agent, { inputType: z.object({}) })).toThrow(
       UserError,
     );
+  });
+
+  it('allows onHandoff without inputType', async () => {
+    const onHandoff = vi.fn();
+    const h = handoff(agent, { onHandoff });
+
+    await h.onInvokeHandoff({} as any, '');
+
+    expect(onHandoff).toHaveBeenCalledWith({});
   });
 
   it('parses JSON and reports errors', async () => {

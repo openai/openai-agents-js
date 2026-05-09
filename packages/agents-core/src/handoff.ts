@@ -266,13 +266,12 @@ export function handoff<
 ) {
   let parser: ((input: string) => Promise<any>) | undefined = undefined;
 
-  const hasOnHandoff = !!config.onHandoff;
-  const hasInputType = !!config.inputType;
-  const hasBothOrNeitherHandoffAndInputType = hasOnHandoff === hasInputType;
+  const inputType = config.inputType;
+  const hasInputType = inputType != null;
 
-  if (!hasBothOrNeitherHandoffAndInputType) {
+  if (hasInputType && config.onHandoff == null) {
     throw new UserError(
-      'You must provide either both `onHandoff` and `inputType` or neither.',
+      'You must provide `onHandoff` when `inputType` is provided.',
     );
   }
 
@@ -329,9 +328,9 @@ export function handoff<
     handoff.isEnabled = async () => config.isEnabled as boolean;
   }
 
-  if (config.inputType) {
+  if (hasInputType) {
     const result = getSchemaAndParserFromInputType(
-      config.inputType,
+      inputType,
       handoff.toolName,
       { strict: true },
     );
