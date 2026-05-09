@@ -181,8 +181,9 @@ export function dropOrphanToolCalls(
 ): AgentInputItem[] {
   const pruningIndexes = options?.pruningIndexes;
   const completedByResultType = collectCompletedCallIdsByResultType(items);
+  const droppedIndexes = new Set<number>();
 
-  return items.filter((item, index) => {
+  const filtered = items.filter((item, index) => {
     if (pruningIndexes && !pruningIndexes.has(index)) {
       return true;
     }
@@ -204,8 +205,66 @@ export function dropOrphanToolCalls(
     if (isPendingHostedShellCall(item)) {
       return true;
     }
-    return completedByResultType.get(resultType)?.has(callId) ?? false;
+    if (completedByResultType.get(resultType)?.has(callId) ?? false) {
+      return true;
+    }
+    droppedIndexes.add(index);
+    return false;
   });
+
+  if (droppedIndexes.size === 0) {
+    return filtered;
+  }
+
+  return dropReasoningItemsPrecedingDroppedCalls(
+    items,
+    droppedIndexes,
+    pruningIndexes,
+  );
+}
+
+function dropReasoningItemsPrecedingDroppedCalls(
+  items: AgentInputItem[],
+  droppedIndexes: Set<number>,
+  pruningIndexes?: Set<number>,
+): AgentInputItem[] {
+  const dropReasoning = new Set<number>();
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (pruningIndexes && !pruningIndexes.has(index)) {
+      continue;
+    }
+    const item = items[index];
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      (item as { type?: unknown }).type !== 'reasoning' ||
+      droppedIndexes.has(index)
+    ) {
+      continue;
+    }
+
+    for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
+      if (dropReasoning.has(nextIndex)) {
+        continue;
+      }
+      const nextItem = items[nextIndex];
+      if (
+        nextItem &&
+        typeof nextItem === 'object' &&
+        (nextItem as { type?: unknown }).type === 'reasoning'
+      ) {
+        continue;
+      }
+      if (droppedIndexes.has(nextIndex)) {
+        dropReasoning.add(index);
+      }
+      break;
+    }
+  }
+
+  const excluded = new Set([...droppedIndexes, ...dropReasoning]);
+  return items.filter((_item, index) => !excluded.has(index));
 }
 
 export function prepareModelInputItems(
