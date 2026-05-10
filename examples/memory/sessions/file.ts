@@ -1,3 +1,4 @@
+import { protocol } from '@openai/agents';
 import type { AgentInputItem, Session } from '@openai/agents';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -33,7 +34,10 @@ export class FileSession implements Session {
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
     const sessionId = await this.getSessionId();
-    const items = await this.#readItems(sessionId);
+    const items = (await this.#readRawItems(sessionId)).flatMap((raw) => {
+      const item = coerceAgentItem(raw);
+      return item ? [item] : [];
+    });
     if (typeof limit === 'number' && limit >= 0) {
       return items.slice(-limit);
     }
@@ -45,22 +49,30 @@ export class FileSession implements Session {
       return;
     }
     const sessionId = await this.getSessionId();
-    const current = await this.#readItems(sessionId);
+    const current = await this.#readRawItems(sessionId);
     // Store a structured clone so we don't accidentally persist references that can mutate.
-    const serialized = items.map((item) => JSON.parse(JSON.stringify(item)));
-    const next = current.concat(serialized as AgentInputItem[]);
+    const serialized = items.flatMap((item) => {
+      const parsed = coerceAgentItem(item);
+      return parsed ? [JSON.parse(JSON.stringify(parsed))] : [];
+    });
+    const next = current.concat(serialized);
     await this.#writeItems(sessionId, next);
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
     const sessionId = await this.getSessionId();
-    const items = await this.#readItems(sessionId);
-    if (items.length === 0) {
-      return undefined;
+    const items = await this.#readRawItems(sessionId);
+    while (items.length > 0) {
+      const raw = items.pop();
+      const item = coerceAgentItem(raw);
+      if (item) {
+        await this.#writeItems(sessionId, items);
+        return item;
+      }
     }
-    const popped = items.pop();
+
     await this.#writeItems(sessionId, items);
-    return popped;
+    return undefined;
   }
 
   async clearSession(): Promise<void> {
@@ -84,12 +96,12 @@ export class FileSession implements Session {
     return path.join(this.#dir, `${sessionId}.json`);
   }
 
-  async #readItems(sessionId: string): Promise<AgentInputItem[]> {
+  async #readRawItems(sessionId: string): Promise<unknown[]> {
     const file = this.#filePath(sessionId);
     try {
       const data = await fs.readFile(file, 'utf8');
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? (parsed as AgentInputItem[]) : [];
+      return Array.isArray(parsed) ? parsed : [];
     } catch (err: any) {
       if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
         return [];
@@ -98,11 +110,19 @@ export class FileSession implements Session {
     }
   }
 
-  async #writeItems(sessionId: string, items: AgentInputItem[]): Promise<void> {
+  async #writeItems(sessionId: string, items: unknown[]): Promise<void> {
     await this.#ensureDir();
     const file = this.#filePath(sessionId);
     await fs.writeFile(file, JSON.stringify(items, null, 2), 'utf8');
   }
+}
+
+function coerceAgentItem(raw: unknown): AgentInputItem | undefined {
+  const parsed = protocol.ModelItem.safeParse(raw);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return parsed.data as AgentInputItem;
 }
 
 export type { AgentInputItem } from '@openai/agents';
