@@ -54,10 +54,10 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
   ['agent-patterns:start:deterministic', 'A short sci-fi story\n'],
   ['agent-patterns:start:llm-as-a-judge', 'A detective story\n'],
   ['agent-patterns:start:parallelization', 'Good morning\n'],
-  // routing loops; leave interactive by hand
+  ['agent-patterns:start:routing', 'Hola\nexit\n'],
   ['basic:start:chat', 'exit()\n'],
   ['basic:start:previous-response-id', 'n\n'],
-  ['customer-service:start', 'What are your store hours?\nexit\n'],
+  ['customer-service:start', 'Do you have wifi?\nexit\n'],
   ['financial-research-agent:start', 'AAPL latest earnings summary\n'],
   ['research-bot:start', 'Impact of electric vehicles on the grid\n'],
   ['handoffs:start:is-enabled', '2\nHello\n'],
@@ -92,15 +92,14 @@ const CONDITIONAL_AUTO_SKIP_RULES = [
 export const DEFAULT_AUTO_SKIP = [
   // Tends to loop multiple times and produce very long output; skip in auto runs.
   'agent-patterns:start:llm-as-a-judge',
-  // Endless readline loop; not meaningful in auto mode.
-  'agent-patterns:start:routing',
-  // readline close issues / interactive loop
-  'customer-service:start',
   // Requires external connector auth not available in auto runs.
   'connectors:start',
   // Approval-prompt examples that still need manual input.
   'mcp:start:hosted-mcp-on-approval',
   'mcp:start:hosted-mcp-human-in-the-loop',
+  // Depends on a local Codex binary that macOS may quarantine or remove.
+  'tools:start:codex',
+  'tools:start:codex-same-thread',
 ];
 
 const EXPECTED_FAILURE_PATTERNS = [

@@ -61,7 +61,7 @@ description: Run examples:start-all in auto mode with parallel execution, per-sc
   - `EXAMPLES_INCLUDE_AUDIO=0`
 - `EXAMPLES_INCLUDE_EXTERNAL=0`
   - This means `realtime-*` / `nextjs` (tagged as server/audio) are skipped unless you opt in with `--include-server` / `--include-audio` or the corresponding env flags.
-- Auto-skip list: `EXAMPLES_AUTO_SKIP` (comma/space separated) overrides the built-in defaults used by both `run.sh` and `run-example-starts.mjs`. Defaults include `agent-patterns:start:llm-as-a-judge`, `agent-patterns:start:routing`, `customer-service:start`, `connectors:start`, `mcp:start:hosted-mcp-on-approval`, `mcp:start:hosted-mcp-human-in-the-loop`.
+- Auto-skip list: `EXAMPLES_AUTO_SKIP` (comma/space separated) overrides the built-in defaults used by both `run.sh` and `run-example-starts.mjs`. Defaults include `agent-patterns:start:llm-as-a-judge`, `connectors:start`, `mcp:start:hosted-mcp-on-approval`, `mcp:start:hosted-mcp-human-in-the-loop`, `tools:start:codex`, `tools:start:codex-same-thread`.
 
 ## Codex execution environment
 
