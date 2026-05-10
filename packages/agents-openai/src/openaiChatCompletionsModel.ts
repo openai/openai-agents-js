@@ -204,6 +204,12 @@ export class OpenAIChatCompletionsModel implements Model {
                 ...remainingFunctionData,
               },
             });
+          } else if (tool_call.type === 'custom') {
+            if (this.#strictFeatureValidation) {
+              throw new UserError(
+                'Custom tool calls are not supported by the Chat Completions converter.',
+              );
+            }
           }
         }
       }
@@ -249,6 +255,7 @@ export class OpenAIChatCompletionsModel implements Model {
       for await (const event of convertChatCompletionsStreamToResponses(
         response,
         stream,
+        { strictFeatureValidation: this.#strictFeatureValidation },
       )) {
         if (
           event.type === 'response_done' &&

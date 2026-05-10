@@ -1,22 +1,26 @@
 import type { Stream } from 'openai/streaming';
 import type { CompletionUsage } from 'openai/resources/completions';
-import { protocol } from '@openai/agents-core';
+import { protocol, UserError } from '@openai/agents-core';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiChatCompletionsModel';
 import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
+import logger from './logger';
 
 type StreamingState = {
   started: boolean;
   text_content: protocol.OutputText | null;
   refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
+  ignored_tool_call_indexes: Set<number>;
   reasoning: string;
   finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
+  hasWarnedUnsupportedChoice: boolean;
 };
 
 export async function* convertChatCompletionsStreamToResponses(
   response: ChatCompletion,
   stream: Stream<ChatCompletionChunk>,
+  options: { strictFeatureValidation?: boolean } = {},
 ): AsyncIterable<protocol.StreamEvent> {
   let usage: CompletionUsage | undefined = undefined;
   const state: StreamingState = {
@@ -24,9 +28,12 @@ export async function* convertChatCompletionsStreamToResponses(
     text_content: null,
     refusal_content: null,
     function_calls: {},
+    ignored_tool_call_indexes: new Set(),
     reasoning: '',
     finishReason: null,
+    hasWarnedUnsupportedChoice: false,
   };
+  const strictFeatureValidation = options.strictFeatureValidation ?? false;
 
   for await (const chunk of stream) {
     if (chunk.id && (response.id === FAKE_ID || !response.id)) {
@@ -55,7 +62,27 @@ export async function* convertChatCompletionsStreamToResponses(
     // This is always set by the OpenAI API, but not by others e.g. LiteLLM
     usage = (chunk as any).usage || undefined;
 
-    const primaryChoice = chunk.choices?.[0];
+    if (!chunk.choices || chunk.choices.length === 0) continue;
+
+    const unsupportedChoiceIndexes = chunk.choices
+      .map((choice) => choice.index)
+      .filter((index) => index !== 0);
+    if (chunk.choices.length > 1 || unsupportedChoiceIndexes.length > 0) {
+      const message =
+        'Chat Completions streaming with multiple choices or nonzero choice indexes ' +
+        'is not fully supported; only choice index 0 can be processed.';
+      if (strictFeatureValidation) {
+        throw new UserError(message);
+      }
+      if (!state.hasWarnedUnsupportedChoice) {
+        logger.warn(
+          `${message} Ignoring the other choices; enable strict feature validation to raise an error instead.`,
+        );
+        state.hasWarnedUnsupportedChoice = true;
+      }
+    }
+
+    const primaryChoice = chunk.choices.find((choice) => choice.index === 0);
     if (!primaryChoice) continue;
     if (primaryChoice.finish_reason) {
       state.finishReason = primaryChoice.finish_reason;
@@ -101,6 +128,20 @@ export async function* convertChatCompletionsStreamToResponses(
     // Handle tool calls
     if (delta.tool_calls) {
       for (const tc_delta of delta.tool_calls) {
+        if (state.ignored_tool_call_indexes.has(tc_delta.index)) {
+          continue;
+        }
+
+        if ((tc_delta as { type?: string }).type === 'custom') {
+          if (strictFeatureValidation) {
+            throw new UserError(
+              'Custom tool calls are not supported by the Chat Completions converter.',
+            );
+          }
+          state.ignored_tool_call_indexes.add(tc_delta.index);
+          continue;
+        }
+
         if (!(tc_delta.index in state.function_calls)) {
           state.function_calls[tc_delta.index] = {
             id: response.id || FAKE_ID,

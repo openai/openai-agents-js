@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { UserError } from '@openai/agents-core';
 import { convertChatCompletionsStreamToResponses } from '../src/openaiChatCompletionsStreaming';
 import { FAKE_ID } from '../src/openaiChatCompletionsModel';
+import logger from '../src/logger';
 import type {
   ChatCompletion,
   ChatCompletionChunk,
@@ -12,7 +14,7 @@ function makeChunk(delta: any, usage?: any) {
     created: 0,
     model: 'm',
     object: 'chat.completion.chunk',
-    choices: [{ delta }],
+    choices: [{ index: 0, delta }],
     usage,
   } as any;
 }
@@ -271,6 +273,90 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(deltas[0].delta).toBe('hi');
   });
 
+  it('filters multiple choices by default', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: 'c',
+        created: 0,
+        model: 'm',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 1, delta: { content: 'ignored-first' } }],
+      } as any,
+      {
+        id: 'c',
+        created: 0,
+        model: 'm',
+        object: 'chat.completion.chunk',
+        choices: [
+          { index: 0, delta: { content: 'kept' } },
+          { index: 1, delta: { content: 'ignored-second' } },
+        ],
+      } as any,
+      {
+        id: 'c',
+        created: 0,
+        model: 'm',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 2, delta: { content: 'ignored-third' } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      } as any,
+    ];
+
+    async function* stream() {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      { id: 'r' } as any,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    expect(
+      events
+        .filter((event) => event.type === 'output_text_delta')
+        .map((event) => event.delta),
+    ).toEqual(['kept']);
+    const final = events.at(-1);
+    expect(final.response.output[0].content[0].text).toBe('kept');
+    expect(final.response.usage.totalTokens).toBe(3);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain(
+      'multiple choices or nonzero choice indexes',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('rejects multiple choices in strict mode', async () => {
+    async function* stream() {
+      yield {
+        id: 'c',
+        created: 0,
+        model: 'm',
+        object: 'chat.completion.chunk',
+        choices: [
+          { index: 0, delta: { content: 'first' } },
+          { index: 1, delta: { content: 'second' } },
+        ],
+      } as any;
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as any,
+        stream() as any,
+        { strictFeatureValidation: true },
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(UserError);
+  });
+
   it('accumulates reasoning deltas into a reasoning item', async () => {
     const resp: ChatCompletion = {
       id: 'r1',
@@ -430,6 +516,56 @@ describe('convertChatCompletionsStreamToResponses', () => {
         },
       },
     ]);
+  });
+
+  it('ignores streamed custom tool calls by default', async () => {
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [{ index: 0, id: 'call1', type: 'custom' }],
+      });
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, function: { name: 'ignored', arguments: 'x' } },
+        ],
+      });
+      yield makeChunk({ content: 'done' });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      { id: 'r' } as any,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toHaveLength(1);
+    expect(final.response.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'done' }],
+    });
+    expect(
+      final.response.output.some((item: any) => item.type === 'function_call'),
+    ).toBe(false);
+  });
+
+  it('rejects streamed custom tool calls in strict mode', async () => {
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [{ index: 0, id: 'call1', type: 'custom' }],
+      });
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as any,
+        stream() as any,
+        { strictFeatureValidation: true },
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow('Custom tool calls are not supported');
   });
 
   it('falls back to FAKE_ID when streaming chunks do not include an id', async () => {
