@@ -568,8 +568,12 @@ export class SandboxRuntimeManager<TContext> {
           agent_name: entry.currentAgentName,
           backend_id: client.backendId,
         },
-        async () => await client.resume!(serializedState),
+        async () =>
+          await client.resume!(serializedState, {
+            archiveLimits: this.sandboxConfig?.archiveLimits,
+          }),
       );
+      this.applyArchiveLimits(session);
       this.sessionsByAgentKey.set(agentKey, session);
       this.sessionAgentNamesByKey.set(agentKey, entry.currentAgentName);
       this.ownedSessionAgentKeys.add(agentKey);

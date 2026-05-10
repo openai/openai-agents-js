@@ -2498,6 +2498,11 @@ describe('sandbox runner integration', () => {
 
   it('starts adopted preserved sandbox sessions before agent execution', async () => {
     const client = new StartableFakeSandboxClient();
+    const archiveLimits = {
+      maxInputBytes: 10,
+      maxExtractedBytes: 20,
+      maxMembers: 30,
+    };
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -2534,6 +2539,7 @@ describe('sandbox runner integration', () => {
       startingAgent: sandboxAgent as Agent<unknown, any>,
       sandboxConfig: {
         client,
+        archiveLimits,
       },
       runState: state,
     });
@@ -2550,6 +2556,7 @@ describe('sandbox runner integration', () => {
     expect(client.resumeCalls.map((call) => call.state.sessionId)).toEqual([
       'resumed-session',
     ]);
+    expect(client.resumeCalls[0]?.archiveLimits).toEqual(archiveLimits);
     expect(client.startCalls).toEqual([
       {
         sessionId: 'resumed-session',
