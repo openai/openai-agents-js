@@ -37,6 +37,7 @@ import type {
   SandboxClient,
   SandboxClientOptions,
   SandboxClientCreateArgs,
+  SandboxArchiveLimits,
   SandboxConcurrencyLimits,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
@@ -114,6 +115,7 @@ export interface DockerSandboxClientOptions extends SandboxClientOptions {
   workspaceBaseDir?: string;
   snapshot?: LocalSandboxSnapshotSpec;
   concurrencyLimits?: SandboxConcurrencyLimits;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState {
@@ -735,6 +737,9 @@ export class DockerSandboxClient implements SandboxClient<
       ...(createArgs.concurrencyLimits
         ? { concurrencyLimits: createArgs.concurrencyLimits }
         : {}),
+      ...(createArgs.archiveLimits !== undefined
+        ? { archiveLimits: createArgs.archiveLimits }
+        : {}),
     };
     const workspaceRootPath = await mkdtemp(
       join(
@@ -787,6 +792,7 @@ export class DockerSandboxClient implements SandboxClient<
         configuredExposedPorts,
         dockerVolumeNames: container.volumeNames,
       },
+      archiveLimits: resolvedOptions.archiveLimits,
     });
     try {
       await provisionDockerAccounts(container.containerId, manifest);
@@ -813,6 +819,7 @@ export class DockerSandboxClient implements SandboxClient<
 
     return new DockerSandboxSession({
       state: restoredState,
+      archiveLimits: this.options.archiveLimits,
     });
   }
 
@@ -961,7 +968,10 @@ export class DockerSandboxClient implements SandboxClient<
       dockerVolumeNames: container.volumeNames,
       exposedPorts: undefined,
     };
-    const session = new DockerSandboxSession({ state: nextState });
+    const session = new DockerSandboxSession({
+      state: nextState,
+      archiveLimits: this.options.archiveLimits,
+    });
     try {
       await provisionDockerAccounts(container.containerId, state.manifest);
       await applyDockerInContainerMounts(session, state.manifest);

@@ -1,6 +1,7 @@
 import type { Editor } from '../editor';
 import { UserError } from '../errors';
 import type { ToolOutputImage } from '../tool';
+import type { SandboxArchiveLimits } from './client';
 import type { Entry } from './entries';
 import type { Manifest } from './manifest';
 import type { Snapshot } from './snapshot';
@@ -100,6 +101,10 @@ export type MaterializeEntryArgs = {
 
 export type WorkspaceArchiveData = string | ArrayBuffer | Uint8Array;
 
+export type WorkspaceArchiveOptions = {
+  archiveLimits?: SandboxArchiveLimits | null;
+};
+
 export type SandboxSessionLifecycleOptions = {
   reason?: string;
   [key: string]: unknown;
@@ -194,7 +199,11 @@ export interface SandboxSession<
   materializeEntry?(args: MaterializeEntryArgs): Promise<void>;
   applyManifest?(manifest: Manifest, runAs?: string): Promise<void>;
   persistWorkspace?(): Promise<Uint8Array>;
-  hydrateWorkspace?(data: WorkspaceArchiveData): Promise<void>;
+  hydrateWorkspace?(
+    data: WorkspaceArchiveData,
+    options?: WorkspaceArchiveOptions,
+  ): Promise<void>;
+  setArchiveLimits?(limits?: SandboxArchiveLimits | null): void;
   resolveExposedPort?(port: number): Promise<ExposedPortEndpoint>;
   supportsPty?(): boolean;
   close?(): Promise<void>;

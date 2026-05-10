@@ -6,6 +6,7 @@ import {
   type Manifest,
   type MaterializeEntryArgs,
   type ReadFileArgs,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   SandboxProviderError,
   type SandboxSession,
@@ -13,6 +14,8 @@ import {
   SandboxUnsupportedFeatureError,
   type ViewImageArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
+  validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import { randomUUID } from 'node:crypto';
 import {
@@ -80,6 +83,7 @@ export type RemoteSandboxSessionBaseOptions = {
   providerName: string;
   providerId: string;
   concurrencyLimits?: SandboxConcurrencyLimits;
+  archiveLimits?: SandboxArchiveLimits | null;
 };
 
 export abstract class RemoteSandboxSessionBase<
@@ -89,6 +93,7 @@ export abstract class RemoteSandboxSessionBase<
   protected readonly providerName: string;
   protected readonly providerId: string;
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
+  private archiveLimits?: SandboxArchiveLimits | null;
   protected readonly remotePathResolver: RemoteSandboxPathResolver = async (
     path,
     options,
@@ -102,6 +107,16 @@ export abstract class RemoteSandboxSessionBase<
     this.providerName = args.options.providerName;
     this.providerId = args.options.providerId;
     this.concurrencyLimits = args.options.concurrencyLimits;
+    this.setArchiveLimits(args.options.archiveLimits);
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
+  }
+
+  protected getArchiveLimits(): SandboxArchiveLimits | null | undefined {
+    return this.archiveLimits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -280,12 +295,15 @@ export abstract class RemoteSandboxSessionBase<
     return await this.persistWorkspaceTar();
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     assertTarWorkspacePersistence(
       this.providerName,
       this.workspacePersistence(),
     );
-    await this.hydrateWorkspaceTar(data);
+    await this.hydrateWorkspaceTar(data, options);
   }
 
   protected abstract runRemoteCommand(
@@ -432,12 +450,17 @@ export abstract class RemoteSandboxSessionBase<
 
   protected async hydrateWorkspaceTar(
     data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
     await hydrateRemoteWorkspaceTar({
       providerName: this.providerName,
       manifest: this.state.manifest,
       io: this.archiveIo(),
       data,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
     });
   }
 

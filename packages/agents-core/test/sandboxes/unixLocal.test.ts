@@ -739,6 +739,54 @@ describe('UnixLocalSandboxClient', () => {
     await session.close();
   });
 
+  it('rejects local workspace archive hydration over resource limits', async () => {
+    const client = new UnixLocalSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'one.txt': {
+            type: 'file',
+            content: '1',
+          },
+          'two.txt': {
+            type: 'file',
+            content: '2',
+          },
+        },
+      }),
+    );
+
+    const archive = await session.persistWorkspace();
+
+    await expect(
+      session.hydrateWorkspace(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: 1,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member count exceeds limit',
+        limit: 1,
+        actual: 2,
+        member: 'two.txt',
+      },
+    });
+    await expect(
+      session.hydrateWorkspace(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: 2,
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    await session.close();
+  });
+
   it('rejects read-only local bind mounts because host symlinks cannot enforce them', async () => {
     const sourceDir = join(rootDir, 'bind-source');
     await mkdir(sourceDir);

@@ -1,4 +1,5 @@
 import { UserError } from '../../../errors';
+import { SandboxArchiveError } from '../../errors';
 import {
   isNoopSnapshotSpec,
   type RemoteSnapshot,
@@ -26,6 +27,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, relative, sep } from 'node:path';
 import type { Manifest } from '../../manifest';
 import type { WorkspaceArchiveData } from '../../session';
+import {
+  resolveSandboxArchiveLimits,
+  type SandboxArchiveLimits,
+} from '../../client';
 import { stableJsonStringify } from '../../shared/stableJson';
 import { isRecord } from '../../shared/typeGuards';
 import {
@@ -441,15 +446,22 @@ async function appendWorkspaceArchiveEntries(
 export async function restoreWorkspaceArchive(
   data: WorkspaceArchiveData,
   destinationRoot: string,
+  options: { archiveLimits?: SandboxArchiveLimits | null } = {},
 ): Promise<void> {
-  const archive = JSON.parse(
+  const bytes =
     typeof data === 'string'
-      ? data
-      : new TextDecoder().decode(workspaceArchiveDataToUint8Array(data)),
+      ? new TextEncoder().encode(data)
+      : workspaceArchiveDataToUint8Array(data);
+  const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
+  checkWorkspaceArchiveInputBytes(bytes.byteLength, archiveLimits);
+
+  const archive = JSON.parse(
+    new TextDecoder().decode(bytes),
   ) as WorkspaceArchiveV1;
   if (archive.version !== 1) {
     throw new UserError('Unsupported remote snapshot archive version.');
   }
+  validateWorkspaceArchiveLimits(archive, archiveLimits);
 
   await mkdir(destinationRoot, { recursive: true });
   await clearDirectory(destinationRoot);
@@ -468,6 +480,84 @@ function workspaceArchiveDataToUint8Array(
     return data;
   }
   return new Uint8Array(data);
+}
+
+function checkWorkspaceArchiveInputBytes(
+  actual: number,
+  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
+): void {
+  const limit = limits?.maxInputBytes;
+  if (limit != null && actual > limit) {
+    throw new SandboxArchiveError(
+      'Workspace archive input size exceeds limit.',
+      {
+        reason: 'archive input size exceeds limit',
+        limit,
+        actual,
+      },
+    );
+  }
+}
+
+function validateWorkspaceArchiveLimits(
+  archive: WorkspaceArchiveV1,
+  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
+): void {
+  if (limits == null) {
+    return;
+  }
+
+  let memberCount = 0;
+  for (const directory of archive.directories) {
+    memberCount += 1;
+    checkWorkspaceArchiveMemberCount(memberCount, directory, limits);
+  }
+
+  let extractedBytes = 0;
+  for (const file of archive.files) {
+    memberCount += 1;
+    checkWorkspaceArchiveMemberCount(memberCount, file.path, limits);
+    extractedBytes += Buffer.byteLength(file.data, 'base64');
+    checkWorkspaceArchiveExtractedBytes(extractedBytes, file.path, limits);
+  }
+}
+
+function checkWorkspaceArchiveMemberCount(
+  actual: number,
+  member: string,
+  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
+): void {
+  const limit = limits?.maxMembers;
+  if (limit != null && actual > limit) {
+    throw new SandboxArchiveError(
+      'Workspace archive member count exceeds limit.',
+      {
+        reason: 'archive member count exceeds limit',
+        limit,
+        actual,
+        member,
+      },
+    );
+  }
+}
+
+function checkWorkspaceArchiveExtractedBytes(
+  actual: number,
+  member: string,
+  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
+): void {
+  const limit = limits?.maxExtractedBytes;
+  if (limit != null && actual > limit) {
+    throw new SandboxArchiveError(
+      'Workspace archive extracted size exceeds limit.',
+      {
+        reason: 'archive extracted size exceeds limit',
+        limit,
+        actual,
+        member,
+      },
+    );
+  }
 }
 
 async function writeSafeArchiveDirectory(

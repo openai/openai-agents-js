@@ -14,10 +14,12 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type SandboxSessionSerializationOptions,
   type SandboxSessionState,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
 import {
   assertCoreSnapshotUnsupported,
@@ -146,6 +148,7 @@ export interface VercelSandboxClientOptions extends SandboxClientOptions {
   networkPolicy?: Record<string, unknown>;
   timeoutMs?: number;
   workspacePersistence?: VercelWorkspacePersistence;
+  archiveLimits?: SandboxArchiveLimits | null;
   snapshotExpirationMs?: number;
   env?: Record<string, string>;
 }
@@ -188,6 +191,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       'projectId' | 'teamId' | 'token'
     >;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     super({
       state: args.state,
@@ -195,6 +199,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         providerName: 'VercelSandboxClient',
         providerId: 'vercel',
         concurrencyLimits: args.concurrencyLimits,
+        archiveLimits: args.archiveLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -313,7 +318,10 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     return await this.persistWorkspaceTar();
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     this.markWorkspaceMutated();
     const snapshotRef =
       this.state.workspacePersistence === 'snapshot'
@@ -324,7 +332,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       return;
     }
 
-    await this.hydrateWorkspaceTar(data);
+    await this.hydrateWorkspaceTar(data, options);
     this.resetKnownDirs();
     this.knownDirs.add(this.state.manifest.root);
   }
@@ -505,6 +513,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     const replacementSession = new VercelSandboxSession({
       credentials: { ...this.credentials, ...credentials },
       sandbox,
+      archiveLimits: this.getArchiveLimits(),
       state: {
         ...this.state,
         sandboxId: sandbox.sandboxId,
@@ -774,6 +783,7 @@ export class VercelSandboxClient implements SandboxClient<
           sandbox,
           credentials: { ...resolvedOptions, ...credentials },
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.sandboxId,
@@ -940,6 +950,7 @@ export class VercelSandboxClient implements SandboxClient<
 
     const session = new VercelSandboxSession({
       credentials,
+      archiveLimits: this.options.archiveLimits,
       state: resumeFromSnapshot
         ? {
             ...state,

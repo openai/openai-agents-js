@@ -11,6 +11,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -23,6 +24,8 @@ import {
   type ViewImageArgs,
   type WriteStdinArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
+  validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
   assertTarWorkspacePersistence,
@@ -116,6 +119,7 @@ export interface CloudflareSandboxClientOptions extends SandboxClientOptions {
   requestTimeoutMs?: number;
   timeouts?: CloudflareSandboxTimeouts;
   mounts?: Array<Record<string, unknown>>;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface CloudflareSandboxTimeouts {
@@ -141,6 +145,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   private readonly apiKey?: string;
   private readonly ptyProcesses = new PtyProcessRegistry();
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
+  private archiveLimits?: SandboxArchiveLimits | null;
   private readonly remotePathResolver: RemoteSandboxPathResolver = async (
     path,
     options,
@@ -150,6 +155,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     state: CloudflareSandboxSessionState;
     apiKey?: string;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     this.state = {
       ...args.state,
@@ -157,6 +163,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     };
     this.apiKey = args.apiKey;
     this.concurrencyLimits = args.concurrencyLimits;
+    this.setArchiveLimits(args.archiveLimits);
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -566,11 +578,18 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     return archive;
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     assertTarWorkspacePersistence('CloudflareSandboxClient', 'tar');
     const archive = toWorkspaceArchiveBytes(data);
     validateWorkspaceTarArchive(archive, {
       allowExternalSymlinkTargets: false,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
     });
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/hydrate`,
@@ -1060,6 +1079,7 @@ export class CloudflareSandboxClient implements SandboxClient<
         const session = new CloudflareSandboxSession({
           apiKey,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             workerUrl: normalizedWorkerUrl,
@@ -1139,6 +1159,7 @@ export class CloudflareSandboxClient implements SandboxClient<
     assertCloudflareManifestMountsSupported(state.manifest);
 
     const session = new CloudflareSandboxSession({
+      archiveLimits: this.options.archiveLimits,
       state: {
         ...state,
         sandboxId,

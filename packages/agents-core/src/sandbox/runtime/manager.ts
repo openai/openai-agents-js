@@ -599,6 +599,7 @@ export class SandboxRuntimeManager<TContext> {
     }
     const existingByKey = this.sessionsByAgentKey.get(agentKey);
     if (existingByKey) {
+      this.applyArchiveLimits(existingByKey);
       await this.ensureSessionStarted(existingByKey, agent, 'resume', {
         oncePerSession: true,
       });
@@ -610,6 +611,7 @@ export class SandboxRuntimeManager<TContext> {
 
     if (this.sandboxConfig?.session) {
       const session = this.sandboxConfig.session;
+      this.applyArchiveLimits(session);
       const configuredManifest = this.resolveConfiguredManifest(agent, {
         providedSession: session,
       });
@@ -632,6 +634,7 @@ export class SandboxRuntimeManager<TContext> {
     const client = this.requireClient();
     const resumed = await this.resumeSessionForAgent(client, agent);
     if (resumed) {
+      this.applyArchiveLimits(resumed);
       await this.ensureSessionStarted(resumed, agent, 'resume');
       this.registerSessionForAgent(agent, resumed, { owned: true });
       return resumed;
@@ -647,6 +650,7 @@ export class SandboxRuntimeManager<TContext> {
       snapshot: this.resolveSnapshotSpec(client),
       options: this.sandboxConfig?.options,
       concurrencyLimits: this.sandboxConfig?.concurrencyLimits,
+      archiveLimits: this.sandboxConfig?.archiveLimits,
     };
     if (configuredManifest.passToCreate) {
       createArgs.manifest = configuredManifest.manifest;
@@ -660,9 +664,19 @@ export class SandboxRuntimeManager<TContext> {
       },
       async () => await createSession(createArgs),
     );
+    this.applyArchiveLimits(session);
     await this.ensureSessionStarted(session, agent, 'create');
     this.registerSessionForAgent(agent, session, { owned: true });
     return session;
+  }
+
+  private applyArchiveLimits(
+    session: SandboxSessionLike<SandboxSessionState>,
+  ): void {
+    if (this.sandboxConfig?.archiveLimits === undefined) {
+      return;
+    }
+    session.setArchiveLimits?.(this.sandboxConfig.archiveLimits);
   }
 
   private registerSessionForAgent(

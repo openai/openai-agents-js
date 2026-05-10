@@ -7,6 +7,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -19,6 +20,8 @@ import {
   type ViewImageArgs,
   type WriteStdinArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
+  validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
@@ -171,6 +174,7 @@ export interface DaytonaSandboxClientOptions extends SandboxClientOptions {
   apiKey?: string;
   apiUrl?: string;
   target?: string;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface DaytonaSandboxSessionState extends SandboxSessionState {
@@ -202,6 +206,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   ) => await this.resolveRemotePath(path, options);
   private readonly activeMountPaths = new Set<string>();
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
+  private archiveLimits?: SandboxArchiveLimits | null;
   private stopPromise?: Promise<void>;
   private deletePromise?: Promise<void>;
 
@@ -209,10 +214,17 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     state: DaytonaSandboxSessionState;
     sandbox: DaytonaSandboxLike;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     this.state = args.state;
     this.sandbox = args.sandbox;
     this.concurrencyLimits = args.concurrencyLimits;
+    this.setArchiveLimits(args.archiveLimits);
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -598,13 +610,20 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     });
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
     await hydrateRemoteWorkspaceTar({
       providerName: 'DaytonaSandboxClient',
       manifest: this.state.manifest,
       io: this.archiveIo(),
       data,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
     });
   }
 
@@ -1073,6 +1092,7 @@ export class DaytonaSandboxClient implements SandboxClient<
         const session = new DaytonaSandboxSession({
           sandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.id,
@@ -1167,7 +1187,11 @@ export class DaytonaSandboxClient implements SandboxClient<
       });
       return await this.recreateFromPersistedState(client, state);
     }
-    const session = new DaytonaSandboxSession({ state, sandbox });
+    const session = new DaytonaSandboxSession({
+      state,
+      sandbox,
+      archiveLimits: this.options.archiveLimits,
+    });
     await session.prepareWorkspaceRoot();
     await session.rematerializeMountEntries();
     return session;
@@ -1225,6 +1249,7 @@ export class DaytonaSandboxClient implements SandboxClient<
     const session = new DaytonaSandboxSession({
       sandbox,
       state: nextState,
+      archiveLimits: this.options.archiveLimits,
     });
     try {
       await session.prepareWorkspaceRoot();

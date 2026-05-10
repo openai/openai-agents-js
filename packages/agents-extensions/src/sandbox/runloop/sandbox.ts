@@ -8,11 +8,13 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type Mount,
   type SandboxSessionState,
   type TypedMount,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
 import { posix as pathPosix } from 'node:path';
 import {
@@ -206,6 +208,7 @@ export interface RunloopSandboxClientOptions extends SandboxClientOptions {
   metadata?: Record<string, string>;
   managedSecrets?: Record<string, string>;
   pauseOnExit?: boolean;
+  archiveLimits?: SandboxArchiveLimits | null;
   userParameters?: RunloopUserParameters;
   env?: Record<string, string>;
   apiKey?: string;
@@ -629,6 +632,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     sdk: RunloopClientLike;
     devbox: RunloopDevboxLike;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     super({
       state: args.state,
@@ -636,6 +640,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         providerName: 'RunloopSandboxClient',
         providerId: 'runloop',
         concurrencyLimits: args.concurrencyLimits,
+        archiveLimits: args.archiveLimits,
       },
     });
     this.sdk = args.sdk;
@@ -680,7 +685,10 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     return await this.persistWorkspaceTar();
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'runloop') {
       await this.replaceDevboxFromSnapshot(snapshotRef.snapshotId);
@@ -688,7 +696,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     }
 
     assertTarWorkspacePersistence('RunloopSandboxClient', 'tar');
-    await this.hydrateWorkspaceTar(data);
+    await this.hydrateWorkspaceTar(data, options);
   }
 
   async close(): Promise<void> {
@@ -1419,6 +1427,7 @@ export class RunloopSandboxClient implements SandboxClient<
           sdk,
           devbox,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             devboxId: devbox.id,
@@ -1536,6 +1545,7 @@ export class RunloopSandboxClient implements SandboxClient<
         state: resumeState,
         sdk,
         devbox,
+        archiveLimits: this.options.archiveLimits,
       });
       try {
         await session.ensureCurrentManifestRoot();

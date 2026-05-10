@@ -2,6 +2,9 @@ import {
   Manifest,
   SandboxArchiveError,
   SandboxUnsupportedFeatureError,
+  resolveSandboxArchiveLimits,
+  type ResolvedSandboxArchiveLimits,
+  type SandboxArchiveLimits,
   type WorkspaceArchiveData,
 } from '@openai/agents-core/sandbox';
 import { shellQuote, validateRemoteSandboxPathForManifest } from './paths';
@@ -27,6 +30,7 @@ export type WorkspaceTarValidationOptions = {
   rejectSymlinkRelPaths?: Iterable<string>;
   skipRelPaths?: Iterable<string>;
   rootName?: string;
+  archiveLimits?: SandboxArchiveLimits | null;
 };
 
 export function assertTarWorkspacePersistence(
@@ -126,10 +130,14 @@ export async function hydrateRemoteWorkspaceTar(args: {
   io: RemoteWorkspaceTarIo;
   data: WorkspaceArchiveData;
   archivePath?: string;
+  archiveLimits?: SandboxArchiveLimits | null;
 }): Promise<void> {
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
-  validateWorkspaceTarArchive(archive, { allowSymlinks: false });
+  validateWorkspaceTarArchive(archive, {
+    allowSymlinks: false,
+    archiveLimits: args.archiveLimits,
+  });
 
   const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'hydrate');
@@ -206,9 +214,12 @@ export function validateWorkspaceTarArchive(
   options: WorkspaceTarValidationOptions = {},
 ): void {
   const bytes = toWorkspaceArchiveBytes(data);
+  const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
+  checkArchiveInputBytes(bytes.byteLength, archiveLimits);
   const membersByPath = new Map<string, TarMember>();
   const symlinkPaths = new Set<string>();
   const members: TarMember[] = [];
+  let extractedBytes = 0;
   let pendingLongName: string | undefined;
   let pendingPax: Record<string, string> | undefined;
 
@@ -267,6 +278,11 @@ export function validateWorkspaceTarArchive(
       const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
+      }
+      checkArchiveMemberCount(members.length + 1, name, archiveLimits);
+      if (member.type === 'file') {
+        extractedBytes += size;
+        checkArchiveExtractedBytes(extractedBytes, name, archiveLimits);
       }
 
       const previous = membersByPath.get(member.path);
@@ -404,6 +420,66 @@ function validateSymlinkTarget(
     return;
   }
   throw tarError(name, `symlink target escapes archive root: ${linkName}`);
+}
+
+function checkArchiveInputBytes(
+  actual: number,
+  limits: ResolvedSandboxArchiveLimits | null,
+): void {
+  const limit = limits?.maxInputBytes;
+  if (limit != null && actual > limit) {
+    throw archiveResourceLimitError(
+      'archive input size exceeds limit',
+      limit,
+      actual,
+    );
+  }
+}
+
+function checkArchiveMemberCount(
+  actual: number,
+  member: string,
+  limits: ResolvedSandboxArchiveLimits | null,
+): void {
+  const limit = limits?.maxMembers;
+  if (limit != null && actual > limit) {
+    throw archiveResourceLimitError(
+      'archive member count exceeds limit',
+      limit,
+      actual,
+      member,
+    );
+  }
+}
+
+function checkArchiveExtractedBytes(
+  actual: number,
+  member: string,
+  limits: ResolvedSandboxArchiveLimits | null,
+): void {
+  const limit = limits?.maxExtractedBytes;
+  if (limit != null && actual > limit) {
+    throw archiveResourceLimitError(
+      'archive extracted size exceeds limit',
+      limit,
+      actual,
+      member,
+    );
+  }
+}
+
+function archiveResourceLimitError(
+  reason: string,
+  limit: number,
+  actual: number,
+  member?: string,
+): SandboxArchiveError {
+  return new SandboxArchiveError(`Workspace ${reason}.`, {
+    reason,
+    limit,
+    actual,
+    ...(member !== undefined ? { member } : {}),
+  });
 }
 
 function safeTarMemberRelPath(name: string): string | null {

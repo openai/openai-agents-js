@@ -7,6 +7,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -21,6 +22,8 @@ import {
   type ViewImageArgs,
   type WriteStdinArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
+  validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
   normalizePosixPath,
@@ -278,6 +281,7 @@ export interface ModalSandboxClientOptions extends SandboxClientOptions {
   imageBuilderVersion?: string;
   nativeCloudBucketSecretName?: string;
   useSleepCmd?: boolean;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface ModalSandboxSessionState extends SandboxSessionState {
@@ -319,6 +323,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     options,
   ) => await this.resolveRemotePath(path, options);
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
+  private archiveLimits?: SandboxArchiveLimits | null;
   private nextProcessId = 1;
 
   constructor(args: {
@@ -330,6 +335,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     cloudBucketMounts?: Record<string, ModalCloudBucketMountLike>;
     cloudBucketMountsProvider?: ModalCloudBucketMountsProvider;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     this.state = args.state;
     this.modal = args.modal;
@@ -340,8 +346,14 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     this.cloudBucketMounts = args.cloudBucketMounts;
     this.cloudBucketMountsProvider = args.cloudBucketMountsProvider;
     this.concurrencyLimits = args.concurrencyLimits;
+    this.setArchiveLimits(args.archiveLimits);
     this.cloudBucketMountsResolved =
       args.cloudBucketMounts !== undefined || !args.cloudBucketMountsProvider;
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -649,7 +661,10 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     });
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'modal_snapshot_filesystem') {
       this.assertExpectedSnapshotPersistence(
@@ -679,6 +694,10 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       manifest: this.state.manifest,
       io: this.archiveIo(),
       data,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
     });
   }
 
@@ -1376,6 +1395,7 @@ export class ModalSandboxClient implements SandboxClient<
           state: sessionState,
           cloudBucketMounts,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           cloudBucketMountsProvider: async () =>
             await modalCloudBucketMountsForManifest({
               modalModule,
@@ -1529,6 +1549,7 @@ export class ModalSandboxClient implements SandboxClient<
             state.nativeCloudBucketSecretName ??
             this.options.nativeCloudBucketSecretName,
         }),
+      archiveLimits: this.options.archiveLimits,
     });
   }
 }

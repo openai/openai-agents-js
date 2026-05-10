@@ -10,6 +10,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -156,6 +157,7 @@ export interface BlaxelSandboxClientOptions extends SandboxClientOptions {
   ttl?: string;
   name?: string;
   pauseOnExit?: boolean;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface BlaxelSandboxSessionState extends SandboxSessionState {
@@ -194,6 +196,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     apiKey?: string;
     ownsSandbox?: boolean;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     super({
       state: args.state,
@@ -201,6 +204,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         providerName: 'BlaxelSandboxClient',
         providerId: 'blaxel',
         concurrencyLimits: args.concurrencyLimits,
+        archiveLimits: args.archiveLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -893,6 +897,7 @@ export class BlaxelSandboxClient implements SandboxClient<
           apiKey: resolvedOptions.apiKey ?? loadEnv().BL_API_KEY,
           ownsSandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             sandboxName,
@@ -1008,6 +1013,7 @@ export class BlaxelSandboxClient implements SandboxClient<
       sandbox,
       apiKey: this.options.apiKey ?? loadEnv().BL_API_KEY,
       ownsSandbox: state.ownsSandbox,
+      archiveLimits: this.options.archiveLimits,
     });
     await session.rehydrateActiveMountPathsFromManifest();
     return session;

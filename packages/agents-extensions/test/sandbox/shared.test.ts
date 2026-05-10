@@ -1350,6 +1350,50 @@ describe('remote sandbox path helpers', () => {
     ).not.toThrow();
   });
 
+  test('rejects workspace tar archives over resource limits', () => {
+    const archive = makeTarArchive([
+      { name: 'one.txt', content: '1' },
+      { name: 'two.txt', content: '22' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: 4,
+          maxExtractedBytes: null,
+          maxMembers: null,
+        },
+      }),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: 2,
+          maxMembers: null,
+        },
+      }),
+    ).toThrow(/archive extracted size exceeds limit/);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: 1,
+        },
+      }),
+    ).toThrow(/archive member count exceeds limit/);
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        archiveLimits: {
+          maxInputBytes: null,
+          maxExtractedBytes: null,
+          maxMembers: null,
+        },
+      }),
+    ).not.toThrow();
+  });
+
   test('rejects symbolic links before hydrating tar archives', async () => {
     const writeFile = vi.fn();
 
