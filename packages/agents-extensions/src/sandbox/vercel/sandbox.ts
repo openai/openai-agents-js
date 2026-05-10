@@ -31,6 +31,7 @@ import {
   encodeNativeSnapshotRef,
   materializeEnvironment,
   posixDirname,
+  providerErrorMessage,
   shellQuote,
   serializeRemoteSandboxSessionState,
   toUint8Array,
@@ -270,7 +271,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         {
           provider: 'vercel',
           port: requestedPort,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -374,7 +375,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     } catch (stopError) {
       if (snapshotError) {
         throw new UserError(
-          `Failed to capture a Vercel sandbox snapshot and stop the sandbox. Snapshot error: ${errorMessage(snapshotError)} Stop error: ${errorMessage(stopError)}`,
+          `Failed to capture a Vercel sandbox snapshot and stop the sandbox. Snapshot error: ${providerErrorMessage(snapshotError)} Stop error: ${providerErrorMessage(stopError)}`,
         );
       }
       if (snapshotCapturedBeforeStop) {
@@ -446,7 +447,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       try {
         await stopVercelSandbox(sandbox);
       } catch (replacementStopError) {
-        replacementStopCause = errorMessage(replacementStopError);
+        replacementStopCause = providerErrorMessage(replacementStopError);
       }
       throw new SandboxProviderError(
         'Vercel snapshot restore created a replacement sandbox, but stopping the previous sandbox failed.',
@@ -454,7 +455,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           provider: 'vercel',
           sandboxId: previousSandbox.sandboxId,
           replacementSandboxId: sandbox.sandboxId,
-          cause: errorMessage(error),
+          cause: providerErrorMessage(error),
           ...(replacementStopCause ? { replacementStopCause } : {}),
         },
       );
@@ -483,8 +484,8 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           provider: 'vercel',
           sandboxId: this.state.sandboxId,
           snapshotId,
-          cause: errorMessage(restoreError),
-          recoveryCause: errorMessage(recoveryError),
+          cause: providerErrorMessage(restoreError),
+          recoveryCause: providerErrorMessage(recoveryError),
         },
       );
     }
@@ -531,7 +532,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await stopVercelSandbox(sandbox);
       } catch (stopError) {
         throw new UserError(
-          `Failed to restore a Vercel sandbox from snapshot and stop the replacement sandbox. Restore error: ${errorMessage(error)} Stop error: ${errorMessage(stopError)}`,
+          `Failed to restore a Vercel sandbox from snapshot and stop the replacement sandbox. Restore error: ${providerErrorMessage(error)} Stop error: ${providerErrorMessage(stopError)}`,
         );
       }
       throw error;
@@ -812,7 +813,7 @@ export class VercelSandboxClient implements SandboxClient<
             await stopVercelSandbox(sandbox);
           } catch (stopError) {
             throw new UserError(
-              `Failed to apply a Vercel sandbox manifest and stop the sandbox. Manifest error: ${errorMessage(error)} Stop error: ${errorMessage(stopError)}`,
+              `Failed to apply a Vercel sandbox manifest and stop the sandbox. Manifest error: ${providerErrorMessage(error)} Stop error: ${providerErrorMessage(stopError)}`,
             );
           }
           throw error;
@@ -976,7 +977,7 @@ export class VercelSandboxClient implements SandboxClient<
         await stopVercelSandbox(sandbox);
       } catch (stopError) {
         throw new UserError(
-          `Failed to resume a Vercel sandbox from snapshot and stop the replacement sandbox. Resume error: ${errorMessage(error)} Stop error: ${errorMessage(stopError)}`,
+          `Failed to resume a Vercel sandbox from snapshot and stop the replacement sandbox. Resume error: ${providerErrorMessage(error)} Stop error: ${providerErrorMessage(stopError)}`,
         );
       }
       throw error;
@@ -1423,16 +1424,12 @@ async function waitForVercelSandboxRunning(
   );
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function isVercelSandboxAlreadyStoppedError(error: unknown): boolean {
   if (isProviderSandboxNotFoundError(error)) {
     return true;
   }
 
-  const message = errorMessage(error);
+  const message = providerErrorMessage(error);
   return (
     /\b(sandbox|sandbox instance|instance)\b.*\b(already\s+)?(stopped|terminated|not running)\b/iu.test(
       message,

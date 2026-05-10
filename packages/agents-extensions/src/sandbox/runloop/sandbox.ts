@@ -31,6 +31,7 @@ import {
   deserializeRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  providerErrorMessage,
   serializeRemoteSandboxSessionState,
   shellQuote,
   isRecord,
@@ -781,7 +782,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           devboxId: this.state.devboxId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -835,7 +836,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -852,14 +853,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       try {
         await this.unmountActiveMounts();
       } catch (unmountError) {
-        replacementCleanupCause = errorMessage(unmountError);
+        replacementCleanupCause = providerErrorMessage(unmountError);
       }
       try {
         await devbox.shutdown();
       } catch (shutdownError) {
         replacementCleanupCause = replacementCleanupCause
-          ? `${replacementCleanupCause}; ${errorMessage(shutdownError)}`
-          : errorMessage(shutdownError);
+          ? `${replacementCleanupCause}; ${providerErrorMessage(shutdownError)}`
+          : providerErrorMessage(shutdownError);
       }
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
@@ -875,7 +876,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
           devboxId: previousDevboxId,
           replacementDevboxId: devbox.id,
           snapshotId,
-          cause: errorMessage(error),
+          cause: providerErrorMessage(error),
           ...(replacementCleanupCause ? { replacementCleanupCause } : {}),
         },
       );
@@ -888,14 +889,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       try {
         await this.unmountActiveMounts();
       } catch (unmountError) {
-        replacementShutdownCause = errorMessage(unmountError);
+        replacementShutdownCause = providerErrorMessage(unmountError);
       }
       try {
         await devbox.shutdown();
       } catch (replacementShutdownError) {
         replacementShutdownCause = replacementShutdownCause
-          ? `${replacementShutdownCause}; ${errorMessage(replacementShutdownError)}`
-          : errorMessage(replacementShutdownError);
+          ? `${replacementShutdownCause}; ${providerErrorMessage(replacementShutdownError)}`
+          : providerErrorMessage(replacementShutdownError);
       }
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
@@ -911,7 +912,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
           devboxId: previousDevbox.id,
           replacementDevboxId: devbox.id,
           snapshotId,
-          cause: errorMessage(error),
+          cause: providerErrorMessage(error),
           ...(replacementShutdownCause ? { replacementShutdownCause } : {}),
         },
       );
@@ -1263,7 +1264,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           port,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -1979,10 +1980,6 @@ function formatRunloopSecretErrorCause(
   return secretValue ? message.split(secretValue).join('[redacted]') : message;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function callRunloopPlatformMethod(
   methodName: string,
   method: RunloopPlatformMethodLike | undefined,
@@ -2030,7 +2027,7 @@ function callRunloopPlatformGetter(
       {
         provider: 'runloop',
         operation: `call platform method ${methodName}`,
-        cause: error instanceof Error ? error.message : String(error),
+        cause: providerErrorMessage(error),
       },
     );
   }

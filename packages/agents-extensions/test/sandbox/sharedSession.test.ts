@@ -11,6 +11,8 @@ import {
   assertCoreSnapshotUnsupported,
   assertResumeRecreateAllowed,
   isProviderSandboxNotFoundError,
+  closeRemoteSessionOnManifestError,
+  withProviderError,
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
@@ -223,6 +225,96 @@ describe('shared sandbox session helpers', () => {
       devboxId: 'devbox_test',
       cause: 'request timeout',
     });
+  });
+
+  test('wraps provider SDK errors with structured diagnostics', async () => {
+    const sdkError = Object.assign(new Error('request failed'), {
+      code: 'rate_limit',
+      statusCode: 429,
+      requestId: 'req_123',
+      response: {
+        status: 429,
+        statusText: 'Too Many Requests',
+        data: {
+          error: {
+            code: 'rate_limit',
+            message: 'slow down',
+          },
+        },
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      await withProviderError(
+        'ProviderSandboxClient',
+        'provider',
+        'create sandbox',
+        async () => {
+          throw sdkError;
+        },
+        { sandboxId: 'sandbox_123' },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxProviderError);
+    expect((thrown as Error).message).toContain('request failed');
+    expect((thrown as Error).message).toContain('responseStatus: 429');
+    expect((thrown as SandboxProviderError).details).toMatchObject({
+      provider: 'provider',
+      operation: 'create sandbox',
+      sandboxId: 'sandbox_123',
+      errorCode: 'rate_limit',
+      status: 429,
+      requestId: 'req_123',
+      responseStatus: 429,
+      responseStatusText: 'Too Many Requests',
+      responseBody: {
+        error: {
+          code: 'rate_limit',
+          message: 'slow down',
+        },
+      },
+      cause: expect.stringContaining('request failed'),
+    });
+  });
+
+  test('keeps provider details when manifest cleanup also fails', async () => {
+    const manifestError = new SandboxProviderError(
+      'ProviderSandboxClient failed to apply manifest.',
+      {
+        provider: 'provider',
+        operation: 'apply manifest',
+        cause: 'mkdir failed',
+      },
+    );
+    const closeError = Object.assign(new Error('delete failed'), {
+      response: {
+        status: 502,
+        data: {
+          error: {
+            code: 'pool_error',
+            message: 'failed to stop sandbox',
+          },
+        },
+      },
+    });
+
+    await expect(
+      closeRemoteSessionOnManifestError(
+        'Provider',
+        {
+          close: async () => {
+            throw closeError;
+          },
+        },
+        manifestError,
+      ),
+    ).rejects.toThrow(
+      /Manifest error: ProviderSandboxClient failed to apply manifest\..*mkdir failed.*Close error: delete failed.*responseStatus: 502.*pool_error/s,
+    );
   });
 
   test('base session handles common exec, filesystem, image, and port helpers', async () => {

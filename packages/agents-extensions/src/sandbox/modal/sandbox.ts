@@ -49,6 +49,7 @@ import {
   manifestMaterializationOptionsWithRunAs,
   materializeEnvironment,
   persistRemoteWorkspaceTar,
+  providerErrorMessage,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
   recordResolvedExposedPortEndpoint,
@@ -566,7 +567,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
         {
           provider: 'modal',
           port: requestedPort,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -835,7 +836,9 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
         try {
           await sandbox.terminate();
         } catch (replacementTerminateError) {
-          replacementTerminateCause = errorMessage(replacementTerminateError);
+          replacementTerminateCause = providerErrorMessage(
+            replacementTerminateError,
+          );
         }
         throw new SandboxProviderError(
           'Modal snapshot_filesystem restore created a replacement sandbox, but terminating the previous sandbox failed.',
@@ -843,7 +846,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
             provider: 'modal',
             sandboxId: previousSandboxId,
             replacementSandboxId: sandbox.sandboxId,
-            cause: errorMessage(error),
+            cause: providerErrorMessage(error),
             ...(replacementTerminateCause ? { replacementTerminateCause } : {}),
           },
         );
@@ -1808,10 +1811,6 @@ function maybeSetModalSandboxCmd(
   return image.cmd(['sleep', 'infinity']);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function modalCloudBucketMountsForManifest(args: {
   modalModule: ModalModule;
   manifest: Manifest;
@@ -2411,7 +2410,7 @@ async function waitForProcessOrTimeout(
 }
 
 function modalErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return providerErrorMessage(error);
 }
 
 function joinCommandOutput(activeProcess: ActiveModalProcess): string {

@@ -19,7 +19,7 @@ export async function closeRemoteSessionOnManifestError(
     await session.close();
   } catch (closeError) {
     throw new UserError(
-      `Failed to apply a ${providerName} sandbox manifest and close the sandbox. Manifest error: ${errorMessage(manifestError)} Close error: ${errorMessage(closeError)}`,
+      `Failed to apply a ${providerName} sandbox manifest and close the sandbox. Manifest error: ${providerErrorMessage(manifestError)} Close error: ${providerErrorMessage(closeError)}`,
     );
   }
   throw manifestError;
@@ -86,12 +86,17 @@ export async function withProviderError<T>(
     if (error instanceof UserError) {
       throw error;
     }
-    throw new SandboxProviderError(`${providerName} failed to ${operation}.`, {
-      provider,
-      operation,
-      ...context,
-      cause: errorMessage(error),
-    });
+    const cause = providerErrorMessage(error);
+    throw new SandboxProviderError(
+      `${providerName} failed to ${operation}${cause ? `: ${cause}` : ''}`,
+      {
+        provider,
+        operation,
+        ...context,
+        ...providerErrorDetails(error),
+        cause,
+      },
+    );
   }
 }
 
@@ -128,9 +133,24 @@ export function assertResumeRecreateAllowed(
       provider: context.provider,
       operation: 'resume',
       ...context.details,
-      cause: errorMessage(error),
+      ...providerErrorDetails(error),
+      cause: providerErrorMessage(error),
     },
   );
+}
+
+export function providerErrorMessage(error: unknown): string {
+  const message = errorMessage(error);
+  const details = providerErrorDetails(error);
+  const detailText = formatProviderErrorDetailSummary(details);
+  if (!detailText) {
+    return message;
+  }
+  return message ? `${message} (${detailText})` : detailText;
+}
+
+export function providerErrorDetails(error: unknown): Record<string, unknown> {
+  return collectProviderErrorDetails(error, new Set<object>(), 0);
 }
 
 function errorMessage(error: unknown): string {
@@ -147,6 +167,195 @@ function formatErrorDetails(details: Record<string, unknown>): string {
   } catch {
     return String(details);
   }
+}
+
+function collectProviderErrorDetails(
+  value: unknown,
+  seen: Set<object>,
+  depth: number,
+): Record<string, unknown> {
+  if (!isRecord(value) || seen.has(value) || depth > 2) {
+    return {};
+  }
+  seen.add(value);
+
+  const details: Record<string, unknown> = {};
+  addOptionalString(
+    details,
+    'errorName',
+    value.name,
+    (name) => name !== 'Error',
+  );
+  addOptionalScalar(details, 'errorCode', value.code);
+  addOptionalScalar(
+    details,
+    'status',
+    firstDefined(value.status, value.statusCode),
+  );
+  addOptionalScalar(
+    details,
+    'httpStatus',
+    firstDefined(value.httpStatus, value.httpStatusCode),
+  );
+  addOptionalString(
+    details,
+    'requestId',
+    firstDefined(value.requestId, value.request_id, value.requestID),
+  );
+
+  const payload = firstDefined(value.json, value.data, value.body, value.error);
+  const formattedPayload = formatProviderPayload(payload, seen, depth + 1);
+  if (formattedPayload !== undefined) {
+    details.errorBody = formattedPayload;
+  }
+
+  const response = value.response;
+  if (isRecord(response)) {
+    addOptionalScalar(
+      details,
+      'responseStatus',
+      firstDefined(response.status, response.statusCode),
+    );
+    addOptionalString(details, 'responseStatusText', response.statusText);
+    addOptionalString(
+      details,
+      'responseRequestId',
+      firstDefined(response.requestId, response.request_id, response.requestID),
+    );
+    const responseBody = formatProviderPayload(
+      firstDefined(response.json, response.data, response.body, response.error),
+      seen,
+      depth + 1,
+    );
+    if (responseBody !== undefined) {
+      details.responseBody = responseBody;
+    }
+  }
+
+  const causeDetails = collectProviderErrorDetails(
+    value.cause,
+    seen,
+    depth + 1,
+  );
+  for (const [key, detail] of Object.entries(causeDetails)) {
+    details[key] ??= detail;
+  }
+
+  return details;
+}
+
+function formatProviderErrorDetailSummary(
+  details: Record<string, unknown>,
+): string {
+  const parts: string[] = [];
+  for (const key of [
+    'status',
+    'httpStatus',
+    'responseStatus',
+    'errorCode',
+    'requestId',
+    'responseRequestId',
+  ]) {
+    const value = details[key];
+    if (typeof value === 'string' || typeof value === 'number') {
+      parts.push(`${key}: ${value}`);
+    }
+  }
+  const body = details.responseBody ?? details.errorBody;
+  if (body !== undefined) {
+    parts.push(`body: ${formatSummaryValue(body)}`);
+  }
+  return parts.join(', ');
+}
+
+function formatProviderPayload(
+  value: unknown,
+  seen: Set<object>,
+  depth: number,
+): unknown {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return truncateProviderString(String(value));
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, 3)
+      .map((item) => formatProviderPayload(item, seen, depth + 1))
+      .filter((item) => item !== undefined);
+    return items.length > 0 ? items : undefined;
+  }
+  if (!isRecord(value) || seen.has(value) || depth > 3) {
+    return undefined;
+  }
+  seen.add(value);
+
+  const summary: Record<string, unknown> = {};
+  for (const key of [
+    'code',
+    'message',
+    'error',
+    'type',
+    'name',
+    'reason',
+    'status',
+    'statusCode',
+  ]) {
+    const formatted = formatProviderPayload(value[key], seen, depth + 1);
+    if (formatted !== undefined) {
+      summary[key] = formatted;
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function formatSummaryValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return truncateProviderString(JSON.stringify(value));
+  } catch {
+    return String(value);
+  }
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+function addOptionalScalar(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    target[key] = value;
+  }
+}
+
+function addOptionalString(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  predicate: (value: string) => boolean = () => true,
+): void {
+  if (typeof value === 'string' && value && predicate(value)) {
+    target[key] = truncateProviderString(value);
+  }
+}
+
+function truncateProviderString(value: string): string {
+  return value.length > 500 ? `${value.slice(0, 497)}...` : value;
 }
 
 function isNotFoundErrorRecord(error: unknown, seen: Set<object>): boolean {

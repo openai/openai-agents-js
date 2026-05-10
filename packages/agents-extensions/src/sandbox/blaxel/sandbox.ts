@@ -37,6 +37,7 @@ import {
   openPtyWebSocket,
   parseExposedPortEndpoint,
   posixDirname,
+  providerErrorMessage,
   resolveSandboxWorkdir,
   serializeRemoteSandboxSessionState,
   shellQuote,
@@ -347,7 +348,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         {
           provider: 'blaxel',
           port: requestedPort,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -554,7 +555,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
           {
             provider: 'blaxel',
             mountPath,
-            cause: unknownErrorMessage(error),
+            cause: providerErrorMessage(error),
           },
         );
       }
@@ -573,7 +574,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
           {
             provider: 'blaxel',
             mountPath,
-            cause: unknownErrorMessage(error),
+            cause: providerErrorMessage(error),
           },
         );
       }
@@ -863,7 +864,7 @@ export class BlaxelSandboxClient implements SandboxClient<
               await sandbox.delete();
             } catch (deleteError) {
               throw new UserError(
-                `Failed to materialize a Blaxel sandbox environment and delete the sandbox. Environment error: ${unknownErrorMessage(error)} Delete error: ${unknownErrorMessage(deleteError)}`,
+                `Failed to materialize a Blaxel sandbox environment and delete the sandbox. Environment error: ${providerErrorMessage(error)} Delete error: ${providerErrorMessage(deleteError)}`,
               );
             }
           }
@@ -882,7 +883,7 @@ export class BlaxelSandboxClient implements SandboxClient<
               await sandbox.delete();
             } catch (deleteError) {
               throw new UserError(
-                `Failed to verify a Blaxel sandbox identity and delete the sandbox. Identity error: ${unknownErrorMessage(error)} Delete error: ${unknownErrorMessage(deleteError)}`,
+                `Failed to verify a Blaxel sandbox identity and delete the sandbox. Identity error: ${providerErrorMessage(error)} Delete error: ${providerErrorMessage(deleteError)}`,
               );
             }
             throw error;
@@ -1187,7 +1188,7 @@ async function canonicalizeBlaxelSandboxIdentitySource(args: {
     return await args.SandboxInstance.get(args.sandboxName);
   } catch (error) {
     throw new UserError(
-      `Blaxel sandbox ${args.sandboxName} cannot be safely preserved because its identity could not be verified after create. ${unknownErrorMessage(error)}`,
+      `Blaxel sandbox ${args.sandboxName} cannot be safely preserved because its identity could not be verified after create. ${providerErrorMessage(error)}`,
     );
   }
 }
@@ -1265,7 +1266,7 @@ function isBlaxelSandboxAlreadyExistsError(error: unknown): boolean {
     }
   }
   return /\b(409|already exists|SANDBOX_ALREADY_EXISTS)\b/iu.test(
-    unknownErrorMessage(error),
+    providerErrorMessage(error),
   );
 }
 
@@ -1387,15 +1388,11 @@ function adaptBlaxelDriveApi(drives: unknown): BlaxelDriveApi | undefined {
   };
 }
 
-function unknownErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function blaxelReadError(path: string, error: unknown): Error {
   if (error instanceof SandboxProviderError) {
     return error;
   }
-  const cause = unknownErrorMessage(error);
+  const cause = providerErrorMessage(error);
   const details = { provider: 'blaxel', path, cause };
   if (isBlaxelReadNotFoundError(cause)) {
     return new SandboxWorkspaceReadNotFoundError(
@@ -1652,7 +1649,7 @@ async function createBlaxelPreviewTokenQuery(
       {
         provider: 'blaxel',
         port,
-        cause: error instanceof Error ? error.message : String(error),
+        cause: providerErrorMessage(error),
       },
     );
   }

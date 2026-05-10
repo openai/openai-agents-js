@@ -34,6 +34,7 @@ import {
   encodeNativeSnapshotRef,
   materializeEnvironment,
   parseExposedPortEndpoint,
+  providerErrorMessage,
   shellQuote,
   shellCommandForPty,
   serializeRemoteSandboxSessionState,
@@ -358,7 +359,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           port: requestedPort,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -458,7 +459,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           sandboxId: this.state.sandboxId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -502,7 +503,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -519,7 +520,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
           sandboxId: previousSandbox.sandboxId,
           replacementSandboxId: sandbox.sandboxId,
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -612,14 +613,8 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
             provider: 'e2b',
             operation,
             sandboxId: this.state.sandboxId,
-            pauseCause:
-              pauseError instanceof Error
-                ? pauseError.message
-                : String(pauseError),
-            killCause:
-              killError instanceof Error
-                ? killError.message
-                : String(killError),
+            pauseCause: providerErrorMessage(pauseError),
+            killCause: providerErrorMessage(killError),
           },
         );
       }

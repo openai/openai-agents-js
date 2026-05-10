@@ -399,9 +399,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       return false;
     }
     if (!response.ok) {
-      throw cloudflareProviderHttpError('check running state', response, {
-        sandboxId: this.state.sandboxId,
-      });
+      throw await cloudflareProviderHttpErrorWithBody(
+        'check running state',
+        response,
+        {
+          sandboxId: this.state.sandboxId,
+        },
+      );
     }
     const payload = (await response.json().catch(() => ({}))) as {
       running?: unknown;
@@ -795,8 +799,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         break;
       }
       const text = decoder.decode(chunk.value, { stream: true });
-      rawStream += text;
       buffer += text;
+      rawStream += text;
       const { events, remaining } = splitCompleteSseEvents(buffer);
       buffer = remaining;
       for (const part of events) {
@@ -807,14 +811,25 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         processEvent(event);
       }
     }
-    const tail = decoder.decode();
-    rawStream += tail;
-    buffer += tail;
+    const finalText = decoder.decode();
+    buffer += finalText;
+    rawStream += finalText;
     for (const part of collectSseEvents(buffer)) {
       const event = parseSseEvent(part);
       if (event) {
         processEvent(event);
       }
+    }
+    if (exitCode === undefined && !stdout && !stderr && rawStream.trim()) {
+      throw new SandboxProviderError(
+        'CloudflareSandboxClient failed to execute command.',
+        {
+          provider: 'cloudflare',
+          operation: 'execute command',
+          sandboxId: this.state.sandboxId,
+          cause: formatCloudflareResponseBody(rawStream),
+        },
+      );
     }
 
     const output = [stdout.trimEnd(), stderr.trimEnd()]
@@ -874,7 +889,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       );
     }
     if (!response.ok) {
-      throw cloudflareProviderHttpError('read file', response, {
+      throw await cloudflareProviderHttpErrorWithBody('read file', response, {
         sandboxId: this.state.sandboxId,
         path,
       });
@@ -895,7 +910,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       },
     );
     if (!response.ok) {
-      throw cloudflareProviderHttpError('write file', response, {
+      throw await cloudflareProviderHttpErrorWithBody('write file', response, {
         sandboxId: this.state.sandboxId,
         path,
       });
@@ -1089,9 +1104,13 @@ export class CloudflareSandboxClient implements SandboxClient<
           { workerUrl: normalizedWorkerUrl },
         );
         if (!response.ok) {
-          throw cloudflareProviderHttpError('create sandbox', response, {
-            workerUrl: normalizedWorkerUrl,
-          });
+          throw await cloudflareProviderHttpErrorWithBody(
+            'create sandbox',
+            response,
+            {
+              workerUrl: normalizedWorkerUrl,
+            },
+          );
         }
         const payload = await withProviderError(
           'CloudflareSandboxClient',
@@ -1400,22 +1419,6 @@ async function cloudflareMountError(args: {
   });
 }
 
-function cloudflareProviderHttpError(
-  operation: string,
-  response: Response,
-  context: Record<string, unknown> = {},
-): SandboxProviderError {
-  return new SandboxProviderError(
-    `CloudflareSandboxClient failed to ${operation}.`,
-    {
-      provider: 'cloudflare',
-      operation,
-      status: response.status,
-      ...context,
-    },
-  );
-}
-
 async function cloudflareProviderHttpErrorWithBody(
   operation: string,
   response: Response,
@@ -1423,7 +1426,7 @@ async function cloudflareProviderHttpErrorWithBody(
 ): Promise<SandboxProviderError> {
   const cause = await readCloudflareErrorBody(response);
   return new SandboxProviderError(
-    `CloudflareSandboxClient failed to ${operation}.`,
+    `CloudflareSandboxClient failed to ${operation}${cause ? `: ${cause}` : ''}`,
     {
       provider: 'cloudflare',
       operation,
@@ -1437,19 +1440,20 @@ async function cloudflareProviderHttpErrorWithBody(
 async function readCloudflareErrorBody(
   response: Response,
 ): Promise<string | undefined> {
-  try {
-    return formatCloudflareResponseBody(await response.text());
-  } catch (error) {
-    return `failed to read error body: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+  const body = await response.text().catch(() => '');
+  const formatted = formatCloudflareResponseBody(body);
+  if (formatted && formatted !== 'Not a JSON error response.') {
+    return formatted;
   }
+  return body.trim()
+    ? `HTTP ${response.status}: ${truncateCloudflareErrorBody(body.trim())}`
+    : `HTTP ${response.status}`;
 }
 
-function formatCloudflareResponseBody(body: string): string | undefined {
+function formatCloudflareResponseBody(body: string): string {
   const trimmed = body.trim();
   if (!trimmed) {
-    return undefined;
+    return '';
   }
   try {
     const payload = JSON.parse(trimmed) as unknown;
@@ -1464,9 +1468,13 @@ function formatCloudflareResponseBody(body: string): string | undefined {
       }
     }
   } catch {
-    // Not a JSON error response.
+    // Fall through to raw text.
   }
-  return trimmed;
+  return truncateCloudflareErrorBody(trimmed);
+}
+
+function truncateCloudflareErrorBody(body: string): string {
+  return body.length > 500 ? `${body.slice(0, 497)}...` : body;
 }
 
 function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {
