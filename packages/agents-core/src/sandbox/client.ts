@@ -49,6 +49,10 @@ export type NormalizedSandboxClientCreateArgs<
   archiveLimits?: SandboxArchiveLimits | null;
 };
 
+export type SandboxClientResumeOptions = {
+  archiveLimits?: SandboxArchiveLimits | null;
+};
+
 export type SandboxClientCreate<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
   TSessionState extends SandboxSessionState = SandboxSessionState,
@@ -92,7 +96,10 @@ export interface SandboxClient<
   deserializeSessionState?(
     state: Record<string, unknown>,
   ): Promise<TSessionState>;
-  resume?(state: TSessionState): Promise<SandboxSessionLike<TSessionState>>;
+  resume?(
+    state: TSessionState,
+    options?: SandboxClientResumeOptions,
+  ): Promise<SandboxSessionLike<TSessionState>>;
 }
 
 export type SandboxRunConfig<

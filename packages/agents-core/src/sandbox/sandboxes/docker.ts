@@ -38,6 +38,7 @@ import type {
   SandboxClientOptions,
   SandboxClientCreateArgs,
   SandboxArchiveLimits,
+  SandboxClientResumeOptions,
   SandboxConcurrencyLimits,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
@@ -812,14 +813,19 @@ export class DockerSandboxClient implements SandboxClient<
 
   async resume(
     state: DockerSandboxSessionState,
+    options: SandboxClientResumeOptions = {},
   ): Promise<DockerSandboxSession> {
     assertDockerManifestSupported(state.manifest);
     await ensureDockerAvailable();
-    const restoredState = await this.restoreIfNeeded(state);
+    const archiveLimits =
+      options.archiveLimits === undefined
+        ? this.options.archiveLimits
+        : options.archiveLimits;
+    const restoredState = await this.restoreIfNeeded(state, archiveLimits);
 
     return new DockerSandboxSession({
       state: restoredState,
-      archiveLimits: this.options.archiveLimits,
+      archiveLimits,
     });
   }
 
@@ -872,6 +878,7 @@ export class DockerSandboxClient implements SandboxClient<
 
   private async restoreIfNeeded(
     state: DockerSandboxSessionState,
+    archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<DockerSandboxSessionState> {
     attachDockerSnapshotExcludedPaths(state);
     const containerRunning = await inspectContainerRunning(state.containerId);
@@ -883,17 +890,23 @@ export class DockerSandboxClient implements SandboxClient<
       }
       if (await canReuseLocalSnapshotWorkspace(state)) {
         await this.cleanupDockerResources(state);
-        return await this.restartContainer(state, state.workspaceRootPath);
+        return await this.restartContainer(
+          state,
+          state.workspaceRootPath,
+          archiveLimits,
+        );
       }
       if (await localSnapshotIsRestorable(state)) {
         const restoredState = await restoreLocalSnapshotToWorkspace(
           state,
           state.workspaceRootPath,
+          { archiveLimits },
         );
         await this.cleanupDockerResources(state);
         return await this.restartContainer(
           restoredState,
           restoredState.workspaceRootPath,
+          archiveLimits,
         );
       }
     }
@@ -918,9 +931,14 @@ export class DockerSandboxClient implements SandboxClient<
         workspaceRootOwned: true,
       },
       workspaceRootPath,
+      { archiveLimits },
     );
 
-    return await this.restartContainer(restoredState, workspaceRootPath);
+    return await this.restartContainer(
+      restoredState,
+      workspaceRootPath,
+      archiveLimits,
+    );
   }
 
   private async cleanupDockerResources(
@@ -933,6 +951,7 @@ export class DockerSandboxClient implements SandboxClient<
   private async restartContainer(
     state: DockerSandboxSessionState,
     workspaceRootPath: string,
+    archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<DockerSandboxSessionState> {
     await materializeLocalWorkspaceManifestMounts(
       state.manifest,
@@ -970,7 +989,7 @@ export class DockerSandboxClient implements SandboxClient<
     };
     const session = new DockerSandboxSession({
       state: nextState,
-      archiveLimits: this.options.archiveLimits,
+      archiveLimits,
     });
     try {
       await provisionDockerAccounts(container.containerId, state.manifest);

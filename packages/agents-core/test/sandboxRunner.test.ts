@@ -254,7 +254,10 @@ class FakeSandboxClient implements SandboxClient<
   readonly rawCreateCalls: Array<
     SandboxClientCreateArgs<SandboxClientOptions> | Manifest | undefined
   > = [];
-  readonly resumeCalls: Array<{ state: FakeSandboxSessionState }> = [];
+  readonly resumeCalls: Array<{
+    state: FakeSandboxSessionState;
+    archiveLimits?: SandboxClientCreateArgs['archiveLimits'];
+  }> = [];
   readonly serializedStates: Array<FakeSandboxSessionState> = [];
   readonly serializedOptions: SandboxSessionSerializationOptions[] = [];
   readonly closeCalls: string[] = [];
@@ -296,8 +299,9 @@ class FakeSandboxClient implements SandboxClient<
 
   async resume(
     state: FakeSandboxSessionState,
+    options: { archiveLimits?: SandboxClientCreateArgs['archiveLimits'] } = {},
   ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
-    this.resumeCalls.push({ state });
+    this.resumeCalls.push({ state, archiveLimits: options.archiveLimits });
     const session = this.makeSession(state);
     this.resumedSessions.push(session);
     return session;
@@ -1473,12 +1477,25 @@ describe('sandbox runner integration', () => {
     const secondResult = await runner.run(sandboxAgent, resumedState, {
       sandbox: {
         client,
+        archiveLimits: {
+          maxInputBytes: 10,
+          maxExtractedBytes: 20,
+          maxMembers: 30,
+        },
       },
     });
 
     expect(secondResult.finalOutput).toBe('turn two');
     expect(client.createCalls).toHaveLength(1);
-    expect(client.resumeCalls).toHaveLength(1);
+    expect(client.resumeCalls).toMatchObject([
+      {
+        archiveLimits: {
+          maxInputBytes: 10,
+          maxExtractedBytes: 20,
+          maxMembers: 30,
+        },
+      },
+    ]);
   });
 
   it('sanitizes manifest data in serialized sandbox state envelopes', async () => {

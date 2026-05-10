@@ -1,4 +1,8 @@
 import { UserError } from '../../../errors';
+import {
+  resolveSandboxArchiveLimits,
+  type SandboxArchiveLimits,
+} from '../../client';
 import { SandboxArchiveError } from '../../errors';
 import {
   isNoopSnapshotSpec,
@@ -27,10 +31,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, relative, sep } from 'node:path';
 import type { Manifest } from '../../manifest';
 import type { WorkspaceArchiveData } from '../../session';
-import {
-  resolveSandboxArchiveLimits,
-  type SandboxArchiveLimits,
-} from '../../client';
 import { stableJsonStringify } from '../../shared/stableJson';
 import { isRecord } from '../../shared/typeGuards';
 import {
@@ -249,7 +249,11 @@ export async function localSnapshotIsRestorable(
 
 export async function restoreLocalSnapshotToWorkspace<
   TState extends LocalSnapshotState,
->(state: TState, workspaceRootPath: string): Promise<TState> {
+>(
+  state: TState,
+  workspaceRootPath: string,
+  options: { archiveLimits?: SandboxArchiveLimits | null } = {},
+): Promise<TState> {
   if (!(await localSnapshotIsRestorable(state))) {
     throw new UserError('No local snapshot is available to restore.');
   }
@@ -260,7 +264,7 @@ export async function restoreLocalSnapshotToWorkspace<
       throw new UserError('No remote snapshot store is available to restore.');
     }
     const restored = await store.load({ id: state.snapshot.id });
-    await restoreWorkspaceArchive(restored.data, workspaceRootPath);
+    await restoreWorkspaceArchive(restored.data, workspaceRootPath, options);
   } else {
     await replaceDirectoryContents(state.snapshot!.path, workspaceRootPath);
   }

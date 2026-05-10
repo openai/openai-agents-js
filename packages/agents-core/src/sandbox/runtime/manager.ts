@@ -811,7 +811,10 @@ export class SandboxRuntimeManager<TContext> {
           agent_name: agent.name,
           backend_id: client.backendId,
         },
-        async () => await client.resume!(this.sandboxConfig!.sessionState!),
+        async () =>
+          await client.resume!(this.sandboxConfig!.sessionState!, {
+            archiveLimits: this.sandboxConfig?.archiveLimits,
+          }),
       );
     }
 
@@ -829,7 +832,10 @@ export class SandboxRuntimeManager<TContext> {
         agent_name: agent.name,
         backend_id: client.backendId,
       },
-      async () => await client.resume!(serializedState),
+      async () =>
+        await client.resume!(serializedState, {
+          archiveLimits: this.sandboxConfig?.archiveLimits,
+        }),
     );
   }
 

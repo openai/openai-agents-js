@@ -740,7 +740,9 @@ describe('UnixLocalSandboxClient', () => {
   });
 
   it('rejects local workspace archive hydration over resource limits', async () => {
-    const client = new UnixLocalSandboxClient();
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
     const session = await client.create(
       new Manifest({
         entries: {
@@ -2280,6 +2282,49 @@ void main();
     await expect(
       readFile(join(restored.state.workspaceRootPath, 'skip.txt'), 'utf8'),
     ).rejects.toThrow();
+  });
+
+  it('applies archive limits before restoring remote snapshots', async () => {
+    const store = new InMemoryRemoteSnapshotStore();
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'remote',
+        id: 'remote-snapshot',
+        store,
+      },
+      archiveLimits: {
+        maxInputBytes: null,
+        maxExtractedBytes: 4,
+        maxMembers: null,
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'keep.txt': {
+            type: 'file',
+            content: 'keep\n',
+          },
+        },
+      }),
+    );
+
+    const serialized = JSON.parse(
+      JSON.stringify(await client.serializeSessionState(session.state)),
+    ) as Record<string, unknown>;
+    await rm(session.state.workspaceRootPath, { recursive: true, force: true });
+
+    await expect(
+      client.resume(await client.deserializeSessionState(serialized)),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive extracted size exceeds limit',
+        limit: 4,
+        actual: 5,
+        member: 'keep.txt',
+      },
+    });
   });
 
   it('rejects restoring remote snapshots into a symlinked workspace root', async () => {

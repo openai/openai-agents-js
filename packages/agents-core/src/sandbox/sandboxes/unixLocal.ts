@@ -25,6 +25,7 @@ import type {
   SandboxClientOptions,
   SandboxClientCreateArgs,
   SandboxArchiveLimits,
+  SandboxClientResumeOptions,
   SandboxConcurrencyLimits,
 } from '../client';
 import {
@@ -938,12 +939,17 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
   async resume(
     state: UnixLocalSandboxSessionState,
+    options: SandboxClientResumeOptions = {},
   ): Promise<UnixLocalSandboxSession> {
-    const restoredState = await this.restoreIfNeeded(state);
+    const archiveLimits =
+      options.archiveLimits === undefined
+        ? this.options.archiveLimits
+        : options.archiveLimits;
+    const restoredState = await this.restoreIfNeeded(state, archiveLimits);
     return new UnixLocalSandboxSession({
       state: restoredState,
       defaultShell: this.options.defaultShell,
-      archiveLimits: this.options.archiveLimits,
+      archiveLimits,
     });
   }
 
@@ -983,13 +989,18 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
   private async restoreIfNeeded(
     state: UnixLocalSandboxSessionState,
+    archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<UnixLocalSandboxSessionState> {
     if (await pathExists(state.workspaceRootPath)) {
       if (await canReuseLocalSnapshotWorkspace(state)) {
         return state;
       }
       if (await localSnapshotIsRestorable(state)) {
-        return await restoreSnapshotAndMounts(state, state.workspaceRootPath);
+        return await restoreSnapshotAndMounts(
+          state,
+          state.workspaceRootPath,
+          archiveLimits,
+        );
       }
       return state;
     }
@@ -1011,6 +1022,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
         workspaceRootOwned: true,
       },
       workspaceRootPath,
+      archiveLimits,
     );
   }
 }
@@ -1018,10 +1030,12 @@ export class UnixLocalSandboxClient implements SandboxClient<
 async function restoreSnapshotAndMounts(
   state: UnixLocalSandboxSessionState,
   workspaceRootPath: string,
+  archiveLimits?: SandboxArchiveLimits | null,
 ): Promise<UnixLocalSandboxSessionState> {
   const restoredState = await restoreLocalSnapshotToWorkspace(
     state,
     workspaceRootPath,
+    { archiveLimits },
   );
   await materializeLocalWorkspaceManifestMounts(
     restoredState.manifest,
