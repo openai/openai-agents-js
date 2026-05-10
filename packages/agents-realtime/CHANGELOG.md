@@ -1,5 +1,24 @@
 # @openai/agents-realtime
 
+## 0.11.2
+
+### Patch Changes
+
+- 454f0b7: fix: preserve realtime output audio content from output item events
+- a3d28b1: fix: treat null realtime audio channels as unset
+- Updated dependencies [3f855d4]
+- Updated dependencies [077876e]
+- Updated dependencies [9e6d1e3]
+- Updated dependencies [2b5c8d2]
+- Updated dependencies [398b21f]
+- Updated dependencies [8e59259]
+- Updated dependencies [c5731d1]
+- Updated dependencies [81508e8]
+- Updated dependencies [8d2f707]
+- Updated dependencies [6883833]
+- Updated dependencies [b0d2a68]
+  - @openai/agents-core@0.11.2
+
 ## 0.11.1
 
 ### Patch Changes

@@ -1,5 +1,21 @@
 # @openai/agents-core
 
+## 0.11.2
+
+### Patch Changes
+
+- 3f855d4: fix: allow callback-only handoff hooks without input schemas
+- 077876e: fix: keep output guardrail tripwires behind sibling completion
+- 9e6d1e3: fix: drop reasoning items orphaned by dropped tool calls
+- 2b5c8d2: fix: exclude computer instances from provider detection
+- 398b21f: test: isolate and speed up slow sandbox tests
+- 8e59259: fix: add configurable sandbox archive extraction limits
+- c5731d1: fix: guard no-op tracing span ids
+- 81508e8: fix: preserve GitRepo root subpath aliases while validating unsafe subpaths
+- 8d2f707: fix: preserve latest response id when resuming server-managed runs
+- 6883833: fix: keep trace batch processing alive after exporter errors
+- b0d2a68: fix: validate sandbox GitRepo subpaths before materialization
+
 ## 0.11.1
 
 ### Patch Changes
