@@ -134,7 +134,19 @@ export function assertResumeRecreateAllowed(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof SandboxProviderError && error.details) {
+    return `${message} Details: ${formatErrorDetails(error.details)}`;
+  }
+  return message;
+}
+
+function formatErrorDetails(details: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details);
+  }
 }
 
 function isNotFoundErrorRecord(error: unknown, seen: Set<object>): boolean {

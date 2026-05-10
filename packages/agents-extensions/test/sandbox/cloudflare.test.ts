@@ -542,6 +542,22 @@ describe('CloudflareSandboxClient', () => {
       },
     });
 
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        error: 'pool error: Failed to start container',
+        code: 'pool_error',
+      }),
+    );
+    await expect(session.execCommand({ cmd: 'ls' })).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'cloudflare',
+        operation: 'execute command',
+        sandboxId: 'cf_test',
+        cause: 'pool_error: pool error: Failed to start container',
+      },
+    });
+
     vi.mocked(global.fetch)
       .mockResolvedValueOnce(
         sseExecResponse([
@@ -566,17 +582,72 @@ describe('CloudflareSandboxClient', () => {
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce(
-      new Response('delete failed', { status: 500 }),
+      jsonResponse(
+        {
+          error: 'pool error: Failed to start container',
+          code: 'pool_error',
+        },
+        502,
+      ),
     );
     await expect(session.delete()).rejects.toMatchObject({
       code: 'provider_error',
       details: {
         provider: 'cloudflare',
         operation: 'delete sandbox',
-        status: 500,
+        status: 502,
         sandboxId: 'cf_test',
+        cause: 'pool_error: pool error: Failed to start container',
       },
     });
+  });
+
+  test('keeps Cloudflare exec and cleanup details when manifest apply fails', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (url.endsWith('/v1/sandbox') && method === 'POST') {
+        return jsonResponse({ id: 'cf_test' });
+      }
+
+      if (url.includes('/exec') && method === 'POST') {
+        return jsonResponse({
+          error: 'pool error: Failed to start container',
+          code: 'pool_error',
+        });
+      }
+
+      if (url.includes('/v1/sandbox/cf_test') && method === 'DELETE') {
+        return jsonResponse(
+          {
+            error: 'pool error: Failed to start container',
+            code: 'pool_error',
+          },
+          502,
+        );
+      }
+
+      return new Response(null, { status: 404 });
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            'README.md': {
+              type: 'file',
+              content: '# Hello\n',
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      /Manifest error: CloudflareSandboxClient failed to execute command\. Details: .*"cause":"pool_error: pool error: Failed to start container".*Close error: CloudflareSandboxClient failed to delete sandbox\. Details: .*"status":502.*"cause":"pool_error: pool error: Failed to start container"/u,
+    );
   });
 
   test('rejects non-workspace roots when applying manifests to sessions', async () => {

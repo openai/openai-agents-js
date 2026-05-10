@@ -629,9 +629,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           },
         );
         if (!response.ok && response.status !== 404) {
-          throw cloudflareProviderHttpError('delete sandbox', response, {
-            sandboxId: this.state.sandboxId,
-          });
+          throw await cloudflareProviderHttpErrorWithBody(
+            'delete sandbox',
+            response,
+            {
+              sandboxId: this.state.sandboxId,
+            },
+          );
         }
       },
     );
@@ -723,9 +727,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       },
     );
     if (!response.ok) {
-      throw cloudflareProviderHttpError('execute command', response, {
-        sandboxId: this.state.sandboxId,
-      });
+      throw await cloudflareProviderHttpErrorWithBody(
+        'execute command',
+        response,
+        {
+          sandboxId: this.state.sandboxId,
+        },
+      );
     }
     if (!response.body) {
       throw new SandboxProviderError(
@@ -742,6 +750,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const decoder = new TextDecoder();
     const reader = response.body.getReader();
     let buffer = '';
+    let rawStream = '';
     let stdout = '';
     let stderr = '';
     let exitCode: number | undefined;
@@ -785,7 +794,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       if (chunk.done) {
         break;
       }
-      buffer += decoder.decode(chunk.value, { stream: true });
+      const text = decoder.decode(chunk.value, { stream: true });
+      rawStream += text;
+      buffer += text;
       const { events, remaining } = splitCompleteSseEvents(buffer);
       buffer = remaining;
       for (const part of events) {
@@ -796,7 +807,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         processEvent(event);
       }
     }
-    buffer += decoder.decode();
+    const tail = decoder.decode();
+    rawStream += tail;
+    buffer += tail;
     for (const part of collectSseEvents(buffer)) {
       const event = parseSseEvent(part);
       if (event) {
@@ -804,11 +817,27 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       }
     }
 
+    const output = [stdout.trimEnd(), stderr.trimEnd()]
+      .filter((value) => value.length > 0)
+      .join('\n');
+    if (exitCode === undefined && output.length === 0) {
+      const cause = formatCloudflareResponseBody(rawStream);
+      if (cause) {
+        throw new SandboxProviderError(
+          'CloudflareSandboxClient failed to execute command.',
+          {
+            provider: 'cloudflare',
+            operation: 'execute command',
+            sandboxId: this.state.sandboxId,
+            cause,
+          },
+        );
+      }
+    }
+
     return {
       exitCode: exitCode ?? 1,
-      output: [stdout.trimEnd(), stderr.trimEnd()]
-        .filter((value) => value.length > 0)
-        .join('\n'),
+      output,
     };
   }
 
@@ -1385,6 +1414,59 @@ function cloudflareProviderHttpError(
       ...context,
     },
   );
+}
+
+async function cloudflareProviderHttpErrorWithBody(
+  operation: string,
+  response: Response,
+  context: Record<string, unknown> = {},
+): Promise<SandboxProviderError> {
+  const cause = await readCloudflareErrorBody(response);
+  return new SandboxProviderError(
+    `CloudflareSandboxClient failed to ${operation}.`,
+    {
+      provider: 'cloudflare',
+      operation,
+      status: response.status,
+      ...context,
+      ...(cause ? { cause } : {}),
+    },
+  );
+}
+
+async function readCloudflareErrorBody(
+  response: Response,
+): Promise<string | undefined> {
+  try {
+    return formatCloudflareResponseBody(await response.text());
+  } catch (error) {
+    return `failed to read error body: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function formatCloudflareResponseBody(body: string): string | undefined {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(trimmed) as unknown;
+    if (isRecord(payload)) {
+      const error = payload.error;
+      const code = payload.code;
+      if (typeof error === 'string' && typeof code === 'string') {
+        return `${code}: ${error}`;
+      }
+      if (typeof error === 'string') {
+        return error;
+      }
+    }
+  } catch {
+    // Not a JSON error response.
+  }
+  return trimmed;
 }
 
 function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {
