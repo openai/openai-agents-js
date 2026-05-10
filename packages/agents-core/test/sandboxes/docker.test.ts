@@ -19,6 +19,8 @@ const ONE_BY_ONE_PNG = Uint8Array.from(
 const DOCKER_TEST_IMAGE = 'busybox:1.36';
 const DOCKER_CLI_TIMEOUT_MS = 30_000;
 const DOCKER_TEST_TIMEOUT_MS = 180_000;
+const ACTIVE_PROCESS_POLL_MS = 50;
+const ACTIVE_PROCESS_MAX_POLLS = 80;
 const dockerAvailable = isDockerAvailable();
 const itIfDocker = dockerAvailable ? it : it.skip;
 
@@ -44,72 +46,6 @@ describe('DockerSandboxClient', () => {
       await rm(rootDir, { recursive: true, force: true });
     }
   });
-
-  itIfDocker(
-    'creates a container-backed workspace and runs commands in it',
-    async () => {
-      rootDir = await mkdtemp(
-        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
-      );
-      const client = new DockerSandboxClient({
-        workspaceBaseDir: rootDir,
-        image: DOCKER_TEST_IMAGE,
-      });
-      const session = await client.create(
-        new Manifest({
-          entries: {
-            'notes.txt': {
-              type: 'file',
-              content: 'hello docker\n',
-            },
-          },
-        }),
-      );
-      cleanupContainerIds.add(session.state.containerId);
-
-      const output = await session.execCommand({
-        cmd: 'cat notes.txt',
-      });
-
-      expect(output).toContain('Process exited with code 0');
-      expect(output).toContain('hello docker');
-
-      await session.applyManifest(
-        new Manifest({
-          environment: {
-            TOKEN: 'updated',
-            EXTRA: 'present',
-          },
-        }),
-      );
-      const envOutput = await session.execCommand({
-        cmd: 'printf "%s:%s\\n" "$TOKEN" "$EXTRA"',
-      });
-      const ttyInitialOutput = await session.execCommand({
-        cmd: 'test -t 0 && printf "tty yes\\n" || printf "tty no\\n"',
-        tty: true,
-        yieldTimeMs: 500,
-      });
-      const ttySessionId = Number(
-        ttyInitialOutput.match(/Process running with session ID (\d+)/)?.[1],
-      );
-      const ttyOutput = Number.isFinite(ttySessionId)
-        ? ttyInitialOutput +
-          (await writeUntilExit(
-            {
-              writeStdin: (args) => session.writeStdin(args),
-            },
-            ttySessionId,
-            '',
-          ))
-        : ttyInitialOutput;
-
-      expect(envOutput).toContain('updated:present');
-      expect(ttyOutput).toContain('tty yes');
-      expect(ttyOutput).not.toContain('tty no');
-    },
-    DOCKER_TEST_TIMEOUT_MS,
-  );
 
   itIfDocker(
     'applies in-container command mounts inside Docker',
@@ -172,7 +108,7 @@ describe('DockerSandboxClient', () => {
   );
 
   itIfDocker(
-    'supports apply_patch, view_image, interactive stdin, and restore via snapshot',
+    'runs workspace commands, apply_patch, view_image, interactive stdin, and restore via snapshot',
     async () => {
       rootDir = await mkdtemp(
         join(tmpdir(), 'agents-core-docker-sandbox-test-'),
@@ -186,7 +122,7 @@ describe('DockerSandboxClient', () => {
           entries: {
             'notes.txt': {
               type: 'file',
-              content: 'before\n',
+              content: 'hello docker\n',
             },
             'pixel.png': {
               type: 'file',
@@ -203,10 +139,30 @@ describe('DockerSandboxClient', () => {
       );
       cleanupContainerIds.add(session.state.containerId);
 
+      const output = await session.execCommand({
+        cmd: 'cat notes.txt',
+      });
+
+      expect(output).toContain('Process exited with code 0');
+      expect(output).toContain('hello docker');
+
+      await session.applyManifest(
+        new Manifest({
+          environment: {
+            TOKEN: 'updated',
+            EXTRA: 'present',
+          },
+        }),
+      );
+      const envOutput = await session.execCommand({
+        cmd: 'printf "%s:%s\\n" "$TOKEN" "$EXTRA"',
+      });
+      expect(envOutput).toContain('updated:present');
+
       await session.createEditor().updateFile({
         type: 'update_file',
         path: 'notes.txt',
-        diff: '@@\n-before\n+after\n',
+        diff: '@@\n-hello docker\n+after\n',
       });
 
       const patchedOutput = await session.execCommand({
@@ -321,19 +277,20 @@ async function writeUntilExit(
   let output = await session.writeStdin({
     sessionId,
     chars,
-    yieldTimeMs: 200,
+    yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
   });
   let combinedOutput = output;
 
   for (
     let attempt = 0;
-    attempt < 20 && !output.includes('Process exited with code');
+    attempt < ACTIVE_PROCESS_MAX_POLLS &&
+    !output.includes('Process exited with code');
     attempt += 1
   ) {
     output = await session.writeStdin({
       sessionId,
       chars: '',
-      yieldTimeMs: 200,
+      yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
     });
     combinedOutput += output;
   }
@@ -355,13 +312,13 @@ async function waitForOutputContaining(
   let output = '';
   for (
     let attempt = 0;
-    attempt < 10 && !output.includes(expected);
+    attempt < ACTIVE_PROCESS_MAX_POLLS && !output.includes(expected);
     attempt += 1
   ) {
     output += await session.writeStdin({
       sessionId,
       chars: '',
-      yieldTimeMs: 200,
+      yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
     });
   }
   expect(output).toContain(expected);

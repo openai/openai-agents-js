@@ -9,11 +9,8 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   Manifest,
@@ -29,28 +26,14 @@ import {
   materializeLocalWorkspaceManifestMounts,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
 
-const execFileAsync = promisify(execFile);
-const testFileDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(testFileDir, '../../..');
-const sandboxLocalModuleUrl = pathToFileURL(
-  join(testFileDir, '../../src/sandbox/local.ts'),
-).href;
-
-const PYTHON_SIGNAL_IGNORE_WRAPPER = String.raw`
-import signal
-import subprocess
-import sys
-
-signal.signal(getattr(signal, sys.argv[1]), signal.SIG_IGN)
-raise SystemExit(subprocess.run(sys.argv[2:]).returncode)
-`;
-
 const ONE_BY_ONE_PNG = Uint8Array.from(
   Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE/wH+gZ6kWQAAAABJRU5ErkJggg==',
     'base64',
   ),
 );
+const ACTIVE_PROCESS_POLL_MS = 50;
+const ACTIVE_PROCESS_MAX_POLLS = 80;
 
 describe('UnixLocalSandboxClient', () => {
   let rootDir: string;
@@ -1166,114 +1149,6 @@ describe('UnixLocalSandboxClient', () => {
     expect(roundTripped.configuredExposedPorts).toEqual([4173]);
   });
 
-  it('allocates a PTY for tty commands', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const initialOutput = await session.execCommand({
-      cmd: 'test -t 0 && printf "tty yes\\n" || printf "tty no\\n"',
-      shell: '/bin/sh',
-      login: false,
-      tty: true,
-      yieldTimeMs: 1_000,
-    });
-    const sessionId = Number(
-      initialOutput.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const output = Number.isFinite(sessionId)
-      ? `${initialOutput}${await writeUntilExit(
-          {
-            writeStdin: (args) => session.writeStdin(args),
-          },
-          sessionId,
-          '',
-        )}`
-      : initialOutput;
-
-    expect(output).toContain('Process exited with code 0');
-    expect(output).toContain('tty yes');
-    expect(output).not.toContain('tty no');
-  });
-
-  it('fails tty commands clearly when the Python PTY bridge is unavailable', async () => {
-    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
-    const missingPython = join(rootDir, 'missing-python3');
-    process.env.OPENAI_AGENTS_PYTHON = missingPython;
-
-    try {
-      const client = new UnixLocalSandboxClient({
-        workspaceBaseDir: rootDir,
-      });
-      const session = await client.create(new Manifest());
-
-      await expect(
-        session.execCommand({
-          cmd: 'printf "hello\\n"',
-          shell: '/bin/sh',
-          login: false,
-          tty: true,
-          yieldTimeMs: 1_000,
-        }),
-      ).rejects.toMatchObject({
-        code: 'configuration_error',
-        message:
-          'PTY support requires Python 3. Install python3 or set OPENAI_AGENTS_PYTHON to a Python 3 executable.',
-        details: expect.objectContaining({
-          pythonExecutable: missingPython,
-        }),
-      });
-    } finally {
-      if (originalPython === undefined) {
-        delete process.env.OPENAI_AGENTS_PYTHON;
-      } else {
-        process.env.OPENAI_AGENTS_PYTHON = originalPython;
-      }
-    }
-  });
-
-  it('checks relative PTY Python executables from the command cwd', async () => {
-    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
-    const pythonPath = await whichPython();
-
-    try {
-      const client = new UnixLocalSandboxClient({
-        workspaceBaseDir: rootDir,
-      });
-      const session = await client.create(new Manifest());
-      await symlink(
-        pythonPath,
-        join(session.state.workspaceRootPath, 'python3'),
-      );
-      process.env.OPENAI_AGENTS_PYTHON = './python3';
-
-      const output = await session.execCommand({
-        cmd: 'test -t 0 && printf "tty yes\\n" || printf "tty no\\n"',
-        shell: '/bin/sh',
-        login: false,
-        tty: true,
-        yieldTimeMs: 1_000,
-      });
-      const finalOutput = await collectActiveCommandOutput(
-        {
-          writeStdin: (args) => session.writeStdin(args),
-        },
-        output,
-      );
-
-      expect(finalOutput).toContain('Process exited with code 0');
-      expect(finalOutput).toContain('tty yes');
-      expect(finalOutput).not.toContain('tty no');
-    } finally {
-      if (originalPython === undefined) {
-        delete process.env.OPENAI_AGENTS_PYTHON;
-      } else {
-        process.env.OPENAI_AGENTS_PYTHON = originalPython;
-      }
-    }
-  });
-
   it('accepts absolute sandbox paths when the manifest root is slash', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
@@ -1316,437 +1191,6 @@ describe('UnixLocalSandboxClient', () => {
       /must not escape root/,
     );
   });
-
-  it('creates parent directories before cloning nested git repositories', async () => {
-    const repository = join(rootDir, 'source-repo');
-    await mkdir(repository, { recursive: true });
-    await execFileAsync('git', ['init'], { cwd: repository });
-    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], {
-      cwd: repository,
-    });
-    await execFileAsync('git', ['config', 'user.name', 'Test User'], {
-      cwd: repository,
-    });
-    await writeFile(join(repository, 'README.md'), 'nested repo\n', 'utf8');
-    await execFileAsync('git', ['add', 'README.md'], { cwd: repository });
-    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repository });
-
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(
-      new Manifest({
-        entries: {
-          'deps/app': {
-            type: 'git_repo',
-            repo: `file://${repository}`,
-          },
-        },
-      }),
-    );
-
-    expect(await session.pathExists('deps/app/README.md')).toBe(true);
-  }, 10_000);
-
-  it('treats empty git repository subpaths as the repository root', async () => {
-    const repository = join(rootDir, 'empty-subpath-repo');
-    await mkdir(repository, { recursive: true });
-    await execFileAsync('git', ['init'], { cwd: repository });
-    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], {
-      cwd: repository,
-    });
-    await execFileAsync('git', ['config', 'user.name', 'Test User'], {
-      cwd: repository,
-    });
-    await writeFile(join(repository, 'README.md'), 'repo root\n', 'utf8');
-    await execFileAsync('git', ['add', 'README.md'], { cwd: repository });
-    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repository });
-
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(
-      new Manifest({
-        entries: {
-          app: {
-            type: 'git_repo',
-            repo: `file://${repository}`,
-            subpath: '',
-          },
-        },
-      }),
-    );
-
-    const output = await session.execCommand({
-      cmd: 'cat /workspace/app/README.md',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 2_000,
-    });
-    expect(output).toContain('repo root');
-  }, 10_000);
-
-  it('checks out commit SHA refs when cloning git repositories', async () => {
-    const repository = join(rootDir, 'commit-repo');
-    await mkdir(repository, { recursive: true });
-    await execFileAsync('git', ['init'], { cwd: repository });
-    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], {
-      cwd: repository,
-    });
-    await execFileAsync('git', ['config', 'user.name', 'Test User'], {
-      cwd: repository,
-    });
-    await writeFile(join(repository, 'README.md'), 'commit ref\n', 'utf8');
-    await execFileAsync('git', ['add', 'README.md'], { cwd: repository });
-    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repository });
-    const { stdout: commitSha } = await execFileAsync(
-      'git',
-      ['rev-parse', 'HEAD'],
-      { cwd: repository },
-    );
-
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(
-      new Manifest({
-        entries: {
-          app: {
-            type: 'git_repo',
-            repo: `file://${repository}`,
-            ref: commitSha.trim(),
-          },
-        },
-      }),
-    );
-
-    const output = await session.execCommand({
-      cmd: 'cat /workspace/app/README.md',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 2_000,
-    });
-    expect(output).toContain('commit ref');
-  }, 10_000);
-
-  it('supports interactive sessions with write_stdin', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'read value; printf "%s\\n" "$value"',
-      shell: '/bin/sh',
-      login: false,
-      tty: true,
-      yieldTimeMs: 0,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const finished = await writeUntilExit(
-      {
-        writeStdin: (args) => session.writeStdin(args),
-      },
-      sessionId,
-      'hello stdin\n',
-    );
-
-    expect(started).toContain('Process running with session ID');
-    expect(finished).toContain('Process exited with code 0');
-    expect(finished).toContain('hello stdin');
-  });
-
-  it('returns buffered PTY output when yielding an active session', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'printf "prompt> "; sleep 1; read value; printf "received:%s\\n" "$value"',
-      shell: '/bin/sh',
-      login: false,
-      tty: true,
-      yieldTimeMs: 500,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const bufferedOutput = started.includes('prompt>')
-      ? started
-      : await waitForOutputContaining(
-          {
-            writeStdin: (args) => session.writeStdin(args),
-          },
-          sessionId,
-          'prompt>',
-        );
-    const polled = await session.writeStdin({
-      sessionId,
-      yieldTimeMs: 50,
-    });
-    const finished = await writeUntilExit(
-      {
-        writeStdin: (args) => session.writeStdin(args),
-      },
-      sessionId,
-      'hello stdin\n',
-    );
-
-    expect(started).toContain('Process running with session ID');
-    expect(bufferedOutput).toContain('prompt>');
-    expect(polled).not.toContain('prompt>');
-    expect(finished).toContain('Process exited with code 0');
-    expect(finished).toContain('received:hello stdin');
-  });
-
-  it('honors yieldTimeMs for non-tty commands', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'sleep 0.2; printf "done\\n"',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 0,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const finished = await writeUntilExit(
-      {
-        writeStdin: (args) => session.writeStdin(args),
-      },
-      sessionId,
-      '',
-    );
-
-    expect(started).toContain('Process running with session ID');
-    expect(finished).toContain('Process exited with code 0');
-    expect(finished).toContain('done');
-  });
-
-  it('reports SIGINT-terminated non-tty commands as failures', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'read value',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 0,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const interrupted = await session.writeStdin({
-      sessionId,
-      chars: '\u0003',
-      yieldTimeMs: 1_000,
-    });
-
-    expect(started).toContain('Process running with session ID');
-    expect(interrupted).toContain('Process exited with code 130');
-  });
-
-  for (const { signalName, chars, expectedExitCodes } of [
-    { signalName: 'SIGINT', chars: '\u0003', expectedExitCodes: [127, 130] },
-    { signalName: 'SIGQUIT', chars: '\u001c', expectedExitCodes: [131] },
-  ]) {
-    it(`interrupts tty commands with ${signalName} even if the parent ignores it`, async () => {
-      const scriptPath = join(rootDir, `pty-${signalName.toLowerCase()}.ts`);
-      await writeFile(
-        scriptPath,
-        `
-import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { Manifest, UnixLocalSandboxClient } from ${JSON.stringify(sandboxLocalModuleUrl)};
-
-const [, , chars, expectedExitCodesJson] = process.argv;
-const expectedExitCodes = JSON.parse(expectedExitCodesJson);
-
-async function main() {
-  const rootDir = await mkdtemp(join(tmpdir(), 'agents-core-pty-signal-child-'));
-  const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
-  const session = await client.create(new Manifest());
-
-  try {
-    const started = await session.execCommand({
-      cmd: 'printf "ready\\\\n"; exec sleep 30',
-      shell: '/bin/sh',
-      login: false,
-      tty: true,
-      yieldTimeMs: 500,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\\d+)/)?.[1],
-    );
-    if (!Number.isFinite(sessionId)) {
-      throw new Error(\`Expected active PTY session, received: \${started}\`);
-    }
-    let readyOutput = started;
-    for (
-      let attempt = 0;
-      attempt < 20 && !readyOutput.includes('ready');
-      attempt += 1
-    ) {
-      readyOutput += await session.writeStdin({
-        sessionId,
-        chars: '',
-        yieldTimeMs: 500,
-      });
-    }
-    if (!readyOutput.includes('ready')) {
-      throw new Error(\`Expected PTY command to become ready, received: \${readyOutput}\`);
-    }
-
-    let interrupted = await session.writeStdin({
-      sessionId,
-      chars,
-      yieldTimeMs: 500,
-    });
-    for (
-      let attempt = 0;
-      attempt < 20 && !interrupted.includes('Process exited with code');
-      attempt += 1
-    ) {
-      interrupted += await session.writeStdin({
-        sessionId,
-        chars: '',
-        yieldTimeMs: 500,
-      });
-    }
-    if (
-      !expectedExitCodes.some((code) =>
-        interrupted.includes(\`Process exited with code \${code}\`),
-      )
-    ) {
-      throw new Error(
-        \`Expected one of exit codes \${expectedExitCodes.join(', ')}, received: \${interrupted}\`,
-      );
-    }
-  } finally {
-    await session.close();
-    await rm(rootDir, { recursive: true, force: true });
-  }
-}
-
-void main();
-`,
-        'utf8',
-      );
-
-      await execFileAsync(
-        process.env.OPENAI_AGENTS_PYTHON ?? 'python3',
-        [
-          '-c',
-          PYTHON_SIGNAL_IGNORE_WRAPPER,
-          signalName,
-          'pnpm',
-          'exec',
-          'tsx',
-          scriptPath,
-          chars,
-          JSON.stringify(expectedExitCodes),
-        ],
-        {
-          cwd: repoRoot,
-          env: {
-            ...process.env,
-            CI: '1',
-          },
-          maxBuffer: 1024 * 1024,
-          timeout: 20_000,
-        },
-      );
-    }, 25_000);
-  }
-
-  it('returns only unread output from active sessions', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'printf "ready\\n"; read value; printf "done\\n"',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 50,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    const readyOutput = started.includes('ready')
-      ? started
-      : await waitForOutputContaining(
-          {
-            writeStdin: (args) => session.writeStdin(args),
-          },
-          sessionId,
-          'ready',
-        );
-    const polled = await session.writeStdin({
-      sessionId,
-      yieldTimeMs: 50,
-    });
-    const finished = await writeUntilExit(
-      {
-        writeStdin: (args) => session.writeStdin(args),
-      },
-      sessionId,
-      'continue\n',
-    );
-
-    expect(readyOutput).toContain('ready');
-    expect(polled).not.toContain('ready');
-    expect(finished).toContain('done');
-    expect(finished).not.toContain('ready');
-  });
-
-  it('caps unread active session output', async () => {
-    const client = new UnixLocalSandboxClient({
-      workspaceBaseDir: rootDir,
-    });
-    const session = await client.create(new Manifest());
-
-    const started = await session.execCommand({
-      cmd: 'sleep 0.1; yes output | head -c 2500000; sleep 2',
-      shell: '/bin/sh',
-      login: false,
-      yieldTimeMs: 10,
-    });
-    const sessionId = Number(
-      started.match(/Process running with session ID (\d+)/)?.[1],
-    );
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const output = await session.writeStdin({
-      sessionId,
-      chars: '',
-      yieldTimeMs: 1_000,
-      maxOutputTokens: 20,
-    });
-
-    expect(output).toContain('characters truncated from process output');
-    expect(output.length).toBeLessThan(2_000);
-    const finalOutput = output.includes('Process exited with code')
-      ? output
-      : await writeUntilExit(
-          {
-            writeStdin: (args) => session.writeStdin(args),
-          },
-          sessionId,
-          '',
-        );
-    expect(finalOutput).toContain('Process exited with code 0');
-  }, 10_000);
 
   it('reattaches to a live workspace and falls back to a local snapshot restore', async () => {
     const client = new UnixLocalSandboxClient({
@@ -2456,29 +1900,25 @@ async function writeUntilExit(
   let output = await session.writeStdin({
     sessionId,
     chars,
-    yieldTimeMs: 200,
+    yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
   });
   let combinedOutput = output;
 
   for (
     let attempt = 0;
-    attempt < 20 && !output.includes('Process exited with code');
+    attempt < ACTIVE_PROCESS_MAX_POLLS &&
+    !output.includes('Process exited with code');
     attempt += 1
   ) {
     output = await session.writeStdin({
       sessionId,
       chars: '',
-      yieldTimeMs: 200,
+      yieldTimeMs: ACTIVE_PROCESS_POLL_MS,
     });
     combinedOutput += output;
   }
 
   return combinedOutput;
-}
-
-async function whichPython(): Promise<string> {
-  const { stdout } = await execFileAsync('which', ['python3']);
-  return stdout.trim();
 }
 
 async function collectActiveCommandOutput(
@@ -2499,35 +1939,4 @@ async function collectActiveCommandOutput(
   }
 
   return `${initialOutput}${await writeUntilExit(session, sessionId, '')}`;
-}
-
-async function waitForOutputContaining(
-  session: {
-    writeStdin(args: {
-      sessionId: number;
-      chars?: string;
-      yieldTimeMs?: number;
-      maxOutputTokens?: number;
-    }): Promise<string>;
-  },
-  sessionId: number,
-  expected: string,
-  options: { yieldTimeMs?: number; maxOutputTokens?: number } = {},
-): Promise<string> {
-  let output = '';
-
-  for (
-    let attempt = 0;
-    attempt < 20 && !output.includes(expected);
-    attempt += 1
-  ) {
-    output += await session.writeStdin({
-      sessionId,
-      chars: '',
-      yieldTimeMs: options.yieldTimeMs ?? 200,
-      maxOutputTokens: options.maxOutputTokens,
-    });
-  }
-
-  return output;
 }

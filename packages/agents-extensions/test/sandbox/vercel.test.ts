@@ -8,7 +8,7 @@ import {
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
@@ -30,6 +30,8 @@ const getAuthMock = vi.fn();
 const refreshTokenMock = vi.fn();
 const updateAuthConfigMock = vi.fn();
 const remoteFilePaths = new Set<string>();
+const originalCwd = process.cwd();
+let isolatedProjectRoot: string | undefined;
 
 function makeSandbox(
   sandboxId: string,
@@ -61,6 +63,12 @@ function vercelAlreadyExistsError(path: string): unknown {
 
 function testExistsPath(command: string): string | undefined {
   return command.match(/^test -e '([^']+)'$/u)?.[1];
+}
+
+function useVercelCliProjectRoot(projectRoot: string): void {
+  process.chdir(projectRoot);
+  vi.stubEnv('INIT_CWD', projectRoot);
+  vi.stubEnv('PWD', projectRoot);
 }
 
 vi.mock('@vercel/sandbox', () => ({
@@ -133,6 +141,23 @@ describe('VercelSandboxClient', () => {
     stopMock.mockResolvedValue(undefined);
     snapshotMock.mockResolvedValue({ snapshotId: 'snap_test' });
     domainMock.mockReturnValue('https://3000-vercel.example.test');
+
+    isolatedProjectRoot = mkdtempSync(join(tmpdir(), 'vercel-cli-isolated-'));
+    useVercelCliProjectRoot(isolatedProjectRoot);
+    vi.stubEnv('VERCEL_PROJECT_ID', '');
+    vi.stubEnv('VERCEL_TEAM_ID', '');
+    vi.stubEnv('VERCEL_TOKEN', '');
+    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', '');
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    vi.unstubAllEnvs();
+
+    if (isolatedProjectRoot) {
+      rmSync(isolatedProjectRoot, { recursive: true, force: true });
+      isolatedProjectRoot = undefined;
+    }
   });
 
   test('rejects unsupported core create options instead of ignoring them', async () => {
@@ -238,15 +263,13 @@ describe('VercelSandboxClient', () => {
     const projectRoot = join(root, 'project');
     mkdirSync(authDir, { recursive: true });
     mkdirSync(projectRoot, { recursive: true });
-    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
     getAuthMock.mockReturnValue({
       token: 'cli_access_token',
       refreshToken: 'cli_refresh_token',
       expiresAt: new Date(Date.now() + 3_600_000),
     });
     vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    vi.stubEnv('INIT_CWD', projectRoot);
-    vi.stubEnv('PWD', projectRoot);
+    useVercelCliProjectRoot(projectRoot);
 
     try {
       const client = new VercelSandboxClient({
@@ -264,7 +287,6 @@ describe('VercelSandboxClient', () => {
         }),
       );
     } finally {
-      cwdSpy.mockRestore();
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
@@ -290,7 +312,7 @@ describe('VercelSandboxClient', () => {
       }),
     );
     vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    vi.stubEnv('INIT_CWD', projectRoot);
+    useVercelCliProjectRoot(projectRoot);
 
     try {
       const client = new VercelSandboxClient();
@@ -316,15 +338,13 @@ describe('VercelSandboxClient', () => {
     const projectRoot = join(root, 'project');
     mkdirSync(authDir, { recursive: true });
     mkdirSync(projectRoot, { recursive: true });
-    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(projectRoot);
     getAuthMock.mockReturnValue({
       token: 'cli_access_token',
       refreshToken: 'cli_refresh_token',
       expiresAt: new Date(Date.now() + 3_600_000),
     });
     vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    vi.stubEnv('INIT_CWD', projectRoot);
-    vi.stubEnv('PWD', projectRoot);
+    useVercelCliProjectRoot(projectRoot);
 
     try {
       const client = new VercelSandboxClient();
@@ -343,7 +363,6 @@ describe('VercelSandboxClient', () => {
         }),
       );
     } finally {
-      cwdSpy.mockRestore();
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
@@ -369,7 +388,7 @@ describe('VercelSandboxClient', () => {
       }),
     );
     vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    vi.stubEnv('INIT_CWD', projectRoot);
+    useVercelCliProjectRoot(projectRoot);
 
     let session: Awaited<ReturnType<VercelSandboxClient['create']>> | undefined;
     try {
