@@ -5,17 +5,17 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
     const agent = new Agent({
       name: 'MCP Assistant',
       instructions:
-        'You must always use the MCP tools to answer questions. The mcp server knows which repo to investigate, so you do not need to ask the user about it.',
+        'You must always use the MCP tools to answer repository questions.',
       tools: [
         hostedMcpTool({
-          serverLabel: 'gitmcp',
-          serverUrl: 'https://gitmcp.io/openai/codex',
+          serverLabel: 'deepwiki',
+          serverUrl: 'https://mcp.deepwiki.com/mcp',
         }),
       ],
     });
 
     const input =
-      'Which language is the repo I pointed in the MCP tool settings written in?';
+      'For the repository openai/codex, tell me the primary programming language.';
     if (stream) {
       const result = await run(agent, input, { stream: true });
       for await (const event of result) {

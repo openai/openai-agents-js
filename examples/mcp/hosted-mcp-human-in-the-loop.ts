@@ -16,26 +16,25 @@ async function confirm(item: RunToolApprovalItem): Promise<boolean> {
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 'always' | 'never' | { never, always }
   const requireApproval = {
-    never: { toolNames: ['search_codex_code'] },
-    always: {
-      toolNames: ['fetch_generic_url_content', 'fetch_codex_documentation'],
-    },
+    never: { toolNames: ['read_wiki_structure', 'read_wiki_contents'] },
+    always: { toolNames: ['ask_question'] },
   };
   const agent = new Agent({
     name: 'MCP Assistant',
     instructions:
-      'You must always use the MCP tools to answer questions. The mcp server knows which repo to investigate, so you do not need to ask the user about it.',
+      'You must always use the MCP tools to answer repository questions.',
     tools: [
       hostedMcpTool({
-        serverLabel: 'gitmcp',
-        serverUrl: 'https://gitmcp.io/openai/codex',
+        serverLabel: 'deepwiki',
+        serverUrl: 'https://mcp.deepwiki.com/mcp',
         requireApproval,
         // when you don't pass onApproval, the agent loop will handle the approval process
       }),
     ],
   });
 
-  const input = 'Which language is this repo written in?';
+  const input =
+    'For the repository openai/codex, tell me the primary programming language.';
 
   if (stream) {
     // Streaming

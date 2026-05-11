@@ -6,22 +6,25 @@ async function main(): Promise<void> {
     instructions: 'You must always use the MCP tools to answer questions.',
     tools: [
       hostedMcpTool({
-        serverLabel: 'gitmcp',
-        serverUrl: 'https://gitmcp.io/openai/codex',
+        serverLabel: 'deepwiki',
+        serverUrl: 'https://mcp.deepwiki.com/mcp',
         // 'always' | 'never' | { never, always }
         requireApproval: {
           never: {
-            toolNames: ['search_codex_code', 'fetch_codex_documentation'],
+            toolNames: ['read_wiki_structure', 'read_wiki_contents'],
           },
           always: {
-            toolNames: ['fetch_generic_url_content'],
+            toolNames: ['ask_question'],
           },
         },
       }),
     ],
   });
 
-  let result = await run(agent, 'Which language is this repo written in?');
+  let result = await run(
+    agent,
+    'For the repository openai/codex, tell me the primary programming language.',
+  );
   while (result.interruptions && result.interruptions.length) {
     for (const interruption of result.interruptions) {
       // Human in the loop here

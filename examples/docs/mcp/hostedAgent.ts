@@ -5,8 +5,8 @@ export const agent = new Agent({
   instructions: 'You must always use the MCP tools to answer questions.',
   tools: [
     hostedMcpTool({
-      serverLabel: 'gitmcp',
-      serverUrl: 'https://gitmcp.io/openai/codex',
+      serverLabel: 'deepwiki',
+      serverUrl: 'https://mcp.deepwiki.com/mcp',
     }),
   ],
 });
