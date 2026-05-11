@@ -34,6 +34,33 @@ type JsonCompatibleValue =
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
+
+async function sleepWithAbort(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(true);
+    }, delayMs);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 const UNSERIALIZABLE = Symbol('openaiTracingExporter.unserializable');
 const textEncoder = new TextEncoder();
 
@@ -765,10 +792,18 @@ export class OpenAITracingExporter implements TracingExporter {
           break;
         }
 
-        const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
-        await new Promise((resolve) => setTimeout(resolve, sleepTime));
-        delay = Math.min(delay * 2, this.#options.maxDelay);
         attempts++;
+        if (attempts >= this.#options.maxRetries) {
+          break;
+        }
+
+        const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        const shouldContinue = await sleepWithAbort(sleepTime, signal);
+        if (!shouldContinue) {
+          logger.error('Tracing: request aborted');
+          break;
+        }
+        delay = Math.min(delay * 2, this.#options.maxDelay);
       }
 
       if (attempts >= this.#options.maxRetries) {

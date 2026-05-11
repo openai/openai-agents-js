@@ -1171,6 +1171,47 @@ describe('OpenAITracingExporter', () => {
     warnSpy.mockRestore();
   });
 
+  it('stops retrying when aborted during retry backoff', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const item = fakeSpan;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'err',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const exporter = new OpenAITracingExporter({
+        apiKey: 'key2',
+        endpoint: 'url',
+        maxRetries: 3,
+        baseDelay: 1000,
+        maxDelay: 1000,
+      });
+      const controller = new AbortController();
+      const exportPromise = exporter.export([item], controller.signal);
+
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+      controller.abort();
+      await exportPromise;
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[non-fatal] Tracing: server error 500, retrying.',
+      );
+      expect(errorSpy).toHaveBeenCalledWith('Tracing: request aborted');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('stops on client error', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const item = fakeSpan;

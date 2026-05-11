@@ -370,6 +370,64 @@ describe('Trace & Span lifecycle', () => {
     onSpy.mockRestore();
   });
 
+  it('does not force exit when beforeExit tracing cleanup times out', async () => {
+    vi.useFakeTimers();
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit should not be called');
+    }) as never);
+    const onceSpy = vi.spyOn(process, 'once');
+    const onSpy = vi.spyOn(process, 'on');
+
+    try {
+      const provider = new TraceProvider();
+      const processor = new TestProcessor();
+      processor.shutdown = vi.fn(
+        () => new Promise<void>(() => {}),
+      ) as TestProcessor['shutdown'];
+      provider.setProcessors([processor]);
+
+      const beforeExitListener = onceSpy.mock.calls.find(
+        ([event]) => event === 'beforeExit',
+      )?.[1];
+      expect(beforeExitListener).toEqual(expect.any(Function));
+
+      const cleanupPromise =
+        typeof beforeExitListener === 'function'
+          ? beforeExitListener(0 as never)
+          : Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5000);
+      await cleanupPromise;
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Tracing cleanup timed out; continuing exit',
+      );
+      expect(processor.shutdown).toHaveBeenCalledWith(5000);
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      if (typeof beforeExitListener === 'function') {
+        process.off('beforeExit', beforeExitListener);
+      }
+      for (const [event, listener] of onSpy.mock.calls) {
+        if (
+          (event === 'SIGINT' ||
+            event === 'SIGTERM' ||
+            event === 'unhandledRejection') &&
+          typeof listener === 'function'
+        ) {
+          process.off(event, listener);
+        }
+      }
+    } finally {
+      warnSpy.mockRestore();
+      exitSpy.mockRestore();
+      onceSpy.mockRestore();
+      onSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back to module provider when global registration fails', () => {
     const symbol = Symbol.for('openai.agents.core.traceProvider');
     const globalHolder = globalThis as unknown as Record<
@@ -797,6 +855,39 @@ describe('BatchTraceProcessor', () => {
 
     debugSpy.mockRestore();
     vi.useRealTimers();
+  });
+
+  it('passes an abort signal to exporter during timed shutdown', async () => {
+    vi.useFakeTimers();
+    let exportSignal: AbortSignal | undefined;
+    let resolveExport: (() => void) | undefined;
+    const exporter: TracingExporter = {
+      export: async (_items, signal) => {
+        exportSignal = signal;
+        await new Promise<void>((resolve) => {
+          resolveExport = resolve;
+        });
+      },
+    };
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 5,
+      scheduleDelay: 10000,
+    });
+
+    try {
+      await processor.onTraceStart(new Trace({ name: 'abortable-export' }));
+      const shutdownPromise = processor.shutdown(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(exportSignal).toBeDefined();
+      expect(exportSignal?.aborted).toBe(true);
+
+      resolveExport?.();
+      await shutdownPromise;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

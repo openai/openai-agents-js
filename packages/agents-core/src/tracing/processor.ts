@@ -175,7 +175,10 @@ export class BatchTraceProcessor implements TracingProcessor {
     }
   }
 
-  async #exportBatches(force: boolean = false): Promise<void> {
+  async #exportBatches(
+    force: boolean = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (this.#buffer.length === 0) {
       return;
     }
@@ -187,7 +190,7 @@ export class BatchTraceProcessor implements TracingProcessor {
     const exportBatch = async (batch: Array<Trace | Span>): Promise<void> => {
       this.#exportInProgress = true;
       try {
-        await this.#exporter.export(batch);
+        await this.#exporter.export(batch, signal);
       } catch (error) {
         logger.error('Tracing exporter failed to export batch', error);
       } finally {
@@ -236,11 +239,10 @@ export class BatchTraceProcessor implements TracingProcessor {
       );
       if (!this.#exportInProgress) {
         // no current export in progress. Forcing all items to be exported
-        await this.#exportBatches(true);
+        await this.#exportBatches(true, this.#timeoutAbortController?.signal);
       }
       if (this.#timeoutAbortController?.signal.aborted) {
         logger.debug('Timeout reached, force flushing');
-        await this.#exportBatches(true);
         break;
       }
       // using setTimeout to add to the event loop and keep this alive until done

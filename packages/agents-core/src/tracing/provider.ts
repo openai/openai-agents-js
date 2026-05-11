@@ -203,15 +203,23 @@ export class TraceProvider {
     if (typeof process !== 'undefined' && typeof process.on === 'function') {
       // handling Node.js process termination
       const cleanup = async () => {
-        const timeout = setTimeout(() => {
-          console.warn('Cleanup timeout, forcing exit');
-          process.exit(1);
-        }, 5000);
+        const timeoutMs = 5000;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
 
         try {
-          await this.shutdown();
+          await Promise.race([
+            this.shutdown(timeoutMs),
+            new Promise<void>((resolve) => {
+              timeout = setTimeout(() => {
+                console.warn('Tracing cleanup timed out; continuing exit');
+                resolve();
+              }, timeoutMs);
+            }),
+          ]);
         } finally {
-          clearTimeout(timeout);
+          if (timeout) {
+            clearTimeout(timeout);
+          }
         }
       };
 
