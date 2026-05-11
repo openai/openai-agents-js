@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.11.3
+
+### Patch Changes
+
+- 2d39801: fix: make tracing shutdown best-effort on process exit
+- Updated dependencies [2d39801]
+  - @openai/agents-core@0.11.3
+
 ## 0.11.2
 
 ### Patch Changes
