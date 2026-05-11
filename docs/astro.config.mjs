@@ -126,6 +126,7 @@ const sidebar = [
       zh: '指南',
       ko: '가이드',
     },
+    collapsed: false,
     items: [
       {
         label: 'Agents',
@@ -143,6 +144,7 @@ const sidebar = [
           zh: '沙盒智能体',
           ko: '샌드박스 에이전트',
         },
+        collapsed: false,
         items: [
           {
             label: 'Quickstart',
@@ -299,88 +301,90 @@ const sidebar = [
           ko: '트레이싱',
         },
       },
-    ],
-  },
-  {
-    label: 'Voice Agents',
-    translations: {
-      ja: '音声エージェント',
-      zh: '语音智能体',
-      ko: '음성 에이전트',
-    },
-    items: [
       {
-        label: 'Overview',
-        link: '/guides/voice-agents',
+        label: 'Voice Agents',
         translations: {
-          ja: '音声エージェントの概要',
-          zh: '语音智能体概述',
-          ko: '음성 에이전트 개요',
+          ja: '音声エージェント',
+          zh: '语音智能体',
+          ko: '음성 에이전트',
         },
+        collapsed: false,
+        items: [
+          {
+            label: 'Overview',
+            link: '/guides/voice-agents',
+            translations: {
+              ja: '音声エージェントの概要',
+              zh: '语音智能体概述',
+              ko: '음성 에이전트 개요',
+            },
+          },
+          {
+            label: 'Quickstart',
+            link: '/guides/voice-agents/quickstart',
+            translations: {
+              ja: 'クイックスタート',
+              zh: '快速开始',
+              ko: '빠른 시작',
+            },
+          },
+          {
+            label: 'Building Voice Agents',
+            link: '/guides/voice-agents/build',
+            translations: {
+              ja: '音声エージェントの構築',
+              zh: '构建语音智能体',
+              ko: '음성 에이전트 구축',
+            },
+          },
+          {
+            label: 'Transport Mechanisms',
+            link: '/guides/voice-agents/transport',
+            translations: {
+              ja: 'リアルタイムトランスポート',
+              zh: '传输机制',
+              ko: '전송 방식',
+            },
+          },
+        ],
       },
       {
-        label: 'Quickstart',
-        link: '/guides/voice-agents/quickstart',
+        label: 'Extensions',
         translations: {
-          ja: 'クイックスタート',
-          zh: '快速开始',
-          ko: '빠른 시작',
+          ja: '拡張機能',
+          zh: '扩展',
+          ko: '확장 기능',
         },
-      },
-      {
-        label: 'Building Voice Agents',
-        link: '/guides/voice-agents/build',
-        translations: {
-          ja: '音声エージェントの構築',
-          zh: '构建语音智能体',
-          ko: '음성 에이전트 구축',
-        },
-      },
-      {
-        label: 'Transport Mechanisms',
-        link: '/guides/voice-agents/transport',
-        translations: {
-          ja: 'リアルタイムトランスポート',
-          zh: '传输机制',
-          ko: '전송 방식',
-        },
-      },
-    ],
-  },
-  {
-    label: 'Extensions',
-    translations: {
-      ja: '拡張機能',
-      zh: '扩展',
-      ko: '확장 기능',
-    },
-    items: [
-      {
-        label: 'AI SDK Integration',
-        link: '/extensions/ai-sdk',
-        translations: {
-          ja: 'AI SDK 連携',
-          zh: 'AI SDK 集成',
-          ko: 'AI SDK 연동',
-        },
-      },
-      {
-        label: 'Realtime Agents on Twilio',
-        link: '/extensions/twilio',
-        translations: {
-          ja: 'Twilio 上の Realtime Agent',
-          zh: 'Twilio 上的实时智能体',
-          ko: 'Twilio용 Realtime 에이전트',
-        },
-      },
-      {
-        label: 'Realtime Agents on Cloudflare',
-        link: '/extensions/cloudflare',
-        translations: {
-          ja: 'Cloudflare 上の Realtime Agent',
-          zh: 'Cloudflare 上的实时智能体',
-          ko: 'Cloudflare용 Realtime 에이전트',
-        },
+        collapsed: false,
+        items: [
+          {
+            label: 'AI SDK Integration',
+            link: '/extensions/ai-sdk',
+            translations: {
+              ja: 'AI SDK 連携',
+              zh: 'AI SDK 集成',
+              ko: 'AI SDK 연동',
+            },
+          },
+          {
+            label: 'Realtime Agents on Twilio',
+            link: '/extensions/twilio',
+            translations: {
+              ja: 'Twilio 上の Realtime Agent',
+              zh: 'Twilio 上的实时智能体',
+              ko: 'Twilio용 Realtime 에이전트',
+            },
+          },
+          {
+            label: 'Realtime Agents on Cloudflare',
+            link: '/extensions/cloudflare',
+            translations: {
+              ja: 'Cloudflare 上の Realtime Agent',
+              zh: 'Cloudflare 上的实时智能体',
+              ko: 'Cloudflare용 Realtime 에이전트',
+            },
+          },
+        ],
       },
     ],
   },
@@ -394,13 +398,22 @@ const sidebar = [
     },
   },
   {
+    label: 'Maintainers: release process',
+    link: '/guides/release',
+    translations: {
+      ja: 'リリースプロセス',
+      zh: '发布流程',
+      ko: '릴리스 프로세스',
+    },
+  },
+  {
     label: 'API Reference',
     translations: {
       ja: 'APIリファレンス',
       zh: 'API 参考',
       ko: 'API 레퍼런스',
     },
-    collapsed: false,
+    collapsed: true,
     items: [
       {
         label: '@openai/agents',
@@ -433,15 +446,6 @@ const sidebar = [
         items: [extensionsTypeDocSidebarGroup],
       },
     ],
-  },
-  {
-    label: 'Maintainers: release process',
-    link: '/guides/release',
-    translations: {
-      ja: 'リリースプロセス',
-      zh: '发布流程',
-      ko: '릴리스 프로세스',
-    },
   },
 ];
 
