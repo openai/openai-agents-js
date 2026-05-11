@@ -178,6 +178,10 @@ export class OpenAIConversationsSession
     return stripAssistantReplayMetadata(item);
   }
 
+  preserveReasoningItemIdsForPersistence(): boolean {
+    return true;
+  }
+
   async addItems(items: AgentInputItem[]): Promise<void> {
     if (!items.length) {
       return;
@@ -188,6 +192,9 @@ export class OpenAIConversationsSession
     const sanitizedItems = stripConversationPersistenceMetadata(
       getInputItems(normalizedItems),
     );
+    if (!sanitizedItems.length) {
+      return;
+    }
     await this.#client.conversations.items.create(conversationId, {
       items: sanitizedItems,
     });
@@ -252,19 +259,32 @@ function stripProviderModelForConversationPersistence(
 function stripConversationPersistenceMetadata(
   items: OpenAI.Responses.ResponseInputItem[],
 ): OpenAI.Responses.ResponseInputItem[] {
-  return items.map((item) => {
+  return items.flatMap((item) => {
     if (Array.isArray(item) || item === null || typeof item !== 'object') {
-      return item;
+      return [item];
     }
     const record = item as unknown as Record<string, unknown>;
+    if (isUnpersistableReasoningItem(record)) {
+      return [];
+    }
     const {
-      id: _id,
       providerData: _providerData,
       provider_data: _provider_data,
       ...rest
     } = record;
-    return rest as unknown as OpenAI.Responses.ResponseInputItem;
+    if (rest.type !== 'reasoning') {
+      delete rest.id;
+    }
+    return [rest as unknown as OpenAI.Responses.ResponseInputItem];
   });
+}
+
+function isUnpersistableReasoningItem(item: Record<string, unknown>): boolean {
+  return (
+    item.type === 'reasoning' &&
+    typeof item.id !== 'string' &&
+    typeof item.encrypted_content !== 'string'
+  );
 }
 
 function stripAssistantReplayMetadata(item: AgentInputItem): AgentInputItem {

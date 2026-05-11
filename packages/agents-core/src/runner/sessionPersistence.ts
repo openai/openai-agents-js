@@ -625,7 +625,9 @@ async function persistRunItemsToSession(options: {
     ...extraInputItems,
     ...extractOutputItemsFromRunItems(
       newRunItems,
-      state._reasoningItemIdPolicy,
+      session.preserveReasoningItemIdsForPersistence?.() === true
+        ? undefined
+        : state._reasoningItemIdPolicy,
     ),
   ];
 

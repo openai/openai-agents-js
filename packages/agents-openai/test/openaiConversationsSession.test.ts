@@ -514,6 +514,146 @@ describe('OpenAIConversationsSession', () => {
     });
   });
 
+  it('preserves reasoning identity and encrypted content when adding items', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      {
+        id: 'rs-input',
+        type: 'reasoning',
+        content: [],
+        providerData: { model: 'some-model' },
+      },
+    ];
+    const converted = [
+      {
+        id: 'rs-output',
+        type: 'reasoning',
+        summary: [],
+        encrypted_content: 'encrypted',
+        providerData: { server: 'metadata' },
+        provider_data: { server: 'snake' },
+      },
+    ];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: [
+        {
+          id: 'rs-output',
+          type: 'reasoning',
+          summary: [],
+          encrypted_content: 'encrypted',
+        },
+      ],
+    });
+  });
+
+  it('drops reasoning items that Conversations cannot persist', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      { type: 'message', role: 'user', content: 'hello' },
+      { type: 'reasoning', id: 'rs-input', content: [] },
+      { type: 'message', role: 'assistant', content: [] },
+    ];
+    const converted = [
+      {
+        id: 'msg-user',
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+      {
+        type: 'reasoning',
+        summary: [],
+      },
+      {
+        id: 'msg-assistant',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: [
+        {
+          type: 'message',
+          role: 'user',
+          content: 'hello',
+        },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [],
+        },
+      ],
+    });
+  });
+
+  it('skips the Conversations write when every item is unpersistable', async () => {
+    const createMock = vi.fn();
+    const inputItems = [{ type: 'reasoning', id: 'rs-input', content: [] }];
+    const converted = [{ type: 'reasoning', summary: [] }];
+
+    getInputItemsMock.mockReturnValue(converted as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   it('strips persistence metadata after converting hosted tool calls', async () => {
     const createMock = vi.fn();
     const inputItems = [

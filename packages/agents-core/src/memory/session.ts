@@ -47,6 +47,14 @@ export interface Session {
   prepareHistoryItemForModelInput?(item: AgentInputItem): AgentInputItem;
 
   /**
+   * Optionally preserve reasoning item IDs when persisting generated output.
+   *
+   * Some remote session stores require provider-assigned reasoning identities to accept stored
+   * reasoning items, even when model replay should omit those IDs.
+   */
+  preserveReasoningItemIdsForPersistence?(): boolean;
+
+  /**
    * Append new items to the conversation history.
    *
    * @param items - Items to add to the session history.

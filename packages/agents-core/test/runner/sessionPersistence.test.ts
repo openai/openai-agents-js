@@ -307,6 +307,61 @@ describe('saveStreamResultToSession', () => {
     ]);
   });
 
+  it('preserves streamed reasoning IDs when the session requires them', async () => {
+    class ReasoningPreservingSession extends TrackingSession {
+      preserveReasoningItemIdsForPersistence(): boolean {
+        return true;
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'StreamerReasoningPreserve',
+      outputType: 'text',
+      instructions: 'stream reasoning test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new ReasoningPreservingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+    state.setReasoningItemIdPolicy('omit');
+
+    state._modelResponses.push({
+      output: [],
+      usage: new Usage(),
+      responseId: 'resp_reasoning',
+    });
+    state._generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_stream',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        },
+        textAgent,
+      ),
+    ];
+
+    const streamedResult = new StreamedRunResult({
+      state,
+    });
+
+    await saveStreamResultToSession(session, streamedResult);
+
+    expect(session.items).toEqual([
+      {
+        type: 'reasoning',
+        id: 'rs_stream',
+        content: [{ type: 'input_text', text: 'thinking' }],
+      },
+    ]);
+  });
+
   it('skips writes when there is no new streamed output but still runs compaction', async () => {
     const textAgent = new Agent<UnknownContext, 'text'>({
       name: 'StreamerNoDelta',
@@ -1185,6 +1240,44 @@ describe('saveToSession', () => {
       this.items = [];
     }
   }
+
+  it('preserves reasoning IDs for sessions that require them', async () => {
+    class ReasoningPreservingSession extends MemorySession {
+      preserveReasoningItemIdsForPersistence(): boolean {
+        return true;
+      }
+    }
+
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'ReasoningSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new ReasoningPreservingSession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+    state.setReasoningItemIdPolicy('omit');
+
+    state._generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'rs_session',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        },
+        agent,
+      ),
+    ];
+
+    await saveToSession(session, [], new RunResult(state));
+
+    expect(session.items).toEqual([
+      {
+        type: 'reasoning',
+        id: 'rs_session',
+        content: [{ type: 'input_text', text: 'thinking' }],
+      },
+    ]);
+  });
 
   it('keeps tool_search ids when persisting session history without call ids', async () => {
     const agent = new Agent<UnknownContext, 'text'>({
