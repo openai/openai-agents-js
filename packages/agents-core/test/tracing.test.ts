@@ -428,6 +428,20 @@ describe('Trace & Span lifecycle', () => {
     }
   });
 
+  it('clears shutdown timeout when tracing buffer is empty', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const processor = new BatchTraceProcessor(new TestExporter());
+
+      await processor.shutdown(5000);
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back to module provider when global registration fails', () => {
     const symbol = Symbol.for('openai.agents.core.traceProvider');
     const globalHolder = globalThis as unknown as Record<
