@@ -1026,6 +1026,38 @@ describe('prepareInputItemsWithSession', () => {
     expect(result.sessionItems).toEqual([newItem]);
   });
 
+  it('matches cloned callback reasoning history with persisted ids when policy omits them', async () => {
+    const reasoningHistoryItem: AgentInputItem = {
+      id: 'rs_persisted',
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([reasoningHistoryItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => [{ ...history[0] }, { ...newItems[0] }],
+      {
+        reasoningItemIdPolicy: 'omit',
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'thinking' }],
+      },
+      newItem,
+    ]);
+    expect(result.sessionItems).toEqual([newItem]);
+  });
+
   it('keeps sanitized user history distinct when callbacks remove its id', async () => {
     const userHistoryItem: AgentInputItem = {
       id: 'conv-user',

@@ -382,7 +382,11 @@ export async function prepareInputItemsWithSession(
 
   const appended: AgentInputItem[] = [];
   for (const [index, item] of combined.entries()) {
-    const historyKey = getHistoryItemModelInputKey(session, item);
+    const historyKey = getHistoryItemModelInputKey(
+      session,
+      item,
+      reasoningItemIdPolicy,
+    );
     const newInputKey = getAgentInputItemKey(item);
     if (removeAgentInputFromPool(newInputRefs, item)) {
       decrementCount(newInputCounts, newInputKey);
