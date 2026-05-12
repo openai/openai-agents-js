@@ -715,7 +715,12 @@ export class RealtimeSession<
       if (functionTool && functionTool.type === 'function') {
         await this.#handleFunctionToolCall(toolCall, functionTool);
       } else {
-        throw new ModelBehaviorError(`Tool ${toolCall.name} not found`);
+        const message = `Tool ${toolCall.name} not found`;
+        this.#transport.sendFunctionCallOutput(toolCall, message, false);
+        this.emit('error', {
+          type: 'error',
+          error: new ModelBehaviorError(message),
+        });
       }
     }
   }

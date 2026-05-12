@@ -502,21 +502,24 @@ describe('RealtimeSession', () => {
     filterSpy.mockRestore();
   });
 
-  it('propagates errors from handleFunctionCall', async () => {
+  it('returns an error output without starting a response for unknown tools', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const errorEvent = waitForEvent<any[]>(session, 'error');
+    const outputEvent = transport.waitForNextFunctionCallOutput();
     transport.emit('function_call', {
       type: 'function_call',
       name: 'missing',
       callId: '1',
       arguments: '{}',
     });
+    const [toolCall, output, startResponse] = await outputEvent;
     const [error] = await errorEvent;
+    expect(toolCall.name).toBe('missing');
+    expect(output).toBe('Tool missing not found');
+    expect(startResponse).toBe(false);
     expect(error.error).toBeInstanceOf(ModelBehaviorError);
-    expect(errorSpy).toHaveBeenCalledWith(
-      'Error handling function call',
-      expect.any(Error),
-    );
+    expect(error.error.message).toBe('Tool missing not found');
+    expect(errorSpy).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
