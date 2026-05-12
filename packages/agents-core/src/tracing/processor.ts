@@ -7,6 +7,7 @@ import {
 } from '@openai/agents-core/_shims';
 import type { Timeout, Timer } from '../shims/interface';
 import { tracing } from '../config';
+import { combineAbortSignals } from '../utils/abortSignals';
 
 type Span = TSpan<any>;
 
@@ -116,6 +117,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #timeout: Timeout | null = null;
   #exportInProgress = false;
   #timeoutAbortController: AbortController | null = null;
+  #activeExportAbortControllers = new Set<AbortController>();
 
   constructor(
     exporter: TracingExporter,
@@ -189,12 +191,20 @@ export class BatchTraceProcessor implements TracingProcessor {
 
     const exportBatch = async (batch: Array<Trace | Span>): Promise<void> => {
       this.#exportInProgress = true;
+      const activeExportAbortController = new AbortController();
+      this.#activeExportAbortControllers.add(activeExportAbortController);
+      const combinedSignal = combineAbortSignals(
+        signal,
+        activeExportAbortController.signal,
+      );
       try {
-        await this.#exporter.export(batch, signal);
+        await this.#exporter.export(batch, combinedSignal.signal);
       } catch (error) {
         logger.error('Tracing exporter failed to export batch', error);
       } finally {
-        this.#exportInProgress = false;
+        combinedSignal.cleanup();
+        this.#activeExportAbortControllers.delete(activeExportAbortController);
+        this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
       }
     };
 
@@ -206,6 +216,37 @@ export class BatchTraceProcessor implements TracingProcessor {
       const batch = this.#buffer.splice(0, this.#maxBatchSize);
       await exportBatch(batch);
     }
+  }
+
+  #abortActiveExports(): void {
+    for (const controller of this.#activeExportAbortControllers) {
+      controller.abort();
+    }
+  }
+
+  async #waitForShutdownProgress(signal?: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      const state: { timeout?: Timeout } = {};
+      const cleanup = () => {
+        if (state.timeout) {
+          this.#timer.clearTimeout(state.timeout);
+        }
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const done = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => done();
+
+      state.timeout = this.#timer.setTimeout(done, 500);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   async onTraceStart(trace: Trace): Promise<void> {
@@ -235,6 +276,7 @@ export class BatchTraceProcessor implements TracingProcessor {
       shutdownTimeout = this.#timer.setTimeout(() => {
         // Force shutdown the HTTP request.
         shutdownAbortController?.abort();
+        this.#abortActiveExports();
       }, timeout);
 
       if (typeof shutdownTimeout.unref === 'function') {
@@ -244,11 +286,11 @@ export class BatchTraceProcessor implements TracingProcessor {
 
     try {
       logger.debug('Shutting down gracefully');
-      while (this.#buffer.length > 0) {
+      while (this.#buffer.length > 0 || this.#exportInProgress) {
         logger.debug(
           `Waiting for buffer to empty. Items left: ${this.#buffer.length}`,
         );
-        if (!this.#exportInProgress) {
+        if (!this.#exportInProgress && this.#buffer.length > 0) {
           // No current export in progress. Forcing all items to be exported.
           await this.#exportBatches(true, shutdownAbortController?.signal);
         }
@@ -257,7 +299,7 @@ export class BatchTraceProcessor implements TracingProcessor {
           break;
         }
         // Using setTimeout to add to the event loop and keep this alive until done.
-        await new Promise((resolve) => this.#timer.setTimeout(resolve, 500));
+        await this.#waitForShutdownProgress(shutdownAbortController?.signal);
       }
       logger.debug('Buffer empty. Exiting');
     } finally {

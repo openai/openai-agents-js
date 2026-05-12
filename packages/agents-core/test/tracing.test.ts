@@ -903,6 +903,51 @@ describe('BatchTraceProcessor', () => {
       vi.useRealTimers();
     }
   });
+
+  it('aborts active exports when timed shutdown elapses', async () => {
+    vi.useFakeTimers();
+    let exportSignal: AbortSignal | undefined;
+    let exportCalls = 0;
+    const exporter: TracingExporter = {
+      export: async (_items, signal) => {
+        exportCalls += 1;
+        exportSignal = signal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      },
+    };
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 5,
+      exportTriggerRatio: 0.1,
+      scheduleDelay: 10000,
+    });
+
+    try {
+      await processor.onTraceStart(new Trace({ name: 'queued' }));
+      const activeExport = processor.onTraceStart(
+        new Trace({ name: 'trigger-export' }),
+      );
+
+      expect(exportCalls).toBe(1);
+      expect(exportSignal).toBeDefined();
+
+      const shutdownPromise = processor.shutdown(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(exportSignal?.aborted).toBe(true);
+      await activeExport;
+      await shutdownPromise;
+      expect(exportCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // -----------------------------------------------------------------------------------------
