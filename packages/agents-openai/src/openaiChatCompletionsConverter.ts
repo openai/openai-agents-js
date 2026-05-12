@@ -490,6 +490,13 @@ function normalizeFunctionCallOutputForChat(
       return handleEmptyOrNonTextToolOutput(options);
     }
 
+    if (options.strictFeatureValidation && textItems.length !== output.length) {
+      throw new UserError(
+        'Only text tool outputs are supported for chat completions. Got item: ' +
+          JSON.stringify(output),
+      );
+    }
+
     return textItems.map((item) => item.text).join('');
   }
 

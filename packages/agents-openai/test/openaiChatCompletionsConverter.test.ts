@@ -616,6 +616,32 @@ describe('itemsToMessages', () => {
     ).toThrow(/cannot be empty or contain only non-text content/);
   });
 
+  test('throws for mixed structured function output in strict mode', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_text',
+            text: 'visible',
+          },
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow(/Only text tool outputs are supported for chat completions/);
+  });
+
   test('rejects namespaced function call history', () => {
     const items: protocol.ModelItem[] = [
       {

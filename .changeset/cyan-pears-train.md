@@ -2,4 +2,4 @@
 '@openai/agents-openai': patch
 ---
 
-fix: avoid empty chat completions tool outputs
+fix: handle unsupported chat completions tool outputs safely
