@@ -91,6 +91,16 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - Adding new tool/output/approval item types requires coordinated updates across model output processing, tool execution, turn resolution, streaming events, run item extraction, and RunState serialization.
 - If serialized RunState shape changes in a released or otherwise supported snapshot format, bump the schema version and update serialization/deserialization. Unreleased post-tag RunState changes on `main` may fold into the same next schema version when no supported snapshot consumer exists yet.
 
+### Runtime and Platform Review Checklist
+
+Use this checklist when the touched code is in the relevant area. Add focused regression tests for concrete bugs, but keep this checklist focused on the recurring SDK and OpenAI platform boundaries that tests often miss across alternate paths.
+
+- Responses, Realtime, and MCP changes: check replay/retry safety, streaming and non-streaming parity, API defaults for omitted fields, tool/call/reasoning IDs, approval policy handling, and strict validation behavior.
+- Session, RunState, and compaction changes: check serialization/deserialization, resume, OpenAI Conversations sessions, local sessions, session callbacks, public history replay, and storage replacement order. Clear or replace persisted history only after the replacement payload is normalized and validated.
+- Sandbox provider changes: treat persisted session state as untrusted, prefer trusted configuration on resume/recreate, verify credential refresh and expiry behavior, separate cleanup from preservation, account for remote timeout operations that can complete late, clean up mount secrets on every failure path, and validate real paths and privileged command environments.
+- Provider-specific behavior changes: do not rely only on docs when field names, timeout units, lifecycle defaults, credential behavior, or generated SDK surfaces are involved. Compare docs, generated types, and a small live probe when practical.
+- Docs and examples changes: typecheck or otherwise verify sample imports against real package exports. In translated docs, preserve locale-prefixed links and localized anchors.
+
 ## Operation Guide
 
 ### Prerequisites
