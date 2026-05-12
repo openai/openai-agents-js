@@ -37,6 +37,18 @@ Use this skill before editing code when the task changes runtime behavior or any
 - Interface changes present on `main` but added after the latest release tag: not a semver breaking change by themselves. Rewrite them directly unless they already back a released or otherwise supported durable format.
 - Internal helpers, private types, same-branch tests, fixtures, and examples: update them directly instead of adding adapters.
 
+## Runtime and platform risk boundaries
+
+Use these checks alongside the release-boundary decision. They are not generic programming rules; they are recurring OpenAI Agents SDK and OpenAI platform failure modes.
+
+- Treat persisted or resumed state as untrusted input. `RunState`, sandbox session state, provider snapshot state, and serialized session data must not be allowed to override trusted runtime configuration such as `baseUrl`, credentials, `secretRefs`, `launchParameters`, `environment`, `userParameters`, manifest roots, or provider blueprints.
+- Retry or replay only when it is safe to assume the request was not accepted server-side. WebSocket timeouts, MCP reconnects, Realtime `response.create`, hosted tool calls, and sandbox operations can duplicate model or tool side effects if replayed after the server may have received the request.
+- Avoid lossy conversion across OpenAI API surfaces. Responses items, Chat Completions messages, Realtime tools, compaction output, and SDK protocol items should either preserve supported data or fail fast in strict paths instead of silently dropping unsupported content, IDs, or metadata.
+- Apply policy decisions across every input path, not only the primary run loop. Check streaming and non-streaming runs, session callbacks, local sessions, OpenAI Conversations sessions, compaction sessions, RunState resume, and public history replay for settings such as `reasoningItemIdPolicy`, approval policies, strict validation, and model defaults.
+- Normalize and validate replacement data before destructive storage updates. Compaction, session replacement, and restore paths should only clear or replace persisted history after the new payload has been converted successfully, and failed partial clears should restore the original snapshot without duplicating items.
+- Preserve API defaults when `undefined` is meaningful. Do not normalize omitted OpenAI or provider settings to concrete SDK defaults unless the API contract requires it; this is especially important for approval policies, lifecycle defaults, model settings, and provider options.
+- Verify provider behavior against authoritative sources and, when practical, a small live probe. Provider docs, generated SDK types, and live backends can disagree on field names, timeout units, credential refresh behavior, and lifecycle semantics.
+
 ## Default implementation stance
 
 - Prefer deletion or replacement over aliases, overloads, shims, feature flags, and dual-write logic when the old shape is unreleased.
