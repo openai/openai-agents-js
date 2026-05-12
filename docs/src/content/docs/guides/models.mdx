@@ -170,7 +170,7 @@ Retries are runtime-only and opt-in. The SDK does not retry model requests unles
 | Field | Type | Notes |
 | --- | --- | --- |
 | `maxRetries` | `number` | Number of retry attempts allowed after the initial request. |
-| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | Default delay strategy when the policy retries without returning `delayMs`. |
+| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | Default delay strategy when the policy retries without returning `delayMs`. `backoff.maxDelayMs` caps this computed backoff delay only; it does not cap explicit `delayMs` values returned by a policy or retry-after hints. |
 | `policy` | `RetryPolicy` | Callback that decides whether to retry. This function is runtime-only and is not serialized into persisted run state. |
 
 A retry policy receives a `RetryPolicyContext` with:
@@ -194,7 +194,7 @@ The SDK exports ready-made helpers on `retryPolicies`:
 | `retryPolicies.providerSuggested()` | Follows provider retry advice when available. |
 | `retryPolicies.networkError()` | Matches transient transport/connectivity failures. |
 | `retryPolicies.httpStatus([..])` | Matches selected HTTP status codes. |
-| `retryPolicies.retryAfter()` | Retries only when a retry-after hint is available, using that delay. |
+| `retryPolicies.retryAfter()` | Retries only when a retry-after hint is available, using that hint as an explicit delay that is not capped by `backoff.maxDelayMs`. |
 | `retryPolicies.any(...)` | Retries when any nested policy opts in. |
 | `retryPolicies.all(...)` | Retries only when every nested policy opts in. |
 
