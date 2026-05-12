@@ -417,7 +417,9 @@ export class OpenAIChatCompletionsModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
-    const messages = itemsToMessages(request.input);
+    const messages = itemsToMessages(request.input, {
+      strictFeatureValidation: this.#strictFeatureValidation,
+    });
     if (request.systemInstructions) {
       messages.unshift({
         content: request.systemInstructions,
