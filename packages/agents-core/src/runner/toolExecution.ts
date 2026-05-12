@@ -637,6 +637,11 @@ async function withToolFunctionSpan<T>(
 
 type ApprovalResolution = 'approved' | 'rejected' | 'pending';
 
+type LocalApprovalDecision = {
+  approve?: boolean;
+  reason?: string;
+};
+
 async function resolveToolApproval(options: {
   runContext: RunContext;
   toolName: string;
@@ -647,7 +652,7 @@ async function resolveToolApproval(options: {
     | ((
         runContext: RunContext,
         approvalItem: RunToolApprovalItem,
-      ) => Promise<{ approve?: boolean }>)
+      ) => Promise<LocalApprovalDecision>)
     | undefined;
 }): Promise<ApprovalResolution> {
   const {
@@ -668,7 +673,14 @@ async function resolveToolApproval(options: {
     if (decision.approve === true) {
       runContext.approveTool(approvalItem);
     } else if (decision.approve === false) {
-      runContext.rejectTool(approvalItem);
+      const reason =
+        typeof decision.reason === 'string' && decision.reason.length > 0
+          ? decision.reason
+          : undefined;
+      runContext.rejectTool(
+        approvalItem,
+        reason === undefined ? undefined : { message: reason },
+      );
     }
   }
 
@@ -700,7 +712,7 @@ async function handleToolApprovalDecision(options: {
     | ((
         runContext: RunContext,
         approvalItem: RunToolApprovalItem,
-      ) => Promise<{ approve?: boolean }>)
+      ) => Promise<LocalApprovalDecision>)
     | undefined;
   buildRejectionItem: () => Promise<RunItem> | RunItem;
 }): Promise<ApprovalDecisionResult> {
