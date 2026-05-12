@@ -80,6 +80,94 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('sends placeholder for non-text-only tool output by default', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'ok' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: [
+        {
+          type: 'function_call_result',
+          id: '2',
+          callId: 'call_image',
+          name: 'f',
+          status: 'completed',
+          output: [
+            {
+              type: 'input_image',
+              image: 'https://example.com/image.png',
+            },
+          ],
+        },
+      ],
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          {
+            role: 'tool',
+            tool_call_id: 'call_image',
+            content: '[tool output omitted]',
+          },
+        ],
+      }),
+      { headers: HEADERS, signal: undefined },
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Replacing the tool output with a placeholder'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('rejects non-text-only tool output in strict mode before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt', {
+      strictFeatureValidation: true,
+    });
+    const req: any = {
+      input: [
+        {
+          type: 'function_call_result',
+          id: '2',
+          callId: 'call_image',
+          name: 'f',
+          status: 'completed',
+          output: [
+            {
+              type: 'input_image',
+              image: 'https://example.com/image.png',
+            },
+          ],
+        },
+      ],
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      /cannot be empty or contain only non-text content/,
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
   it('warns and ignores server-managed conversation state by default', async () => {
     const client = new FakeClient();
     const response = {

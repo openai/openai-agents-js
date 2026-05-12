@@ -14,8 +14,14 @@ import {
   UserError,
 } from '@openai/agents-core';
 import { getProviderDataWithoutReservedKeys } from './utils/providerData';
+import logger from './logger';
 
 const CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const OMITTED_TOOL_OUTPUT_PLACEHOLDER = '[tool output omitted]';
+
+type ItemsToMessagesOptions = {
+  strictFeatureValidation?: boolean;
+};
 
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
@@ -246,6 +252,7 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
 
 export function itemsToMessages(
   items: ModelRequest['input'],
+  options: ItemsToMessagesOptions = {},
 ): ChatCompletionMessageParam[] {
   if (typeof items === 'string') {
     return [{ role: 'user', content: items }];
@@ -436,7 +443,10 @@ export function itemsToMessages(
     } else if (item.type === 'function_call_result') {
       flushAssistantMessage();
       const funcOutput = item;
-      const toolContent = normalizeFunctionCallOutputForChat(funcOutput.output);
+      const toolContent = normalizeFunctionCallOutputForChat(
+        funcOutput.output,
+        options,
+      );
 
       result.push({
         role: 'tool',
@@ -467,19 +477,27 @@ export function itemsToMessages(
 
 function normalizeFunctionCallOutputForChat(
   output: protocol.FunctionCallResultItem['output'],
+  options: ItemsToMessagesOptions,
 ): string {
   if (typeof output === 'string') {
     return output;
   }
 
   if (Array.isArray(output)) {
-    const textOnly = output.every((item) => item.type === 'input_text');
-    if (!textOnly) {
+    const textItems = output.filter((item) => item.type === 'input_text');
+
+    if (textItems.length === 0) {
+      return handleEmptyOrNonTextToolOutput(options);
+    }
+
+    if (options.strictFeatureValidation && textItems.length !== output.length) {
       throw new UserError(
-        'Only text tool outputs are supported for chat completions.',
+        'Only text tool outputs are supported for chat completions. Got item: ' +
+          JSON.stringify(output),
       );
     }
-    return output.map((item) => item.text).join('');
+
+    return textItems.map((item) => item.text).join('');
   }
 
   if (
@@ -490,10 +508,30 @@ function normalizeFunctionCallOutputForChat(
     return output.text;
   }
 
+  if (isRecord(output) && (output.type === 'image' || output.type === 'file')) {
+    return handleEmptyOrNonTextToolOutput(options);
+  }
+
   throw new UserError(
     'Only text tool outputs are supported for chat completions. Got item: ' +
       JSON.stringify(output),
   );
+}
+
+function handleEmptyOrNonTextToolOutput(
+  options: ItemsToMessagesOptions,
+): string {
+  const message =
+    'Chat Completions tool outputs cannot be empty or contain only non-text content.';
+
+  if (options.strictFeatureValidation) {
+    throw new UserError(message);
+  }
+
+  logger.warn(
+    `${message} Replacing the tool output with a placeholder; enable strict feature validation to raise an error instead.`,
+  );
+  return OMITTED_TOOL_OUTPUT_PLACEHOLDER;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

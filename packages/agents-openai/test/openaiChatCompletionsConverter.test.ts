@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import {
   convertToolChoice,
   extractAllAssistantContent,
@@ -14,6 +14,7 @@ import type {
   SerializedHandoff,
   SerializedTool,
 } from '@openai/agents-core/model';
+import logger from '../src/logger';
 
 /**
  * Tests around the helpers converting internal protocol structures to the
@@ -455,6 +456,190 @@ describe('itemsToMessages', () => {
       },
       { role: 'tool', tool_call_id: 'call1', content: 'res' },
     ]);
+  });
+
+  test('uses placeholder for empty structured function output by default', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: '[tool output omitted]',
+      },
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Replacing the tool output with a placeholder'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  test('uses placeholder for non-text-only structured function output by default', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: '[tool output omitted]',
+      },
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Replacing the tool output with a placeholder'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  test('keeps text from mixed structured function output by default', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_text',
+            text: 'visible',
+          },
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: 'visible',
+      },
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  test('keeps explicit empty text from structured function output', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_text',
+            text: '',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: '',
+      },
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  test('throws for empty structured function output in strict mode', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow(/cannot be empty or contain only non-text content/);
+  });
+
+  test('throws for non-text-only structured function output in strict mode', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow(/cannot be empty or contain only non-text content/);
+  });
+
+  test('throws for mixed structured function output in strict mode', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: [
+          {
+            type: 'input_text',
+            text: 'visible',
+          },
+          {
+            type: 'input_image',
+            image: 'https://example.com/image.png',
+          },
+        ],
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow(/Only text tool outputs are supported for chat completions/);
   });
 
   test('rejects namespaced function call history', () => {
