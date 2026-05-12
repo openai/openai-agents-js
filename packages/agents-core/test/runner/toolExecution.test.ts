@@ -2038,6 +2038,46 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(0);
     });
 
+    it('preserves apply_patch onApproval rejection reasons', async () => {
+      const editor = new FakeEditor();
+      const onApproval = vi.fn(async () => ({
+        approve: false,
+        reason: 'Patch denied',
+      }));
+      const applyPatch = applyPatchTool({
+        editor,
+        needsApproval: async () => true,
+        onApproval,
+      });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const runner = new Runner({ tracingDisabled: true });
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch',
+        status: 'completed',
+        operation: {
+          type: 'delete_file',
+          path: 'README.md',
+        },
+      };
+
+      const results = await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+      );
+
+      expect(onApproval).toHaveBeenCalled();
+      const outputItem = results[0] as ToolCallOutputItem;
+      const rawItem = outputItem.rawItem as protocol.ApplyPatchCallResultItem;
+      expect(rawItem.status).toBe('failed');
+      expect(rawItem.output).toBe('Patch denied');
+      expect(outputItem.output).toBe('Patch denied');
+      expect(editor.operations).toHaveLength(0);
+    });
+
     it('uses toolErrorFormatter message for rejected apply_patch operations', async () => {
       const editor = new FakeEditor();
       const applyPatch = applyPatchTool({
@@ -3269,6 +3309,119 @@ describe('executeShellActions', () => {
     expect(onApproval).toHaveBeenCalled();
     expect(shell.calls).toHaveLength(1);
     expect(results[0].rawItem.type).toBe('shell_call_output');
+  });
+
+  it('preserves shell onApproval rejection reasons', async () => {
+    const shell = new FakeShell();
+    const onApproval = vi.fn(async () => ({
+      approve: false,
+      reason: 'Not allowed',
+    }));
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+      onApproval,
+    });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    expect(onApproval).toHaveBeenCalled();
+    expect(shell.calls).toHaveLength(0);
+    const outputItem = results[0] as ToolCallOutputItem;
+    const rawItem = outputItem.rawItem as protocol.ShellCallResultItem;
+    expect(rawItem.output).toEqual([
+      {
+        stdout: '',
+        stderr: 'Not allowed',
+        outcome: { type: 'exit', exitCode: null },
+      },
+    ]);
+    expect(outputItem.output).toBe('Not allowed');
+  });
+
+  it('uses the default shell rejection message for empty onApproval reasons', async () => {
+    const shell = new FakeShell();
+    const onApproval = vi.fn(async () => ({
+      approve: false,
+      reason: '',
+    }));
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+      onApproval,
+    });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(rawItem.output[0]?.stderr).toBe('Tool execution was not approved.');
+    expect(shell.calls).toHaveLength(0);
+  });
+
+  it('prefers shell onApproval reasons over toolErrorFormatter messages', async () => {
+    const shell = new FakeShell();
+    const onApproval = vi.fn(async () => ({
+      approve: false,
+      reason: 'Policy denied',
+    }));
+    const shellToolDef = shellTool({
+      shell,
+      needsApproval: async () => true,
+      onApproval,
+    });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({
+      tracingDisabled: true,
+      toolErrorFormatter: () => CUSTOM_REJECTION_MESSAGE,
+    });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const results = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+      undefined,
+      runner.config.toolErrorFormatter,
+    );
+
+    const rawItem = results[0].rawItem as protocol.ShellCallResultItem;
+    expect(rawItem.output[0]?.stderr).toBe('Policy denied');
+    expect(shell.calls).toHaveLength(0);
   });
 
   it('returns failed output when approval explicitly rejected', async () => {
