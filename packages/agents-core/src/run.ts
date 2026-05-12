@@ -524,7 +524,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Per-run callback can override runner-level tool error formatting defaults.
     const toolErrorFormatter =
       resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
-    const reasoningItemIdPolicy = resolvedOptions.reasoningItemIdPolicy;
+    const reasoningItemIdPolicy =
+      resolvedOptions.reasoningItemIdPolicy ??
+      this.config.reasoningItemIdPolicy;
     const toolExecution = validateToolExecutionConfig(
       resolvedOptions.toolExecution ?? this.config.toolExecution,
     );
@@ -578,6 +580,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // previous messages are recovered via conversationId/previousResponseId.
           includeHistoryInPreparedInput: !serverManagesConversation,
           preserveDroppedNewItems: serverManagesConversation,
+          reasoningItemIdPolicy,
         },
       );
       if (serverManagesConversation && session) {

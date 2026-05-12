@@ -3,4 +3,4 @@
 '@openai/agents-openai': patch
 ---
 
-fix: preserve reasoning identities for OpenAI Conversations persistence
+fix: preserve Conversations reasoning identities without replaying omitted IDs

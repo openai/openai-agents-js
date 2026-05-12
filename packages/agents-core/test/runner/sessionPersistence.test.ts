@@ -908,6 +908,33 @@ describe('prepareInputItemsWithSession', () => {
     expect(result.sessionItems).toEqual(toAgentInputList('new'));
   });
 
+  it('strips persisted reasoning IDs from model input when policy omits them', async () => {
+    const reasoningHistoryItem: AgentInputItem = {
+      id: 'rs_persisted',
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    };
+    const session = new StubSession([reasoningHistoryItem]);
+
+    const result = await prepareInputItemsWithSession(
+      'new',
+      session,
+      undefined,
+      {
+        reasoningItemIdPolicy: 'omit',
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'thinking' }],
+      },
+      ...toAgentInputList('new'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('new'));
+  });
+
   it('matches sanitized assistant history returned by callbacks without re-persisting it', async () => {
     const assistantHistoryItem: AgentInputItem = {
       id: 'conv-assistant',
@@ -955,6 +982,44 @@ describe('prepareInputItemsWithSession', () => {
             text: 'assistant history',
           },
         ],
+      },
+      newItem,
+    ]);
+    expect(result.sessionItems).toEqual([newItem]);
+  });
+
+  it('matches callback-returned reasoning history after policy-based id stripping', async () => {
+    const reasoningHistoryItem: AgentInputItem = {
+      id: 'rs_persisted',
+      type: 'reasoning',
+      content: [{ type: 'input_text', text: 'thinking' }],
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([reasoningHistoryItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        const { id: _id, ...historyWithoutId } = history[0] as Record<
+          string,
+          unknown
+        >;
+        return [historyWithoutId as AgentInputItem, { ...newItems[0] }];
+      },
+      {
+        reasoningItemIdPolicy: 'omit',
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'thinking' }],
       },
       newItem,
     ]);

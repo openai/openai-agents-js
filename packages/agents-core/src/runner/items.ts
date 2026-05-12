@@ -99,26 +99,37 @@ function shouldOmitReasoningItemIds(
   return reasoningItemIdPolicy === 'omit';
 }
 
+export function stripReasoningItemIdForPolicy(
+  item: AgentInputItem,
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
+): AgentInputItem {
+  if (
+    !shouldOmitReasoningItemIds(reasoningItemIdPolicy) ||
+    !item ||
+    typeof item !== 'object' ||
+    item.type !== 'reasoning' ||
+    !('id' in item)
+  ) {
+    return item;
+  }
+
+  const { id: _id, ...withoutId } = item as Record<string, unknown>;
+  return withoutId as AgentInputItem;
+}
+
 // Extracts model-ready output items from run items, excluding approval placeholders.
 export function extractOutputItemsFromRunItems(
   items: RunItem[],
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const omitReasoningItemIds = shouldOmitReasoningItemIds(
-    reasoningItemIdPolicy,
-  );
   return items
     .filter((item) => item.type !== 'tool_approval_item')
     .map((item) => {
       const rawItem = withoutNullStatus(item.rawItem as AgentInputItem);
-      if (!omitReasoningItemIds || item.type !== 'reasoning_item') {
+      if (item.type !== 'reasoning_item') {
         return rawItem;
       }
-      if (!rawItem || typeof rawItem !== 'object' || !('id' in rawItem)) {
-        return rawItem;
-      }
-      const { id: _id, ...withoutId } = rawItem as Record<string, unknown>;
-      return withoutId as AgentInputItem;
+      return stripReasoningItemIdForPolicy(rawItem, reasoningItemIdPolicy);
     });
 }
 
