@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.11.4
+
+### Patch Changes
+
+- 3dc9b90: fix: avoid auto responses for unknown realtime tools
+- Updated dependencies [087ce4b]
+- Updated dependencies [2c993cf]
+- Updated dependencies [f36e7b2]
+  - @openai/agents-core@0.11.4
+
 ## 0.11.3
 
 ### Patch Changes

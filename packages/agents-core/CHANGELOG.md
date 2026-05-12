@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.11.4
+
+### Patch Changes
+
+- 087ce4b: fix: preserve Conversations reasoning identities without replaying omitted IDs
+- 2c993cf: fix: preserve local approval rejection reasons
+- f36e7b2: fix: abort active tracing exports on shutdown timeout
+
 ## 0.11.3
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.11.4
+
+### Patch Changes
+
+- 087ce4b: fix: preserve Conversations reasoning identities without replaying omitted IDs
+- 5dd3b2f: fix: handle unsupported chat completions tool outputs safely
+- Updated dependencies [087ce4b]
+- Updated dependencies [2c993cf]
+- Updated dependencies [f36e7b2]
+  - @openai/agents-core@0.11.4
+
 ## 0.11.3
 
 ### Patch Changes
