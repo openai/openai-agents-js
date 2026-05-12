@@ -2800,6 +2800,41 @@ describe('Runner.run', () => {
         expect(firstPart?.providerData).toEqual({ annotations: [] });
       });
 
+      it('applies runner-level reasoningItemIdPolicy to replayed session history', async () => {
+        class ReasoningPreservingSession extends MemorySession {
+          preserveReasoningItemIdsForPersistence(): boolean {
+            return true;
+          }
+        }
+
+        const model = new RecordingModel([
+          {
+            ...TEST_MODEL_RESPONSE_BASIC,
+            output: [fakeModelMessage('response')],
+          },
+        ]);
+        const agent = new Agent({ name: 'SessionReasoningAgent', model });
+        const session = new ReasoningPreservingSession([
+          {
+            id: 'rs_persisted',
+            type: 'reasoning',
+            content: [{ type: 'input_text', text: 'stored reasoning' }],
+          },
+        ]);
+        const runner = new Runner({ reasoningItemIdPolicy: 'omit' });
+
+        await runner.run(agent, 'new input', { session });
+
+        expect(model.lastRequest).toBeDefined();
+        const reasoningItem = getRequestInputItems(model.lastRequest!).find(
+          (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+        );
+        expect(reasoningItem).toEqual({
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'stored reasoning' }],
+        });
+      });
+
       it('allows list inputs with session history and no session input callback', async () => {
         const model = new RecordingModel([
           {

@@ -18,6 +18,8 @@ import {
   toAgentInputList,
   getAgentInputItemKey,
   removeAgentInputFromPool,
+  stripReasoningItemIdForPolicy,
+  type ReasoningItemIdPolicy,
 } from './items';
 import logger from '../logger';
 
@@ -325,6 +327,7 @@ export async function prepareInputItemsWithSession(
   options?: {
     includeHistoryInPreparedInput?: boolean;
     preserveDroppedNewItems?: boolean;
+    reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   },
 ): Promise<PreparedInputWithSessionResult> {
   if (!session) {
@@ -337,13 +340,14 @@ export async function prepareInputItemsWithSession(
   const includeHistoryInPreparedInput =
     options?.includeHistoryInPreparedInput ?? true;
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
+  const reasoningItemIdPolicy = options?.reasoningItemIdPolicy;
 
   const history = await session.getItems();
   const newInputItems = toAgentInputList(input);
 
   if (!sessionInputCallback) {
     const historyForModelInput = history.map((item) =>
-      prepareHistoryItemForModelInput(session, item),
+      prepareHistoryItemForModelInput(session, item, reasoningItemIdPolicy),
     );
     const preparedInput = includeHistoryInPreparedInput
       ? dropOrphanToolCalls([...historyForModelInput, ...newInputItems], {
@@ -369,6 +373,7 @@ export async function prepareInputItemsWithSession(
   const historyCounts = buildItemFrequencyMap(historySnapshot, {
     session,
     prepareForModelInput: true,
+    reasoningItemIdPolicy,
   });
   const newInputCounts = buildItemFrequencyMap(newInputSnapshot);
   const historyRefs = buildAgentInputPool(historySnapshot);
@@ -377,7 +382,11 @@ export async function prepareInputItemsWithSession(
 
   const appended: AgentInputItem[] = [];
   for (const [index, item] of combined.entries()) {
-    const historyKey = getHistoryItemModelInputKey(session, item);
+    const historyKey = getHistoryItemModelInputKey(
+      session,
+      item,
+      reasoningItemIdPolicy,
+    );
     const newInputKey = getAgentInputItemKey(item);
     if (removeAgentInputFromPool(newInputRefs, item)) {
       decrementCount(newInputCounts, newInputKey);
@@ -433,6 +442,7 @@ export async function prepareInputItemsWithSession(
           session,
           preparedItems,
           historyIndexes,
+          reasoningItemIdPolicy,
         ),
         { pruningIndexes: historyIndexes },
       )
@@ -448,13 +458,14 @@ function prepareHistoryItemsForModelInput(
   session: Session,
   items: AgentInputItem[],
   historyIndexes: Set<number>,
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  if (!session.prepareHistoryItemForModelInput || historyIndexes.size === 0) {
+  if (historyIndexes.size === 0) {
     return items;
   }
   return items.map((item, index) =>
     historyIndexes.has(index)
-      ? prepareHistoryItemForModelInput(session, item)
+      ? prepareHistoryItemForModelInput(session, item, reasoningItemIdPolicy)
       : item,
   );
 }
@@ -462,15 +473,20 @@ function prepareHistoryItemsForModelInput(
 function prepareHistoryItemForModelInput(
   session: Session,
   item: AgentInputItem,
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem {
-  return session.prepareHistoryItemForModelInput?.(item) ?? item;
+  const prepared = session.prepareHistoryItemForModelInput?.(item) ?? item;
+  return stripReasoningItemIdForPolicy(prepared, reasoningItemIdPolicy);
 }
 
 function getHistoryItemModelInputKey(
   session: Session,
   item: AgentInputItem,
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): string {
-  return getAgentInputItemKey(prepareHistoryItemForModelInput(session, item));
+  return getAgentInputItemKey(
+    prepareHistoryItemForModelInput(session, item, reasoningItemIdPolicy),
+  );
 }
 
 function normalizeItemsForSessionPersistence(
@@ -625,7 +641,9 @@ async function persistRunItemsToSession(options: {
     ...extraInputItems,
     ...extractOutputItemsFromRunItems(
       newRunItems,
-      state._reasoningItemIdPolicy,
+      session.preserveReasoningItemIdsForPersistence?.() === true
+        ? undefined
+        : state._reasoningItemIdPolicy,
     ),
   ];
 
@@ -680,13 +698,21 @@ async function runCompactionOnSession(
 
 function buildItemFrequencyMap(
   items: AgentInputItem[],
-  options?: { session?: Session; prepareForModelInput?: boolean },
+  options?: {
+    session?: Session;
+    prepareForModelInput?: boolean;
+    reasoningItemIdPolicy?: ReasoningItemIdPolicy;
+  },
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const item of items) {
     const key =
       options?.prepareForModelInput && options.session
-        ? getHistoryItemModelInputKey(options.session, item)
+        ? getHistoryItemModelInputKey(
+            options.session,
+            item,
+            options.reasoningItemIdPolicy,
+          )
         : getAgentInputItemKey(item);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
