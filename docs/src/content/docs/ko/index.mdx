@@ -13,42 +13,42 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    작은 수의 기본 구성 요소로 샌드박스, 텍스트, 음성 에이전트를 구축합니다.
+    작은 기본 구성 요소 집합으로 샌드박스, 텍스트, 음성 에이전트를 구축합니다.
   </Fragment>
   <Fragment slot="cta">시작하기</Fragment>
 </Hero>
 
 ## 개요
 
-[TypeScript용 OpenAI Agents SDK](https://github.com/openai/openai-agents-js)는 매우 적은 추상화로 가볍고 사용하기 쉬운 패키지에서 에이전트형 AI 앱을 구축할 수 있게 해줍니다. 이는 에이전트를 위한 이전 실험 프로젝트인 [Swarm](https://github.com/openai/swarm/tree/main)의 프로덕션 준비 버전 업그레이드이며, [Python 버전도 제공됩니다](https://github.com/openai/openai-agents-python). Agents SDK에는 매우 작은 수의 기본 구성 요소가 있습니다.
+[TypeScript용 OpenAI Agents SDK](https://github.com/openai/openai-agents-js)를 사용하면 매우 적은 추상화로 구성된 가볍고 사용하기 쉬운 패키지에서 에이전틱 AI 앱을 구축할 수 있습니다. 이는 에이전트를 위한 이전 실험 프로젝트인 [Swarm](https://github.com/openai/swarm/tree/main)을 프로덕션에 사용할 수 있도록 업그레이드한 것이며, [Python으로도 제공](https://github.com/openai/openai-agents-python)됩니다. Agents SDK에는 매우 작은 기본 구성 요소 집합이 있습니다.
 
 - **에이전트**: instructions와 tools가 갖춰진 LLM
-- **샌드박스 에이전트**: 에이전트를 격리된 파일시스템 작업공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태와 결합한 것
-- **Agents as tools / 핸드오프**: 에이전트가 특정 작업을 위해 다른 에이전트에 위임할 수 있게 하는 기능
-- **가드레일**: 에이전트에 대한 입력을 검증할 수 있게 하는 기능
+- **샌드박스 에이전트**: 에이전트에 격리된 파일 시스템 작업 공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태를 결합한 것
+- **Agents as tools / 핸드오프**: 에이전트가 특정 작업을 다른 에이전트에 위임할 수 있게 하는 것
+- **가드레일**: 에이전트에 대한 입력을 검증할 수 있게 하는 것
 
-TypeScript와 결합하면 이러한 기본 구성 요소는 도구와 에이전트 간의 복잡한 관계를 표현하고, 필요할 때 에이전트에 실제 작업공간을 제공하며, 가파른 학습 곡선 없이 실제 애플리케이션을 구축할 수 있을 만큼 강력합니다. 또한 SDK에는 에이전트형 흐름을 시각화하고 디버그할 수 있게 해주는 기본 제공 **트레이싱**이 포함되어 있으며, 이를 평가하고 애플리케이션에 맞게 모델을 미세 조정하는 것도 가능합니다.
+TypeScript와 함께 사용하면 이러한 기본 구성 요소는 도구와 에이전트 간의 복잡한 관계를 표현하고, 필요할 때 에이전트에 실제 작업 공간을 제공하며, 가파른 학습 곡선 없이 실제 애플리케이션을 구축하기에 충분히 강력합니다. 또한 SDK에는 에이전틱 플로를 시각화하고 디버그할 수 있는 내장 **트레이싱**이 포함되어 있으며, 이를 평가하고 애플리케이션에 맞게 모델을 파인튜닝할 수도 있습니다.
 
 ## Agents SDK 사용 이유
 
 SDK에는 두 가지 핵심 설계 원칙이 있습니다.
 
-1. 사용할 가치가 있을 만큼 충분한 기능을 제공하되, 빠르게 배울 수 있을 만큼 기본 구성 요소는 적게 유지합니다.
-2. 별도 설정 없이도 잘 작동하지만, 정확히 어떤 일이 일어날지는 직접 사용자화할 수 있습니다.
+1. 사용할 가치가 있을 만큼 충분한 기능을 제공하되, 빠르게 익힐 수 있을 만큼 기본 구성 요소는 적게 유지합니다.
+2. 기본 설정만으로도 훌륭하게 작동하지만, 정확히 어떤 일이 일어나는지 사용자 지정할 수 있습니다.
 
-다음은 SDK의 주요 기능입니다.
+SDK의 주요 기능은 다음과 같습니다.
 
-- **에이전트 루프**: 도구 호출을 처리하고, 결과를 LLM에 다시 보내며, 작업이 완료될 때까지 계속하는 기본 제공 에이전트 루프
-- **샌드박스 실행**: 작업에 작업공간이 필요할 때, 격리된 파일시스템 작업공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태와 함께 에이전트를 실행
-- **TypeScript 우선**: 새로운 추상화를 배울 필요 없이, TypeScript 고유 언어 기능을 사용해 에이전트를 오케스트레이션하고 연결
-- **Agents as tools / 핸드오프**: 여러 에이전트 간 작업을 조정하고 위임하기 위한 강력한 메커니즘
-- **가드레일**: 입력 검증과 안전성 검사를 에이전트 실행과 병렬로 수행하고, 검사를 통과하지 못하면 빠르게 실패 처리
-- **함수 도구**: 자동 스키마 생성과 Zod 기반 검증을 통해 모든 TypeScript 함수를 도구로 변환
-- **MCP 서버 도구 호출**: 함수 도구와 동일한 방식으로 작동하는 기본 제공 MCP 서버 도구 통합
-- **세션**: 에이전트 루프 내에서 작업 컨텍스트를 유지하기 위한 지속형 메모리 계층
-- **휴먼인더루프 (HITL)**: 에이전트 실행 전반에 사람을 참여시키기 위한 기본 제공 메커니즘
-- **트레이싱**: 워크플로를 시각화, 디버그, 모니터링하기 위한 기본 제공 트레이싱으로, OpenAI 평가, 미세 조정, 증류 도구 제품군 지원 포함
-- **실시간 에이전트**: 자동 인터럽션(중단 처리) 감지, 컨텍스트 관리, 가드레일 등의 기능을 갖춘 강력한 음성 에이전트 구축
+- **에이전트 루프**: 도구 호출을 처리하고, 결과를 LLM에 다시 보내며, 작업이 완료될 때까지 계속 진행하는 내장 에이전트 루프입니다.
+- **샌드박스 실행**: 작업에 작업 공간이 필요할 때 격리된 파일 시스템 작업 공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태와 함께 에이전트를 실행합니다.
+- **TypeScript 우선**: 새로운 추상화를 배울 필요 없이 네이티브 TypeScript 언어 기능을 사용해 에이전트를 오케스트레이션하고 체이닝합니다.
+- **Agents as tools / 핸드오프**: 여러 에이전트 간에 작업을 조율하고 위임하기 위한 강력한 메커니즘입니다.
+- **가드레일**: 에이전트 실행과 병렬로 입력 검증 및 안전성 검사를 실행하고, 검사를 통과하지 못하면 빠르게 실패합니다.
+- **함수 도구**: 자동 스키마 생성과 Zod 기반 검증을 통해 모든 TypeScript 함수를 도구로 전환합니다.
+- **MCP 서버 도구 호출**: 함수 도구와 동일한 방식으로 작동하는 내장 MCP 서버 도구 연동입니다.
+- **세션**: 에이전트 루프 내에서 작업 컨텍스트를 유지하기 위한 영구 메모리 계층입니다.
+- **휴먼인더루프 (HITL)**: 에이전트 실행 전반에 사람을 참여시키기 위한 내장 메커니즘입니다.
+- **트레이싱**: 워크플로를 시각화, 디버그, 모니터링하기 위한 내장 트레이싱이며, OpenAI의 평가, 파인튜닝, 증류 도구 모음을 지원합니다.
+- **실시간 에이전트**: 자동 인터럽션(중단 처리) 감지, 컨텍스트 관리, 가드레일 등과 같은 기능을 갖춘 강력한 음성 에이전트를 구축합니다.
 
 ## 설치
 
@@ -56,78 +56,78 @@ SDK에는 두 가지 핵심 설계 원칙이 있습니다.
 npm install @openai/agents zod
 ```
 
-SDK는 Zod v4를 필요로 하며, npm으로 `zod`를 설치하면 최신 v4 릴리스를 가져옵니다.
+SDK에는 Zod v4가 필요합니다. npm으로 `zod`를 설치하면 최신 v4 릴리스를 가져옵니다.
 
 ## 시작 지점 선택
 
-처음 사용하는 대부분의 사용자는 다음 진입점 중 하나만 있으면 됩니다.
+대부분의 처음 사용자는 다음 진입점 중 하나만 필요합니다.
 
-| Start with | Use it when | Notes |
+| 시작 항목 | 사용 시점 | 참고 |
 | --- | --- | --- |
-| `@openai/agents` | 대부분의 텍스트, 샌드박스 또는 음성 애플리케이션을 구축하는 경우 | 권장 기본값입니다. OpenAI provider 설정, `@openai/agents/sandbox` 아래의 샌드박스 에이전트 API, `@openai/agents/realtime` 아래의 음성 API가 포함됩니다. |
+| `@openai/agents` | 대부분의 텍스트, 샌드박스 또는 음성 애플리케이션을 구축하는 경우 | 권장 기본값입니다. OpenAI 공급자 설정, `@openai/agents/sandbox` 아래의 샌드박스 에이전트 API, `@openai/agents/realtime` 아래의 음성 API를 포함합니다. |
 | `@openai/agents-realtime` | 독립형 Realtime 패키지만 필요한 경우 | 브라우저 전용 음성 앱이나 더 좁은 패키지 경계를 원하는 경우에 유용합니다. |
-| Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | 더 낮은 수준의 조합, 사용자 정의 provider 연결, 또는 특정 통합이 필요한 경우 | 대부분의 신규 사용자는 구체적인 필요가 생길 때까지는 이를 무시해도 됩니다. |
+| 하위 수준 패키지(`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | 하위 수준 컴포지션, 사용자 지정 공급자 연결, 또는 특정 연동이 필요한 경우 | 대부분의 신규 사용자는 구체적인 필요가 생길 때까지 이를 무시해도 됩니다. |
 
-## Hello world 예제
+## Hello World 예제
 
-에이전트가 파일시스템에서 작업해야 한다면 샌드박스 에이전트로 시작하세요. 워크플로에 샌드박스 작업공간이나 샌드박스 생명주기가 필요하지 않다면 일반 `Agent`를 계속 사용할 수도 있습니다.
+에이전트가 파일 시스템에서 작업해야 할 때는 샌드박스 에이전트로 시작하세요. 워크플로에 샌드박스 작업 공간이나 샌드박스 수명 주기가 필요하지 않은 경우에는 일반 `Agent`를 계속 사용할 수 있습니다.
 
 <Tabs>
-  <TabItem label="Sandbox Agent">
+  <TabItem label="샌드박스 에이전트">
     <Code
       lang="typescript"
       code={helloWorldSandboxExample}
-      title="Hello World with a sandbox"
+      title="샌드박스를 사용한 Hello World"
     />
   </TabItem>
-  <TabItem label="Without Sandbox">
+  <TabItem label="샌드박스 없음">
     <Code
       lang="typescript"
       code={helloWorldExample}
-      title="Hello World without a sandbox"
+      title="샌드박스 없는 Hello World"
     />
   </TabItem>
 </Tabs>
 
-(_이를 실행하려면 `OPENAI_API_KEY` 환경 변수가 설정되어 있는지 확인하세요_)
+(_이를 실행하는 경우 `OPENAI_API_KEY` 환경 변수를 설정했는지 확인하세요_)
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-## 시작 안내
+## 시작 위치
 
-먼저 한 경로를 선택해 처음부터 끝까지 동작하게 만든 다음, 더 깊이 있는 가이드로 돌아오세요.
+먼저 하나의 경로를 선택해 처음부터 끝까지 작동하게 만든 다음, 더 심화된 가이드를 위해 다시 돌아오세요.
 
 <LinkCard
-  title="Quickstart"
+  title="빠른 시작"
   href="/openai-agents-js/ko/guides/quickstart"
-  description="첫 번째 텍스트 기반 에이전트를 만들고 SDK의 핵심 워크플로를 배워보세요."
+  description="첫 텍스트 기반 에이전트를 만들고 핵심 SDK 워크플로를 익힙니다."
 />
 
 <LinkCard
-  title="Voice Agents Quickstart"
+  title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="음성 상호작용을 구축하는 경우 Realtime 음성 경로로 시작하세요."
+  description="음성 상호작용을 구축하는 경우 Realtime 음성 경로부터 시작합니다."
 />
 
 <LinkCard
-  title="Sandbox agents"
+  title="빠른 시작"
   href="/openai-agents-js/ko/guides/sandbox-agents"
-  description="에이전트에 파일, 셸 명령, 패치 또는 재개 가능한 샌드박스 상태가 필요하다면 샌드박스 에이전트로 시작하세요."
+  description="에이전트에 파일, 셸 명령, 패치 또는 재개 가능한 샌드박스 상태가 필요할 때 샌드박스 에이전트를 시작합니다."
 />
 
 ## 경로 선택
 
-무엇을 하고 싶은지는 알지만 어떤 페이지에서 설명하는지 모를 때 이 표를 사용하세요.
+하고 싶은 작업은 알고 있지만 어떤 페이지에서 설명하는지 모를 때 이 표를 사용하세요.
 
-| Goal | Start here |
+| 목표 | 시작 위치 |
 | --- | --- |
-| 첫 번째 텍스트 에이전트를 만들고 하나의 완전한 실행을 확인 | [빠른 시작](/openai-agents-js/guides/quickstart) |
-| 함수 도구, 호스티드 툴 또는 Agents as tools 추가 | [도구](/openai-agents-js/guides/tools) |
-| 에이전트에 격리된 파일시스템 및 셸 작업공간 제공 | [Sandbox agents](/openai-agents-js/guides/sandbox-agents) |
-| 핸드오프와 매니저 스타일 오케스트레이션 중 선택 | [에이전트 오케스트레이션](/openai-agents-js/guides/multi-agent) |
-| 여러 턴에 걸쳐 메모리 유지 | [에이전트 실행](/openai-agents-js/guides/running-agents) 및 [세션](/openai-agents-js/guides/sessions) |
-| OpenAI 모델, websocket 전송 또는 비OpenAI provider 사용 | [모델](/openai-agents-js/guides/models) |
-| 출력, 실행 항목, 인터럽션(중단 처리), 재개 상태 검토 | [실행 결과](/openai-agents-js/guides/results) |
-| 지연 시간이 낮은 음성 에이전트 구축 | [빠른 시작](/openai-agents-js/guides/voice-agents/quickstart) |
+| 첫 텍스트 에이전트를 만들고 완전한 실행 한 번 확인 | [빠른 시작](/openai-agents-js/ko/guides/quickstart) |
+| 함수 도구, 호스티드 툴 또는 Agents as tools 추가 | [도구](/openai-agents-js/ko/guides/tools) |
+| 에이전트에 격리된 파일 시스템 및 셸 작업 공간 제공 | [빠른 시작](/openai-agents-js/ko/guides/sandbox-agents) |
+| 핸드오프와 매니저 스타일 오케스트레이션 중 선택 | [에이전트 오케스트레이션](/openai-agents-js/ko/guides/multi-agent) |
+| 턴 간 메모리 유지 | [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 및 [세션](/openai-agents-js/ko/guides/sessions) |
+| OpenAI 모델, websocket 전송 또는 OpenAI가 아닌 공급자 사용 | [모델](/openai-agents-js/ko/guides/models) |
+| 출력, 실행 항목, 인터럽션(중단 처리), 재개 상태 검토 | [실행 결과](/openai-agents-js/ko/guides/results) |
+| 지연 시간이 짧은 음성 에이전트 구축 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |

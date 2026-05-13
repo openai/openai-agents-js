@@ -7,56 +7,56 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 
 <Aside type="caution" title="Beta 功能">
-  沙盒智能体目前处于 Beta 阶段。API 细节、默认设置和支持的能力
-  可能会在正式发布前发生变化，并且预计会随着时间推移 提供更多高级功能。
+  沙盒智能体处于 beta 阶段。API 细节、默认值和支持的能力
+  可能会在正式发布前发生变化，并且预计会逐步推出更多高级功能。
 </Aside>
 
-现代智能体在能够操作文件系统中的真实文件时效果最佳。Agents SDK 中的 **Sandbox Agents** 为模型提供了一个持久化工作区，模型可以在其中搜索大型文档集、编辑文件、运行命令、生成产物，并从已保存的沙盒状态继续工作。
+现代智能体在能够操作文件系统中的真实文件时效果最佳。Agents SDK 中的**沙盒智能体**为模型提供持久化工作区，使其能够搜索大型文档集、编辑文件、运行命令、生成产物，并从已保存的沙盒状态继续工作。
 
-SDK 为您提供了这套执行基础设施，无需您自己拼装文件暂存、文件系统工具、shell 访问、沙盒生命周期、快照以及特定提供方的粘合逻辑。您仍然沿用常规的 `Agent` 和 `Runner` 流程，然后添加工作区的 `Manifest`、用于沙盒原生工具的 capabilities，以及用于指定工作运行位置的 `sandbox` 运行选项。
+SDK 为你提供这套执行框架，无需你自行串联文件暂存、文件系统工具、shell 访问、沙盒生命周期、快照以及特定提供商的衔接逻辑。你可以保留常规的 `Agent` 和 `Runner` 流程，然后为工作区添加 `Manifest`、为沙盒原生工具添加能力，并通过 `sandbox` 运行选项指定工作运行的位置。
 
 ## 前提条件
 
 - Node.js 22 或更高版本。
-- 对 OpenAI Agents SDK 有基本了解。
-- 一个沙盒客户端。对于本地开发，建议从 `UnixLocalSandboxClient` 开始。
+- 基本熟悉 OpenAI Agents SDK。
+- 一个沙盒客户端。对于本地开发，请从 `UnixLocalSandboxClient` 开始。
 
-本 quickstart 使用 Node.js 和 npm 命令，但 SDK 并不局限于 Node.js。只要项目使用兼容的包解析和运行时 API，Sandbox agent 也可以在 Deno 和 Bun 上运行。
+本快速开始使用 Node.js 和 npm 命令，但 SDK 并不限于 Node.js。当你的项目使用兼容的包解析和运行时 API 时，沙盒智能体也可以在 Deno 和 Bun 上运行。
 
 ## 安装
 
-如果您尚未安装 SDK：
+如果你尚未安装 SDK：
 
 ```bash
 npm install @openai/agents
 ```
 
-对于基于 Docker 的沙盒，请在本地安装 Docker，并使用来自 `@openai/agents/sandbox/local` 的 `DockerSandboxClient`。
+对于 Docker 支持的沙盒，请在本地安装 Docker，并使用 `@openai/agents/sandbox/local` 中的 `DockerSandboxClient`。
 
-如果您使用带有 `tty: true` 的交互式本地 PTY 会话，运行 SDK 的进程还需要能够使用 Python 3（以 `python3` 的形式，或通过 `OPENAI_AGENTS_PYTHON`）。非 PTY 的 shell 命令不需要 Python。
+如果你使用带有 `tty: true` 的交互式本地 PTY 会话，运行 SDK 的进程还需要提供可用的 Python 3（以 `python3` 的形式，或通过 `OPENAI_AGENTS_PYTHON`）。非 PTY shell 命令不需要 Python。
 
-## 本地沙盒智能体
+## 本地沙盒智能体的创建
 
-此示例会将本地仓库暂存到 `repo/` 下，按需延迟加载本地 skills，并让 runner 为本次运行创建一个 Unix 本地沙盒会话。智能体定义拥有 manifest 和 capabilities，而运行配置仅为本次运行选择沙盒客户端。
+此示例会将本地仓库暂存到 `repo/` 下，按需延迟加载本地技能，并让 runner 为本次运行创建一个 Unix 本地沙盒会话。智能体定义拥有 manifest 和能力，而运行配置只为本次运行选择沙盒客户端。
 
 <Code lang="typescript" code={basicExample} title="创建本地沙盒智能体" />
 
-## 关键选择
+## 关键选项
 
-当基础运行正常后，大多数人接下来会关注这些选择：
+基础运行成功后，大多数人接下来会关注这些选项：
 
-- `defaultManifest`：用于全新沙盒会话的文件、仓库、目录和挂载。
-- `instructions`：应在各个提示词之间统一适用的简短工作流规则。
-- `baseInstructions`：用于替换 SDK 沙盒提示词的高级逃生舱选项。
-- `capabilities`：沙盒原生工具，例如文件系统编辑/图像检查、shell、skills、记忆和压缩。
+- `defaultManifest`：用于新沙盒会话的文件、仓库、目录和挂载。
+- `instructions`：应在不同提示中通用的简短工作流规则。
+- `baseInstructions`：用于替换 SDK 沙盒提示的高级逃生口。
+- `capabilities`：沙盒原生工具，例如文件系统编辑/图像检查、shell、技能、记忆和压缩。
 - `runAs`：面向模型的工具所使用的沙盒用户身份。
 - `sandbox.client`：沙盒后端。
-- `sandbox.session`、`sandbox.sessionState` 或 `sandbox.snapshot`：后续运行如何重新连接到先前的工作。
+- `sandbox.session`、`sandbox.sessionState` 或 `sandbox.snapshot`：后续运行如何重新连接到之前的工作。
 
-## 后续内容
+## 后续步骤
 
-- [概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)：了解 manifest、capabilities、权限、快照、运行配置和组合模式。
-- [沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients)：选择 Unix 本地、Docker、托管提供方以及挂载策略。
+- [概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)：了解 manifest、能力、权限、快照、运行配置和组合模式。
+- [沙盒客户端](/openai-agents-js/zh/guides/sandbox-agents/clients)：选择 Unix 本地、Docker、托管提供商和挂载策略。
 - [智能体记忆](/openai-agents-js/zh/guides/sandbox-agents/memory)：保留并复用之前沙盒运行中的经验。
 
-如果 shell 访问只是偶尔使用的一种工具，请先从[工具](/openai-agents-js/zh/guides/tools)指南中的托管 shell 开始。如果您的设计需要工作区隔离、沙盒客户端选择或沙盒会话恢复行为，请使用沙盒智能体。
+如果 shell 访问只是偶尔使用的一个工具，请先阅读[工具](/openai-agents-js/zh/guides/tools)中的托管 shell。当工作区隔离、沙盒客户端选择或沙盒会话恢复行为属于设计的一部分时，再选择沙盒智能体。

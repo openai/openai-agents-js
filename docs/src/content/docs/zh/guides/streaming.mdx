@@ -13,66 +13,58 @@ import openaiResponsesRawModelStreamEventExample from '../../../../../../example
 import runItemStreamEventExample from '../../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
 import runAgentUpdatedStreamEventExample from '../../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
-Agents SDK 可以逐步传递模型输出以及其他执行步骤的结果。流式传输可让您的 UI 保持响应，并避免在更新用户之前等待完整的最终结果。
+Agents SDK 可以增量地交付来自模型以及其他执行步骤的输出。流式传输可以让你的 UI 保持响应，并避免等到完整最终结果生成后才向用户更新内容。
 
-## 启用流式传输
+## 流式传输的启用
 
-向 `Runner.run()` 传入 `{ stream: true }` 选项，即可获得一个流式对象，而不是完整结果：
+向 `Runner.run()` 传入 `{ stream: true }` 选项，即可获得流式对象，而不是完整结果：
 
-<Code
-  lang="typescript"
-  code={basicStreamingExample}
-  title="Enabling streaming"
-/>
+<Code lang="typescript" code={basicStreamingExample} title="启用流式传输" />
 
-启用流式传输后，返回的 `stream` 会实现 `AsyncIterable` 接口。每个产生的事件都是一个对象，用于描述运行过程中发生的情况。该流会产生三种事件类型，每种都对应智能体执行过程中的不同部分。不过，大多数应用通常只关心模型文本，因此该流也提供了辅助方法。
+启用流式传输后，返回的 `stream` 会实现 `AsyncIterable` 接口。每个产出的事件都是一个对象，用于描述运行过程中发生的事情。该流会产出三种事件类型之一，每种类型描述智能体执行过程中的不同部分。不过，大多数应用只需要模型文本，因此该流提供了一些辅助方法。
 
-### 获取文本输出
+### 文本输出获取
 
-调用 `stream.toTextStream()` 可获得已发出的文本流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是一个标准的 Node.js `Readable`。我们可以将其直接管道传输到 `process.stdout` 或其他目标。
+调用 `stream.toTextStream()` 可获得已发出文本的流。当 `compatibleWithNodeStreams` 为 `true` 时，返回值是普通的 Node.js `Readable`。我们可以将它直接管道传输到 `process.stdout` 或其他目标。
 
 <Code
   lang="typescript"
   code={nodeTextStreamExample}
-  title="Logging out the text as it arrives"
+  title="文本到达时输出日志"
   meta={`{13-17}`}
 />
 
-当运行以及所有待处理回调都完成后，Promise `stream.completed` 会被解析。如果您想确保不会再有更多输出，请始终等待它。这包括一些后处理工作，例如会话持久化或历史压缩钩子，这些工作可能会在最后一个文本 token 到达后才完成。
+`stream.completed` 这个 promise 会在运行以及所有待处理回调都完成后 resolve。如果你想确保不再有更多输出，请务必 await 它。这也包括后处理工作，例如会话持久化或历史压缩钩子，它们会在最后一个文本 token 到达后完成。
 
-`toTextStream()` 只会发出助手文本。工具调用、交接、审批及其他运行时事件可从完整事件流中获取。
+`toTextStream()` 只会发出助手文本。工具调用、交接、批准和其他运行时事件可从完整事件流中获取。
 
-### 监听所有事件
+### 所有事件的监听
 
-您可以使用 `for await` 循环在每个事件到达时进行检查。其中的有用信息包括底层模型事件、任何智能体切换以及 SDK 特有的运行信息：
+你可以使用 `for await` 循环检查每个到达的事件。有用的信息包括低层模型事件、任何智能体切换以及 SDK 专属运行信息：
 
-<Code
-  lang="typescript"
-  code={handleAllEventsExample}
-  title="Listening to all events"
-/>
+<Code lang="typescript" code={handleAllEventsExample} title="监听所有事件" />
 
-有关完整脚本示例（同时打印纯文本流和原始事件流），请参见[流式传输示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)。
+请参阅[流式传输示例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)，其中提供了一个完整可运行脚本，会同时打印纯文本流和原始事件流。
 
 ### Responses WebSocket 传输（可选）
 
-本页中的流式传输 API 也适用于 OpenAI Responses WebSocket 传输。
+本页的流式传输 API 也适用于 OpenAI Responses WebSocket 传输。
 
-可通过 `setOpenAIResponsesTransport('websocket')` 全局启用，或者使用您自己的 `OpenAIProvider` 并设置 `useResponsesWebSocket: true`。
+可以使用 `setOpenAIResponsesTransport('websocket')` 全局启用它，或使用你自己的 `OpenAIProvider` 并设置 `useResponsesWebSocket: true`。
 
-您**不需要**仅仅为了通过 WebSocket 进行流式传输而使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。如果运行之间允许重新连接，那么在启用该传输后，`run()` / `Runner.run(..., { stream: true })` 仍然可以正常工作。
+仅为了通过 WebSocket 进行流式传输，你不需要 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。如果可以接受在不同运行之间重新连接，启用该传输后，`run()` / `Runner.run(..., { stream: true })` 仍然可用。
 
-当您希望复用连接，并对 provider 生命周期进行更明确的控制时，请使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider` / `Runner`。
+当你希望复用连接并更明确地控制提供方生命周期时，请使用 `withResponsesWebSocketSession(...)`，或使用自定义 `OpenAIProvider` / `Runner`。
 
-通过 `previousResponseId` 进行续接时，其语义与 HTTP 传输相同。区别仅在于传输方式和连接生命周期。
+使用 `previousResponseId` 继续时，语义与 HTTP 传输相同。区别仅在于传输方式和连接生命周期。
 
-如果您自行构建 provider，请记得在关闭时调用 `await provider.close()`。默认情况下，基于 Websocket 的模型包装器会被缓存以供复用，而关闭 provider 会释放这些连接。`withResponsesWebSocketSession(...)` 也提供相同的复用能力，但会自动将清理范围限定在单个回调内。
+如果你自行构建提供方，请记得在关闭时调用 `await provider.close()`。由 WebSocket 支持的模型包装器默认会被缓存以便复用，关闭提供方会释放这些连接。`withResponsesWebSocketSession(...)` 提供相同的复用能力，但会自动将清理范围限定在单个回调内。
 
-完整示例（包含流式传输、工具调用、审批和 `previousResponseId`）请参见 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)。
+请参阅 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)，其中包含一个完整示例，涵盖流式传输、工具调用、批准以及 `previousResponseId`。
 
 ## 事件类型
 
-该流会产生三种不同的事件类型：
+该流会产出三种不同的事件类型：
 
 ### raw_model_stream_event
 
@@ -94,26 +86,26 @@ Agents SDK 可以逐步传递模型输出以及其他执行步骤的结果。流
 }
 ```
 
-如果您使用的是 OpenAI provider，`@openai/agents-openai` 和 `@openai/agents` 都会导出辅助方法，用于缩小原始 OpenAI 载荷的类型范围，同时不会改变 `agents-core` 中通用的 `RunRawModelStreamEvent` 契约。
+如果你使用 OpenAI 提供方，`@openai/agents-openai` 和 `@openai/agents` 都会导出辅助函数，用于对原始 OpenAI 载荷进行类型收窄，而不会改变 `agents-core` 中通用的 `RunRawModelStreamEvent` 契约。
 
 <Code
   lang="typescript"
   code={openaiResponsesRawModelStreamEventExample}
-  title="Narrow OpenAI raw model events"
+  title="收窄 OpenAI 原始模型事件"
 />
 
-当您只需要与传输无关的流式传输代码时，检查 `event.type === 'raw_model_stream_event'` 仍然足够。
+当你只需要与传输无关的流式传输代码时，检查 `event.type === 'raw_model_stream_event'` 仍然足够。
 
-如果您使用 OpenAI 模型，并希望在不手动类型转换的情况下检查 provider 特有的载荷，SDK 还导出了类型收窄辅助方法：
+如果你使用 OpenAI 模型，并希望在不手动类型转换的情况下检查提供方特定载荷，SDK 也会导出类型收窄辅助函数：
 
-- `isOpenAIResponsesRawModelStreamEvent(event)`：用于 Responses 原始事件。
-- `isOpenAIChatCompletionsRawModelStreamEvent(event)`：用于 Chat Completions 分块。
+- `isOpenAIResponsesRawModelStreamEvent(event)` 用于 Responses 原始事件。
+- `isOpenAIChatCompletionsRawModelStreamEvent(event)` 用于 Chat Completions 分块。
 
-对于这些 OpenAI 模型事件，`RunRawModelStreamEvent.source` 也会被填充为 `'openai-responses'` 或 `'openai-chat-completions'`。
+对于这些 OpenAI 模型事件，`RunRawModelStreamEvent.source` 也会填充为 `'openai-responses'` 或 `'openai-chat-completions'`。
 
-当您希望检查仅属于 Responses 的事件（如 `response.reasoning_summary_text.delta`、`response.output_item.done` 或 MCP 参数增量），同时保持 TypeScript 知晓底层事件结构时，这一点尤其有用。
+当你希望检查仅 Responses 才有的事件时，这一点尤其有用，例如 `response.reasoning_summary_text.delta`、`response.output_item.done` 或 MCP 参数增量，同时仍让 TypeScript 了解底层事件形状。
 
-更完整的 OpenAI 特定流式传输模式，请参见 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)、[`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts) 和 [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)。
+请参阅 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)、[`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts) 和 [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)，了解更完整的 OpenAI 专属流式传输模式。
 
 ### run_item_stream_event
 
@@ -123,21 +115,21 @@ Agents SDK 可以逐步传递模型输出以及其他执行步骤的结果。流
   title="RunItemStreamEvent"
 />
 
-`name` 用于标识产出的条目类型：
+`name` 标识生成了哪类项：
 
 | `name` | 含义 |
 | --- | --- |
-| `message_output_created` | 已创建消息输出条目。 |
-| `handoff_requested` | 模型请求了一次交接。 |
-| `handoff_occurred` | 运行时已完成向另一个智能体的交接。 |
-| `tool_search_called` | 发出了一个 `tool_search_call` 条目。 |
-| `tool_search_output_created` | 发出了一个包含已加载工具定义的 `tool_search_output` 条目。 |
-| `tool_called` | 发出了一个工具调用条目。 |
-| `tool_output` | 发出了一个工具结果条目。 |
-| `reasoning_item_created` | 发出了一个推理条目。 |
-| `tool_approval_requested` | 一个工具调用因等待人工审批而暂停。 |
+| `message_output_created` | 已创建消息输出项。 |
+| `handoff_requested` | 模型请求了交接。 |
+| `handoff_occurred` | 运行时完成了到另一个智能体的交接。 |
+| `tool_search_called` | 发出了一个 `tool_search_call` 项。 |
+| `tool_search_output_created` | 发出了一个包含已加载工具定义的 `tool_search_output` 项。 |
+| `tool_called` | 发出了一个工具调用项。 |
+| `tool_output` | 发出了一个工具结果项。 |
+| `reasoning_item_created` | 发出了一个推理项。 |
+| `tool_approval_requested` | 工具调用因等待人工批准而暂停。 |
 
-`tool_search_*` 事件仅会出现在使用 `toolSearchTool()` 在运行期间加载延迟工具的 Responses 运行中。
+`tool_search_*` 事件只会出现在使用 `toolSearchTool()` 在运行期间加载延迟工具的 Responses 运行中。
 
 交接载荷示例：
 
@@ -173,32 +165,32 @@ Agents SDK 可以逐步传递模型输出以及其他执行步骤的结果。流
 }
 ```
 
-## 流式传输中的人机协作
+## 流式传输期间的人工干预
 
-流式传输兼容会暂停执行的交接（例如工具需要审批时）。流对象上的 `interruptions` 字段会暴露待处理的审批项，您可以对每一项调用 `state.approve()` 或 `state.reject()` 以继续执行。流暂停后，`stream.completed` 会被解析，而 `stream.interruptions` 会包含需要处理的审批项。再次以 `{ stream: true }` 执行时，会恢复流式输出。
+流式传输与会暂停执行的交接兼容（例如工具需要批准时）。stream 对象上的 `interruptions` 字段会暴露待处理的批准项，你可以对每个批准项调用 `state.approve()` 或 `state.reject()` 来继续执行。流暂停后，`stream.completed` 会 resolve，`stream.interruptions` 会包含需要处理的批准项。再次以 `{ stream: true }` 执行会恢复流式输出。
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="Handling human approval while streaming"
+  title="流式传输期间的人工批准处理"
 />
 
-与用户交互的更完整示例请参见 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)。
+一个会与用户交互的更完整示例是 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)。
 
-## 停止流并继续同一轮对话
+## 流的停止与同一轮次的继续
 
-如果要提前停止一次流式运行，请中止您传给 `run()` 的 `signal`，或取消由 `stream.toStream()` 创建的 reader。无论采用哪种方式，在将该运行视为已稳定结束前，仍应等待 `stream.completed`。即使您的代码已停止消费事件，SDK 仍可能正在持久化当前轮次输入，或完成其他清理工作。
+要提前停止一次流式运行，可以中止传给 `run()` 的 `signal`，或取消从 `stream.toStream()` 创建的 reader。无论哪种方式，在将该运行视为已完成前，仍应 await `stream.completed`。在你的代码停止消费事件后，SDK 可能仍在持久化当前轮次输入，或完成其他清理工作。
 
-当流被取消时，`stream.cancelled` 会变为 `true`，而 `stream.finalOutput` 通常会保持为 `undefined`，因为当前轮次尚未完成。如果您之后想继续这个未完成的轮次，请使用 `stream.state` 重新运行相同的智能体，而不是追加一条新的用户消息。这样可以保持轮次计数正确，并复用已存储在 `RunState` 中的 `conversationId` 或 `previousResponseId`。
+当流被取消时，`stream.cancelled` 会变为 `true`，而 `stream.finalOutput` 通常仍为 `undefined`，因为当前轮次从未完成。如果你想稍后继续这个未完成的轮次，请用 `stream.state` 重新运行同一个智能体，而不是追加新的用户消息。这样可以保持轮次计数正确，并复用任何已存储在 `RunState` 中的 `conversationId` 或 `previousResponseId`。
 
-如果您还在使用会话持久化，请在恢复后的 `run()` 调用中再次传入同一个 `session`，这样对话就会继续写入同一个后端存储。
+如果你也在使用会话持久化，请在恢复后的 `run()` 调用中再次传入同一个 `session`，以便对话继续写入同一个后端存储。
 
-审批暂停也遵循相同规则：先处理 `stream.interruptions`，然后从 `stream.state` 恢复，而不是开始新一轮对话。
+批准导致的暂停也遵循同一规则：先处理 `stream.interruptions`，再从 `stream.state` 恢复，而不是开始新轮次。
 
 ## 提示
 
 - 请记得在退出前等待 `stream.completed`，以确保所有输出都已刷新。
-- 初始的 `{ stream: true }` 选项只对传入它的那次调用生效。如果您使用 `RunState` 重新运行，则必须再次指定该选项。
-- 如果您的应用只关心文本结果，优先使用 `toTextStream()`，以避免处理单独的事件对象。
+- 初始的 `{ stream: true }` 选项只适用于提供该选项的那次调用。如果使用 `RunState` 重新运行，你必须再次指定该选项。
+- 如果你的应用只关心文本结果，优先使用 `toTextStream()`，以避免处理单个事件对象。
 
-借助流式传输和事件系统，您可以将智能体集成到聊天界面、终端应用程序，或任何用户能从增量更新中受益的场景中。
+借助流式传输和事件系统，你可以将智能体集成到聊天界面、终端应用，或任何能让用户受益于增量更新的场景中。

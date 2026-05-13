@@ -13,42 +13,42 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    使用一组精简的基本组件构建沙箱、文本和语音智能体。
+    使用少量基本组件构建沙盒、文本和语音智能体。
   </Fragment>
   <Fragment slot="cta">开始构建</Fragment>
 </Hero>
 
 ## 概述
 
-[TypeScript 版 OpenAI Agents SDK](https://github.com/openai/openai-agents-js) 让您能够使用一个轻量、易用且几乎没有额外抽象的包来构建智能体 AI 应用。它是在我们之前面向智能体的实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 基础上的生产就绪升级版本，同时也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只有一组非常精简的基本组件：
+[TypeScript 版 OpenAI Agents SDK](https://github.com/openai/openai-agents-js) 让您能够通过一个轻量、易用且抽象很少的包，构建智能体式 AI 应用。它是我们此前智能体实验项目 [Swarm](https://github.com/openai/swarm/tree/main) 的生产可用升级版，并且也[提供 Python 版本](https://github.com/openai/openai-agents-python)。Agents SDK 只包含一组非常精简的基本组件：
 
-- **智能体**：配备 instructions 和 tools 的 LLM
-- **沙箱智能体**：将智能体与隔离的文件系统工作区、shell 命令、文件编辑、快照以及沙箱会话状态结合起来
-- **Agents as tools / 交接**：允许智能体将特定任务委派给其他智能体
-- **护栏**：可对传入智能体的输入进行验证
+- **智能体**，即配备 instructions 和 tools 的 LLM
+- **沙盒智能体**，将智能体与隔离的文件系统工作区、shell 命令、文件编辑、快照和沙盒会话状态配对
+- **Agents as tools / 交接**，允许智能体将特定任务委派给其他智能体
+- **护栏**，用于对智能体的输入进行验证
 
-结合 TypeScript，这些基本组件足以表达工具与智能体之间的复杂关系，在需要时为智能体提供真实工作区，并让您无需陡峭的学习曲线就能构建真实世界应用。此外，SDK 内置了**追踪**功能，可帮助您可视化和调试智能体流程，还可以对其进行评估，甚至为您的应用微调模型。
+结合 TypeScript，这些基本组件强大到足以表达工具与智能体之间的复杂关系，在智能体需要时为其提供真实工作区，并让您无需陡峭的学习曲线即可构建真实世界应用。此外，SDK 内置了**追踪**，可帮助您可视化和调试智能体式流程，也可以评估这些流程，甚至为您的应用微调模型。
 
-## 使用 Agents SDK 的原因
+## 选择 Agents SDK 的理由
 
-SDK 有两个核心设计原则：
+SDK 有两条核心设计原则：
 
-1. 功能足够丰富，值得使用；同时基本组件足够少，便于快速上手。
-2. 开箱即用，同时您也可以精确自定义实际发生的行为。
+1. 功能足够丰富，值得使用；基本组件又足够少，便于快速学习。
+2. 开箱即用效果很好，同时也允许您精确自定义实际发生的行为。
 
-以下是 SDK 的主要特性：
+SDK 的主要功能包括：
 
-- **智能体循环**：内置智能体循环，负责处理工具调用、将结果发回 LLM，并持续执行直到任务完成。
-- **沙箱执行**：当工作需要工作区时，可使用隔离的文件系统工作区、shell 命令、文件编辑、快照和沙箱会话状态来运行智能体。
-- **TypeScript 优先**：使用原生 TypeScript 语言特性来编排和串联智能体，无需学习新的抽象概念。
-- **Agents as tools / 交接**：一种强大的机制，用于跨多个智能体协调和委派工作。
-- **护栏**：与智能体执行并行运行输入验证和安全检查，并在检查未通过时快速失败。
-- **函数工具**：将任何 TypeScript 函数转换为工具，并自动生成 schema 和基于 Zod 的验证。
-- **MCP 服务器工具调用**：内置 MCP 服务器工具集成，使用方式与函数工具相同。
-- **会话**：一个持久化记忆层，用于在智能体循环中维护工作上下文。
-- **人工干预**：内置机制，可在智能体多次运行过程中引入人工参与。
-- **追踪**：内置追踪功能，用于工作流的可视化、调试和监控，并支持 OpenAI 的评估、微调和蒸馏工具套件。
-- **实时智能体**：构建强大的语音智能体，支持自动打断检测、上下文管理、护栏等功能。
+- **智能体循环**：内置的智能体循环会处理工具调用、将结果发回 LLM，并持续运行直到任务完成。
+- **沙盒执行**：当任务需要工作区时，使用隔离的文件系统工作区、shell 命令、文件编辑、快照和沙盒会话状态运行智能体。
+- **TypeScript 优先**：使用原生 TypeScript 语言特性编排并串联智能体，无需学习新的抽象概念。
+- **Agents as tools / 交接**：一种强大的机制，用于在多个智能体之间协调和委派工作。
+- **护栏**：与智能体执行并行运行输入验证和安全检查，并在检查未通过时立即失败。
+- **函数工具**：将任何 TypeScript 函数转换为工具，并自动生成 schema，使用 Zod 驱动的验证。
+- **MCP 服务器工具调用**：内置 MCP 服务器工具集成，其工作方式与函数工具相同。
+- **会话**：用于在智能体循环中维护工作上下文的持久记忆层。
+- **人工干预**：内置机制，用于在多次智能体运行中引入人工参与。
+- **追踪**：内置追踪，用于可视化、调试和监控工作流，并支持 OpenAI 的评估、微调和蒸馏工具套件。
+- **实时智能体**：构建强大的语音智能体，支持自动中断检测、上下文管理、护栏等功能。
 
 ## 安装
 
@@ -58,76 +58,76 @@ npm install @openai/agents zod
 
 SDK 需要 Zod v4；通过 npm 安装 `zod` 时会获取最新的 v4 版本。
 
-## 选择起点
+## 起点选择
 
-大多数首次使用的用户只需要以下入口之一：
+大多数首次使用者只需要从以下入口中选择一个：
 
 | 起点 | 适用场景 | 说明 |
 | --- | --- | --- |
-| `@openai/agents` | 您正在构建大多数文本、沙箱或语音应用。 | 推荐默认选择。它包含 OpenAI provider 配置、位于 `@openai/agents/sandbox` 下的沙箱智能体 API，以及位于 `@openai/agents/realtime` 下的语音 API。 |
-| `@openai/agents-realtime` | 您只需要独立的 Realtime 包。 | 适用于纯浏览器语音应用，或当您希望包边界更清晰时。 |
-| 更底层的包（`@openai/agents-core`、`@openai/agents-openai`、`@openai/agents-extensions`） | 您需要更底层的组合方式、自定义 provider 连接或特定集成。 | 大多数新用户在有明确需求之前都可以忽略这些。 |
+| `@openai/agents` | 您正在构建大多数文本、沙盒或语音应用。 | 推荐的默认选择。它包含 OpenAI provider 设置、`@openai/agents/sandbox` 下的沙盒智能体 API，以及 `@openai/agents/realtime` 下的语音 API。 |
+| `@openai/agents-realtime` | 您只需要独立的 Realtime 包。 | 适用于纯浏览器语音应用，或当您希望包边界更窄时。 |
+| 更底层的包（`@openai/agents-core`、`@openai/agents-openai`、`@openai/agents-extensions`） | 您需要更底层的组合、自定义 provider 接入或特定集成。 | 大多数新用户可以先忽略这些，直到有明确需求。 |
 
 ## Hello World 示例
 
-当智能体需要在文件系统中工作时，请从沙箱智能体开始。如果您的工作流不需要沙箱工作区或沙箱生命周期，也仍然可以使用常规的 `Agent`。
+当智能体需要在文件系统中工作时，请从沙盒智能体开始。如果您的工作流不需要沙盒工作区或沙盒生命周期，仍可使用普通的 `Agent`。
 
 <Tabs>
-  <TabItem label="Sandbox Agent">
+  <TabItem label="沙盒智能体">
     <Code
       lang="typescript"
       code={helloWorldSandboxExample}
-      title="Hello World with a sandbox"
+      title="带沙盒的 Hello World"
     />
   </TabItem>
-  <TabItem label="Without Sandbox">
+  <TabItem label="不使用沙盒">
     <Code
       lang="typescript"
       code={helloWorldExample}
-      title="Hello World without a sandbox"
+      title="不带沙盒的 Hello World"
     />
   </TabItem>
 </Tabs>
 
-（_如果要运行此示例，请确保已设置 `OPENAI_API_KEY` 环境变量_）
+(_如果要运行此示例，请确保设置 `OPENAI_API_KEY` 环境变量_)
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-## 从这里开始
+## 起步路径
 
-先选择一条路径，把它完整跑通，然后再回来阅读更深入的指南。
+先选择一条路径，让它端到端跑通，然后再回来阅读更深入的指南。
 
 <LinkCard
-  title="快速上手"
+  title="快速开始"
   href="/openai-agents-js/zh/guides/quickstart"
   description="构建您的第一个基于文本的智能体，并学习 SDK 的核心工作流。"
 />
 
 <LinkCard
-  title="语音智能体快速开始"
+  title="快速开始"
   href="/openai-agents-js/zh/guides/voice-agents/quickstart"
-  description="如果您正在构建语音交互，请从 Realtime 语音路径开始。"
+  description="当您正在构建语音交互时，请从 Realtime 语音路径开始。"
 />
 
 <LinkCard
-  title="Sandbox clients"
+  title="快速入门"
   href="/openai-agents-js/zh/guides/sandbox-agents"
-  description="当智能体需要文件、shell 命令、补丁或可恢复的沙箱状态时，从沙箱智能体开始。"
+  description="当智能体需要文件、shell 命令、补丁或可恢复的沙盒状态时，请启动沙盒智能体。"
 />
 
 ## 路径选择
 
-当您知道自己想完成什么工作，但不确定该看哪个页面时，可使用下表。
+当您知道想完成的任务，但不知道哪一页介绍它时，可以使用此表。
 
-| 目标 | 从这里开始 |
+| 目标 | 起点 |
 | --- | --- |
-| 构建第一个文本智能体，并查看一次完整运行 | [快速开始](/openai-agents-js/guides/quickstart) |
-| 添加函数工具、托管工具或 Agents as tools | [工具](/openai-agents-js/guides/tools) |
-| 为智能体提供隔离的文件系统和 shell 工作区 | [Sandbox clients](/openai-agents-js/guides/sandbox-agents) |
-| 在交接和管理者式编排之间做出选择 | [智能体编排](/openai-agents-js/guides/multi-agent) |
-| 跨轮次保留记忆 | [运行智能体](/openai-agents-js/guides/running-agents) 和 [会话](/openai-agents-js/guides/sessions) |
-| 使用 OpenAI 模型、websocket 传输或非 OpenAI provider | [模型](/openai-agents-js/guides/models) |
-| 查看输出、运行项、中断和恢复状态 | [执行结果](/openai-agents-js/guides/results) |
-| 构建低延迟语音智能体 | [快速开始](/openai-agents-js/guides/voice-agents/quickstart) |
+| 构建第一个文本智能体并查看一次完整运行 | [快速开始](/openai-agents-js/zh/guides/quickstart) |
+| 添加函数工具、托管工具或 agents as tools | [工具](/openai-agents-js/zh/guides/tools) |
+| 为智能体提供隔离的文件系统和 shell 工作区 | [快速入门](/openai-agents-js/zh/guides/sandbox-agents) |
+| 在交接与管理器风格编排之间做选择 | [智能体编排](/openai-agents-js/zh/guides/multi-agent) |
+| 在多轮之间保留记忆 | [运行智能体](/openai-agents-js/zh/guides/running-agents) 和 [会话](/openai-agents-js/zh/guides/sessions) |
+| 使用 OpenAI 模型、WebSocket 传输或非 OpenAI provider | [模型](/openai-agents-js/zh/guides/models) |
+| 查看输出、运行项、中断和恢复状态 | [执行结果](/openai-agents-js/zh/guides/results) |
+| 构建低延迟语音智能体 | [快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart) |

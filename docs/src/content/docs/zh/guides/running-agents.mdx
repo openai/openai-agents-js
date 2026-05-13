@@ -13,139 +13,139 @@ import previousResponseIdExample from '../../../../../../examples/docs/running-a
 
 智能体本身不会执行任何操作——您需要使用 `Runner` 类或 `run()` 工具来**运行**它们。
 
-> 当您希望执行轮次、流式传输事件或管理对话状态时，请在阅读完[智能体](/openai-agents-js/zh/guides/agents)后再阅读本页。如果您还在决定应如何定义智能体，请先从[智能体](/openai-agents-js/zh/guides/agents)开始。
+> 在您已经阅读 [智能体](/openai-agents-js/zh/guides/agents)，并希望执行轮次、流式传输事件或管理对话状态后，再阅读本页。如果您仍在决定应如何定义智能体，请先从 [智能体](/openai-agents-js/zh/guides/agents) 开始。
 
 <Code lang="typescript" code={helloWorldExample} title="简单运行" />
 
-当您不需要自定义 runner 时，也可以使用 `run()` 工具，它会运行一个单例的默认 `Runner` 实例。
+当您不需要自定义 Runner 时，也可以使用 `run()` 工具，它会运行一个单例默认 `Runner` 实例。
 
-或者，您也可以创建自己的 runner 实例：
+或者，您也可以创建自己的 Runner 实例：
 
 <Code lang="typescript" code={helloWorldWithRunnerExample} title="简单运行" />
 
-运行智能体后，您将收到一个[执行结果](/openai-agents-js/zh/guides/results)对象，其中包含最终输出以及此次运行的完整历史记录。
+运行智能体后，您会收到一个[执行结果](/openai-agents-js/zh/guides/results)对象，其中包含最终输出和本次运行的完整历史。
 
 ## Runner 生命周期与配置
 
 ### 智能体循环
 
-当您使用 Runner 中的 run 方法时，需要传入一个起始智能体和输入。输入可以是字符串（会被视为一条用户消息），也可以是输入项列表，也就是 OpenAI Responses API 中的条目。
+当您使用 Runner 中的 run 方法时，会传入一个起始智能体和输入。输入可以是字符串（会被视为用户消息），也可以是一组输入项，即 OpenAI Responses API 中的项。
 
-随后 runner 会执行一个循环：
+Runner 随后执行一个循环：
 
 1. 使用当前输入调用当前智能体的模型。
-2. 检查 LLM 的响应。
+2. 检查 LLM 响应。
    - **最终输出** → 返回。
-   - **交接** → 切换到新智能体，保留累计的对话历史，转到 1。
-   - **工具调用** → 执行工具，将其结果追加到对话中，转到 1。
-3. 一旦达到 `maxTurns`，抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)，除非 `maxTurns` 为 `null`。
+   - **交接** → 切换到新的智能体，保留累积的对话历史，回到第 1 步。
+   - **工具调用** → 执行工具，将结果追加到对话中，回到第 1 步。
+3. 一旦达到 `maxTurns`，就抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)，除非 `maxTurns` 为 `null`。
 
 <Aside type="note">
   判断 LLM 输出是否被视为"最终输出"的规则是：
-  它生成了具有目标类型的文本输出，并且没有任何工具调用。
+  它会生成所需类型的文本输出，并且没有工具调用。
 </Aside>
 
 #### Runner 生命周期
 
-在应用启动时创建一个 `Runner`，并在多个请求之间复用它。该实例会存储全局配置，例如模型提供方和追踪选项。只有在您需要完全不同的配置时，才创建另一个 `Runner`。对于简单脚本，您也可以直接调用 `run()`，它会在内部使用默认 runner。
+在应用启动时创建一个 `Runner`，并在各个请求之间复用它。该实例会存储全局配置，例如模型提供商和追踪选项。只有在需要完全不同的设置时，才创建另一个 `Runner`。对于简单脚本，也可以调用 `run()`，它会在内部使用默认 Runner。
 
 ### 运行参数
 
-`run()` 方法的输入包括：一个用于启动本次运行的初始智能体、本次运行的输入，以及一组选项。
+`run()` 方法的输入包括用于开始运行的初始智能体、运行输入以及一组选项。
 
-输入可以是字符串（会被视为一条用户消息）、[input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) 列表，或者在构建[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)智能体时使用的 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 对象。
+输入可以是字符串（会被视为用户消息），也可以是一组[输入项](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem)，或者在构建[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)智能体时使用 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 对象。
 
-附加选项包括：
+其他选项如下：
 
-| Option | Default | Description |
+| 选项 | 默认值 | 描述 |
 | --- | --- | --- |
-| `stream` | `false` | 若为 `true`，调用将返回 `StreamedRunResult`，并在模型返回事件时实时发出。 |
-| `context` | – | 传递给每个工具 / 护栏 / 交接的上下文对象。更多信息请参见[上下文管理](/openai-agents-js/zh/guides/context)。 |
+| `stream` | `false` | 如果为 `true`，调用会返回 `StreamedRunResult`，并在事件从模型抵达时发出事件。 |
+| `context` | – | 转发给每个工具 / 护栏 / 交接的上下文对象。更多信息请参阅[上下文管理](/openai-agents-js/zh/guides/context)。 |
 | `maxTurns` | `10` | 安全限制——达到时会抛出 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)。传入 `null` 可禁用该限制。 |
 | `signal` | – | 用于取消的 `AbortSignal`。 |
-| `session` | – | 会话持久化实现。参见[会话](/openai-agents-js/zh/guides/sessions)。 |
-| `sessionInputCallback` | – | 用于合并会话历史与新输入的自定义逻辑；在调用模型前运行。参见[会话](/openai-agents-js/zh/guides/sessions)。 |
-| `callModelInputFilter` | – | 在调用模型前，用于编辑模型输入（条目 + 可选 instructions）的钩子。参见[调用模型输入过滤器](#调用模型输入过滤器)。 |
-| `toolErrorFormatter` | – | 用于自定义返回给模型的工具审批拒绝消息的钩子。参见[工具错误格式化器](#工具错误格式化器)。 |
-| `reasoningItemIdPolicy` | – | 控制在将先前运行条目重新转换为模型输入时，是否保留或省略 reasoning item 的 `id`。参见[Reasoning item ID 策略](#reasoning-item-id-策略)。 |
-| `tracing` | – | 按次运行覆盖的追踪配置（例如导出 API 密钥）。 |
-| `sandbox` | – | 用于 `SandboxAgent` 运行的沙盒客户端、实时会话、会话状态、快照、manifest 覆盖项或并发限制。参见[概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)。 |
-| `toolExecution` | – | 本地工具调用的 SDK 侧执行设置。使用 `toolExecution.maxFunctionToolConcurrency` 可限制函数工具的同时运行数量。 |
-| `errorHandlers` | – | 受支持运行时错误的处理器（当前为 `maxTurns`）。参见[错误处理器](#错误处理器)。 |
-| `conversationId` | – | 复用服务器端对话（仅 OpenAI Responses API + Conversations API）。 |
-| `previousResponseId` | – | 在不创建对话的情况下，从上一次 Responses API 调用继续（仅 OpenAI Responses API）。 |
+| `session` | – | 会话持久化实现。请参阅[会话](/openai-agents-js/zh/guides/sessions)。 |
+| `sessionInputCallback` | – | 会话历史与新输入的自定义合并逻辑；在模型调用前运行。请参阅[会话](/openai-agents-js/zh/guides/sessions)。 |
+| `callModelInputFilter` | – | 在调用模型前编辑模型输入（items + 可选 instructions）的钩子。请参阅[模型调用输入过滤器](#call-model-input-filter)。 |
+| `toolErrorFormatter` | – | 用于自定义返回给模型的工具批准拒绝消息的钩子。请参阅[工具错误格式化器](#tool-error-formatter)。 |
+| `reasoningItemIdPolicy` | – | 控制在先前运行项重新转换为模型输入时，是保留还是省略推理项 `id`。请参阅[推理项 ID 策略](#reasoning-item-id-policy)。 |
+| `tracing` | – | 每次运行的追踪配置覆盖（例如导出 API 密钥）。 |
+| `sandbox` | – | 用于 `SandboxAgent` 运行的沙盒客户端、实时会话、会话状态、快照、manifest 覆盖或并发限制。请参阅[概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)。 |
+| `toolExecution` | – | 本地工具调用的 SDK 端执行设置。使用 `toolExecution.maxFunctionToolConcurrency` 限制同时运行的函数工具数量。 |
+| `errorHandlers` | – | 受支持运行时错误（当前为 `maxTurns`）的处理器。请参阅[错误处理器](#error-handlers)。 |
+| `conversationId` | – | 复用服务器端对话（仅限 OpenAI Responses API + Conversations API）。 |
+| `previousResponseId` | – | 从上一次 Responses API 调用继续，而不创建对话（仅限 OpenAI Responses API）。 |
 
 ### 流式传输
 
-流式传输允许您在 LLM 运行时额外接收流式事件。一旦流开始，`StreamedRunResult` 将包含此次运行的完整信息，包括所有新生成的输出。您可以使用 `for await` 循环遍历流式事件。更多信息请参见[流式传输](/openai-agents-js/zh/guides/streaming)。
+流式传输允许您在 LLM 运行时额外接收流式事件。流启动后，`StreamedRunResult` 将包含本次运行的完整信息，包括生成的所有新输出。您可以使用 `for await` 循环遍历流式事件。更多信息请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
 
 ### 运行配置
 
-如果您要创建自己的 `Runner` 实例，可以传入一个 `RunConfig` 对象来配置 runner。
+如果您要创建自己的 `Runner` 实例，可以传入 `RunConfig` 对象来配置 Runner。
 
-| Field | Type | Purpose |
+| 字段 | 类型 | 用途 |
 | --- | --- | --- |
-| `model` | `string \| Model` | 为此次运行中的**所有**智能体强制指定一个特定模型。 |
-| `modelProvider` | `ModelProvider` | 解析模型名称——默认使用 OpenAI 提供方。 |
-| `modelSettings` | `ModelSettings` | 全局调优参数，会覆盖每个智能体的设置。详情请参见[模型](/openai-agents-js/zh/guides/models#modelsettings)，其中也包括选择启用的重试配置。 |
-| `handoffInputFilter` | `HandoffInputFilter` | 执行交接时修改输入项（如果交接本身尚未定义该过滤器）。 |
+| `model` | `string \| Model` | 为运行中的**所有**智能体强制使用特定模型。 |
+| `modelProvider` | `ModelProvider` | 解析模型名称——默认为 OpenAI 提供商。 |
+| `modelSettings` | `ModelSettings` | 覆盖每个智能体设置的全局调优参数。详情请参阅[模型](/openai-agents-js/zh/guides/models#modelsettings)，包括选择启用的重试配置。 |
+| `handoffInputFilter` | `HandoffInputFilter` | 执行交接时修改输入项（如果交接本身尚未定义）。 |
 | `inputGuardrails` | `InputGuardrail[]` | 应用于*初始*用户输入的护栏。 |
 | `outputGuardrails` | `OutputGuardrail[]` | 应用于*最终*输出的护栏。 |
 | `tracingDisabled` | `boolean` | 完全禁用 OpenAI 追踪。 |
-| `traceIncludeSensitiveData` | `boolean` | 在仍然发出 span 的情况下，从追踪中排除 LLM / 工具输入与输出。 |
+| `traceIncludeSensitiveData` | `boolean` | 在仍发出 span 的同时，从追踪中排除 LLM/工具输入和输出。 |
 | `workflowName` | `string` | 显示在 Traces 仪表板中——有助于对相关运行进行分组。 |
-| `traceId` / `groupId` | `string` | 手动指定 trace 或 group ID，而不是由 SDK 自动生成。 |
+| `traceId` / `groupId` | `string` | 手动指定追踪或组 ID，而不是让 SDK 生成。 |
 | `traceMetadata` | `Record<string, string>` | 附加到每个 span 的任意元数据。 |
-| `tracing` | `TracingConfig` | 按次运行覆盖的追踪配置（例如导出 API 密钥）。 |
-| `sessionInputCallback` | `SessionInputCallback` | 该 runner 上所有运行的默认历史合并策略。 |
-| `callModelInputFilter` | `CallModelInputFilter` | 在每次调用模型前编辑模型输入的全局钩子。 |
-| `toolErrorFormatter` | `ToolErrorFormatter` | 用于自定义返回给模型的工具审批拒绝消息的全局钩子。 |
-| `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | 在将生成的条目重放到后续模型调用时，保留或省略 reasoning item `id` 的默认策略。 |
-| `sandbox` | `SandboxRunConfig` | `SandboxAgent` 运行的默认沙盒运行时配置。 |
-| `toolExecution` | `ToolExecutionConfig` | 本地工具调用的默认 SDK 侧执行设置。`maxFunctionToolConcurrency` 会限制每轮本地函数工具的并发数；未设置或为 `null` 时，会启动该轮中发出的所有函数工具调用。 |
+| `tracing` | `TracingConfig` | 每次运行的追踪配置覆盖（例如导出 API 密钥）。 |
+| `sessionInputCallback` | `SessionInputCallback` | 此 Runner 上所有运行的默认历史合并策略。 |
+| `callModelInputFilter` | `CallModelInputFilter` | 在每次模型调用前编辑模型输入的全局钩子。 |
+| `toolErrorFormatter` | `ToolErrorFormatter` | 用于自定义返回给模型的工具批准拒绝消息的全局钩子。 |
+| `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | 将生成的项重放进后续模型调用时，保留或省略推理项 `id` 的默认策略。 |
+| `sandbox` | `SandboxRunConfig` | 用于 `SandboxAgent` 运行的默认沙盒运行时配置。 |
+| `toolExecution` | `ToolExecutionConfig` | 本地工具调用的默认 SDK 端执行设置。`maxFunctionToolConcurrency` 限制每个轮次的本地函数工具并发数；未设置或为 `null` 时，会启动该轮次中发出的所有函数工具调用。 |
 
-`toolExecution.maxFunctionToolConcurrency` 必须是大于或等于 `1` 的整数。该设置仅限制本地函数工具在 SDK 侧的执行，不会改变提供方侧的 `modelSettings.parallelToolCalls`。
+`toolExecution.maxFunctionToolConcurrency` 必须是大于或等于 `1` 的整数。此设置仅限制本地函数工具在 SDK 端的执行。它不会改变提供商端的 `modelSettings.parallelToolCalls`。
 
 ## 状态与对话管理
 
-### 选择一种记忆策略
+### 记忆策略选择
 
-将状态带入下一轮，通常有四种方式：
+有四种将状态带入下一轮的常见方式：
 
-| Strategy | Where state lives | Best for | What you pass on the next turn |
+| 策略 | 状态存储位置 | 适用场景 | 下一轮传入内容 |
 | --- | --- | --- | --- |
-| `result.history` | 您应用的内存 | 小型聊天循环、完全手动控制、任意提供方 | `result.history` |
-| `session` | 您的存储 + SDK | 持久化聊天状态、可恢复运行、自定义存储 | 同一个 `session` 实例（或由存储支持的实例） |
-| `conversationId` | OpenAI Conversations API | 跨 worker / 服务共享的服务器端状态 | 同一个 `conversationId`，外加仅新的用户轮次 |
-| `previousResponseId` | 仅 OpenAI Responses API | 最简单的服务器托管续接方式，无需创建对话 | `result.lastResponseId`，外加仅新的用户轮次 |
+| `result.history` | 您的应用内存 | 小型聊天循环、完全手动控制、任何提供商 | `result.history` |
+| `session` | 您的存储 + SDK | 持久聊天状态、可恢复运行、自定义存储 | 同一个 `session` 实例（或由存储支持的实例） |
+| `conversationId` | OpenAI Conversations API | 跨 worker/服务共享的服务器端状态 | 同一个 `conversationId`，外加仅新的用户轮次 |
+| `previousResponseId` | 仅 OpenAI Responses API | 无需创建对话的最简单服务器管理延续方式 | `result.lastResponseId`，外加仅新的用户轮次 |
 
-`result.history` 和 `session` 由客户端管理。`conversationId` 和 `previousResponseId` 由 OpenAI 管理，并且仅适用于您使用 OpenAI Responses API 的情况。在大多数应用中，每个对话选择一种持久化策略即可。将客户端管理的历史与服务器管理的状态混合使用，可能会造成上下文重复，除非您有意对两层进行协调。
+`result.history` 和 `session` 由客户端管理。`conversationId` 和 `previousResponseId` 由 OpenAI 管理，并且仅在您使用 OpenAI Responses API 时适用。在大多数应用中，每个对话选择一种持久化策略即可。除非您有意协调这两层，否则混合使用客户端管理的历史与服务器管理的状态可能会导致上下文重复。
 
-Sandbox 智能体还增加了另一层状态：实时沙盒工作区。对话历史请使用常规 SDK 的 `session`、`conversationId` 或 `previousResponseId`；沙盒文件系统状态则使用 `sandbox.session`、`sandbox.sessionState`、`RunState` 或快照。有关工作区生命周期，请参见[概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)。
+沙盒智能体会增加另一层状态：实时沙盒工作区。对话历史请使用常规 SDK `session`、`conversationId` 或 `previousResponseId`；沙盒文件系统状态请使用 `sandbox.session`、`sandbox.sessionState`、`RunState` 或快照。有关工作区生命周期，请参阅[概念](/openai-agents-js/zh/guides/sandbox-agents/concepts)。
 
 ### 对话 / 聊天线程
 
-每次调用 `runner.run()`（或 `run()` 工具）都表示应用层对话中的一个**轮次**。您可以自行决定向最终用户展示多少 `RunResult` 内容——有时只展示 `finalOutput`，有时则展示每一个生成条目。
+对 `runner.run()`（或 `run()` 工具）的每次调用都表示应用级对话中的一个**轮次**。您可以自行决定向最终用户展示多少 `RunResult` 内容——有时只展示 `finalOutput`，有时展示每个生成项。
 
 <Code lang="typescript" code={chatLoopExample} title="延续对话历史的示例" />
 
-交互版本请参见[聊天示例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)。
+交互版本请参阅[聊天示例](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)。
 
-#### 服务器托管的对话
+#### 服务器管理的对话
 
-您可以让 OpenAI Responses API 为您持久化对话历史，而不必在每一轮都发送整个本地对话历史。这在您需要协调长对话或多个服务时非常有用。对于下面任一种服务器托管方式，每次请求只传入新一轮的输入即可。API 会为您复用先前状态。详情请参见[Conversation state guide](https://developers.openai.com/api/docs/guides/conversation-state)。
+您可以让 OpenAI Responses API 为您持久化对话历史，而不是在每个轮次都发送完整的本地对话历史。当您需要协调长对话或多个服务时，这会很有用。对于下面任一服务器管理方式，每次请求只需传入本轮的新输入。API 会为您复用之前的状态。详情请参阅[对话状态指南](https://developers.openai.com/api/docs/guides/conversation-state)。
 
-OpenAI 提供了两种复用服务器端状态的方式：
+OpenAI 提供两种复用服务器端状态的方式：
 
-##### 1. 使用 `conversationId` 表示整个对话
+##### 1. 用于整个对话的 `conversationId`
 
-您可以先通过 [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) 创建一个对话，然后在每一轮中复用该 ID。SDK 会自动只包含新生成的条目。
+您可以使用 [Conversations API](https://platform.openai.com/docs/api-reference/conversations/create) 创建一次对话，然后在每个轮次复用其 ID。SDK 会自动仅包含新生成的项。
 
 <Code lang="typescript" code={conversationIdExample} title="复用服务器对话" />
 
-##### 2. 使用 `previousResponseId` 从上一轮继续
+##### 2. 从上一轮继续的 `previousResponseId`
 
-如果您本来就只想从 Responses API 开始，也可以使用前一个响应返回的 ID 将每次请求串联起来。这样无需创建完整的对话资源，也能在多轮之间保持上下文。
+如果无论如何都只想从 Responses API 开始，可以使用上一条响应返回的 ID 串联每个请求。这样无需创建完整的对话资源，也能在多个轮次间保持上下文。
 
 <Code
   lang="typescript"
@@ -153,105 +153,105 @@ OpenAI 提供了两种复用服务器端状态的方式：
   title="使用 previousResponseId 串联"
 />
 
-`conversationId` 和 `previousResponseId` 互斥。若您希望使用一个可在多个系统间共享的具名对话资源，请使用 `conversationId`；若您只想要从一个响应延续到下一个响应的最轻量 SDK 级续接机制，请使用 `previousResponseId`。
+`conversationId` 和 `previousResponseId` 互斥。当您需要一个可跨系统共享的具名对话资源时使用 `conversationId`；当您只需要从一次响应到下一次响应之间最轻量的 SDK 级延续机制时使用 `previousResponseId`。
 
 ## 钩子与自定义
 
-### 调用模型输入过滤器
+### 模型调用输入过滤器
 
-使用 `callModelInputFilter` 可以在调用模型**之前**编辑模型输入。该钩子会接收当前智能体、上下文，以及合并后的输入项（如果存在会话历史，也会包含在内）。您可以返回更新后的 `input` 数组和可选的 `instructions`，以便屏蔽敏感数据、丢弃旧消息，或注入额外的系统指导。
+使用 `callModelInputFilter` 在模型被调用的*前一刻*编辑模型输入。该钩子会接收当前智能体、上下文以及合并后的输入项（存在会话历史时会包含它）。返回更新后的 `input` 数组和可选的 `instructions`，用于遮盖敏感数据、丢弃旧消息或注入额外的系统指导。
 
-您可以在单次运行中通过 `runner.run(..., { callModelInputFilter })` 设置它，也可以在 `Runner` 配置中将其设为默认值（即 `RunConfig` 中的 `callModelInputFilter`）。
+可以在每次运行中通过 `runner.run(..., { callModelInputFilter })` 设置，也可以在 `Runner` 配置中作为默认值设置（`RunConfig` 中的 `callModelInputFilter`）。
 
-返回值必须是一个 `ModelInputData` 对象：`{ input: AgentInputItem[], instructions? }`。其中 `input` 字段是必填项，且必须是数组。返回任何其他结构都会抛出 `UserError`。
+返回值必须是 `ModelInputData` 对象：`{ input: AgentInputItem[], instructions? }`。`input` 字段是必需的，且必须是数组。返回任何其他形状都会抛出 `UserError`。
 
-SDK 会在调用过滤器前克隆准备好的轮次输入。如果您同时使用了 `session`，那么被过滤后的克隆内容也会被持久化，因此在这里进行的脱敏或截断也会反映到存储的会话历史中。
+SDK 会在调用过滤器前克隆准备好的轮次输入。如果您同时使用 `session`，被过滤后的克隆会被持久化，因此此处应用的遮盖或截断也会反映在已存储的会话历史中。
 
-使用 `conversationId` 或 `previousResponseId` 时，该钩子会作用于下一次 Responses API 调用所准备的负载。先前由服务器托管的上下文会由 API 恢复，因此该次调用的过滤后数组可能已经只表示新轮次的增量，而不是对先前完整历史的重放。如果您需要在这一步最终过滤之前更改存储历史与当前轮次的合并方式，请使用 `sessionInputCallback`。
+使用 `conversationId` 或 `previousResponseId` 时，该钩子会在下一次 Responses API 调用的已准备载荷上运行。之前由服务器管理的上下文会由 API 恢复，因此该调用的过滤后数组可能已经只表示新轮次增量，而不是对早期历史的完整重放。如果需要在最终过滤步骤之前改变已存储历史与当前轮次的合并方式，请使用 `sessionInputCallback`。
 
 ### 工具错误格式化器
 
-使用 `toolErrorFormatter` 可以自定义当工具调用被拒绝时，返回给模型的审批拒绝消息。这样您就可以返回特定领域的措辞（例如合规指引），而不是使用 SDK 的默认消息。
+使用 `toolErrorFormatter` 自定义当工具调用被拒绝时发送回模型的批准拒绝消息。这样您可以返回特定领域的措辞（例如合规指导），而不是 SDK 默认消息。
 
-该格式化器可以按次运行设置（`runner.run(..., { toolErrorFormatter })`），也可以在 `RunConfig` 中全局设置（在 `new Runner(...)` 中配置 `toolErrorFormatter`）。
+该格式化器可以按运行设置（`runner.run(..., { toolErrorFormatter })`），也可以在 `RunConfig` 中全局设置（`new Runner(...)` 中的 `toolErrorFormatter`）。
 
-此格式化器是审批拒绝消息的全局回退机制。如果您在拒绝某个特定中断时使用 `result.state.reject(interruption, { message: '...' })`，则该次调用的 `message` 会优先于 `toolErrorFormatter`。如果两者都未提供，SDK 会回退到默认拒绝文本：`Tool execution was not approved.`
+此格式化器是批准拒绝的全局回退。如果您使用 `result.state.reject(interruption, { message: '...' })` 拒绝特定中断，则该次调用的 `message` 优先于 `toolErrorFormatter`。如果两者都未提供，SDK 会回退到默认拒绝文本：`Tool execution was not approved.`
 
-该格式化器当前会在 `approval_rejected` 事件中运行，并接收以下参数：
+该格式化器目前针对 `approval_rejected` 事件运行，并接收：
 
-- `kind`（当前始终为 `'approval_rejected'`）
+- `kind`（目前始终为 `'approval_rejected'`）
 - `toolType`（`'function'`、`'computer'`、`'shell'` 或 `'apply_patch'`）
 - `toolName`
 - `callId`
-- `defaultMessage`（SDK 的回退消息，当前为 `Tool execution was not approved.`）
+- `defaultMessage`（SDK 回退消息，目前为 `Tool execution was not approved.`）
 - `runContext`
 
-返回一个字符串即可覆盖该消息，返回 `undefined` 则保留 SDK 默认值。如果格式化器抛出异常（或返回非字符串值），SDK 会记录警告并回退到默认的审批拒绝消息。
+返回字符串以覆盖消息，或返回 `undefined` 保留 SDK 默认值。如果格式化器抛出异常（或返回非字符串值），SDK 会记录警告并回退到默认批准拒绝消息。
 
-### Reasoning item ID 策略
+### 推理项 ID 策略
 
-使用 `reasoningItemIdPolicy` 可控制当 SDK 将先前生成的运行条目重新转换为 `AgentInputItem[]`，以供后续模型输入使用时，reasoning items 是否保留其 `id` 字段。
+使用 `reasoningItemIdPolicy` 控制当 SDK 将先前生成的运行项转换回 `AgentInputItem[]` 以用于后续模型输入时，推理项是否保留其 `id` 字段。
 
-这会影响 SDK 将生成的模型条目重放为输入的场景，例如：
+这会影响 SDK 将生成的模型项重放为输入的场景，例如：
 
-- 同一次运行中的后续模型调用（例如工具执行之后）；
-- 后续轮次中复用生成条目作为输入 / 历史时；
-- 从已保存的 `RunState` 恢复运行时；
-- 派生结果视图，如 `result.history` / `result.output`（它们是模型输入形状的数组）。
-- `'preserve'`（默认）保留 reasoning item ID。
-- `'omit'` 在将 reasoning items 作为输入重新发送前移除其 `id` 字段。
-- 非 reasoning items 不受影响。
+- 同一次运行内的后续模型调用（例如工具执行之后），
+- 复用生成项作为输入/历史的后续轮次，
+- 从已保存的 `RunState` 恢复的运行，
+- `result.history` / `result.output` 等派生的执行结果视图（它们是形如模型输入的数组）。
+- `'preserve'`（默认）保留推理项 ID。
+- `'omit'` 会在推理项被作为输入发送回去之前移除其 `id` 字段。
+- 非推理项不受影响。
 
-它**不会**改变以下内容：
+这**不会**改变：
 
-- 原始模型响应（`result.rawResponses`）；
-- 运行条目（`result.newItems`）；
-- 提供方返回的当前轮次模型输出。
+- 原始模型响应（`result.rawResponses`），
+- 运行项（`result.newItems`），
+- 提供商返回的模型当前轮次输出。
 
-换句话说，该策略会在 SDK 根据先前生成的条目构建**下一次输入**时生效。
+换句话说，该策略适用于 SDK 基于先前生成项构建**下一次输入**时。
 
-您可以按次运行设置该策略（`runner.run(..., { reasoningItemIdPolicy: 'omit' })`），也可以将其设为 runner 默认值（`new Runner({ reasoningItemIdPolicy: 'omit', ... })`）。当从已保存的 `RunState` 恢复时，除非您显式覆盖，否则会复用先前已解析出的策略。
+您可以按运行设置该策略（`runner.run(..., { reasoningItemIdPolicy: 'omit' })`），也可以作为 Runner 默认值设置（`new Runner({ reasoningItemIdPolicy: 'omit', ... })`）。从已保存的 `RunState` 恢复时，除非您覆盖它，否则会复用先前已解析的策略。
 
 #### 与 `callModelInputFilter` 的交互
 
-`reasoningItemIdPolicy` 会在 `callModelInputFilter` 之前生效。如果您需要自定义行为，`callModelInputFilter` 仍可检查准备好的输入，并在调用模型前手动重新添加或删除 reasoning ID。
+`reasoningItemIdPolicy` 会在 `callModelInputFilter` 之前应用。如果您需要自定义行为，`callModelInputFilter` 仍然可以检查准备好的输入，并在模型调用前手动重新引入或移除推理 ID。
 
-#### 何时使用 `'omit'`
+#### `'omit'` 的使用时机
 
-当您希望被重放的 reasoning items 在不带 ID 的情况下进行规范化时，请使用 `'omit'`（例如，为了让转发 / 重放的模型输入更简单，或满足应用流程中的集成要求）。
+当您希望重放的推理项在没有 ID 的情况下规范化时（例如，让转发/重放的模型输入更简单，或匹配应用流水线中的集成要求），请使用 `'omit'`。
 
-如果您的后端 / 提供方拒绝包含重放 reasoning items 的请求，并返回请求校验错误（例如后续输入中与 reasoning item ID 相关的 HTTP `400` 错误），这也是一个有用的故障排除选项。在这些情况下，使用 `'omit'` 去除重放的 reasoning ID，可以避免发送那些被后端视为对新请求无效的 ID。
+如果您的后端/提供商因请求校验错误而拒绝重放的推理项（例如与后续输入中的推理项 ID 相关的 HTTP `400` 错误），这也是一个有用的故障排除选项。在这些情况下，使用 `'omit'` 移除重放的推理 ID，可以避免发送后端认为对新请求无效的 ID。
 
-如果您希望 SDK 在重放输入中保留 reasoning item ID，并且您的集成也接受它们，则保留 `'preserve'`。
+如果您希望 SDK 在重放输入中保留推理项 ID，并且您的集成接受这些 ID，请保留 `'preserve'`。
 
 ## 错误与恢复
 
 ### 错误处理器
 
-使用 `errorHandlers` 可将受支持的运行时错误转换为最终输出，而不是直接抛出异常。支持的键包括 `maxTurns` 和 `modelRefusal`。
+使用 `errorHandlers` 将受支持的运行时错误转换为最终输出，而不是抛出异常。受支持的键是 `maxTurns` 和 `modelRefusal`。
 
 - `errorHandlers.maxTurns` 仅处理最大轮次错误。
-- `errorHandlers.modelRefusal` 处理以 [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror) 形式暴露的模型拒绝。
-- `errorHandlers.default` 用作受支持类型的兜底处理器。
-- 处理器会接收 `{ error, context, runData }`，并可返回 `{ finalOutput, includeInHistory? }`。
+- `errorHandlers.modelRefusal` 处理以 [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror) 暴露的模型拒绝。
+- `errorHandlers.default` 用作受支持类型的回退。
+- 处理器接收 `{ error, context, runData }`，并可返回 `{ finalOutput, includeInHistory? }`。
 
 ### 异常
 
-SDK 会抛出一小组可捕获的错误：
+SDK 会抛出少量可捕获的错误：
 
 - [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)——达到 `maxTurns`。
-- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror)——模型生成了无效输出（例如格式错误的 JSON、未知工具）。
-- [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror)——模型拒绝生成所请求的输出。
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror)——模型产生了无效输出（例如格式不正确的 JSON、未知工具）。
+- [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror)——模型拒绝生成请求的输出。
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered)——护栏违规。
 - [`ToolInputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/toolinputguardrailtripwiretriggered) / [`ToolOutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/tooloutputguardrailtripwiretriggered)——工具护栏违规。
-- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror)——护栏未能完成执行。
-- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror)——函数工具超出 `timeoutMs`，且使用了 `timeoutBehavior: 'raise_exception'`。
-- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror)——函数工具执行失败，且不是超时错误。
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror)——任何基于配置或用户输入抛出的错误。
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror)——护栏未能完成。
+- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror)——函数工具超过 `timeoutMs` 且使用了 `timeoutBehavior: 'raise_exception'`。
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror)——函数工具执行因非超时错误而失败。
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror)——基于配置或用户输入抛出的任何错误。
 
-它们都继承自基础的 `AgentsError` 类，该类可能提供 `state` 属性，用于访问当前运行状态。
+它们都继承自基类 `AgentsError`，该类可提供 `state` 属性以访问当前运行状态。
 
-下面是一个处理 `GuardrailExecutionError` 的代码示例。由于输入护栏只会在第一条用户输入上运行，因此该示例会使用原始输入和上下文重新启动运行。它还展示了如何复用保存的状态，在不再次调用模型的情况下重试输出护栏：
+下面是一段处理 `GuardrailExecutionError` 的示例代码。由于输入护栏只在第一个用户输入上运行，该示例会使用原始输入和上下文重新启动运行。它还展示了如何复用已保存的状态来重试输出护栏，而无需再次调用模型：
 
 <Code
   lang="typescript"
@@ -259,12 +259,12 @@ SDK 会抛出一小组可捕获的错误：
   title="护栏执行错误"
 />
 
-输入与输出重试的区别：
+输入重试与输出重试：
 
-- 输入护栏仅在一次运行的第一条用户输入上运行，因此若要重试，您必须使用相同的输入 / 上下文重新启动一次新的运行——传入保存的 `state` 不会再次触发输入护栏。
-- 输出护栏在模型响应之后运行，因此您可以复用 `GuardrailExecutionError` 中保存的 `state`，在不再次调用模型的情况下重新运行输出护栏。
+- 输入护栏只在一次运行的第一个用户输入上运行，因此必须用相同的输入/上下文启动一次全新的运行来重试它们——传入已保存的 `state` 不会重新触发输入护栏。
+- 输出护栏在模型响应之后运行，因此可以复用 `GuardrailExecutionError` 中保存的 `state` 来重新运行输出护栏，而无需再次调用模型。
 
-运行上面的示例时，您将看到以下输出：
+运行上面的示例时，您会看到以下输出：
 
 ```
 Guardrail execution failed (input): Error: Input guardrail failed to complete: Error: Something is wrong!
@@ -277,9 +277,9 @@ Output guardrail tripped after retry with saved state
 
 ## 相关指南
 
-- [智能体](/openai-agents-js/zh/guides/agents)：在运行前定义智能体。
-- [执行结果](/openai-agents-js/zh/guides/results)：了解 `finalOutput`、运行条目、中断和恢复状态。
-- [会话](/openai-agents-js/zh/guides/sessions)：了解由 SDK 管理的持久化记忆。
+- [智能体](/openai-agents-js/zh/guides/agents)：用于在运行前定义智能体。
+- [执行结果](/openai-agents-js/zh/guides/results)：了解 `finalOutput`、运行项、中断和恢复状态。
+- [会话](/openai-agents-js/zh/guides/sessions)：用于持久的 SDK 管理记忆。
 - [工具](/openai-agents-js/zh/guides/tools)：了解运行循环中使用的能力。
-- [模型](/openai-agents-js/zh/guides/models)：了解提供方配置与 Responses 传输。
-- 添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)，以满足生产环境准备要求。
+- [模型](/openai-agents-js/zh/guides/models)：了解提供商配置和 Responses 传输。
+- 添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)，以满足生产就绪需求。

@@ -16,260 +16,264 @@ import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer
 import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
 
-ツールを使うと、エージェントは **アクションを実行** できます。たとえば、データの取得、外部 API の呼び出し、コードの実行、さらにはコンピュータの操作も可能です。 JavaScript / TypeScript SDK では、7 つのカテゴリーをサポートしています。
+ツールにより、エージェントは **アクションを実行** できます。データの取得、外部 API の呼び出し、コードの実行、さらにはコンピュータの使用も可能です。JavaScript/TypeScript SDK は 7 つのカテゴリーをサポートしています。
 
-> どのエージェントがタスクを担うべきかがわかり、そのエージェントに機能を持たせたい場合は、まず [Agents](/openai-agents-js/guides/agents) を読んだうえでこのページを参照してください。委譲パターンをまだ検討中であれば、[Agent orchestration](/openai-agents-js/guides/multi-agent) を参照してください。
+> どのエージェントがタスクを担当すべきか分かっており、そのエージェントに機能を与えたい場合は、[エージェント](/openai-agents-js/ja/guides/agents) を読んだ後でこのページを読んでください。委任パターンをまだ検討中の場合は、[エージェントオーケストレーション](/openai-agents-js/ja/guides/multi-agent) を参照してください。
 
-1. **OpenAI がホストするツール** – OpenAI のサーバー上でモデルと並行して実行されます。 _(Web 検索、ファイル検索、Code Interpreter、画像生成、tool search)_
-2. **組み込み実行ツール** – SDK が提供するツールで、モデルの外側で実行されます。 _(computer use と apply_patch はローカルで実行され、 shell はローカルまたはホストされたコンテナで実行できます)_
-3. **関数ツール** – 任意のローカル関数を JSON schema でラップし、LLM から呼び出せるようにします
-4. **Agents as tools** – エージェント全体を呼び出し可能なツールとして公開します
-5. **MCP サーバー** – Model Context Protocol サーバー（ローカルまたはリモート）を接続します
-6. **Sandbox capabilities** – `SandboxAgent` に、ワークスペース単位の shell、filesystem、skills、memory、compaction ツールを追加します
-7. **Experimental: Codex tool** – Codex SDK を関数ツールとしてラップし、ワークスペースを意識したタスクを実行します
+1. **OpenAI がホストするツール** – OpenAI サーバー上でモデルと並行して実行されます。_(Web 検索、ファイル検索、Code Interpreter、画像生成、ツール検索)_
+2. **組み込み実行ツール** – モデルの外部で実行される、SDK 提供のツールです。_(コンピュータ操作と apply_patch はローカルで実行されます。shell はローカルまたはホストされたコンテナで実行できます)_
+3. **関数ツール** – 任意のローカル関数を JSON スキーマでラップし、LLM が呼び出せるようにします。
+4. **Agents as tools** – エージェント全体を呼び出し可能なツールとして公開します。
+5. **MCP サーバー** – Model Context Protocol サーバー（ローカルまたはリモート）を接続します。
+6. **サンドボックス機能** – ワークスペーススコープの shell、filesystem、skills、memory、compaction ツールを `SandboxAgent` に接続します。
+7. **実験的: Codex ツール** – Codex SDK を関数ツールとしてラップし、ワークスペースを認識したタスクを実行します。
 
 ---
 
 ## ツールのカテゴリー
 
-このガイドの残りでは、まず各ツールカテゴリーを説明し、その後でツール選択とプロンプト設計に関する横断的な指針をまとめます。
+このガイドの残りでは、まず各ツールカテゴリーを説明し、その後で横断的なツール選択とプロンプトのガイダンスをまとめます。
 
-### 1. Hosted tools (OpenAI Responses API)
+### 1. 組み込みツール（Hosted）（OpenAI Responses API）
 
-`OpenAIResponsesModel` を使う場合、次の組み込みツールを追加できます。
+`OpenAIResponsesModel` を使用する場合、次の組み込みツールを追加できます。
 
-| ツール | 型文字列 | 用途 |
+| ツール | 型文字列 | 目的 |
 | --- | --- | --- |
 | Web 検索 | `'web_search'` | インターネット検索 |
-| ファイル / 検索 | `'file_search'` | OpenAI 上でホストされるベクトルストアをクエリします |
+| ファイル / retrieval 検索 | `'file_search'` | OpenAI 上でホストされているベクトルストアをクエリします |
 | Code Interpreter | `'code_interpreter'` | サンドボックス環境でコードを実行します |
 | 画像生成 | `'image_generation'` | テキストに基づいて画像を生成します |
-| Tool search | `'tool_search'` | 遅延関数ツール、名前空間、または検索可能な MCP ツールを実行時に読み込みます |
+| ツール検索 | `'tool_search'` | 遅延された関数ツール、名前空間、検索可能な MCP ツールを実行時に読み込みます |
 
-<Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
+<Code
+  lang="typescript"
+  code={toolsHostedToolsExample}
+  title="組み込みツール（Hosted）"
+/>
 
-SDK には、ホスト型ツール定義を返すヘルパー関数が用意されています。
+SDK は、ホスト型ツール定義を返すヘルパー関数を提供します。
 
-| ヘルパー関数 | メモ |
+| ヘルパー関数 | 注記 |
 | --- | --- |
-| `webSearchTool(options?)` | `searchContextSize`、`userLocation`、`filters.allowedDomains` などの JavaScript 向けオプション |
-| `fileSearchTool(ids, options?)` | 最初の引数に 1 つ以上のベクトルストア ID を受け取り、`maxNumResults`、`includeSearchResults`、`rankingOptions`、filters などのオプションも指定可能 |
-| `codeInterpreterTool(options?)` | `container` を指定しない場合は、自動管理コンテナがデフォルトになります |
-| `imageGenerationTool(options?)` | `model`、`size`、`quality`、`background`、`inputFidelity`、`inputImageMask`、`moderation`、`outputCompression`、`partialImages`、出力形式などの画像生成設定をサポート |
-| `toolSearchTool(options?)` | 組み込みの `tool_search` ヘルパーを追加します。 `deferLoading: true` を設定した遅延関数ツールまたはホスト型 MCP ツールと組み合わせて使います。デフォルトではホスト実行をサポートし、`execution: 'client'` と `execute` を併用するとクライアント実行も可能です |
+| `webSearchTool(options?)` | `searchContextSize`、`userLocation`、`filters.allowedDomains` など、JS フレンドリーなオプション |
+| `fileSearchTool(ids, options?)` | 1 つ以上のベクトルストア ID を最初の引数として受け取り、`maxNumResults`、`includeSearchResults`、`rankingOptions`、フィルターなどのオプションも受け取ります |
+| `codeInterpreterTool(options?)` | `container` が指定されていない場合、既定で自動管理コンテナを使用します |
+| `imageGenerationTool(options?)` | `model`、`size`、`quality`、`background`、`inputFidelity`、`inputImageMask`、`moderation`、`outputCompression`、`partialImages`、出力形式などの画像生成設定をサポートします |
+| `toolSearchTool(options?)` | 組み込みの `tool_search` ヘルパーを追加します。遅延関数ツールや、`deferLoading: true` を設定したホスト型 MCP ツールと組み合わせて使用します。既定ではホスト型実行をサポートし、`execution: 'client'` と `execute` を指定するとクライアント実行もサポートします |
 
-これらのヘルパーは、JavaScript / TypeScript 向けのオプション名を、基盤となる OpenAI Responses API のツールペイロードにマッピングします。完全なツール schema や、ranking options・semantic filters などの高度なオプションについては公式の [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) を参照してください。現在の組み込み tool-search フローや利用可能なモデルについては、公式の [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) を参照してください。
+これらのヘルパーは、JavaScript/TypeScript フレンドリーなオプション名を、基盤となる OpenAI Responses API ツールペイロードにマッピングします。ランキングオプションやセマンティックフィルターなど、完全なツールスキーマと高度なオプションについては、公式の [OpenAI ツールガイド](https://developers.openai.com/api/docs/guides/tools) を参照してください。また、現在の組み込みツール検索フローとモデルの利用可否については、公式の [ツール検索ガイド](https://developers.openai.com/api/docs/guides/tools-tool-search) を参照してください。
 
 ---
 
 ### 2. 組み込み実行ツール
 
-これらのツールは SDK に組み込まれていますが、実行はモデル応答自体の外側で行われます。
+これらのツールは SDK に組み込まれていますが、実行自体はモデルのレスポンスの外側で行われます。
 
-- **コンピュータ操作** – `Computer` インターフェースを実装し、`computerTool()` に渡します。これは常に、あなたが提供するローカル `Computer` 実装に対して実行されます
-- **Shell** – ローカルの `Shell` 実装を渡すか、`shellTool({ environment })` でホスト型コンテナ環境を設定します
-- **Apply patch** – `Editor` インターフェースを実装し、`applyPatchTool()` に渡します。これは常に、あなたが提供するローカル `Editor` 実装に対して実行されます
-- **Sandbox shell / filesystem ツール** – アクションをサンドボックスワークスペース内で実行したい場合は、`SandboxAgent` 上で `shell()`、`filesystem()`、`skills()`、`memory()`、`compaction()` を使います
+- **コンピュータ操作** – `Computer` インターフェイスを実装し、`computerTool()` に渡します。これは常に、あなたが提供するローカルの `Computer` 実装に対して実行されます。
+- **Shell** – ローカルの `Shell` 実装を提供するか、`shellTool({ environment })` でホスト型コンテナ環境を設定します。
+- **Apply patch** – `Editor` インターフェイスを実装し、`applyPatchTool()` に渡します。これは常に、あなたが提供するローカルの `Editor` 実装に対して実行されます。
+- **サンドボックス shell と filesystem ツール** – これらのアクションをサンドボックスワークスペース内で実行する必要がある場合は、`SandboxAgent` 上で `shell()`、`filesystem()`、`skills()`、`memory()`、または `compaction()` を使用します。
 
-ツール呼び出し自体は引き続きモデルによって要求されますが、実際の処理はアプリケーションまたは設定された実行環境が行います。
+ツール呼び出しのリクエストは引き続きモデルによって行われますが、作業はアプリケーションまたは設定された実行環境が実行します。
 
-Sandbox capability ツールは、プロセス全体で使う組み込みツールとは異なります。これらは現在の `SandboxAgent` 実行のライブなサンドボックスセッションに結び付けられています。ツールをアプリケーションプロセスではなくエージェントの分離されたワークスペース上で動作させたい場合は、[Sandbox agents](/openai-agents-js/guides/sandbox-agents) を使ってください。
+サンドボックス機能ツールは、プロセス全体の組み込みツールとは異なります。これらは、現在の `SandboxAgent` 実行におけるライブのサンドボックスセッションにバインドされます。ツールがアプリケーションプロセスではなく、エージェントの分離されたワークスペース上で動作する必要がある場合は、[クイックスタート](/openai-agents-js/ja/guides/sandbox-agents) を使用してください。
 
 <Code
   lang="typescript"
   code={localBuiltInToolsExample}
-  title="Built-in execution tools"
+  title="組み込み実行ツール"
 />
 
-#### コンピュータツールの詳細
+#### Computer ツールの詳細
 
 `computerTool()` は次のいずれかを受け取ります。
 
 - 具体的な `Computer` インスタンス
-- 実行ごとに `Computer` を生成する初期化関数
-- 実行スコープのセットアップとクリーンアップが必要な場合の `{ create, dispose }` を持つ provider オブジェクト
+- 実行ごとに `Computer` を作成する初期化関数
+- 実行スコープのセットアップとティアダウンが必要な場合の `{ create, dispose }` を持つプロバイダーオブジェクト
 
-OpenAI の現在のコンピュータ操作パスを使うには、[`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) のようなコンピュータ対応モデルを設定してください。リクエストモデルが明示されている場合、SDK は GA の組み込み `computer` ツール形式を送信します。実効モデルが保存済みプロンプトや別の古い統合から来ている場合は、`modelSettings.toolChoice: 'computer'` で明示的に GA パスを選ばない限り、互換性のため従来の `computer_use_preview` ワイヤー形式を維持します。
+OpenAI の現在のコンピュータ操作パスを使用するには、[`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) のようなコンピュータ対応モデルを設定します。リクエストモデルが明示されている場合、SDK は GA の組み込み `computer` ツール形式を送信します。有効なモデルが保存済みプロンプトや別の古い連携から来ている場合は、`modelSettings.toolChoice: 'computer'` で明示的に GA パスを選択しない限り、SDK は互換性のために従来の `computer_use_preview` ワイヤ形式を維持します。
 
-GA の computer 呼び出しには、1 つの `computer_call` に複数の `actions[]` が含まれる場合があります。SDK はそれらを順に実行し、各アクションに対して `needsApproval` を評価し、最終スクリーンショットをツール出力として返します。`interruption.rawItem` から承認 UI を構築する場合、`actions` があればそれを読み、従来 preview 項目用には `action` にフォールバックしてください。
+GA の computer 呼び出しでは、単一の `computer_call` 内にバッチ化された `actions[]` を含めることができます。SDK はそれらを順番に実行し、各アクションに対して `needsApproval` を評価し、最終的なスクリーンショットをツール出力として返します。`interruption.rawItem` から承認 UI を構築する場合は、存在する場合は `actions` を読み取り、従来のプレビュー項目では `action` にフォールバックしてください。
 
-影響の大きいコンピュータ操作をユーザー確認のために一時停止したい場合は `needsApproval` を使います。computer 呼び出しに対して報告される保留中の安全性チェックを承認または拒否したい場合は `onSafetyCheck` を使います。モデル側のガイダンスと移行の詳細は、公式の [OpenAI computer use guide](https://developers.openai.com/api/docs/guides/tools-computer-use/) とその [migration note](https://developers.openai.com/api/docs/guides/tools-computer-use/#migration-from-computer-use-preview) を参照してください。
+影響の大きいコンピュータ操作をユーザーレビューのために一時停止する必要がある場合は `needsApproval` を使用し、computer 呼び出しに対して報告された保留中の安全性チェックを承認または拒否したい場合は `onSafetyCheck` を使用します。モデル側のガイダンスと移行の詳細については、公式の [OpenAI コンピュータ操作ガイド](https://developers.openai.com/api/docs/guides/tools-computer-use/) とその [移行ノート](https://developers.openai.com/api/docs/guides/tools-computer-use/#migration-from-computer-use-preview) を参照してください。
 
 #### Shell ツールの詳細
 
 `shellTool()` には 2 つのモードがあります。
 
-- ローカルモード: `shell` を渡し、必要に応じて `environment: { type: 'local', skills }`、および自動承認処理用の `needsApproval` と `onApproval` を指定します
-- ホスト型コンテナモード: `type: 'container_auto'` または `type: 'container_reference'` を含む `environment` を渡します
+- ローカルモード: `shell` を提供し、必要に応じて `environment: { type: 'local', skills }`、さらに自動承認処理のために `needsApproval` と `onApproval` を指定します。
+- ホスト型コンテナモード: `type: 'container_auto'` または `type: 'container_reference'` を持つ `environment` を提供します。
 
-ローカルモードでは、`environment.skills` により、`name`、`description`、filesystem の `path` でローカル skills をマウントできます。
+ローカルモードでは、`environment.skills` により、`name`、`description`、filesystem の `path` でローカルスキルをマウントできます。
 
-ホスト型コンテナモードでは、`shellTool({ environment })` を次のいずれかで設定します。
+ホスト型コンテナモードでは、次のいずれかを使って `shellTool({ environment })` を設定します。
 
-- `type: 'container_auto'` で、その実行用の管理コンテナを作成する
-- `type: 'container_reference'` で、`containerId` によって既存コンテナを再利用する
+- `type: 'container_auto'` で、その実行用の管理コンテナを作成します。
+- `type: 'container_reference'` で、`containerId` により既存のコンテナを再利用します。
 
-ホスト型の `container_auto` 環境では以下をサポートします。
+ホスト型の `container_auto` 環境は次をサポートします。
 
-- `domainSecrets` を含む allowlist を含めた `networkPolicy`
+- `domainSecrets` を含む許可リストなどの `networkPolicy`
 - アップロード済みファイルをマウントするための `fileIds`
 - コンテナサイズ指定のための `memoryLimit`
 - `skill_reference` またはインライン zip バンドルによる `skills`
 
 ホスト型 shell 環境では、実行がローカルプロセスではなくホスト型コンテナ環境で行われるため、`shell`、`needsApproval`、`onApproval` は受け付けません。
 
-エンドツーエンドの使い方については、`examples/tools/local-shell.ts`、`examples/tools/container-shell-skill-ref.ts`、`examples/tools/container-shell-inline-skill.ts` を参照してください。
+エンドツーエンドの使用方法については、`examples/tools/local-shell.ts`、`examples/tools/container-shell-skill-ref.ts`、`examples/tools/container-shell-inline-skill.ts` を参照してください。
 
 #### Apply-patch ツールの詳細
 
-`applyPatchTool()` は `shellTool()` のローカル承認フローを踏襲します。ファイル編集前に一時停止するには `needsApproval` を使い、自動承認または拒否のためにアプリレベルのコールバックが必要な場合は `onApproval` を使います。
+`applyPatchTool()` は `shellTool()` のローカル承認フローを反映しています。ファイル編集の前に一時停止するには `needsApproval` を使用し、アプリレベルのコールバックで自動承認または拒否したい場合は `onApproval` を使用します。
 
 ---
 
 ### 3. 関数ツール
 
-`tool()` ヘルパーを使うと、**任意の** 関数をツールにできます。
+`tool()` ヘルパーを使うと、**任意の** 関数をツールに変換できます。
 
 <Code
   lang="typescript"
   code={toolsFunctionExample}
-  title="Function tool with Zod parameters"
+  title="Zod パラメーターを使った関数ツール"
 />
 
-#### オプション一覧
+#### オプションリファレンス
 
 | フィールド | 必須 | 説明 |
 | --- | --- | --- |
-| `name` | いいえ | デフォルトは関数名（例: `get_weather`）です |
-| `description` | はい | LLM に表示される、明確で人が読める説明 |
-| `parameters` | はい | Zod schema または生の JSON schema オブジェクトのいずれか。Zod parameters は自動的に **strict** モードを有効にします |
-| `strict` | いいえ | `true`（デフォルト）の場合、引数の検証に失敗すると SDK はモデルエラーを返します。あいまい一致を許可するには `false` にします |
-| `execute` | はい | `(args, context, details) => string \| unknown \| Promise<...>` – あなたのビジネスロジックです。文字列以外の出力はモデル向けにシリアライズされます。`context` は省略可能な `RunContext`、`details` には `toolCall`、`resumeState`、`signal` などのメタデータが含まれます |
-| `errorFunction` | いいえ | 内部エラーをユーザーに見える文字列へ変換するカスタムハンドラー `(context, error) => string` |
-| `timeoutMs` | いいえ | 呼び出し単位のタイムアウト（ミリ秒）。0 より大きく、`2147483647` 以下である必要があります |
-| `timeoutBehavior` | いいえ | タイムアウトモード: `error_as_result`（デフォルト）はモデルに見えるタイムアウトメッセージを返し、`raise_exception` は `ToolTimeoutError` を送出します |
-| `timeoutErrorFunction` | いいえ | `timeoutBehavior` が `error_as_result` のときにタイムアウト出力を生成するカスタムハンドラー `(context, timeoutError) => string` |
-| `needsApproval` | いいえ | 実行前に人間の承認を要求します。[human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop) を参照してください |
-| `isEnabled` | いいえ | 実行ごとにツールを条件付きで公開します。真偽値または述語を受け付けます |
-| `inputGuardrails` | いいえ | ツール実行前に走るガードレール。拒否または例外送出が可能です。[Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) を参照してください |
-| `outputGuardrails` | いいえ | ツール実行後に走るガードレール。拒否または例外送出が可能です。[Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) を参照してください |
+| `name` | いいえ | 既定では関数名（例: `get_weather`）になります |
+| `description` | はい | LLM に表示される、明確で人間が読める説明 |
+| `parameters` | はい | Zod スキーマまたは元の JSON スキーマオブジェクトのいずれかです。Zod パラメーターは自動的に **strict** モードを有効にします |
+| `strict` | いいえ | `true`（既定）の場合、引数が検証に失敗すると SDK はモデルエラーを返します。あいまいなマッチングには `false` を設定します |
+| `execute` | はい | `(args, context, details) => string \| unknown \| Promise<...>` – ビジネスロジックです。文字列以外の出力はモデル向けにシリアライズされます。`context` は任意の `RunContext` です。`details` には `toolCall`、`resumeState`、`signal` などのメタデータが含まれます |
+| `errorFunction` | いいえ | 内部エラーをユーザーに見える文字列に変換するためのカスタムハンドラー `(context, error) => string` |
+| `timeoutMs` | いいえ | 呼び出しごとのタイムアウト（ミリ秒）。0 より大きく、`2147483647` 以下である必要があります |
+| `timeoutBehavior` | いいえ | タイムアウトモード: `error_as_result`（既定）はモデルに見えるタイムアウトメッセージを返し、`raise_exception` は `ToolTimeoutError` を投げます |
+| `timeoutErrorFunction` | いいえ | `timeoutBehavior` が `error_as_result` の場合のタイムアウト出力用カスタムハンドラー `(context, timeoutError) => string` |
+| `needsApproval` | いいえ | 実行前に人間の承認を要求します。[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop) を参照してください |
+| `isEnabled` | いいえ | 実行ごとにツールを条件付きで公開します。boolean または述語を受け取ります |
+| `inputGuardrails` | いいえ | ツール実行前に実行されるガードレールです。拒否または例外を投げることができます。[ガードレール](/openai-agents-js/ja/guides/guardrails#tool-guardrails) を参照してください |
+| `outputGuardrails` | いいえ | ツール実行後に実行されるガードレールです。拒否または例外を投げることができます。[ガードレール](/openai-agents-js/ja/guides/guardrails#tool-guardrails) を参照してください |
 
 #### 関数ツールのタイムアウト
 
-各関数ツール呼び出しの上限時間を設定するには `timeoutMs` を使います。
+各関数ツールの呼び出しを制限するには、`timeoutMs` を使用します。
 
-- `timeoutBehavior: 'error_as_result'`（デフォルト）は、`Tool '<name>' timed out after <timeoutMs>ms.` をモデルに返します
-- `timeoutBehavior: 'raise_exception'` は [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) を送出し、[run exceptions](/openai-agents-js/guides/running-agents#exceptions) の一部としてキャッチできます
-- `timeoutErrorFunction` を使うと、`error_as_result` モードのタイムアウト文言をカスタマイズできます
-- タイムアウト時には `details.signal` が中断されるため、長時間動くツールもキャンセルを監視していればすぐ停止できます
+- `timeoutBehavior: 'error_as_result'`（既定）は、`Tool '<name>' timed out after <timeoutMs>ms.` をモデルに返します。
+- `timeoutBehavior: 'raise_exception'` は [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) を投げます。これは [エージェントの実行](/openai-agents-js/ja/guides/running-agents#exceptions) の一部として捕捉できます。
+- `timeoutErrorFunction` により、`error_as_result` モードでのタイムアウト文言をカスタマイズできます。
+- タイムアウトは `details.signal` を中断するため、長時間実行されるツールはキャンセルをリッスンしていればすばやく停止できます。
 
-関数ツールを直接呼び出す場合は、[`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) を使うことで、通常のエージェント実行と同じタイムアウト動作を強制できます。
+関数ツールを直接呼び出す場合は、通常のエージェント実行と同じタイムアウト動作を適用するために [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) を使用します。
 
-#### Non‑strict JSON‑schema ツール
+#### 非 strict JSON スキーマツール
 
-無効または部分的な入力をモデルに _推測_ させたい場合は、生の JSON schema を使う際に strict モードを無効化できます。
+無効または部分的な入力をモデルに _推測_ させる必要がある場合は、元の JSON スキーマを使用するときに strict モードを無効にできます。
 
 <Code
   lang="typescript"
   code={nonStrictSchemaTools}
-  title="Non-strict JSON schema tools"
+  title="非 strict JSON スキーマツール"
 />
 
-#### Tool search による遅延ツール読み込み
+#### ツール検索による遅延ツール読み込み
 
-Tool search を使うと、すべての schema を最初に送信する代わりに、モデルは実行時に必要なツール定義だけを読み込めます。SDK では、遅延トップレベル関数ツール、`toolNamespace()` グループ、`deferLoading: true` で設定されたホスト型 MCP ツールでこれを利用します。
+ツール検索により、すべてのスキーマを事前に送信するのではなく、モデルが実行時に必要なツール定義だけを読み込めます。SDK では、遅延されたトップレベルの関数ツール、`toolNamespace()` グループ、`deferLoading: true` を設定したホスト型 MCP ツールを扱うための仕組みです。
 
-Tool search は、Responses API でこれをサポートする GPT-5.4 以降のモデルリリースでのみ使用してください。
+ツール検索は、Responses API でこれをサポートする GPT-5.4 以降のモデルリリースでのみ使用してください。
 
 <Code
   lang="typescript"
   code={toolSearchExample}
-  title="Deferred tool loading with tool search"
+  title="ツール検索による遅延ツール読み込み"
 />
 
-この例では、意図的に両方のスタイルを混在させています。
+この例では意図的に両方のスタイルを混在させています。
 
-- `shippingLookup` は、単独の検索可能機能であるためトップレベルのままにしています
-- `crmTools` は、関連する CRM ツールが 1 つの上位ラベルと説明を共有するため `toolNamespace()` を使っています
-- 同一リクエスト内で名前空間付きとトップレベルの遅延ツールを混在させることは可能です。tool search は `crm` のような名前空間パスと、`get_shipping_eta` のようなトップレベルパスの両方を読み込めます
+- `shippingLookup` は、単独の検索可能な機能であるためトップレベルのままです。
+- `crmTools` は、関連する CRM ツールが 1 つの高レベルなラベルと説明を共有するため、`toolNamespace()` を使用します。
+- 名前空間化された遅延ツールとトップレベルの遅延ツールを同じリクエストで混在させることがサポートされています。ツール検索は、`crm` のような名前空間パスと、`get_shipping_eta` のようなトップレベルパスの両方を読み込めます。
 
-Tool search を使うときは、次の点に注意してください。
+ツール検索を使用する場合:
 
-- 各遅延関数ツールに `deferLoading: true` を設定する
-- 複数の関連ツールが 1 つのドメイン説明を共有し、グループとして読み込まれるべき場合は `toolNamespace({ name, description, tools })` を使う
-- 単一の独立した機能であり、ツール名自体が適切な検索対象になる場合はトップレベルのままにする
-- いずれかの遅延関数ツールまたはホスト型 MCP ツールが `deferLoading: true` を使う場合は、同じ `tools` 配列に `toolSearchTool()` を追加する
-- `modelSettings.toolChoice` は `'auto'` のままにする。SDK は組み込み `tool_search` ツールや遅延関数ツールを名前で強制することを拒否します
-- デフォルトはホスト実行です。`toolSearchTool({ execution: 'client', execute })` を設定した場合、標準の `run()` ループは組み込みの `{ paths: string[] }` というクライアントクエリ形式のみをサポートします。独自のクライアント側 schema には独自の Responses ループが必要です
-- 1 つの名前空間に即時メンバーと遅延メンバーを混在させることができます。即時メンバーは tool search なしで呼び出し可能なままであり、同じ名前空間内の遅延メンバーは必要時に読み込まれます
-- 遅延関数ツールと `toolNamespace()` は Responses 専用です。Chat Completions はこれらを拒否し、AI SDK adapter は遅延 Responses ツール読み込みフローをサポートしません
+- 各遅延関数ツールに `deferLoading: true` を指定します。
+- 複数の関連ツールで 1 つのドメイン説明を共有し、グループとして読み込む必要がある場合は、`toolNamespace({ name, description, tools })` を使用します。
+- 単一の独立した機能であり、ツール名自体が適切な検索対象である場合は、ツールをトップレベルのままにします。
+- 遅延関数ツールまたはホスト型 MCP ツールが `deferLoading: true` を使用する場合は、必ず同じ `tools` 配列に `toolSearchTool()` を追加します。
+- `modelSettings.toolChoice` は `'auto'` のままにします。SDK は、組み込みの `tool_search` ツールや遅延関数ツールを名前で強制することを拒否します。
+- ホスト型実行が既定です。`toolSearchTool({ execution: 'client', execute })` を設定した場合、標準の `run()` ループは組み込みの `{ paths: string[] }` クライアントクエリ形式のみをサポートします。カスタムのクライアント側スキーマには、独自の Responses ループが必要です。
+- 名前空間には即時メンバーと遅延メンバーを混在させることができます。即時メンバーはツール検索なしで呼び出し可能なままで、同じ名前空間内の遅延メンバーはオンデマンドで読み込まれます。
+- 遅延関数ツールと `toolNamespace()` は Responses 専用です。Chat Completions はそれらを拒否し、AI SDK アダプターは遅延 Responses ツール読み込みフローをサポートしません。
 
 ---
 
 ### 4. Agents as tools
 
-会話を完全にハンドオフせずに、あるエージェントが別のエージェントを _支援_ するようにしたい場合があります。その場合は `agent.asTool()` を使います。
+会話を完全にハンドオフせずに、あるエージェントに別のエージェントを _支援_ させたい場合があります。その場合は `agent.asTool()` を使用します。
 
-`agent.asTool()` と `handoff()` のどちらを使うべきかまだ判断中であれば、[Agents guide](/openai-agents-js/guides/agents#composition-patterns) と [Agent orchestration](/openai-agents-js/guides/multi-agent) のパターン比較を参照してください。
+`agent.asTool()` と `handoff()` のどちらを選ぶかまだ検討中の場合は、[エージェント](/openai-agents-js/ja/guides/agents#composition-patterns) と [エージェントオーケストレーション](/openai-agents-js/ja/guides/multi-agent) のパターンを比較してください。
 
 <Code lang="typescript" code={agentsAsToolsExample} title="Agents as tools" />
 
-内部的には SDK は次のことを行います。
+内部では SDK が次を行います。
 
-- 単一の `input` パラメーターを持つ関数ツールを作成します
-- ツールが呼び出されたときに、その入力でサブエージェントを実行します
-- 最後のメッセージ、または `customOutputExtractor` によって抽出された出力を返します
+- 単一の `input` パラメーターを持つ関数ツールを作成します。
+- ツールが呼び出されたときに、その入力でサブエージェントを実行します。
+- 最後のメッセージ、または `customOutputExtractor` によって抽出された出力を返します。
 
-エージェントをツールとして実行すると、Agents SDK はデフォルト設定で runner を作成し、関数実行内でその runner を使ってエージェントを実行します。`runConfig` や `runOptions` の各種プロパティを渡したい場合は、`asTool()` メソッドに渡して runner の挙動をカスタマイズできます。
+エージェントをツールとして実行すると、Agents SDK は既定の設定で runner を作成し、関数実行内でその runner を使ってエージェントを実行します。`runConfig` や `runOptions` のプロパティを指定したい場合は、それらを `asTool()` メソッドに渡して runner の動作をカスタマイズできます。
 
-`asTool()` オプションで、エージェントツールに `needsApproval` と `isEnabled` を設定することもでき、Human in the loop (人間の介入) フローや条件付きツール可用性と統合できます。
+Human in the loop (人間の介入) フローや条件付きツール可用性と連携するために、`asTool()` オプションを通じてエージェントツールに `needsApproval` と `isEnabled` を設定することもできます。
 
-`customOutputExtractor` の内部では、`result.agentToolInvocation` を使って現在の `Agent.asTool()` 呼び出しを確認できます。このコールバックでは結果は常に `Agent.asTool()` から来るため、`agentToolInvocation` は常に定義されており、`toolName`、`toolCallId`、`toolArguments` を公開します。通常のアプリコンテキストと `toolInput` には `result.runContext` を使ってください。このメタデータは現在のネストされた呼び出しに限定されており、`RunState` にシリアライズされません。
+`customOutputExtractor` 内では、現在の `Agent.asTool()` 呼び出しを調べるために `result.agentToolInvocation` を使用します。このコールバックでは結果は常に `Agent.asTool()` から来るため、`agentToolInvocation` は常に定義され、`toolName`、`toolCallId`、`toolArguments` を公開します。通常のアプリコンテキストには `result.runContext` を使用し、ツール入力には `toolInput` を使用します。このメタデータは現在のネストされた呼び出しにスコープされ、`RunState` にはシリアライズされません。
 
 <Code
   lang="typescript"
   code={agentToolRunContextExample}
-  title="Read agent tool invocation metadata"
+  title="エージェントツール呼び出しメタデータの読み取り"
 />
 
 `agent.asTool()` の高度な構造化入力オプション:
 
-- `inputBuilder`: 構造化されたツール引数を、ネストされたエージェント入力ペイロードへマッピングします
-- `includeInputSchema`: より強い schema-aware な振る舞いのために、入力 JSON schema をネスト実行に含めます
-- `resumeState`: ネストされたシリアライズ済み `RunState` を再開する際のコンテキスト統合戦略を制御します。`'merge'`（デフォルト）はライブの承認 / コンテキスト状態をシリアライズ済み状態にマージし、`'replace'` は代わりに現在の実行コンテキストを使い、`'preferSerialized'` はシリアライズ済みコンテキストを変更せずに再開します
+- `inputBuilder`: 構造化ツール引数を、ネストされたエージェント入力ペイロードにマッピングします。
+- `includeInputSchema`: スキーマをより強く意識した動作のために、入力 JSON スキーマをネストされた実行に含めます。
+- `resumeState`: ネストされたシリアライズ済み `RunState` を再開するときのコンテキスト照合戦略を制御します。`'merge'`（既定）はライブの承認/コンテキスト状態をシリアライズ済み状態にマージし、`'replace'` は代わりに現在の実行コンテキストを使用し、`'preferSerialized'` はシリアライズ済みコンテキストを変更せずに再開します。
 
 #### エージェントツールからのストリーミングイベント
 
-エージェントツールは、ネストされた実行イベントをすべてアプリへストリーミングできます。ツールの構築方法に応じて適したフックスタイルを選んでください。
+エージェントツールは、ネストされたすべての実行イベントをアプリにストリーミングできます。ツールの構築方法に合うフックスタイルを選んでください。
 
 <Code
   lang="typescript"
   code={agentsAsToolsStreamingExample}
-  title="Streaming agent tools"
+  title="ストリーミング対応のエージェントツール"
 />
 
-- イベント型は `RunStreamEvent['type']` に一致します: `raw_model_stream_event`、`run_item_stream_event`、`agent_updated_stream_event`
-- `onStream` は最も単純な「すべて受け取る」方法で、ツールをインラインで宣言する場合（`tools: [agent.asTool({ onStream })]`）に適しています。イベントごとの振り分けが不要ならこれを使ってください
-- `on(eventName, handler)` を使うと、選択的に（または `'*'` で）購読でき、より細かい処理が必要な場合や作成後にリスナーを付けたい場合に向いています
-- `onStream` またはいずれかの `on(...)` ハンドラーを指定すると、agent-as-tool は自動的にストリーミングモードで実行されます。これらがなければ非ストリーミング経路のままです
-- ハンドラーは並列に呼び出されるため、遅い `onStream` コールバックが `on(...)` ハンドラーをブロックすることはありません（逆も同様です）
-- `toolCallId` は、ツールがモデルのツール呼び出し経由で起動された場合に提供されます。直接の `invoke()` 呼び出しや provider の挙動によっては省略されることがあります
+- イベントタイプは `RunStreamEvent['type']` と一致します: `raw_model_stream_event`、`run_item_stream_event`、`agent_updated_stream_event`
+- `onStream` は最もシンプルな「すべてを受け取る」方法で、ツールをインラインで宣言する場合（`tools: [agent.asTool({ onStream })]`）に適しています。イベントごとのルーティングが不要な場合に使用してください。
+- `on(eventName, handler)` は、選択的に（または `'*'` で）購読できます。より細かな処理が必要な場合や、作成後にリスナーを接続したい場合に最適です。
+- `onStream` またはいずれかの `on(...)` ハンドラーを指定すると、agent-as-tool は自動的にストリーミングモードで実行されます。指定しない場合は非ストリーミングパスのままです。
+- ハンドラーは並列に呼び出されるため、遅い `onStream` コールバックが `on(...)` ハンドラーをブロックすることはありません（その逆も同様です）。
+- ツールがモデルのツール呼び出し経由で呼び出された場合、`toolCallId` が提供されます。直接の `invoke()` 呼び出しやプロバイダーの癖によっては省略される場合があります。
 
 ---
 
 ### 5. MCP サーバー
 
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) サーバー経由でツールを公開し、エージェントに接続できます。たとえば、`MCPServerStdio` を使うと stdio MCP サーバーを起動して接続できます。
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) サーバー経由でツールを公開し、エージェントに接続できます。たとえば、`MCPServerStdio` を使って stdio MCP サーバーを起動し、接続できます。
 
-<Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
+<Code lang="typescript" code={mcpLocalServer} title="ローカル MCP サーバー" />
 
-完全な例については [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) を参照してください。また、MCP サーバーツール統合の包括的なガイドを探している場合は、詳細について [MCP guide](/openai-agents-js/guides/mcp) を参照してください。複数サーバーを管理する場合（または部分的な障害がある場合）は、`connectMcpServers` と [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle) のライフサイクル指針を使ってください。
+完全な例については [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts) を参照してください。また、MCP サーバーツール連携の包括的なガイドを探している場合は、詳細は [MCP 連携](/openai-agents-js/ja/guides/mcp) を参照してください。複数のサーバー（または部分的な失敗）を管理する場合は、`connectMcpServers` と [MCP 連携](/openai-agents-js/ja/guides/mcp#managing-mcp-server-lifecycle) のライフサイクルガイダンスを使用してください。
 
 ---
 
-### 6. Experimental: Codex tool
+### 6. 実験的: Codex ツール
 
-`@openai/agents-extensions/experimental/codex` は `codexTool()` を提供します。これは関数ツールで、モデルのツール呼び出しを Codex SDK にルーティングし、エージェントがワークスペース単位のタスク（shell、ファイル編集、MCP ツール）を自律的に実行できるようにします。このインターフェースは実験的であり、変更される可能性があります。
+`@openai/agents-extensions/experimental/codex` は `codexTool()` を提供します。これはモデルのツール呼び出しを Codex SDK にルーティングする関数ツールで、エージェントがワークスペーススコープのタスク（shell、ファイル編集、MCP ツール）を自律的に実行できるようにします。このインターフェイスは実験的であり、変更される可能性があります。
 
 まず依存関係をインストールします。
 
@@ -279,58 +283,54 @@ npm install @openai/agents-extensions @openai/codex-sdk
 
 クイックスタート:
 
-<Code
-  lang="typescript"
-  code={codexToolExample}
-  title="Experimental Codex tool"
-/>
+<Code lang="typescript" code={codexToolExample} title="実験的な Codex ツール" />
 
 知っておくべきこと:
 
-- 認証: `CODEX_API_KEY`（推奨）または `OPENAI_API_KEY` を指定するか、`codexOptions.apiKey` を渡します
-- 入力: strict schema — `inputs` には少なくとも 1 つの `{ type: 'text', text }` または `{ type: 'local_image', path }` を含める必要があります
-- 安全性: `sandboxMode` と `workingDirectory` を組み合わせて使います。ディレクトリが Git リポジトリでない場合は `skipGitRepoCheck` を設定します
-- スレッド管理: `useRunContextThreadId: true` は最新の thread id を `runContext.context` に読み書きし、アプリ状態でターンをまたいで再利用するのに役立ちます
-- Thread ID の優先順位: ツール呼び出しの `threadId`（schema に含まれている場合）が最優先され、次に run-context の thread id、その次に `codexTool({ threadId })` が使われます
-- Run context キー: `name: 'codex'` の場合のデフォルトは `codexThreadId`、`name: 'engineer'` のような名前では `codexThreadId_<suffix>` です（正規化後は `codex_engineer`）
-- 可変コンテキスト要件: `useRunContextThreadId` が有効な場合は、`run(..., { context })` に可変オブジェクトまたは `Map` を渡してください
-- 命名: ツール名は `codex` 名前空間内に正規化されます（`engineer` は `codex_engineer` になります）。また、1 つのエージェント内で重複する Codex ツール名は拒否されます
-- ストリーミング: `onStream` は Codex イベント（reasoning、コマンド実行、MCP ツール呼び出し、ファイル変更、Web 検索）を反映するため、進捗をログまたはトレースできます
-- 出力: ツール結果には `response`、`usage`、`threadId` が含まれ、Codex のトークン使用量は `RunContext` に記録されます
-- 構造: `outputSchema` には descriptor、JSON schema オブジェクト、または Zod オブジェクトを使えます。JSON object schema の場合、`additionalProperties` は `false` である必要があります
+- 認証: `CODEX_API_KEY`（推奨）または `OPENAI_API_KEY` を指定するか、`codexOptions.apiKey` を渡します。
+- 入力: strict スキーマです。`inputs` には少なくとも 1 つの `{ type: 'text', text }` または `{ type: 'local_image', path }` を含める必要があります。
+- 安全性: `sandboxMode` は `workingDirectory` と組み合わせて使用します。ディレクトリが Git リポジトリでない場合は `skipGitRepoCheck` を設定します。
+- スレッド化: `useRunContextThreadId: true` は最新の thread ID を `runContext.context` から読み取り/保存します。これはアプリ状態でターンをまたいで再利用する場合に役立ちます。
+- Thread ID の優先順位: ツール呼び出しの `threadId`（スキーマに含まれる場合）が最優先され、次に run context thread ID、最後に `codexTool({ threadId })` が使われます。
+- Run context キー: `name: 'codex'` の場合は既定で `codexThreadId`、`name: 'engineer'` のような名前の場合は `codexThreadId_<suffix>`（正規化後は `codex_engineer`）になります。
+- 可変コンテキスト要件: `useRunContextThreadId` が有効な場合は、`run(..., { context })` として可変オブジェクトまたは `Map` を渡します。
+- 命名: ツール名は `codex` 名前空間に正規化され（`engineer` は `codex_engineer` になります）、エージェント内で Codex ツール名が重複すると拒否されます。
+- ストリーミング: `onStream` は Codex イベント（推論、コマンド実行、MCP ツール呼び出し、ファイル変更、Web 検索）を反映するため、進行状況をログまたはトレースできます。
+- 出力: ツール結果には `response`、`usage`、`threadId` が含まれ、Codex トークン使用量は `RunContext` に記録されます。
+- 構造: `outputSchema` には descriptor、JSON スキーマオブジェクト、または Zod オブジェクトを指定できます。JSON オブジェクトスキーマでは、`additionalProperties` は `false` である必要があります。
 
-Run-context のスレッド再利用例:
+Run context thread の再利用例:
 
 <Code
   lang="typescript"
   code={codexRunContextThreadExample}
-  title="Codex run-context thread reuse"
+  title="Codex run-context thread の再利用"
 />
 
 ---
 
 ## ツール戦略とベストプラクティス
 
-### ツール使用の挙動
+### ツール使用動作
 
-モデルがいつどのようにツールを使わなければならないかを制御する方法（`modelSettings.toolChoice`、`toolUseBehavior` など）については、[Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) を参照してください。
+モデルがいつどのようにツールを使用する必要があるか（`modelSettings.toolChoice`、`toolUseBehavior` など）を制御する方法については、[エージェント](/openai-agents-js/ja/guides/agents#forcing-tool-use) を参照してください。
 
 ---
 
 ### ベストプラクティス
 
-- **短く明示的な説明** – ツールが _何をするか_ と _いつ使うか_ を説明する
-- **入力を検証する** – 可能な限り、厳密な JSON 検証のために Zod schema を使う
-- **エラーハンドラーで副作用を避ける** – `errorFunction` は例外を投げるのではなく、役立つ文字列を返すべきです
-- **ツールごとに責務は 1 つ** – 小さく組み合わせ可能なツールのほうが、モデルの推論性能が向上します
+- **短く明示的な説明** – ツールが _何を_ するのか、 _いつ使うか_ を説明します。
+- **入力の検証** – 可能な場合は、厳密な JSON 検証のために Zod スキーマを使用します。
+- **エラーハンドラーでの副作用の回避** – `errorFunction` は例外を投げるのではなく、有用な文字列を返すべきです。
+- **ツールごとに 1 つの責務** – 小さく構成可能なツールは、モデルの推論を向上させます。
 
 ---
 
 ## 関連ガイド
 
-- [Agents](/openai-agents-js/guides/agents) – ツールを持つエージェントの定義と `toolUseBehavior` の制御
-- [Agent orchestration](/openai-agents-js/guides/multi-agent) – agents as tools と handoffs のどちらを使うかの判断
-- [Running agents](/openai-agents-js/guides/running-agents) – 実行フロー、ストリーミング、会話状態
-- [Models](/openai-agents-js/guides/models) – OpenAI ホスト型モデルの設定と Responses 転送の選択肢
-- [Guardrails](/openai-agents-js/guides/guardrails) – ツール入力または出力の検証
-- [`tool()`](/openai-agents-js/openai/agents/functions/tool) と各種ホスト型ツール型の TypeDoc リファレンスも参照してください
+- ツールを持つエージェントの定義と `toolUseBehavior` の制御については、[エージェント](/openai-agents-js/ja/guides/agents)
+- agents as tools とハンドオフのどちらを使うかを判断するには、[エージェントオーケストレーション](/openai-agents-js/ja/guides/multi-agent)
+- 実行フロー、ストリーミング、会話状態については、[エージェントの実行](/openai-agents-js/ja/guides/running-agents)
+- ホスト型 OpenAI モデル設定と Responses トランスポートの選択については、[モデル](/openai-agents-js/ja/guides/models)
+- ツール入力または出力を検証するには、[ガードレール](/openai-agents-js/ja/guides/guardrails)
+- [`tool()`](/openai-agents-js/openai/agents/functions/tool) と各種組み込みツール（Hosted）タイプについては、TypeDoc リファレンスを参照してください。

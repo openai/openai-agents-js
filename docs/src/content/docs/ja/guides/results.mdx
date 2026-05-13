@@ -8,44 +8,44 @@ import handoffFinalOutputTypes from '../../../../../../examples/docs/results/han
 import historyLoop from '../../../../../../examples/docs/results/historyLoop.ts?raw';
 import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
 
-[エージェントの実行](/openai-agents-js/guides/running-agents) を行うと、次のいずれかを受け取ります。
+[エージェントの実行](/openai-agents-js/ja/guides/running-agents)を行うと、次のいずれかを受け取ります:
 
-- `stream: true` を指定せずに `run` を呼び出した場合は [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- `stream: true` を指定して `run` を呼び出した場合は [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。ストリーミングの詳細は、[ストリーミング ガイド](/openai-agents-js/guides/streaming) も参照してください。
+- [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) — `stream: true` なしで `run` を呼び出した場合
+- [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) — `stream: true` 付きで `run` を呼び出した場合。ストリーミングの詳細は、[ストリーミング](/openai-agents-js/ja/guides/streaming)も参照してください。
 
-どちらの result 型でも、`finalOutput`、`newItems`、`interruptions`、`state` など、同じ中核的な result のインターフェースが提供されます。`StreamedRunResult` には、`completed`、`toStream()`、`toTextStream()`、`currentAgent` などのストリーミング制御も追加されています。
+どちらの実行結果型も、`finalOutput`、`newItems`、`interruptions`、`state` などの同じ主要な結果サーフェスを公開します。`StreamedRunResult` は、`completed`、`toStream()`、`toTextStream()`、`currentAgent` などのストリーミング制御を追加します。
 
-## 適切な result インターフェースの選択
+## 適切な結果サーフェスの選択
 
-ほとんどのアプリケーションで必要になるのは、いくつかのプロパティだけです。
+ほとんどのアプリケーションで必要になるプロパティは数個だけです:
 
 | 必要なもの | 使用するもの |
 | --- | --- |
 | ユーザーに表示する最終回答 | `finalOutput` |
-| 完全なローカル transcript を含む、再生可能な次ターン入力 | `history` |
-| この run で新しく生成された model 形式の item のみ | `output` |
-| エージェント / ツール / ハンドオフ のメタデータを持つ詳細な run item | `newItems` |
-| 通常、次のユーザーターンを担当すべきエージェント | `lastAgent` または `activeAgent` |
-| OpenAI Responses API の chaining に使う `previousResponseId` | `lastResponseId` |
-| 保留中の承認と再開可能な snapshot | `interruptions` と `state` |
-| アプリ context、承認、usage、ネストされた agent-tool input | `runContext` |
+| ローカルの完全なトランスクリプトを含む、リプレイ可能な次ターン入力 | `history` |
+| この実行で新たに生成されたモデル形式の項目のみ | `output` |
+| エージェント/ツール/ハンドオフのメタデータを持つリッチな実行項目 | `newItems` |
+| 通常、次のユーザーターンを処理すべきエージェント | `lastAgent` または `activeAgent` |
+| `previousResponseId` を使った OpenAI Responses API のチェーン | `lastResponseId` |
+| 保留中の承認と再開可能なスナップショット | `interruptions` と `state` |
+| アプリケーションコンテキスト、承認、使用量、ネストされたエージェントツール入力 | `runContext` |
 | 現在のネストされた `Agent.asTool()` 呼び出しに関するメタデータ。たとえば `customOutputExtractor` 内で使用 | `agentToolInvocation` |
-| 元の model 呼び出しやガードレール診断 | `rawResponses` とガードレール result 配列 |
+| 元のモデル呼び出しまたはガードレール診断 | `rawResponses` とガードレール結果配列 |
 
 ## 最終出力
 
-`finalOutput` プロパティには、最後に実行されたエージェントの最終出力が含まれます。この result は次のいずれかです。
+`finalOutput` プロパティには、最後に実行されたエージェントの最終出力が含まれます。この結果は次のいずれかです:
 
 - `string` — `outputType` が定義されていないエージェントのデフォルト
-- `unknown` — エージェントの出力型として JSON schema が定義されている場合。この場合 JSON は parse されていますが、型の検証は引き続き手動で行う必要があります
-- `z.infer<outputType>` — エージェントの出力型として Zod schema が定義されている場合。出力はこの schema に対して自動的に parse されます
-- `undefined` — エージェントが出力を生成しなかった場合（たとえば、出力を生成する前に停止した場合）
+- `unknown` — エージェントに出力型として JSON スキーマが定義されている場合。この場合、JSON はパース済みですが、型は手動で検証する必要があります
+- `z.infer<outputType>` — エージェントに出力型として Zod スキーマが定義されている場合。出力は自動的にこのスキーマに基づいてパースされます
+- `undefined` — エージェントが出力を生成しなかった場合（たとえば出力を生成する前に停止した場合）
 
-ストリーミングされた run がまだ進行中の場合や、最終出力に到達する前に承認の interruption で run が一時停止した場合も、`finalOutput` は `undefined` です。
+`finalOutput` は、ストリーミング実行がまだ進行中の場合や、最終出力に到達する前に承認中断で実行が一時停止した場合にも `undefined` になります。
 
-異なる出力型を持つハンドオフを使用している場合は、エージェントの作成に `new Agent()` コンストラクターではなく `Agent.create()` メソッドを使用してください。
+異なる出力型を持つハンドオフを使用している場合は、`new Agent()` コンストラクターではなく `Agent.create()` メソッドを使用してエージェントを作成してください。
 
-これにより、SDK はすべての可能なハンドオフにまたがる出力型を推論でき、`finalOutput` プロパティに union 型を提供できます。
+これにより、SDK は考えられるすべてのハンドオフにわたって出力型を推論し、`finalOutput` プロパティにユニオン型を提供できます。
 
 例:
 
@@ -55,113 +55,113 @@ import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
   title="ハンドオフの最終出力型"
 />
 
-## 入出力インターフェース
+## 入力と出力のサーフェス
 
-これらのプロパティは、それぞれ異なる問いに答えます。
+これらのプロパティは、それぞれ異なる問いに答えます:
 
 | プロパティ | 含まれるもの | 最適な用途 |
 | --- | --- | --- |
-| `input` | この run のベース入力。ハンドオフ input filter が履歴を書き換えた場合、run がそのまま継続した filter 後の入力が反映されます | この run が実際に入力として何を使ったかの監査 |
-| `output` | この run で生成された model 形式の item のみ。エージェントのメタデータは含みません | 新しい model の差分だけを保存または再生 |
-| `newItems` | エージェント / ツール / ハンドオフ のメタデータを持つ、リッチな [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) ラッパー | ログ、UI、監査、デバッグ |
-| `history` | `input + newItems` から構築される、再生可能な次ターン入力 | 手動の chat ループやクライアント管理の会話 state |
+| `input` | この実行の基準となる入力。ハンドオフ入力フィルターが履歴を書き換えた場合、これは実行が継続に使用したフィルター済み入力を反映します。 | この実行が実際に入力として使用した内容の監査 |
+| `output` | この実行で生成されたモデル形式の項目のみ。エージェントのメタデータは含みません。 | 新しいモデル差分だけの保存またはリプレイ |
+| `newItems` | エージェント/ツール/ハンドオフのメタデータを持つリッチな [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) ラッパー | ログ、UI、監査、デバッグ |
+| `history` | `input + newItems` から構築された、リプレイ可能な次ターン入力 | 手動のチャットループとクライアント管理の会話状態 |
 
-実際には次のように使い分けます。
+実際には:
 
-- アプリケーション側で会話全体を手動で保持している場合は `history` を使います
-- 以前の履歴をすでに別の場所に保存していて、この run で新しく生成された item だけが欲しい場合は `output` を使います
-- エージェントとの関連付け、ツール出力、ハンドオフの境界、承認 item が必要な場合は `newItems` を使います
-- `conversationId` や `previousResponseId` を使っている場合、通常は `history` を `run()` に戻して渡しません。代わりに、新しいユーザー入力だけを渡し、サーバー管理の ID を再利用します。完全な比較は [エージェントの実行](/openai-agents-js/guides/running-agents#state-and-conversation-management) を参照してください
+- アプリケーション内で会話全体を手動で持ち回る場合は、`history` を使用します。
+- 以前の履歴をすでに別の場所に保存していて、この実行で新たに生成された項目だけが必要な場合は、`output` を使用します。
+- エージェントの関連付け、ツール出力、ハンドオフの境界、承認項目が必要な場合は、`newItems` を使用します。
+- `conversationId` または `previousResponseId` を使用している場合、通常は `history` を `run()` に渡し戻しません。代わりに、新しいユーザー入力だけを渡し、サーバー管理 ID を再利用します。詳細な比較については、[エージェントの実行](/openai-agents-js/ja/guides/running-agents#state-and-conversation-management)を参照してください。
 
-`history` は、chat のようなユースケースで完全な履歴を維持するための便利な方法です。
+`history` は、チャットのようなユースケースで完全な履歴を維持するための便利な方法です:
 
-<Code lang="typescript" code={historyLoop} title="History ループ" />
+<Code lang="typescript" code={historyLoop} title="履歴ループ" />
 
-## 新しい item
+## 新しい項目
 
-`newItems` は、run 中に何が起こったかをもっとも豊富に把握できるビューを提供します。一般的な item 型は次のとおりです。
+`newItems` は、実行中に何が起きたかを最もリッチに把握できます。一般的な項目型は次のとおりです:
 
-- アシスタントメッセージ用の [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)
-- reasoning item 用の [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)
-- Responses のツール検索リクエストと、それが返すロード済みツール定義用の [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) および [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem)
-- ツール呼び出しとその結果用の [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) および [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)
-- 承認のために一時停止したツール呼び出し用の [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)
-- ハンドオフ要求と完了した転送用の [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) および [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) — アシスタントメッセージ用
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) — 推論項目用
+- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) と [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) — Responses のツール検索リクエストと、それが返す読み込まれたツール定義用
+- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) と [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) — ツール呼び出しとその結果用
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) — 承認のために一時停止したツール呼び出し用
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) と [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) — ハンドオフリクエストと完了した移譲用
 
-どのエージェントが item を生成したか、あるいはそれがツール、ツール検索、ハンドオフ、承認の境界を示しているかを知る必要がある場合は、`output` ではなく `newItems` を選んでください。`toolSearchTool()` を使う場合、通常のツール呼び出しが発生する前に、どの遅延ツールや namespace がロードされたかを確認するもっとも簡単な方法が、これらのツール検索 item です。
+どのエージェントが項目を生成したか、またはそれがツール、ツール検索、ハンドオフ、承認の境界を示すかを知る必要がある場合は、`output` ではなく `newItems` を選択してください。`toolSearchTool()` を使用する場合、通常のツール呼び出しが行われる前に読み込まれた遅延ツールや名前空間を調べるには、これらのツール検索項目が最も簡単です。
 
 ## 会話の継続または再開
 
-### アクティブエージェント
+### アクティブなエージェント
 
-`lastAgent` プロパティには、最後に実行されたエージェントが入ります。これは、ハンドオフ後の次のユーザーターンで再利用するエージェントとして最適なことが多いです。`activeAgent` は同じ値の alias です。
+`lastAgent` プロパティには、最後に実行されたエージェントが含まれます。これは多くの場合、ハンドオフ後の次のユーザーターンで再利用するのに最適なエージェントです。`activeAgent` は同じ値のエイリアスです。
 
-ストリーミング モードでは、`currentAgent` によって、run がまだ進行中の間にどのエージェントが現在アクティブかを確認できます。
+ストリーミングモードでは、実行がまだ進行中の間、`currentAgent` によって現在アクティブなエージェントがわかります。
 
-### 中断と再開可能な state
+### 中断と再開可能な状態
 
-ツールが承認を必要とする場合、run は一時停止し、`interruptions` には保留中の [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) が入ります。これには、直接のツール、ハンドオフ後に到達したツール、ネストされた `agent.asTool()` run で発生した承認が含まれる場合があります。
+ツールに承認が必要な場合、実行は一時停止し、`interruptions` には保留中の [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) が含まれます。これには、直接のツールによって発生した承認、ハンドオフ後に到達したツールによって発生した承認、またはネストされた `agent.asTool()` 実行によって発生した承認が含まれる場合があります。
 
-`result.state.approve(...)` / `result.state.reject(...)` で承認を解決し、その後、同じ `state` を `run()` に戻して渡して再開します。すべての interruption を一度に解決する必要はありません。一部の item だけを処理して再実行した場合、解決済みの呼び出しは続行され、未解決のものは保留のままとなり、run は再び一時停止します。
+承認は `result.state.approve(...)` / `result.state.reject(...)` を通じて解決し、その後同じ `state` を `run()` に渡して再開します。すべての中断を一度に解決する必要はありません。一部の項目だけを処理した後に再実行すると、解決済みの呼び出しは続行でき、未解決の呼び出しは保留のまま残って再び実行を一時停止します。
 
-`state` プロパティは、この result の背後にある serializable な snapshot です。[人間の介入（HITL）](/openai-agents-js/guides/human-in-the-loop)、リトライフロー、または一時停止した run を後で再開する必要があるあらゆるケースで使用します。
+`state` プロパティは、実行結果の背後にあるシリアライズ可能なスナップショットです。[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop)、リトライフロー、または一時停止した実行を後で再開する必要がある任意のケースで使用します。
 
 ### サーバー管理の継続
 
-`lastResponseId` は、OpenAI Responses API chaining を使用している場合に、次のターンで `previousResponseId` として渡す値です。
+`lastResponseId` は、OpenAI Responses API のチェーンを使用しているとき、次のターンで `previousResponseId` として渡す値です。
 
-すでに `history`、`session`、または `conversationId` で会話を継続している場合、通常は `lastResponseId` は必要ありません。複数ステップの run におけるすべての元の model response が必要な場合は、代わりに `rawResponses` を確認してください。
+`history`、`session`、または `conversationId` ですでに会話を継続している場合、通常は `lastResponseId` は必要ありません。複数ステップの実行からすべての元のモデルレスポンスが必要な場合は、代わりに `rawResponses` を調べてください。
 
-## ネストされた agent-tool のメタデータ
+## ネストされたエージェントツールのメタデータ
 
-`agentToolInvocation` は、ネストされた `Agent.asTool()` の result 用で、特に `customOutputExtractor` 内で現在のツール呼び出しに関するメタデータが欲しい場合に使います。これは、一般的な「run 全体が完了した」ことを示す summary フィールドではありません。
+`agentToolInvocation` は、ネストされた `Agent.asTool()` の結果のためのものです。特に、`customOutputExtractor` の中にいて、現在のツール呼び出しに関するメタデータが必要な場合に使用します。これは汎用的な「実行全体が完了した」ことを表す要約フィールドではありません。
 
-このネストされたコンテキストでは、`agentToolInvocation` は次を公開します。
+そのネストされたコンテキストでは、`agentToolInvocation` は次を公開します:
 
 - `toolName`
 - `toolCallId`
 - `toolArguments`
 
-ネストされた agent-tool run に渡された構造化 input も必要な場合は、`result.runContext.toolInput` と組み合わせて使ってください。
+そのネストされたエージェントツール実行に渡された構造化入力も必要な場合は、`result.runContext.toolInput` と併用してください。
 
-通常のトップレベル `run()` の result では、これは通常 `undefined` です。このメタデータは runtime 限定であり、`RunState` には serialize されません。周辺のパターンについては、[Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools) を参照してください。
+通常のトップレベルの `run()` 結果では、これは通常 `undefined` です。メタデータはランタイム専用であり、`RunState` にはシリアライズされません。周辺パターンについては、[Agents as tools](/openai-agents-js/ja/guides/tools#4-agents-as-tools)を参照してください。
 
-## ストリーミングされた result
+## ストリーミング結果
 
-`StreamedRunResult` は上記と同じ result インターフェースを継承しますが、ストリーミング固有の制御が追加されています。
+`StreamedRunResult` は上記と同じ結果サーフェスを継承しますが、ストリーミング固有の制御を追加します:
 
-- アシスタントのテキストのみに対する `toTextStream()`
-- 完全なイベント stream に対する `toStream()` または `for await ... of stream`
-- run とすべての後処理 callback が完了するまで待つための `completed`
-- 終端時のストリーミング state を確認するための `error` と `cancelled`
-- run の途中でアクティブなエージェントを追跡するための `currentAgent`
+- `toTextStream()` — アシスタントのテキストのみ
+- `toStream()` または `for await ... of stream` — 完全なイベントストリーム
+- `completed` — 実行とすべての後処理コールバックが完了するまで待機
+- `error` と `cancelled` — 終了時のストリーミング状態の確認
+- `currentAgent` — 実行途中のアクティブなエージェントの追跡
 
-ストリーミングされた run の確定した最終 state が必要な場合は、`finalOutput`、`history`、`interruptions`、その他の summary プロパティを読む前に `completed` を待ってください。イベントごとの処理については、[ストリーミング ガイド](/openai-agents-js/guides/streaming) を参照してください。
+ストリーミング実行の確定した最終状態が必要な場合は、`finalOutput`、`history`、`interruptions`、またはその他の要約プロパティを読む前に `completed` を待機してください。イベントごとの処理については、[ストリーミング](/openai-agents-js/ja/guides/streaming)を参照してください。
 
-ストリーミングされた run がキャンセルされた場合でも、クリーンアップ後に `completed` は resolve され、`cancelled` は `true` になります。ただし、現在のターンが完了していないため、`finalOutput` のようなターン終端フィールドは未設定のままになることがあります。その未完了ターンは、新しいユーザーメッセージを追加するのではなく、`result.state`（必要に応じて同じ `session` も）で再開してください。
+ストリーミング実行がキャンセルされた場合でも、クリーンアップ後に `completed` は解決され、`cancelled` は `true` になります。ただし、現在のターンが完了していないため、`finalOutput` などのターン終了時のフィールドは未設定のままになることがあります。新しいユーザーメッセージを追加するのではなく、`result.state`（使用している場合は同じ `session`）を使って、その未完了のターンを再開してください。
 
 ## 診断と高度なフィールド
 
-### Run context
+### 実行コンテキスト
 
-`runContext` プロパティは、result 上の run context に対する、サポート対象の公開ビューです。`result.runContext.context` はアプリの context であり、同じオブジェクトには承認、usage、ネストされた `toolInput` などの SDK 管理 runtime メタデータも含まれます。完全な shape については [コンテキスト管理](/openai-agents-js/guides/context) を参照してください。
+`runContext` プロパティは、実行結果上の実行コンテキストについて、サポートされる公開ビューです。`result.runContext.context` はあなたのアプリケーションコンテキストであり、同じオブジェクトには承認、使用量、ネストされた `toolInput` など、SDK 管理のランタイムメタデータも含まれます。全体の構造については、[コンテキスト管理](/openai-agents-js/ja/guides/context)を参照してください。
 
-### 元の response
+### 元レスポンス
 
-`rawResponses` には、run 中に収集された元の model response が含まれます。複数ステップの run では、たとえばハンドオフや、ツール / model サイクルの繰り返しをまたいで、複数の response が生成されることがあります。
+`rawResponses` には、実行中に収集された元のモデルレスポンスが含まれます。複数ステップの実行では、たとえばハンドオフや繰り返しのツール/モデルサイクルをまたいで、複数のレスポンスが生成されることがあります。
 
 ### ガードレール結果
 
-`inputGuardrailResults` と `outputGuardrailResults` プロパティには、エージェントレベルのガードレール result が含まれます。ツールのガードレール result は、`toolInputGuardrailResults` と `toolOutputGuardrailResults` を通じて別途公開されます。
+`inputGuardrailResults` と `outputGuardrailResults` プロパティには、エージェントレベルのガードレール結果が含まれます。ツールガードレール結果は、`toolInputGuardrailResults` と `toolOutputGuardrailResults` を通じて別に公開されます。
 
-これらの配列は、ガードレールの判断をログに残したい場合、ガードレール関数が返す追加メタデータを確認したい場合、あるいは run がブロックされた理由をデバッグしたい場合に使います。
+ガードレールの判定をログに記録したい場合、ガードレール関数が返した追加メタデータを調べたい場合、または実行がブロックされた理由をデバッグしたい場合は、これらの配列を使用します。
 
-### Usage
+### 使用状況
 
-トークン usage は `result.state.usage` に集約されており、run のリクエスト数とトークン総数を追跡します。同じ usage オブジェクトは `result.runContext.usage` からも利用できます。ストリーミング run では、このデータは response の到着に応じて更新されます。
+トークン使用量は `result.state.usage` に集計され、実行のリクエスト数とトークン合計を追跡します。同じ使用量オブジェクトは `result.runContext.usage` からも利用できます。ストリーミング実行では、レスポンスが到着するたびにこのデータが更新されます。
 
 <Code
   lang="typescript"
   code={usageExample}
-  title="RunState から usage を読む"
+  title="RunState から使用量を読み取る"
 />

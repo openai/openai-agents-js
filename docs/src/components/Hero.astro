@@ -6,6 +6,11 @@ import helloWorldVoiceExample from '../../../examples/docs/toppage/voiceAgent.ts
 const path = Astro.url.pathname;
 const pathPrefix =
   path !== '/' ? (!path.endsWith('/') ? path + '/' : path) : '';
+const quickstartLinks = {
+  sandbox: `${pathPrefix}guides/sandbox-agents`,
+  text: `${pathPrefix}guides/quickstart`,
+  voice: `${pathPrefix}guides/voice-agents/quickstart`,
+};
 ---
 
 <div class="openai-hero">
@@ -16,7 +21,13 @@ const pathPrefix =
         <p>
           <slot name="description" />
         </p>
-        <a href={`${pathPrefix}guides/quickstart`} class="openai-hero-cta">
+        <a
+          href={quickstartLinks.sandbox}
+          class="openai-hero-cta"
+          data-sandbox-href={quickstartLinks.sandbox}
+          data-text-href={quickstartLinks.text}
+          data-voice-href={quickstartLinks.voice}
+        >
           <slot name="cta" />
         </a>
       </div>
@@ -40,3 +51,53 @@ const pathPrefix =
     </div>
   </div>
 </div>
+
+<script>
+  document.querySelectorAll<HTMLElement>('.openai-hero').forEach((hero) => {
+    const cta = hero.querySelector<HTMLAnchorElement>('.openai-hero-cta');
+    const tabs = hero.querySelector('starlight-tabs');
+
+    const linkForLabel = (label: string) => {
+      const normalizedLabel = label.trim().toLowerCase();
+      if (normalizedLabel.includes('sandbox')) {
+        return cta?.dataset.sandboxHref;
+      }
+      if (normalizedLabel.includes('voice')) {
+        return cta?.dataset.voiceHref;
+      }
+      return cta?.dataset.textHref;
+    };
+
+    const updateCta = (tab?: Element | null) => {
+      if (!cta) {
+        return;
+      }
+      const selectedTab =
+        tab ?? hero.querySelector('[role="tab"][aria-selected="true"]');
+      const nextHref = linkForLabel(selectedTab?.textContent ?? '');
+      if (nextHref) {
+        cta.href = nextHref;
+      }
+    };
+
+    const queueCtaUpdate = () => {
+      window.setTimeout(() => updateCta(), 0);
+    };
+
+    updateCta();
+
+    tabs?.addEventListener('click', (event) => {
+      const tab = (event.target as Element | null)?.closest('[role="tab"]');
+      updateCta(tab);
+    });
+    tabs?.addEventListener('keydown', queueCtaUpdate);
+
+    const tablist = tabs?.querySelector('[role="tablist"]');
+    if (tablist) {
+      new MutationObserver(queueCtaUpdate).observe(tablist, {
+        attributeFilter: ['aria-selected'],
+        subtree: true,
+      });
+    }
+  });
+</script>
