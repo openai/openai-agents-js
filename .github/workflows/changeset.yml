@@ -8,7 +8,7 @@ on:
 jobs:
   changeset-validation:
     if: ${{ github.repository == 'openai/openai-agents-js' }}
-    # Use pull_request_target so secrets are available for label/milestone updates.
+    # Use pull_request_target so labels can be updated.
     # Always checkout base and fetch head to avoid executing forked code and reduce skipped checks.
     runs-on: ubuntu-latest
     permissions:
@@ -60,56 +60,13 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run lightweight changeset check (forks)
-        if: ${{ steps.pr.outputs.is_fork == 'true' }}
+      - name: Run lightweight changeset check
         run: |
           pnpm changeset:validate-lite -- \
             --base ${{ steps.pr.outputs.base_sha }} \
             --head ${{ steps.pr.outputs.head_sha }}
 
-      - name: Generate changeset prompt
-        id: changeset_prompt
-        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
-        run: |
-          pnpm changeset:validate-prompt -- \
-            --ci \
-            --output .github/codex/prompts/changeset-validation.generated.md \
-            --base ${{ steps.pr.outputs.base_sha }} \
-            --head ${{ steps.pr.outputs.head_sha }}
-
-      - name: Prepare Codex output dir
-        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
-        run: mkdir -p .github/codex/outputs
-
-      - name: Run Codex changeset validation
-        id: run_codex
-        if: ${{ github.actor != 'dependabot[bot]' && steps.pr.outputs.is_fork != 'true' }}
-        uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1
-        with:
-          openai-api-key: ${{ secrets.PROD_OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/changeset-validation.generated.md
-          output-file: .github/codex/outputs/changeset-validation.json
-          output-schema-file: .github/codex/schemas/changeset-validation.json
-          allow-bots: true
-          # Keep the legacy Linux sandbox path until the default bubblewrap path
-          # works reliably on GitHub-hosted Ubuntu runners.
-          codex-args: '["--full-auto","--enable","use_legacy_landlock"]'
-          sandbox: read-only
-          safety-strategy: drop-sudo
-
-      - name: Validate Codex output
-        id: validate_codex
-        if: ${{ steps.run_codex.conclusion == 'success' }}
-        run: pnpm changeset:validate-result -- .github/codex/outputs/changeset-validation.json
-
-      - name: Assign milestone
-        if: ${{ steps.run_codex.conclusion == 'success' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm changeset:assign-milestone -- .github/codex/outputs/changeset-validation.json
-
       - name: Sync package labels
-        if: ${{ steps.run_codex.conclusion == 'success' || github.actor == 'dependabot[bot]' || steps.pr.outputs.is_fork == 'true' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
