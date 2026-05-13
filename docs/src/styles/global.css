@@ -236,6 +236,14 @@
       font-size: var(--sl-text-sm);
     }
 
+    table :is(th, td):not(:last-child):not(:where(.not-content *)) {
+      min-width: 5rem;
+    }
+
+    table th:not(:where(.not-content *)) {
+      white-space: nowrap;
+    }
+
     table td code {
       white-space: nowrap;
     }

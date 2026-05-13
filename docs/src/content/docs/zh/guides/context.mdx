@@ -6,59 +6,59 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-上下文是一个含义很多的术语。您可能需要关注两类主要的上下文：
+上下文是一个含义较多的术语。你可能关心的上下文主要有两类：
 
-1. 代码在运行期间可访问的**本地上下文**：工具所需的依赖或数据、诸如 `onHandoff` 之类的回调，以及生命周期钩子。
-2. 语言模型在生成响应时可见的**智能体/LLM 上下文**。
+1. 你的代码在一次运行期间可以访问的**本地上下文**：工具所需的依赖或数据、类似 `onHandoff` 的回调以及生命周期钩子。
+2. 语言模型在生成响应时可以看到的**智能体/LLM 上下文**。
 
 ## 本地上下文
 
-本地上下文由 `RunContext<T>` 类型表示。您可以创建任意对象来保存状态或依赖项，并将其传递给 `Runner.run()`。所有工具调用和钩子都会收到一个 `RunContext` 包装器，因此它们可以读取或修改该对象。
+本地上下文由 `RunContext<T>` 类型表示。你可以创建任意对象来保存状态或依赖，并将其传递给 `Runner.run()`。所有工具调用和钩子都会收到一个 `RunContext` 包装器，因此它们可以读取或修改该对象。
 
 <Code lang="typescript" code={localContextExample} title="本地上下文示例" />
 
 参与同一次运行的每个智能体、工具和钩子都必须使用相同的上下文**类型**。
 
-本地上下文适合用于以下内容：
+本地上下文适用于以下内容：
 
-- 关于此次运行的数据（用户名、ID 等）
+- 关于本次运行的数据（用户名、ID 等）
 - 依赖项，例如日志记录器或数据获取器
 - 辅助函数
 
 <Aside type="note">
-  上下文对象**不会**发送给
-  LLM。它完全是本地的，您可以自由地从中读取或向其中写入。
+  上下文对象**不会**发送给 LLM。它完全是本地的，你可以自由地 读取或写入它。
 </Aside>
 
-在一次运行中，派生上下文共享相同的底层应用上下文、审批状态和用量跟踪。嵌套的 `agent.asTool()` 运行可能会附加不同的 `toolInput`，但默认情况下不会获得应用状态的隔离副本。
+在同一次运行中，派生上下文会共享相同的底层应用上下文、审批和用量追踪。嵌套的 `agent.asTool()` 运行可能会附加不同的 `toolInput`，但默认情况下它们不会获得你的应用状态的隔离副本。
 
-### `RunContext` 提供的内容
+### `RunContext` 暴露的内容
 
-`RunContext<T>` 是围绕您在应用中定义的上下文对象的一个包装器。实际使用中，您最常会用到：
+`RunContext<T>` 是对你在应用中定义的上下文对象的包装。在实践中，你最常使用的是：
 
-- `runContext.context`：用于您自己的可变应用状态和依赖项。
+- `runContext.context`：用于你自己的可变应用状态和依赖。
 - `runContext.usage`：用于当前运行的聚合 token/请求用量。
-- `runContext.toolInput`：用于当前运行在 `agent.asTool()` 内执行时的结构化输入。
-- `runContext.approveTool(...)` / `runContext.rejectTool(...)`：用于在您需要以编程方式更新审批状态时使用。
+- `runContext.toolInput`：当当前运行在 `agent.asTool()` 内执行时，用于结构化输入。
+- `runContext.approveTool(...)` / `runContext.rejectTool(...)`：当你需要以编程方式更新审批状态时使用。
 
-只有 `runContext.context` 是您在应用中定义的对象。其他字段都是由 SDK 管理的运行时元数据。
+只有 `runContext.context` 是你在应用中定义的对象。其他字段都是由 SDK 管理的运行时元数据。
 
-如果您之后为了[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)而序列化一个 [`RunState`](/openai-agents-js/guides/results#state)，这些运行时元数据会与状态一起保存。如果您打算持久化或传输序列化后的状态，请避免将敏感信息放入 `runContext.context` 中。
+如果你之后为了[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)而序列化 [`RunState`](/openai-agents-js/zh/guides/results#state)，这些运行时元数据会随状态一起保存。如果你打算持久化或传输序列化后的状态，请避免将密钥放入 `runContext.context`。
 
 <Aside type="note">
-  `RunContext`
-  关注的是当前运行的本地应用状态。对话状态是另一个独立问题：请根据您希望如何延续轮次，使用
-  `result.history`、`session`、`conversationId` 或
-  `previousResponseId`。相关决策请参见[运行智能体](/openai-agents-js/guides/running-agents#state-and-conversation-management)。
+  `RunContext` 关注的是当前运行的本地应用状态。对话状态
+  是另一个独立问题：可根据你希望如何延续多轮对话，使用
+  `result.history`、`session`、`conversationId` 或 `previousResponseId`。请参阅
+  [运行智能体](/openai-agents-js/zh/guides/running-agents#state-and-conversation-management)
+  以做出选择。
 </Aside>
 
-如果您继承 `RunContext`，请确认嵌套运行或派生运行仍会保留您所依赖的任何子类特定实例状态。SDK 会在嵌套运行期间在内部创建分叉上下文。
+如果你继承 `RunContext`，请确认嵌套或派生运行仍会保留你依赖的任何子类特有实例状态。SDK 会在嵌套运行期间在内部创建分叉上下文。
 
 ## 智能体/LLM 上下文
 
-调用 LLM 时，它唯一能看到的数据来自对话历史。若要让额外信息可用，您有几种选择：
+调用 LLM 时，它唯一能看到的数据来自对话历史。要让其他信息可用，你有几种选择：
 
-1. 将其添加到智能体的 `instructions` 中——也称为 system 或 developer message。它可以是静态字符串，也可以是接收上下文并返回字符串的函数。
-2. 在调用 `Runner.run()` 时将其包含在 `input` 中。这与 instructions 的方式类似，但可以让您将消息放在[命令链](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)中更低的位置。
-3. 通过函数工具暴露这些信息，以便 LLM 按需获取数据。
+1. 将其添加到智能体的 `instructions` 中——也称为系统消息或开发者消息。它可以是静态字符串，也可以是接收上下文并返回字符串的函数。
+2. 在调用 `Runner.run()` 时将其包含在 `input` 中。这类似于 instructions 技术，但允许你把消息放在[命令链](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)中更低的位置。
+3. 通过函数工具公开它，让 LLM 可以按需获取数据。
 4. 使用检索或 Web 搜索工具，让响应基于来自文件、数据库或 Web 的相关数据。

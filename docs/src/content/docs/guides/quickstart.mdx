@@ -3,8 +3,7 @@ title: Quickstart
 description: Create your first AI Agent from scratch
 ---
 
-import { Steps } from '@astrojs/starlight/components';
-import { Code } from '@astrojs/starlight/components';
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
 import quickstartExample from '../../../../../examples/docs/quickstart/index.ts?raw';
 import createAgentExample from '../../../../../examples/docs/quickstart/createAgent.ts?raw';
 import runAgentExample from '../../../../../examples/docs/quickstart/runAgent.ts?raw';
@@ -12,6 +11,13 @@ import agentWithToolsExample from '../../../../../examples/docs/quickstart/agent
 import additionalAgentsExample from '../../../../../examples/docs/quickstart/additionalAgents.ts?raw';
 import defineHandoffsExample from '../../../../../examples/docs/quickstart/defineHandoffs.ts?raw';
 import runOrchestrationExample from '../../../../../examples/docs/quickstart/runOrchestration.ts?raw';
+
+<Aside type="note" title="Looking for sandbox agents?">
+  This quickstart builds a text agent that runs in your app process. If you want
+  an agent with an isolated filesystem workspace, shell commands, and sandbox
+  session state, start with the [Sandbox agents
+  quickstart](/openai-agents-js/guides/sandbox-agents).
+</Aside>
 
 ## Project Setup
 
@@ -37,9 +43,7 @@ import runOrchestrationExample from '../../../../../examples/docs/quickstart/run
    export OPENAI_API_KEY=sk-...
    ```
 
-   Alternatively you can call `setDefaultOpenAIKey('<api key>')` to set the key
-   programmatically and use `setTracingExportApiKey('<api key>')` for tracing.
-   See [the config guide](/openai-agents-js/guides/config) for more details.
+   Alternatively you can call `setDefaultOpenAIKey('<api key>')` to set the key programmatically and use `setTracingExportApiKey('<api key>')` for tracing. See [the config guide](/openai-agents-js/guides/config) for more details.
 
 </Steps>
 
@@ -51,18 +55,13 @@ Agents are defined with instructions and a name.
 
 ## Run your first agent
 
-You can use the `run` method to run your agent. You trigger a run by passing both the agent you
-want to start on and the input you want to pass in.
+You can use the `run` method to run your agent. You trigger a run by passing both the agent you want to start on and the input you want to pass in.
 
-This will return a result that contains the final output and any actions that were performed
-during that run.
+This will return a result that contains the final output and any actions that were performed during that run.
 
 <Code lang="typescript" code={runAgentExample} title="Run an agent" />
 
-For a second turn, you can either pass `result.history` back into `run()`, attach a
-[session](/openai-agents-js/guides/sessions), or reuse OpenAI server-managed state with
-`conversationId` / `previousResponseId`. The [running agents](/openai-agents-js/guides/running-agents)
-guide compares these approaches.
+For a second turn, you can either pass `result.history` back into `run()`, attach a [session](/openai-agents-js/guides/sessions), or reuse OpenAI server-managed state with `conversationId` / `previousResponseId`. The [running agents](/openai-agents-js/guides/running-agents) guide compares these approaches.
 
 ## Give your agent tools
 
@@ -72,9 +71,7 @@ You can give an agent tools to use to look up information or perform actions.
 
 ## Add a few more agents
 
-Additional agents can be defined similarly to break down problems into smaller parts and have your
-agent be more focused on the task at hand. It also allows you to use different models for different
-problems by defining the model on the agent.
+Additional agents can be defined similarly to break down problems into smaller parts and have your agent be more focused on the task at hand. It also allows you to use different models for different problems by defining the model on the agent.
 
 <Code
   lang="typescript"
@@ -84,14 +81,11 @@ problems by defining the model on the agent.
 
 ## Define your handoffs
 
-In order to orchestrate between multiple agents, you can define `handoffs` for an agent. This will
-enable the agent to pass the conversation on to the next agent. This will happen automatically
-during the course of a run.
+In order to orchestrate between multiple agents, you can define `handoffs` for an agent. This will enable the agent to pass the conversation on to the next agent. This will happen automatically during the course of a run.
 
 <Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
-After your run you can see which agent generated the final response by looking at the `lastAgent`
-property on the result.
+After your run you can see which agent generated the final response by looking at the `lastAgent` property on the result.
 
 ## Run the agent orchestration
 
@@ -105,18 +99,15 @@ The runner handles executing individual agents, any handoffs, and any tool calls
 
 ## Putting it all together
 
-Let's put it all together into one full example. Place this into your `index.js` file and run it.
-If your app is already set up for TypeScript, you can use `index.ts` instead.
+Let's put it all together into one full example. Place this into your `index.js` file and run it. If your app is already set up for TypeScript, you can use `index.ts` instead.
 
 <Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
 ## View your traces
 
-The Agents SDK will automatically generate traces for you. This allows you to review how your agents
-are operating, what tools they called or which agent they handed off to.
+The Agents SDK will automatically generate traces for you. This allows you to review how your agents are operating, what tools they called or which agent they handed off to.
 
-To review what happened during your agent run, navigate to the
-[Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
+To review what happened during your agent run, navigate to the [Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
 
 ## Next steps
 

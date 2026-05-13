@@ -7,59 +7,59 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ## 概述
 
-![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+![实时智能体](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-语音智能体让您能够基于 OpenAI speech-to-speech 模型构建低延迟的语音交互界面。SDK 保留了 Realtime API 的心智模型，但将原始事件流封装进 `RealtimeAgent`、`RealtimeSession` 和传输辅助工具中，使工具、护栏、交接和会话历史更易于使用。
+语音智能体让你可以基于 OpenAI 语音到语音模型构建低延迟的语音交互界面。SDK 保留了 Realtime API 的心智模型，同时用 `RealtimeAgent`、`RealtimeSession` 和传输辅助工具封装原始事件流，让工具、护栏、交接和会话历史更易使用。
 
-在底层，官方指南 [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、[Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/) 和 [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) 中的相同 Realtime 概念仍然适用。Voice Agents SDK 在该 API 之上增加了一个 TypeScript 优先的层，让您可以专注于产品逻辑，而不必从头重建传输和事件处理。
+在底层，官方[基于 WebRTC 的 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、[Realtime 对话](https://developers.openai.com/api/docs/guides/realtime-conversations/)和[语音活动检测](https://developers.openai.com/api/docs/guides/realtime-vad/)指南中的相同 Realtime 概念仍然适用。Voice Agents SDK 在该 API 之上添加了一个 TypeScript 优先层，让你可以专注于产品逻辑，而无需从零开始重建传输和事件处理。
 
 <Aside type="note">
-  如果您要使用 WebRTC 连接浏览器客户端，请先从快速开始开始。 如果您正在
+  如果你要使用 WebRTC 连接浏览器客户端，请从快速开始开始。 如果你正在
   WebRTC、WebSocket、SIP、Twilio 或 Cloudflare Workers 之间做选择，
-  请先阅读传输机制指南。
+  请先查看传输机制指南。
 </Aside>
 
-## 入门导航
+## 入门入口
 
 <LinkCard
   title="快速开始"
   href="/openai-agents-js/zh/guides/voice-agents/quickstart"
-  description="几分钟内使用 OpenAI Agents SDK 构建您的第一个实时语音助手。"
+  description="使用 OpenAI Agents SDK，在几分钟内构建你的第一个实时语音助手。"
 />
 
 <LinkCard
   title="构建语音智能体"
   href="/openai-agents-js/zh/guides/voice-agents/build"
-  description="了解 SDK 中的会话生命周期、VAD、中断、多模态输入、工具和历史记录的工作方式。"
+  description="了解 SDK 中的会话生命周期、VAD、中断、多模态输入、工具和历史记录如何工作。"
 />
 
 <LinkCard
   title="传输机制"
   href="/openai-agents-js/zh/guides/voice-agents/transport"
-  description="在 WebRTC、WebSocket、SIP 或自定义传输之间做出选择，并了解何时应降级到底层原始事件。"
+  description="在 WebRTC、WebSocket、SIP 或自定义传输之间做选择，并了解何时需要下探到原始事件。"
 />
 
-## SDK 的增强能力
+## SDK 新增内容
 
 - 面向浏览器优先的 WebRTC 设置，支持临时客户端令牌。
-- 服务端 WebSocket 和 SIP 传输选项。
-- 自动处理中断以及本地会话历史更新。
+- 服务器端 WebSocket 和 SIP 传输选项。
+- 自动中断处理和本地对话历史更新。
 - 通过实时交接实现多智能体编排。
 - 函数工具、托管 MCP 工具、审批和委派模式。
-- 为实时语音交互提供输出护栏和追踪支持。
+- 面向实时语音交互的输出护栏和追踪支持。
 
-## 后续页面选择
+## 下一页选择
 
-| 如果您需要…… | 前往这里 |
+| 如果你需要...... | 前往这里 |
 | --- | --- |
-| 使用 WebRTC 和临时令牌安全地连接浏览器客户端 | [快速开始](/openai-agents-js/guides/voice-agents/quickstart) |
-| 了解会话生命周期、VAD、中断、图像输入、工具和历史记录 | [构建语音智能体](/openai-agents-js/guides/voice-agents/build) |
-| 在 WebRTC、WebSocket、SIP 和自定义传输之间做选择 | [传输机制](/openai-agents-js/guides/voice-agents/transport) |
-| 在 Twilio 上运行电话或语音通信体验 | [Twilio 上的实时智能体](/openai-agents-js/extensions/twilio) |
-| 从 Cloudflare Workers 或其他 workerd 运行时进行连接 | [Cloudflare 上的实时智能体](/openai-agents-js/extensions/cloudflare) |
+| 使用 WebRTC 和临时令牌安全地连接浏览器客户端 | [快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart) |
+| 了解会话生命周期、VAD、中断、图像输入、工具和历史记录 | [构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build) |
+| 在 WebRTC、WebSocket、SIP 和自定义传输之间做选择 | [传输机制](/openai-agents-js/zh/guides/voice-agents/transport) |
+| 在 Twilio 上运行电话或电信体验 | [Twilio 上的实时智能体](/openai-agents-js/zh/extensions/twilio) |
+| 从 Cloudflare Workers 或其他 workerd 运行时连接 | [Cloudflare 上的实时智能体](/openai-agents-js/zh/extensions/cloudflare) |
 
-## 选择 speech-to-speech 的原因
+## 语音到语音的优势
 
-speech-to-speech 模型会直接处理用户音频，因此您无需为每一轮构建独立的语音转文本、文本推理和文本转语音链路。这可以降低延迟，并让中断、文本与语音混合输入以及工具调用在实时应用中显得自然得多。
+语音到语音模型会直接处理用户音频，因此你不必为每一轮对话构建单独的语音转文本、文本推理和文本转语音链路。这可以降低延迟，并让实时应用中的中断、文本与语音混合输入以及工具调用感觉自然得多。
 
-![Speech-to-speech model](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+![语音到语音模型](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

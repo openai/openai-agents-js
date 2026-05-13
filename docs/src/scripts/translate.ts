@@ -16,12 +16,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import {
-  Agent,
-  getDefaultModelSettings,
-  Runner,
-  setDefaultOpenAIKey,
-} from '@openai/agents';
+import { Agent, Runner, setDefaultOpenAIKey } from '@openai/agents';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -140,7 +135,7 @@ const languages: Record<string, string> = {
   zh: 'Chinese',
   // Add more languages here
 };
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
 setDefaultOpenAIKey(process.env.OPENAI_API_KEY || '');
 const ENABLE_CODE_SNIPPET_EXCLUSION = true;
 
@@ -612,12 +607,14 @@ async function callAgent(
   instructions: string,
   model: string = OPENAI_MODEL,
 ): Promise<string> {
-  const modelSettings = getDefaultModelSettings(model);
   const agent = new Agent({
     name: 'translator',
     instructions,
     model,
-    modelSettings,
+    modelSettings: {
+      reasoning: { effort: 'high' },
+      text: { verbosity: 'medium' },
+    },
   });
   const result = await runner.run(agent, content);
   const output = result.finalOutput;
@@ -718,7 +715,7 @@ async function translateFile(
         langCode,
       );
       translatedTitle = sanitizeTitle(
-        await callAgent(titleValue, instructions, 'gpt-4.1'),
+        await callAgent(titleValue, instructions, 'gpt-5.4-mini'),
       );
     }
     // Remove markdown heading if present as the first non-empty line after frontmatter

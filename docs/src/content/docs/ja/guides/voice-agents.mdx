@@ -7,60 +7,60 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ## 概要
 
-![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+![リアルタイムエージェント](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-音声エージェントを使うと、 OpenAI の speech-to-speech モデル上に低レイテンシな音声インターフェースを構築できます。 SDK は Realtime API のメンタルモデルをそのまま維持しつつ、 元のイベントフローを `RealtimeAgent` 、 `RealtimeSession` 、およびトランスポートヘルパーでラップし、ツール、ガードレール、ハンドオフ、セッション履歴をより扱いやすくします。
+音声エージェントを使うと、OpenAI の speech-to-speech モデル上に低レイテンシの音声インターフェイスを構築できます。SDK は Realtime API の考え方をそのまま保ちながら、元のイベントフローを `RealtimeAgent`、`RealtimeSession`、トランスポートヘルパーでラップし、ツール、ガードレール、ハンドオフ、セッション履歴を扱いやすくします。
 
-内部では、公式ガイドの [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、 [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/)、および [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) にある同じ Realtime の概念が引き続き適用されます。 Voice Agents SDK はその API の上に TypeScript ファーストのレイヤーを追加するため、トランスポートやイベント処理をゼロから作り直すのではなく、製品ロジックに集中できます。
+内部では、公式の [WebRTC を用いた Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/)、[Realtime 会話](https://developers.openai.com/api/docs/guides/realtime-conversations/)、[音声活動検出](https://developers.openai.com/api/docs/guides/realtime-vad/) ガイドで説明されている同じ Realtime のコンセプトが引き続き適用されます。Voice Agents SDK は、その API の上に TypeScript ファーストのレイヤーを追加するため、トランスポートやイベント処理をゼロから作り直すのではなく、プロダクトロジックに集中できます。
 
 <Aside type="note">
   ブラウザクライアントを WebRTC
-  で接続する場合は、まずクイックスタートから始めてください。 WebRTC、
-  WebSocket、 SIP、 Twilio、または Cloudflare Workers
+  で接続する場合は、クイックスタートから始めてください。
+  WebRTC、WebSocket、SIP、Twilio、Cloudflare Workers
   のどれを使うか検討している場合は、 まずトランスポートガイドに進んでください。
 </Aside>
 
-## はじめに
+## ここから開始
 
 <LinkCard
   title="クイックスタート"
   href="/openai-agents-js/ja/guides/voice-agents/quickstart"
-  description="OpenAI Agents SDK を使って、ほんの数分ではじめてのエージェントをつくることができます。"
+  description="OpenAI Agents SDK を使って、ほんの数分で最初のリアルタイム音声アシスタントを構築します。"
 />
 
 <LinkCard
   title="音声エージェントの構築"
   href="/openai-agents-js/ja/guides/voice-agents/build"
-  description="SDK におけるセッションライフサイクル、 VAD、割り込み、マルチモーダル入力、ツール、履歴の仕組みを学びます。"
+  description="SDK におけるセッションライフサイクル、VAD、割り込み、マルチモーダル入力、ツール、履歴の仕組みを学びます。"
 />
 
 <LinkCard
   title="リアルタイムトランスポート"
   href="/openai-agents-js/ja/guides/voice-agents/transport"
-  description="WebRTC、 WebSocket、 SIP、またはカスタムトランスポートから選択し、どのタイミングで元のイベントに移行すべきかを把握します。"
+  description="WebRTC、WebSocket、SIP、カスタムトランスポートから選択し、いつ元のイベントまで下りるべきかを理解します。"
 />
 
-## SDK の追加機能
+## SDK による追加要素
 
-- エフェメラルクライアントトークンを使った、ブラウザファーストな WebRTC セットアップ
-- サーバーサイドの WebSocket および SIP トランスポートオプション
-- 自動的な割り込み処理とローカル会話履歴の更新
-- リアルタイムなハンドオフによるマルチエージェントオーケストレーション
-- 関数ツール、 hosted MCP ツール、承認、および委任パターン
-- ライブ音声インタラクション向けの出力ガードレールとトレーシングのサポート
+- ブラウザファーストの WebRTC セットアップと一時的なクライアントトークン
+- サーバー側の WebSocket および SIP トランスポートオプション
+- 自動的な割り込み処理とローカルの会話履歴更新
+- リアルタイムハンドオフによるマルチエージェントオーケストレーション
+- 関数ツール、ホスト型 MCP ツール、承認、委任パターン
+- ライブ音声インタラクション向けの出力ガードレールとトレーシング対応
 
-## 次に読むページ
+## 次のページの選択
 
-| 必要なこと | 参照先 |
+| したいこと | 参照先 |
 | --- | --- |
-| WebRTC とエフェメラルトークンを使ってブラウザクライアントを安全に接続する | [クイックスタート](/openai-agents-js/guides/voice-agents/quickstart) |
-| セッションライフサイクル、 VAD、割り込み、画像入力、ツール、履歴を理解する | [音声エージェントの構築](/openai-agents-js/guides/voice-agents/build) |
-| WebRTC、 WebSocket、 SIP、カスタムトランスポートのどれを使うか決める | [リアルタイムトランスポート](/openai-agents-js/guides/voice-agents/transport) |
-| Twilio 上で電話やテレフォニー体験を実行する | [Twilio 上の Realtime Agent](/openai-agents-js/extensions/twilio) |
-| Cloudflare Workers やその他の workerd ランタイムから接続する | [Cloudflare 上の Realtime Agent](/openai-agents-js/extensions/cloudflare) |
+| WebRTC と一時的なトークンでブラウザクライアントを安全に接続する | [クイックスタート](/openai-agents-js/ja/guides/voice-agents/quickstart) |
+| セッションライフサイクル、VAD、割り込み、画像入力、ツール、履歴を理解する | [音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build) |
+| WebRTC、WebSocket、SIP、カスタムトランスポートのどれを使うか判断する | [リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport) |
+| Twilio で電話またはテレフォニー体験を実行する | [Twilio 上の Realtime Agent](/openai-agents-js/ja/extensions/twilio) |
+| Cloudflare Workers またはその他の workerd ランタイムから接続する | [Cloudflare 上の Realtime Agent](/openai-agents-js/ja/extensions/cloudflare) |
 
-## speech-to-speech を選ぶ理由
+## Speech-to-speech の利点
 
-speech-to-speech モデルはユーザーの音声を直接処理するため、各ターンごとに speech-to-text、テキスト推論、 text-to-speech の個別チェーンを構築する必要がありません。 これによりレイテンシが抑えられ、リアルタイムアプリケーションにおいて割り込み、テキストと音声が混在する入力、ツール呼び出しがより自然に感じられます。
+Speech-to-speech モデルはユーザーの音声を直接処理するため、ターンごとに個別の音声認識、テキスト推論、音声合成のチェーンを構築する必要がありません。これによりレイテンシを抑えられ、リアルタイムアプリケーションでの割り込み、テキストと音声が混在する入力、ツール呼び出しがより自然に感じられます。
 
-![Speech-to-speech model](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+![Speech-to-speech モデル](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
