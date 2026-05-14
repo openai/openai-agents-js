@@ -26,6 +26,10 @@ let lastCallToolOptions: any;
 let lastCallToolParams: any;
 let lastReadResourceOptions: any;
 let lastReadResourceParams: any;
+let lastSetLoggingLevel: any;
+let lastSetLoggingLevelOptions: any;
+let lastNotificationHandlerSchema: any;
+let lastNotificationHandler: any;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
@@ -38,6 +42,10 @@ beforeEach(() => {
   lastCallToolParams = undefined;
   lastReadResourceOptions = undefined;
   lastReadResourceParams = undefined;
+  lastSetLoggingLevel = undefined;
+  lastSetLoggingLevelOptions = undefined;
+  lastNotificationHandlerSchema = undefined;
+  lastNotificationHandler = undefined;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -123,6 +131,44 @@ describe('NodeMCPServerStdio', () => {
     );
 
     expect(lastCallToolParams?._meta).toEqual({ request_id: 'req-123' });
+
+    await server.close();
+  });
+
+  test('should subscribe to MCP server logging messages', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerStdio({
+      name: 'logging-test',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 11,
+      serverLogging: {
+        level: 'info',
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'info',
+        logger: 'mock-server',
+        data: { progress: 'halfway' },
+        _meta: { requestId: 'req-123' },
+      },
+    });
+
+    expect(lastNotificationHandlerSchema.shape.method.value).toBe(
+      'notifications/message',
+    );
+    expect(lastSetLoggingLevel).toBe('info');
+    expect(lastSetLoggingLevelOptions?.timeout).toBe(11000);
+    expect(handler).toHaveBeenCalledWith({
+      level: 'info',
+      logger: 'mock-server',
+      data: { progress: 'halfway' },
+      meta: { requestId: 'req-123' },
+    });
 
     await server.close();
   });
@@ -268,6 +314,15 @@ class MockClient {
       ],
     });
   }
+  setNotificationHandler(schema: any, handler: any): void {
+    lastNotificationHandlerSchema = schema;
+    lastNotificationHandler = handler;
+  }
+  setLoggingLevel(level: any, options?: any): Promise<any> {
+    lastSetLoggingLevel = level;
+    lastSetLoggingLevelOptions = options;
+    return Promise.resolve({});
+  }
   close(): Promise<void> {
     return Promise.resolve();
   }
@@ -384,6 +439,39 @@ describe('NodeMCPServerSSE', () => {
     expect(lastConnectOptions?.timeout).toBe(4000);
     expect(lastListToolsOptions?.timeout).toBe(4000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
+  test('should subscribe to MCP server logging without changing level', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-logging',
+      serverLogging: {
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'debug',
+        data: 'working',
+      },
+    });
+
+    expect(lastNotificationHandlerSchema.shape.method.value).toBe(
+      'notifications/message',
+    );
+    expect(lastSetLoggingLevel).toBeUndefined();
+    expect(handler).toHaveBeenCalledWith({
+      level: 'debug',
+      logger: undefined,
+      data: 'working',
+      meta: undefined,
+    });
 
     await server.close();
   });
@@ -543,6 +631,43 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.close();
 
     expect(server.sessionId).toBeUndefined();
+  });
+
+  test('should subscribe to streamable HTTP MCP server logging', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-logging',
+      clientSessionTimeoutSeconds: 3,
+      serverLogging: {
+        level: 'warning',
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'warning',
+        logger: 'stream-server',
+        data: ['retrying'],
+      },
+    });
+
+    expect(lastNotificationHandlerSchema.shape.method.value).toBe(
+      'notifications/message',
+    );
+    expect(lastSetLoggingLevel).toBe('warning');
+    expect(lastSetLoggingLevelOptions?.timeout).toBe(3000);
+    expect(handler).toHaveBeenCalledWith({
+      level: 'warning',
+      logger: 'stream-server',
+      data: ['retrying'],
+      meta: undefined,
+    });
+
+    await server.close();
   });
 
   test('should forward resource requests to session methods', async () => {

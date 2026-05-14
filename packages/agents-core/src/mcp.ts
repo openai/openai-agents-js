@@ -29,6 +29,10 @@ import type {
 } from './mcpUtil';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
+import type {
+  LoggingLevel,
+  LoggingMessageNotification,
+} from '@modelcontextprotocol/sdk/types.js';
 
 export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:stdio-mcp-client';
@@ -43,6 +47,24 @@ export type MCPToolErrorFunction = (args: {
   context: RunContext;
   error: Error | unknown;
 }) => Promise<string> | string;
+
+export type MCPServerLoggingHandler = (message: {
+  level: LoggingMessageNotification['params']['level'];
+  logger?: string;
+  data: unknown;
+  meta?: LoggingMessageNotification['params']['_meta'];
+}) => void | Promise<void>;
+
+export type MCPServerLoggingOptions = {
+  /**
+   * Optional minimum level requested from the MCP server.
+   */
+  level?: LoggingLevel;
+  /**
+   * Handler invoked for MCP `notifications/message` logging events.
+   */
+  handler: MCPServerLoggingHandler;
+};
 
 const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
@@ -1212,6 +1234,7 @@ export interface BaseMCPServerStdioOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 }
 export interface DefaultMCPServerStdioOptions extends BaseMCPServerStdioOptions {
@@ -1242,6 +1265,7 @@ export interface MCPServerStreamableHttpOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -1276,6 +1300,7 @@ export interface MCPServerSSEOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------
