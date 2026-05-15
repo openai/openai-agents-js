@@ -102,6 +102,66 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
   });
 
+  test('listen resolves with Twilio start data before OpenAI connect', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+    expect(twilio.listenerCount('message')).toBe(1);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'start',
+          start: {
+            streamSid: 'stream-123',
+            callSid: 'call-123',
+            customParameters: { store: 'Beacon' },
+          },
+        }),
+    });
+
+    await expect(startPromise).resolves.toEqual({
+      streamSid: 'stream-123',
+      callSid: 'call-123',
+      customParameters: { store: 'Beacon' },
+    });
+
+    await expect(transport.listen()).resolves.toEqual({
+      streamSid: 'stream-123',
+      callSid: 'call-123',
+      customParameters: { store: 'Beacon' },
+    });
+  });
+
+  test('connect reuses listeners created by listen', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    void transport.listen();
+    await transport.connect({ apiKey: 'ek_test' } as any);
+
+    expect(twilio.listenerCount('message')).toBe(1);
+    expect(twilio.listenerCount('close')).toBe(1);
+    expect(twilio.listenerCount('error')).toBe(1);
+  });
+
+  test('listen rejects if Twilio closes before start', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+    twilio.emit('close');
+
+    await expect(startPromise).rejects.toThrow('Twilio websocket closed');
+  });
+
   test('connect handles messages and events', async () => {
     allowConsole(['error']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

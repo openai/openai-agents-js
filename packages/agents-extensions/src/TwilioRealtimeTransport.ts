@@ -27,6 +27,15 @@ export type TwilioRealtimeTransportLayerOptions =
     twilioWebSocket: WebSocket | NodeWebSocket;
   };
 
+export type TwilioRealtimeStartEvent = {
+  accountSid?: string;
+  streamSid: string;
+  callSid?: string;
+  tracks?: string[];
+  customParameters?: Record<string, string>;
+  [key: string]: unknown;
+};
+
 /**
  * An adapter to connect a websocket that is receiving messages from Twilio's Media Streams API to
  * the OpenAI Realtime API via WebSocket.
@@ -56,6 +65,11 @@ export type TwilioRealtimeTransportLayerOptions =
 export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #twilioWebSocket: WebSocket | NodeWebSocket;
   #streamSid: string | null = null;
+  #startEvent: TwilioRealtimeStartEvent | null = null;
+  #startEventPromise: Promise<TwilioRealtimeStartEvent> | null = null;
+  #resolveStartEvent: ((start: TwilioRealtimeStartEvent) => void) | null = null;
+  #rejectStartEvent: ((error: unknown) => void) | null = null;
+  #twilioListenersAttached: boolean = false;
   #audioChunkCount: number = 0;
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
@@ -64,6 +78,32 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   constructor(options: TwilioRealtimeTransportLayerOptions) {
     super(options);
     this.#twilioWebSocket = options.twilioWebSocket;
+  }
+
+  /**
+   * Start listening for Twilio Media Streams events before connecting to OpenAI.
+   *
+   * This resolves with Twilio's `start` payload, including `callSid` and
+   * `customParameters`, so callers can pass that data into `RealtimeSession` context before
+   * dynamic agent instructions are evaluated.
+   */
+  listen(): Promise<TwilioRealtimeStartEvent> {
+    this.#attachTwilioListeners();
+
+    if (this.#startEvent) {
+      return Promise.resolve(this.#startEvent);
+    }
+
+    if (!this.#startEventPromise) {
+      this.#startEventPromise = new Promise<TwilioRealtimeStartEvent>(
+        (resolve, reject) => {
+          this.#resolveStartEvent = resolve;
+          this.#rejectStartEvent = reject;
+        },
+      );
+    }
+
+    return this.#startEventPromise;
   }
 
   _setInputAndOutputAudioFormat(
@@ -105,11 +145,12 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     };
   }
 
-  async connect(options: RealtimeTransportLayerConnectOptions) {
-    options.initialSessionConfig = this._setInputAndOutputAudioFormat(
-      options.initialSessionConfig,
-    );
-    // listen to Twilio messages as quickly as possible
+  #attachTwilioListeners() {
+    if (this.#twilioListenersAttached) {
+      return;
+    }
+    this.#twilioListenersAttached = true;
+
     this.#twilioWebSocket.addEventListener(
       'message',
       (message: MessageEvent | NodeMessageEvent) => {
@@ -150,7 +191,14 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
               }
               break;
             case 'start':
-              this.#streamSid = data.start.streamSid;
+              this.#startEvent = data.start as TwilioRealtimeStartEvent;
+              this.#streamSid = this.#startEvent.streamSid;
+              this.#audioChunkCount = 0;
+              this.#lastPlayedChunkCount = 0;
+              this.#previousItemId = null;
+              this.#resolveStartEvent?.(this.#startEvent);
+              this.#resolveStartEvent = null;
+              this.#rejectStartEvent = null;
               break;
             default:
               break;
@@ -170,6 +218,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       },
     );
     this.#twilioWebSocket.addEventListener('close', () => {
+      this.#rejectStartEvent?.(new Error('Twilio websocket closed'));
+      this.#resolveStartEvent = null;
+      this.#rejectStartEvent = null;
       if (this.status !== 'disconnected') {
         this.close();
       }
@@ -181,6 +232,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
           type: 'error',
           error,
         });
+        this.#rejectStartEvent?.(error);
+        this.#resolveStartEvent = null;
+        this.#rejectStartEvent = null;
         this.close();
       },
     );
@@ -195,6 +249,14 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         }),
       );
     });
+  }
+
+  async connect(options: RealtimeTransportLayerConnectOptions) {
+    options.initialSessionConfig = this._setInputAndOutputAudioFormat(
+      options.initialSessionConfig,
+    );
+    // listen to Twilio messages as quickly as possible
+    this.#attachTwilioListeners();
     await super.connect(options);
   }
 
