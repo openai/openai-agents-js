@@ -38,7 +38,7 @@ export type MCPToolMetaResolver<TContext = UnknownContext> = (
 export type MCPToolFilterCallable<TContext = UnknownContext> = (
   context: MCPToolFilterContext<TContext>,
   tool: MCPTool,
-) => Promise<boolean>;
+) => boolean | Promise<boolean>;
 
 /** Static tool filter configuration using allow and block lists. */
 export interface MCPToolFilterStatic {

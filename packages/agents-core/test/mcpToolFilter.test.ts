@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import { createMCPToolStaticFilter } from '../src/mcpUtil';
+import type { MCPToolFilterCallable } from '../src/mcpUtil';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -83,6 +84,14 @@ describe('MCP tool filtering', () => {
       const result = await server.listTools();
       expect(result.map((t) => t.name)).toEqual(['good', 'bad']);
     });
+  });
+
+  it('accepts sync callable filter types', async () => {
+    const filter: MCPToolFilterCallable = (_ctx, tool) => {
+      return tool.name !== 'blocked';
+    };
+
+    expect(filter).toBeTypeOf('function');
   });
 
   it('hierarchy across multiple servers', async () => {
