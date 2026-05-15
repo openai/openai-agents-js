@@ -162,6 +162,18 @@ describe('TwilioRealtimeTransportLayer', () => {
     await expect(startPromise).rejects.toThrow('Twilio websocket closed');
   });
 
+  test('listen rejects Twilio errors before an error listener is attached', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+
+    expect(() => twilio.emit('error', new Error('boom'))).not.toThrow();
+    await expect(startPromise).rejects.toThrow('boom');
+  });
+
   test('connect handles messages and events', async () => {
     allowConsole(['error']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

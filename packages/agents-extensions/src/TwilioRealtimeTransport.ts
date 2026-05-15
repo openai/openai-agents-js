@@ -106,6 +106,37 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     return this.#startEventPromise;
   }
 
+  #hasTransportErrorListeners(): boolean {
+    const delegatedEmitter = (
+      this as unknown as {
+        eventEmitter?: { listenerCount?: (type: string) => number };
+      }
+    ).eventEmitter;
+    if (typeof delegatedEmitter?.listenerCount === 'function') {
+      return delegatedEmitter.listenerCount('error') > 0;
+    }
+
+    const directEmitter = this as unknown as {
+      listenerCount?: (type: string) => number;
+    };
+    if (typeof directEmitter.listenerCount === 'function') {
+      return directEmitter.listenerCount('error') > 0;
+    }
+
+    return true;
+  }
+
+  #emitTransportError(error: unknown): void {
+    if (!this.#hasTransportErrorListeners()) {
+      return;
+    }
+
+    this.emit('error', {
+      type: 'error',
+      error,
+    });
+  }
+
   _setInputAndOutputAudioFormat(
     partialConfig?: Partial<RealtimeSessionConfig>,
   ): Partial<RealtimeSessionConfig> {
@@ -210,10 +241,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
             'Message:',
             message,
           );
-          this.emit('error', {
-            type: 'error',
-            error,
-          });
+          this.#emitTransportError(error);
         }
       },
     );
@@ -228,13 +256,10 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#twilioWebSocket.addEventListener(
       'error',
       (error: ErrorEvent | NodeErrorEvent) => {
-        this.emit('error', {
-          type: 'error',
-          error,
-        });
         this.#rejectStartEvent?.(error);
         this.#resolveStartEvent = null;
         this.#rejectStartEvent = null;
+        this.#emitTransportError(error);
         this.close();
       },
     );
