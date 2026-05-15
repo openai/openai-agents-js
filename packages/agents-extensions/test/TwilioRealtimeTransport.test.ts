@@ -1,6 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import type { MessageEvent as NodeMessageEvent } from 'ws';
@@ -36,6 +35,8 @@ class FakeTwilioWebSocket extends EventEmitter {
   close = vi.fn();
 }
 
+let TwilioRealtimeTransportLayer: any;
+
 // @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
 FakeTwilioWebSocket.prototype.addEventListener = function (
   type: string,
@@ -47,8 +48,11 @@ FakeTwilioWebSocket.prototype.addEventListener = function (
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 
 describe('TwilioRealtimeTransportLayer', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    ({ TwilioRealtimeTransportLayer } = await import(
+      '../src/TwilioRealtimeTransport'
+    ));
   });
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {
