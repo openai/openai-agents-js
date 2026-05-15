@@ -161,3 +161,5 @@ Use these arrays when you want to log guardrail decisions, inspect extra metadat
 Token usage is aggregated in `result.state.usage`, which tracks request counts and token totals for the run. The same usage object is also available through `result.runContext.usage`. For streaming runs this data updates as responses arrive.
 
 <Code lang="typescript" code={usageExample} title="Read usage from RunState" />
+
+Usage data is also the right place to implement application-level budgets. For example, after each run you can compare `usage.requests` and `usage.totalTokens` against your own per-user, per-tenant, or per-workflow limits before allowing more work to continue.

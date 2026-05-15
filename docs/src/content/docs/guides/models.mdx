@@ -200,6 +200,8 @@ The SDK exports ready-made helpers on `retryPolicies`:
 
 When you compose policies, `providerSuggested()` is the safest first building block because it preserves provider vetoes and replay-safety approvals when the provider can distinguish them.
 
+Retries are not a rate limiter or spending control. They only decide whether a failed model request should be attempted again. If your application needs per-minute request limits, token budgets, or tenant-level quotas, enforce those outside the retry policy and use `result.state.usage` after each run to decide whether more work is allowed. See the [usage section in the results guide](/openai-agents-js/guides/results#usage) for a small example.
+
 #### Safety boundaries
 
 Some failures are never retried automatically:

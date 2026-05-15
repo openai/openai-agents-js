@@ -1,5 +1,8 @@
 import { Agent, run } from '@openai/agents';
 
+const REQUEST_BUDGET = 3;
+const TOKEN_BUDGET = 2_000;
+
 const agent = new Agent({
   name: 'Usage Tracker',
   instructions: 'Summarize the latest project update in one sentence.',
@@ -27,4 +30,10 @@ if (usage.requestUsageEntries) {
       totalTokens: entry.totalTokens,
     });
   }
+}
+
+if (usage.requests > REQUEST_BUDGET || usage.totalTokens > TOKEN_BUDGET) {
+  throw new Error(
+    `Usage budget exceeded: ${usage.requests} requests and ${usage.totalTokens} tokens`,
+  );
 }
