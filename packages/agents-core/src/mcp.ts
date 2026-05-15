@@ -29,10 +29,6 @@ import type {
 } from './mcpUtil';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
-import type {
-  LoggingLevel,
-  LoggingMessageNotification,
-} from '@modelcontextprotocol/sdk/types.js';
 
 export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:stdio-mcp-client';
@@ -48,18 +44,28 @@ export type MCPToolErrorFunction = (args: {
   error: Error | unknown;
 }) => Promise<string> | string;
 
+export type MCPServerLoggingLevel =
+  | 'debug'
+  | 'info'
+  | 'notice'
+  | 'warning'
+  | 'error'
+  | 'critical'
+  | 'alert'
+  | 'emergency';
+
 export type MCPServerLoggingHandler = (message: {
-  level: LoggingMessageNotification['params']['level'];
+  level: MCPServerLoggingLevel;
   logger?: string;
   data: unknown;
-  meta?: LoggingMessageNotification['params']['_meta'];
+  meta?: Record<string, unknown>;
 }) => void | Promise<void>;
 
 export type MCPServerLoggingOptions = {
   /**
    * Optional minimum level requested from the MCP server.
    */
-  level?: LoggingLevel;
+  level?: MCPServerLoggingLevel;
   /**
    * Handler invoked for MCP `notifications/message` logging events.
    */
