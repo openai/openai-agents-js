@@ -30,6 +30,7 @@ let lastSetLoggingLevel: any;
 let lastSetLoggingLevelOptions: any;
 let lastNotificationHandlerSchema: any;
 let lastNotificationHandler: any;
+let loggingOperationOrder: string[];
 
 beforeEach(() => {
   lastConnectOptions = undefined;
@@ -46,6 +47,7 @@ beforeEach(() => {
   lastSetLoggingLevelOptions = undefined;
   lastNotificationHandlerSchema = undefined;
   lastNotificationHandler = undefined;
+  loggingOperationOrder = [];
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -163,6 +165,11 @@ describe('NodeMCPServerStdio', () => {
     );
     expect(lastSetLoggingLevel).toBe('info');
     expect(lastSetLoggingLevelOptions?.timeout).toBe(11000);
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+      'setLoggingLevel',
+    ]);
     expect(handler).toHaveBeenCalledWith({
       level: 'info',
       logger: 'mock-server',
@@ -252,6 +259,7 @@ class MockClient {
     this.options = options;
   }
   connect(_transport: any, options?: any): Promise<void> {
+    loggingOperationOrder.push('connect');
     lastConnectOptions = options;
     return Promise.resolve();
   }
@@ -315,10 +323,12 @@ class MockClient {
     });
   }
   setNotificationHandler(schema: any, handler: any): void {
+    loggingOperationOrder.push('setNotificationHandler');
     lastNotificationHandlerSchema = schema;
     lastNotificationHandler = handler;
   }
   setLoggingLevel(level: any, options?: any): Promise<any> {
+    loggingOperationOrder.push('setLoggingLevel');
     lastSetLoggingLevel = level;
     lastSetLoggingLevelOptions = options;
     return Promise.resolve({});
@@ -466,6 +476,10 @@ describe('NodeMCPServerSSE', () => {
       'notifications/message',
     );
     expect(lastSetLoggingLevel).toBeUndefined();
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+    ]);
     expect(handler).toHaveBeenCalledWith({
       level: 'debug',
       logger: undefined,
@@ -660,6 +674,11 @@ describe('NodeMCPServerStreamableHttp', () => {
     );
     expect(lastSetLoggingLevel).toBe('warning');
     expect(lastSetLoggingLevelOptions?.timeout).toBe(3000);
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+      'setLoggingLevel',
+    ]);
     expect(handler).toHaveBeenCalledWith({
       level: 'warning',
       logger: 'stream-server',

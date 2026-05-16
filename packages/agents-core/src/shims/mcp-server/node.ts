@@ -56,10 +56,9 @@ function buildRequestOptions(
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
 }
 
-async function configureMCPServerLogging(
+async function registerMCPServerLoggingHandler(
   client: Client,
   serverLogging: MCPServerLoggingOptions | undefined,
-  requestOptions?: RequestOptions,
 ): Promise<void> {
   if (!serverLogging) {
     return;
@@ -79,6 +78,16 @@ async function configureMCPServerLogging(
       });
     },
   );
+}
+
+async function setMCPServerLoggingLevel(
+  client: Client,
+  serverLogging: MCPServerLoggingOptions | undefined,
+  requestOptions?: RequestOptions,
+): Promise<void> {
+  if (!serverLogging) {
+    return;
+  }
 
   if (serverLogging.level) {
     await client.setLoggingLevel(serverLogging.level, requestOptions);
@@ -254,8 +263,12 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
-      await configureMCPServerLogging(
+      await setMCPServerLoggingLevel(
         this.session,
         this.params.serverLogging,
         requestOptions,
@@ -462,8 +475,12 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
-      await configureMCPServerLogging(
+      await setMCPServerLoggingLevel(
         this.session,
         this.params.serverLogging,
         requestOptions,
@@ -739,8 +756,9 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(client, this.params.serverLogging);
       await client.connect(transport, requestOptions);
-      await configureMCPServerLogging(
+      await setMCPServerLoggingLevel(
         client,
         this.params.serverLogging,
         requestOptions,
@@ -994,13 +1012,17 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        args.client,
+        this.params.serverLogging,
+      );
       await args.client.connect(transport, requestOptions);
       if (args.sessionId !== undefined) {
         // Reconnecting with an existing session skips initialize(), so resend
         // initialized to reopen the shared SSE stream for async responses.
         await this.reopenSharedStreamableHttpSession(args.client);
       }
-      await configureMCPServerLogging(
+      await setMCPServerLoggingLevel(
         args.client,
         this.params.serverLogging,
         requestOptions,
