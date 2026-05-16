@@ -50,9 +50,8 @@ const base64 = (data: string) => Buffer.from(data).toString('base64');
 describe('TwilioRealtimeTransportLayer', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
-    ({ TwilioRealtimeTransportLayer } = await import(
-      '../src/TwilioRealtimeTransport'
-    ));
+    ({ TwilioRealtimeTransportLayer } =
+      await import('../src/TwilioRealtimeTransport'));
   });
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {
@@ -241,21 +240,18 @@ describe('TwilioRealtimeTransportLayer', () => {
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'a';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(8).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'a';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(16).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'b';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
