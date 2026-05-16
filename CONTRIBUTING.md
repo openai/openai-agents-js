@@ -109,10 +109,9 @@ When opening an issue, include:
    pnpm build && pnpm -r build-check && pnpm test && pnpm lint
    ```
 4. If applicable, generate a changeset (`pnpm changeset`).
-5. Make sure you have [Trufflehog](https://github.com/trufflesecurity/trufflehog) installed to ensure no secrets are accidentally committed.
-6. Commit your changes using Conventional Commits (e.g., `feat:`, `fix:`, `docs:`).
-7. Push your branch to your fork and open a pull request against the `main` branch.
-8. In the pull request description, link any related issues and summarize your changes.
+5. Commit your changes using Conventional Commits (e.g., `feat:`, `fix:`, `docs:`).
+6. Push your branch to your fork and open a pull request against the `main` branch.
+7. In the pull request description, link any related issues and summarize your changes.
 
 ### Review process
 

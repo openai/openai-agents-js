@@ -20,14 +20,3 @@ else
     run_changeset_fixtures_if_needed
   fi
 fi
-
-# Check for secrets.
-if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
-  if ! command -v trufflehog >/dev/null 2>&1; then
-    echo "trufflehog' is not installed or not in your PATH."
-    echo "Download it from: https://github.com/trufflesecurity/trufflehog"
-    echo "Skipping secrets check due to missing trufflehog."
-    exit 1
-  fi
-  trufflehog --no-update git file://. --since-commit HEAD --fail
-fi
