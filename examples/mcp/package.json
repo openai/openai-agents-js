@@ -2,7 +2,7 @@
   "private": true,
   "name": "mcp",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@openai/agents": "workspace:*"
   },

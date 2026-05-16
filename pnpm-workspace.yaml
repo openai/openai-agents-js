@@ -16,6 +16,22 @@ allowBuilds:
 
 overrides:
   '@types/node': 22.19.13
+  '@hono/node-server': 1.19.13
+  ajv: 8.20.0
+  'brace-expansion@>=2.0.0 <2.0.3': 2.0.3
+  'brace-expansion@>=4.0.0 <5.0.5': 5.0.6
+  devalue: 5.8.1
+  express-rate-limit: 8.2.2
+  fast-uri: 3.1.2
+  hono: 4.12.18
+  ip-address: 10.1.1
+  lodash: 4.18.1
+  'minimatch@>=7.0.0 <7.4.8': 7.4.8
+  postcss: 8.5.10
+  '@protobufjs/utf8': 1.1.1
+  'protobufjs@<=7.5.5': 7.5.6
+  'protobufjs@>=8.0.0 <=8.0.1': 8.0.2
+  uuid: 11.1.1
 
 publishBranch: main
 minimumReleaseAge: 10080
