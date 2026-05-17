@@ -855,6 +855,14 @@ describe('Runner.run', () => {
       const result = await run(agent, state);
 
       expect(result.finalOutput).toBe('Tool execution was not approved.');
+      expect(result.newItems).toHaveLength(1);
+      const outputItem = result.newItems[0];
+      expect(outputItem).toBeInstanceOf(ToolCallOutputItem);
+      expect(outputItem.rawItem).toMatchObject({
+        type: 'function_call_result',
+        callId: 'c1',
+        status: 'incomplete',
+      });
     });
 
     it('uses toolErrorFormatter for static final output when tool execution is rejected', async () => {
