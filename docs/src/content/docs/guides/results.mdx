@@ -180,7 +180,7 @@ contains several different claims:
 
 Those claims may need evidence from different result surfaces, such as `newItems`, tool outputs, approval metadata, guardrail results, file diffs, logs, or human review.
 
-One practical pattern is to ask the last agent to produce a small completion receipt alongside its user-facing answer:
+One practical pattern is to produce the user-facing `finalOutput` first, then have application code validate the claims against the settled `RunResult`. If you want an agent-authored receipt, pass the relevant evidence from `newItems`, guardrail results, approvals, logs, or diffs into a separate verifier agent instead of asking the producing agent to self-attest to data it cannot see after `run()` returns.
 
 ```yaml
 status_code: 412
@@ -189,13 +189,15 @@ summary: "The agent claimed completion and test success, but did not attach comm
 claims:
   - claim: "Task is complete."
     support_status: unverified
-    evidence: []
+    evidence:
+      - "newItems[3]: tool call update_customer_record completed"
     required_fix: "Attach the relevant tool output, file diff, or trace item."
   - claim: "All tests passed."
     support_status: unsupported
-    evidence: []
+    evidence:
+      - "No test command output was present in newItems, logs, or approval metadata."
     required_fix: "Attach the test command and output, or downgrade the claim."
-next_owner: ProducingAgent
+next_owner: ApplicationVerifier
 human_decision_required: false
 ```
 
@@ -207,4 +209,4 @@ A receipt should make these boundaries explicit:
 - who owns the next step
 - whether human approval is required before publishing, deploying, saving memory, or taking another external action
 
-This pattern complements tracing and guardrails. Traces show what happened during the run; guardrails can block or flag unsafe behavior; a receipt summarizes the final work state so humans and downstream systems can audit the completion claim.
+This pattern complements tracing and guardrails. Traces show what happened during the run; guardrails can block or flag unsafe behavior; an app-side or verifier-agent receipt summarizes the final work state so humans and downstream systems can audit the completion claim without relying on unsupported self-attestation.
