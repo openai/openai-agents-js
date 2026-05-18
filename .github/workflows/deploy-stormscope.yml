@@ -11,16 +11,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
+  contents: write
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +28,8 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Install workspace deps
-        run: pnpm install --frozen-lockfile
+      - name: Install dependencies
+        run: pnpm install
 
       - name: Build StormScope
         run: pnpm build
@@ -43,21 +37,13 @@ jobs:
         env:
           GITHUB_ACTIONS: 'true'
 
-      - name: Add SPA redirect for GitHub Pages
+      - name: Add SPA 404 fallback
         run: cp examples/stormscope/dist/index.html examples/stormscope/dist/404.html
 
-      - uses: actions/configure-pages@v4
-
-      - uses: actions/upload-pages-artifact@v3
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: examples/stormscope/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: examples/stormscope/dist
+          destination_dir: stormscope
+          commit_message: 'deploy: stormscope ${{ github.sha }}'
