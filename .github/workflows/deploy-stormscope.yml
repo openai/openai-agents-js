@@ -1,0 +1,63 @@
+name: Deploy StormScope
+
+on:
+  push:
+    branches:
+      - main
+      - claude/setup-stormscope-repo-zp5fQ
+    paths:
+      - 'examples/stormscope/**'
+      - '.github/workflows/deploy-stormscope.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build StormScope
+        run: pnpm build
+        working-directory: examples/stormscope
+        env:
+          GITHUB_ACTIONS: 'true'
+
+      - name: Add SPA redirect for GitHub Pages
+        run: cp examples/stormscope/dist/index.html examples/stormscope/dist/404.html
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/stormscope/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
