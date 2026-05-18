@@ -226,10 +226,10 @@ importers:
         version: 1.1.3
       '@openai/agents':
         specifier: 0.3.9
-        version: 0.3.9(ws@8.18.2)(zod@3.25.76)
+        version: 0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       '@openai/agents-extensions':
         specifier: 0.3.9
-        version: 0.3.9(@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.18.2)(zod@3.25.76)
+        version: 0.3.9(@openai/agents@0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       hono:
         specifier: ^4.12.16
         version: 4.12.16
@@ -244,7 +244,7 @@ importers:
         version: link:../../packages/agents
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -289,7 +289,7 @@ importers:
         version: link:../../packages/agents-realtime
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -357,7 +357,7 @@ importers:
         version: link:../../packages/agents
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -436,7 +436,7 @@ importers:
         version: 4.1.10(vite@6.4.2(@types/node@22.19.13)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       tailwindcss:
         specifier: ^4.1.7
         version: 4.1.10
@@ -510,7 +510,7 @@ importers:
         version: 8.0.2
       '@fastify/websocket':
         specifier: ^11.1.0
-        version: 11.1.0
+        version: 11.1.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -525,7 +525,7 @@ importers:
         version: 5.8.5
       ws:
         specifier: ^8.18.1
-        version: 8.18.2
+        version: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -552,7 +552,7 @@ importers:
         version: 5.0.0
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -597,7 +597,7 @@ importers:
         version: 5.6.2
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       playwright:
         specifier: ^1.55.1
         version: 1.57.0
@@ -621,7 +621,7 @@ importers:
         version: 4.4.1
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -637,7 +637,7 @@ importers:
         version: 4.4.1
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -667,13 +667,16 @@ importers:
         version: 3.0.2
       '@blaxel/core':
         specifier: 0.2.82
-        version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)
+        version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(bufferutil@4.1.0)(debug@4.4.1)(utf-8-validate@6.0.6)
       '@daytonaio/sdk':
         specifier: 0.162.0
-        version: 0.162.0(debug@4.4.1)(ws@8.18.2)
+        version: 0.162.0(debug@4.4.1)(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       '@e2b/code-interpreter':
         specifier: 2.3.3
         version: 2.3.3
+      '@northflank/js-client':
+        specifier: 0.9.5
+        version: 0.9.5
       '@openai/agents':
         specifier: workspace:>=0.0.0
         version: link:../agents
@@ -703,7 +706,7 @@ importers:
         version: 6.21.0
       ws:
         specifier: ^8.18.1
-        version: 8.18.2
+        version: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -718,7 +721,7 @@ importers:
         version: 4.4.1
       openai:
         specifier: ^6.35.0
-        version: 6.35.0(ws@8.18.2)(zod@4.3.5)
+        version: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -743,7 +746,7 @@ importers:
         version: 4.4.1
       ws:
         specifier: ^8.18.1
-        version: 8.18.2
+        version: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -1964,6 +1967,10 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@northflank/js-client@0.9.5':
+    resolution: {integrity: sha512-yo8DvsuZnsQLczccYJJtQQ3KNjKeCUaQLNBIKgjDbYcRfz9qTt5E6Nb3SDvC6x0T3SsB6RZKliTjQ6iGJ/ST/g==}
+    engines: {node: '>=18.0.0'}
 
   '@openai/agents-core@0.3.9':
     resolution: {integrity: sha512-6Fr/VkA3lMaTT9EV2+OsmkMX9Yx+/PeWtlmaWNKDRG8D15IWuK13NOC9eFklTsa7otbuwbw/Xmjes+h4Z+CwSQ==}
@@ -3812,6 +3819,10 @@ packages:
   buffer@6.0.3:
     resolution: {integrity: sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==}
 
+  bufferutil@4.1.0:
+    resolution: {integrity: sha512-ZMANVnAixE6AWWnPzlW2KpUrxhm9woycYvPOo67jWHyFowASTEd9s+QN1EIMsSDtwhIxN4sWE1jotpuDUIgyIw==}
+    engines: {node: '>=6.14.2'}
+
   bundle-name@4.1.0:
     resolution: {integrity: sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q==}
     engines: {node: '>=18'}
@@ -4324,9 +4335,6 @@ packages:
   encodeurl@2.0.0:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
     engines: {node: '>= 0.8'}
-
-  end-of-stream@1.4.4:
-    resolution: {integrity: sha512-+uw1inIHVPQoaVuHzRyXd21icM+cnt4CzD5rW+NC1wjOUSTOs+Te7FOv7AhN7vS9x/oIyhLP5PR1H+phQAHu5Q==}
 
   end-of-stream@1.4.5:
     resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
@@ -5451,6 +5459,9 @@ packages:
   lockfile@1.0.4:
     resolution: {integrity: sha512-cvbTwETRfsFh4nHsL1eGWapU1XFi5Ot9E85sWAwia7Y7EgB7vfqcZhTKZ+l7hCGxSPoushMv5GKhT5PdLv03WA==}
 
+  lodash-es@4.18.1:
+    resolution: {integrity: sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==}
+
   lodash.camelcase@4.3.0:
     resolution: {integrity: sha512-TwuEnCnxbc3rAvhf/LbG7tJUDzhqXyFnv3dtzLOPgCG/hODL7WFnsbwktkD7yUV0RrreP/l1PALq/YSg6VvjlA==}
 
@@ -5820,21 +5831,12 @@ packages:
     resolution: {integrity: sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==}
     engines: {node: '>=16 || 14 >=14.17'}
 
-  minizlib@3.0.2:
-    resolution: {integrity: sha512-oG62iEk+CYt5Xj2YqI5Xi9xWUeZhDI8jjQmC5oThVH5JGCTgIjr7ciJDzC7MBzYd//WvR1OTmP5Q38Q8ShQtVA==}
-    engines: {node: '>= 18'}
-
   minizlib@3.1.0:
     resolution: {integrity: sha512-KZxYo1BUkWD2TVFLr0MQoM8vUUigWD3LlD83a/75BqC+4qE0Hb1Vo5v1FgcfaNXvfXzr+5EhQ6ing/CaBijTlw==}
     engines: {node: '>= 18'}
 
   mkdirp@1.0.4:
     resolution: {integrity: sha512-vVqVZQyf3WLx2Shd0qJ9xuvqgAyKPLAiqITEtqW0oIUjzo3PePDd6fW9iFz30ef7Ysp/oiWqbhszeGWW2T6Gzw==}
-    engines: {node: '>=10'}
-    hasBin: true
-
-  mkdirp@3.0.1:
-    resolution: {integrity: sha512-+NsyUUAZDmo6YVHzL/stxSu3t9YS1iljliy3BSDrXJ/dkn1KYdmtZODGGjLcc9XLgVVpH4KshHB8XmZgMhaBXg==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -5934,6 +5936,10 @@ packages:
 
   node-gyp-build-optional-packages@5.1.1:
     resolution: {integrity: sha512-+P72GAjVAbTxjjwUmwjVrqrdZROD4nf8KgpBoDxqXXTiYZZt/ud60dE5yvCSr9lRO8e8yv6kgJIC0K0PfZFVQw==}
+    hasBin: true
+
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
 
   node-mock-http@1.0.4:
@@ -6993,11 +6999,6 @@ packages:
   tar-stream@3.1.7:
     resolution: {integrity: sha512-qJj60CXt7IU1Ffyc3NJMjh6EkuCFej46zUqJ4J7pqYlThyd9bO0XBTmcOIhSzZJVWfsLks0+nle/j538YAW9RQ==}
 
-  tar@7.4.3:
-    resolution: {integrity: sha512-5S7Va8hKfV7W5U6g3aYxXmlPoZVAwUMy9AOKyF2fVuZa2UD3qZjg578OrLRt8PcNN1PleVaL/5/yYATNL0ICUw==}
-    engines: {node: '>=18'}
-    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
-
   tar@7.5.13:
     resolution: {integrity: sha512-tOG/7GyXpFevhXVh8jOPJrmtRpOTsYqUIkVdVooZYJS/z8WhfQUX8RJILmeuJNinGAMSu1veBr4asSHFt5/hng==}
     engines: {node: '>=18'}
@@ -7095,6 +7096,10 @@ packages:
 
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
+
+  tr46@5.1.1:
+    resolution: {integrity: sha512-hdF5ZgjTqgAntKkklYw0R03MG2x/bSzTtkxmIRw/sTNV8YXsCJ1tfLAX23lhxhHJlEf3CRCOCGGWw3vI3GaSPw==}
+    engines: {node: '>=18'}
 
   tree-kill@1.2.2:
     resolution: {integrity: sha512-L0Orpi8qGpRG//Nd+H90vFB+3iHnue1zSSGmNOOCh1GLJ7rUKVwV2HvijphGQS2UmhUZewS9VgvxYIdgr+fG1A==}
@@ -7383,6 +7388,10 @@ packages:
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
+  utf-8-validate@6.0.6:
+    resolution: {integrity: sha512-q3l3P9UtEEiAHcsgsqTgf9PPjctrDWoIXW3NpOHFdRDbLvu4DLIcxHangJ4RLrWkBcKjmcs/6NkerI8T/rE4LA==}
+    engines: {node: '>=6.14.2'}
+
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
@@ -7577,6 +7586,14 @@ packages:
   webidl-conversions@3.0.1:
     resolution: {integrity: sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ==}
 
+  webidl-conversions@7.0.0:
+    resolution: {integrity: sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==}
+    engines: {node: '>=12'}
+
+  whatwg-url@14.2.0:
+    resolution: {integrity: sha512-De72GdQZzNTUBBChsXueQUnPKDkg/5A5zp7pFDuQAj5UFoENpiACU0wlCvzpAGnTkj++ihpKwKyYewn/XNUbKw==}
+    engines: {node: '>=18'}
+
   whatwg-url@5.0.0:
     resolution: {integrity: sha512-saE57nupxk6v3HY35+jzBwYa0rKSy0XR8JSxZPwgLr7ys0IBzhGviA1/TUGJLmSVqs8pb9AnvICXEuOHLprYTw==}
 
@@ -7614,6 +7631,18 @@ packages:
 
   ws@8.18.2:
     resolution: {integrity: sha512-DMricUmwGZUVr++AEAe2uiVM7UoO9MAVZMDu05UQOaUII0lp+zOzLLU4Xqh/JvTqklB1T4uELaaPBKyjE1r4fQ==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+  ws@8.20.1:
+    resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -8394,7 +8423,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@blaxel/core@0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(debug@4.4.1)':
+  '@blaxel/core@0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))(bufferutil@4.1.0)(debug@4.4.1)(utf-8-validate@6.0.6)':
     dependencies:
       '@hey-api/client-fetch': 0.10.2(@hey-api/openapi-ts@0.96.1(magicast@0.5.2)(typescript@5.9.3))
       '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
@@ -8406,7 +8435,7 @@ snapshots:
       jwt-decode: 4.0.0
       toml: 3.0.0
       uuid: 11.1.0
-      ws: 8.18.2
+      ws: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       yaml: 2.8.3
       zod: 3.25.76
     transitivePeerDependencies:
@@ -8642,7 +8671,7 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  '@daytonaio/sdk@0.162.0(debug@4.4.1)(ws@8.18.2)':
+  '@daytonaio/sdk@0.162.0(debug@4.4.1)(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))':
     dependencies:
       '@aws-sdk/client-s3': 3.1033.0
       '@aws-sdk/lib-storage': 3.1033.0(@aws-sdk/client-s3@3.1033.0)
@@ -8663,7 +8692,7 @@ snapshots:
       expand-tilde: 2.0.2
       fast-glob: 3.3.3
       form-data: 4.0.5
-      isomorphic-ws: 5.0.0(ws@8.18.2)
+      isomorphic-ws: 5.0.0(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       pathe: 2.0.3
       shell-quote: 1.8.3
       tar: 7.5.13
@@ -8937,11 +8966,11 @@ snapshots:
       '@fastify/forwarded': 3.0.1
       ipaddr.js: 2.3.0
 
-  '@fastify/websocket@11.1.0':
+  '@fastify/websocket@11.1.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       duplexify: 4.1.3
       fastify-plugin: 5.0.1
-      ws: 8.18.2
+      ws: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -9358,10 +9387,23 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@openai/agents-core@0.3.9(ws@8.18.2)(zod@3.25.76)':
+  '@northflank/js-client@0.9.5':
+    dependencies:
+      bufferutil: 4.1.0
+      lodash-es: 4.18.1
+      node-fetch: 2.6.7
+      pump: 3.0.4
+      tar: 7.5.13
+      utf-8-validate: 6.0.6
+      whatwg-url: 14.2.0
+      ws: 8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+    transitivePeerDependencies:
+      - encoding
+
+  '@openai/agents-core@0.3.9(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)':
     dependencies:
       debug: 4.4.3
-      openai: 6.35.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.35.0(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
       zod: 3.25.76
@@ -9370,14 +9412,26 @@ snapshots:
       - supports-color
       - ws
 
-  '@openai/agents-extensions@0.3.9(@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents-core@0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)':
+    dependencies:
+      debug: 4.4.3
+      openai: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
+    optionalDependencies:
+      '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - supports-color
+      - ws
+
+  '@openai/agents-extensions@0.3.9(@openai/agents@0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
-      '@openai/agents': 0.3.9(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents': 0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       '@types/ws': 8.18.1
       debug: 4.4.3
-      ws: 8.18.2
+      ws: 8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 3.25.76
     optionalDependencies:
       '@openai/codex-sdk': 0.86.0
@@ -9385,23 +9439,23 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@openai/agents-openai@0.3.9(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents-openai@0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.35.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color
       - ws
 
-  '@openai/agents-realtime@0.3.9(zod@3.25.76)':
+  '@openai/agents-realtime@0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       '@types/ws': 8.18.1
       debug: 4.4.3
-      ws: 8.18.2
+      ws: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -9409,13 +9463,13 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@openai/agents@0.3.9(ws@8.18.2)(zod@3.25.76)':
+  '@openai/agents@0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-openai': 0.3.9(ws@8.18.2)(zod@3.25.76)
-      '@openai/agents-realtime': 0.3.9(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
+      '@openai/agents-openai': 0.3.9(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
+      '@openai/agents-realtime': 0.3.9(bufferutil@4.1.0)(utf-8-validate@6.0.6)(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.26.0(ws@8.18.2)(zod@3.25.76)
+      openai: 6.26.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -10607,7 +10661,7 @@ snapshots:
   '@tailwindcss/oxide@4.1.10':
     dependencies:
       detect-libc: 2.1.1
-      tar: 7.4.3
+      tar: 7.5.13
     optionalDependencies:
       '@tailwindcss/oxide-android-arm64': 4.1.10
       '@tailwindcss/oxide-darwin-arm64': 4.1.10
@@ -11489,6 +11543,10 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
+  bufferutil@4.1.0:
+    dependencies:
+      node-gyp-build: 4.8.4
+
   bundle-name@4.1.0:
     dependencies:
       run-applescript: 7.1.0
@@ -11924,7 +11982,7 @@ snapshots:
 
   duplexify@4.1.3:
     dependencies:
-      end-of-stream: 1.4.4
+      end-of-stream: 1.4.5
       inherits: 2.0.4
       readable-stream: 3.6.2
       stream-shift: 1.0.3
@@ -11967,10 +12025,6 @@ snapshots:
   empathic@2.0.0: {}
 
   encodeurl@2.0.0: {}
-
-  end-of-stream@1.4.4:
-    dependencies:
-      once: 1.4.0
 
   end-of-stream@1.4.5:
     dependencies:
@@ -13107,9 +13161,9 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-ws@5.0.0(ws@8.18.2):
+  isomorphic-ws@5.0.0(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)):
     dependencies:
-      ws: 8.18.2
+      ws: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
   isstream@0.1.2: {}
 
@@ -13356,6 +13410,8 @@ snapshots:
   lockfile@1.0.4:
     dependencies:
       signal-exit: 3.0.7
+
+  lodash-es@4.18.1: {}
 
   lodash.camelcase@4.3.0: {}
 
@@ -13993,17 +14049,11 @@ snapshots:
 
   minipass@7.1.3: {}
 
-  minizlib@3.0.2:
-    dependencies:
-      minipass: 7.1.3
-
   minizlib@3.1.0:
     dependencies:
       minipass: 7.1.3
 
   mkdirp@1.0.4: {}
-
-  mkdirp@3.0.1: {}
 
   modal@0.7.4:
     dependencies:
@@ -14115,6 +14165,8 @@ snapshots:
       detect-libc: 2.1.2
     optional: true
 
+  node-gyp-build@4.8.4: {}
+
   node-mock-http@1.0.4: {}
 
   normalize-path@3.0.0: {}
@@ -14181,19 +14233,24 @@ snapshots:
       powershell-utils: 0.1.0
       wsl-utils: 0.3.1
 
-  openai@6.26.0(ws@8.18.2)(zod@3.25.76):
+  openai@6.26.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76):
     optionalDependencies:
-      ws: 8.18.2
+      ws: 8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 3.25.76
 
-  openai@6.35.0(ws@8.18.2)(zod@3.25.76):
+  openai@6.35.0(ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76):
     optionalDependencies:
-      ws: 8.18.2
+      ws: 8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 3.25.76
 
-  openai@6.35.0(ws@8.18.2)(zod@4.3.5):
+  openai@6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@3.25.76):
     optionalDependencies:
-      ws: 8.18.2
+      ws: 8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+      zod: 3.25.76
+
+  openai@6.35.0(ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5):
+    optionalDependencies:
+      ws: 8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 4.3.5
 
   openapi-fetch@0.14.1:
@@ -15406,15 +15463,6 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
-  tar@7.4.3:
-    dependencies:
-      '@isaacs/fs-minipass': 4.0.1
-      chownr: 3.0.0
-      minipass: 7.1.3
-      minizlib: 3.0.2
-      mkdirp: 3.0.1
-      yallist: 5.0.0
-
   tar@7.5.13:
     dependencies:
       '@isaacs/fs-minipass': 4.0.1
@@ -15501,6 +15549,10 @@ snapshots:
       tldts: 6.1.86
 
   tr46@0.0.3: {}
+
+  tr46@5.1.1:
+    dependencies:
+      punycode: 2.3.1
 
   tree-kill@1.2.2: {}
 
@@ -15742,6 +15794,10 @@ snapshots:
     dependencies:
       react: 19.2.3
 
+  utf-8-validate@6.0.6:
+    dependencies:
+      node-gyp-build: 4.8.4
+
   util-deprecate@1.0.2: {}
 
   utils-merge@1.0.1: {}
@@ -15951,6 +16007,13 @@ snapshots:
 
   webidl-conversions@3.0.1: {}
 
+  webidl-conversions@7.0.0: {}
+
+  whatwg-url@14.2.0:
+    dependencies:
+      tr46: 5.1.1
+      webidl-conversions: 7.0.0
+
   whatwg-url@5.0.0:
     dependencies:
       tr46: 0.0.3
@@ -15985,7 +16048,15 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.18.2: {}
+  ws@8.18.2(bufferutil@4.1.0)(utf-8-validate@6.0.6):
+    optionalDependencies:
+      bufferutil: 4.1.0
+      utf-8-validate: 6.0.6
+
+  ws@8.20.1(bufferutil@4.1.0)(utf-8-validate@6.0.6):
+    optionalDependencies:
+      bufferutil: 4.1.0
+      utf-8-validate: 6.0.6
 
   wsl-utils@0.3.1:
     dependencies:

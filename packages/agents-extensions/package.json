@@ -54,10 +54,20 @@
       "require": "./dist/sandbox/e2b/index.js",
       "import": "./dist/sandbox/e2b/index.mjs"
     },
+    "./northflank": {
+      "types": "./dist/northflank/index.d.ts",
+      "require": "./dist/northflank/index.js",
+      "import": "./dist/northflank/index.mjs"
+    },
     "./sandbox/modal": {
       "types": "./dist/sandbox/modal/index.d.ts",
       "require": "./dist/sandbox/modal/index.js",
       "import": "./dist/sandbox/modal/index.mjs"
+    },
+    "./sandbox/northflank": {
+      "types": "./dist/sandbox/northflank/index.d.ts",
+      "require": "./dist/sandbox/northflank/index.js",
+      "import": "./dist/sandbox/northflank/index.mjs"
     },
     "./sandbox/runloop": {
       "types": "./dist/sandbox/runloop/index.d.ts",
@@ -80,6 +90,7 @@
     "@blaxel/core": "^0.2.82",
     "@daytonaio/sdk": "^0.162.0",
     "@e2b/code-interpreter": "^2.3.3",
+    "@northflank/js-client": "^0.9.0",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
     "@runloop/api-client": "^1.16.2",
@@ -115,6 +126,9 @@
     "modal": {
       "optional": true
     },
+    "@northflank/js-client": {
+      "optional": true
+    },
     "@runloop/api-client": {
       "optional": true
     },
@@ -134,6 +148,7 @@
     "@blaxel/core": "0.2.82",
     "@daytonaio/sdk": "0.162.0",
     "@e2b/code-interpreter": "2.3.3",
+    "@northflank/js-client": "0.9.5",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.86.0",
     "@runloop/api-client": "1.16.2",
@@ -163,8 +178,14 @@
       "sandbox/e2b": [
         "dist/sandbox/e2b/index.d.ts"
       ],
+      "northflank": [
+        "dist/northflank/index.d.ts"
+      ],
       "sandbox/modal": [
         "dist/sandbox/modal/index.d.ts"
+      ],
+      "sandbox/northflank": [
+        "dist/sandbox/northflank/index.d.ts"
       ],
       "sandbox/runloop": [
         "dist/sandbox/runloop/index.d.ts"

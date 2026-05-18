@@ -18,6 +18,11 @@ const testAliases = {
     rootDir,
     'packages/agents-core/src/sandbox/index.ts',
   ),
+  '@openai/agents-core/_shims': resolve(
+    rootDir,
+    'packages/agents-core/src/shims/shims-node.ts',
+  ),
+  '@openai/agents-core': resolve(rootDir, 'packages/agents-core/src/index.ts'),
 };
 
 const baseTestConfig = {
