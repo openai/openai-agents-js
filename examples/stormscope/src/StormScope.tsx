@@ -6,6 +6,7 @@ import {
   type SupplementDraft,
   type ConciergeResponse,
 } from './agents';
+import { ReconMap } from './ReconMap';
 
 // ═══════════════════════════════════════════════════
 // DATA + API LAYER
@@ -25,6 +26,7 @@ interface SPCReport {
   loc: string;
   state: string;
   lat: number;
+  lon: number;
 }
 
 interface Property {
@@ -111,6 +113,7 @@ async function fetchSPC(): Promise<SPCReport[]> {
           loc: p[2],
           state: p[4],
           lat: +p[5],
+          lon: +p[6],
         };
       })
       .filter((row) => row.lat);
@@ -1197,7 +1200,7 @@ function WeatherView({
 // MAIN APP
 // ═══════════════════════════════════════════════════
 
-type View = 'owner' | 'sales' | 'weather';
+type View = 'owner' | 'sales' | 'weather' | 'recon';
 type ConciergeEntry = {
   loading: boolean;
   result: ConciergeResponse | null;
@@ -1288,6 +1291,7 @@ export default function StormScopeV3() {
     { key: 'owner' as const, icon: '📊', label: 'Command' },
     { key: 'sales' as const, icon: '⚡', label: 'Sales' },
     { key: 'weather' as const, icon: '🌩️', label: 'Weather' },
+    { key: 'recon' as const, icon: '🗺️', label: 'Recon' },
   ];
 
   return (
@@ -1336,37 +1340,43 @@ export default function StormScopeV3() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        {selected ? (
-          <PropertyDetail
-            p={selected}
-            onBack={() => setSelected(null)}
-            aiEnabled={aiEnabled}
-          />
-        ) : (
-          <>
-            {view === 'owner' && (
-              <OwnerDashboard props={props} alerts={alerts} spc={spc} />
-            )}
-            {view === 'sales' && (
-              <SalesView
-                props={props}
-                onSelect={setSelected}
-                aiEnabled={aiEnabled}
-                scoutReasons={scoutReasons}
-                scoutLoading={scoutLoading}
-                scoutError={scoutError}
-                onRunScout={handleRunScout}
-                conciergeState={conciergeState}
-                onDraftResponse={handleDraftResponse}
-              />
-            )}
-            {view === 'weather' && (
-              <WeatherView alerts={alerts} spc={spc} loading={loading} />
-            )}
-          </>
-        )}
-      </div>
+      {view === 'recon' ? (
+        <div className="flex-1 overflow-hidden">
+          <ReconMap spc={spc} spcLoading={loading} />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-3 py-3">
+          {selected ? (
+            <PropertyDetail
+              p={selected}
+              onBack={() => setSelected(null)}
+              aiEnabled={aiEnabled}
+            />
+          ) : (
+            <>
+              {view === 'owner' && (
+                <OwnerDashboard props={props} alerts={alerts} spc={spc} />
+              )}
+              {view === 'sales' && (
+                <SalesView
+                  props={props}
+                  onSelect={setSelected}
+                  aiEnabled={aiEnabled}
+                  scoutReasons={scoutReasons}
+                  scoutLoading={scoutLoading}
+                  scoutError={scoutError}
+                  onRunScout={handleRunScout}
+                  conciergeState={conciergeState}
+                  onDraftResponse={handleDraftResponse}
+                />
+              )}
+              {view === 'weather' && (
+                <WeatherView alerts={alerts} spc={spc} loading={loading} />
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <footer className="flex items-center justify-between px-4 py-1 border-t border-zinc-800/40 bg-[#09090d] text-[7px] text-zinc-700 uppercase tracking-wider flex-shrink-0">
         <span>MRMS · NWS · SPC · Claude Vision</span>
