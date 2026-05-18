@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -38,6 +38,35 @@ interface GeoProspect {
   distanceKm: number | null;
 }
 
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'stormscope-recon-v1';
+
+function loadSavedStatuses(): Record<string, KnockStatus> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw) as {
+      date: string;
+      statuses: Record<string, KnockStatus>;
+    };
+    const today = new Date().toISOString().slice(0, 10);
+    if (data.date !== today) return {}; // fresh slate each day
+    return data.statuses ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStatuses(prospects: GeoProspect[]) {
+  const today = new Date().toISOString().slice(0, 10);
+  const statuses: Record<string, KnockStatus> = {};
+  prospects.forEach((p) => {
+    if (p.status !== 'unvisited') statuses[p.id] = p.status;
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, statuses }));
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const seededRng = (seed: number) => {
@@ -64,6 +93,14 @@ const haversineKm = (
       Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
+
+function openInMaps(lat: number, lon: number) {
+  window.open(
+    `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,
+    '_blank',
+    'noopener',
+  );
+}
 
 const ROOF_TYPES = [
   'Asphalt 3-Tab',
@@ -97,7 +134,6 @@ const STREET_NAMES = [
 const STREET_TYPES = ['St', 'Ave', 'Dr', 'Blvd', 'Ln', 'Rd', 'Ct', 'Way', 'Pl'];
 const STREET_DIRS = ['N', 'S', 'E', 'W', ''];
 
-// Fallback storm — central OKC, classic hail alley
 const FALLBACK_REPORTS: SPCReport[] = [
   {
     id: 0,
@@ -158,7 +194,6 @@ function generateGeoProspects(
     const report = src[Math.floor(rng() * src.length)];
     const hailSize = Math.max(parseFloat(report.size) || 1.0, 0.5);
 
-    // Scatter within 2.5 km radius (a walkable neighborhood)
     const angle = rng() * 2 * Math.PI;
     const distKm = rng() * 2.5;
     const lat = report.lat + (distKm / 111.0) * Math.cos(angle);
@@ -170,7 +205,6 @@ function generateGeoProspects(
     const roofAge = Math.floor(rng() * 34 + 1);
     const roofType = ROOF_TYPES[Math.floor(rng() * ROOF_TYPES.length)];
 
-    // Damage probability: hail size weight + roof age weight + variance
     const sizeScore = Math.min(hailSize / 3.0, 1.0) * 0.5;
     const ageScore = Math.min(roofAge / 30, 1.0) * 0.32;
     const variance = (rng() - 0.4) * 0.18;
@@ -183,7 +217,7 @@ function generateGeoProspects(
     const dir = STREET_DIRS[Math.floor(rng() * STREET_DIRS.length)];
     const street = STREET_NAMES[Math.floor(rng() * STREET_NAMES.length)];
     const type = STREET_TYPES[Math.floor(rng() * STREET_TYPES.length)];
-    const address = `${houseNum} ${dir ? dir + ' ' : ''}${street} ${type}`;
+    const address = `${houseNum}${dir ? ' ' + dir : ''} ${street} ${type}`;
 
     return {
       id: `R${String(i).padStart(3, '0')}`,
@@ -201,17 +235,17 @@ function generateGeoProspects(
   }).sort((a, b) => b.priority - a.priority);
 }
 
-// Hail size → heat color
+// ─── Color helpers ────────────────────────────────────────────────────────────
+
 function hailColor(sizeIn: number): string {
-  if (sizeIn >= 3.0) return '#dc2626'; // deep red
-  if (sizeIn >= 2.0) return '#ef4444'; // red
-  if (sizeIn >= 1.5) return '#f97316'; // orange
-  if (sizeIn >= 1.0) return '#eab308'; // yellow
-  if (sizeIn >= 0.75) return '#84cc16'; // lime
-  return '#22c55e'; // green
+  if (sizeIn >= 3.0) return '#dc2626';
+  if (sizeIn >= 2.0) return '#ef4444';
+  if (sizeIn >= 1.5) return '#f97316';
+  if (sizeIn >= 1.0) return '#eab308';
+  if (sizeIn >= 0.75) return '#84cc16';
+  return '#22c55e';
 }
 
-// Prospect pin color by status + priority
 function pinColor(p: GeoProspect): string {
   if (p.status === 'interested') return '#22d3ee';
   if (p.status === 'knocked' || p.status === 'not_home') return '#4b5563';
@@ -221,10 +255,10 @@ function pinColor(p: GeoProspect): string {
   return '#22c55e';
 }
 
-const PRIORITY_TEXT = (p: number) =>
+const pt = (p: number) =>
   p > 0.7 ? 'text-red-400' : p > 0.45 ? 'text-amber-400' : 'text-emerald-400';
 
-const PRIORITY_BORDER = (p: number) =>
+const pBorder = (p: number) =>
   p > 0.7
     ? 'border-red-500/40'
     : p > 0.45
@@ -239,21 +273,21 @@ const STATUS_ICON: Record<KnockStatus, string> = {
   skip: '✕',
 };
 
-// ─── Map Sub-components ───────────────────────────────────────────────────────
+// ─── Map sub-components ───────────────────────────────────────────────────────
 
-// Auto-fit map bounds to data on load
 function BoundsFitter({ reports }: { reports: SPCReport[] }) {
   const map = useMap();
   const fitted = useRef(false);
 
   useEffect(() => {
-    if (fitted.current || reports.length === 0) return;
+    if (fitted.current) return;
     const src = reports.length > 0 ? reports : FALLBACK_REPORTS;
+    if (src.length === 0) return;
     const lats = src.map((r) => r.lat);
     const lons = src.map((r) => r.lon);
     const bounds = L.latLngBounds(
-      [Math.min(...lats) - 0.2, Math.min(...lons) - 0.2],
-      [Math.max(...lats) + 0.2, Math.max(...lons) + 0.2],
+      [Math.min(...lats) - 0.25, Math.min(...lons) - 0.25],
+      [Math.max(...lats) + 0.25, Math.max(...lons) + 0.25],
     );
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
     fitted.current = true;
@@ -262,7 +296,6 @@ function BoundsFitter({ reports }: { reports: SPCReport[] }) {
   return null;
 }
 
-// Heatmap: concentric rings per SPC report simulating a heat gradient
 function HeatBlobs({
   reports,
   visible,
@@ -272,18 +305,16 @@ function HeatBlobs({
 }) {
   if (!visible) return null;
   const src = reports.length > 0 ? reports : FALLBACK_REPORTS;
-
   return (
     <>
       {src.map((r) => {
         const color = hailColor(parseFloat(r.size) || 1.0);
-        const baseRadius = Math.max(parseFloat(r.size) || 1.0, 0.5) * 1200; // meters
+        const base = Math.max(parseFloat(r.size) || 1.0, 0.5) * 1200;
         return (
           <React.Fragment key={r.id}>
-            {/* outer glow ring */}
             <Circle
               center={[r.lat, r.lon]}
-              radius={baseRadius * 3}
+              radius={base * 3}
               pathOptions={{
                 color,
                 fillColor: color,
@@ -293,7 +324,7 @@ function HeatBlobs({
             />
             <Circle
               center={[r.lat, r.lon]}
-              radius={baseRadius * 2}
+              radius={base * 2}
               pathOptions={{
                 color,
                 fillColor: color,
@@ -303,7 +334,7 @@ function HeatBlobs({
             />
             <Circle
               center={[r.lat, r.lon]}
-              radius={baseRadius * 1.2}
+              radius={base * 1.2}
               pathOptions={{
                 color,
                 fillColor: color,
@@ -311,10 +342,9 @@ function HeatBlobs({
                 weight: 0,
               }}
             />
-            {/* hot core */}
             <Circle
               center={[r.lat, r.lon]}
-              radius={baseRadius * 0.55}
+              radius={base * 0.55}
               pathOptions={{
                 color,
                 fillColor: color,
@@ -322,7 +352,6 @@ function HeatBlobs({
                 weight: 0,
               }}
             />
-            {/* strike point */}
             <CircleMarker
               center={[r.lat, r.lon]}
               radius={6}
@@ -350,7 +379,6 @@ function HeatBlobs({
   );
 }
 
-// Prospect pins on the map
 function ProspectPins({
   prospects,
   visible,
@@ -363,29 +391,27 @@ function ProspectPins({
   onSelect: (id: string) => void;
 }) {
   if (!visible) return null;
-
   return (
     <>
       {prospects.map((p) => {
-        const isSelected = p.id === selectedId;
+        const sel = p.id === selectedId;
         const color = pinColor(p);
         const radius = p.priority > 0.7 ? 9 : p.priority > 0.45 ? 7 : 5;
-
         return (
           <CircleMarker
             key={p.id}
             center={[p.lat, p.lon]}
-            radius={isSelected ? radius + 4 : radius}
+            radius={sel ? radius + 4 : radius}
             pathOptions={{
-              color: isSelected ? '#fff' : color,
+              color: sel ? '#fff' : color,
               fillColor: color,
               fillOpacity:
                 p.status === 'skip'
-                  ? 0.2
+                  ? 0.15
                   : p.status !== 'unvisited'
-                    ? 0.5
+                    ? 0.45
                     : 0.9,
-              weight: isSelected ? 2.5 : 1,
+              weight: sel ? 2.5 : 1,
             }}
             eventHandlers={{ click: () => onSelect(p.id) }}
           >
@@ -393,7 +419,7 @@ function ProspectPins({
               <div className="text-xs font-mono leading-tight">
                 <div className="font-bold">{p.address}</div>
                 <div>
-                  Dmg {(p.priority * 100).toFixed(0)}% · {p.hailSize}" hail ·{' '}
+                  {(p.priority * 100).toFixed(0)}% damage · {p.hailSize}" hail ·{' '}
                   {p.roofAge}yr roof
                 </div>
                 {p.status !== 'unvisited' && (
@@ -410,7 +436,6 @@ function ProspectPins({
   );
 }
 
-// User's GPS location dot
 function UserDot({ pos }: { pos: [number, number] | null }) {
   if (!pos) return null;
   return (
@@ -439,10 +464,172 @@ function UserDot({ pos }: { pos: [number, number] | null }) {
   );
 }
 
+// ─── Day Summary ──────────────────────────────────────────────────────────────
+
+function DaySummary({ prospects }: { prospects: GeoProspect[] }) {
+  const [copied, setCopied] = useState(false);
+
+  const interested = prospects.filter((p) => p.status === 'interested');
+  const notHome = prospects.filter((p) => p.status === 'not_home');
+  const knocked = prospects.filter((p) => p.status === 'knocked');
+  const skipped = prospects.filter((p) => p.status === 'skip');
+  const total =
+    interested.length + notHome.length + knocked.length + skipped.length;
+
+  const copyReport = () => {
+    const date = new Date().toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    const lines = [
+      `STORMSCOPE RECON — ${date}`,
+      `${'─'.repeat(30)}`,
+      `Doors worked:   ${total}`,
+      `Hot leads:      ${interested.length}`,
+      `Not home:       ${notHome.length}`,
+      `Knocked/done:   ${knocked.length}`,
+      '',
+    ];
+    if (interested.length > 0) {
+      lines.push('⭐ HOT LEADS — follow up ASAP:');
+      interested.forEach((p) =>
+        lines.push(
+          `  • ${p.address}  [${(p.priority * 100).toFixed(0)}% dmg est, ${p.hailSize}" hail, ${p.roofAge}yr roof]`,
+        ),
+      );
+      lines.push('');
+    }
+    if (notHome.length > 0) {
+      lines.push('🔕 CIRCLE BACK:');
+      notHome.forEach((p) => lines.push(`  • ${p.address}`));
+      lines.push('');
+    }
+    lines.push('Sent from StormScope');
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  };
+
+  if (total === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <div className="text-4xl mb-3">👋</div>
+        <div className="text-[13px] font-bold text-zinc-300">
+          Nothing logged yet
+        </div>
+        <div className="text-[11px] text-zinc-600 mt-1">
+          Tap a prospect on the map or list to start tracking
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 pb-4">
+      {/* Stat row */}
+      <div className="grid grid-cols-4 gap-1.5">
+        {[
+          [total.toString(), 'Worked', 'text-zinc-200'],
+          [interested.length.toString(), 'Hot', 'text-cyan-400'],
+          [notHome.length.toString(), 'Not Home', 'text-amber-400'],
+          [knocked.length.toString(), 'Done', 'text-emerald-400'],
+        ].map(([val, label, cls]) => (
+          <div
+            key={label}
+            className="bg-zinc-900/60 border border-zinc-800/50 rounded-xl p-2 text-center"
+          >
+            <div className={`text-[22px] font-black tabular-nums ${cls}`}>
+              {val}
+            </div>
+            <div className="text-[8px] uppercase tracking-[0.15em] text-zinc-600">
+              {label}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Hot leads */}
+      {interested.length > 0 && (
+        <div>
+          <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-cyan-400 mb-1.5">
+            ⭐ Hot Leads — Follow Up ASAP
+          </div>
+          <div className="space-y-1">
+            {interested.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/25 rounded-xl px-3 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] font-semibold text-zinc-200 truncate">
+                    {p.address}
+                  </div>
+                  <div className="text-[9px] text-zinc-500">
+                    {(p.priority * 100).toFixed(0)}% dmg · {p.hailSize}" hail ·{' '}
+                    {p.roofAge}yr {p.roofType}
+                  </div>
+                </div>
+                <button
+                  onClick={() => openInMaps(p.lat, p.lon)}
+                  className="flex-shrink-0 px-2 py-1 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 text-[9px] font-bold uppercase"
+                >
+                  🗺️
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Not home */}
+      {notHome.length > 0 && (
+        <div>
+          <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400 mb-1.5">
+            🔕 Circle Back
+          </div>
+          <div className="space-y-1">
+            {notHome.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-2 bg-zinc-900/50 border border-zinc-800/40 rounded-xl px-3 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] text-zinc-400 truncate">
+                    {p.address}
+                  </div>
+                </div>
+                <button
+                  onClick={() => openInMaps(p.lat, p.lon)}
+                  className="flex-shrink-0 px-2 py-1 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 text-[9px] font-bold"
+                >
+                  🗺️
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Copy report button */}
+      <button
+        onClick={copyReport}
+        className={`w-full py-3 rounded-xl border text-[11px] font-bold uppercase tracking-wider transition-all ${
+          copied
+            ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400'
+            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+        }`}
+      >
+        {copied ? '✓ Copied to Clipboard' : '📋 Copy Day Report'}
+      </button>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-// React must be in scope for JSX in React.Fragment
-import React from 'react';
+type ListFilter = 'all' | 'priority' | 'interested' | 'done' | 'summary';
 
 export function ReconMap({
   spc,
@@ -454,10 +641,13 @@ export function ReconMap({
   const isDemoMode = spc.length === 0 && !spcLoading;
   const reports = isDemoMode ? FALLBACK_REPORTS : spc;
 
-  // Prospects generated from real SPC lat/lon
   const [prospects, setProspects] = useState<GeoProspect[]>([]);
   useEffect(() => {
-    setProspects(generateGeoProspects(reports, 75, 42));
+    const generated = generateGeoProspects(reports, 75, 42);
+    const saved = loadSavedStatuses();
+    setProspects(
+      generated.map((p) => ({ ...p, status: saved[p.id] ?? p.status })),
+    );
   }, [reports]);
 
   const [heatVisible, setHeatVisible] = useState(true);
@@ -465,11 +655,9 @@ export function ReconMap({
   const [listOpen, setListOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [userPos, setUserPos] = useState<[number, number] | null>(null);
-  const [filter, setFilter] = useState<
-    'all' | 'priority' | 'interested' | 'done'
-  >('all');
+  const [filter, setFilter] = useState<ListFilter>('all');
 
-  // GPS watch
+  // GPS
   useEffect(() => {
     if (!navigator.geolocation) return;
     const id = navigator.geolocation.watchPosition(
@@ -480,7 +668,7 @@ export function ReconMap({
     return () => navigator.geolocation.clearWatch(id);
   }, []);
 
-  // Update distances when GPS changes
+  // Update walking distances when GPS changes
   useEffect(() => {
     if (!userPos) return;
     setProspects((prev) =>
@@ -493,58 +681,59 @@ export function ReconMap({
     );
   }, [userPos]);
 
-  const updateStatus = useCallback((id: string, status: KnockStatus) => {
-    setProspects((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, status } : p)),
-    );
+  const updateStatus = (id: string, status: KnockStatus) => {
+    setProspects((prev) => {
+      const next = prev.map((p) => (p.id === id ? { ...p, status } : p));
+      saveStatuses(next);
+      return next;
+    });
     setSelectedId(null);
-  }, []);
+  };
 
-  // Summary counts
-  const counts = useMemo(() => {
-    const unvisited = prospects.filter((p) => p.status === 'unvisited').length;
-    const interested = prospects.filter(
-      (p) => p.status === 'interested',
-    ).length;
-    const done = prospects.filter(
-      (p) =>
-        p.status === 'knocked' ||
-        p.status === 'not_home' ||
-        p.status === 'skip',
-    ).length;
-    return { unvisited, interested, done };
-  }, [prospects]);
+  // Counts
+  const counts = useMemo(
+    () => ({
+      unvisited: prospects.filter((p) => p.status === 'unvisited').length,
+      interested: prospects.filter((p) => p.status === 'interested').length,
+      done: prospects.filter(
+        (p) => p.status !== 'unvisited' && p.status !== 'interested',
+      ).length,
+      priority: prospects.filter(
+        (p) => p.status === 'unvisited' && p.priority > 0.5,
+      ).length,
+    }),
+    [prospects],
+  );
 
-  // Sorted / filtered list
+  // Filtered + sorted list
   const listProspects = useMemo(() => {
     let list = [...prospects];
     if (filter === 'priority')
       list = list.filter((p) => p.status === 'unvisited' && p.priority > 0.5);
-    else if (filter === 'interested')
+    if (filter === 'interested')
       list = list.filter((p) => p.status === 'interested');
-    else if (filter === 'done')
+    if (filter === 'done')
       list = list.filter(
-        (p) =>
-          p.status === 'knocked' ||
-          p.status === 'not_home' ||
-          p.status === 'skip',
+        (p) => p.status !== 'unvisited' && p.status !== 'interested',
       );
-    // Sort: interested first, then by priority desc, then done last
+
     return list.sort((a, b) => {
+      // Interested always first
       if (a.status === 'interested' && b.status !== 'interested') return -1;
       if (b.status === 'interested' && a.status !== 'interested') return 1;
-      const aDone =
-        a.status === 'knocked' ||
-        a.status === 'not_home' ||
-        a.status === 'skip';
-      const bDone =
-        b.status === 'knocked' ||
-        b.status === 'not_home' ||
-        b.status === 'skip';
+      // Done last
+      const aDone = a.status !== 'unvisited' && a.status !== 'interested';
+      const bDone = b.status !== 'unvisited' && b.status !== 'interested';
       if (aDone && !bDone) return 1;
       if (bDone && !aDone) return -1;
-      // If both unvisited and GPS available, sort by distance
-      if (userPos && a.distanceKm != null && b.distanceKm != null) {
+      // GPS distance when available
+      if (
+        userPos &&
+        a.distanceKm != null &&
+        b.distanceKm != null &&
+        !aDone &&
+        !bDone
+      ) {
         return a.distanceKm - b.distanceKm;
       }
       return b.priority - a.priority;
@@ -556,18 +745,23 @@ export function ReconMap({
     [prospects, selectedId],
   );
 
-  // Map center from reports centroid
   const mapCenter = useMemo((): [number, number] => {
     const src = reports.length > 0 ? reports : FALLBACK_REPORTS;
-    const avgLat = src.reduce((s, r) => s + r.lat, 0) / src.length;
-    const avgLon = src.reduce((s, r) => s + r.lon, 0) / src.length;
-    return [avgLat, avgLon];
+    return [
+      src.reduce((s, r) => s + r.lat, 0) / src.length,
+      src.reduce((s, r) => s + r.lon, 0) / src.length,
+    ];
   }, [reports]);
+
+  const distLabel = (km: number | null) => {
+    if (km == null) return null;
+    return km < 1 ? `${(km * 1000).toFixed(0)}m` : `${km.toFixed(1)}km`;
+  };
 
   return (
     <div className="relative w-full h-full flex flex-col">
-      {/* ── Map ── */}
-      <div className="flex-1 relative">
+      {/* ── Map ───────────────────────────────────────────────────────────── */}
+      <div className="flex-1 relative min-h-0">
         <MapContainer
           center={mapCenter}
           zoom={10}
@@ -579,7 +773,6 @@ export function ReconMap({
             url="https://{s}.basemaps.cartocdn.com/dark_matter_nolabels/{z}/{x}/{y}{r}.png"
             subdomains="abcd"
           />
-          {/* Labels on top */}
           <TileLayer
             url="https://{s}.basemaps.cartocdn.com/dark_matter_only_labels/{z}/{x}/{y}{r}.png"
             subdomains="abcd"
@@ -593,54 +786,57 @@ export function ReconMap({
             onSelect={(id) => {
               setSelectedId(id);
               setListOpen(true);
+              setFilter('all');
             }}
           />
           <UserDot pos={userPos} />
         </MapContainer>
 
-        {/* ── Floating top controls ── */}
-        <div className="absolute top-3 left-3 right-3 z-[1000] flex items-start justify-between gap-2 pointer-events-none">
-          {/* Left: storm info */}
-          <div className="bg-black/75 backdrop-blur-sm rounded-xl border border-zinc-700/50 px-3 py-2 pointer-events-auto">
-            <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400 leading-tight">
-              {isDemoMode
-                ? '⚡ Demo — OKC Storm'
-                : `🌩️ ${reports.length} SPC Reports`}
-            </div>
-            <div className="text-[10px] text-zinc-300 mt-0.5">
-              {counts.unvisited} to knock · {counts.interested} hot ·{' '}
-              {counts.done} done
-            </div>
+        {/* Top-left: storm badge */}
+        <div className="absolute top-3 left-3 z-[1000] bg-black/75 backdrop-blur-sm rounded-xl border border-zinc-700/50 px-3 py-2">
+          <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400 leading-tight">
+            {isDemoMode
+              ? '⚡ Demo — OKC Storm'
+              : `🌩️ ${reports.length} SPC Reports`}
           </div>
-
-          {/* Right: layer toggles */}
-          <div className="flex flex-col gap-1.5 pointer-events-auto">
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => setHeatVisible((v) => !v)}
-                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm border transition-all ${
-                  heatVisible
-                    ? 'bg-amber-500/25 border-amber-500/40 text-amber-300'
-                    : 'bg-black/60 border-zinc-700/50 text-zinc-500'
-                }`}
-              >
-                🔥 Heat
-              </button>
-              <button
-                onClick={() => setPinsVisible((v) => !v)}
-                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm border transition-all ${
-                  pinsVisible
-                    ? 'bg-sky-500/25 border-sky-500/40 text-sky-300'
-                    : 'bg-black/60 border-zinc-700/50 text-zinc-500'
-                }`}
-              >
-                📍 Pins
-              </button>
-            </div>
+          <div className="text-[10px] text-zinc-300 mt-0.5">
+            {counts.unvisited} to knock
+            {counts.interested > 0 && (
+              <span className="text-cyan-400"> · {counts.interested} hot</span>
+            )}
+            {counts.done > 0 && (
+              <span className="text-zinc-500"> · {counts.done} done</span>
+            )}
           </div>
         </div>
 
-        {/* ── Hail legend ── */}
+        {/* Top-right: layer toggles */}
+        <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5">
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => setHeatVisible((v) => !v)}
+              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm border transition-all ${
+                heatVisible
+                  ? 'bg-amber-500/25 border-amber-500/40 text-amber-300'
+                  : 'bg-black/60 border-zinc-700/50 text-zinc-500'
+              }`}
+            >
+              🔥 Heat
+            </button>
+            <button
+              onClick={() => setPinsVisible((v) => !v)}
+              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm border transition-all ${
+                pinsVisible
+                  ? 'bg-sky-500/25 border-sky-500/40 text-sky-300'
+                  : 'bg-black/60 border-zinc-700/50 text-zinc-500'
+              }`}
+            >
+              📍 Pins
+            </button>
+          </div>
+        </div>
+
+        {/* Bottom-left: hail legend */}
         <div className="absolute bottom-16 left-3 z-[1000] bg-black/75 backdrop-blur-sm rounded-xl border border-zinc-700/50 px-3 py-2">
           <div className="text-[8px] uppercase tracking-[0.15em] text-zinc-500 mb-1.5">
             Hail Size
@@ -662,7 +858,7 @@ export function ReconMap({
           ))}
         </div>
 
-        {/* ── List toggle button ── */}
+        {/* Bottom-center: list toggle */}
         <button
           onClick={() => setListOpen((v) => !v)}
           className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[1000] bg-black/85 backdrop-blur-sm border border-zinc-600/60 rounded-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-zinc-200 flex items-center gap-2 shadow-lg"
@@ -673,52 +869,56 @@ export function ReconMap({
               {Math.min(counts.unvisited, 99)}
             </span>
           )}
+          {counts.interested > 0 && (
+            <span className="bg-cyan-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[8px] font-black">
+              {counts.interested}
+            </span>
+          )}
         </button>
       </div>
 
-      {/* ── Bottom Sheet: Prospect List ── */}
+      {/* ── Bottom Sheet ──────────────────────────────────────────────────── */}
       <div
         className={`flex-shrink-0 bg-[#09090d] border-t border-zinc-800/70 overflow-hidden transition-all duration-300 ease-in-out ${
-          listOpen ? 'h-[58vh]' : 'h-0'
+          listOpen ? 'h-[60vh]' : 'h-0'
         }`}
       >
         {listOpen && (
           <div className="h-full flex flex-col">
-            {/* List header + filters */}
+            {/* Sheet header */}
             <div className="flex-shrink-0 px-3 pt-3 pb-2 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400">
-                  ⚡ Prospect List
+                  ⚡ Recon List
                   {userPos && (
-                    <span className="text-zinc-500 ml-2 normal-case tracking-normal">
-                      · sorted by distance
+                    <span className="text-zinc-500 ml-2 normal-case tracking-normal font-normal">
+                      · GPS active
                     </span>
                   )}
                 </div>
                 <button
                   onClick={() => setListOpen(false)}
-                  className="text-zinc-600 hover:text-zinc-300 text-[14px] leading-none"
+                  className="text-zinc-600 hover:text-zinc-300 text-[16px] leading-none w-6 h-6 flex items-center justify-center"
                 >
                   ✕
                 </button>
               </div>
 
-              <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+              {/* Filter tabs */}
+              <div className="flex gap-1 overflow-x-auto pb-0.5 scrollbar-none">
                 {(
                   [
                     ['all', `All (${prospects.length})`],
-                    [
-                      'priority',
-                      `🔥 Priority (${prospects.filter((p) => p.status === 'unvisited' && p.priority > 0.5).length})`,
-                    ],
+                    ['priority', `🔥 Priority (${counts.priority})`],
                     ['interested', `⭐ Hot (${counts.interested})`],
                     ['done', `Done (${counts.done})`],
-                  ] as const
+                    ['summary', '📋 Summary'],
+                  ] as [ListFilter, string][]
                 ).map(([k, l]) => (
                   <button
                     key={k}
                     onClick={() => setFilter(k)}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap transition-all ${
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap transition-all flex-shrink-0 ${
                       filter === k
                         ? 'bg-zinc-800 text-zinc-200'
                         : 'text-zinc-600 hover:text-zinc-400'
@@ -730,155 +930,175 @@ export function ReconMap({
               </div>
             </div>
 
-            {/* Selected prospect quick-action card */}
-            {selectedProspect && (
-              <div
-                className={`flex-shrink-0 mx-3 mb-2 rounded-xl border p-3 ${PRIORITY_BORDER(selectedProspect.priority)} bg-zinc-900/80`}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <div className="text-[12px] font-bold text-zinc-100">
-                      {selectedProspect.address}
+            {/* Summary view */}
+            {filter === 'summary' ? (
+              <div className="flex-1 overflow-y-auto px-3 pb-2">
+                <DaySummary prospects={prospects} />
+              </div>
+            ) : (
+              <>
+                {/* Selected prospect action card */}
+                {selectedProspect && (
+                  <div
+                    className={`flex-shrink-0 mx-3 mb-2 rounded-xl border p-3 ${pBorder(selectedProspect.priority)} bg-zinc-900/80`}
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex-1 min-w-0 pr-2">
+                        <div className="text-[12px] font-bold text-zinc-100 truncate">
+                          {selectedProspect.address}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 mt-0.5">
+                          {selectedProspect.hailSize}" hail ·{' '}
+                          {selectedProspect.roofAge}yr{' '}
+                          {selectedProspect.roofType}
+                          {selectedProspect.distanceKm != null && (
+                            <>
+                              {' '}
+                              · {distLabel(selectedProspect.distanceKm)} away
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div
+                        className={`flex-shrink-0 text-[20px] font-black tabular-nums ${pt(selectedProspect.priority)}`}
+                      >
+                        {(selectedProspect.priority * 100).toFixed(0)}%
+                      </div>
                     </div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">
-                      {selectedProspect.hailSize}" hail ·{' '}
-                      {selectedProspect.roofAge}yr {selectedProspect.roofType}
-                      {selectedProspect.distanceKm != null && (
-                        <>
-                          {' '}
-                          ·{' '}
-                          {selectedProspect.distanceKm < 1
-                            ? `${(selectedProspect.distanceKm * 1000).toFixed(0)}m away`
-                            : `${selectedProspect.distanceKm.toFixed(1)}km away`}
-                        </>
+                    <div className="flex gap-1.5 flex-wrap">
+                      <button
+                        onClick={() =>
+                          openInMaps(selectedProspect.lat, selectedProspect.lon)
+                        }
+                        className="py-2 px-3 rounded-lg bg-violet-500/15 border border-violet-500/30 text-violet-400 text-[10px] font-bold uppercase tracking-wider"
+                      >
+                        🗺️ Navigate
+                      </button>
+                      {selectedProspect.status !== 'knocked' && (
+                        <button
+                          onClick={() =>
+                            updateStatus(selectedProspect.id, 'knocked')
+                          }
+                          className="flex-1 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          🚪 Knocked
+                        </button>
+                      )}
+                      {selectedProspect.status !== 'not_home' && (
+                        <button
+                          onClick={() =>
+                            updateStatus(selectedProspect.id, 'not_home')
+                          }
+                          className="flex-1 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          🔕 Not Home
+                        </button>
+                      )}
+                      {selectedProspect.status !== 'interested' && (
+                        <button
+                          onClick={() =>
+                            updateStatus(selectedProspect.id, 'interested')
+                          }
+                          className="flex-1 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 text-[10px] font-bold uppercase tracking-wider"
+                        >
+                          ⭐ Hot Lead
+                        </button>
+                      )}
+                      {selectedProspect.status !== 'skip' && (
+                        <button
+                          onClick={() =>
+                            updateStatus(selectedProspect.id, 'skip')
+                          }
+                          className="py-2 px-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-600 text-[10px] font-bold"
+                        >
+                          ✕
+                        </button>
                       )}
                     </div>
                   </div>
-                  <div
-                    className={`text-[18px] font-black ${PRIORITY_TEXT(selectedProspect.priority)}`}
-                  >
-                    {(selectedProspect.priority * 100).toFixed(0)}%
-                  </div>
-                </div>
-                <div className="flex gap-1.5 flex-wrap">
-                  {selectedProspect.status !== 'knocked' && (
-                    <button
-                      onClick={() =>
-                        updateStatus(selectedProspect.id, 'knocked')
-                      }
-                      className="flex-1 min-w-[60px] py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold uppercase tracking-wider"
-                    >
-                      🚪 Knocked
-                    </button>
-                  )}
-                  {selectedProspect.status !== 'not_home' && (
-                    <button
-                      onClick={() =>
-                        updateStatus(selectedProspect.id, 'not_home')
-                      }
-                      className="flex-1 min-w-[60px] py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 text-[10px] font-bold uppercase tracking-wider"
-                    >
-                      🔕 Not Home
-                    </button>
-                  )}
-                  {selectedProspect.status !== 'interested' && (
-                    <button
-                      onClick={() =>
-                        updateStatus(selectedProspect.id, 'interested')
-                      }
-                      className="flex-1 min-w-[60px] py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 text-[10px] font-bold uppercase tracking-wider"
-                    >
-                      ⭐ Hot Lead
-                    </button>
-                  )}
-                  <button
-                    onClick={() => updateStatus(selectedProspect.id, 'skip')}
-                    className="py-2 px-3 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-600 text-[10px] font-bold uppercase tracking-wider"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            )}
+                )}
 
-            {/* Scrollable prospect rows */}
-            <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1.5">
-              {listProspects.slice(0, 50).map((p, i) => {
-                const isDone =
-                  p.status === 'knocked' ||
-                  p.status === 'not_home' ||
-                  p.status === 'skip';
-                const isHot = p.status === 'interested';
-
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() =>
-                      setSelectedId(p.id === selectedId ? null : p.id)
-                    }
-                    className={`w-full text-left rounded-xl border px-3 py-2.5 transition-all ${
-                      p.id === selectedId
-                        ? 'bg-zinc-800/80 border-zinc-600'
-                        : isDone
-                          ? 'bg-zinc-900/30 border-zinc-800/30 opacity-50'
-                          : isHot
-                            ? 'bg-cyan-500/10 border-cyan-500/30'
-                            : 'bg-zinc-900/50 border-zinc-800/50 hover:bg-zinc-800/50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      {/* Rank */}
-                      <div className="text-[9px] font-mono text-zinc-600 w-5 flex-shrink-0">
-                        {isDone || isHot ? STATUS_ICON[p.status] : `#${i + 1}`}
-                      </div>
-
-                      {/* Priority dot */}
-                      <div
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: pinColor(p) }}
-                      />
-
-                      {/* Address + details */}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[11px] font-semibold text-zinc-200 truncate">
-                          {p.address}
-                        </div>
-                        <div className="text-[9px] text-zinc-600 mt-0.5">
-                          {p.hailSize}" hail · {p.roofAge}yr roof · {p.roofType}
-                        </div>
-                      </div>
-
-                      {/* Right: score + distance */}
-                      <div className="flex-shrink-0 text-right">
-                        <div
-                          className={`text-[13px] font-black tabular-nums ${PRIORITY_TEXT(p.priority)}`}
-                        >
-                          {(p.priority * 100).toFixed(0)}%
-                        </div>
-                        {p.distanceKm != null && (
-                          <div className="text-[9px] text-zinc-600">
-                            {p.distanceKm < 1
-                              ? `${(p.distanceKm * 1000).toFixed(0)}m`
-                              : `${p.distanceKm.toFixed(1)}km`}
+                {/* Scrollable prospect rows */}
+                <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1.5">
+                  {listProspects.slice(0, 60).map((p, i) => {
+                    const isDone =
+                      p.status !== 'unvisited' && p.status !== 'interested';
+                    const isHot = p.status === 'interested';
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() =>
+                          setSelectedId(p.id === selectedId ? null : p.id)
+                        }
+                        className={`w-full text-left rounded-xl border px-3 py-2.5 transition-all ${
+                          p.id === selectedId
+                            ? 'bg-zinc-800/80 border-zinc-600'
+                            : isDone
+                              ? 'bg-zinc-900/30 border-zinc-800/30 opacity-40'
+                              : isHot
+                                ? 'bg-cyan-500/10 border-cyan-500/30'
+                                : 'bg-zinc-900/50 border-zinc-800/50 hover:bg-zinc-800/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="text-[9px] font-mono text-zinc-600 w-5 flex-shrink-0">
+                            {isDone || isHot
+                              ? STATUS_ICON[p.status]
+                              : `#${i + 1}`}
                           </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Damage probability bar */}
-                    <div className="mt-1.5 h-0.5 bg-zinc-800/80 rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${p.priority * 100}%`,
-                          backgroundColor: pinColor(p),
-                        }}
-                      />
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                          <div
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: pinColor(p) }}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[11px] font-semibold text-zinc-200 truncate">
+                              {p.address}
+                            </div>
+                            <div className="text-[9px] text-zinc-600">
+                              {p.hailSize}" hail · {p.roofAge}yr {p.roofType}
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0 flex items-center gap-2">
+                            {/* Navigate shortcut */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openInMaps(p.lat, p.lon);
+                              }}
+                              className="text-[13px] opacity-40 hover:opacity-100 transition-opacity"
+                              title="Navigate"
+                            >
+                              🗺️
+                            </button>
+                            <div className="text-right">
+                              <div
+                                className={`text-[13px] font-black tabular-nums ${pt(p.priority)}`}
+                              >
+                                {(p.priority * 100).toFixed(0)}%
+                              </div>
+                              {p.distanceKm != null && (
+                                <div className="text-[9px] text-zinc-600">
+                                  {distLabel(p.distanceKm)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-1.5 h-0.5 bg-zinc-800/80 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${p.priority * 100}%`,
+                              backgroundColor: pinColor(p),
+                            }}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
