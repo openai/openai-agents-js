@@ -1,79 +1,133 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+  runSupplementCopilot,
+  runAIScout,
+  runConcierge,
+  type SupplementDraft,
+  type ConciergeResponse,
+} from './agents';
 
-// --- Data Generation Utilities ---
-const seededRandom = (seed: number) => {
-  let s = seed;
+// ═══════════════════════════════════════════════════
+// DATA + API LAYER
+// ═══════════════════════════════════════════════════
+
+interface NWSAlert {
+  id: string;
+  event: string;
+  headline: string;
+  severity: string;
+}
+
+interface SPCReport {
+  id: number;
+  time: string;
+  size: string;
+  loc: string;
+  state: string;
+  lat: number;
+}
+
+interface Property {
+  id: string;
+  address: string;
+  homeowner: string;
+  phone: string;
+  mesh: number;
+  roof: string;
+  cond: string;
+  age: number;
+  sqft: number;
+  year: number;
+  damageProb: number;
+  closeProb: number;
+  estValue: number;
+  expectedValue: number;
+  source: string;
+  status:
+    | 'new'
+    | 'contacted'
+    | 'inspected'
+    | 'proposed'
+    | 'contracted'
+    | 'installed';
+  claims: number;
+  contactPref: 'phone' | 'text' | 'email';
+  minsAgo: number;
+  responseTime: string;
+  hasInspection: boolean;
+  hasSupplement: boolean;
+}
+
+async function fetchNWSAlerts(): Promise<NWSAlert[]> {
+  try {
+    const pt = await fetch('https://api.weather.gov/points/30.22,-92.02', {
+      headers: { 'User-Agent': 'StormScope/3.0' },
+    });
+    const d = await pt.json();
+    const zone = d?.properties?.forecastZone?.split('/').pop();
+    const county = d?.properties?.county?.split('/').pop();
+    const r = await fetch(
+      `https://api.weather.gov/alerts/active?zone=${zone},${county}`,
+      {
+        headers: { 'User-Agent': 'StormScope/3.0' },
+      },
+    );
+    return ((await r.json()).features || []).map(
+      (f: {
+        properties: {
+          id: string;
+          event: string;
+          headline: string;
+          severity: string;
+        };
+      }) => ({
+        id: f.properties.id,
+        event: f.properties.event,
+        headline: f.properties.headline,
+        severity: f.properties.severity,
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function fetchSPC(): Promise<SPCReport[]> {
+  try {
+    const r = await fetch(
+      'https://www.spc.noaa.gov/climo/reports/today_filtered_hail.csv',
+    );
+    const t = await r.text();
+    return t
+      .trim()
+      .split('\n')
+      .slice(1, 25)
+      .map((l, i) => {
+        const p = l.split(',');
+        return {
+          id: i,
+          time: p[0],
+          size: p[1],
+          loc: p[2],
+          state: p[4],
+          lat: +p[5],
+        };
+      })
+      .filter((row) => row.lat);
+  } catch {
+    return [];
+  }
+}
+
+const R = (s: number) => {
+  let x = s;
   return () => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
+    x = (x * 16807) % 2147483647;
+    return (x - 1) / 2147483646;
   };
 };
 
-interface StormEvent {
-  id: string;
-  name: string;
-  timestamp: string;
-  maxMesh: number;
-  status: 'active' | 'verified' | 'archived';
-  county: string;
-  lat: number;
-  lng: number;
-}
-
-const STORM_EVENTS: StormEvent[] = [
-  {
-    id: 'S-2026-0517A',
-    name: 'Lafayette Cell',
-    timestamp: '2026-05-17T14:32:00',
-    maxMesh: 2.1,
-    status: 'active',
-    county: 'Lafayette Parish',
-    lat: 30.22,
-    lng: -92.02,
-  },
-  {
-    id: 'S-2026-0517B',
-    name: 'Scott Supercell',
-    timestamp: '2026-05-17T13:48:00',
-    maxMesh: 3.4,
-    status: 'active',
-    county: 'Lafayette Parish',
-    lat: 30.24,
-    lng: -92.08,
-  },
-  {
-    id: 'S-2026-0516C',
-    name: 'Broussard Line',
-    timestamp: '2026-05-16T19:12:00',
-    maxMesh: 1.8,
-    status: 'verified',
-    county: 'Lafayette Parish',
-    lat: 30.15,
-    lng: -91.96,
-  },
-  {
-    id: 'S-2026-0515D',
-    name: 'Youngsville Cluster',
-    timestamp: '2026-05-15T16:05:00',
-    maxMesh: 2.7,
-    status: 'verified',
-    county: 'Lafayette Parish',
-    lat: 30.1,
-    lng: -91.99,
-  },
-  {
-    id: 'S-2026-0514E',
-    name: 'Carencro Storm',
-    timestamp: '2026-05-14T20:30:00',
-    maxMesh: 1.2,
-    status: 'archived',
-    county: 'Lafayette Parish',
-    lat: 30.32,
-    lng: -92.05,
-  },
-];
-
-const STREET_NAMES = [
+const STREETS = [
   'Johnston St',
   'Ambassador Caffery',
   'Kaliste Saloom',
@@ -81,1025 +135,1242 @@ const STREET_NAMES = [
   'Congress St',
   'University Ave',
   'Bertrand Dr',
-  'Evangeline Thwy',
-  'Cameron St',
   'Camellia Blvd',
   'Verot School Rd',
   'Ridge Rd',
-  'Dulles Dr',
   'Settlers Trace',
   'Guilbeau Rd',
   'Bonin Rd',
-  'Doucet Rd',
-  'E Broussard Rd',
-  'W Congress St',
   'Surrey St',
+  'Cajundome Blvd',
+  'Eraste Landry Rd',
 ];
-
-const ROOF_TYPES = [
-  'Asphalt Shingle',
+const ROOFS = [
+  'Asphalt 3-Tab',
+  'Architectural Shingle',
   'Metal Standing Seam',
   'Clay Tile',
   'TPO Membrane',
-  'Built-Up (BUR)',
-  'Slate',
   'Wood Shake',
 ];
-const ROOF_CONDITIONS = [
-  'New (0-3yr)',
-  'Good (3-8yr)',
-  'Aging (8-15yr)',
-  'Worn (15-25yr)',
-  'Critical (25yr+)',
+const NAMES = [
+  'Sarah M.',
+  'James T.',
+  'Maria G.',
+  'Robert K.',
+  'Lisa P.',
+  'David W.',
+  'Jennifer H.',
+  'Michael C.',
+  'Amanda R.',
+  'Chris L.',
+  'Nicole B.',
+  'Tyler F.',
+  'Karen D.',
+  'Brian S.',
+  'Ashley J.',
 ];
+const SOURCES = [
+  'Storm Canvass',
+  'Google Ads',
+  'Referral',
+  'GBP Organic',
+  'Yard Sign',
+  'Repeat Customer',
+  'Nextdoor',
+  'Facebook Ad',
+  'Insurance Referral',
+  'Home Advisor',
+];
+const CONDS = ['New', 'Good', 'Aging', 'Worn', 'Critical'] as const;
+const STATUSES = [
+  'new',
+  'new',
+  'new',
+  'contacted',
+  'inspected',
+  'proposed',
+  'contracted',
+  'installed',
+] as const;
 
-interface Property {
-  id: string;
-  address: string;
-  city: string;
-  meshAtSite: number;
-  roofType: string;
-  roofCondition: string;
-  roofAge: number;
-  sqft: number;
-  yearBuilt: number;
-  damageProb: number;
-  confidence: 'high' | 'medium' | 'low';
-  canvassStatus: 'unvisited' | 'visited' | 'flagged';
-  x: number;
-  y: number;
-  hasDroneData: boolean;
-  priorClaims: number;
+function genProps(n: number, seed: number): Property[] {
+  const r = R(seed);
+  return Array.from({ length: n }, (_, i) => {
+    const mesh = r() * 3.5 + 0.5;
+    const age = Math.floor(r() * 35);
+    const ci = age < 3 ? 0 : age < 8 ? 1 : age < 15 ? 2 : age < 25 ? 3 : 4;
+    const vuln = [0.1, 0.25, 0.5, 0.75, 0.95][ci];
+    const raw =
+      Math.min(mesh / 2.5, 1) * 0.45 +
+      vuln * 0.3 +
+      r() * 0.3 * 0.15 +
+      r() * 0.15 * 0.1;
+    const prob = Math.min(Math.max(raw + (r() - 0.5) * 0.1, 0.02), 0.99);
+    const closeProb = prob * (0.5 + r() * 0.4) * (age > 15 ? 1.2 : 1);
+    const jobValue = Math.floor(6000 + r() * 18000);
+    const minsAgo = Math.floor(r() * 480);
+    return {
+      id: `P${String(i).padStart(3, '0')}`,
+      address: `${Math.floor(r() * 9000 + 100)} ${STREETS[Math.floor(r() * STREETS.length)]}`,
+      homeowner: NAMES[Math.floor(r() * NAMES.length)],
+      phone: `(337) ${Math.floor(r() * 900 + 100)}-${Math.floor(r() * 9000 + 1000)}`,
+      mesh: +mesh.toFixed(2),
+      roof: ROOFS[Math.floor(r() * ROOFS.length)],
+      cond: CONDS[ci],
+      age,
+      sqft: Math.floor(r() * 3000 + 800),
+      year: 2026 - Math.floor(r() * 55 + 5),
+      damageProb: +prob.toFixed(3),
+      closeProb: +Math.min(closeProb, 0.95).toFixed(3),
+      estValue: jobValue,
+      expectedValue: Math.floor(jobValue * closeProb),
+      source: SOURCES[Math.floor(r() * SOURCES.length)],
+      status: STATUSES[Math.floor(r() * 8)],
+      claims: Math.floor(r() * 3),
+      contactPref: (r() > 0.6 ? 'phone' : r() > 0.3 ? 'text' : 'email') as
+        | 'phone'
+        | 'text'
+        | 'email',
+      minsAgo,
+      responseTime:
+        minsAgo < 5
+          ? '< 5 min'
+          : minsAgo < 30
+            ? `${minsAgo} min`
+            : `${Math.floor(minsAgo / 60)}h ${minsAgo % 60}m`,
+      hasInspection: r() > 0.6,
+      hasSupplement: r() > 0.8,
+    };
+  }).sort((a, b) => b.expectedValue - a.expectedValue);
 }
 
-function generateProperties(count: number, stormId: string): Property[] {
-  const rng = seededRandom(stormId.charCodeAt(stormId.length - 1) * 7919);
-  const props: Property[] = [];
-  for (let i = 0; i < count; i++) {
-    const meshAtSite = rng() * 3.5 + 0.5;
-    const roofAge = Math.floor(rng() * 35);
-    const roofCondIdx =
-      roofAge < 3
-        ? 0
-        : roofAge < 8
-          ? 1
-          : roofAge < 15
-            ? 2
-            : roofAge < 25
-              ? 3
-              : 4;
-    const roofVulnerability = [0.1, 0.25, 0.5, 0.75, 0.95][roofCondIdx];
-    const meshFactor = Math.min(meshAtSite / 2.5, 1);
-    const windFactor = rng() * 0.3;
-    const treeCover = rng() * 0.15;
-    const rawScore =
-      meshFactor * 0.45 +
-      roofVulnerability * 0.3 +
-      windFactor * 0.15 +
-      treeCover * 0.1;
-    const damageProb = Math.min(
-      Math.max(rawScore + (rng() - 0.5) * 0.1, 0.02),
-      0.99,
-    );
-    const x = rng() * 100;
-    const y = rng() * 100;
-    const confidenceRoll = rng();
+// ═══════════════════════════════════════════════════
+// SHARED UI PRIMITIVES
+// ═══════════════════════════════════════════════════
 
-    props.push({
-      id: `P-${stormId.slice(-1)}-${String(i).padStart(4, '0')}`,
-      address: `${Math.floor(rng() * 9000 + 100)} ${STREET_NAMES[Math.floor(rng() * STREET_NAMES.length)]}`,
-      city: 'Lafayette, LA',
-      meshAtSite: +meshAtSite.toFixed(2),
-      roofType: ROOF_TYPES[Math.floor(rng() * ROOF_TYPES.length)],
-      roofCondition: ROOF_CONDITIONS[roofCondIdx],
-      roofAge,
-      sqft: Math.floor(rng() * 3000 + 800),
-      yearBuilt: 2026 - Math.floor(rng() * 60 + 5),
-      damageProb: +damageProb.toFixed(3),
-      confidence:
-        confidenceRoll > 0.3
-          ? 'high'
-          : confidenceRoll > 0.15
-            ? 'medium'
-            : 'low',
-      canvassStatus: 'unvisited',
-      x,
-      y,
-      hasDroneData: rng() > 0.85,
-      priorClaims: Math.floor(rng() * 3),
-    });
-  }
-  return props.sort((a, b) => b.damageProb - a.damageProb);
-}
+const pc = (p: number) =>
+  p > 0.7 ? '#ef4444' : p > 0.4 ? '#f59e0b' : p > 0.2 ? '#22c55e' : '#52525b';
+const pt = (p: number) =>
+  p > 0.7
+    ? 'text-red-400'
+    : p > 0.4
+      ? 'text-amber-400'
+      : p > 0.2
+        ? 'text-emerald-400'
+        : 'text-zinc-500';
 
-// --- UI Components ---
-type BadgeColor = 'red' | 'amber' | 'green' | 'blue' | 'gray' | 'purple';
+const BADGE_COLORS: Record<string, string> = {
+  red: 'bg-red-500/15 text-red-400 border-red-500/25',
+  amber: 'bg-amber-500/15 text-amber-400 border-amber-500/25',
+  green: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25',
+  blue: 'bg-sky-500/15 text-sky-400 border-sky-500/25',
+  violet: 'bg-violet-500/15 text-violet-400 border-violet-500/25',
+  zinc: 'bg-zinc-800 text-zinc-400 border-zinc-700',
+  cyan: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/25',
+};
 
-const Badge = ({
+function Badge({
   children,
-  color = 'gray',
+  color = 'zinc',
 }: {
   children: React.ReactNode;
-  color?: BadgeColor;
-}) => {
-  const colors: Record<BadgeColor, string> = {
-    red: 'bg-red-500/20 text-red-300 border-red-500/30',
-    amber: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-    green: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-    blue: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
-    gray: 'bg-zinc-700/40 text-zinc-400 border-zinc-600/30',
-    purple: 'bg-violet-500/20 text-violet-300 border-violet-500/30',
-  };
+  color?: string;
+}) {
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider border rounded ${colors[color]}`}
+      className={`inline-flex items-center px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider border rounded-md ${BADGE_COLORS[color]}`}
     >
       {children}
     </span>
   );
-};
+}
 
-const DamageBar = ({
-  value,
-  size = 'sm',
-}: {
-  value: number;
-  size?: 'sm' | 'lg';
-}) => {
-  const pct = value * 100;
-  const color =
-    pct > 70
-      ? '#ef4444'
-      : pct > 40
-        ? '#f59e0b'
-        : pct > 20
-          ? '#22c55e'
-          : '#6b7280';
-  const h = size === 'sm' ? 'h-1.5' : 'h-3';
+function Bar({ value, max = 1 }: { value: number; max?: number }) {
   return (
-    <div className={`w-full ${h} bg-zinc-800 rounded-full overflow-hidden`}>
+    <div className="w-full h-1.5 bg-zinc-800/80 rounded-full overflow-hidden">
       <div
-        className={`${h} rounded-full transition-all duration-700`}
-        style={{ width: `${pct}%`, backgroundColor: color }}
+        className="h-full rounded-full transition-all duration-500"
+        style={{ width: `${(value / max) * 100}%`, backgroundColor: pc(value) }}
       />
     </div>
   );
-};
+}
 
-const StatCard = ({
+function KPI({
   label,
   value,
   sub,
   accent,
+  large,
 }: {
   label: string;
-  value: number;
+  value: string | number;
   sub?: string;
   accent?: string;
-}) => (
-  <div className="bg-zinc-900/80 border border-zinc-800 rounded-lg p-3">
-    <div className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">
-      {label}
-    </div>
-    <div
-      className={`text-2xl font-black tabular-nums ${accent ?? 'text-zinc-100'}`}
-    >
-      {value}
-    </div>
-    {sub && <div className="text-[11px] text-zinc-500 mt-0.5">{sub}</div>}
-  </div>
-);
-
-// --- Hail Swath Map Component ---
-const HailSwathMap = ({
-  properties,
-  selectedId,
-  onSelect,
-  meshMax,
-}: {
-  properties: Property[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  meshMax: number;
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-    const W = rect.width;
-    const H = rect.height;
-
-    ctx.fillStyle = '#0a0a0a';
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x < W; x += 30) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, H);
-      ctx.stroke();
-    }
-    for (let y = 0; y < H; y += 30) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
-    }
-
-    const swathCenters = [
-      { x: W * 0.35, y: H * 0.3, r: W * 0.25, intensity: 0.9 },
-      { x: W * 0.55, y: H * 0.5, r: W * 0.2, intensity: 0.7 },
-      { x: W * 0.7, y: H * 0.65, r: W * 0.15, intensity: 0.4 },
-    ];
-    swathCenters.forEach(({ x, y, r, intensity }) => {
-      const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-      if (intensity > 0.7) {
-        grad.addColorStop(0, 'rgba(239,68,68,0.25)');
-        grad.addColorStop(0.4, 'rgba(245,158,11,0.15)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-      } else if (intensity > 0.4) {
-        grad.addColorStop(0, 'rgba(245,158,11,0.2)');
-        grad.addColorStop(0.5, 'rgba(34,197,94,0.1)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-      } else {
-        grad.addColorStop(0, 'rgba(34,197,94,0.15)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-      }
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, W, H);
-    });
-
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = 'rgba(245,158,11,0.3)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(W * 0.45, H * 0.42, W * 0.32, H * 0.35, 0.3, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    ctx.strokeStyle = '#1e1e3a';
-    ctx.lineWidth = 1;
-    const streets: [[number, number], [number, number]][] = [
-      [
-        [W * 0.1, H * 0.2],
-        [W * 0.9, H * 0.25],
-      ],
-      [
-        [W * 0.15, H * 0.4],
-        [W * 0.85, H * 0.38],
-      ],
-      [
-        [W * 0.1, H * 0.6],
-        [W * 0.9, H * 0.62],
-      ],
-      [
-        [W * 0.1, H * 0.8],
-        [W * 0.85, H * 0.78],
-      ],
-      [
-        [W * 0.2, H * 0.05],
-        [W * 0.22, H * 0.95],
-      ],
-      [
-        [W * 0.4, H * 0.05],
-        [W * 0.38, H * 0.95],
-      ],
-      [
-        [W * 0.6, H * 0.05],
-        [W * 0.62, H * 0.95],
-      ],
-      [
-        [W * 0.8, H * 0.05],
-        [W * 0.78, H * 0.95],
-      ],
-    ];
-    streets.forEach(([a, b]) => {
-      ctx.beginPath();
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-      ctx.stroke();
-    });
-
-    properties.forEach((p) => {
-      const px = (p.x / 100) * W;
-      const py = (p.y / 100) * H;
-      const isSelected = p.id === selectedId;
-      const isHovered = p.id === hoveredId;
-      const sz = isSelected ? 7 : isHovered ? 6 : 4;
-
-      const dmg = p.damageProb;
-      const fillColor =
-        dmg > 0.7
-          ? '#ef4444'
-          : dmg > 0.4
-            ? '#f59e0b'
-            : dmg > 0.2
-              ? '#22c55e'
-              : '#6b7280';
-
-      if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(px, py, 14, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(56,189,248,0.5)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      if (p.canvassStatus === 'visited') {
-        ctx.beginPath();
-        ctx.arc(px, py, sz + 2, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(168,85,247,0.6)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = isSelected || isHovered ? 1 : 0.75;
-      ctx.fillRect(px - sz, py - sz, sz * 2, sz * 2);
-      ctx.globalAlpha = 1;
-
-      if (p.hasDroneData) {
-        ctx.fillStyle = '#38bdf8';
-        ctx.beginPath();
-        ctx.arc(px + sz + 3, py - sz - 2, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    });
-
-    ctx.fillStyle = 'rgba(10,10,10,0.85)';
-    ctx.fillRect(8, H - 90, 160, 82);
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(8, H - 90, 160, 82);
-    ctx.font = 'bold 9px monospace';
-    ctx.fillStyle = '#888';
-    ctx.fillText('DAMAGE PROBABILITY', 16, H - 74);
-    const legendItems: [string, string][] = [
-      ['#ef4444', '> 70% HIGH'],
-      ['#f59e0b', '40-70% MODERATE'],
-      ['#22c55e', '20-40% LOW'],
-      ['#6b7280', '< 20% MINIMAL'],
-    ];
-    legendItems.forEach(([c, label], i) => {
-      ctx.fillStyle = c;
-      ctx.fillRect(16, H - 62 + i * 15, 8, 8);
-      ctx.fillStyle = '#aaa';
-      ctx.font = '9px monospace';
-      ctx.fillText(label, 30, H - 55 + i * 15);
-    });
-
-    ctx.fillStyle = 'rgba(10,10,10,0.8)';
-    ctx.fillRect(W - 150, 8, 142, 28);
-    ctx.font = 'bold 10px monospace';
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillText(`MESH MAX: ${meshMax}" ⚡`, W - 142, 26);
-  }, [properties, selectedId, hoveredId, meshMax]);
-
-  const handleCanvasClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const mx = ((e.clientX - rect.left) / rect.width) * 100;
-      const my = ((e.clientY - rect.top) / rect.height) * 100;
-      let closest: Property | null = null;
-      let closestDist = Infinity;
-      properties.forEach((p) => {
-        const d = Math.hypot(p.x - mx, p.y - my);
-        if (d < closestDist && d < 4) {
-          closest = p;
-          closestDist = d;
-        }
-      });
-      if (closest) onSelect((closest as Property).id);
-    },
-    [properties, onSelect],
-  );
-
-  const handleCanvasMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const mx = ((e.clientX - rect.left) / rect.width) * 100;
-      const my = ((e.clientY - rect.top) / rect.height) * 100;
-      let closest: Property | null = null;
-      let closestDist = Infinity;
-      properties.forEach((p) => {
-        const d = Math.hypot(p.x - mx, p.y - my);
-        if (d < closestDist && d < 4) {
-          closest = p;
-          closestDist = d;
-        }
-      });
-      setHoveredId((closest as Property | null)?.id ?? null);
-    },
-    [properties],
-  );
-
+  large?: boolean;
+}) {
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full cursor-crosshair rounded-lg"
-      onClick={handleCanvasClick}
-      onMouseMove={handleCanvasMove}
+    <div
+      className={`bg-zinc-900/70 border border-zinc-800/60 rounded-xl ${large ? 'p-4' : 'p-2.5'}`}
+    >
+      <div className="text-[8px] uppercase tracking-[0.2em] text-zinc-600 mb-0.5">
+        {label}
+      </div>
+      <div
+        className={`${large ? 'text-3xl' : 'text-xl'} font-black tabular-nums leading-tight ${accent || 'text-zinc-100'}`}
+      >
+        {value}
+      </div>
+      {sub && <div className="text-[10px] text-zinc-600 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+const STATUS_MAP: Record<string, [string, string]> = {
+  new: ['New', 'blue'],
+  contacted: ['Contacted', 'cyan'],
+  inspected: ['Inspected', 'amber'],
+  proposed: ['Proposed', 'violet'],
+  contracted: ['Contracted', 'green'],
+  installed: ['Installed', 'green'],
+};
+
+function StatusPill({ status }: { status: string }) {
+  const [label, color] = STATUS_MAP[status] ?? ['Unknown', 'zinc'];
+  return <Badge color={color}>{label}</Badge>;
+}
+
+function Spinner({
+  className = 'w-3.5 h-3.5 border-amber-400',
+}: {
+  className?: string;
+}) {
+  return (
+    <span
+      className={`${className} border-2 border-t-transparent rounded-full animate-spin inline-block`}
     />
   );
-};
+}
 
-// --- Property Detail Panel ---
-const PropertyDetail = ({
-  property,
-  onCanvass,
-  onClose,
+// ═══════════════════════════════════════════════════
+// VIEW: OWNER KPI COMMAND CENTER
+// ═══════════════════════════════════════════════════
+
+function OwnerDashboard({
+  props,
+  alerts,
+  spc,
 }: {
-  property: Property;
-  onCanvass: (id: string, status: 'visited' | 'flagged') => void;
-  onClose: () => void;
-}) => {
-  const p = property;
-  const pct = (p.damageProb * 100).toFixed(1);
-  const color =
-    p.damageProb > 0.7
-      ? 'text-red-400'
-      : p.damageProb > 0.4
-        ? 'text-amber-400'
-        : p.damageProb > 0.2
-          ? 'text-emerald-400'
-          : 'text-zinc-400';
-
-  return (
-    <div className="bg-zinc-950 border border-zinc-800 rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-zinc-900/50">
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-3 h-3 rounded-sm ${p.damageProb > 0.7 ? 'bg-red-500' : p.damageProb > 0.4 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-          />
-          <span className="text-xs font-mono text-zinc-400">{p.id}</span>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-zinc-500 hover:text-zinc-300 text-sm"
-        >
-          ✕
-        </button>
-      </div>
-
-      <div className="p-4 space-y-4">
-        <div>
-          <div className="text-sm font-semibold text-zinc-100">{p.address}</div>
-          <div className="text-xs text-zinc-500">
-            {p.city} · Built {p.yearBuilt} · {p.sqft.toLocaleString()} sqft
-          </div>
-        </div>
-
-        <div className="bg-zinc-900/60 rounded-lg p-3 border border-zinc-800">
-          <div className="flex items-baseline justify-between mb-2">
-            <span className="text-[10px] uppercase tracking-widest text-zinc-500">
-              Damage Probability
-            </span>
-            <span className={`text-2xl font-black tabular-nums ${color}`}>
-              {pct}%
-            </span>
-          </div>
-          <DamageBar value={p.damageProb} size="lg" />
-          <div className="flex justify-between mt-2">
-            <Badge
-              color={
-                p.confidence === 'high'
-                  ? 'green'
-                  : p.confidence === 'medium'
-                    ? 'amber'
-                    : 'red'
-              }
-            >
-              {p.confidence} confidence
-            </Badge>
-            {p.hasDroneData && <Badge color="blue">drone verified</Badge>}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="bg-zinc-900/40 rounded p-2 border border-zinc-800/50">
-            <div className="text-zinc-500 text-[10px] uppercase">
-              MESH at Site
-            </div>
-            <div className="text-zinc-200 font-bold text-lg tabular-nums">
-              {p.meshAtSite}"
-            </div>
-          </div>
-          <div className="bg-zinc-900/40 rounded p-2 border border-zinc-800/50">
-            <div className="text-zinc-500 text-[10px] uppercase">Roof Age</div>
-            <div className="text-zinc-200 font-bold text-lg tabular-nums">
-              {p.roofAge} yr
-            </div>
-          </div>
-          <div className="bg-zinc-900/40 rounded p-2 border border-zinc-800/50">
-            <div className="text-zinc-500 text-[10px] uppercase">Roof Type</div>
-            <div className="text-zinc-200 font-semibold text-xs mt-0.5">
-              {p.roofType}
-            </div>
-          </div>
-          <div className="bg-zinc-900/40 rounded p-2 border border-zinc-800/50">
-            <div className="text-zinc-500 text-[10px] uppercase">Condition</div>
-            <div className="text-zinc-200 font-semibold text-xs mt-0.5">
-              {p.roofCondition}
-            </div>
-          </div>
-        </div>
-
-        {p.priorClaims > 0 && (
-          <div className="flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
-            <span>⚠</span>
-            <span>
-              {p.priorClaims} prior claim{p.priorClaims > 1 ? 's' : ''} on file
-            </span>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            onClick={() => onCanvass(p.id, 'visited')}
-            className={`flex-1 text-xs font-bold uppercase tracking-wider py-2.5 rounded-lg border transition-all ${
-              p.canvassStatus === 'visited'
-                ? 'bg-violet-500/20 border-violet-500/40 text-violet-300'
-                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-            }`}
-          >
-            {p.canvassStatus === 'visited' ? '✓ Visited' : 'Mark Visited'}
-          </button>
-          <button
-            onClick={() => onCanvass(p.id, 'flagged')}
-            className={`flex-1 text-xs font-bold uppercase tracking-wider py-2.5 rounded-lg border transition-all ${
-              p.canvassStatus === 'flagged'
-                ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-            }`}
-          >
-            {p.canvassStatus === 'flagged' ? '⚑ Flagged' : 'Flag for Review'}
-          </button>
-        </div>
-
-        <button className="w-full text-xs font-bold uppercase tracking-wider py-2.5 rounded-lg border bg-sky-500/15 border-sky-500/30 text-sky-300 hover:bg-sky-500/25 transition-all">
-          Generate Hail Report →
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// --- AI Scout Panel ---
-const AIScoutPanel = ({
-  properties,
-  onSelect,
-}: {
-  properties: Property[];
-  onSelect: (id: string) => void;
-}) => {
-  const top10 = properties.slice(0, 10);
-  return (
-    <div className="space-y-1">
-      {top10.map((p, i) => (
-        <button
-          key={p.id}
-          onClick={() => onSelect(p.id)}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-zinc-800/60 transition-colors text-left group"
-        >
-          <span className="text-[10px] font-mono text-zinc-600 w-4">
-            {String(i + 1).padStart(2, '0')}
-          </span>
-          <div
-            className={`w-2.5 h-2.5 rounded-sm flex-shrink-0 ${p.damageProb > 0.7 ? 'bg-red-500' : p.damageProb > 0.4 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="text-xs text-zinc-300 truncate group-hover:text-zinc-100">
-              {p.address}
-            </div>
-            <div className="text-[10px] text-zinc-600">
-              {p.roofCondition} · {p.meshAtSite}" MESH
-            </div>
-          </div>
-          <span
-            className={`text-xs font-black tabular-nums ${p.damageProb > 0.7 ? 'text-red-400' : p.damageProb > 0.4 ? 'text-amber-400' : 'text-emerald-400'}`}
-          >
-            {(p.damageProb * 100).toFixed(0)}%
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-};
-
-// --- Main App ---
-type ViewKey = 'map' | 'scout' | 'storms';
-type FilterKey = 'all' | 'high' | 'unvisited';
-
-export default function StormScope() {
-  const [activeStorm, setActiveStorm] = useState<StormEvent>(STORM_EVENTS[0]);
-  const [properties, setProperties] = useState<Property[]>([]);
-  const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
-  const [view, setView] = useState<ViewKey>('map');
-  const [filter, setFilter] = useState<FilterKey>('all');
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(true);
-    const timer = setTimeout(() => {
-      setProperties(generateProperties(80, activeStorm.id));
-      setSelectedPropId(null);
-      setLoading(false);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [activeStorm]);
-
-  const handleCanvass = useCallback(
-    (id: string, status: 'visited' | 'flagged') => {
-      setProperties((prev) =>
-        prev.map((p) =>
-          p.id === id
-            ? {
-                ...p,
-                canvassStatus:
-                  p.canvassStatus === status ? 'unvisited' : status,
-              }
-            : p,
-        ),
-      );
-    },
-    [],
-  );
-
-  const filteredProperties = useMemo(() => {
-    if (filter === 'high') return properties.filter((p) => p.damageProb > 0.6);
-    if (filter === 'unvisited')
-      return properties.filter((p) => p.canvassStatus === 'unvisited');
-    return properties;
-  }, [properties, filter]);
-
-  const selectedProp = properties.find((p) => p.id === selectedPropId) ?? null;
-
+  props: Property[];
+  alerts: NWSAlert[];
+  spc: SPCReport[];
+}) {
   const stats = useMemo(() => {
-    const high = properties.filter((p) => p.damageProb > 0.7).length;
-    const mod = properties.filter(
-      (p) => p.damageProb > 0.4 && p.damageProb <= 0.7,
+    const byStatus = (s: string) => props.filter((p) => p.status === s).length;
+    const pipeline = props.filter((p) =>
+      ['contacted', 'inspected', 'proposed', 'contracted'].includes(p.status),
+    );
+    const slow = props.filter(
+      (p) => p.minsAgo > 30 && p.status === 'new',
     ).length;
-    const visited = properties.filter(
-      (p) => p.canvassStatus === 'visited',
-    ).length;
-    const drone = properties.filter((p) => p.hasDroneData).length;
-    return { high, mod, visited, drone, total: properties.length };
-  }, [properties]);
+    const bySource: Record<string, number> = {};
+    props.forEach((p) => {
+      bySource[p.source] = (bySource[p.source] || 0) + 1;
+    });
+    return {
+      leads: byStatus('new'),
+      contacted: byStatus('contacted'),
+      inspected: byStatus('inspected'),
+      proposed: byStatus('proposed'),
+      contracted: byStatus('contracted'),
+      installed: byStatus('installed'),
+      pipelineValue: pipeline.reduce((s, p) => s + p.estValue, 0),
+      avgClose: props.reduce((s, p) => s + p.closeProb, 0) / props.length,
+      fast: props.filter((p) => p.minsAgo < 5).length,
+      slow,
+      avgJobValue: Math.floor(
+        props.reduce((s, p) => s + p.estValue, 0) / props.length,
+      ),
+      topSources: Object.entries(bySource)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5),
+      total: props.length,
+    };
+  }, [props]);
+
+  const PIPELINE = [
+    ['New', stats.leads, 'text-sky-400'],
+    ['Contacted', stats.contacted, 'text-cyan-400'],
+    ['Inspected', stats.inspected, 'text-amber-400'],
+    ['Proposed', stats.proposed, 'text-violet-400'],
+    ['Contracted', stats.contracted, 'text-emerald-400'],
+    ['Installed', stats.installed, 'text-emerald-400'],
+  ] as const;
 
   return (
-    <div
-      className="h-screen w-full bg-[#050508] text-zinc-100 flex flex-col overflow-hidden"
-      style={{
-        fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
-      }}
-    >
-      {/* Header */}
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-800/80 bg-[#08080d] flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-gradient-to-br from-amber-500 to-red-600 rounded-lg flex items-center justify-center text-[10px] font-black text-white">
-              SS
-            </div>
-            <div>
-              <div className="text-sm font-black tracking-tight text-zinc-100">
-                STORMSCOPE
-              </div>
-              <div className="text-[9px] text-zinc-600 tracking-widest uppercase">
-                Hail Intelligence Platform
-              </div>
-            </div>
-          </div>
+    <div className="space-y-3">
+      <div className="bg-zinc-900/50 rounded-xl border border-zinc-800/50 p-3">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500 mb-3">
+          Sales Pipeline
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[10px] text-emerald-400 uppercase tracking-wider">
-              Live
+        <div className="grid grid-cols-6 gap-1">
+          {PIPELINE.map(([label, val, cls]) => (
+            <div key={label} className="text-center">
+              <div className={`text-lg font-black tabular-nums ${cls}`}>
+                {val}
+              </div>
+              <div className="text-[7px] uppercase text-zinc-600 tracking-wider">
+                {label}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-[10px] text-zinc-500">Pipeline Value</span>
+          <span className="text-sm font-black text-emerald-400">
+            ${(stats.pipelineValue / 1000).toFixed(0)}K
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <KPI
+          label="Avg Job Value"
+          value={`$${(stats.avgJobValue / 1000).toFixed(1)}K`}
+        />
+        <KPI
+          label="Avg Close Prob"
+          value={`${(stats.avgClose * 100).toFixed(0)}%`}
+          accent={pt(stats.avgClose)}
+        />
+        <KPI
+          label="Fast Response"
+          value={stats.fast}
+          sub="< 5 min"
+          accent="text-emerald-400"
+        />
+        <KPI
+          label="Stale Leads"
+          value={stats.slow}
+          sub="> 30 min"
+          accent={stats.slow > 5 ? 'text-red-400' : 'text-amber-400'}
+        />
+        <KPI
+          label="SPC Reports"
+          value={spc.length}
+          sub="today"
+          accent="text-amber-400"
+        />
+        <KPI
+          label="NWS Alerts"
+          value={alerts.length}
+          sub="active"
+          accent={alerts.length > 0 ? 'text-red-400' : 'text-emerald-400'}
+        />
+      </div>
+
+      <div className="bg-zinc-900/50 rounded-xl border border-zinc-800/50 p-3">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500 mb-2">
+          Lead Sources
+        </div>
+        {stats.topSources.map(([source, count]) => (
+          <div key={source} className="flex items-center gap-2 mb-1.5">
+            <span className="text-[10px] text-zinc-400 w-28 truncate">
+              {source}
+            </span>
+            <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-500/60 rounded-full"
+                style={{ width: `${(count / stats.total) * 100}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-zinc-500 tabular-nums w-6 text-right">
+              {count}
             </span>
           </div>
-          <div className="text-[10px] text-zinc-600">
-            {new Date().toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
+        ))}
+      </div>
+
+      <div className="bg-zinc-900/50 rounded-xl border border-zinc-800/50 p-3">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500 mb-2">
+          ⚠ Action Items
+        </div>
+        <div className="space-y-1.5 text-[11px]">
+          {stats.slow > 0 && (
+            <div className="flex items-start gap-2 text-red-400">
+              <span className="mt-0.5">●</span>
+              <span>
+                {stats.slow} leads waiting 30+ min — speed compounds before
+                competitors answer
+              </span>
+            </div>
+          )}
+          {stats.inspected > 3 && (
+            <div className="flex items-start gap-2 text-amber-400">
+              <span className="mt-0.5">●</span>
+              <span>
+                {stats.inspected} inspections need proposals — cycle time is
+                leaking close rate
+              </span>
+            </div>
+          )}
+          {stats.proposed > 2 && (
+            <div className="flex items-start gap-2 text-violet-400">
+              <span className="mt-0.5">●</span>
+              <span>
+                {stats.proposed} proposals out — follow-up cadence check needed
+              </span>
+            </div>
+          )}
+          <div className="flex items-start gap-2 text-emerald-400">
+            <span className="mt-0.5">●</span>
+            <span>
+              {stats.installed} jobs completed — trigger review request within
+              48h
+            </span>
           </div>
         </div>
-      </header>
+      </div>
+    </div>
+  );
+}
 
-      {/* Storm Selector Bar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800/50 bg-[#08080d] overflow-x-auto flex-shrink-0">
-        {STORM_EVENTS.map((s) => (
+// ═══════════════════════════════════════════════════
+// VIEW: SALES REP — TERRITORY + LEADS + AI SCOUT
+// ═══════════════════════════════════════════════════
+
+function SalesView({
+  props,
+  onSelect,
+  aiEnabled,
+  scoutReasons,
+  scoutLoading,
+  scoutError,
+  onRunScout,
+  conciergeState,
+  onDraftResponse,
+}: {
+  props: Property[];
+  onSelect: (p: Property) => void;
+  aiEnabled: boolean;
+  scoutReasons: Map<string, string>;
+  scoutLoading: boolean;
+  scoutError: string | null;
+  onRunScout: () => void;
+  conciergeState: Map<
+    string,
+    { loading: boolean; result: ConciergeResponse | null; error: string | null }
+  >;
+  onDraftResponse: (p: Property) => void;
+}) {
+  const [filter, setFilter] = useState<'all' | 'hot' | 'stale' | 'ready'>(
+    'all',
+  );
+  const filtered = useMemo(() => {
+    if (filter === 'hot')
+      return props.filter((p) => p.expectedValue > 5000 && p.status === 'new');
+    if (filter === 'stale')
+      return props.filter((p) => p.minsAgo > 30 && p.status === 'new');
+    if (filter === 'ready')
+      return props.filter((p) => p.hasInspection && p.status === 'inspected');
+    return props;
+  }, [props, filter]);
+
+  return (
+    <div className="space-y-2">
+      {/* AI Concierge status bar */}
+      <div className="bg-gradient-to-r from-sky-500/10 to-violet-500/10 rounded-xl border border-sky-500/20 p-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-400">
+            🤖 AI Lead Concierge
+          </span>
+          <Badge color={aiEnabled ? 'green' : 'zinc'}>
+            {aiEnabled ? 'Active' : 'No API Key'}
+          </Badge>
+        </div>
+        <div className="text-[11px] text-zinc-400">
+          {aiEnabled ? (
+            <>
+              Auto-responding to new leads via preferred channel. Avg response:{' '}
+              <span className="text-emerald-400 font-bold">47 sec</span>. Set
+              rate: <span className="text-emerald-400 font-bold">78%</span>
+            </>
+          ) : (
+            'Add VITE_OPENAI_API_KEY to .env.local to enable AI features'
+          )}
+        </div>
+      </div>
+
+      {/* AI Scout trigger */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onRunScout}
+          disabled={!aiEnabled || scoutLoading}
+          title={
+            !aiEnabled ? 'Add VITE_OPENAI_API_KEY to .env.local' : undefined
+          }
+          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+            !aiEnabled
+              ? 'text-zinc-700 cursor-not-allowed'
+              : scoutLoading
+                ? 'bg-amber-500/10 text-amber-500'
+                : scoutReasons.size > 0
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+          }`}
+        >
+          {scoutLoading ? (
+            <>
+              <Spinner className="w-3 h-3 border-amber-400" /> Scouting...
+            </>
+          ) : (
+            '⚡ Run AI Scout'
+          )}
+        </button>
+        {scoutError && (
+          <span className="text-[10px] text-red-400">{scoutError}</span>
+        )}
+        {scoutReasons.size > 0 && !scoutLoading && (
+          <span className="text-[10px] text-amber-400">
+            {scoutReasons.size} properties analyzed
+          </span>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-1.5">
+        {(
+          [
+            ['all', 'All'],
+            ['hot', '🔥 High EV'],
+            ['stale', '⚠ Stale'],
+            ['ready', '✓ Needs Proposal'],
+          ] as const
+        ).map(([k, l]) => (
           <button
-            key={s.id}
-            onClick={() => setActiveStorm(s)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-all border ${
-              activeStorm.id === s.id
-                ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
-                : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
-            }`}
+            key={k}
+            onClick={() => setFilter(k)}
+            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${filter === k ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-600'}`}
           >
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${s.status === 'active' ? 'bg-red-500 animate-pulse' : s.status === 'verified' ? 'bg-emerald-500' : 'bg-zinc-600'}`}
-            />
-            <span className="font-semibold">{s.name}</span>
-            <span className="text-zinc-600">{s.maxMesh}"</span>
+            {l}
           </button>
         ))}
       </div>
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-5 gap-2 px-4 py-2 border-b border-zinc-800/50 bg-[#08080d] flex-shrink-0">
-        <StatCard label="Properties" value={stats.total} sub="in swath" />
-        <StatCard
-          label="High Risk"
-          value={stats.high}
-          accent="text-red-400"
-          sub={`>${stats.total > 0 ? ((stats.high / stats.total) * 100).toFixed(0) : 0}%`}
-        />
-        <StatCard label="Moderate" value={stats.mod} accent="text-amber-400" />
-        <StatCard
-          label="Canvassed"
-          value={stats.visited}
-          accent="text-violet-400"
-          sub={`of ${stats.total}`}
-        />
-        <StatCard
-          label="Drone Data"
-          value={stats.drone}
-          accent="text-sky-400"
-          sub="verified"
-        />
+      <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400 px-1">
+        ⚡ {filtered.length} Targets — Ranked by Expected Value
       </div>
 
-      {/* Tab Nav */}
-      <div className="flex items-center justify-between px-4 py-1.5 border-b border-zinc-800/50 bg-[#08080d] flex-shrink-0">
-        <div className="flex items-center gap-1">
-          {(
-            [
-              { key: 'map', label: '◉ Map' },
-              { key: 'scout', label: '⚡ AI Scout' },
-              { key: 'storms', label: '☁ Storms' },
-            ] as { key: ViewKey; label: string }[]
-          ).map((t) => (
+      {filtered.slice(0, 15).map((p, i) => {
+        const conc = conciergeState.get(p.id);
+        return (
+          <div
+            key={p.id}
+            className="bg-zinc-900/40 rounded-xl border border-zinc-800/40 overflow-hidden"
+          >
             <button
-              key={t.key}
-              onClick={() => setView(t.key)}
-              className={`px-3 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider transition-all ${
-                view === t.key
-                  ? 'bg-zinc-800 text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-300'
-              }`}
+              onClick={() => onSelect(p)}
+              className="w-full text-left p-3 hover:bg-zinc-800/40 transition-all"
             >
-              {t.label}
+              <div className="flex items-start justify-between mb-1.5">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-[10px] font-mono text-zinc-600">
+                      #{i + 1}
+                    </span>
+                    <span className="text-[12px] font-semibold text-zinc-200 truncate">
+                      {p.address}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    {p.homeowner} · {p.contactPref} preferred · {p.source}
+                  </div>
+                  {scoutReasons.has(p.id) && (
+                    <div className="text-[10px] text-amber-300/80 mt-0.5 italic">
+                      ⚡ {scoutReasons.get(p.id)}
+                    </div>
+                  )}
+                </div>
+                <StatusPill status={p.status} />
+              </div>
+              <div className="flex items-center gap-3 text-[10px]">
+                <span className="text-zinc-500">
+                  MESH{' '}
+                  <span className={`font-bold ${pt(p.damageProb)}`}>
+                    {p.mesh}"
+                  </span>
+                </span>
+                <span className="text-zinc-500">
+                  Dmg{' '}
+                  <span className={`font-bold ${pt(p.damageProb)}`}>
+                    {(p.damageProb * 100).toFixed(0)}%
+                  </span>
+                </span>
+                <span className="text-zinc-500">
+                  Close{' '}
+                  <span className={`font-bold ${pt(p.closeProb)}`}>
+                    {(p.closeProb * 100).toFixed(0)}%
+                  </span>
+                </span>
+                <span className="text-zinc-500">
+                  EV{' '}
+                  <span className="font-bold text-emerald-400">
+                    ${(p.expectedValue / 1000).toFixed(1)}K
+                  </span>
+                </span>
+                <span
+                  className={`ml-auto font-bold ${p.minsAgo < 5 ? 'text-emerald-400' : p.minsAgo < 30 ? 'text-amber-400' : 'text-red-400'}`}
+                >
+                  {p.responseTime}
+                </span>
+              </div>
+              <Bar value={p.closeProb} />
             </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1">
-          {(
-            [
-              { key: 'all', label: 'All' },
-              { key: 'high', label: 'High Risk' },
-              { key: 'unvisited', label: 'Unvisited' },
-            ] as { key: FilterKey; label: string }[]
-          ).map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={`px-2.5 py-1 rounded text-[10px] uppercase tracking-wider transition-all border ${
-                filter === f.key
-                  ? 'bg-zinc-800 border-zinc-600 text-zinc-300'
-                  : 'border-transparent text-zinc-600 hover:text-zinc-400'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex min-h-0">
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <div className="w-8 h-8 border-2 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-              <div className="text-xs text-zinc-500 uppercase tracking-widest">
-                Processing MESH Data...
+            {/* Draft Response row — visible for new leads when AI is enabled */}
+            {p.status === 'new' && (
+              <div className="border-t border-zinc-800/40 px-3 py-2">
+                {!conc || (!conc.loading && !conc.result) ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDraftResponse(p);
+                    }}
+                    disabled={!aiEnabled}
+                    title={
+                      !aiEnabled
+                        ? 'Add VITE_OPENAI_API_KEY to .env.local'
+                        : undefined
+                    }
+                    className={`text-[10px] font-bold uppercase tracking-wider transition-all ${aiEnabled ? 'text-sky-400 hover:text-sky-300' : 'text-zinc-700 cursor-not-allowed'}`}
+                  >
+                    🤖 Draft Response via {p.contactPref}
+                  </button>
+                ) : conc.loading ? (
+                  <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                    <Spinner className="w-3 h-3 border-zinc-500" /> Drafting{' '}
+                    {p.contactPref} response...
+                  </div>
+                ) : conc.error ? (
+                  <span className="text-[10px] text-red-400">{conc.error}</span>
+                ) : conc.result ? (
+                  <div className="space-y-1.5">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-sky-400">
+                      AI-Drafted {conc.result.channel.toUpperCase()} Response
+                    </div>
+                    {conc.result.channel === 'phone' ? (
+                      <ul className="space-y-0.5">
+                        {conc.result.talkingPoints.map((pt, i) => (
+                          <li
+                            key={i}
+                            className="text-[11px] text-zinc-300 flex gap-1.5"
+                          >
+                            <span className="text-zinc-600">{i + 1}.</span>
+                            {pt}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="text-[11px] text-zinc-300">
+                        {conc.result.message}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
-              <div className="text-[10px] text-zinc-700 mt-1">
-                {activeStorm.name} · {activeStorm.county}
-              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// VIEW: PROPERTY DETAIL — FULL FLYWHEEL
+// ═══════════════════════════════════════════════════
+
+function PropertyDetail({
+  p,
+  onBack,
+  aiEnabled,
+}: {
+  p: Property;
+  onBack: () => void;
+  aiEnabled: boolean;
+}) {
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'evidence' | 'supplement' | 'homeowner'
+  >('overview');
+  const [supplementDraft, setSupplementDraft] =
+    useState<SupplementDraft | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [supplementError, setSupplementError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const draftSupplement = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setDrafting(true);
+    setSupplementError(null);
+    try {
+      const draft = await runSupplementCopilot(
+        {
+          roof: p.roof,
+          age: p.age,
+          sqft: p.sqft,
+          mesh: p.mesh,
+          damageProb: p.damageProb,
+          cond: p.cond,
+        },
+        ctrl.signal,
+      );
+      setSupplementDraft(draft);
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setSupplementError(String(e));
+    } finally {
+      setDrafting(false);
+    }
+  }, [p]);
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
+
+  const TABS = [
+    ['overview', 'Property'],
+    ['evidence', 'Evidence'],
+    ['supplement', 'Supplement'],
+    ['homeowner', 'Homeowner View'],
+  ] as const;
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={onBack}
+        className="flex items-center gap-2 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+      >
+        <span>←</span> Back to list
+      </button>
+
+      <div className="bg-zinc-900/60 rounded-xl border border-zinc-800/50 p-4">
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <div className="text-[14px] font-bold text-zinc-100">
+              {p.address}
+            </div>
+            <div className="text-[11px] text-zinc-500">
+              {p.homeowner} · {p.phone} · Prefers {p.contactPref}
             </div>
           </div>
+          <StatusPill status={p.status} />
+        </div>
+        <div className="grid grid-cols-4 gap-2 mt-3">
+          {[
+            [`${(p.damageProb * 100).toFixed(0)}%`, 'Damage', pt(p.damageProb)],
+            [`${(p.closeProb * 100).toFixed(0)}%`, 'Close', pt(p.closeProb)],
+            [
+              `$${(p.estValue / 1000).toFixed(1)}K`,
+              'Est Value',
+              'text-zinc-200',
+            ],
+            [
+              `$${(p.expectedValue / 1000).toFixed(1)}K`,
+              'Exp Value',
+              'text-emerald-400',
+            ],
+          ].map(([val, label, cls]) => (
+            <div key={label} className="text-center">
+              <div className={`text-lg font-black ${cls}`}>{val}</div>
+              <div className="text-[8px] text-zinc-600 uppercase">{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-1 flex-wrap">
+        {TABS.map(([k, l]) => (
+          <button
+            key={k}
+            onClick={() => setActiveTab(k)}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider ${activeTab === k ? 'bg-zinc-800 text-zinc-200' : 'text-zinc-600'}`}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (
+        <div className="grid grid-cols-2 gap-2">
+          {(
+            [
+              ['MESH at Site', `${p.mesh}"`],
+              ['Roof Type', p.roof],
+              ['Roof Age', `${p.age} yr`],
+              ['Condition', p.cond],
+              ['Year Built', p.year],
+              ['Sqft', p.sqft.toLocaleString()],
+              ['Prior Claims', p.claims],
+              ['Source', p.source],
+            ] as const
+          ).map(([l, v]) => (
+            <div
+              key={l}
+              className="bg-zinc-900/40 rounded-lg p-2.5 border border-zinc-800/40"
+            >
+              <div className="text-[8px] uppercase tracking-widest text-zinc-600">
+                {l}
+              </div>
+              <div className="text-[12px] text-zinc-200 font-semibold mt-0.5">
+                {v}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'evidence' && (
+        <div className="space-y-2">
+          <div className="text-[10px] text-zinc-500">
+            Turn every inspection into a homeowner-ready AND claim-ready proof
+            package in minutes.
+          </div>
+          <div className="bg-zinc-900/40 rounded-xl border border-zinc-800/40 p-3">
+            <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-400 mb-2">
+              📋 Evidence Pack Status
+            </div>
+            {(
+              [
+                ['Hail swath overlay', 'MESH radar confirmation', true],
+                ['Property attributes', 'Roof age, type, sqft', true],
+                ['Inspection photos', 'Field capture', false],
+                ['AI damage analysis', 'Claude Vision scoring', false],
+                ['Weather event timestamp', 'NOAA verification', true],
+              ] as const
+            ).map(([item, desc, done]) => (
+              <div
+                key={item}
+                className="flex items-center gap-2 py-1.5 border-b border-zinc-800/30 last:border-0"
+              >
+                <span
+                  className={`text-[10px] w-4 ${done ? 'text-emerald-400' : 'text-zinc-600'}`}
+                >
+                  {done ? '✓' : '—'}
+                </span>
+                <div className="flex-1">
+                  <div className="text-[11px] text-zinc-300">{item}</div>
+                  <div className="text-[9px] text-zinc-600">{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button className="w-full py-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 text-[11px] font-bold uppercase tracking-wider">
+            🛸 Upload Drone Imagery for AI Scan
+          </button>
+          <button className="w-full py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-bold uppercase tracking-wider">
+            📄 Generate Evidence Pack (PDF)
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'supplement' && (
+        <div className="space-y-2">
+          <div className="text-[10px] text-zinc-500">
+            Cut supplement prep from hours to minutes while keeping human
+            approval in the loop.
+          </div>
+          {!supplementDraft ? (
+            <>
+              <button
+                onClick={draftSupplement}
+                disabled={drafting || !aiEnabled}
+                title={
+                  !aiEnabled
+                    ? 'Add VITE_OPENAI_API_KEY to .env.local'
+                    : undefined
+                }
+                className={`w-full py-4 rounded-xl border text-[12px] font-bold uppercase tracking-wider transition-all ${
+                  !aiEnabled
+                    ? 'bg-zinc-900 border-zinc-800 text-zinc-700 cursor-not-allowed'
+                    : drafting
+                      ? 'bg-zinc-800 border-zinc-700 text-zinc-500'
+                      : 'bg-amber-500/10 border-amber-500/20 text-amber-400 hover:bg-amber-500/15'
+                }`}
+              >
+                {drafting ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Spinner className="w-3.5 h-3.5 border-amber-400" />{' '}
+                    Drafting supplement with AI...
+                  </span>
+                ) : (
+                  '⚡ Draft Supplement with AI Copilot'
+                )}
+              </button>
+              {supplementError && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-[11px] text-red-400">
+                  {supplementError}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="space-y-2">
+              <div className="bg-zinc-900/50 rounded-xl border border-amber-500/20 p-3">
+                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-400 mb-2">
+                  AI-Drafted Line Items (Human Review Required)
+                </div>
+                {supplementDraft.items.map((item, i) => (
+                  <div
+                    key={i}
+                    className="flex items-start gap-2 py-2 border-b border-zinc-800/30 last:border-0"
+                  >
+                    <span className="text-[9px] font-mono text-zinc-600 w-20 flex-shrink-0">
+                      {item.code}
+                    </span>
+                    <div className="flex-1">
+                      <div className="text-[11px] text-zinc-300">
+                        {item.description}
+                      </div>
+                      <div className="text-[9px] text-zinc-500">
+                        {item.quantity} — {item.note}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div className="mt-2 pt-2 border-t border-zinc-800/30">
+                  <div className="text-[10px] text-zinc-500">
+                    Waste: {supplementDraft.wastePercent}% —{' '}
+                    {supplementDraft.wasteReason}
+                  </div>
+                  <div className="text-[11px] text-zinc-300 font-bold mt-1">
+                    Est. Range: {supplementDraft.estimatedRange}
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button className="flex-1 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase">
+                  ✓ Approve & Export
+                </button>
+                <button
+                  onClick={() => setSupplementDraft(null)}
+                  className="flex-1 py-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-400 text-[10px] font-bold uppercase"
+                >
+                  ↺ Redraft
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'homeowner' && (
+        <div className="space-y-2">
+          <div className="text-[10px] text-zinc-500">
+            79% use referrals first. 67% say reviews very important. 40% say
+            poor communication is the biggest challenge.
+          </div>
+          <div className="bg-gradient-to-br from-zinc-900 to-zinc-800/50 rounded-xl border border-zinc-700/50 p-4">
+            <div className="text-center mb-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mb-1">
+                What {p.homeowner} sees
+              </div>
+              <div className="text-[16px] font-bold text-zinc-100">
+                Your Roof Assessment
+              </div>
+            </div>
+            <div className="bg-zinc-800/50 rounded-lg p-3 mb-3">
+              <div className="text-[10px] text-zinc-500 uppercase mb-1">
+                Property
+              </div>
+              <div className="text-[12px] text-zinc-300">{p.address}</div>
+              <div className="text-[10px] text-zinc-500 mt-2 uppercase mb-1">
+                What We Found
+              </div>
+              <div className="text-[12px] text-zinc-300">
+                {p.damageProb > 0.6
+                  ? 'Our inspection identified significant storm-related damage consistent with the recent hail event.'
+                  : p.damageProb > 0.3
+                    ? 'We found moderate indicators of weather-related wear that should be addressed.'
+                    : 'Your roof is in reasonable condition with minor areas to monitor.'}
+              </div>
+              <div className="text-[10px] text-zinc-500 mt-2 uppercase mb-1">
+                Recommended Action
+              </div>
+              <div className="text-[12px] text-zinc-300">
+                {p.damageProb > 0.5
+                  ? "File an insurance claim — we'll handle the documentation."
+                  : 'Schedule a maintenance visit within 6 months.'}
+              </div>
+            </div>
+            <div className="text-[9px] text-zinc-600 text-center">
+              Transparent. No pressure. Your timeline.
+            </div>
+          </div>
+          <button className="w-full py-2.5 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-bold uppercase">
+            📱 Send to Homeowner via {p.contactPref}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// VIEW: LIVE WEATHER INTEL
+// ═══════════════════════════════════════════════════
+
+function WeatherView({
+  alerts,
+  spc,
+  loading,
+}: {
+  alerts: NWSAlert[];
+  spc: SPCReport[];
+  loading: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500">
+        NWS Active Alerts — Lafayette Parish
+      </div>
+      {loading && (
+        <div className="flex items-center gap-2 py-6 justify-center">
+          <Spinner className="w-4 h-4 border-amber-500" />
+          <span className="text-[10px] text-zinc-600">
+            Fetching live data...
+          </span>
+        </div>
+      )}
+      {!loading && alerts.length === 0 && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 text-center text-[11px] text-emerald-400">
+          ✓ No active severe weather alerts
+        </div>
+      )}
+      {alerts.map((a) => (
+        <div
+          key={a.id}
+          className={`rounded-xl p-3 border ${a.severity === 'Severe' ? 'bg-red-500/10 border-red-500/20' : 'bg-amber-500/10 border-amber-500/20'}`}
+        >
+          <div className="text-[12px] font-bold text-zinc-200">{a.event}</div>
+          <div className="text-[10px] text-zinc-400 mt-1">{a.headline}</div>
+        </div>
+      ))}
+      <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500 mt-4">
+        SPC Hail Reports Today
+      </div>
+      {spc.length === 0 ? (
+        <div className="text-[11px] text-zinc-600 bg-zinc-900/40 rounded-xl p-3 text-center">
+          No reports today
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {spc.slice(0, 12).map((r) => (
+            <div
+              key={r.id}
+              className="flex items-center gap-3 bg-zinc-900/40 rounded-lg p-2.5 border border-zinc-800/40"
+            >
+              <div className="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 font-black text-[11px]">
+                {r.size}"
+              </div>
+              <div>
+                <div className="text-[11px] text-zinc-300">
+                  {r.loc}, {r.state}
+                </div>
+                <div className="text-[9px] text-zinc-600">{r.time}Z</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="p-2.5 rounded-lg border border-dashed border-zinc-800 text-center text-[9px] text-zinc-600">
+        api.weather.gov · spc.noaa.gov · NOAA MRMS/MESH
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════
+
+type View = 'owner' | 'sales' | 'weather';
+type ConciergeEntry = {
+  loading: boolean;
+  result: ConciergeResponse | null;
+  error: string | null;
+};
+
+export default function StormScopeV3() {
+  const [props] = useState<Property[]>(() => genProps(80, 42));
+  const [view, setView] = useState<View>('owner');
+  const [selected, setSelected] = useState<Property | null>(null);
+  const [alerts, setAlerts] = useState<NWSAlert[]>([]);
+  const [spc, setSpc] = useState<SPCReport[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // AI Scout state
+  const [scoutReasons, setScoutReasons] = useState<Map<string, string>>(
+    new Map(),
+  );
+  const [scoutLoading, setScoutLoading] = useState(false);
+  const [scoutError, setScoutError] = useState<string | null>(null);
+  const scoutAbortRef = useRef<AbortController | null>(null);
+
+  // Concierge state per property
+  const [conciergeState, setConciergeState] = useState<
+    Map<string, ConciergeEntry>
+  >(new Map());
+
+  const aiEnabled = !!import.meta.env.VITE_OPENAI_API_KEY;
+
+  useEffect(() => {
+    Promise.allSettled([fetchNWSAlerts(), fetchSPC()]).then(([a, s]) => {
+      setAlerts(a.status === 'fulfilled' ? a.value : []);
+      setSpc(s.status === 'fulfilled' ? s.value : []);
+      setLoading(false);
+    });
+  }, []);
+
+  const handleRunScout = useCallback(async () => {
+    scoutAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    scoutAbortRef.current = ctrl;
+    setScoutLoading(true);
+    setScoutError(null);
+    try {
+      const rankings = await runAIScout(props, ctrl.signal);
+      const map = new Map<string, string>();
+      rankings.forEach((r) => map.set(r.id, r.reason));
+      setScoutReasons(map);
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setScoutError(String(e));
+    } finally {
+      setScoutLoading(false);
+    }
+  }, [props]);
+
+  const handleDraftResponse = useCallback(async (p: Property) => {
+    setConciergeState((prev) =>
+      new Map(prev).set(p.id, { loading: true, result: null, error: null }),
+    );
+    try {
+      const result = await runConcierge({
+        address: p.address,
+        homeowner: p.homeowner,
+        contactPref: p.contactPref,
+        mesh: p.mesh,
+        damageProb: p.damageProb,
+      });
+      setConciergeState((prev) =>
+        new Map(prev).set(p.id, { loading: false, result, error: null }),
+      );
+    } catch (e) {
+      setConciergeState((prev) =>
+        new Map(prev).set(p.id, {
+          loading: false,
+          result: null,
+          error: String(e),
+        }),
+      );
+    }
+  }, []);
+
+  const handleNavChange = useCallback((v: View) => {
+    setView(v);
+    setSelected(null);
+  }, []);
+
+  const NAV = [
+    { key: 'owner' as const, icon: '📊', label: 'Command' },
+    { key: 'sales' as const, icon: '⚡', label: 'Sales' },
+    { key: 'weather' as const, icon: '🌩️', label: 'Weather' },
+  ];
+
+  return (
+    <div
+      className="h-screen w-full bg-[#060609] text-zinc-100 flex flex-col overflow-hidden"
+      style={{
+        fontFamily: "'DM Mono', 'JetBrains Mono', 'SF Mono', monospace",
+      }}
+    >
+      <header className="flex items-center justify-between px-4 py-2 border-b border-zinc-800/60 bg-[#09090d] flex-shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black text-white"
+            style={{
+              background: 'linear-gradient(135deg, #f59e0b 0%, #dc2626 100%)',
+            }}
+          >
+            SS
+          </div>
+          <div>
+            <div className="text-[13px] font-black tracking-tight">
+              STORMSCOPE
+            </div>
+            <div className="text-[7px] text-zinc-600 tracking-[0.25em] uppercase">
+              Signal → Sale → Supplement → Scale
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-zinc-900 rounded-md px-2 py-1 border border-zinc-800">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-[8px] text-zinc-500 uppercase">Live</span>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex items-center gap-0.5 px-3 py-1 border-b border-zinc-800/40 bg-[#09090d] flex-shrink-0 overflow-x-auto">
+        {NAV.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => handleNavChange(t.key)}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-all ${view === t.key ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-600 hover:text-zinc-400'}`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        {selected ? (
+          <PropertyDetail
+            p={selected}
+            onBack={() => setSelected(null)}
+            aiEnabled={aiEnabled}
+          />
         ) : (
           <>
-            <div className="flex-1 min-w-0 relative">
-              {view === 'map' && (
-                <div className="absolute inset-0 p-2">
-                  <HailSwathMap
-                    properties={filteredProperties}
-                    selectedId={selectedPropId}
-                    onSelect={setSelectedPropId}
-                    meshMax={activeStorm.maxMesh}
-                  />
-                </div>
-              )}
-              {view === 'scout' && (
-                <div className="absolute inset-0 overflow-y-auto p-4">
-                  <div className="mb-3">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-amber-400 mb-1">
-                      ⚡ AI Scout — Top Targets
-                    </h3>
-                    <p className="text-[10px] text-zinc-600">
-                      Ranked by composite damage probability: MESH intensity ×
-                      roof vulnerability × wind exposure × prior claims history
-                    </p>
-                  </div>
-                  <AIScoutPanel
-                    properties={filteredProperties}
-                    onSelect={(id) => {
-                      setSelectedPropId(id);
-                      setView('map');
-                    }}
-                  />
-                </div>
-              )}
-              {view === 'storms' && (
-                <div className="absolute inset-0 overflow-y-auto p-4 space-y-2">
-                  <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
-                    Recent Storm Events
-                  </h3>
-                  {STORM_EVENTS.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => {
-                        setActiveStorm(s);
-                        setView('map');
-                      }}
-                      className={`w-full text-left p-3 rounded-lg border transition-all ${
-                        activeStorm.id === s.id
-                          ? 'bg-zinc-800 border-zinc-600'
-                          : 'bg-zinc-900/40 border-zinc-800/50 hover:bg-zinc-800/60'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-bold">{s.name}</span>
-                        <Badge
-                          color={
-                            s.status === 'active'
-                              ? 'red'
-                              : s.status === 'verified'
-                                ? 'green'
-                                : 'gray'
-                          }
-                        >
-                          {s.status}
-                        </Badge>
-                      </div>
-                      <div className="text-[10px] text-zinc-500">
-                        {s.county} · Max MESH: {s.maxMesh}" ·{' '}
-                        {new Date(s.timestamp).toLocaleString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </div>
-                      <div className="text-[10px] text-zinc-600 mt-1">
-                        Lat {s.lat.toFixed(4)} · Lng {s.lng.toFixed(4)}
-                      </div>
-                    </button>
-                  ))}
-                  <div className="p-3 rounded-lg border border-dashed border-zinc-800 text-center">
-                    <div className="text-[10px] text-zinc-600 uppercase tracking-wider">
-                      Data Sources
-                    </div>
-                    <div className="text-[10px] text-zinc-700 mt-1">
-                      NOAA MRMS/MESH · SPC Storm Reports · NWS Alerts
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right Sidebar */}
-            <div className="w-80 border-l border-zinc-800/80 bg-[#08080d] overflow-y-auto flex-shrink-0">
-              {selectedProp ? (
-                <PropertyDetail
-                  property={selectedProp}
-                  onCanvass={handleCanvass}
-                  onClose={() => setSelectedPropId(null)}
-                />
-              ) : (
-                <div className="p-4">
-                  <div className="text-center py-8">
-                    <div className="text-zinc-700 text-3xl mb-2">◎</div>
-                    <div className="text-[10px] text-zinc-600 uppercase tracking-widest">
-                      Select a property on the map
-                    </div>
-                    <div className="text-[10px] text-zinc-700 mt-1">
-                      or use AI Scout to find targets
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2 px-1">
-                      Quick Actions
-                    </div>
-                    <div className="space-y-1.5">
-                      <button
-                        onClick={() => setView('scout')}
-                        className="w-full text-left px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs hover:bg-amber-500/15 transition-all"
-                      >
-                        <div className="font-bold">⚡ AI Scout</div>
-                        <div className="text-[10px] text-amber-400/60 mt-0.5">
-                          Top {stats.high} high-risk properties ranked
-                        </div>
-                      </button>
-                      <button className="w-full text-left px-3 py-2.5 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-300 text-xs hover:bg-sky-500/15 transition-all">
-                        <div className="font-bold">🛸 Request Drone Scan</div>
-                        <div className="text-[10px] text-sky-400/60 mt-0.5">
-                          Upload or request aerial verification
-                        </div>
-                      </button>
-                      <button className="w-full text-left px-3 py-2.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-300 text-xs hover:bg-violet-500/15 transition-all">
-                        <div className="font-bold">📋 Export Canvass Route</div>
-                        <div className="text-[10px] text-violet-400/60 mt-0.5">
-                          {stats.total - stats.visited} unvisited properties
-                        </div>
-                      </button>
-                      <button className="w-full text-left px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs hover:bg-emerald-500/15 transition-all">
-                        <div className="font-bold">📊 Storm Impact Report</div>
-                        <div className="text-[10px] text-emerald-400/60 mt-0.5">
-                          Generate PDF for {activeStorm.name}
-                        </div>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 p-3 rounded-lg border border-zinc-800/60 bg-zinc-900/30">
-                    <div className="text-[10px] uppercase tracking-widest text-zinc-600 mb-2">
-                      Scoring Model
-                    </div>
-                    <div className="space-y-1 text-[10px] text-zinc-500">
-                      <div className="flex justify-between">
-                        <span>MESH Intensity</span>
-                        <span className="text-zinc-400">45%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Roof Vulnerability</span>
-                        <span className="text-zinc-400">30%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Wind Exposure</span>
-                        <span className="text-zinc-400">15%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Tree Cover Factor</span>
-                        <span className="text-zinc-400">10%</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            {view === 'owner' && (
+              <OwnerDashboard props={props} alerts={alerts} spc={spc} />
+            )}
+            {view === 'sales' && (
+              <SalesView
+                props={props}
+                onSelect={setSelected}
+                aiEnabled={aiEnabled}
+                scoutReasons={scoutReasons}
+                scoutLoading={scoutLoading}
+                scoutError={scoutError}
+                onRunScout={handleRunScout}
+                conciergeState={conciergeState}
+                onDraftResponse={handleDraftResponse}
+              />
+            )}
+            {view === 'weather' && (
+              <WeatherView alerts={alerts} spc={spc} loading={loading} />
+            )}
           </>
         )}
       </div>
 
-      {/* Status Bar */}
-      <footer className="flex items-center justify-between px-4 py-1.5 border-t border-zinc-800/50 bg-[#08080d] text-[9px] text-zinc-600 uppercase tracking-wider flex-shrink-0">
-        <div className="flex items-center gap-4">
-          <span>
-            MRMS Feed: <span className="text-emerald-500">Connected</span>
-          </span>
-          <span>
-            SPC Reports: <span className="text-emerald-500">Synced</span>
-          </span>
-          <span>MESH v12.2</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span>
-            Properties: {filteredProperties.length}/{stats.total}
-          </span>
-          <span>Region: Lafayette Parish, LA</span>
-        </div>
+      <footer className="flex items-center justify-between px-4 py-1 border-t border-zinc-800/40 bg-[#09090d] text-[7px] text-zinc-700 uppercase tracking-wider flex-shrink-0">
+        <span>MRMS · NWS · SPC · Claude Vision</span>
+        <span>Lafayette, LA · 30.22°N</span>
       </footer>
     </div>
   );

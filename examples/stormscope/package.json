@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "@openai/agents": "workspace:*",
+    "openai": "^6.35.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.4",
