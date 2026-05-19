@@ -1,0 +1,62 @@
+name: Deploy StormScope
+
+on:
+  push:
+    branches:
+      - main
+      - claude/setup-stormscope-repo-zp5fQ
+    paths:
+      - 'examples/stormscope/**'
+      - '.github/workflows/deploy-stormscope.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace packages
+        run: pnpm build:ci
+
+      - name: Build StormScope
+        working-directory: examples/stormscope
+        env:
+          GITHUB_ACTIONS: 'true'
+        run: pnpm build
+
+      - name: Prepare deploy directory
+        run: |
+          mkdir -p /tmp/ghpages/stormscope
+          cp -r examples/stormscope/dist/. /tmp/ghpages/stormscope/
+          # SPA fallback so direct URL loads work
+          cp /tmp/ghpages/stormscope/index.html /tmp/ghpages/stormscope/404.html
+
+      - name: Push to gh-pages branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd /tmp/ghpages
+          git init -b gh-pages
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add .
+          git commit -m "deploy: stormscope ${{ github.sha }}"
+          git push -f \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            gh-pages:gh-pages
