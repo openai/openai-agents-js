@@ -140,9 +140,11 @@ function getImplicitModelSettingsForResolvedModel(
 //  Configuration
 // --------------------------------------------------------------
 
+export type ToolErrorKind = 'approval_rejected' | 'tool_not_found';
+
 export type ToolErrorFormatterArgs<
   TContext = unknown,
-  TKind extends 'approval_rejected' = 'approval_rejected',
+  TKind extends ToolErrorKind = ToolErrorKind,
 > = {
   /**
    * The category of tool error being formatted.
@@ -185,6 +187,8 @@ export type ToolExecutionConfig = {
    */
   maxFunctionToolConcurrency?: number | null;
 };
+
+export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
 
 function validateToolExecutionConfig(
   config: ToolExecutionConfig | undefined,
@@ -289,6 +293,14 @@ export type RunConfig = {
   toolExecution?: ToolExecutionConfig;
 
   /**
+   * Controls unresolved function tool calls emitted by the model.
+   *
+   * - `raise_error` preserves the default behavior and raises a `ModelBehaviorError`.
+   * - `return_error_to_model` returns a model-visible tool error and lets the run continue.
+   */
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -332,6 +344,7 @@ type SharedRunOptions<
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
   toolExecution?: ToolExecutionConfig;
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
   /**
    * Error handlers keyed by error kind.
    */
@@ -446,6 +459,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sandbox: config.sandbox,
       toolExecution: validateToolExecutionConfig(config.toolExecution),
+      toolNotFoundBehavior: config.toolNotFoundBehavior ?? 'raise_error',
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
@@ -530,6 +544,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolExecution = validateToolExecutionConfig(
       resolvedOptions.toolExecution ?? this.config.toolExecution,
     );
+    const toolNotFoundBehavior =
+      resolvedOptions.toolNotFoundBehavior ?? this.config.toolNotFoundBehavior;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const traceOverrides = {
@@ -545,6 +561,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       toolErrorFormatter,
       reasoningItemIdPolicy,
       toolExecution,
+      toolNotFoundBehavior,
     };
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
@@ -731,7 +748,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const hasSandboxOverride = typeof options.sandbox !== 'undefined';
     const hasToolExecutionOverride =
       typeof options.toolExecution !== 'undefined';
-    if (!hasSandboxOverride && !hasToolExecutionOverride) {
+    const hasToolNotFoundBehaviorOverride =
+      typeof options.toolNotFoundBehavior !== 'undefined';
+    if (
+      !hasSandboxOverride &&
+      !hasToolExecutionOverride &&
+      !hasToolNotFoundBehaviorOverride
+    ) {
       return this.config;
     }
     return {
@@ -739,6 +762,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...(hasSandboxOverride ? { sandbox: options.sandbox } : {}),
       ...(hasToolExecutionOverride
         ? { toolExecution: options.toolExecution }
+        : {}),
+      ...(hasToolNotFoundBehaviorOverride
+        ? { toolNotFoundBehavior: options.toolNotFoundBehavior }
         : {}),
     };
   }
@@ -998,6 +1024,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.handoffs,
               state,
               [...preparedCall.turnInput, ...state._generatedItems],
+              options.toolNotFoundBehavior,
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1506,6 +1533,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedCall.handoffs,
             result.state,
             [...preparedCall.turnInput, ...result.state._generatedItems],
+            options.toolNotFoundBehavior,
           );
 
           result.state._lastProcessedResponse = processedResponse;

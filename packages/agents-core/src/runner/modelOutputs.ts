@@ -44,10 +44,12 @@ import type {
   ToolRunApplyPatch,
   ToolRunComputer,
   ToolRunFunction,
+  ToolRunFunctionNotFound,
   ToolRunHandoff,
   ToolRunMCPApprovalRequest,
   ToolRunShell,
 } from './types';
+import type { ToolNotFoundBehavior } from '../run';
 import * as protocol from '../types/protocol';
 import {
   addHostedMcpToolsFromToolSearchOutput,
@@ -133,7 +135,8 @@ function resolveFunctionOrHandoff(
   agent: Agent<any, any>,
 ):
   | { type: 'handoff'; handoff: Handoff<any, any> }
-  | { type: 'function'; tool: FunctionTool<any> } {
+  | { type: 'function'; tool: FunctionTool<any> }
+  | { type: 'not_found'; toolName: string } {
   const resolvedToolName =
     resolveFunctionToolCallName(toolCall, functionMap) ?? toolCall.name;
   const namespace = getToolCallNamespace(toolCall);
@@ -163,18 +166,39 @@ function resolveFunctionOrHandoff(
 
   const functionTool = functionMap.get(resolvedToolName);
   if (!functionTool) {
-    const message = `Tool ${resolvedToolName} not found in agent ${agent.name}.`;
-    addErrorToCurrentSpan({
-      message,
-      data: {
-        tool_name: resolvedToolName,
-        agent_name: agent.name,
-      },
-    });
-
-    throw new ModelBehaviorError(message);
+    return { type: 'not_found', toolName: resolvedToolName };
   }
   return { type: 'function', tool: functionTool };
+}
+
+function throwFunctionToolNotFound(
+  toolName: string,
+  agent: Agent<any, any>,
+): never {
+  const message = `Tool ${toolName} not found in agent ${agent.name}.`;
+  addErrorToCurrentSpan({
+    message,
+    data: {
+      tool_name: toolName,
+      agent_name: agent.name,
+    },
+  });
+
+  throw new ModelBehaviorError(message);
+}
+
+function recordMissingFunctionTool(
+  output: protocol.FunctionCallItem,
+  toolName: string,
+  agent: Agent<any, any>,
+  items: RunItem[],
+  functionToolsNotFound: ToolRunFunctionNotFound[],
+): void {
+  items.push(new RunToolCallItem(output, agent));
+  functionToolsNotFound.push({
+    toolCall: output,
+    toolName,
+  });
 }
 
 function normalizeFunctionToolCallForStorage(
@@ -631,10 +655,12 @@ export function processModelResponse<TContext>(
   tools: Tool<TContext>[],
   handoffs: Handoff<any, any>[],
   priorItems: Array<RunItem | AgentInputItem> = [],
+  toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
 ): ProcessedResponse<TContext> {
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
+  const functionToolsNotFound: ToolRunFunctionNotFound[] = [];
   const runComputerActions: ToolRunComputer[] = [];
   const runShellActions: ToolRunShell[] = [];
   let hasHostedShellCall = false;
@@ -842,7 +868,18 @@ export function processModelResponse<TContext>(
       functionMap,
       agent,
     );
-    if (resolved.type === 'handoff') {
+    if (resolved.type === 'not_found') {
+      if (toolNotFoundBehavior !== 'return_error_to_model') {
+        throwFunctionToolNotFound(resolved.toolName, agent);
+      }
+      recordMissingFunctionTool(
+        output,
+        resolved.toolName,
+        agent,
+        items,
+        functionToolsNotFound,
+      );
+    } else if (resolved.type === 'handoff') {
       recordHandoffRequest(
         output,
         resolved.handoff,
@@ -877,6 +914,7 @@ export function processModelResponse<TContext>(
     newItems: items,
     handoffs: runHandoffs,
     functions: runFunctions,
+    functionToolsNotFound,
     computerActions: runComputerActions,
     shellActions: runShellActions,
     applyPatchActions: runApplyPatchActions,
@@ -886,6 +924,7 @@ export function processModelResponse<TContext>(
       return (
         runHandoffs.length > 0 ||
         runFunctions.length > 0 ||
+        functionToolsNotFound.length > 0 ||
         runMCPApprovalRequests.length > 0 ||
         runComputerActions.length > 0 ||
         runShellActions.length > 0 ||
@@ -904,6 +943,7 @@ export async function processModelResponseAsync<TContext>(
   handoffs: Handoff<any, any>[],
   state: RunState<TContext, Agent<any, any>>,
   priorItems: Array<RunItem | AgentInputItem> = [],
+  toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
 ): Promise<ProcessedResponse<TContext>> {
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
@@ -923,12 +963,14 @@ export async function processModelResponseAsync<TContext>(
       tools,
       handoffs,
       priorItems,
+      toolNotFoundBehavior,
     );
   }
 
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
+  const functionToolsNotFound: ToolRunFunctionNotFound[] = [];
   const runComputerActions: ToolRunComputer[] = [];
   const runShellActions: ToolRunShell[] = [];
   let hasHostedShellCall = false;
@@ -1142,7 +1184,18 @@ export async function processModelResponseAsync<TContext>(
       functionMap,
       agent,
     );
-    if (resolved.type === 'handoff') {
+    if (resolved.type === 'not_found') {
+      if (toolNotFoundBehavior !== 'return_error_to_model') {
+        throwFunctionToolNotFound(resolved.toolName, agent);
+      }
+      recordMissingFunctionTool(
+        output,
+        resolved.toolName,
+        agent,
+        items,
+        functionToolsNotFound,
+      );
+    } else if (resolved.type === 'handoff') {
       recordHandoffRequest(
         output,
         resolved.handoff,
@@ -1177,6 +1230,7 @@ export async function processModelResponseAsync<TContext>(
     newItems: items,
     handoffs: runHandoffs,
     functions: runFunctions,
+    functionToolsNotFound,
     computerActions: runComputerActions,
     shellActions: runShellActions,
     applyPatchActions: runApplyPatchActions,
@@ -1186,6 +1240,7 @@ export async function processModelResponseAsync<TContext>(
       return (
         runHandoffs.length > 0 ||
         runFunctions.length > 0 ||
+        functionToolsNotFound.length > 0 ||
         runMCPApprovalRequests.length > 0 ||
         runComputerActions.length > 0 ||
         runShellActions.length > 0 ||

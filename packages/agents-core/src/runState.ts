@@ -89,8 +89,9 @@ import {
  * - 1.10: Adds optional stable agent identity keys so duplicate-name agent graphs can
  *   serialize and resume without ambiguous name resolution.
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
+ * - 1.12: Adds optional missing function tool calls to processed responses.
  */
-export const CURRENT_SCHEMA_VERSION = '1.11' as const;
+export const CURRENT_SCHEMA_VERSION = '1.12' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -103,6 +104,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.8',
   '1.9',
   '1.10',
+  '1.11',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -285,6 +287,14 @@ const serializedProcessedResponseSchema = z.object({
       tool: z.any(),
     }),
   ),
+  functionToolsNotFound: z
+    .array(
+      z.object({
+        toolCall: z.any(),
+        toolName: z.string(),
+      }),
+    )
+    .optional(),
   computerActions: z.array(
     z.object({
       toolCall: z.any(),
@@ -2305,6 +2315,8 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         };
       }),
     ),
+    functionToolsNotFound:
+      serializedProcessedResponse.functionToolsNotFound ?? [],
     computerActions: serializedProcessedResponse.computerActions.map(
       (computerAction) => {
         const toolName = computerAction.computer.name;
@@ -2389,6 +2401,7 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       return (
         result.handoffs.length > 0 ||
         result.functions.length > 0 ||
+        result.functionToolsNotFound.length > 0 ||
         result.mcpApprovalRequests.length > 0 ||
         result.computerActions.length > 0 ||
         result.shellActions.length > 0 ||
