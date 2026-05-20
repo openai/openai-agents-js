@@ -2080,6 +2080,7 @@ describe('processModelResponse edge cases', () => {
     expect(result.newItems).toHaveLength(1);
     expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
     expect(result.functions).toEqual([]);
+    expect(result.toolsUsed).toEqual(['missing_tool']);
     expect(result.functionToolsNotFound).toEqual([
       {
         toolCall: missingCall,

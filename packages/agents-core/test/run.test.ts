@@ -179,6 +179,7 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'MissingToolAgent',
         model,
+        modelSettings: { toolChoice: 'required' },
         toolUseBehavior: 'run_llm_again',
       });
 
@@ -188,6 +189,8 @@ describe('Runner.run', () => {
 
       expect(result.finalOutput).toBe('recovered');
       expect(model.requests).toHaveLength(2);
+      expect(model.requests[0].modelSettings.toolChoice).toBe('required');
+      expect(model.requests[1].modelSettings.toolChoice).toBeUndefined();
       const secondInput = model.requests[1].input as AgentInputItem[];
       expect(secondInput).toContainEqual({
         type: 'function_call_result',

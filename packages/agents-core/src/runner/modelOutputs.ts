@@ -192,8 +192,10 @@ function recordMissingFunctionTool(
   toolName: string,
   agent: Agent<any, any>,
   items: RunItem[],
+  toolsUsed: string[],
   functionToolsNotFound: ToolRunFunctionNotFound[],
 ): void {
+  toolsUsed.push(toolName);
   items.push(new RunToolCallItem(output, agent));
   functionToolsNotFound.push({
     toolCall: output,
@@ -877,6 +879,7 @@ export function processModelResponse<TContext>(
         resolved.toolName,
         agent,
         items,
+        toolsUsed,
         functionToolsNotFound,
       );
     } else if (resolved.type === 'handoff') {
@@ -1193,6 +1196,7 @@ export async function processModelResponseAsync<TContext>(
         resolved.toolName,
         agent,
         items,
+        toolsUsed,
         functionToolsNotFound,
       );
     } else if (resolved.type === 'handoff') {
