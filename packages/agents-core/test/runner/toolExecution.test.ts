@@ -3032,6 +3032,42 @@ describe('executeShellActions', () => {
         expect(String(firstResult.output)).toContain('valid JSON');
       }
     });
+
+    it('Doesnt call input guardrail when tool needs approval', async () => {
+      const guardrail = defineToolInputGuardrail({
+        name: 'block',
+        run: async () =>
+          ToolGuardrailFunctionOutputFactory.rejectContent(
+            'blocked by guardrail',
+          ),
+      });
+      const t = tool({
+        name: 'guarded_tool',
+        description: 'tool with input guardrail',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'should-not-run'),
+        inputGuardrails: [guardrail],
+        needsApproval: true,
+      }) as unknown as FunctionTool;
+
+      const invokeSpy = vi.spyOn(t, 'invoke');
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+      const first = res[0];
+      expect(first.type).toBe('function_approval');
+      expect(invokeSpy).not.toHaveBeenCalled();
+      expect(state._toolInputGuardrailResults).toHaveLength(0);
+    });
+    it('Calls pre approval input guardrail when tool needs approval', async () => {});
+    it('Doesnt call pre approval input guardrail when tool does not need approval', async () => {});
+    it('Carries on to approval call if passes pre approval check', async () => {});
+    it('Does not carries on to approval call if fails pre approval check', async () => {});
   });
 
   describe('executeComputerActions', () => {
