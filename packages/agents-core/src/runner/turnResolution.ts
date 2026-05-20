@@ -727,10 +727,16 @@ export async function resolveInterruptedTurn<TContext>(
           toolErrorFormatter,
         })
       : [];
+  const pendingFunctionToolsNotFound = filterPendingActions(
+    processedResponse.functionToolsNotFound ?? [],
+    {
+      completedCallIds: completedFunctionCallIds,
+    },
+  );
   const toolNotFoundResults = await buildToolNotFoundOutputItems(
     agent,
     state,
-    processedResponse.functionToolsNotFound ?? [],
+    pendingFunctionToolsNotFound,
     toolErrorFormatter,
   );
 

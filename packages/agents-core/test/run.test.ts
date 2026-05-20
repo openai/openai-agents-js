@@ -5980,6 +5980,72 @@ describe('Runner.run', () => {
       });
     });
 
+    it('does not re-emit missing function tool results when resuming an interrupted turn', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const missingToolCall: protocol.FunctionCallItem = {
+        ...buildToolCall('call-missing', 'missing'),
+        name: 'missing_tool',
+      };
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-approved', 'foo'), missingToolCall],
+          'resp-mixed-missing-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-mixed-missing-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'MixedMissingToolResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const preResumeMissingResults = firstResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(preResumeMissingResults).toHaveLength(1);
+
+      firstResult.state.approve(firstResult.interruptions[0]);
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const allMissingResults = secondResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(allMissingResults).toHaveLength(1);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      const missingResultsSentOnResume = secondInput.filter(
+        (item) =>
+          item.type === 'function_call_result' &&
+          item.callId === 'call-missing',
+      );
+      expect(missingResultsSentOnResume).toHaveLength(1);
+    });
+
     it('does not resend prior items when resuming with previousResponseId', async () => {
       const approvalTool = tool({
         name: 'test',
