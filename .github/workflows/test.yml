@@ -95,7 +95,7 @@ jobs:
       matrix:
         # https://nodejs.org/en/about/previous-releases
         # Using 24.3.x due to https://github.com/pnpm/pnpm/issues/9743
-        node-version: ['20', '22', '24.3.x']
+        node-version: ['22', '24.3.x']
     steps:
       - name: Skip CI for docs/meta-only changes
         if: ${{ needs.changes.outputs.run_ci != 'true' }}
