@@ -211,14 +211,15 @@ function validateToolExecutionConfig(
 export type RunConfig = {
   /**
    * The model to use for the entire agent run. If set, will override the model set on every
-   * agent. The modelProvider passed in below must be able to resolve this model name.
+   * agent. String model names are resolved with the configured modelProvider, or the default
+   * model provider if no explicit provider is configured.
    */
   model?: string | Model;
 
   /**
    * The model provider to use when looking up string model names. Defaults to OpenAI.
    */
-  modelProvider: ModelProvider;
+  modelProvider?: ModelProvider;
 
   /**
    * Configure global model settings. Any non-null values will override the agent-specific model
@@ -444,7 +445,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   constructor(config: Partial<RunConfig> = {}) {
     super();
     this.config = {
-      modelProvider: config.modelProvider ?? getDefaultModelProvider(),
+      modelProvider: config.modelProvider,
       model: config.model,
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
@@ -715,7 +716,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof selectedModel === 'string' ? selectedModel : undefined;
     const resolvedModel =
       typeof selectedModel === 'string'
-        ? await this.config.modelProvider.getModel(selectedModel)
+        ? await (
+            this.config.modelProvider ?? getDefaultModelProvider()
+          ).getModel(selectedModel)
         : selectedModel;
     return { model: resolvedModel, explictlyModelSet, resolvedModelName };
   }

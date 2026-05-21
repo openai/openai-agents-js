@@ -130,6 +130,54 @@ describe('Runner.run', () => {
       expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
     });
 
+    it('keeps modelProvider unset until a string model needs the default provider', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => model),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        expect(runner.config.modelProvider).toBeUndefined();
+
+        await runner.run(new Agent({ name: 'Lazy Provider Agent' }), 'hello');
+
+        expect(provider.getModel).toHaveBeenCalledWith('default-model');
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it('does not require a modelProvider when the selected model is a Model object', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => {
+          throw new Error('default provider should not be used');
+        }),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model,
+          tracingDisabled: true,
+        });
+
+        expect(runner.config.modelProvider).toBeUndefined();
+
+        await runner.run(new Agent({ name: 'Model Object Agent' }), 'hello');
+
+        expect(provider.getModel).not.toHaveBeenCalled();
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
     it('rejects invalid function tool concurrency config', () => {
       expect(
         () =>
