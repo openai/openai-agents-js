@@ -27,6 +27,7 @@
     "start:daytona": "tsx extensions/daytona-runner.ts",
     "start:e2b": "tsx extensions/e2b-runner.ts",
     "start:modal": "tsx extensions/modal-runner.ts",
+    "start:northflank": "tsx extensions/northflank-runner.ts",
     "start:runloop": "tsx extensions/runloop-runner.ts",
     "start:vercel": "tsx extensions/vercel-runner.ts"
   }
