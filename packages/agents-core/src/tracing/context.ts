@@ -11,6 +11,11 @@ type ContextState = {
   active: boolean;
 };
 
+export type TraceContextSnapshot = Readonly<{
+  trace: Trace;
+  span?: Span<any> | null;
+}>;
+
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 let localFallbackAls: AsyncLocalStorage<ContextState | undefined> | undefined;
 
@@ -78,6 +83,50 @@ export function getCurrentSpan() {
     return currentSpan.span;
   }
   return null;
+}
+
+/**
+ * Gets a public snapshot of the current trace context.
+ *
+ * This intentionally does not expose the internal async storage shape.
+ */
+export function getCurrentTraceContext(): TraceContextSnapshot | null {
+  const context = getActiveContext();
+  if (!context?.trace) {
+    return null;
+  }
+
+  if (context.span) {
+    return {
+      trace: context.trace,
+      span: context.span,
+    };
+  }
+
+  return { trace: context.trace };
+}
+
+/**
+ * Runs a callback with a previously captured trace context.
+ *
+ * Pass null or undefined to run the callback without any ambient trace context.
+ */
+export function withTraceContext<T>(
+  context: TraceContextSnapshot | null | undefined,
+  fn: () => T,
+): T {
+  if (!context) {
+    return getContextAsyncLocalStorage().run({ active: false }, fn);
+  }
+
+  return getContextAsyncLocalStorage().run(
+    {
+      trace: context.trace,
+      span: context.span ?? undefined,
+      active: true,
+    },
+    fn,
+  );
 }
 
 /**

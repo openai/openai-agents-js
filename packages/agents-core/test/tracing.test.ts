@@ -31,6 +31,8 @@ import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import {
   withTrace,
+  withTraceContext,
+  getCurrentTraceContext,
   getCurrentTrace,
   getCurrentSpan,
   setTraceProcessors,
@@ -38,6 +40,7 @@ import {
   setCurrentSpan,
   resetCurrentSpan,
 } from '../src/tracing';
+import type { TraceContextSnapshot } from '../src/tracing';
 
 import {
   withAgentSpan,
@@ -991,6 +994,81 @@ describe('withTrace & span helpers (integration)', () => {
     // Processor should have been notified
     expect(processor.tracesStarted.length).toBe(1);
     expect(processor.tracesEnded.length).toBe(1);
+  });
+
+  it('getCurrentTraceContext returns null outside a trace', () => {
+    expect(getCurrentTraceContext()).toBeNull();
+  });
+
+  it('getCurrentTraceContext returns the active trace snapshot', async () => {
+    await withTrace('workflow', async (trace) => {
+      const snapshot = getCurrentTraceContext();
+
+      expect(snapshot).toEqual({ trace });
+      expect(snapshot?.trace).toBe(getCurrentTrace());
+    });
+  });
+
+  it('withTraceContext restores a captured trace around a callback', async () => {
+    let snapshot: TraceContextSnapshot | null = null;
+
+    await withTrace('workflow', async () => {
+      snapshot = getCurrentTraceContext();
+    });
+
+    expect(snapshot).not.toBeNull();
+    const result = withTraceContext(snapshot, () => {
+      expect(getCurrentTrace()).toBe(snapshot?.trace);
+      return 'done';
+    });
+
+    expect(result).toBe('done');
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('withTraceContext restores a provided span around a callback', () => {
+    const trace = new Trace({ name: 'manual-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        data: { type: 'custom', name: 'manual-span', data: {} },
+      },
+      processor,
+    );
+
+    withTraceContext({ trace, span }, () => {
+      expect(getCurrentTrace()).toBe(trace);
+      expect(getCurrentSpan()).toBe(span);
+    });
+
+    expect(getCurrentTrace()).toBeNull();
+    expect(getCurrentSpan()).toBeNull();
+  });
+
+  it('withTraceContext clears and restores ambient trace context', async () => {
+    await withTrace('workflow', async (trace) => {
+      const result = withTraceContext(null, () => {
+        expect(getCurrentTrace()).toBeNull();
+        expect(getCurrentTraceContext()).toBeNull();
+        return 'isolated';
+      });
+
+      expect(result).toBe('isolated');
+      expect(getCurrentTrace()).toBe(trace);
+    });
+  });
+
+  it('withTraceContext keeps context across awaits', async () => {
+    const trace = new Trace({ name: 'manual-async-trace' });
+
+    await withTraceContext({ trace }, async () => {
+      expect(getCurrentTrace()).toBe(trace);
+      await Promise.resolve();
+      expect(getCurrentTrace()).toBe(trace);
+      expect(getCurrentTraceContext()?.trace).toBe(trace);
+    });
+
+    expect(getCurrentTrace()).toBeNull();
   });
 
   it('does not allow setting spans after a trace ends', async () => {
