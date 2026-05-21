@@ -119,17 +119,57 @@ export const ReadableStreamController =
   globalThis.ReadableStreamDefaultController;
 export const TransformStream = globalThis.TransformStream;
 
-export class AsyncLocalStorage {
-  context = null;
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Promise<unknown>).finally === 'function'
+  );
+}
+
+export class AsyncLocalStorage<T = any> {
+  context: T | undefined = undefined;
+  #stack: Array<{ context: T }> = [];
+
   constructor() {}
-  run(context: any, fn: () => any) {
+
+  run<TResult>(context: T, fn: () => TResult): TResult {
+    const entry = { context };
+    this.#stack.push(entry);
     this.context = context;
-    return fn();
+
+    const restore = () => {
+      const index = this.#stack.indexOf(entry);
+      if (index !== -1) {
+        this.#stack.splice(index, 1);
+      }
+      this.context = this.#stack.at(-1)?.context;
+    };
+
+    try {
+      const result = fn();
+      if (isPromiseLike(result)) {
+        return result.finally(restore) as TResult;
+      }
+      restore();
+      return result;
+    } catch (error) {
+      restore();
+      throw error;
+    }
   }
+
   getStore() {
     return this.context;
   }
-  enterWith(context: any) {
+
+  enterWith(context: T) {
+    const current = this.#stack.at(-1);
+    if (current) {
+      current.context = context;
+    } else {
+      this.#stack.push({ context });
+    }
     this.context = context;
   }
 }

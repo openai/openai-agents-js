@@ -10,10 +10,11 @@ export {
   getOrCreateTrace,
   resetCurrentSpan,
   setCurrentSpan,
+  setTracingContextStorage,
   withTraceContext,
   withTrace,
 } from './context';
-export type { TraceContextSnapshot } from './context';
+export type { TraceContextSnapshot, TracingContextStorage } from './context';
 export * from './createSpans';
 export {
   BatchTraceProcessor,
