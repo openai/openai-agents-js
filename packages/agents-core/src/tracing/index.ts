@@ -1,6 +1,7 @@
 import { TracingProcessor } from './processor';
 import { getGlobalTraceProvider } from './provider';
 import type { TracingConfig } from './config';
+import type { TracingIdGenerator } from './utils';
 
 export {
   getCurrentSpan,
@@ -36,7 +37,14 @@ export type {
   SpanError,
 } from './spans';
 export { NoopTrace, Trace } from './traces';
-export { generateGroupId, generateSpanId, generateTraceId } from './utils';
+export {
+  defaultTracingIdGenerator,
+  generateGroupId,
+  generateSpanId,
+  generateTraceId,
+} from './utils';
+export type { TracingIdGenerator } from './utils';
+export type { TraceProviderOptions } from './provider';
 export type { TracingConfig };
 
 /**
@@ -64,6 +72,17 @@ export function setTraceProcessors(processors: TracingProcessor[]): void {
  */
 export function setTracingDisabled(disabled: boolean): void {
   getGlobalTraceProvider().setDisabled(disabled);
+}
+
+/**
+ * Set the trace and span ID generator for the global tracing provider.
+ *
+ * @param idGenerator - Custom ID generator methods, or undefined to restore defaults.
+ */
+export function setTracingIdGenerator(
+  idGenerator?: Partial<TracingIdGenerator>,
+): void {
+  getGlobalTraceProvider().setIdGenerator(idGenerator);
 }
 
 /**
