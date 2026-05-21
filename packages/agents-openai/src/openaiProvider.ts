@@ -9,10 +9,18 @@ import {
 } from './defaults';
 import {
   OpenAIResponsesModel,
+  type OpenAIAgentIdentityMode,
+  type OpenAIResponsesModelOptions,
   type OpenAIResponsesWebSocketOptions,
   OpenAIResponsesWSModel,
 } from './openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
+import {
+  OpenAIAgentIdentity,
+  getDefaultOpenAIAgentIdentityOptions,
+  type OpenAIAgentIdentityInput,
+  resolveOpenAIAgentIdentity,
+} from './agentIdentity';
 
 /**
  * Options for OpenAIProvider.
@@ -34,6 +42,14 @@ export type OpenAIProviderOptions = {
   strictFeatureValidation?: boolean;
   responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
   openAIClient?: OpenAI;
+  /**
+   * Optional OpenAI agent identity used to mint verified AgentAssertion auth for
+   * Responses API requests. By default the provider creates an SDK runtime
+   * identity and applies it only to model calls prepared for sandbox agents.
+   * Pass `false` to disable this behavior.
+   */
+  agentIdentity?: OpenAIAgentIdentityInput;
+  agentIdentityMode?: OpenAIAgentIdentityMode;
 };
 
 /**
@@ -47,6 +63,7 @@ export class OpenAIProvider implements ModelProvider {
   #cacheResponsesWebSocketModels: boolean;
   #modelCache = new Map<string, Model>();
   #options: OpenAIProviderOptions;
+  #agentIdentity?: OpenAIAgentIdentity;
 
   constructor(options: OpenAIProviderOptions = {}) {
     this.#options = options;
@@ -69,6 +86,9 @@ export class OpenAIProvider implements ModelProvider {
     this.#websocketBaseURL = this.#options.websocketBaseURL;
     this.#cacheResponsesWebSocketModels =
       this.#options.cacheResponsesWebSocketModels ?? true;
+    this.#agentIdentity = resolveOpenAIAgentIdentity(
+      this.#options.agentIdentity ?? getDefaultOpenAIAgentIdentityOptions(),
+    );
   }
 
   /**
@@ -137,14 +157,19 @@ export class OpenAIProvider implements ModelProvider {
 
     if (useResponses) {
       const client = this.#getClient();
+      const responsesModelOptions: OpenAIResponsesModelOptions = {
+        agentIdentity: this.#agentIdentity,
+        agentIdentityMode: this.#options.agentIdentityMode,
+      };
       resolvedModel = useResponsesWebSocket
         ? new OpenAIResponsesWSModel(client, model, {
+            ...responsesModelOptions,
             websocketBaseURL:
               this.#getWebSocketBaseURLForResponsesModel(client),
             reuseConnection: shouldCacheModelWrapper,
             websocketOptions: this.#options.responsesWebSocketOptions,
           })
-        : new OpenAIResponsesModel(client, model);
+        : new OpenAIResponsesModel(client, model, responsesModelOptions);
     } else {
       resolvedModel = new OpenAIChatCompletionsModel(this.#getClient(), model, {
         strictFeatureValidation: this.#options.strictFeatureValidation,

@@ -17,6 +17,7 @@
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "debug": "^4.4.0",
+    "libsodium-wrappers-sumo": "^0.8.4",
     "openai": "^6.35.0"
   },
   "scripts": {

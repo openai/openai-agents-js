@@ -127,6 +127,179 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('adds AgentAssertion auth to sandbox-marked Responses requests', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-agent-assertion',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const agentIdentity = {
+        getAuthorizationHeader: vi.fn().mockResolvedValue('AgentAssertion jwt'),
+      };
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test', {
+        agentIdentity: agentIdentity as any,
+      });
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {
+          providerData: {
+            openai_agents_sdk: {
+              sandbox: {
+                enabled: true,
+                externalTaskRef: 'group_123',
+              },
+            },
+            extra_headers: {
+              'X-Request-Header': 'present',
+            },
+          },
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(agentIdentity.getAuthorizationHeader).toHaveBeenCalledWith(
+        fakeClient,
+        { externalTaskRef: 'group_123' },
+      );
+      const [args, opts] = createMock.mock.calls[0];
+      expect(args.openai_agents_sdk).toBeUndefined();
+      expect(opts.headers).toMatchObject({
+        Authorization: 'AgentAssertion jwt',
+        'X-Request-Header': 'present',
+      });
+    });
+  });
+
+  it('does not add AgentAssertion auth without a sandbox marker by default', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-no-agent-assertion',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const agentIdentity = {
+        getAuthorizationHeader: vi.fn().mockResolvedValue('AgentAssertion jwt'),
+      };
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test', {
+        agentIdentity: agentIdentity as any,
+      });
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(agentIdentity.getAuthorizationHeader).not.toHaveBeenCalled();
+      expect(createMock.mock.calls[0]?.[1]).toEqual({
+        headers: HEADERS,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('can add AgentAssertion auth to every Responses request when configured', async () => {
+    await withTrace('test', async () => {
+      const fakeResponse = {
+        id: 'res-agent-assertion-always',
+        usage: {},
+        output: [],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const agentIdentity = {
+        getAuthorizationHeader: vi.fn().mockResolvedValue('AgentAssertion jwt'),
+      };
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test', {
+        agentIdentity: agentIdentity as any,
+        agentIdentityMode: 'always',
+      });
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(agentIdentity.getAuthorizationHeader).toHaveBeenCalledWith(
+        fakeClient,
+        { externalTaskRef: undefined },
+      );
+      expect(createMock.mock.calls[0]?.[1].headers).toMatchObject({
+        Authorization: 'AgentAssertion jwt',
+      });
+    });
+  });
+
+  it('rejects explicit Authorization headers when AgentAssertion auth is enabled', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const agentIdentity = {
+        getAuthorizationHeader: vi.fn().mockResolvedValue('AgentAssertion jwt'),
+      };
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test', {
+        agentIdentity: agentIdentity as any,
+      });
+
+      await expect(
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'hello',
+          modelSettings: {
+            providerData: {
+              openai_agents_sdk: {
+                sandbox: {
+                  enabled: true,
+                },
+              },
+              extra_headers: {
+                authorization: 'Bearer user-token',
+              },
+            },
+          },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        } as any),
+      ).rejects.toThrow(/explicit Authorization header/);
+
+      expect(agentIdentity.getAuthorizationHeader).not.toHaveBeenCalled();
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('getRetryAdvice does not suggest retries from transport heuristics alone', () => {
     const fakeClient = {
       responses: { create: vi.fn() },

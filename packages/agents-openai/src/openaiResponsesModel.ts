@@ -23,6 +23,7 @@ import type {
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import logger from './logger';
+import type { OpenAIAgentIdentity } from './agentIdentity';
 import { OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import {
@@ -101,6 +102,24 @@ type WebSocketRequestTimeoutDeadline = {
 type EnsuredResponsesWebSocketConnection = {
   connection: ResponsesWebSocketConnection;
   reused: boolean;
+};
+
+export type OpenAIAgentIdentityMode = 'sandbox' | 'always';
+
+export type OpenAIResponsesModelOptions = {
+  agentIdentity?: OpenAIAgentIdentity;
+  /**
+   * Controls when AgentAssertion authorization is applied to Responses calls.
+   *
+   * - `sandbox`: only requests marked by the sandbox runner receive the header.
+   * - `always`: every Responses request from this model receives the header.
+   */
+  agentIdentityMode?: OpenAIAgentIdentityMode;
+};
+
+type OpenAIAgentsSdkSandboxContext = {
+  enabled: boolean;
+  externalTaskRef?: string;
 };
 
 type ResponseFunctionCallOutputListItem =
@@ -1117,6 +1136,44 @@ function normalizeLegacyFileFromOutput(value: Record<string, any>): {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
+}
+
+function getAgentsSdkSandboxContext(
+  providerData: unknown,
+): OpenAIAgentsSdkSandboxContext | undefined {
+  if (!isRecord(providerData)) {
+    return undefined;
+  }
+
+  const agentsSdk = providerData.openai_agents_sdk;
+  if (!isRecord(agentsSdk)) {
+    return undefined;
+  }
+
+  const sandbox = agentsSdk.sandbox;
+  if (!isRecord(sandbox) || sandbox.enabled !== true) {
+    return undefined;
+  }
+
+  return {
+    enabled: true,
+    ...(typeof sandbox.externalTaskRef === 'string' &&
+    sandbox.externalTaskRef.length > 0
+      ? { externalTaskRef: sandbox.externalTaskRef }
+      : {}),
+  };
+}
+
+function hasAuthorizationHeader(headers: Record<string, unknown> | undefined) {
+  if (!headers) {
+    return false;
+  }
+  return Object.entries(headers).some(
+    ([name, value]) =>
+      value !== null &&
+      typeof value !== 'undefined' &&
+      name.toLowerCase() === 'authorization',
+  );
 }
 
 function getShellCallProviderDataForInput(
@@ -2862,10 +2919,18 @@ async function* withAttachedResponseRequestId(
 export class OpenAIResponsesModel implements Model {
   protected readonly _client: OpenAI;
   protected readonly _model: string;
+  protected readonly _agentIdentity?: OpenAIAgentIdentity;
+  protected readonly _agentIdentityMode: OpenAIAgentIdentityMode;
 
-  constructor(client: OpenAI, model: string) {
+  constructor(
+    client: OpenAI,
+    model: string,
+    options: OpenAIResponsesModelOptions = {},
+  ) {
     this._client = client;
     this._model = model;
+    this._agentIdentity = options.agentIdentity;
+    this._agentIdentityMode = options.agentIdentityMode ?? 'sandbox';
   }
 
   getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
@@ -2890,7 +2955,12 @@ export class OpenAIResponsesModel implements Model {
     | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
     | OpenAI.Responses.Response
   > {
-    const builtRequest = this._buildResponsesCreateRequest(request, stream);
+    const preparedRequest =
+      await this._prepareRequestWithAgentIdentity(request);
+    const builtRequest = this._buildResponsesCreateRequest(
+      preparedRequest,
+      stream,
+    );
     const requestOptions: {
       headers: any;
       signal: AbortSignal | undefined;
@@ -2946,6 +3016,49 @@ export class OpenAIResponsesModel implements Model {
     return response;
   }
 
+  protected async _prepareRequestWithAgentIdentity(
+    request: ModelRequest,
+  ): Promise<ModelRequest> {
+    if (!this._agentIdentity) {
+      return request;
+    }
+
+    const providerData = request.modelSettings.providerData;
+    const sandboxContext = getAgentsSdkSandboxContext(providerData);
+    if (this._agentIdentityMode === 'sandbox' && !sandboxContext) {
+      return request;
+    }
+
+    const { overrides: transportOverrides } =
+      splitResponsesTransportOverrides(providerData);
+    if (hasAuthorizationHeader(transportOverrides.extraHeaders)) {
+      throw new UserError(
+        'Cannot combine OpenAI agent identity with an explicit Authorization header.',
+      );
+    }
+
+    const authorization = await this._agentIdentity.getAuthorizationHeader(
+      this._client,
+      {
+        externalTaskRef: sandboxContext?.externalTaskRef,
+      },
+    );
+
+    return {
+      ...request,
+      modelSettings: {
+        ...request.modelSettings,
+        providerData: {
+          ...(isRecord(providerData) ? providerData : {}),
+          extra_headers: {
+            ...(transportOverrides.extraHeaders ?? {}),
+            Authorization: authorization,
+          },
+        },
+      },
+    };
+  }
+
   protected _buildResponsesCreateRequest(
     request: ModelRequest,
     stream: boolean,
@@ -2980,7 +3093,11 @@ export class OpenAIResponsesModel implements Model {
     assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
       allowPromptSuppliedTools,
     });
-    const { text, ...restOfProviderData } = providerDataWithoutTransport;
+    const {
+      text,
+      openai_agents_sdk: _openAIAgentsSdkProviderData,
+      ...restOfProviderData
+    } = providerDataWithoutTransport;
 
     if (request.modelSettings.reasoning) {
       // Merge top-level reasoning settings with provider data.
@@ -3248,7 +3365,7 @@ export class OpenAIResponsesModel implements Model {
   }
 }
 
-export type OpenAIResponsesWSModelOptions = {
+export type OpenAIResponsesWSModelOptions = OpenAIResponsesModelOptions & {
   websocketBaseURL?: string;
   reuseConnection?: boolean;
   websocketOptions?: OpenAIResponsesWebSocketOptions;
@@ -3281,7 +3398,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     model: string,
     options: OpenAIResponsesWSModelOptions = {},
   ) {
-    super(client, model);
+    super(client, model, options);
     this.#websocketBaseURL = options.websocketBaseURL;
     this.#reuseConnection = options.reuseConnection ?? true;
     this.#websocketOptions = cloneResponsesWebSocketOptions(
@@ -3331,7 +3448,12 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   > {
     // The websocket transport always uses streamed Responses events, then callers either
     // consume the stream directly or collapse it into the final terminal response.
-    const builtRequest = this._buildResponsesCreateRequest(request, true);
+    const preparedRequest =
+      await this._prepareRequestWithAgentIdentity(request);
+    const builtRequest = this._buildResponsesCreateRequest(
+      preparedRequest,
+      true,
+    );
 
     if (stream) {
       return this.#iterWebSocketResponseEvents(builtRequest);

@@ -123,6 +123,46 @@ export type { ReasoningItemIdPolicy } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
+const OPENAI_AGENTS_SDK_PROVIDER_DATA_KEY = 'openai_agents_sdk';
+
+function isPlainObjectLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function withSandboxProviderData(
+  modelSettings: ModelSettings,
+  args: { externalTaskRef?: string },
+): ModelSettings {
+  const providerData = isPlainObjectLike(modelSettings.providerData)
+    ? modelSettings.providerData
+    : {};
+  const existingAgentsSdk = isPlainObjectLike(
+    providerData[OPENAI_AGENTS_SDK_PROVIDER_DATA_KEY],
+  )
+    ? providerData[OPENAI_AGENTS_SDK_PROVIDER_DATA_KEY]
+    : {};
+  const existingSandbox = isPlainObjectLike(existingAgentsSdk.sandbox)
+    ? existingAgentsSdk.sandbox
+    : {};
+
+  return {
+    ...modelSettings,
+    providerData: {
+      ...providerData,
+      [OPENAI_AGENTS_SDK_PROVIDER_DATA_KEY]: {
+        ...existingAgentsSdk,
+        sandbox: {
+          ...existingSandbox,
+          enabled: true,
+          ...(args.externalTaskRef
+            ? { externalTaskRef: args.externalTaskRef }
+            : {}),
+        },
+      },
+    },
+  };
+}
+
 function getImplicitModelSettingsForResolvedModel(
   explictlyModelSet: boolean,
   resolvedModelName?: string,
@@ -1855,6 +1895,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._toolUseTracker,
       modelSettings,
     );
+    if (isSandboxRuntimeAgent(state._currentAgent)) {
+      modelSettings = withSandboxProviderData(modelSettings, {
+        externalTaskRef: this.config.groupId ?? this.config.traceId,
+      });
+    }
     state._lastModelSettings = modelSettings;
 
     const systemInstructions = await executionAgent.getSystemPrompt(

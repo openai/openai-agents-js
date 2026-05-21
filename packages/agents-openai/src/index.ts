@@ -7,8 +7,17 @@ export {
 export {
   OpenAIResponsesModel,
   OpenAIResponsesWSModel,
+  type OpenAIAgentIdentityMode,
+  type OpenAIResponsesModelOptions,
   type OpenAIResponsesWebSocketOptions,
 } from './openaiResponsesModel';
+export {
+  OpenAIAgentIdentity,
+  getDefaultOpenAIAgentIdentityOptions,
+  type OpenAIAgentAssertionContext,
+  type OpenAIAgentIdentityInput,
+  type OpenAIAgentIdentityOptions,
+} from './agentIdentity';
 export {
   OpenAIChatCompletionsModel,
   type OpenAIChatCompletionsModelOptions,

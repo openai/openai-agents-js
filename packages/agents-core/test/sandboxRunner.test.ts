@@ -1916,6 +1916,42 @@ describe('sandbox runner integration', () => {
     expect(sandboxModel.requests[1]?.modelSettings.toolChoice).toBeUndefined();
   });
 
+  it('marks sandbox model calls for OpenAI agent identity attribution', async () => {
+    const client = new FakeSandboxClient();
+    const sandboxModel = new RecordingFakeModel([
+      {
+        output: [fakeModelMessage('sandbox done')],
+        usage: new Usage(),
+      },
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: sandboxModel,
+      defaultManifest: new Manifest({ root: '/workspace' }),
+      capabilities: [shell()],
+    });
+
+    const result = await new Runner({ groupId: 'group_123' }).run(
+      sandboxAgent,
+      'Hello',
+      {
+        sandbox: {
+          client,
+        },
+      },
+    );
+
+    expect(result.finalOutput).toBe('sandbox done');
+    expect(sandboxModel.requests[0]?.modelSettings.providerData).toMatchObject({
+      openai_agents_sdk: {
+        sandbox: {
+          enabled: true,
+          externalTaskRef: 'group_123',
+        },
+      },
+    });
+  });
+
   it('resets required tool choice after a sandbox agent uses a shell tool', async () => {
     const client = new FakeSandboxClient();
     const sandboxModel = new RecordingFakeModel([
