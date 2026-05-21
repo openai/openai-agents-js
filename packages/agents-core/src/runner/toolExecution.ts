@@ -123,10 +123,15 @@ function getComputerTraceInputPayload(
  * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
  * Doing this here keeps API surface stable even when providers add new shapes.
+ *
+ * The optional `status` lets callers signal that a result is not a normal success.
+ * Approval rejections and similar failure paths pass `'incomplete'` so the model
+ * does not treat the synthetic output as a completed tool execution.
  */
 export function getToolCallOutputItem(
   toolCall: protocol.FunctionCallItem,
   output: string | unknown,
+  status: FunctionCallResultItem['status'] = 'completed',
 ): FunctionCallResultItem {
   const maybeStructuredOutputs = normalizeStructuredToolOutputs(output);
 
@@ -142,7 +147,7 @@ export function getToolCallOutputItem(
         ? { namespace: toolCall.namespace }
         : {}),
       callId: toolCall.callId,
-      status: 'completed',
+      status,
       output: structuredItems,
     };
   }
@@ -154,7 +159,7 @@ export function getToolCallOutputItem(
       ? { namespace: toolCall.namespace }
       : {}),
     callId: toolCall.callId,
-    status: 'completed',
+    status,
     output: {
       type: 'text',
       text: toSmartString(output),
@@ -362,7 +367,7 @@ async function buildApprovalRejectionResult<TContext>(
       tool: toolRun.tool,
       output: response,
       runItem: new RunToolCallOutputItem(
-        getToolCallOutputItem(toolRun.toolCall, response),
+        getToolCallOutputItem(toolRun.toolCall, response, 'incomplete'),
         agent,
         response,
       ),

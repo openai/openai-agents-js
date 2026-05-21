@@ -193,6 +193,20 @@ describe('getToolCallOutputItem', () => {
     });
   });
 
+  it('uses the provided status on the function_call_result item', () => {
+    const output = getToolCallOutputItem(
+      TEST_MODEL_FUNCTION_CALL,
+      'Tool execution was not approved.',
+      'incomplete',
+    );
+
+    expect(output.status).toBe('incomplete');
+    expect(output.output).toEqual({
+      type: 'text',
+      text: 'Tool execution was not approved.',
+    });
+  });
+
   it('converts structured text outputs into input_text items', () => {
     const output = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, {
       type: 'text',
@@ -2402,6 +2416,30 @@ describe('executeShellActions', () => {
       );
 
       expect(state.hasPendingAgentToolRun(t.name, toolCall.callId)).toBe(false);
+    });
+
+    it('marks rejected function_call_result items as incomplete', async () => {
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      const rawItem = (res[0].runItem as ToolCallOutputItem)
+        .rawItem as protocol.FunctionCallResultItem;
+      expect(rawItem.type).toBe('function_call_result');
+      expect(rawItem.status).toBe('incomplete');
+      expect(rawItem.output).toEqual({
+        type: 'text',
+        text: 'Tool execution was not approved.',
+      });
     });
 
     it('runs tool and emits events on success', async () => {
