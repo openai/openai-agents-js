@@ -130,7 +130,7 @@ describe('Runner.run', () => {
       expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
     });
 
-    it('keeps modelProvider unset until a string model needs the default provider', async () => {
+    it('keeps the default provider lazy until a string model needs it', async () => {
       const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
       const provider = {
         getModel: vi.fn(() => model),
@@ -143,11 +143,10 @@ describe('Runner.run', () => {
           tracingDisabled: true,
         });
 
-        expect(runner.config.modelProvider).toBeUndefined();
+        expect(provider.getModel).not.toHaveBeenCalled();
 
         await runner.run(new Agent({ name: 'Lazy Provider Agent' }), 'hello');
 
-        expect(runner.config.modelProvider).toBe(provider);
         expect(provider.getModel).toHaveBeenCalledWith('default-model');
       } finally {
         setDefaultModelProvider(new FakeModelProvider());
@@ -177,7 +176,6 @@ describe('Runner.run', () => {
         setDefaultModelProvider(laterProvider);
         await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
 
-        expect(runner.config.modelProvider).toBe(firstProvider);
         expect(firstProvider.getModel).toHaveBeenCalledTimes(2);
         expect(laterProvider.getModel).not.toHaveBeenCalled();
       } finally {
@@ -199,8 +197,6 @@ describe('Runner.run', () => {
           model,
           tracingDisabled: true,
         });
-
-        expect(runner.config.modelProvider).toBeUndefined();
 
         await runner.run(new Agent({ name: 'Model Object Agent' }), 'hello');
 

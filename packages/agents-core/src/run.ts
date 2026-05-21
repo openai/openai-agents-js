@@ -386,6 +386,20 @@ export type IndividualRunOptions<
   TAgent extends Agent<any, any> = Agent<any, any>,
 > = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
 
+type RunnerConfig = RunConfig & {
+  modelProvider: ModelProvider;
+};
+
+class LazyDefaultModelProvider implements ModelProvider {
+  #modelProvider: ModelProvider | undefined;
+
+  getModel(modelName?: string): Promise<Model> | Model {
+    const modelProvider = this.#modelProvider ?? getDefaultModelProvider();
+    this.#modelProvider = modelProvider;
+    return modelProvider.getModel(modelName);
+  }
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -428,7 +442,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
  * tracing. Reuse a `Runner` instance when you want consistent configuration across multiple runs.
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
-  public readonly config: RunConfig;
+  public readonly config: RunnerConfig;
   private readonly traceOverrides: {
     traceId?: string;
     workflowName?: string;
@@ -445,7 +459,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   constructor(config: Partial<RunConfig> = {}) {
     super();
     this.config = {
-      modelProvider: config.modelProvider,
+      modelProvider: config.modelProvider ?? new LazyDefaultModelProvider(),
       model: config.model,
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
@@ -485,13 +499,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     this.outputGuardrailDefs = (config.outputGuardrails ?? []).map(
       defineOutputGuardrail,
     );
-  }
-
-  #getModelProvider(): ModelProvider {
-    const modelProvider =
-      this.config.modelProvider ?? getDefaultModelProvider();
-    this.config.modelProvider = modelProvider;
-    return modelProvider;
   }
 
   /**
@@ -723,7 +730,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof selectedModel === 'string' ? selectedModel : undefined;
     const resolvedModel =
       typeof selectedModel === 'string'
-        ? await this.#getModelProvider().getModel(selectedModel)
+        ? await this.config.modelProvider.getModel(selectedModel)
         : selectedModel;
     return { model: resolvedModel, explictlyModelSet, resolvedModelName };
   }
