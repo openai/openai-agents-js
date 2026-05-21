@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { BrowserEventEmitter, randomUUID } from '../../src/shims/shims-browser';
+import {
+  AsyncLocalStorage,
+  BrowserEventEmitter,
+  randomUUID,
+} from '../../src/shims/shims-browser';
 
 describe('BrowserEventEmitter', () => {
   test('off removes previously registered listener', () => {
@@ -116,5 +120,83 @@ describe('randomUUID', () => {
       value: originalCrypto,
       configurable: true,
     });
+  });
+});
+
+describe('AsyncLocalStorage browser shim', () => {
+  test('restores the previous context after a synchronous run', () => {
+    const storage = new AsyncLocalStorage<string>();
+
+    storage.enterWith('outer');
+    const result = storage.run('inner', () => {
+      expect(storage.getStore()).toBe('inner');
+      return 'done';
+    });
+
+    expect(result).toBe('done');
+    expect(storage.getStore()).toBe('outer');
+  });
+
+  test('restores the previous context after an asynchronous run settles', async () => {
+    const storage = new AsyncLocalStorage<string>();
+
+    storage.enterWith('outer');
+    const result = await storage.run('inner', async () => {
+      expect(storage.getStore()).toBe('inner');
+      await Promise.resolve();
+      expect(storage.getStore()).toBe('inner');
+      return 'done';
+    });
+
+    expect(result).toBe('done');
+    expect(storage.getStore()).toBe('outer');
+  });
+
+  test('keeps the active context when overlapping runs settle out of order', async () => {
+    const storage = new AsyncLocalStorage<string>();
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+
+    const first = storage.run(
+      'first',
+      () => new Promise<void>((resolve) => (resolveFirst = resolve)),
+    );
+    const second = storage.run(
+      'second',
+      () => new Promise<void>((resolve) => (resolveSecond = resolve)),
+    );
+
+    expect(storage.getStore()).toBe('second');
+
+    resolveFirst();
+    await first;
+    expect(storage.getStore()).toBe('second');
+
+    resolveSecond();
+    await second;
+    expect(storage.getStore()).toBeUndefined();
+  });
+
+  test('keeps context until a streamed result loop settles', async () => {
+    const storage = new AsyncLocalStorage<string>();
+    let resolveStream!: () => void;
+    const streamLoopPromise = new Promise<void>((resolve) => {
+      resolveStream = resolve;
+    });
+    const streamedResult = {
+      _getStreamLoopPromise: () => streamLoopPromise,
+    };
+
+    storage.enterWith('outer');
+    const result = await storage.run('inner', async () => streamedResult);
+
+    expect(result).toBe(streamedResult);
+    expect(storage.getStore()).toBe('inner');
+
+    resolveStream();
+    await streamLoopPromise;
+    await Promise.resolve();
+
+    expect(storage.getStore()).toBe('outer');
   });
 });

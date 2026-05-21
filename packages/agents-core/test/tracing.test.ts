@@ -39,10 +39,14 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   setTracingIdGenerator,
+  setTracingContextStorage,
   setCurrentSpan,
   resetCurrentSpan,
 } from '../src/tracing';
-import type { TraceContextSnapshot } from '../src/tracing';
+import type {
+  TraceContextSnapshot,
+  TracingContextStorage,
+} from '../src/tracing';
 
 import {
   withAgentSpan,
@@ -55,6 +59,8 @@ import { TraceProvider, getGlobalTraceProvider } from '../src/tracing/provider';
 import { Runner } from '../src/run';
 import { Agent } from '../src/agent';
 import { StreamedRunResult } from '../src/result';
+import { RunContext } from '../src/runContext';
+import { RunState } from '../src/runState';
 import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
 import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
@@ -95,6 +101,54 @@ class TestProcessor implements TracingProcessor {
   }
   async forceFlush(): Promise<void> {
     /* noop */
+  }
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Promise<unknown>).finally === 'function'
+  );
+}
+
+class StackTracingContextStorage implements TracingContextStorage {
+  runCalls = 0;
+  enterWithCalls = 0;
+  #stack: any[] = [];
+
+  run<TResult>(store: any, callback: () => TResult): TResult {
+    this.runCalls += 1;
+    this.#stack.push(store);
+
+    const restore = () => {
+      this.#stack.pop();
+    };
+
+    try {
+      const result = callback();
+      if (isPromiseLike(result)) {
+        return result.finally(restore) as TResult;
+      }
+      restore();
+      return result;
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+
+  getStore() {
+    return this.#stack.at(-1);
+  }
+
+  enterWith(store: any) {
+    this.enterWithCalls += 1;
+    if (this.#stack.length > 0) {
+      this.#stack[this.#stack.length - 1] = store;
+    } else {
+      this.#stack.push(store);
+    }
   }
 }
 
@@ -983,6 +1037,7 @@ describe('withTrace & span helpers (integration)', () => {
     // Restore original default processor so other test suites are unaffected
     // restore the global processor so subsequent tests are unaffected
     setTraceProcessors([defaultProcessor()]);
+    setTracingContextStorage();
   });
 
   it('withTrace creates a trace that is accessible via getCurrentTrace()', async () => {
@@ -1000,6 +1055,62 @@ describe('withTrace & span helpers (integration)', () => {
     // Processor should have been notified
     expect(processor.tracesStarted.length).toBe(1);
     expect(processor.tracesEnded.length).toBe(1);
+  });
+
+  it('uses a supplied tracing context storage implementation', async () => {
+    const storage = new StackTracingContextStorage();
+    const observed: Array<string | null> = [];
+
+    setTracingContextStorage(storage);
+
+    await withTrace('outer', async () => {
+      observed.push(getCurrentTrace()?.name ?? null);
+
+      await withTrace('inner', async () => {
+        observed.push(getCurrentTrace()?.name ?? null);
+      });
+
+      observed.push(getCurrentTrace()?.name ?? null);
+    });
+
+    expect(observed).toEqual(['outer', 'inner', 'outer']);
+    expect(storage.runCalls).toBe(2);
+    expect(storage.enterWithCalls).toBeGreaterThan(0);
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('keeps browser shim context active until a streamed result settles', async () => {
+    const storage = new BrowserAsyncLocalStorage<any>();
+    let resolveStream!: () => void;
+    const streamLoopPromise = new Promise<void>((resolve) => {
+      resolveStream = resolve;
+    });
+    let activeTrace: Trace | null = null;
+
+    setTracingContextStorage(storage);
+
+    await withTrace('streaming-workflow', async (trace) => {
+      activeTrace = trace;
+      const agent = new Agent({ name: 'stream-agent' });
+      const state: RunState<unknown, Agent<any, any>> = new RunState(
+        new RunContext(),
+        [],
+        agent,
+        1,
+      );
+      const result = new StreamedRunResult({ state });
+      result._setStreamLoopPromise(streamLoopPromise);
+      return result;
+    });
+
+    expect(getCurrentTrace()).toBe(activeTrace);
+
+    resolveStream();
+    await streamLoopPromise;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getCurrentTrace()).toBeNull();
   });
 
   it('getCurrentTraceContext returns null outside a trace', () => {
@@ -1158,7 +1269,6 @@ describe('withTrace & span helpers (integration)', () => {
       expect(getCurrentTrace()).toBe(trace);
       expect(getCurrentTraceContext()?.trace).toBe(trace);
     });
-
     expect(getCurrentTrace()).toBeNull();
   });
 
