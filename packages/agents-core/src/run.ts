@@ -487,6 +487,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
   }
 
+  #getModelProvider(): ModelProvider {
+    const modelProvider =
+      this.config.modelProvider ?? getDefaultModelProvider();
+    this.config.modelProvider = modelProvider;
+    return modelProvider;
+  }
+
   /**
    * Run a workflow starting at the given agent. The agent will run in a loop until a final
    * output is generated. The loop runs like so:
@@ -716,9 +723,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof selectedModel === 'string' ? selectedModel : undefined;
     const resolvedModel =
       typeof selectedModel === 'string'
-        ? await (
-            this.config.modelProvider ?? getDefaultModelProvider()
-          ).getModel(selectedModel)
+        ? await this.#getModelProvider().getModel(selectedModel)
         : selectedModel;
     return { model: resolvedModel, explictlyModelSet, resolvedModelName };
   }

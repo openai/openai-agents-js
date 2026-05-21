@@ -147,7 +147,39 @@ describe('Runner.run', () => {
 
         await runner.run(new Agent({ name: 'Lazy Provider Agent' }), 'hello');
 
+        expect(runner.config.modelProvider).toBe(provider);
         expect(provider.getModel).toHaveBeenCalledWith('default-model');
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it("keeps a runner's resolved default provider stable", async () => {
+      const firstProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      const laterProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(firstProvider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+        setDefaultModelProvider(laterProvider);
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+
+        expect(runner.config.modelProvider).toBe(firstProvider);
+        expect(firstProvider.getModel).toHaveBeenCalledTimes(2);
+        expect(laterProvider.getModel).not.toHaveBeenCalled();
       } finally {
         setDefaultModelProvider(new FakeModelProvider());
       }
