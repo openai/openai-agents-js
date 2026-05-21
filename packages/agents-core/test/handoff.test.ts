@@ -151,16 +151,26 @@ describe('Handoff#clone', () => {
     expect(h.agentName).toBe('Original Agent');
   });
 
-  it('preserves tool metadata by default when replacing the agent', () => {
+  it('returns the replacement agent by default while preserving handoff side effects', async () => {
     const originalAgent = new Agent({ name: 'Original Agent' });
     const convertedAgent = new Agent({ name: 'Converted Agent' });
+    const onHandoff = vi.fn();
     const h = handoff(originalAgent, {
+      onHandoff,
+      inputType: z.object({ reason: z.string() }),
       toolNameOverride: 'stable_transfer',
       toolDescriptionOverride: 'Stable transfer',
     });
+    const runContext = new RunContext();
 
     const clone = h.clone({ agent: convertedAgent });
+    const result = await clone.onInvokeHandoff(
+      runContext,
+      '{"reason":"reroute"}',
+    );
 
+    expect(result).toBe(convertedAgent);
+    expect(onHandoff).toHaveBeenCalledWith(runContext, { reason: 'reroute' });
     expect(clone.agent).toBe(convertedAgent);
     expect(clone.agentName).toBe('Converted Agent');
     expect(clone.toolName).toBe('stable_transfer');

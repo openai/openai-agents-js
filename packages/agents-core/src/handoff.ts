@@ -246,10 +246,15 @@ export class Handoff<
     overrides: HandoffCloneOptions<TContext, TOutput> = {},
   ): Handoff<TContext, TOutput> {
     const agent = overrides.agent ?? this.agent;
-    const cloned = new Handoff(
-      agent,
-      overrides.onInvokeHandoff ?? this.onInvokeHandoff,
-    );
+    const onInvokeHandoff =
+      overrides.onInvokeHandoff ??
+      (overrides.agent
+        ? async (context: RunContext<TContext>, args: string) => {
+            await this.onInvokeHandoff(context, args);
+            return agent;
+          }
+        : this.onInvokeHandoff);
+    const cloned = new Handoff(agent, onInvokeHandoff);
 
     cloned.agentName =
       overrides.agentName ??
