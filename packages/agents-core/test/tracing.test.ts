@@ -36,6 +36,8 @@ import {
   getCurrentTraceContext,
   getCurrentTrace,
   getCurrentSpan,
+  dispatchSpan,
+  dispatchTrace,
   setTraceProcessors,
   setTracingDisabled,
   setTracingIdGenerator,
@@ -1515,6 +1517,121 @@ describe('MultiTracingProcessor', () => {
     await multiProcessor.forceFlush();
     expect(flush1).toHaveBeenCalledTimes(1);
     expect(flush2).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches completed traces to all processors without using trace lifecycle methods', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const traceProcessor = new TestProcessor();
+    const trace = new Trace(
+      { name: 'completed-trace', traceId: 'trace_completed', started: true },
+      traceProcessor,
+    );
+
+    await trace.start();
+    expect(traceProcessor.tracesStarted).toHaveLength(0);
+
+    await multiProcessor.dispatchTrace(trace);
+
+    expect(processor1.tracesStarted).toEqual([trace]);
+    expect(processor1.tracesEnded).toEqual([trace]);
+    expect(processor2.tracesStarted).toEqual([trace]);
+    expect(processor2.tracesEnded).toEqual([trace]);
+  });
+
+  it('dispatches completed spans to all processors without mutating timestamps', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const startedAt = '2026-05-22T00:00:00.000Z';
+    const endedAt = '2026-05-22T00:00:01.000Z';
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt,
+        endedAt,
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchSpan(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toEqual([span]);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toEqual([span]);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+  });
+});
+
+// -----------------------------------------------------------------------------------------
+// Tests for completed trace dispatch helpers.
+// -----------------------------------------------------------------------------------------
+
+describe('completed trace dispatch helpers', () => {
+  afterEach(() => {
+    setTraceProcessors([defaultProcessor()]);
+  });
+
+  it('dispatches completed traces and spans through TraceProvider', async () => {
+    const processor = new TestProcessor();
+    const provider = new TraceProvider();
+    provider.registerProcessor(processor);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await provider.dispatchTrace(trace);
+    await provider.dispatchSpan(span);
+
+    expect(processor.tracesStarted).toEqual([trace]);
+    expect(processor.tracesEnded).toEqual([trace]);
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
+  it('dispatches completed traces and spans through global helpers', async () => {
+    const processor = new TestProcessor();
+    setTraceProcessors([processor]);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await dispatchTrace(trace);
+    await dispatchSpan(span);
+
+    expect(processor.tracesStarted).toEqual([trace]);
+    expect(processor.tracesEnded).toEqual([trace]);
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
   });
 });
 

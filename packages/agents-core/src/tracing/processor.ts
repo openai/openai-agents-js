@@ -367,6 +367,24 @@ export class MultiTracingProcessor implements TracingProcessor {
     }
   }
 
+  /**
+   * Dispatches a completed trace lifecycle to every registered processor without
+   * calling Trace.start() or Trace.end().
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    await this.onTraceStart(trace);
+    await this.onTraceEnd(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to every registered processor without
+   * calling Span.start() or Span.end().
+   */
+  async dispatchSpan(span: Span): Promise<void> {
+    await this.onSpanStart(span);
+    await this.onSpanEnd(span);
+  }
+
   async shutdown(timeout?: number): Promise<void> {
     for (const processor of this.#processors) {
       await processor.shutdown(timeout);

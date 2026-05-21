@@ -108,6 +108,30 @@ export class TraceProvider {
     this.#multiProcessor.start();
   }
 
+  /**
+   * Dispatches a completed trace lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a trace that was started and
+   * ended outside this process and needs to fan out the lifecycle without
+   * mutating the trace state.
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    await this.#multiProcessor.dispatchTrace(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a span that already has
+   * lifecycle timestamps and needs to fan out the lifecycle without mutating
+   * those timestamps.
+   */
+  async dispatchSpan<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    await this.#multiProcessor.dispatchSpan(span);
+  }
+
   createTrace(traceOptions: TraceOptions): Trace {
     if (this.#disabled) {
       logger.debug('Tracing is disabled, Not creating trace %o', traceOptions);
