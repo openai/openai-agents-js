@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
 import { ModelBehaviorError, ModelRefusalError } from '../errors';
-import { RunItem, RunMessageOutputItem, RunToolApprovalItem } from '../items';
+import {
+  RunItem,
+  RunMessageOutputItem,
+  RunToolApprovalItem,
+  RunToolCallOutputItem,
+} from '../items';
+import logger from '../logger';
 import { ModelResponse } from '../model';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
@@ -17,6 +23,7 @@ import type {
   ProcessedResponse,
   ToolRunApplyPatch,
   ToolRunHandoff,
+  ToolRunFunctionNotFound,
   ToolRunShell,
 } from './types';
 import {
@@ -27,6 +34,7 @@ import {
   executeHandoffCalls,
   executeShellActions,
   collectInterruptions,
+  getToolCallOutputItem,
 } from './toolExecution';
 import { handleHostedMcpApprovals } from './mcpApprovals';
 import * as ProviderData from '../types/providerData';
@@ -41,6 +49,71 @@ import {
   resolveRunErrorHandler,
 } from './errorHandlers';
 import { getTurnInput } from './items';
+
+const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
+  `Tool '${toolName}' not found.`;
+
+async function resolveToolNotFoundMessage<TContext>(
+  state: RunState<TContext, Agent<TContext, any>>,
+  toolRun: ToolRunFunctionNotFound,
+  toolErrorFormatter?: ToolErrorFormatter<TContext>,
+): Promise<string> {
+  const defaultMessage = DEFAULT_TOOL_NOT_FOUND_MESSAGE(toolRun.toolName);
+  if (!toolErrorFormatter) {
+    return defaultMessage;
+  }
+
+  try {
+    const formattedMessage = await toolErrorFormatter({
+      kind: 'tool_not_found',
+      toolType: 'function',
+      toolName: toolRun.toolName,
+      callId: toolRun.toolCall.callId,
+      defaultMessage,
+      runContext: state._context,
+    });
+
+    if (typeof formattedMessage === 'string') {
+      return formattedMessage;
+    }
+    if (typeof formattedMessage !== 'undefined') {
+      logger.warn(
+        'toolErrorFormatter returned a non-string value. Falling back to the default tool not found message.',
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `toolErrorFormatter threw while formatting tool not found: ${message}`,
+    );
+  }
+
+  return defaultMessage;
+}
+
+async function buildToolNotFoundOutputItems<TContext>(
+  agent: Agent<TContext, any>,
+  state: RunState<TContext, Agent<TContext, any>>,
+  toolRuns: ToolRunFunctionNotFound[],
+  toolErrorFormatter?: ToolErrorFormatter<TContext>,
+): Promise<RunToolCallOutputItem[]> {
+  const items: RunToolCallOutputItem[] = [];
+  for (const toolRun of toolRuns) {
+    const message = await resolveToolNotFoundMessage(
+      state,
+      toolRun,
+      toolErrorFormatter,
+    );
+    items.push(
+      new RunToolCallOutputItem(
+        getToolCallOutputItem(toolRun.toolCall, message),
+        agent,
+        message,
+      ),
+    );
+  }
+  return items;
+}
 
 type ApprovalItemLike =
   | RunToolApprovalItem
@@ -654,6 +727,18 @@ export async function resolveInterruptedTurn<TContext>(
           toolErrorFormatter,
         })
       : [];
+  const pendingFunctionToolsNotFound = filterPendingActions(
+    processedResponse.functionToolsNotFound ?? [],
+    {
+      completedCallIds: completedFunctionCallIds,
+    },
+  );
+  const toolNotFoundResults = await buildToolNotFoundOutputItems(
+    agent,
+    state,
+    pendingFunctionToolsNotFound,
+    toolErrorFormatter,
+  );
 
   const newItems: RunItem[] = [];
   const appendContext = buildAppendContext(originalPreStepItems);
@@ -669,6 +754,10 @@ export async function resolveInterruptedTurn<TContext>(
       continue;
     }
     appendIfNew(result.runItem);
+  }
+
+  for (const result of toolNotFoundResults) {
+    appendIfNew(result);
   }
 
   for (const result of computerResults) {
@@ -848,6 +937,12 @@ export async function resolveTurnAfterModelResponse<
           toolErrorFormatter,
         })
       : [];
+  const toolNotFoundResults = await buildToolNotFoundOutputItems(
+    agent,
+    state,
+    processedResponse.functionToolsNotFound ?? [],
+    toolErrorFormatter,
+  );
 
   for (const result of functionResults) {
     if (
@@ -858,6 +953,9 @@ export async function resolveTurnAfterModelResponse<
       continue;
     }
     appendIfNew(result.runItem);
+  }
+  for (const item of toolNotFoundResults) {
+    appendIfNew(item);
   }
   for (const item of computerResults) {
     appendIfNew(item);

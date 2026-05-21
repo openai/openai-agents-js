@@ -2056,6 +2056,40 @@ describe('processModelResponse edge cases', () => {
     ).toThrow(ModelBehaviorError);
   });
 
+  it('collects unknown function tool calls when opted in', () => {
+    const missingCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      name: 'missing_tool',
+      callId: 'call_missing',
+      arguments: '{}',
+    };
+    const response: ModelResponse = {
+      output: [missingCall],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(
+      response,
+      TEST_AGENT,
+      [TEST_TOOL],
+      [],
+      [],
+      'return_error_to_model',
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.functions).toEqual([]);
+    expect(result.toolsUsed).toEqual(['missing_tool']);
+    expect(result.functionToolsNotFound).toEqual([
+      {
+        toolCall: missingCall,
+        toolName: 'missing_tool',
+      },
+    ]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
   it('throws when computer action emitted without computer tool', () => {
     const compCall: protocol.ComputerUseCallItem = {
       id: 'c1',

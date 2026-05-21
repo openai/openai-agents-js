@@ -182,6 +182,8 @@ export type {
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
   ToolExecutionConfig,
+  ToolNotFoundBehavior,
+  ToolErrorKind,
   ReasoningItemIdPolicy,
   RunErrorData,
   RunErrorHandler,

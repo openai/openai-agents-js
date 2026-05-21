@@ -32,6 +32,7 @@ import {
   user,
   assistant,
   type ToolExecutionConfig,
+  type ToolNotFoundBehavior,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { ServerConversationTracker } from '../src/runner/conversation';
@@ -117,6 +118,18 @@ describe('Runner.run', () => {
       expect(runner.config.toolExecution).toBe(toolExecution);
     });
 
+    it('accepts public tool not found behavior config', () => {
+      const toolNotFoundBehavior =
+        'return_error_to_model' satisfies ToolNotFoundBehavior;
+
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolNotFoundBehavior,
+      });
+
+      expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
+    });
+
     it('rejects invalid function tool concurrency config', () => {
       expect(
         () =>
@@ -134,6 +147,121 @@ describe('Runner.run', () => {
       ).toThrow(
         'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
       );
+    });
+
+    it('returns missing function tool errors to the model when opted in', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'MissingToolAgent',
+        model,
+        modelSettings: { toolChoice: 'required' },
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(result.finalOutput).toBe('recovered');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[0].modelSettings.toolChoice).toBe('required');
+      expect(model.requests[1].modelSettings.toolChoice).toBeUndefined();
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: "Tool 'missing_tool' not found.",
+        },
+      });
+    });
+
+    it('uses toolErrorFormatter for missing function tool errors', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('formatter recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const seenKinds: string[] = [];
+      const agent = new Agent({
+        name: 'MissingToolFormatterAgent',
+        model,
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+        toolErrorFormatter: (args) => {
+          seenKinds.push(args.kind);
+          if (args.kind !== 'tool_not_found') {
+            return undefined;
+          }
+          return `${args.toolName} unavailable for ${args.callId}`;
+        },
+      });
+
+      expect(result.finalOutput).toBe('formatter recovered');
+      expect(seenKinds).toEqual(['tool_not_found']);
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: 'missing_tool unavailable for call_missing',
+        },
+      });
     });
 
     it('does not persist nested agent-tool metadata when resuming a RunState', async () => {
@@ -5853,6 +5981,72 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-approved',
       });
+    });
+
+    it('does not re-emit missing function tool results when resuming an interrupted turn', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const missingToolCall: protocol.FunctionCallItem = {
+        ...buildToolCall('call-missing', 'missing'),
+        name: 'missing_tool',
+      };
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-approved', 'foo'), missingToolCall],
+          'resp-mixed-missing-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-mixed-missing-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'MixedMissingToolResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const preResumeMissingResults = firstResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(preResumeMissingResults).toHaveLength(1);
+
+      firstResult.state.approve(firstResult.interruptions[0]);
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const allMissingResults = secondResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(allMissingResults).toHaveLength(1);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      const missingResultsSentOnResume = secondInput.filter(
+        (item) =>
+          item.type === 'function_call_result' &&
+          item.callId === 'call-missing',
+      );
+      expect(missingResultsSentOnResume).toHaveLength(1);
     });
 
     it('does not resend prior items when resuming with previousResponseId', async () => {
