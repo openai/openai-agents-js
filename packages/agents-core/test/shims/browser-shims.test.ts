@@ -176,4 +176,27 @@ describe('AsyncLocalStorage browser shim', () => {
     await second;
     expect(storage.getStore()).toBeUndefined();
   });
+
+  test('keeps context until a streamed result loop settles', async () => {
+    const storage = new AsyncLocalStorage<string>();
+    let resolveStream!: () => void;
+    const streamLoopPromise = new Promise<void>((resolve) => {
+      resolveStream = resolve;
+    });
+    const streamedResult = {
+      _getStreamLoopPromise: () => streamLoopPromise,
+    };
+
+    storage.enterWith('outer');
+    const result = await storage.run('inner', async () => streamedResult);
+
+    expect(result).toBe(streamedResult);
+    expect(storage.getStore()).toBe('inner');
+
+    resolveStream();
+    await streamLoopPromise;
+    await Promise.resolve();
+
+    expect(storage.getStore()).toBe('outer');
+  });
 });

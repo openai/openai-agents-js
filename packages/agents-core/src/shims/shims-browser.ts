@@ -123,8 +123,29 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
   return (
     typeof value === 'object' &&
     value !== null &&
+    typeof (value as Promise<unknown>).then === 'function' &&
     typeof (value as Promise<unknown>).finally === 'function'
   );
+}
+
+function getDeferredRestorePromise(
+  value: unknown,
+): Promise<unknown> | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  const streamLoopPromise = (
+    value as {
+      _getStreamLoopPromise?: () => unknown;
+    }
+  )._getStreamLoopPromise?.();
+
+  if (isPromiseLike(streamLoopPromise)) {
+    return streamLoopPromise;
+  }
+
+  return undefined;
 }
 
 export class AsyncLocalStorage<T = any> {
@@ -149,7 +170,21 @@ export class AsyncLocalStorage<T = any> {
     try {
       const result = fn();
       if (isPromiseLike(result)) {
-        return result.finally(restore) as TResult;
+        return result.then(
+          (value) => {
+            const deferredRestore = getDeferredRestorePromise(value);
+            if (deferredRestore) {
+              void deferredRestore.then(restore, restore);
+            } else {
+              restore();
+            }
+            return value;
+          },
+          (error) => {
+            restore();
+            throw error;
+          },
+        ) as TResult;
       }
       restore();
       return result;
@@ -167,8 +202,11 @@ export class AsyncLocalStorage<T = any> {
     const current = this.#stack.at(-1);
     if (current) {
       current.context = context;
-    } else {
+    } else if (context !== undefined) {
       this.#stack.push({ context });
+    } else {
+      this.context = context;
+      return;
     }
     this.context = context;
   }
