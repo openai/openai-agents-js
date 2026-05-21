@@ -82,6 +82,37 @@ describe('RunState', () => {
     expect(state._toolOutputGuardrailResults).toEqual([]);
   });
 
+  it('clears restored trace state', () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'TraceClearingAgent' });
+    const state = new RunState(context, 'input', agent, 1);
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+
+    try {
+      const trace = provider.createTrace({
+        traceId: 'trace_original',
+        name: 'Original workflow',
+      });
+      const span = provider.createSpan(
+        { data: { type: 'agent', name: 'OriginalSpan' } },
+        trace,
+      );
+      state._trace = trace;
+      state._currentAgentSpan = span;
+
+      state.clearTrace();
+
+      expect(state._trace).toBeNull();
+      expect(state._currentAgentSpan).toBeUndefined();
+      const json = state.toJSON();
+      expect(json.trace).toBeNull();
+      expect(json.currentAgentSpan).toBeUndefined();
+    } finally {
+      provider.setDisabled(true);
+    }
+  });
+
   it('exposes the current agent', () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'CurrentAgent' });
