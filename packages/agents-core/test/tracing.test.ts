@@ -56,6 +56,9 @@ import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
 import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
+import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+
+const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 
 class TestExporter implements TracingExporter {
   public exported: Array<(Trace | Span<any>)[]> = [];
@@ -1056,6 +1059,45 @@ describe('withTrace & span helpers (integration)', () => {
       expect(result).toBe('isolated');
       expect(getCurrentTrace()).toBe(trace);
     });
+  });
+
+  it('withTraceContext restores ambient trace context with browser storage', async () => {
+    const globalScope = globalThis as unknown as Record<
+      symbol,
+      unknown | undefined
+    >;
+    const previousStorage = globalScope[ALS_SYMBOL];
+
+    globalScope[ALS_SYMBOL] = new BrowserAsyncLocalStorage();
+
+    try {
+      await withTrace('workflow', async (trace) => {
+        const overlayTrace = new Trace({ name: 'overlay-trace' });
+
+        const isolated = withTraceContext(null, () => {
+          expect(getCurrentTrace()).toBeNull();
+          expect(getCurrentTraceContext()).toBeNull();
+          return 'isolated';
+        });
+
+        expect(isolated).toBe('isolated');
+        expect(getCurrentTrace()).toBe(trace);
+
+        await withTraceContext({ trace: overlayTrace }, async () => {
+          expect(getCurrentTrace()).toBe(overlayTrace);
+          await Promise.resolve();
+          expect(getCurrentTrace()).toBe(overlayTrace);
+        });
+
+        expect(getCurrentTrace()).toBe(trace);
+      });
+    } finally {
+      if (previousStorage === undefined) {
+        delete globalScope[ALS_SYMBOL];
+      } else {
+        globalScope[ALS_SYMBOL] = previousStorage;
+      }
+    }
   });
 
   it('withTraceContext keeps context across awaits', async () => {

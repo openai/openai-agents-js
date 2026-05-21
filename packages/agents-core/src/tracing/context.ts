@@ -58,6 +58,40 @@ function getActiveContext() {
   return undefined;
 }
 
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Promise<unknown>).then === 'function' &&
+    typeof (value as Promise<unknown>).finally === 'function'
+  );
+}
+
+function runWithScopedTraceContext<T>(store: ContextState, fn: () => T): T {
+  const asyncLocalStorage = getContextAsyncLocalStorage();
+  const previousStore = asyncLocalStorage.getStore();
+  const restore = () => {
+    asyncLocalStorage.enterWith(previousStore);
+  };
+
+  return asyncLocalStorage.run(store, () => {
+    let restoreOnExit = true;
+    try {
+      const result = fn();
+      if (isPromiseLike(result)) {
+        restoreOnExit = false;
+        return result.finally(restore) as T;
+      }
+
+      return result;
+    } finally {
+      if (restoreOnExit) {
+        restore();
+      }
+    }
+  });
+}
+
 /**
  * This function will get the current trace from the execution context.
  *
@@ -116,10 +150,10 @@ export function withTraceContext<T>(
   fn: () => T,
 ): T {
   if (!context) {
-    return getContextAsyncLocalStorage().run({ active: false }, fn);
+    return runWithScopedTraceContext({ active: false }, fn);
   }
 
-  return getContextAsyncLocalStorage().run(
+  return runWithScopedTraceContext(
     {
       trace: context.trace,
       span: context.span ?? undefined,
