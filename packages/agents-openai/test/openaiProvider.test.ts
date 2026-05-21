@@ -5,6 +5,7 @@ import {
   OpenAIResponsesWSModel,
 } from '../src/openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
+import { OpenAIAgentIdentity } from '../src/agentIdentity';
 import * as defaultsModule from '../src/defaults';
 import {
   setDefaultOpenAIClient,
@@ -66,6 +67,62 @@ describe('OpenAIProvider', () => {
     });
     const model = await provider.getModel('m');
     expect(model).toBeInstanceOf(OpenAIResponsesModel);
+  });
+
+  it('creates a default agent identity when using the default OpenAI client path', async () => {
+    setDefaultOpenAIKey('test-key');
+    const provider = new OpenAIProvider({
+      useResponses: true,
+    });
+
+    const model = (await provider.getModel('m')) as any;
+
+    expect(model).toBeInstanceOf(OpenAIResponsesModel);
+    expect(model._agentIdentity).toBeInstanceOf(OpenAIAgentIdentity);
+  });
+
+  it('does not create a default agent identity for explicit OpenAI clients', async () => {
+    const provider = new OpenAIProvider({
+      openAIClient: new FakeClient() as any,
+      useResponses: true,
+    });
+
+    const model = (await provider.getModel('m')) as any;
+
+    expect(model).toBeInstanceOf(OpenAIResponsesModel);
+    expect(model._agentIdentity).toBeUndefined();
+  });
+
+  it('does not create a default agent identity for explicit base URLs', async () => {
+    setDefaultOpenAIKey('test-key');
+    const provider = new OpenAIProvider({
+      baseURL: 'https://proxy.example.test/v1',
+      useResponses: true,
+    });
+
+    const model = (await provider.getModel('m')) as any;
+
+    expect(model).toBeInstanceOf(OpenAIResponsesModel);
+    expect(model._agentIdentity).toBeUndefined();
+  });
+
+  it('allows explicit agent identity opt-in with explicit base URLs', async () => {
+    setDefaultOpenAIKey('test-key');
+    const agentIdentity = new OpenAIAgentIdentity({
+      agentHarnessId: 'test-harness',
+      agentVersion: '1.0.0',
+      runningLocation: 'test',
+    });
+    const provider = new OpenAIProvider({
+      agentIdentity,
+      baseURL: 'https://proxy.example.test/v1',
+      useResponses: true,
+    });
+
+    const model = (await provider.getModel('m')) as any;
+
+    expect(model).toBeInstanceOf(OpenAIResponsesModel);
+    expect(model._agentIdentity).toBe(agentIdentity);
   });
 
   it('returns websocket responses model when useResponsesWebSocket is enabled', async () => {

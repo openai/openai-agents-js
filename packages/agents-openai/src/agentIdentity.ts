@@ -5,6 +5,8 @@ import { METADATA } from './metadata';
 const AGENT_ASSERTION_AUTHORIZATION_SCHEME = 'AgentAssertion';
 const DEFAULT_TASK_CACHE_KEY = '__default__';
 const DEFAULT_AGENT_HARNESS_ID = 'openai-agents-js';
+const DEFAULT_AGENT_REGISTRATION_BASE_URL =
+  'https://auth.openai.com/api/accounts';
 
 type SodiumKeyPair = {
   publicKey: Uint8Array;
@@ -64,6 +66,11 @@ export type OpenAIAgentIdentityOptions = {
    * reference is available from the runner.
    */
   externalTaskRef?: string;
+
+  /**
+   * Base URL for the AuthAPI agent registration surface.
+   */
+  registrationBaseURL?: string;
 };
 
 export type OpenAIAgentAssertionContext = {
@@ -183,17 +190,27 @@ function getDefaultRunningLocation(): string {
   return typeof globalValue.window === 'undefined' ? 'node' : 'browser';
 }
 
+function registrationURL(baseURL: string, path: string): string {
+  const url = new URL(baseURL);
+  const basePath = url.pathname.replace(/\/+$/, '');
+  url.pathname = `${basePath}${path}`;
+  return url.toString();
+}
+
 /**
  * Registers an OpenAI agent runtime/task and mints verified AgentAssertion
  * authorization headers for Responses API calls.
  */
 export class OpenAIAgentIdentity {
   readonly #options: OpenAIAgentIdentityOptions;
+  readonly #registrationBaseURL: string;
   #runtimePromise?: Promise<RegisteredRuntime>;
   readonly #taskPromises = new Map<string, Promise<RegisteredTask>>();
 
   constructor(options: OpenAIAgentIdentityOptions) {
     this.#options = { ...options };
+    this.#registrationBaseURL =
+      options.registrationBaseURL ?? DEFAULT_AGENT_REGISTRATION_BASE_URL;
   }
 
   async getAuthorizationHeader(
@@ -227,7 +244,7 @@ export class OpenAIAgentIdentity {
     const keyPair = sodium.crypto_sign_seed_keypair(seed);
     const agentPublicKey = openSshEd25519PublicKey(keyPair.publicKey);
     const response = await client.post<RegisterAgentResponse>(
-      '/agent/register',
+      registrationURL(this.#registrationBaseURL, '/v1/agent/register'),
       {
         body: {
           abom: {
@@ -285,7 +302,10 @@ export class OpenAIAgentIdentity {
       `${runtime.agentRuntimeId}:${timestamp}`,
     );
     const response = await client.post<RegisterTaskResponse>(
-      `/agent/${runtime.agentRuntimeId}/task/register`,
+      registrationURL(
+        this.#registrationBaseURL,
+        `/v1/agent/${runtime.agentRuntimeId}/task/register`,
+      ),
       {
         body: {
           timestamp,
@@ -309,6 +329,7 @@ export function getDefaultOpenAIAgentIdentityOptions(): OpenAIAgentIdentityOptio
     agentHarnessId: DEFAULT_AGENT_HARNESS_ID,
     agentVersion: METADATA.version,
     runningLocation: getDefaultRunningLocation(),
+    registrationBaseURL: DEFAULT_AGENT_REGISTRATION_BASE_URL,
   };
 }
 

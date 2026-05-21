@@ -45,8 +45,11 @@ export type OpenAIProviderOptions = {
   /**
    * Optional OpenAI agent identity used to mint verified AgentAssertion auth for
    * Responses API requests. By default the provider creates an SDK runtime
-   * identity and applies it only to model calls prepared for sandbox agents.
-   * Pass `false` to disable this behavior.
+   * identity when it also creates the default OpenAI client, and applies it only
+   * to model calls prepared for sandbox agents. Explicit `baseURL` and
+   * `openAIClient` configurations do not get a default identity because they may
+   * point at OpenAI-compatible providers that do not support agent runtime
+   * registration. Pass identity options to opt in, or `false` to disable.
    */
   agentIdentity?: OpenAIAgentIdentityInput;
   agentIdentityMode?: OpenAIAgentIdentityMode;
@@ -86,9 +89,23 @@ export class OpenAIProvider implements ModelProvider {
     this.#websocketBaseURL = this.#options.websocketBaseURL;
     this.#cacheResponsesWebSocketModels =
       this.#options.cacheResponsesWebSocketModels ?? true;
-    this.#agentIdentity = resolveOpenAIAgentIdentity(
-      this.#options.agentIdentity ?? getDefaultOpenAIAgentIdentityOptions(),
-    );
+    this.#agentIdentity = this.#resolveAgentIdentity();
+  }
+
+  #resolveAgentIdentity(): OpenAIAgentIdentity | undefined {
+    if (typeof this.#options.agentIdentity !== 'undefined') {
+      return resolveOpenAIAgentIdentity(this.#options.agentIdentity);
+    }
+
+    if (
+      this.#options.openAIClient ||
+      this.#options.baseURL ||
+      getDefaultOpenAIClient()
+    ) {
+      return undefined;
+    }
+
+    return resolveOpenAIAgentIdentity(getDefaultOpenAIAgentIdentityOptions());
   }
 
   /**

@@ -3,6 +3,8 @@ import sodium from 'libsodium-wrappers-sumo';
 import type OpenAI from 'openai';
 import { OpenAIAgentIdentity } from '../src/agentIdentity';
 
+const DEFAULT_REGISTRATION_BASE_URL = 'https://auth.openai.com/api/accounts';
+
 function utf8Bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
@@ -44,7 +46,7 @@ describe('OpenAIAgentIdentity', () => {
 
     let runtimePublicKey: Uint8Array | undefined;
     const post = vi.fn(async (path: string, options: { body: any }) => {
-      if (path === '/agent/register') {
+      if (path === `${DEFAULT_REGISTRATION_BASE_URL}/v1/agent/register`) {
         expect(options.body.abom).toEqual({
           agent_harness_id: 'agents-js',
           agent_version: '1.2.3',
@@ -57,7 +59,10 @@ describe('OpenAIAgentIdentity', () => {
         return { agent_runtime_id: 'runtime_123' };
       }
 
-      if (path === '/agent/runtime_123/task/register') {
+      if (
+        path ===
+        `${DEFAULT_REGISTRATION_BASE_URL}/v1/agent/runtime_123/task/register`
+      ) {
         expect(runtimePublicKey).toBeDefined();
         expect(options.body.external_task_ref).toBe('run_456');
         const registrationPayload = `runtime_123:${options.body.timestamp}`;
@@ -117,6 +122,52 @@ describe('OpenAIAgentIdentity', () => {
     await identity.getAuthorizationHeader(fakeClient, {
       externalTaskRef: 'run_456',
     });
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses a custom AuthAPI registration base URL when configured', async () => {
+    await sodium.ready;
+
+    let runtimePublicKey: Uint8Array | undefined;
+    const post = vi.fn(async (path: string, options: { body: any }) => {
+      if (path === 'https://auth.example.test/accounts/v1/agent/register') {
+        runtimePublicKey = parseOpenSshEd25519PublicKey(
+          options.body.agent_public_key,
+        );
+        return { agent_runtime_id: 'runtime_custom' };
+      }
+
+      if (
+        path ===
+        'https://auth.example.test/accounts/v1/agent/runtime_custom/task/register'
+      ) {
+        expect(runtimePublicKey).toBeDefined();
+        const curvePublicKey = sodium.crypto_sign_ed25519_pk_to_curve25519(
+          runtimePublicKey!,
+        );
+        return {
+          encrypted_task_id: sodium.to_base64(
+            sodium.crypto_box_seal(utf8Bytes('task_custom'), curvePublicKey),
+            sodium.base64_variants.ORIGINAL,
+          ),
+        };
+      }
+
+      throw new Error(`Unexpected path ${path}`);
+    });
+    const fakeClient = { post } as unknown as OpenAI;
+    const identity = new OpenAIAgentIdentity({
+      agentHarnessId: 'agents-js',
+      agentVersion: '1.2.3',
+      runningLocation: 'docker',
+      registrationBaseURL: 'https://auth.example.test/accounts/',
+    });
+
+    const header = await identity.getAuthorizationHeader(fakeClient);
+
+    const assertion = decodeAgentAssertion(header);
+    expect(assertion.agent_runtime_id).toBe('runtime_custom');
+    expect(assertion.task_id).toBe('task_custom');
     expect(post).toHaveBeenCalledTimes(2);
   });
 });
