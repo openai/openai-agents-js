@@ -80,6 +80,10 @@ You can serialize the state using `result.state.toString()` (or `JSON.stringify(
 
 When `RunState` is serialized, the SDK records stable agent identities for the handoff and `Agent.asTool()` graph. This lets paused runs resume even when distinct agents share the same `name`, as long as the process that resumes the run rebuilds the same agent graph.
 
+The `agent` passed to `RunState.fromString(agent, serializedState)` is the root of that rebuilt graph. During deserialization, the SDK traverses that agent's handoffs and `Agent.asTool()` references, then resolves every serialized agent reference in the state against the rebuilt graph. This includes the current agent and nested references held by generated items, processed model responses, and queued next steps.
+
+If you need to resume with a substituted graph, for example agents whose models or tools were wrapped by another runtime, deserialize the state with the original graph, serialize it again, then deserialize that string with the substituted root agent. Calling `state.setCurrentAgent(agent)` only changes the active agent and does not rewrite nested references that were already resolved during deserialization.
+
 If the resumed process needs to inject a fresh context object, use `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })` instead.
 
 - `contextStrategy: 'merge'` (default) keeps the provided `RunContext`, merges in the serialized approval state, and restores serialized `toolInput` when the new context does not already define one.
