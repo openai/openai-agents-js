@@ -1338,6 +1338,48 @@ describe('saveToSession', () => {
     }
   }
 
+  it('does not require a process global for debug session logging', async () => {
+    const processDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'process',
+    );
+    Object.defineProperty(globalThis, 'process', {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+
+    try {
+      const agent = new Agent<UnknownContext, 'text'>({
+        name: 'ProcesslessSessionAgent',
+        outputType: 'text',
+        instructions: 'test',
+      });
+      const session = new MemorySession();
+      const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+
+      state._generatedItems = [
+        new MessageOutputItem(fakeModelMessage('saved'), agent),
+      ];
+
+      await expect(
+        saveToSession(session, [], new RunResult(state)),
+      ).resolves.toBeUndefined();
+      expect(session.items).toHaveLength(1);
+      expect(session.items[0]).toMatchObject({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'saved' }],
+      });
+    } finally {
+      if (processDescriptor) {
+        Object.defineProperty(globalThis, 'process', processDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'process');
+      }
+    }
+  });
+
   it('preserves reasoning IDs for sessions that require them', async () => {
     class ReasoningPreservingSession extends MemorySession {
       preserveReasoningItemIdsForPersistence(): boolean {
