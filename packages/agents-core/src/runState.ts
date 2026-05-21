@@ -662,6 +662,17 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._currentAgentSpan = span;
   }
 
+  /**
+   * Clears the restored trace and current agent span from this run state.
+   *
+   * Use this before resuming a serialized state when the resumed run should attach
+   * to the current ambient trace instead of the trace persisted in the state.
+   */
+  public clearTrace(): void {
+    this._trace = null;
+    this._currentAgentSpan = undefined;
+  }
+
   private getOrCreateToolSearchRuntimeToolState(
     agent: Agent<any, any>,
   ): ToolSearchRuntimeToolState<TContext> {

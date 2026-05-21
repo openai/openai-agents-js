@@ -29,6 +29,7 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   BatchTraceProcessor,
+  withTrace,
   user,
   assistant,
   type ToolExecutionConfig,
@@ -1621,6 +1622,50 @@ describe('Runner.run', () => {
         'override-key',
       );
       setTracingDisabled(true);
+    });
+
+    it('can clear a restored RunState trace so resume uses the ambient trace', async () => {
+      setTracingDisabled(false);
+      try {
+        const provider = getGlobalTraceProvider();
+        const agent = new Agent({
+          name: 'ResumeAmbientTrace',
+          model: new FakeModel([
+            { output: [fakeModelMessage('hi')], usage: new Usage() },
+          ]),
+        });
+        const state = new RunState(new RunContext(), 'hi', agent, 1);
+        const restoredTrace = provider.createTrace({
+          traceId: 'restored-trace-id',
+          name: 'Restored workflow',
+        });
+        state._trace = restoredTrace;
+        state._currentAgentSpan = provider.createSpan(
+          { data: { type: 'agent', name: 'RestoredSpan' } },
+          restoredTrace,
+        );
+        state.clearTrace();
+
+        const ambientTrace = provider.createTrace({
+          traceId: 'ambient-trace-id',
+          name: 'Ambient workflow',
+        });
+
+        const resumed = await withTrace(ambientTrace, async () =>
+          new Runner().run(agent, state),
+        );
+
+        expect(resumed.state._trace?.traceId).toBe('ambient-trace-id');
+        expect(resumed.state._currentAgentSpan?.traceId).toBe(
+          'ambient-trace-id',
+        );
+        expect(resumed.state._trace?.traceId).not.toBe('restored-trace-id');
+        expect(resumed.state._currentAgentSpan?.traceId).not.toBe(
+          'restored-trace-id',
+        );
+      } finally {
+        setTracingDisabled(true);
+      }
     });
 
     it('input guardrail executes only once', async () => {

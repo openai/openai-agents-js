@@ -23,6 +23,7 @@ import { RunResult, StreamedRunResult } from './result';
 import { RunState } from './runState';
 import { RunItem } from './items';
 import {
+  getCurrentTrace,
   getOrCreateTrace,
   resetCurrentSpan,
   setCurrentSpan,
@@ -688,14 +689,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         return executeRun();
       });
     }
-    return getOrCreateTrace(async () => executeRun(), {
-      traceId: this.config.traceId,
-      name: this.config.workflowName,
-      groupId: this.config.groupId,
-      metadata: this.config.traceMetadata,
-      // Per-run tracing config overrides exporter defaults such as environment API key.
-      tracingApiKey: tracingConfig?.apiKey,
-    });
+    return getOrCreateTrace(
+      async () => {
+        if (preparedInput instanceof RunState && !preparedInput._trace) {
+          preparedInput._trace = getCurrentTrace();
+        }
+        return executeRun();
+      },
+      {
+        traceId: this.config.traceId,
+        name: this.config.workflowName,
+        groupId: this.config.groupId,
+        metadata: this.config.traceMetadata,
+        // Per-run tracing config overrides exporter defaults such as environment API key.
+        tracingApiKey: tracingConfig?.apiKey,
+      },
+    );
   }
 
   // --------------------------------------------------------------
