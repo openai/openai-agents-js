@@ -7,6 +7,7 @@ import {
   generateSpanId,
   generateGroupId,
   removePrivateFields,
+  NOOP_TRACE_OR_SPAN_ID,
 } from '../src/tracing/utils';
 
 import { Trace, NoopTrace } from '../src/tracing/traces';
@@ -1571,6 +1572,53 @@ describe('MultiTracingProcessor', () => {
     expect(processor2.spansEnded).toEqual([span]);
     expect(span.startedAt).toBe(startedAt);
     expect(span.endedAt).toBe(endedAt);
+  });
+
+  it('does not dispatch no-op traces or spans', async () => {
+    const processor = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor);
+
+    const noopTrace = new NoopTrace();
+    const traceWithNoopId = new Trace({
+      name: 'no-op-id',
+      traceId: NOOP_TRACE_OR_SPAN_ID,
+    });
+    const noopSpan = new NoopSpan(
+      { type: 'custom', name: 'noop-span', data: {} },
+      new TestProcessor(),
+    );
+    const spanWithNoopTraceId = new Span(
+      {
+        traceId: NOOP_TRACE_OR_SPAN_ID,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'noop-trace-id', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+    const spanWithNoopSpanId = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: NOOP_TRACE_OR_SPAN_ID,
+        data: { type: 'custom', name: 'noop-span-id', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchTrace(noopTrace);
+    await multiProcessor.dispatchTrace(traceWithNoopId);
+    await multiProcessor.dispatchSpan(noopSpan);
+    await multiProcessor.dispatchSpan(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpan(spanWithNoopSpanId);
+
+    expect(processor.tracesStarted).toHaveLength(0);
+    expect(processor.tracesEnded).toHaveLength(0);
+    expect(processor.spansStarted).toHaveLength(0);
+    expect(processor.spansEnded).toHaveLength(0);
   });
 });
 
