@@ -2,6 +2,11 @@ import { randomUUID } from '@openai/agents-core/_shims';
 
 export const NOOP_TRACE_OR_SPAN_ID = 'no-op';
 
+export type TracingIdGenerator = Readonly<{
+  generateTraceId: () => string;
+  generateSpanId: () => string;
+}>;
+
 /**
  * Generate an ISO 8601 timestamp of the current time.
  * @returns An ISO 8601 timestamp.
@@ -27,6 +32,11 @@ export function generateTraceId(): string {
 export function generateSpanId(): string {
   return `span_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
+
+export const defaultTracingIdGenerator: TracingIdGenerator = Object.freeze({
+  generateTraceId,
+  generateSpanId,
+});
 
 /**
  * Generate a group ID by creating a random UUID v4 and removing the dashes. This is the equivalent

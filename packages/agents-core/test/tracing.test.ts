@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   timeIso,
+  defaultTracingIdGenerator,
   generateTraceId,
   generateSpanId,
   generateGroupId,
@@ -35,6 +36,7 @@ import {
   getCurrentSpan,
   setTraceProcessors,
   setTracingDisabled,
+  setTracingIdGenerator,
   setCurrentSpan,
   resetCurrentSpan,
 } from '../src/tracing';
@@ -1232,6 +1234,147 @@ describe('TraceProvider disabled behavior', () => {
       trace,
     );
     expect(span).toBeInstanceOf(NoopSpan);
+  });
+});
+
+describe('TraceProvider ID generator behavior', () => {
+  it('keeps the default ID generator immutable', () => {
+    expect(Object.isFrozen(defaultTracingIdGenerator)).toBe(true);
+    expect(
+      Object.getOwnPropertyDescriptor(
+        defaultTracingIdGenerator,
+        'generateTraceId',
+      )?.writable,
+    ).toBe(false);
+    expect(
+      Object.getOwnPropertyDescriptor(
+        defaultTracingIdGenerator,
+        'generateSpanId',
+      )?.writable,
+    ).toBe(false);
+  });
+
+  it('uses a custom constructor ID generator for traces and spans', () => {
+    const provider = new TraceProvider({
+      idGenerator: {
+        generateTraceId: () => 'trace_custom_1',
+        generateSpanId: () => 'span_custom_1',
+      },
+    });
+    provider.setDisabled(false);
+
+    const trace = provider.createTrace({ name: 'deterministic' });
+    const span = provider.createSpan(
+      { data: { type: 'custom', name: 'deterministic', data: {} } },
+      trace,
+    );
+
+    expect(trace.traceId).toBe('trace_custom_1');
+    expect(span.spanId).toBe('span_custom_1');
+    expect(span.traceId).toBe('trace_custom_1');
+  });
+
+  it('prefers explicit trace and span IDs over the configured generator', () => {
+    const generateTraceId = vi.fn(() => 'trace_generated');
+    const generateSpanId = vi.fn(() => 'span_generated');
+    const provider = new TraceProvider({
+      idGenerator: {
+        generateTraceId,
+        generateSpanId,
+      },
+    });
+    provider.setDisabled(false);
+
+    const trace = provider.createTrace({
+      name: 'explicit',
+      traceId: 'trace_explicit',
+    });
+    const span = provider.createSpan(
+      {
+        spanId: 'span_explicit',
+        data: { type: 'custom', name: 'explicit', data: {} },
+      },
+      trace,
+    );
+
+    expect(trace.traceId).toBe('trace_explicit');
+    expect(span.spanId).toBe('span_explicit');
+    expect(generateTraceId).not.toHaveBeenCalled();
+    expect(generateSpanId).not.toHaveBeenCalled();
+  });
+
+  it('configures and resets the global provider ID generator', () => {
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+
+    try {
+      setTracingIdGenerator({
+        generateTraceId: () => 'trace_configured_global',
+        generateSpanId: () => 'span_configured_global',
+      });
+
+      const trace = provider.createTrace({ name: 'global' });
+      const span = provider.createSpan(
+        { data: { type: 'custom', name: 'global', data: {} } },
+        trace,
+      );
+
+      expect(trace.traceId).toBe('trace_configured_global');
+      expect(span.spanId).toBe('span_configured_global');
+    } finally {
+      setTracingIdGenerator();
+      provider.setDisabled(true);
+    }
+  });
+
+  it('prefers provider ID generation methods over the global ID generator', () => {
+    class DeterministicTraceProvider extends TraceProvider {
+      override generateTraceId(): string {
+        return 'trace_provider_custom';
+      }
+
+      override generateSpanId(): string {
+        return 'span_provider_custom';
+      }
+    }
+
+    const symbol = Symbol.for('openai.agents.core.traceProvider');
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+    const original = globalHolder[symbol];
+    const provider = new DeterministicTraceProvider();
+    const generateTraceId = vi.fn(() => 'trace_global_generator');
+    const generateSpanId = vi.fn(() => 'span_global_generator');
+
+    provider.setDisabled(false);
+    globalHolder[symbol] = provider;
+
+    try {
+      setTracingIdGenerator({ generateTraceId, generateSpanId });
+
+      const trace = getGlobalTraceProvider().createTrace({
+        name: 'provider-priority',
+      });
+      const span = getGlobalTraceProvider().createSpan(
+        { data: { type: 'custom', name: 'provider-priority', data: {} } },
+        trace,
+      );
+
+      expect(trace.traceId).toBe('trace_provider_custom');
+      expect(span.spanId).toBe('span_provider_custom');
+      expect(generateTraceId).not.toHaveBeenCalled();
+      expect(generateSpanId).not.toHaveBeenCalled();
+    } finally {
+      setTracingIdGenerator();
+      provider.setDisabled(true);
+      if (typeof original === 'undefined') {
+        delete globalHolder[symbol];
+      } else {
+        globalHolder[symbol] = original;
+      }
+    }
   });
 });
 
