@@ -60,11 +60,35 @@ function getActiveContext() {
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {
   return (
-    typeof value === 'object' &&
+    (typeof value === 'object' || typeof value === 'function') &&
     value !== null &&
-    typeof (value as Promise<unknown>).then === 'function' &&
-    typeof (value as Promise<unknown>).finally === 'function'
+    typeof (value as Promise<unknown>).then === 'function'
   );
+}
+
+function deferRestoreForStreamedRunResult(
+  result: unknown,
+  restore: () => void,
+) {
+  if (!(result instanceof StreamedRunResult)) {
+    return false;
+  }
+
+  const streamLoopPromise = result._getStreamLoopPromise();
+  if (!streamLoopPromise) {
+    return false;
+  }
+
+  void streamLoopPromise.then(restore, restore);
+  return true;
+}
+
+function restoreAfterResolvedValue<T>(result: T, restore: () => void): T {
+  if (!deferRestoreForStreamedRunResult(result, restore)) {
+    restore();
+  }
+
+  return result;
 }
 
 function runWithScopedTraceContext<T>(store: ContextState, fn: () => T): T {
@@ -78,12 +102,18 @@ function runWithScopedTraceContext<T>(store: ContextState, fn: () => T): T {
     let restoreOnExit = true;
     try {
       const result = fn();
+      restoreOnExit = false;
       if (isPromiseLike(result)) {
-        restoreOnExit = false;
-        return result.finally(restore) as T;
+        return result.then(
+          (resolved) => restoreAfterResolvedValue(resolved, restore),
+          (error) => {
+            restore();
+            throw error;
+          },
+        ) as T;
       }
 
-      return result;
+      return restoreAfterResolvedValue(result, restore);
     } finally {
       if (restoreOnExit) {
         restore();
@@ -157,6 +187,7 @@ export function withTraceContext<T>(
     {
       trace: context.trace,
       span: context.span ?? undefined,
+      previousSpan: context.span?.previousSpan,
       active: true,
     },
     fn,

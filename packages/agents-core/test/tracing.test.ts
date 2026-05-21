@@ -52,6 +52,7 @@ import { TraceProvider, getGlobalTraceProvider } from '../src/tracing/provider';
 
 import { Runner } from '../src/run';
 import { Agent } from '../src/agent';
+import { StreamedRunResult } from '../src/result';
 import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
 import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
@@ -1100,6 +1101,52 @@ describe('withTrace & span helpers (integration)', () => {
     }
   });
 
+  it('withTraceContext keeps browser context until streamed results finish', async () => {
+    const globalScope = globalThis as unknown as Record<
+      symbol,
+      unknown | undefined
+    >;
+    const previousStorage = globalScope[ALS_SYMBOL];
+    const trace = new Trace({ name: 'manual-streaming-trace' });
+
+    globalScope[ALS_SYMBOL] = new BrowserAsyncLocalStorage();
+
+    try {
+      let finishStreamLoop!: () => void;
+      let traceDuringStreamLoop: Trace | null | undefined;
+      const streamLoopGate = new Promise<void>((resolve) => {
+        finishStreamLoop = resolve;
+      });
+      const streamLoopPromise = streamLoopGate.then(() => {
+        traceDuringStreamLoop = getCurrentTrace();
+      });
+
+      const resultPromise = withTraceContext({ trace }, async () => {
+        const result = new StreamedRunResult<any, any>();
+        result._setStreamLoopPromise(streamLoopPromise);
+        return result;
+      });
+
+      const result = await resultPromise;
+
+      expect(result).toBeInstanceOf(StreamedRunResult);
+      expect(getCurrentTrace()).toBe(trace);
+
+      finishStreamLoop();
+      await streamLoopPromise;
+      await Promise.resolve();
+
+      expect(traceDuringStreamLoop).toBe(trace);
+      expect(getCurrentTrace()).toBeNull();
+    } finally {
+      if (previousStorage === undefined) {
+        delete globalScope[ALS_SYMBOL];
+      } else {
+        globalScope[ALS_SYMBOL] = previousStorage;
+      }
+    }
+  });
+
   it('withTraceContext keeps context across awaits', async () => {
     const trace = new Trace({ name: 'manual-async-trace' });
 
@@ -1184,6 +1231,33 @@ describe('withTrace & span helpers (integration)', () => {
 
       resetCurrentSpan();
       expect(getCurrentSpan()).toBeNull();
+    });
+  });
+
+  it('withTraceContext preserves the captured span stack', async () => {
+    await withTrace('workflow', async () => {
+      const spanA = createAgentSpan({ data: { name: 'A' } });
+      setCurrentSpan(spanA);
+      const spanB = createAgentSpan({ data: { name: 'B' } });
+      setCurrentSpan(spanB);
+      const snapshot = getCurrentTraceContext();
+
+      expect(snapshot?.span).toBe(spanB);
+      expect(spanB.previousSpan).toBe(spanA);
+
+      withTraceContext(snapshot, () => {
+        const spanC = createAgentSpan({ data: { name: 'C' } });
+        setCurrentSpan(spanC);
+
+        expect(spanC.previousSpan).toBe(spanB);
+        resetCurrentSpan();
+        expect(getCurrentSpan()).toBe(spanB);
+        resetCurrentSpan();
+        expect(getCurrentSpan()).toBe(spanA);
+      });
+
+      expect(spanB.previousSpan).toBe(spanA);
+      expect(getCurrentSpan()).toBe(spanB);
     });
   });
 
