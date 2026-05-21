@@ -427,6 +427,75 @@ describe('OpenAIResponsesWSModel', () => {
     expect((responseDone as any).response.id).toBe('resp_done');
   });
 
+  it('adds AgentAssertion auth to sandbox-marked websocket requests', async () => {
+    const fakeClient = createFakeClient();
+    const sentFrames: Record<string, any>[] = [];
+    const agentIdentity = {
+      getAuthorizationHeader: vi.fn().mockResolvedValue('AgentAssertion jwt'),
+    };
+
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend((rawFrame) => {
+        sentFrames.push(JSON.parse(rawFrame));
+        socket.queueJSON({
+          type: 'response.created',
+          response: { id: 'resp_init' },
+          sequence_number: 0,
+        });
+        socket.queueJSON({
+          type: 'response.completed',
+          response: {
+            id: 'resp_done',
+            output: [],
+            usage: {},
+          },
+          sequence_number: 1,
+        });
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
+      agentIdentity: agentIdentity as any,
+      websocketBaseURL: 'wss://proxy.example.test/v1',
+    });
+
+    const request = {
+      systemInstructions: undefined,
+      input: 'hello',
+      modelSettings: {
+        providerData: {
+          openai_agents_sdk: {
+            sandbox: {
+              enabled: true,
+              externalTaskRef: 'group_123',
+            },
+          },
+        },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    for await (const _event of model.getStreamedResponse(request as any)) {
+      // Consume stream to trigger the websocket handshake.
+    }
+
+    expect(agentIdentity.getAuthorizationHeader).toHaveBeenCalledWith(
+      fakeClient,
+      { externalTaskRef: 'group_123' },
+    );
+    expect(TestWebSocket.instances[0]?.init).toMatchObject({
+      headers: {
+        Authorization: 'AgentAssertion jwt',
+      },
+    });
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0]?.openai_agents_sdk).toBeUndefined();
+  });
+
   it('serializes websocket query array params with bracket-style encoding', async () => {
     const fakeClient = createFakeClient();
 
