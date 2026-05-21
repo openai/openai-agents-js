@@ -64,6 +64,85 @@ describe('Usage', () => {
     ]);
   });
 
+  it('reconstructs RequestUsage instances from JSON-compatible values', () => {
+    const wireValue = JSON.parse(
+      JSON.stringify(
+        new RequestUsage({
+          inputTokens: 7,
+          outputTokens: 3,
+          totalTokens: 10,
+          inputTokensDetails: { cached_tokens: 1 },
+          outputTokensDetails: { reasoning_tokens: 2 },
+          endpoint: 'responses.create',
+        }),
+      ),
+    );
+
+    const usage = RequestUsage.fromJSON(wireValue);
+
+    expect(usage).toBeInstanceOf(RequestUsage);
+    expect(usage).toEqual(
+      new RequestUsage({
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+        inputTokensDetails: { cached_tokens: 1 },
+        outputTokensDetails: { reasoning_tokens: 2 },
+        endpoint: 'responses.create',
+      }),
+    );
+  });
+
+  it('reconstructs Usage and nested RequestUsage instances from JSON-compatible values', () => {
+    const wireValue = JSON.parse(
+      JSON.stringify(
+        new Usage({
+          requests: 1,
+          inputTokens: 7,
+          outputTokens: 3,
+          totalTokens: 10,
+          inputTokensDetails: [{ cached_tokens: 1 }],
+          outputTokensDetails: [{ reasoning_tokens: 2 }],
+          requestUsageEntries: [
+            new RequestUsage({
+              inputTokens: 7,
+              outputTokens: 3,
+              totalTokens: 10,
+              inputTokensDetails: { cached_tokens: 1 },
+              outputTokensDetails: { reasoning_tokens: 2 },
+              endpoint: 'responses.create',
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const usage = Usage.fromJSON(wireValue);
+
+    expect(usage).toBeInstanceOf(Usage);
+    expect(usage.requestUsageEntries?.[0]).toBeInstanceOf(RequestUsage);
+    expect(usage).toEqual(
+      new Usage({
+        requests: 1,
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+        inputTokensDetails: [{ cached_tokens: 1 }],
+        outputTokensDetails: [{ reasoning_tokens: 2 }],
+        requestUsageEntries: [
+          new RequestUsage({
+            inputTokens: 7,
+            outputTokens: 3,
+            totalTokens: 10,
+            inputTokensDetails: { cached_tokens: 1 },
+            outputTokensDetails: { reasoning_tokens: 2 },
+            endpoint: 'responses.create',
+          }),
+        ],
+      }),
+    );
+  });
+
   it('adds other Usage instances correctly', () => {
     const usageA = new Usage({
       inputTokens: 1,
