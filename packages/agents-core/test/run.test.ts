@@ -130,6 +130,82 @@ describe('Runner.run', () => {
       expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
     });
 
+    it('keeps the default provider lazy until a string model needs it', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => model),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        expect(provider.getModel).not.toHaveBeenCalled();
+
+        await runner.run(new Agent({ name: 'Lazy Provider Agent' }), 'hello');
+
+        expect(provider.getModel).toHaveBeenCalledWith('default-model');
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it("keeps a runner's resolved default provider stable", async () => {
+      const firstProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      const laterProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(firstProvider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+        setDefaultModelProvider(laterProvider);
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+
+        expect(firstProvider.getModel).toHaveBeenCalledTimes(2);
+        expect(laterProvider.getModel).not.toHaveBeenCalled();
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it('does not require a modelProvider when the selected model is a Model object', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => {
+          throw new Error('default provider should not be used');
+        }),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model,
+          tracingDisabled: true,
+        });
+
+        await runner.run(new Agent({ name: 'Model Object Agent' }), 'hello');
+
+        expect(provider.getModel).not.toHaveBeenCalled();
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
     it('rejects invalid function tool concurrency config', () => {
       expect(
         () =>
