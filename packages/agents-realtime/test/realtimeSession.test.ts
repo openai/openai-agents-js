@@ -488,6 +488,44 @@ describe('RealtimeSession', () => {
     expect(updatedMessage.status).toBe('completed');
   });
 
+  it('adds completed audio transcripts to history when retrieval is skipped', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const historyAdded = vi.fn();
+    scenarioSession.on('history_added', historyAdded);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    const historyUpdated = waitForEvent<[RealtimeItem[]]>(
+      scenarioSession,
+      'history_updated',
+    );
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'audio-1',
+      transcript: 'lookup my account',
+    });
+
+    const [updatedHistory] = await historyUpdated;
+    expect(updatedHistory).toEqual([
+      {
+        itemId: 'audio-1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [
+          {
+            type: 'input_audio',
+            transcript: 'lookup my account',
+          },
+        ],
+      },
+    ]);
+    expect(scenarioSession.history).toEqual(updatedHistory);
+    expect(historyAdded).toHaveBeenCalledWith(updatedHistory[0]);
+  });
+
   it('resets guardrail debounce per transcript item', async () => {
     let guardrailRuns = 0;
     let resolveSecondRun!: () => void;

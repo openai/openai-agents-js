@@ -779,12 +779,23 @@ export class RealtimeSession<
       ) {
         try {
           const completedEvent = event as InputAudioTranscriptionCompletedEvent;
+          const isNew = !this.#history.some(
+            (item) => item.itemId === completedEvent.item_id,
+          );
           this.#history = updateRealtimeHistory(
             this.#history,
             completedEvent,
             this.#shouldIncludeAudioData,
           );
           this.#context.context.history = this.#history;
+          if (isNew) {
+            const addedItem = this.#history.find(
+              (item) => item.itemId === completedEvent.item_id,
+            );
+            if (addedItem) {
+              this.emit('history_added', addedItem);
+            }
+          }
           this.emit('history_updated', this.#history);
         } catch (err) {
           this.emit('error', {

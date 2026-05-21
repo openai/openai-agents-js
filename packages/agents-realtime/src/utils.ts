@@ -237,15 +237,19 @@ export function updateRealtimeHistory(
   event: RealtimeItem | InputAudioTranscriptionCompletedEvent,
   shouldIncludeAudioData: boolean,
 ): RealtimeItem[] {
-  // Merge transcript into placeholder input_audio message
+  // Merge transcript into placeholder input_audio message. If the transport cannot
+  // retrieve the full item (for example because a tool call immediately follows the
+  // user audio), keep the final transcript in history by adding a minimal audio item.
   if (event.type === 'conversation.item.input_audio_transcription.completed') {
-    return history.map((item) => {
+    let matchedAudioItem = false;
+    const updatedHistory = history.map((item) => {
       if (
         item.itemId === event.item_id &&
         item.type === 'message' &&
         'role' in item &&
         item.role === 'user'
       ) {
+        matchedAudioItem = true;
         const updatedContent = item.content.map((entry: any) => {
           if (entry.type === 'input_audio') {
             return {
@@ -259,11 +263,31 @@ export function updateRealtimeHistory(
         return {
           ...item,
           content: updatedContent,
-          status: 'completed',
+          status: 'completed' as const,
         };
       }
       return item;
     });
+
+    if (matchedAudioItem) {
+      return updatedHistory;
+    }
+
+    return [
+      ...history,
+      {
+        itemId: event.item_id,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [
+          {
+            type: 'input_audio',
+            transcript: event.transcript,
+          },
+        ],
+      },
+    ];
   }
   const newEvent =
     !shouldIncludeAudioData && event.type === 'message'
