@@ -8,6 +8,7 @@ import {
 import type { Timeout, Timer } from '../shims/interface';
 import { tracing } from '../config';
 import { combineAbortSignals } from '../utils/abortSignals';
+import { NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 type Span = TSpan<any>;
 
@@ -365,6 +366,35 @@ export class MultiTracingProcessor implements TracingProcessor {
     for (const processor of this.#processors) {
       await processor.onSpanEnd(span);
     }
+  }
+
+  /**
+   * Dispatches a completed trace lifecycle to every registered processor without
+   * calling Trace.start() or Trace.end().
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    if (trace.traceId === NOOP_TRACE_OR_SPAN_ID) {
+      return;
+    }
+
+    await this.onTraceStart(trace);
+    await this.onTraceEnd(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to every registered processor without
+   * calling Span.start() or Span.end().
+   */
+  async dispatchSpan(span: Span): Promise<void> {
+    if (
+      span.traceId === NOOP_TRACE_OR_SPAN_ID ||
+      span.spanId === NOOP_TRACE_OR_SPAN_ID
+    ) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+    await this.onSpanEnd(span);
   }
 
   async shutdown(timeout?: number): Promise<void> {

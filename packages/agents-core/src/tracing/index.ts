@@ -1,6 +1,8 @@
 import { TracingProcessor } from './processor';
 import { getGlobalTraceProvider } from './provider';
 import type { TracingConfig } from './config';
+import type { Span, SpanData } from './spans';
+import type { Trace } from './traces';
 import type { TracingIdGenerator } from './utils';
 
 export {
@@ -21,6 +23,7 @@ export {
   TracingExporter,
   TracingProcessor,
   ConsoleSpanExporter,
+  MultiTracingProcessor,
 } from './processor';
 export { NoopSpan, Span } from './spans';
 export type {
@@ -87,6 +90,30 @@ export function setTracingIdGenerator(
   idGenerator?: Partial<TracingIdGenerator>,
 ): void {
   getGlobalTraceProvider().setIdGenerator(idGenerator);
+}
+
+/**
+ * Dispatch a completed trace lifecycle to all processors registered on the
+ * global tracing provider.
+ *
+ * This bypasses Trace.start() and Trace.end(), so callers can replay a
+ * completed lifecycle without mutating the trace state.
+ */
+export async function dispatchTrace(trace: Trace): Promise<void> {
+  await getGlobalTraceProvider().dispatchTrace(trace);
+}
+
+/**
+ * Dispatch a completed span lifecycle to all processors registered on the
+ * global tracing provider.
+ *
+ * This bypasses Span.start() and Span.end(), so callers can replay a completed
+ * lifecycle without mutating existing timestamps.
+ */
+export async function dispatchSpan<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpan(span);
 }
 
 /**
