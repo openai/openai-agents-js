@@ -11,6 +11,11 @@ type ContextState = {
   active: boolean;
 };
 
+export type TraceContextSnapshot = Readonly<{
+  trace: Trace;
+  span?: Span<any> | null;
+}>;
+
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 let localFallbackAls: AsyncLocalStorage<ContextState | undefined> | undefined;
 
@@ -53,6 +58,70 @@ function getActiveContext() {
   return undefined;
 }
 
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    typeof (value as Promise<unknown>).then === 'function'
+  );
+}
+
+function deferRestoreForStreamedRunResult(
+  result: unknown,
+  restore: () => void,
+) {
+  if (!(result instanceof StreamedRunResult)) {
+    return false;
+  }
+
+  const streamLoopPromise = result._getStreamLoopPromise();
+  if (!streamLoopPromise) {
+    return false;
+  }
+
+  void streamLoopPromise.then(restore, restore);
+  return true;
+}
+
+function restoreAfterResolvedValue<T>(result: T, restore: () => void): T {
+  if (!deferRestoreForStreamedRunResult(result, restore)) {
+    restore();
+  }
+
+  return result;
+}
+
+function runWithScopedTraceContext<T>(store: ContextState, fn: () => T): T {
+  const asyncLocalStorage = getContextAsyncLocalStorage();
+  const previousStore = asyncLocalStorage.getStore();
+  const restore = () => {
+    asyncLocalStorage.enterWith(previousStore);
+  };
+
+  return asyncLocalStorage.run(store, () => {
+    let restoreOnExit = true;
+    try {
+      const result = fn();
+      restoreOnExit = false;
+      if (isPromiseLike(result)) {
+        return result.then(
+          (resolved) => restoreAfterResolvedValue(resolved, restore),
+          (error) => {
+            restore();
+            throw error;
+          },
+        ) as T;
+      }
+
+      return restoreAfterResolvedValue(result, restore);
+    } finally {
+      if (restoreOnExit) {
+        restore();
+      }
+    }
+  });
+}
+
 /**
  * This function will get the current trace from the execution context.
  *
@@ -78,6 +147,51 @@ export function getCurrentSpan() {
     return currentSpan.span;
   }
   return null;
+}
+
+/**
+ * Gets a public snapshot of the current trace context.
+ *
+ * This intentionally does not expose the internal async storage shape.
+ */
+export function getCurrentTraceContext(): TraceContextSnapshot | null {
+  const context = getActiveContext();
+  if (!context?.trace) {
+    return null;
+  }
+
+  if (context.span) {
+    return {
+      trace: context.trace,
+      span: context.span,
+    };
+  }
+
+  return { trace: context.trace };
+}
+
+/**
+ * Runs a callback with a previously captured trace context.
+ *
+ * Pass null or undefined to run the callback without any ambient trace context.
+ */
+export function withTraceContext<T>(
+  context: TraceContextSnapshot | null | undefined,
+  fn: () => T,
+): T {
+  if (!context) {
+    return runWithScopedTraceContext({ active: false }, fn);
+  }
+
+  return runWithScopedTraceContext(
+    {
+      trace: context.trace,
+      span: context.span ?? undefined,
+      previousSpan: context.span?.previousSpan,
+      active: true,
+    },
+    fn,
+  );
 }
 
 /**

@@ -4,13 +4,16 @@ import type { TracingConfig } from './config';
 import type { TracingIdGenerator } from './utils';
 
 export {
+  getCurrentTraceContext,
   getCurrentSpan,
   getCurrentTrace,
   getOrCreateTrace,
   resetCurrentSpan,
   setCurrentSpan,
+  withTraceContext,
   withTrace,
 } from './context';
+export type { TraceContextSnapshot } from './context';
 export * from './createSpans';
 export {
   BatchTraceProcessor,
