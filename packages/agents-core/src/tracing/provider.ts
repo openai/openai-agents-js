@@ -116,6 +116,11 @@ export class TraceProvider {
    * mutating the trace state.
    */
   async dispatchTrace(trace: Trace): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching trace %o', trace);
+      return;
+    }
+
     await this.#multiProcessor.dispatchTrace(trace);
   }
 
@@ -129,6 +134,11 @@ export class TraceProvider {
   async dispatchSpan<TSpanData extends SpanData>(
     span: Span<TSpanData>,
   ): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching span %o', span);
+      return;
+    }
+
     await this.#multiProcessor.dispatchSpan(span);
   }
 
