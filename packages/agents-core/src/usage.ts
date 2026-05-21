@@ -1,6 +1,6 @@
 import { RequestUsageData, UsageData } from './types/protocol';
 
-type RequestUsageInput = Partial<
+export type RequestUsageInput = Partial<
   RequestUsageData & {
     input_tokens: number;
     output_tokens: number;
@@ -11,7 +11,7 @@ type RequestUsageInput = Partial<
   }
 >;
 
-type UsageInput = Partial<
+export type UsageInput = Partial<
   UsageData & {
     input_tokens: number;
     output_tokens: number;
@@ -82,6 +82,13 @@ export class RequestUsage {
     if (typeof input?.endpoint !== 'undefined') {
       this.endpoint = input.endpoint;
     }
+  }
+
+  /**
+   * Reconstructs a RequestUsage instance from a JSON-compatible wire value.
+   */
+  static fromJSON(input?: RequestUsageInput): RequestUsage {
+    return new RequestUsage(input);
   }
 }
 
@@ -177,6 +184,13 @@ export class Usage {
           ? normalizedRequestUsageEntries
           : undefined;
     }
+  }
+
+  /**
+   * Reconstructs a Usage instance from a JSON-compatible wire value.
+   */
+  static fromJSON(input?: UsageInput): Usage {
+    return new Usage(input);
   }
 
   add(newUsage: Usage) {
