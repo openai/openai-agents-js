@@ -80,6 +80,7 @@ export {
   getHandoff,
   getTransferMessage,
   Handoff,
+  HandoffCloneOptions,
   handoff,
   HandoffInputData,
   HandoffEnabledFunction,
