@@ -246,6 +246,11 @@ export type RunConfig = {
   outputGuardrails?: OutputGuardrail<AgentOutputType<unknown>>[];
 
   /**
+   * A list of Guardrails that run before a human in the loop pause, prevents waiting for approval if failure can be pre calculated.
+   */
+  preApprovalGuardrails?: InputGuardrail[];
+
+  /**
    * Whether tracing is disabled for the agent run. If disabled, we will not trace the agent run.
    */
   tracingDisabled: boolean;
