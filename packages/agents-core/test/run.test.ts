@@ -109,6 +109,7 @@ describe('Runner.run', () => {
     it('accepts public tool execution config', () => {
       const toolExecution = {
         maxFunctionToolConcurrency: 2,
+        preApprovalInputGuardrails: true,
       } satisfies ToolExecutionConfig;
 
       const runner = new Runner({
@@ -223,6 +224,18 @@ describe('Runner.run', () => {
           }),
       ).toThrow(
         'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
+      );
+    });
+
+    it('rejects invalid pre-approval input guardrail config', () => {
+      expect(
+        () =>
+          new Runner({
+            tracingDisabled: true,
+            toolExecution: { preApprovalInputGuardrails: 'yes' as any },
+          }),
+      ).toThrow(
+        'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
       );
     });
 

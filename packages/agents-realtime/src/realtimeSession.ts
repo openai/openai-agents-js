@@ -8,6 +8,7 @@ import {
   RunContext,
   Usage,
   RunToolApprovalItem,
+  UserError,
   invokeFunctionTool,
   type FunctionTool,
   type ToolErrorFormatterArgs,
@@ -70,6 +71,14 @@ export type RealtimeContextData<TContext = unknown> = TContext & {
   history: RealtimeItem[];
 };
 
+export type RealtimeToolExecutionConfig = {
+  /**
+   * Runs function tool input guardrails before emitting a pending human approval interruption.
+   * The same guardrails still run again immediately before tool execution after approval.
+   */
+  preApprovalInputGuardrails?: boolean;
+};
+
 export type RealtimeSessionOptions<TContext = unknown> = {
   /**
    * The API key to use for the connection. Pass a function to lazily load the API key
@@ -105,6 +114,11 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * Additional session config options. Overrides default client options.
    */
   config?: Partial<RealtimeSessionConfig>;
+
+  /**
+   * SDK-side execution settings for local realtime tool calls.
+   */
+  toolExecution?: RealtimeToolExecutionConfig;
 
   /**
    * Whether the history copy should include a local copy of the audio data. By default it is not
@@ -175,6 +189,20 @@ function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
   ) as Partial<RealtimeSessionConfig>;
 }
 
+function validateRealtimeToolExecutionConfig(
+  config: RealtimeToolExecutionConfig | undefined,
+): RealtimeToolExecutionConfig | undefined {
+  if (
+    typeof config?.preApprovalInputGuardrails !== 'undefined' &&
+    typeof config.preApprovalInputGuardrails !== 'boolean'
+  ) {
+    throw new UserError(
+      'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
+    );
+  }
+  return config;
+}
+
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
 
 function toErrorMessage(error: unknown): string {
@@ -243,6 +271,7 @@ export class RealtimeSession<
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
     cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
+  #toolExecution: RealtimeToolExecutionConfig | undefined;
   #eventListenersAttached = false;
 
   constructor(
@@ -281,6 +310,9 @@ export class RealtimeSession<
     this.#shouldIncludeAudioData = options.historyStoreAudio ?? false;
     this.#automaticallyTriggerResponseForMcpToolCalls =
       options.automaticallyTriggerResponseForMcpToolCalls ?? true;
+    this.#toolExecution = validateRealtimeToolExecutionConfig(
+      options.toolExecution,
+    );
   }
 
   /**
@@ -618,6 +650,23 @@ export class RealtimeSession<
         });
         return;
       } else if (typeof approval === 'undefined') {
+        if (this.#toolExecution?.preApprovalInputGuardrails === true) {
+          const inputGuardrailResult = await runToolInputGuardrails({
+            guardrails: tool.inputGuardrails,
+            context: this.#context,
+            agent: this.#currentAgent,
+            toolCall: toolCall as any,
+          });
+
+          if (inputGuardrailResult.type === 'reject') {
+            this.#transport.sendFunctionCallOutput(
+              toolCall,
+              inputGuardrailResult.message,
+              true,
+            );
+            return;
+          }
+        }
         this.emit(
           'tool_approval_requested',
           this.#context,

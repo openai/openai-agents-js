@@ -52,6 +52,7 @@ import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
+import type { ToolInputGuardrailResult } from '../toolGuardrail';
 import {
   resolveApprovalRejectionMessage,
   TOOL_APPROVAL_REJECTION_MESSAGE,
@@ -82,6 +83,10 @@ const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
 type ParseToolArgumentsResult =
   | { success: true; args: any }
   | { success: false; error: Error };
+
+type ToolInputGuardrailCheckResult =
+  | { type: 'allow' }
+  | { type: 'reject'; message: string };
 
 function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
@@ -231,6 +236,17 @@ function getMaxFunctionToolConcurrency(
   return toolExecution?.maxFunctionToolConcurrency ?? undefined;
 }
 
+function shouldRunPreApprovalInputGuardrails<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+): boolean {
+  return (
+    (
+      deps.agentToolParentRunConfig?.toolExecution ??
+      deps.runner.config.toolExecution
+    )?.preApprovalInputGuardrails === true
+  );
+}
+
 async function executeToolRunsWithConcurrency<TContext>(
   toolRuns: ToolRunFunction<TContext>[],
   maxConcurrency: number | undefined,
@@ -375,7 +391,7 @@ async function handleFunctionApproval<TContext>(
   toolRun: ToolRunFunction<TContext>,
   parsedArgs: any,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
-  const { state } = deps;
+  const { agent, state } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const needsApproval = await toolRun.tool.needsApproval(
     state._context,
@@ -398,10 +414,68 @@ async function handleFunctionApproval<TContext>(
   }
 
   if (approval !== true) {
+    if (shouldRunPreApprovalInputGuardrails(deps)) {
+      const inputGuardrailResult = await runFunctionToolInputGuardrails({
+        guardrails: toolRun.tool.inputGuardrails,
+        context: state._context,
+        agent,
+        toolCall: toolRun.toolCall,
+        onResult: (result) => {
+          state._toolInputGuardrailResults.push(result);
+        },
+      });
+
+      if (inputGuardrailResult.type === 'reject') {
+        return buildInputGuardrailRejectionResult(
+          deps,
+          toolRun,
+          inputGuardrailResult.message,
+        );
+      }
+    }
     return buildApprovalRequestResult(deps, toolRun);
   }
 
   return 'approved';
+}
+
+function buildInputGuardrailRejectionResult<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolRun: ToolRunFunction<TContext>,
+  message: string,
+): FunctionToolResult<TContext> {
+  return {
+    type: 'function_output' as const,
+    tool: toolRun.tool,
+    output: message,
+    runItem: new RunToolCallOutputItem(
+      getToolCallOutputItem(toolRun.toolCall, message),
+      deps.agent,
+      message,
+    ),
+  };
+}
+
+async function runFunctionToolInputGuardrails<TContext>({
+  guardrails,
+  context,
+  agent,
+  toolCall,
+  onResult,
+}: {
+  guardrails?: ToolRunFunction<TContext>['tool']['inputGuardrails'];
+  context: RunContext<TContext>;
+  agent: Agent<TContext, any>;
+  toolCall: protocol.FunctionCallItem;
+  onResult?: (result: ToolInputGuardrailResult) => void;
+}): Promise<ToolInputGuardrailCheckResult> {
+  return runToolInputGuardrails({
+    guardrails,
+    context,
+    agent,
+    toolCall,
+    onResult,
+  });
 }
 
 async function runApprovedFunctionTool<TContext>(
@@ -417,7 +491,7 @@ async function runApprovedFunctionTool<TContext>(
     }
 
     try {
-      const inputGuardrailResult = await runToolInputGuardrails({
+      const inputGuardrailResult = await runFunctionToolInputGuardrails({
         guardrails: toolRun.tool.inputGuardrails,
         context: state._context,
         agent,

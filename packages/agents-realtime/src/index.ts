@@ -7,6 +7,7 @@ export {
   RealtimeSessionConnectOptions,
   RealtimeSessionOptions,
   RealtimeContextData,
+  RealtimeToolExecutionConfig,
 } from './realtimeSession';
 
 export { RealtimeSessionEventTypes } from './realtimeSessionEvents';
