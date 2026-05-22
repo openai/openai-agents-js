@@ -23,6 +23,7 @@ import { RunResult, StreamedRunResult } from './result';
 import { RunState } from './runState';
 import { RunItem } from './items';
 import {
+  getCurrentTrace,
   getOrCreateTrace,
   resetCurrentSpan,
   setCurrentSpan,
@@ -140,9 +141,11 @@ function getImplicitModelSettingsForResolvedModel(
 //  Configuration
 // --------------------------------------------------------------
 
+export type ToolErrorKind = 'approval_rejected' | 'tool_not_found';
+
 export type ToolErrorFormatterArgs<
   TContext = unknown,
-  TKind extends 'approval_rejected' = 'approval_rejected',
+  TKind extends ToolErrorKind = ToolErrorKind,
 > = {
   /**
    * The category of tool error being formatted.
@@ -186,6 +189,8 @@ export type ToolExecutionConfig = {
   maxFunctionToolConcurrency?: number | null;
 };
 
+export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
+
 function validateToolExecutionConfig(
   config: ToolExecutionConfig | undefined,
 ): ToolExecutionConfig | undefined {
@@ -207,14 +212,15 @@ function validateToolExecutionConfig(
 export type RunConfig = {
   /**
    * The model to use for the entire agent run. If set, will override the model set on every
-   * agent. The modelProvider passed in below must be able to resolve this model name.
+   * agent. String model names are resolved with the configured modelProvider, or the default
+   * model provider if no explicit provider is configured.
    */
   model?: string | Model;
 
   /**
    * The model provider to use when looking up string model names. Defaults to OpenAI.
    */
-  modelProvider: ModelProvider;
+  modelProvider?: ModelProvider;
 
   /**
    * Configure global model settings. Any non-null values will override the agent-specific model
@@ -289,6 +295,14 @@ export type RunConfig = {
   toolExecution?: ToolExecutionConfig;
 
   /**
+   * Controls unresolved function tool calls emitted by the model.
+   *
+   * - `raise_error` preserves the default behavior and raises a `ModelBehaviorError`.
+   * - `return_error_to_model` returns a model-visible tool error and lets the run continue.
+   */
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -332,6 +346,7 @@ type SharedRunOptions<
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
   toolExecution?: ToolExecutionConfig;
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
   /**
    * Error handlers keyed by error kind.
    */
@@ -371,6 +386,20 @@ export type IndividualRunOptions<
   TContext = undefined,
   TAgent extends Agent<any, any> = Agent<any, any>,
 > = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
+
+type RunnerConfig = RunConfig & {
+  modelProvider: ModelProvider;
+};
+
+class LazyDefaultModelProvider implements ModelProvider {
+  #modelProvider: ModelProvider | undefined;
+
+  getModel(modelName?: string): Promise<Model> | Model {
+    const modelProvider = this.#modelProvider ?? getDefaultModelProvider();
+    this.#modelProvider = modelProvider;
+    return modelProvider.getModel(modelName);
+  }
+}
 
 // --------------------------------------------------------------
 //  Runner
@@ -414,7 +443,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
  * tracing. Reuse a `Runner` instance when you want consistent configuration across multiple runs.
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
-  public readonly config: RunConfig;
+  public readonly config: RunnerConfig;
   private readonly traceOverrides: {
     traceId?: string;
     workflowName?: string;
@@ -431,7 +460,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   constructor(config: Partial<RunConfig> = {}) {
     super();
     this.config = {
-      modelProvider: config.modelProvider ?? getDefaultModelProvider(),
+      modelProvider: config.modelProvider ?? new LazyDefaultModelProvider(),
       model: config.model,
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
@@ -446,6 +475,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sandbox: config.sandbox,
       toolExecution: validateToolExecutionConfig(config.toolExecution),
+      toolNotFoundBehavior: config.toolNotFoundBehavior ?? 'raise_error',
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
@@ -530,6 +560,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolExecution = validateToolExecutionConfig(
       resolvedOptions.toolExecution ?? this.config.toolExecution,
     );
+    const toolNotFoundBehavior =
+      resolvedOptions.toolNotFoundBehavior ?? this.config.toolNotFoundBehavior;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
     const traceOverrides = {
@@ -545,6 +577,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       toolErrorFormatter,
       reasoningItemIdPolicy,
       toolExecution,
+      toolNotFoundBehavior,
     };
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
@@ -656,14 +689,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         return executeRun();
       });
     }
-    return getOrCreateTrace(async () => executeRun(), {
-      traceId: this.config.traceId,
-      name: this.config.workflowName,
-      groupId: this.config.groupId,
-      metadata: this.config.traceMetadata,
-      // Per-run tracing config overrides exporter defaults such as environment API key.
-      tracingApiKey: tracingConfig?.apiKey,
-    });
+    return getOrCreateTrace(
+      async () => {
+        if (preparedInput instanceof RunState && !preparedInput._trace) {
+          preparedInput._trace = getCurrentTrace();
+        }
+        return executeRun();
+      },
+      {
+        traceId: this.config.traceId,
+        name: this.config.workflowName,
+        groupId: this.config.groupId,
+        metadata: this.config.traceMetadata,
+        // Per-run tracing config overrides exporter defaults such as environment API key.
+        tracingApiKey: tracingConfig?.apiKey,
+      },
+    );
   }
 
   // --------------------------------------------------------------
@@ -731,7 +772,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const hasSandboxOverride = typeof options.sandbox !== 'undefined';
     const hasToolExecutionOverride =
       typeof options.toolExecution !== 'undefined';
-    if (!hasSandboxOverride && !hasToolExecutionOverride) {
+    const hasToolNotFoundBehaviorOverride =
+      typeof options.toolNotFoundBehavior !== 'undefined';
+    if (
+      !hasSandboxOverride &&
+      !hasToolExecutionOverride &&
+      !hasToolNotFoundBehaviorOverride
+    ) {
       return this.config;
     }
     return {
@@ -739,6 +786,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...(hasSandboxOverride ? { sandbox: options.sandbox } : {}),
       ...(hasToolExecutionOverride
         ? { toolExecution: options.toolExecution }
+        : {}),
+      ...(hasToolNotFoundBehaviorOverride
+        ? { toolNotFoundBehavior: options.toolNotFoundBehavior }
         : {}),
     };
   }
@@ -998,6 +1048,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.handoffs,
               state,
               [...preparedCall.turnInput, ...state._generatedItems],
+              options.toolNotFoundBehavior,
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1506,6 +1557,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedCall.handoffs,
             result.state,
             [...preparedCall.turnInput, ...result.state._generatedItems],
+            options.toolNotFoundBehavior,
           );
 
           result.state._lastProcessedResponse = processedResponse;

@@ -10,11 +10,13 @@ import {
   ModelBehaviorError,
   RunToolApprovalItem,
   ToolTimeoutError,
+  tool,
   defineToolInputGuardrail,
   defineToolOutputGuardrail,
   ToolGuardrailFunctionOutputFactory,
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
+  type MCPServer,
 } from '@openai/agents-core';
 import * as utils from '../src/utils';
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
@@ -25,7 +27,6 @@ import {
 import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
 import { toNewSessionConfig } from '../src/clientMessages';
-import { tool } from '@openai/agents-core';
 import { backgroundResult } from '../src/tool';
 import { z } from 'zod';
 import logger from '../src/logger';
@@ -38,6 +39,28 @@ function createMessage(id: string, text: string): RealtimeItem {
     status: 'completed',
     content: [{ type: 'input_text', text }],
   } as RealtimeItem;
+}
+
+class FakeMCPServer implements MCPServer {
+  cacheToolsList = false;
+  name = 'test-mcp-server';
+
+  connect = vi.fn(async () => {});
+  close = vi.fn(async () => {});
+  invalidateToolsCache = vi.fn(async () => {});
+  callTool = vi.fn(async () => [{ type: 'text', text: 'ok' }] as any);
+  listTools: MCPServer['listTools'] = vi.fn(async () => [
+    {
+      name: 'lookup_account',
+      description: 'Look up an account',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+        required: [] as string[],
+        additionalProperties: false,
+      },
+    },
+  ]);
 }
 
 async function waitForEvent<T extends unknown[]>(
@@ -106,6 +129,31 @@ describe('RealtimeSession', () => {
     });
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it('connects with MCP tools when tracing is disabled', async () => {
+    const mcpServer = new FakeMCPServer();
+    const agent = new RealtimeAgent({
+      name: 'MCP',
+      handoffs: [],
+      mcpServers: [mcpServer],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      tracingDisabled: true,
+    });
+
+    await expect(s.connect({ apiKey: 'test' })).resolves.toBeUndefined();
+
+    expect(mcpServer.listTools).toHaveBeenCalledTimes(1);
+    expect(t.connectCalls[0]?.initialSessionConfig?.tracing).toBeNull();
+    expect(t.connectCalls[0]?.initialSessionConfig?.tools).toEqual([
+      expect.objectContaining({
+        name: 'lookup_account',
+        type: 'function',
+      }),
+    ]);
   });
 
   it('updates history and emits history_updated', () => {

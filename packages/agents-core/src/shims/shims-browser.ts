@@ -119,17 +119,95 @@ export const ReadableStreamController =
   globalThis.ReadableStreamDefaultController;
 export const TransformStream = globalThis.TransformStream;
 
-export class AsyncLocalStorage {
-  context = null;
-  constructor() {}
-  run(context: any, fn: () => any) {
-    this.context = context;
-    return fn();
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Promise<unknown>).then === 'function' &&
+    typeof (value as Promise<unknown>).finally === 'function'
+  );
+}
+
+function getDeferredRestorePromise(
+  value: unknown,
+): Promise<unknown> | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
   }
+
+  const streamLoopPromise = (
+    value as {
+      _getStreamLoopPromise?: () => unknown;
+    }
+  )._getStreamLoopPromise?.();
+
+  if (isPromiseLike(streamLoopPromise)) {
+    return streamLoopPromise;
+  }
+
+  return undefined;
+}
+
+export class AsyncLocalStorage<T = any> {
+  context: T | undefined = undefined;
+  #stack: Array<{ context: T }> = [];
+
+  constructor() {}
+
+  run<TResult>(context: T, fn: () => TResult): TResult {
+    const entry = { context };
+    this.#stack.push(entry);
+    this.context = context;
+
+    const restore = () => {
+      const index = this.#stack.indexOf(entry);
+      if (index !== -1) {
+        this.#stack.splice(index, 1);
+      }
+      this.context = this.#stack.at(-1)?.context;
+    };
+
+    try {
+      const result = fn();
+      if (isPromiseLike(result)) {
+        return result.then(
+          (value) => {
+            const deferredRestore = getDeferredRestorePromise(value);
+            if (deferredRestore) {
+              void deferredRestore.then(restore, restore);
+            } else {
+              restore();
+            }
+            return value;
+          },
+          (error) => {
+            restore();
+            throw error;
+          },
+        ) as TResult;
+      }
+      restore();
+      return result;
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+
   getStore() {
     return this.context;
   }
-  enterWith(context: any) {
+
+  enterWith(context: T) {
+    const current = this.#stack.at(-1);
+    if (current) {
+      current.context = context;
+    } else if (context !== undefined) {
+      this.#stack.push({ context });
+    } else {
+      this.context = context;
+      return;
+    }
     this.context = context;
   }
 }

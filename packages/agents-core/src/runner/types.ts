@@ -29,6 +29,11 @@ export type ToolRunFunction<TContext = UnknownContext> = {
   tool: FunctionTool<TContext>;
 };
 
+export type ToolRunFunctionNotFound = {
+  toolCall: protocol.FunctionCallItem;
+  toolName: string;
+};
+
 export type ToolRunComputer = {
   toolCall: protocol.ComputerUseCallItem;
   computer: ComputerTool<any, any>;
@@ -53,6 +58,7 @@ export type ProcessedResponse<TContext = UnknownContext> = {
   newItems: RunItem[];
   handoffs: ToolRunHandoff[];
   functions: ToolRunFunction<TContext>[];
+  functionToolsNotFound?: ToolRunFunctionNotFound[];
   computerActions: ToolRunComputer[];
   shellActions: ToolRunShell[];
   applyPatchActions: ToolRunApplyPatch[];

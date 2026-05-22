@@ -105,6 +105,59 @@ export type HandoffEnabledFunction<TContext = UnknownContext> = (args: {
   agent: Agent<any, any>;
 }) => Promise<boolean>;
 
+export type HandoffCloneOptions<
+  TContext = UnknownContext,
+  TOutput extends AgentOutputType = TextOutput,
+> = {
+  /**
+   * The agent that the cloned handoff should target.
+   */
+  agent?: Agent<TContext, TOutput>;
+
+  /**
+   * The callback that should run when the cloned handoff is invoked.
+   */
+  onInvokeHandoff?: (
+    context: RunContext<TContext>,
+    args: string,
+  ) => Promise<Agent<TContext, TOutput>> | Agent<TContext, TOutput>;
+
+  /**
+   * The model-facing name of the target agent.
+   */
+  agentName?: string;
+
+  /**
+   * The name of the tool that represents the cloned handoff.
+   */
+  toolName?: string;
+
+  /**
+   * The description of the tool that represents the cloned handoff.
+   */
+  toolDescription?: string;
+
+  /**
+   * The JSON schema for the cloned handoff input.
+   */
+  inputJsonSchema?: JsonObjectSchema<any>;
+
+  /**
+   * Whether the cloned handoff input schema is strict.
+   */
+  strictJsonSchema?: boolean;
+
+  /**
+   * A function that filters the inputs that are passed to the cloned handoff's agent.
+   */
+  inputFilter?: HandoffInputFilter;
+
+  /**
+   * Determines whether the cloned handoff should be available for the current run.
+   */
+  isEnabled?: HandoffEnabledFunction<TContext>;
+};
+
 export class Handoff<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
@@ -181,6 +234,40 @@ export class Handoff<
       parameters: this.inputJsonSchema,
       strict: this.strictJsonSchema,
     };
+  }
+
+  /**
+   * Makes a copy of this handoff, with the given fields changed.
+   *
+   * Tool name and description default to the original handoff's values so adapters can replace
+   * the runtime target without changing the model-facing tool contract.
+   */
+  clone(
+    overrides: HandoffCloneOptions<TContext, TOutput> = {},
+  ): Handoff<TContext, TOutput> {
+    const agent = overrides.agent ?? this.agent;
+    const onInvokeHandoff =
+      overrides.onInvokeHandoff ??
+      (overrides.agent
+        ? async (context: RunContext<TContext>, args: string) => {
+            await this.onInvokeHandoff(context, args);
+            return agent;
+          }
+        : this.onInvokeHandoff);
+    const cloned = new Handoff(agent, onInvokeHandoff);
+
+    cloned.agentName =
+      overrides.agentName ??
+      (overrides.agent ? overrides.agent.name : this.agentName);
+    cloned.toolName = overrides.toolName ?? this.toolName;
+    cloned.toolDescription = overrides.toolDescription ?? this.toolDescription;
+    cloned.inputJsonSchema = overrides.inputJsonSchema ?? this.inputJsonSchema;
+    cloned.strictJsonSchema =
+      overrides.strictJsonSchema ?? this.strictJsonSchema;
+    cloned.inputFilter = overrides.inputFilter ?? this.inputFilter;
+    cloned.isEnabled = overrides.isEnabled ?? this.isEnabled;
+
+    return cloned;
   }
 
   public isEnabled: HandoffEnabledFunction<TContext> = async () => true;

@@ -11,18 +11,45 @@ type ContextState = {
   active: boolean;
 };
 
+export type TraceContextSnapshot = Readonly<{
+  trace: Trace;
+  span?: Span<any> | null;
+}>;
+
+export type TracingContextStorage<TStore = any> = {
+  /**
+   * Runs the callback with the provided store as the active tracing context.
+   */
+  run<TResult>(store: TStore, callback: () => TResult): TResult;
+
+  /**
+   * Returns the active tracing context store, if one exists.
+   */
+  getStore(): TStore | undefined;
+
+  /**
+   * Replaces the active tracing context store. The store is undefined when
+   * tracing clears the current scope.
+   */
+  enterWith(store: TStore | undefined): void;
+};
+
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
-let localFallbackAls: AsyncLocalStorage<ContextState | undefined> | undefined;
+let localFallbackAls:
+  | TracingContextStorage<ContextState | undefined>
+  | undefined;
 
 // Global symbols ensure that if multiple copies of agents-core are loaded
 // (e.g., via different npm resolution paths or bundlers), they all share the
 // same AsyncLocalStorage instance. This prevents losing trace/span state when a
 // downstream package pulls in a duplicate copy.
-function getContextAsyncLocalStorage() {
+function getContextAsyncLocalStorage(): TracingContextStorage<
+  ContextState | undefined
+> {
   try {
     const globalScope = globalThis as unknown as Record<
       symbol | string,
-      AsyncLocalStorage<ContextState | undefined> | undefined
+      TracingContextStorage<ContextState | undefined> | undefined
     >;
 
     const globalALS = globalScope[ALS_SYMBOL];
@@ -32,7 +59,11 @@ function getContextAsyncLocalStorage() {
     }
 
     const newALS = new AsyncLocalStorage<ContextState | undefined>();
-    globalScope[ALS_SYMBOL] = newALS;
+    Object.defineProperty(globalScope, ALS_SYMBOL, {
+      value: newALS,
+      writable: true,
+      configurable: true,
+    });
     return newALS;
   } catch {
     // As a defensive fallback (e.g., if globalThis is locked down or ALS
@@ -45,12 +76,109 @@ function getContextAsyncLocalStorage() {
   }
 }
 
+/**
+ * Sets the context storage implementation used for tracing.
+ *
+ * Use this before starting traces in runtimes that cannot rely on the SDK's default
+ * AsyncLocalStorage implementation. Pass undefined to restore the default storage.
+ */
+export function setTracingContextStorage(
+  storage?: TracingContextStorage,
+): void {
+  try {
+    const globalScope = globalThis as unknown as Record<
+      symbol | string,
+      TracingContextStorage<ContextState | undefined> | undefined
+    >;
+
+    if (storage) {
+      Object.defineProperty(globalScope, ALS_SYMBOL, {
+        value: storage,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      delete globalScope[ALS_SYMBOL];
+    }
+
+    localFallbackAls = undefined;
+  } catch {
+    localFallbackAls = storage;
+  }
+}
+
 function getActiveContext() {
-  const store = getContextAsyncLocalStorage().getStore();
+  const store = getContextAsyncLocalStorage().getStore() as
+    | ContextState
+    | undefined;
   if (store?.active === true) {
     return store;
   }
   return undefined;
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    typeof (value as Promise<unknown>).then === 'function'
+  );
+}
+
+function deferRestoreForStreamedRunResult(
+  result: unknown,
+  restore: () => void,
+) {
+  if (!(result instanceof StreamedRunResult)) {
+    return false;
+  }
+
+  const streamLoopPromise = result._getStreamLoopPromise();
+  if (!streamLoopPromise) {
+    return false;
+  }
+
+  void streamLoopPromise.then(restore, restore);
+  return true;
+}
+
+function restoreAfterResolvedValue<T>(result: T, restore: () => void): T {
+  if (!deferRestoreForStreamedRunResult(result, restore)) {
+    restore();
+  }
+
+  return result;
+}
+
+function runWithScopedTraceContext<T>(store: ContextState, fn: () => T): T {
+  const asyncLocalStorage = getContextAsyncLocalStorage();
+  const previousStore = asyncLocalStorage.getStore();
+  const restore = () => {
+    asyncLocalStorage.enterWith(previousStore);
+  };
+
+  return asyncLocalStorage.run(store, () => {
+    let restoreOnExit = true;
+    try {
+      const result = fn();
+      restoreOnExit = false;
+      if (isPromiseLike(result)) {
+        return result.then(
+          (resolved) => restoreAfterResolvedValue(resolved, restore),
+          (error) => {
+            restore();
+            throw error;
+          },
+        ) as T;
+      }
+
+      return restoreAfterResolvedValue(result, restore);
+    } finally {
+      if (restoreOnExit) {
+        restore();
+      }
+    }
+  });
 }
 
 /**
@@ -78,6 +206,51 @@ export function getCurrentSpan() {
     return currentSpan.span;
   }
   return null;
+}
+
+/**
+ * Gets a public snapshot of the current trace context.
+ *
+ * This intentionally does not expose the internal async storage shape.
+ */
+export function getCurrentTraceContext(): TraceContextSnapshot | null {
+  const context = getActiveContext();
+  if (!context?.trace) {
+    return null;
+  }
+
+  if (context.span) {
+    return {
+      trace: context.trace,
+      span: context.span,
+    };
+  }
+
+  return { trace: context.trace };
+}
+
+/**
+ * Runs a callback with a previously captured trace context.
+ *
+ * Pass null or undefined to run the callback without any ambient trace context.
+ */
+export function withTraceContext<T>(
+  context: TraceContextSnapshot | null | undefined,
+  fn: () => T,
+): T {
+  if (!context) {
+    return runWithScopedTraceContext({ active: false }, fn);
+  }
+
+  return runWithScopedTraceContext(
+    {
+      trace: context.trace,
+      span: context.span ?? undefined,
+      previousSpan: context.span?.previousSpan,
+      active: true,
+    },
+    fn,
+  );
 }
 
 /**
@@ -175,7 +348,9 @@ export async function withTrace<T>(
     trace: newTrace,
     active: true,
   };
-  const previousAlsStore = getContextAsyncLocalStorage().getStore();
+  const previousAlsStore = getContextAsyncLocalStorage().getStore() as
+    | ContextState
+    | undefined;
 
   return getContextAsyncLocalStorage().run(
     context,
@@ -205,7 +380,9 @@ export async function getOrCreateTrace<T>(
     trace: newTrace,
     active: true,
   };
-  const previousAlsStore = getContextAsyncLocalStorage().getStore();
+  const previousAlsStore = getContextAsyncLocalStorage().getStore() as
+    | ContextState
+    | undefined;
   return getContextAsyncLocalStorage().run(
     newContext,
     _wrapFunctionWithTraceLifecycle(fn, newContext, previousAlsStore),

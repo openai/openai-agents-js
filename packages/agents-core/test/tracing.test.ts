@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   timeIso,
+  defaultTracingIdGenerator,
   generateTraceId,
   generateSpanId,
   generateGroupId,
   removePrivateFields,
+  NOOP_TRACE_OR_SPAN_ID,
 } from '../src/tracing/utils';
 
 import { Trace, NoopTrace } from '../src/tracing/traces';
@@ -31,12 +33,22 @@ import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import {
   withTrace,
+  withTraceContext,
+  getCurrentTraceContext,
   getCurrentTrace,
   getCurrentSpan,
+  dispatchSpan,
+  dispatchTrace,
   setTraceProcessors,
   setTracingDisabled,
+  setTracingIdGenerator,
+  setTracingContextStorage,
   setCurrentSpan,
   resetCurrentSpan,
+} from '../src/tracing';
+import type {
+  TraceContextSnapshot,
+  TracingContextStorage,
 } from '../src/tracing';
 
 import {
@@ -49,10 +61,16 @@ import { TraceProvider, getGlobalTraceProvider } from '../src/tracing/provider';
 
 import { Runner } from '../src/run';
 import { Agent } from '../src/agent';
+import { StreamedRunResult } from '../src/result';
+import { RunContext } from '../src/runContext';
+import { RunState } from '../src/runState';
 import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
 import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
+import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+
+const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 
 class TestExporter implements TracingExporter {
   public exported: Array<(Trace | Span<any>)[]> = [];
@@ -86,6 +104,54 @@ class TestProcessor implements TracingProcessor {
   }
   async forceFlush(): Promise<void> {
     /* noop */
+  }
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Promise<unknown>).finally === 'function'
+  );
+}
+
+class StackTracingContextStorage implements TracingContextStorage {
+  runCalls = 0;
+  enterWithCalls = 0;
+  #stack: any[] = [];
+
+  run<TResult>(store: any, callback: () => TResult): TResult {
+    this.runCalls += 1;
+    this.#stack.push(store);
+
+    const restore = () => {
+      this.#stack.pop();
+    };
+
+    try {
+      const result = callback();
+      if (isPromiseLike(result)) {
+        return result.finally(restore) as TResult;
+      }
+      restore();
+      return result;
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+
+  getStore() {
+    return this.#stack.at(-1);
+  }
+
+  enterWith(store: any) {
+    this.enterWithCalls += 1;
+    if (this.#stack.length > 0) {
+      this.#stack[this.#stack.length - 1] = store;
+    } else {
+      this.#stack.push(store);
+    }
   }
 }
 
@@ -974,6 +1040,7 @@ describe('withTrace & span helpers (integration)', () => {
     // Restore original default processor so other test suites are unaffected
     // restore the global processor so subsequent tests are unaffected
     setTraceProcessors([defaultProcessor()]);
+    setTracingContextStorage();
   });
 
   it('withTrace creates a trace that is accessible via getCurrentTrace()', async () => {
@@ -991,6 +1058,221 @@ describe('withTrace & span helpers (integration)', () => {
     // Processor should have been notified
     expect(processor.tracesStarted.length).toBe(1);
     expect(processor.tracesEnded.length).toBe(1);
+  });
+
+  it('uses a supplied tracing context storage implementation', async () => {
+    const storage = new StackTracingContextStorage();
+    const observed: Array<string | null> = [];
+
+    setTracingContextStorage(storage);
+
+    await withTrace('outer', async () => {
+      observed.push(getCurrentTrace()?.name ?? null);
+
+      await withTrace('inner', async () => {
+        observed.push(getCurrentTrace()?.name ?? null);
+      });
+
+      observed.push(getCurrentTrace()?.name ?? null);
+    });
+
+    expect(observed).toEqual(['outer', 'inner', 'outer']);
+    expect(storage.runCalls).toBe(2);
+    expect(storage.enterWithCalls).toBeGreaterThan(0);
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('keeps browser shim context active until a streamed result settles', async () => {
+    const storage = new BrowserAsyncLocalStorage<any>();
+    let resolveStream!: () => void;
+    const streamLoopPromise = new Promise<void>((resolve) => {
+      resolveStream = resolve;
+    });
+    let activeTrace: Trace | null = null;
+
+    setTracingContextStorage(storage);
+
+    await withTrace('streaming-workflow', async (trace) => {
+      activeTrace = trace;
+      const agent = new Agent({ name: 'stream-agent' });
+      const state: RunState<unknown, Agent<any, any>> = new RunState(
+        new RunContext(),
+        [],
+        agent,
+        1,
+      );
+      const result = new StreamedRunResult({ state });
+      result._setStreamLoopPromise(streamLoopPromise);
+      return result;
+    });
+
+    expect(getCurrentTrace()).toBe(activeTrace);
+
+    resolveStream();
+    await streamLoopPromise;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('getCurrentTraceContext returns null outside a trace', () => {
+    expect(getCurrentTraceContext()).toBeNull();
+  });
+
+  it('getCurrentTraceContext returns the active trace snapshot', async () => {
+    await withTrace('workflow', async (trace) => {
+      const snapshot = getCurrentTraceContext();
+
+      expect(snapshot).toEqual({ trace });
+      expect(snapshot?.trace).toBe(getCurrentTrace());
+    });
+  });
+
+  it('withTraceContext restores a captured trace around a callback', async () => {
+    let snapshot: TraceContextSnapshot | null = null;
+
+    await withTrace('workflow', async () => {
+      snapshot = getCurrentTraceContext();
+    });
+
+    expect(snapshot).not.toBeNull();
+    const result = withTraceContext(snapshot, () => {
+      expect(getCurrentTrace()).toBe(snapshot?.trace);
+      return 'done';
+    });
+
+    expect(result).toBe('done');
+    expect(getCurrentTrace()).toBeNull();
+  });
+
+  it('withTraceContext restores a provided span around a callback', () => {
+    const trace = new Trace({ name: 'manual-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        data: { type: 'custom', name: 'manual-span', data: {} },
+      },
+      processor,
+    );
+
+    withTraceContext({ trace, span }, () => {
+      expect(getCurrentTrace()).toBe(trace);
+      expect(getCurrentSpan()).toBe(span);
+    });
+
+    expect(getCurrentTrace()).toBeNull();
+    expect(getCurrentSpan()).toBeNull();
+  });
+
+  it('withTraceContext clears and restores ambient trace context', async () => {
+    await withTrace('workflow', async (trace) => {
+      const result = withTraceContext(null, () => {
+        expect(getCurrentTrace()).toBeNull();
+        expect(getCurrentTraceContext()).toBeNull();
+        return 'isolated';
+      });
+
+      expect(result).toBe('isolated');
+      expect(getCurrentTrace()).toBe(trace);
+    });
+  });
+
+  it('withTraceContext restores ambient trace context with browser storage', async () => {
+    const globalScope = globalThis as unknown as Record<
+      symbol,
+      unknown | undefined
+    >;
+    const previousStorage = globalScope[ALS_SYMBOL];
+
+    globalScope[ALS_SYMBOL] = new BrowserAsyncLocalStorage();
+
+    try {
+      await withTrace('workflow', async (trace) => {
+        const overlayTrace = new Trace({ name: 'overlay-trace' });
+
+        const isolated = withTraceContext(null, () => {
+          expect(getCurrentTrace()).toBeNull();
+          expect(getCurrentTraceContext()).toBeNull();
+          return 'isolated';
+        });
+
+        expect(isolated).toBe('isolated');
+        expect(getCurrentTrace()).toBe(trace);
+
+        await withTraceContext({ trace: overlayTrace }, async () => {
+          expect(getCurrentTrace()).toBe(overlayTrace);
+          await Promise.resolve();
+          expect(getCurrentTrace()).toBe(overlayTrace);
+        });
+
+        expect(getCurrentTrace()).toBe(trace);
+      });
+    } finally {
+      if (previousStorage === undefined) {
+        delete globalScope[ALS_SYMBOL];
+      } else {
+        globalScope[ALS_SYMBOL] = previousStorage;
+      }
+    }
+  });
+
+  it('withTraceContext keeps browser context until streamed results finish', async () => {
+    const globalScope = globalThis as unknown as Record<
+      symbol,
+      unknown | undefined
+    >;
+    const previousStorage = globalScope[ALS_SYMBOL];
+    const trace = new Trace({ name: 'manual-streaming-trace' });
+
+    globalScope[ALS_SYMBOL] = new BrowserAsyncLocalStorage();
+
+    try {
+      let finishStreamLoop!: () => void;
+      let traceDuringStreamLoop: Trace | null | undefined;
+      const streamLoopGate = new Promise<void>((resolve) => {
+        finishStreamLoop = resolve;
+      });
+      const streamLoopPromise = streamLoopGate.then(() => {
+        traceDuringStreamLoop = getCurrentTrace();
+      });
+
+      const resultPromise = withTraceContext({ trace }, async () => {
+        const result = new StreamedRunResult<any, any>();
+        result._setStreamLoopPromise(streamLoopPromise);
+        return result;
+      });
+
+      const result = await resultPromise;
+
+      expect(result).toBeInstanceOf(StreamedRunResult);
+      expect(getCurrentTrace()).toBe(trace);
+
+      finishStreamLoop();
+      await streamLoopPromise;
+      await Promise.resolve();
+
+      expect(traceDuringStreamLoop).toBe(trace);
+      expect(getCurrentTrace()).toBeNull();
+    } finally {
+      if (previousStorage === undefined) {
+        delete globalScope[ALS_SYMBOL];
+      } else {
+        globalScope[ALS_SYMBOL] = previousStorage;
+      }
+    }
+  });
+
+  it('withTraceContext keeps context across awaits', async () => {
+    const trace = new Trace({ name: 'manual-async-trace' });
+
+    await withTraceContext({ trace }, async () => {
+      expect(getCurrentTrace()).toBe(trace);
+      await Promise.resolve();
+      expect(getCurrentTrace()).toBe(trace);
+      expect(getCurrentTraceContext()?.trace).toBe(trace);
+    });
+    expect(getCurrentTrace()).toBeNull();
   });
 
   it('does not allow setting spans after a trace ends', async () => {
@@ -1064,6 +1346,33 @@ describe('withTrace & span helpers (integration)', () => {
 
       resetCurrentSpan();
       expect(getCurrentSpan()).toBeNull();
+    });
+  });
+
+  it('withTraceContext preserves the captured span stack', async () => {
+    await withTrace('workflow', async () => {
+      const spanA = createAgentSpan({ data: { name: 'A' } });
+      setCurrentSpan(spanA);
+      const spanB = createAgentSpan({ data: { name: 'B' } });
+      setCurrentSpan(spanB);
+      const snapshot = getCurrentTraceContext();
+
+      expect(snapshot?.span).toBe(spanB);
+      expect(spanB.previousSpan).toBe(spanA);
+
+      withTraceContext(snapshot, () => {
+        const spanC = createAgentSpan({ data: { name: 'C' } });
+        setCurrentSpan(spanC);
+
+        expect(spanC.previousSpan).toBe(spanB);
+        resetCurrentSpan();
+        expect(getCurrentSpan()).toBe(spanB);
+        resetCurrentSpan();
+        expect(getCurrentSpan()).toBe(spanA);
+      });
+
+      expect(spanB.previousSpan).toBe(spanA);
+      expect(getCurrentSpan()).toBe(spanB);
     });
   });
 
@@ -1210,6 +1519,224 @@ describe('MultiTracingProcessor', () => {
     expect(flush1).toHaveBeenCalledTimes(1);
     expect(flush2).toHaveBeenCalledTimes(1);
   });
+
+  it('dispatches completed traces to all processors without using trace lifecycle methods', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const traceProcessor = new TestProcessor();
+    const trace = new Trace(
+      { name: 'completed-trace', traceId: 'trace_completed', started: true },
+      traceProcessor,
+    );
+
+    await trace.start();
+    expect(traceProcessor.tracesStarted).toHaveLength(0);
+
+    await multiProcessor.dispatchTrace(trace);
+
+    expect(processor1.tracesStarted).toEqual([trace]);
+    expect(processor1.tracesEnded).toEqual([trace]);
+    expect(processor2.tracesStarted).toEqual([trace]);
+    expect(processor2.tracesEnded).toEqual([trace]);
+  });
+
+  it('dispatches completed spans to all processors without mutating timestamps', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const startedAt = '2026-05-22T00:00:00.000Z';
+    const endedAt = '2026-05-22T00:00:01.000Z';
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt,
+        endedAt,
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchSpan(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toEqual([span]);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toEqual([span]);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+  });
+
+  it('does not dispatch no-op traces or spans', async () => {
+    const processor = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor);
+
+    const noopTrace = new NoopTrace();
+    const traceWithNoopId = new Trace({
+      name: 'no-op-id',
+      traceId: NOOP_TRACE_OR_SPAN_ID,
+    });
+    const noopSpan = new NoopSpan(
+      { type: 'custom', name: 'noop-span', data: {} },
+      new TestProcessor(),
+    );
+    const spanWithNoopTraceId = new Span(
+      {
+        traceId: NOOP_TRACE_OR_SPAN_ID,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'noop-trace-id', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+    const spanWithNoopSpanId = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: NOOP_TRACE_OR_SPAN_ID,
+        data: { type: 'custom', name: 'noop-span-id', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchTrace(noopTrace);
+    await multiProcessor.dispatchTrace(traceWithNoopId);
+    await multiProcessor.dispatchSpan(noopSpan);
+    await multiProcessor.dispatchSpan(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpan(spanWithNoopSpanId);
+
+    expect(processor.tracesStarted).toHaveLength(0);
+    expect(processor.tracesEnded).toHaveLength(0);
+    expect(processor.spansStarted).toHaveLength(0);
+    expect(processor.spansEnded).toHaveLength(0);
+  });
+});
+
+// -----------------------------------------------------------------------------------------
+// Tests for completed trace dispatch helpers.
+// -----------------------------------------------------------------------------------------
+
+describe('completed trace dispatch helpers', () => {
+  afterEach(() => {
+    setTraceProcessors([defaultProcessor()]);
+    setTracingDisabled(true);
+  });
+
+  it('dispatches completed traces and spans through TraceProvider', async () => {
+    const processor = new TestProcessor();
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+    provider.registerProcessor(processor);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await provider.dispatchTrace(trace);
+    await provider.dispatchSpan(span);
+
+    expect(processor.tracesStarted).toEqual([trace]);
+    expect(processor.tracesEnded).toEqual([trace]);
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
+  it('does not dispatch completed traces and spans when TraceProvider tracing is disabled', async () => {
+    const processor = new TestProcessor();
+    const provider = new TraceProvider();
+    provider.setDisabled(true);
+    provider.registerProcessor(processor);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await provider.dispatchTrace(trace);
+    await provider.dispatchSpan(span);
+
+    expect(processor.tracesStarted).toHaveLength(0);
+    expect(processor.tracesEnded).toHaveLength(0);
+    expect(processor.spansStarted).toHaveLength(0);
+    expect(processor.spansEnded).toHaveLength(0);
+  });
+
+  it('dispatches completed traces and spans through global helpers', async () => {
+    const processor = new TestProcessor();
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await dispatchTrace(trace);
+    await dispatchSpan(span);
+
+    expect(processor.tracesStarted).toEqual([trace]);
+    expect(processor.tracesEnded).toEqual([trace]);
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
+  it('does not dispatch completed traces and spans through global helpers when tracing is disabled', async () => {
+    const processor = new TestProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(true);
+
+    const trace = new Trace({ name: 'completed-trace' });
+    const span = new Span(
+      {
+        traceId: trace.traceId,
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'completed-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await dispatchTrace(trace);
+    await dispatchSpan(span);
+
+    expect(processor.tracesStarted).toHaveLength(0);
+    expect(processor.tracesEnded).toHaveLength(0);
+    expect(processor.spansStarted).toHaveLength(0);
+    expect(processor.spansEnded).toHaveLength(0);
+  });
 });
 
 // -----------------------------------------------------------------------------------------
@@ -1232,6 +1759,147 @@ describe('TraceProvider disabled behavior', () => {
       trace,
     );
     expect(span).toBeInstanceOf(NoopSpan);
+  });
+});
+
+describe('TraceProvider ID generator behavior', () => {
+  it('keeps the default ID generator immutable', () => {
+    expect(Object.isFrozen(defaultTracingIdGenerator)).toBe(true);
+    expect(
+      Object.getOwnPropertyDescriptor(
+        defaultTracingIdGenerator,
+        'generateTraceId',
+      )?.writable,
+    ).toBe(false);
+    expect(
+      Object.getOwnPropertyDescriptor(
+        defaultTracingIdGenerator,
+        'generateSpanId',
+      )?.writable,
+    ).toBe(false);
+  });
+
+  it('uses a custom constructor ID generator for traces and spans', () => {
+    const provider = new TraceProvider({
+      idGenerator: {
+        generateTraceId: () => 'trace_custom_1',
+        generateSpanId: () => 'span_custom_1',
+      },
+    });
+    provider.setDisabled(false);
+
+    const trace = provider.createTrace({ name: 'deterministic' });
+    const span = provider.createSpan(
+      { data: { type: 'custom', name: 'deterministic', data: {} } },
+      trace,
+    );
+
+    expect(trace.traceId).toBe('trace_custom_1');
+    expect(span.spanId).toBe('span_custom_1');
+    expect(span.traceId).toBe('trace_custom_1');
+  });
+
+  it('prefers explicit trace and span IDs over the configured generator', () => {
+    const generateTraceId = vi.fn(() => 'trace_generated');
+    const generateSpanId = vi.fn(() => 'span_generated');
+    const provider = new TraceProvider({
+      idGenerator: {
+        generateTraceId,
+        generateSpanId,
+      },
+    });
+    provider.setDisabled(false);
+
+    const trace = provider.createTrace({
+      name: 'explicit',
+      traceId: 'trace_explicit',
+    });
+    const span = provider.createSpan(
+      {
+        spanId: 'span_explicit',
+        data: { type: 'custom', name: 'explicit', data: {} },
+      },
+      trace,
+    );
+
+    expect(trace.traceId).toBe('trace_explicit');
+    expect(span.spanId).toBe('span_explicit');
+    expect(generateTraceId).not.toHaveBeenCalled();
+    expect(generateSpanId).not.toHaveBeenCalled();
+  });
+
+  it('configures and resets the global provider ID generator', () => {
+    const provider = getGlobalTraceProvider();
+    provider.setDisabled(false);
+
+    try {
+      setTracingIdGenerator({
+        generateTraceId: () => 'trace_configured_global',
+        generateSpanId: () => 'span_configured_global',
+      });
+
+      const trace = provider.createTrace({ name: 'global' });
+      const span = provider.createSpan(
+        { data: { type: 'custom', name: 'global', data: {} } },
+        trace,
+      );
+
+      expect(trace.traceId).toBe('trace_configured_global');
+      expect(span.spanId).toBe('span_configured_global');
+    } finally {
+      setTracingIdGenerator();
+      provider.setDisabled(true);
+    }
+  });
+
+  it('prefers provider ID generation methods over the global ID generator', () => {
+    class DeterministicTraceProvider extends TraceProvider {
+      override generateTraceId(): string {
+        return 'trace_provider_custom';
+      }
+
+      override generateSpanId(): string {
+        return 'span_provider_custom';
+      }
+    }
+
+    const symbol = Symbol.for('openai.agents.core.traceProvider');
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+    const original = globalHolder[symbol];
+    const provider = new DeterministicTraceProvider();
+    const generateTraceId = vi.fn(() => 'trace_global_generator');
+    const generateSpanId = vi.fn(() => 'span_global_generator');
+
+    provider.setDisabled(false);
+    globalHolder[symbol] = provider;
+
+    try {
+      setTracingIdGenerator({ generateTraceId, generateSpanId });
+
+      const trace = getGlobalTraceProvider().createTrace({
+        name: 'provider-priority',
+      });
+      const span = getGlobalTraceProvider().createSpan(
+        { data: { type: 'custom', name: 'provider-priority', data: {} } },
+        trace,
+      );
+
+      expect(trace.traceId).toBe('trace_provider_custom');
+      expect(span.spanId).toBe('span_provider_custom');
+      expect(generateTraceId).not.toHaveBeenCalled();
+      expect(generateSpanId).not.toHaveBeenCalled();
+    } finally {
+      setTracingIdGenerator();
+      provider.setDisabled(true);
+      if (typeof original === 'undefined') {
+        delete globalHolder[symbol];
+      } else {
+        globalHolder[symbol] = original;
+      }
+    }
   });
 });
 

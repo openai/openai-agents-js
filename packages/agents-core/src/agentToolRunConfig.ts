@@ -281,6 +281,10 @@ export function getInheritedAgentToolRunConfig(
   if (typeof parentRunConfig.toolExecution !== 'undefined') {
     inheritedRunConfig.toolExecution = parentRunConfig.toolExecution;
   }
+  if (typeof parentRunConfig.toolNotFoundBehavior !== 'undefined') {
+    inheritedRunConfig.toolNotFoundBehavior =
+      parentRunConfig.toolNotFoundBehavior;
+  }
 
   return Object.keys(inheritedRunConfig).length > 0
     ? inheritedRunConfig

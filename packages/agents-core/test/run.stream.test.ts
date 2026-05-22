@@ -32,6 +32,7 @@ import {
 import {
   FakeModel,
   FakeModelProvider,
+  TEST_MODEL_FUNCTION_CALL,
   fakeModelMessage,
   fakeModelRefusal,
 } from './stubs';
@@ -234,6 +235,87 @@ describe('Runner.run (streaming)', () => {
 
     await result.completed;
     expect(result.finalOutput).toBe('The package arrives tomorrow.');
+  });
+
+  it('streams through missing function tool errors when opted in', async () => {
+    class RecordingStreamingModel implements Model {
+      readonly requests: ModelRequest[] = [];
+
+      constructor(private readonly responses: ModelResponse[]) {}
+
+      async getResponse(request: ModelRequest): Promise<ModelResponse> {
+        this.requests.push(request);
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        return response;
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = await this.getResponse(request);
+        yield {
+          type: 'response_done',
+          response: {
+            id: response.responseId ?? 'resp-stream-missing-tool',
+            usage: {
+              requests: response.usage.requests,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output.map((item) =>
+              protocol.OutputModelItem.parse(item),
+            ),
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const model = new RecordingStreamingModel([
+      {
+        output: [
+          {
+            ...TEST_MODEL_FUNCTION_CALL,
+            name: 'missing_tool',
+            callId: 'call_missing',
+            arguments: '{}',
+          },
+        ],
+        usage: new Usage(),
+      },
+      {
+        output: [fakeModelMessage('stream recovered')],
+        usage: new Usage(),
+      },
+    ]);
+    const agent = new Agent({
+      name: 'StreamingMissingToolAgent',
+      model,
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    const result = await run(agent, 'start', {
+      stream: true,
+      toolNotFoundBehavior: 'return_error_to_model',
+    });
+
+    await result.completed;
+    expect(result.finalOutput).toBe('stream recovered');
+    expect(model.requests).toHaveLength(2);
+    const secondInput = model.requests[1].input as AgentInputItem[];
+    expect(secondInput).toContainEqual({
+      type: 'function_call_result',
+      name: 'missing_tool',
+      callId: 'call_missing',
+      status: 'completed',
+      output: {
+        type: 'text',
+        text: "Tool 'missing_tool' not found.",
+      },
+    });
   });
 
   it('detaches abort listeners after streaming completion when signal is retained', async () => {

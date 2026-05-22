@@ -134,7 +134,7 @@ describe('AiSdkModel issue #802', () => {
                   cacheRead: 2,
                   cacheWrite: 3,
                 } as any,
-                outputTokens: { total: 20 } as any,
+                outputTokens: { total: 20, text: 17, reasoning: 3 } as any,
                 totalTokens: { total: 30 } as any,
               },
               providerMetadata: {},
@@ -160,6 +160,9 @@ describe('AiSdkModel issue #802', () => {
       expect(res.usage.inputTokensDetails).toEqual([
         { cached_tokens: 2, cache_write_tokens: 3 },
       ]);
+      expect(res.usage.outputTokensDetails).toEqual([
+        { reasoning_tokens: 3, text_tokens: 17 },
+      ]);
 
       const generationSpan = processor.spans.find(
         (span) => span.spanData.type === 'generation',
@@ -169,6 +172,7 @@ describe('AiSdkModel issue #802', () => {
         input_tokens: 10,
         output_tokens: 20,
         input_tokens_details: { cached_tokens: 2, cache_write_tokens: 3 },
+        output_tokens_details: { reasoning_tokens: 3, text_tokens: 17 },
       });
     } finally {
       setTracingDisabled(true);
@@ -185,10 +189,14 @@ describe('AiSdkModel issue #802', () => {
         // Simulating Google AI SDK behavior where tokens are objects
         usage: {
           inputTokens: { total: 5, cacheRead: 1, cacheWrite: 2 } as any,
-          outputTokens: { total: 8 } as any,
+          outputTokens: { total: 8, text: 6, reasoning: 2 } as any,
         },
       },
     ];
+    const processor = new CollectingProcessor();
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
     const model = new AiSdkModel(
       stubModel({
         async doStream() {
@@ -200,25 +208,44 @@ describe('AiSdkModel issue #802', () => {
     );
 
     let finalUsage: any;
-    for await (const ev of model.getStreamedResponse({
-      input: 'hi',
-      tools: [],
-      handoffs: [],
-      modelSettings: {},
-      outputType: 'text',
-      tracing: false,
-    } as any)) {
-      if (ev.type === 'response_done') {
-        finalUsage = ev.response.usage;
-      }
-    }
+    try {
+      await withTrace('t', async () => {
+        for await (const ev of model.getStreamedResponse({
+          input: 'hi',
+          tools: [],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: true,
+        } as any)) {
+          if (ev.type === 'response_done') {
+            finalUsage = ev.response.usage;
+          }
+        }
+      });
 
-    expect(finalUsage).toEqual({
-      inputTokens: 5,
-      outputTokens: 8,
-      totalTokens: 13,
-      inputTokensDetails: { cached_tokens: 1, cache_write_tokens: 2 },
-    });
+      expect(finalUsage).toEqual({
+        inputTokens: 5,
+        outputTokens: 8,
+        totalTokens: 13,
+        inputTokensDetails: { cached_tokens: 1, cache_write_tokens: 2 },
+        outputTokensDetails: { reasoning_tokens: 2, text_tokens: 6 },
+      });
+
+      const generationSpan = processor.spans.find(
+        (span) => span.spanData.type === 'generation',
+      );
+
+      expect(generationSpan?.spanData?.usage).toEqual({
+        input_tokens: 5,
+        output_tokens: 8,
+        input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 2, text_tokens: 6 },
+      });
+    } finally {
+      setTracingDisabled(true);
+      setTraceProcessors([new BatchTraceProcessor(new ConsoleSpanExporter())]);
+    }
   });
 
   test('preserves toolChoice and provider options through streaming tool calls', async () => {

@@ -272,7 +272,10 @@ export async function saveToSession(
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   const newRunItems = result.newItems.slice(alreadyPersisted);
 
-  if (process.env.OPENAI_AGENTS__DEBUG_SAVE_SESSION) {
+  if (
+    typeof process !== 'undefined' &&
+    process.env?.OPENAI_AGENTS__DEBUG_SAVE_SESSION
+  ) {
     console.debug(
       'saveToSession:newRunItems',
       newRunItems.map((item) => item.type),

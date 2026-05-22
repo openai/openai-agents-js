@@ -4,22 +4,43 @@ import logger from '../logger';
 import { MultiTracingProcessor, TracingProcessor } from './processor';
 import { NoopSpan, Span, SpanData, SpanOptions } from './spans';
 import { NoopTrace, Trace, TraceOptions } from './traces';
-import { generateTraceId, NOOP_TRACE_OR_SPAN_ID } from './utils';
+import {
+  defaultTracingIdGenerator,
+  NOOP_TRACE_OR_SPAN_ID,
+  type TracingIdGenerator,
+} from './utils';
 
 export type CreateSpanOptions<TData extends SpanData> = Omit<
   SpanOptions<TData>,
   'traceId'
 > & { traceId?: string; disabled?: boolean };
 
+export type TraceProviderOptions = {
+  idGenerator?: Partial<TracingIdGenerator>;
+};
+
+function resolveTracingIdGenerator(
+  idGenerator?: Partial<TracingIdGenerator>,
+): TracingIdGenerator {
+  return {
+    generateTraceId:
+      idGenerator?.generateTraceId ?? defaultTracingIdGenerator.generateTraceId,
+    generateSpanId:
+      idGenerator?.generateSpanId ?? defaultTracingIdGenerator.generateSpanId,
+  };
+}
+
 export class TraceProvider {
   #multiProcessor: MultiTracingProcessor;
   #disabled: boolean;
   #shutdownPromise: Promise<void> | null;
+  #idGenerator: TracingIdGenerator;
 
-  constructor() {
+  constructor(options: TraceProviderOptions = {}) {
     this.#multiProcessor = new MultiTracingProcessor();
     this.#disabled = tracing.disabled;
     this.#shutdownPromise = null;
+    this.#idGenerator = resolveTracingIdGenerator(options.idGenerator);
 
     this.#addCleanupListeners();
   }
@@ -61,8 +82,64 @@ export class TraceProvider {
     this.#disabled = disabled;
   }
 
+  setIdGenerator(idGenerator?: Partial<TracingIdGenerator>): void {
+    this.#idGenerator = resolveTracingIdGenerator(idGenerator);
+  }
+
+  /**
+   * Generate a new trace ID.
+   *
+   * Override this in custom providers to take precedence over configured ID generators.
+   */
+  generateTraceId(): string {
+    return this.#idGenerator.generateTraceId();
+  }
+
+  /**
+   * Generate a new span ID.
+   *
+   * Override this in custom providers to take precedence over configured ID generators.
+   */
+  generateSpanId(): string {
+    return this.#idGenerator.generateSpanId();
+  }
+
   startExportLoop(): void {
     this.#multiProcessor.start();
+  }
+
+  /**
+   * Dispatches a completed trace lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a trace that was started and
+   * ended outside this process and needs to fan out the lifecycle without
+   * mutating the trace state.
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching trace %o', trace);
+      return;
+    }
+
+    await this.#multiProcessor.dispatchTrace(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to all registered processors.
+   *
+   * This is useful when an integration receives a span that already has
+   * lifecycle timestamps and needs to fan out the lifecycle without mutating
+   * those timestamps.
+   */
+  async dispatchSpan<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching span %o', span);
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpan(span);
   }
 
   createTrace(traceOptions: TraceOptions): Trace {
@@ -71,7 +148,7 @@ export class TraceProvider {
       return new NoopTrace();
     }
 
-    const traceId = traceOptions.traceId ?? generateTraceId();
+    const traceId = traceOptions.traceId ?? this.generateTraceId();
     const name = traceOptions.name ?? 'Agent workflow';
 
     logger.debug('Creating trace %s with name %s', traceId, name);
@@ -168,13 +245,20 @@ export class TraceProvider {
       return new NoopSpan(spanOptions.data, this.#multiProcessor);
     }
 
+    const spanId = spanOptions.spanId ?? this.generateSpanId();
+    if (spanId === NOOP_TRACE_OR_SPAN_ID) {
+      logger.debug('Span id is no-op, returning NoopSpan');
+      return new NoopSpan(spanOptions.data, this.#multiProcessor);
+    }
+
     logger.debug(
-      `Creating span ${JSON.stringify(spanOptions.data)} with id ${spanOptions.spanId ?? traceId}`,
+      `Creating span ${JSON.stringify(spanOptions.data)} with id ${spanId}`,
     );
 
     return new Span(
       {
         ...spanOptions,
+        spanId,
         traceId,
         parentId,
         traceMetadata: traceMetadata ?? spanOptions.traceMetadata,
