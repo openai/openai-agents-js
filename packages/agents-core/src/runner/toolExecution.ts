@@ -398,15 +398,7 @@ async function handleFunctionApproval<TContext>(
   }
 
   if (approval !== true) {
-    // const wantsApproval = await toolRun.tool.needsApproval(
-    // state._context,
-    // parseResult.args,
-    // toolRun.toolCall.callId,
-    // );
-    if (
-      // wantsApproval &&
-      (toolRun.tool.preApprovalGuardrails ?? []).length > 0
-    ) {
+    if ((toolRun.tool.preApprovalGuardrails ?? []).length > 0) {
       const preApprovalInputGuardrailResult = await runToolInputGuardrails({
         guardrails: toolRun.tool.preApprovalGuardrails,
         context: state._context,
@@ -419,7 +411,6 @@ async function handleFunctionApproval<TContext>(
 
       if (preApprovalInputGuardrailResult.type === 'reject') {
         const toolOutput = preApprovalInputGuardrailResult.message;
-        //span?
         const functionResult: FunctionToolResult<TContext> = {
           type: 'function_output' as const,
           tool: toolRun.tool,
