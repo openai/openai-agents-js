@@ -172,6 +172,7 @@ Constructor options:
 | `clientSessionTimeoutSeconds` | `number` | Timeout for MCP client sessions. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
 | `timeout` | `number` | Per-request timeout (milliseconds). |
 | `logger` | `Logger` | Custom logger. |
@@ -208,6 +209,7 @@ Constructor options:
 | `encodingErrorHandler` | `'strict' \| 'ignore' \| 'replace'` | Encoding error strategy. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
 | `timeout` | `number` | Per-request timeout (milliseconds). |
 | `logger` | `Logger` | Custom logger. |

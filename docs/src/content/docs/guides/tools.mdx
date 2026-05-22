@@ -149,10 +149,15 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `timeoutMs` | No | Per-call timeout in milliseconds. Must be greater than 0 and less than or equal to `2147483647`. |
 | `timeoutBehavior` | No | Timeout mode: `error_as_result` (default) returns a model-visible timeout message, and `raise_exception` throws `ToolTimeoutError`. |
 | `timeoutErrorFunction` | No | Custom handler `(context, timeoutError) => string` for timeout output when `timeoutBehavior` is `error_as_result`. |
+| `customDataExtractor` | No | Callback `(context) => Record<string, unknown> \| null \| undefined` for attaching SDK-only metadata to the emitted `RunToolCallOutputItem.customData`. This data is not sent back to the model. |
 | `needsApproval` | No | Require human approval before execution. See the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop). |
 | `isEnabled` | No | Conditionally expose the tool per run; accepts a boolean or predicate. |
 | `inputGuardrails` | No | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 | `outputGuardrails` | No | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
+
+#### SDK-only custom data
+
+Use `customDataExtractor` when your application needs renderer hints, internal IDs, or other JSON-compatible metadata next to a tool result. The callback receives the run context, tool definition, model tool call, parsed input, output, and a cloned raw output item. Returned data is stored on `RunToolCallOutputItem.customData` and in `RunState`, but it is excluded from `history` and model replay.
 
 #### Function tool timeouts
 
