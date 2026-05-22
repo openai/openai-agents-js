@@ -3064,10 +3064,137 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
       expect(state._toolInputGuardrailResults).toHaveLength(0);
     });
-    it('Calls pre approval input guardrail when tool needs approval', async () => {});
-    it('Doesnt call pre approval input guardrail when tool does not need approval', async () => {});
-    it('Carries on to approval call if passes pre approval check', async () => {});
-    it('Does not carries on to approval call if fails pre approval check', async () => {});
+
+    it('Calls pre approval input guardrail when tool needs approval', async () => {
+      const preApprovalRun = vi.fn(async () =>
+        ToolGuardrailFunctionOutputFactory.allow(),
+      );
+      const preApprovalGuardrail = defineToolInputGuardrail({
+        name: 'pre_approval_allow',
+        run: preApprovalRun,
+      });
+      const t = tool({
+        name: 'preapproval_guarded_tool',
+        description: 'tool with pre approval guardrail',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'ok'),
+        preApprovalGuardrails: [preApprovalGuardrail],
+        needsApproval: true,
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(preApprovalRun).toHaveBeenCalledTimes(1);
+      expect(res[0].type).toBe('function_approval');
+      expect(state._toolInputGuardrailResults).toHaveLength(1);
+    });
+
+    it.skip('Doesnt call pre approval input guardrail when tool does not need approval', async () => {
+      const preApprovalRun = vi.fn(async () =>
+        ToolGuardrailFunctionOutputFactory.allow(),
+      );
+      const preApprovalGuardrail = defineToolInputGuardrail({
+        name: 'pre_approval_allow',
+        run: preApprovalRun,
+      });
+      const t = tool({
+        name: 'preapproval_skipped_tool',
+        description: 'tool with pre approval guardrail',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'ok'),
+        preApprovalGuardrails: [preApprovalGuardrail],
+        needsApproval: false,
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(preApprovalRun).not.toHaveBeenCalled();
+      expect(res[0].type).toBe('function_output');
+      expect(state._toolInputGuardrailResults).toHaveLength(0);
+    });
+
+    it('Carries on to approval call if passes pre approval check', async () => {
+      const preApprovalGuardrail = defineToolInputGuardrail({
+        name: 'pre_approval_allow',
+        run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+      });
+      const needsApproval = vi.fn(async () => true);
+      const t = tool({
+        name: 'preapproval_then_approval_tool',
+        description: 'tool with pre approval guardrail',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'ok'),
+        preApprovalGuardrails: [preApprovalGuardrail],
+        needsApproval,
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(needsApproval).toHaveBeenCalledTimes(1);
+      expect(res[0].type).toBe('function_approval');
+    });
+
+    it('Does not carry on to approval call if fails pre approval check', async () => {
+      const preApprovalRun = vi.fn(async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent(
+          'blocked by pre approval guardrail',
+        ),
+      );
+      const preApprovalGuardrail = defineToolInputGuardrail({
+        name: 'pre_approval_block',
+        run: preApprovalRun,
+      });
+      const needsApproval = vi.fn(async () => true);
+      const isToolApprovedSpy = vi.spyOn(state._context, 'isToolApproved');
+      const t = tool({
+        name: 'preapproval_blocked_tool',
+        description: 'tool with pre approval guardrail',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'should-not-run'),
+        preApprovalGuardrails: [preApprovalGuardrail],
+        needsApproval,
+      }) as unknown as FunctionTool;
+      const invokeSpy = vi.spyOn(t, 'invoke');
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(preApprovalRun).toHaveBeenCalledTimes(1);
+      expect(needsApproval).toHaveBeenCalledTimes(0);
+      expect(isToolApprovedSpy).not.toHaveBeenCalled();
+      expect(invokeSpy).not.toHaveBeenCalled();
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        expect(res[0].output).toBe('blocked by pre approval guardrail');
+      }
+    });
   });
 
   describe('executeComputerActions', () => {

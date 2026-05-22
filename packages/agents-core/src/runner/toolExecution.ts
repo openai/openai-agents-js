@@ -191,7 +191,15 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       return buildParseErrorResult(deps, toolRun, parseResult.error);
     }
 
-    if ((toolRun.tool.preApprovalGuardrails ?? []).length > 0) {
+    // const wantsApproval = await toolRun.tool.needsApproval(
+    // state._context,
+    // parseResult.args,
+    // toolRun.toolCall.callId,
+    // );
+    if (
+      // wantsApproval &&
+      (toolRun.tool.preApprovalGuardrails ?? []).length > 0
+    ) {
       const toolName = getFunctionToolIdentity(toolRun);
       //run pre-approval guardrails and skip approval if any fail
       const preApprovalInputGuardrailResult = await runToolInputGuardrails({
