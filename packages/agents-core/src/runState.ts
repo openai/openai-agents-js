@@ -89,7 +89,8 @@ import {
  * - 1.10: Adds optional stable agent identity keys so duplicate-name agent graphs can
  *   serialize and resume without ambiguous name resolution.
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
- * - 1.12: Adds optional missing function tool calls to processed responses.
+ * - 1.12: Adds optional missing function tool calls to processed responses and optional
+ *   SDK-only customData on tool output run items.
  */
 export const CURRENT_SCHEMA_VERSION = '1.12' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -204,6 +205,7 @@ const itemSchema = z.discriminatedUnion('type', [
       .or(protocol.ApplyPatchCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
+    customData: z.record(z.string(), z.any()).optional(),
   }),
   z.object({
     type: z.literal('reasoning_item'),
@@ -2090,6 +2092,7 @@ export function deserializeItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.output,
+        serializedItem.customData,
       );
     case 'reasoning_item':
       return new RunReasoningItem(

@@ -136,6 +136,8 @@ export {
   MCPToolFilterCallable,
   MCPToolFilterContext,
   MCPToolFilterStatic,
+  MCPToolCustomDataContext,
+  MCPToolCustomDataExtractor,
   MCPToolMetaContext,
   MCPToolMetaResolver,
   createMCPToolStaticFilter,
@@ -248,6 +250,13 @@ export type {
   ToolInputParameters,
   ToolOptions,
   ToolNamespaceOptions,
+  ToolOutputCustomData,
+  FunctionToolCustomDataContext,
+  FunctionToolCustomDataExtractor,
+  ComputerToolCustomDataContext,
+  ComputerToolCustomDataExtractor,
+  ApplyPatchToolCustomDataContext,
+  ApplyPatchToolCustomDataExtractor,
 } from './tool';
 export type {
   ToolOutputText,
