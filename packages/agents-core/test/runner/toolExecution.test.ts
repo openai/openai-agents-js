@@ -3096,7 +3096,7 @@ describe('executeShellActions', () => {
       expect(state._toolInputGuardrailResults).toHaveLength(1);
     });
 
-    it.skip('Doesnt call pre approval input guardrail when tool does not need approval', async () => {
+    it('Doesnt call pre approval input guardrail when tool does not need approval', async () => {
       const preApprovalRun = vi.fn(async () =>
         ToolGuardrailFunctionOutputFactory.allow(),
       );
