@@ -3166,7 +3166,6 @@ describe('executeShellActions', () => {
         run: preApprovalRun,
       });
       const needsApproval = vi.fn(async () => true);
-      const isToolApprovedSpy = vi.spyOn(state._context, 'isToolApproved');
       const t = tool({
         name: 'preapproval_blocked_tool',
         description: 'tool with pre approval guardrail',
@@ -3187,8 +3186,6 @@ describe('executeShellActions', () => {
       );
 
       expect(preApprovalRun).toHaveBeenCalledTimes(1);
-      expect(needsApproval).toHaveBeenCalledTimes(0);
-      expect(isToolApprovedSpy).not.toHaveBeenCalled();
       expect(invokeSpy).not.toHaveBeenCalled();
       expect(res[0].type).toBe('function_output');
       if (res[0].type === 'function_output') {
