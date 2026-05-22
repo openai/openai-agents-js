@@ -699,6 +699,104 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
+  it('does not emit a success end event when computer customDataExtractor fails', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({
+      computer: fakeComputer,
+      customDataExtractor: () => ({ bad: BigInt(1) }) as any,
+    });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_bad_custom_data',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const runner = new Runner();
+    const end = vi.fn();
+    runner.on('agent_tool_end', end);
+
+    await expect(
+      executeComputerActions(
+        new Agent({ name: 'Comp' }),
+        [{ toolCall: call, computer: tool }],
+        runner,
+        new RunContext(),
+      ),
+    ).rejects.toThrow(/customDataExtractor must return JSON-compatible data/);
+
+    expect(end).not.toHaveBeenCalled();
+  });
+
+  it('passes a cloned computer tool call to customDataExtractor', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({
+      computer: fakeComputer,
+      customDataExtractor: (context) => {
+        (context.toolCall as any).sdkOnly = { traceId: 'sdk-only' };
+        context.toolCall.action = {
+          type: 'click',
+          button: 'left',
+          x: 1,
+          y: 2,
+        } as any;
+        return { annotatedCall: context.toolCall };
+      },
+    });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c1_cloned_custom_data',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect((call as any).sdkOnly).toBeUndefined();
+    expect(call.action).toEqual({ type: 'screenshot' });
+    expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect((items[0] as ToolCallOutputItem).customData).toEqual({
+      annotatedCall: {
+        ...call,
+        action: {
+          type: 'click',
+          button: 'left',
+          x: 1,
+          y: 2,
+        },
+        sdkOnly: { traceId: 'sdk-only' },
+      },
+    });
+  });
+
   it('emits a function span for computer actions', async () => {
     const fakeComputer = {
       environment: 'mac',
@@ -1748,6 +1846,41 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(1);
     });
 
+    it('does not emit a success end event when apply_patch customDataExtractor fails', async () => {
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({
+        editor,
+        customDataExtractor: () => ({ bad: BigInt(1) }) as any,
+      });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const runner = new Runner({ tracingDisabled: true });
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_bad_custom_data',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'README.md',
+          diff: 'diff --git',
+        },
+      };
+
+      await expect(
+        executeApplyPatchOperations(
+          agent,
+          [{ toolCall, applyPatch } as any],
+          runner,
+          runContext,
+        ),
+      ).rejects.toThrow(/customDataExtractor must return JSON-compatible data/);
+
+      expect(end).not.toHaveBeenCalled();
+      expect(editor.operations).toHaveLength(1);
+    });
+
     it('passes RunContext to apply_patch editor operations', async () => {
       const editor = new FakeEditor();
       const applyPatch = applyPatchTool({ editor });
@@ -2609,6 +2742,140 @@ describe('executeShellActions', () => {
       );
       expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
       expect(invokeSpy).toHaveBeenCalled();
+    });
+
+    it('passes a cloned tool call to customDataExtractor', async () => {
+      const localToolCall = {
+        ...toolCall,
+        callId: 'c_cloned_tool_call',
+        arguments: '{}',
+      };
+      const t = tool({
+        name: 'hi',
+        description: 't',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'ok'),
+        customDataExtractor: (context) => {
+          (context.toolCall as any).sdkOnly = { traceId: 'sdk-only' };
+          context.toolCall.arguments = '{"leaked":true}';
+          return { annotatedCall: context.toolCall };
+        },
+      }) as unknown as FunctionTool;
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: localToolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      expect(res[0].type).toBe('function_output');
+      expect((localToolCall as any).sdkOnly).toBeUndefined();
+      expect(localToolCall.arguments).toBe('{}');
+      if (res[0].type === 'function_output') {
+        expect(res[0].runItem.customData).toEqual({
+          annotatedCall: {
+            ...localToolCall,
+            arguments: '{"leaked":true}',
+            sdkOnly: { traceId: 'sdk-only' },
+          },
+        });
+      }
+    });
+
+    it('passes the executed tool input to customDataExtractor', async () => {
+      const executedInputs: unknown[] = [];
+      const t = tool({
+        name: 'hi',
+        description: 't',
+        parameters: z.object({
+          name: z.string(),
+          optional: z.string().optional(),
+          withDefault: z.string().default('default-value'),
+        }),
+        execute: vi.fn(async (input) => {
+          executedInputs.push(input);
+          return 'ok';
+        }),
+        customDataExtractor: (context) => ({
+          input: context.input,
+        }),
+      }) as unknown as FunctionTool;
+      const localToolCall = {
+        ...toolCall,
+        callId: 'c_executed_input_custom_data',
+        arguments: JSON.stringify({
+          name: 'alice',
+          optional: null,
+        }),
+      };
+
+      const res = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: localToolCall, tool: t }],
+          runner,
+          state,
+        ),
+      );
+
+      const expectedInput = {
+        name: 'alice',
+        withDefault: 'default-value',
+      };
+      expect(executedInputs).toEqual([expectedInput]);
+      expect(res[0].type).toBe('function_output');
+      if (res[0].type === 'function_output') {
+        expect(res[0].runItem.customData).toEqual({
+          input: expectedInput,
+        });
+      }
+    });
+
+    it('emits a single error end event when customDataExtractor fails', async () => {
+      const t = tool({
+        name: 'hi',
+        description: 't',
+        parameters: z.object({}),
+        execute: vi.fn(async () => 'ok'),
+        customDataExtractor: () => ({ bad: BigInt(1) }) as any,
+      }) as unknown as FunctionTool;
+      const start = vi.fn();
+      const end = vi.fn();
+      runner.on('agent_tool_start', start);
+      runner.on('agent_tool_end', end);
+
+      await expect(
+        withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            runner,
+            state,
+          ),
+        ),
+      ).rejects.toThrow(/customDataExtractor must return JSON-compatible data/);
+
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledWith(
+        state._context,
+        state._currentAgent,
+        t,
+        expect.stringContaining(
+          'customDataExtractor must return JSON-compatible data',
+        ),
+        { toolCall },
+      );
+      expect(end).not.toHaveBeenCalledWith(
+        state._context,
+        state._currentAgent,
+        t,
+        'ok',
+        { toolCall },
+      );
     });
 
     it('starts all function tool calls by default', async () => {

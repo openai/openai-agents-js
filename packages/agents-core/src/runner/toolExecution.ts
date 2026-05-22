@@ -24,7 +24,11 @@ import { ModelResponse } from '../model';
 import {
   ComputerSafetyCheck,
   ComputerSafetyCheckResult,
+  ComputerToolCustomDataContext,
   FunctionToolResult,
+  FunctionToolCustomDataContext,
+  FUNCTION_TOOL_PARSED_INPUT_CALLBACK,
+  ApplyPatchToolCustomDataContext,
   invokeFunctionTool,
   resolveComputer,
   Tool,
@@ -53,6 +57,7 @@ import {
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
 import type { ToolInputGuardrailResult } from '../toolGuardrail';
+import { maybeExtractToolOutputCustomData } from '../utils/customData';
 import {
   resolveApprovalRejectionMessage,
   TOOL_APPROVAL_REJECTION_MESSAGE,
@@ -92,6 +97,14 @@ function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): string {
   return getFunctionToolQualifiedName(toolRun.tool) ?? toolRun.tool.name;
+}
+
+function cloneForCustomDataContext<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    return value;
+  }
 }
 
 function getFunctionToolTraceName<TContext>(
@@ -204,7 +217,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     if (approvalOutcome !== 'approved') {
       return approvalOutcome;
     }
-    return runApprovedFunctionTool(deps, toolRun);
+    return runApprovedFunctionTool(deps, toolRun, parseResult.args);
   };
 
   try {
@@ -481,6 +494,7 @@ async function runFunctionToolInputGuardrails<TContext>({
 async function runApprovedFunctionTool<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
+  parsedInput: unknown,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, agentToolParentRunConfig } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
@@ -510,6 +524,7 @@ async function runApprovedFunctionTool<TContext>(
       );
 
       let toolOutput: unknown;
+      let executedInput = parsedInput;
       if (inputGuardrailResult.type === 'reject') {
         toolOutput = inputGuardrailResult.message;
       } else {
@@ -520,6 +535,9 @@ async function runApprovedFunctionTool<TContext>(
         const toolDetails = {
           toolCall: toolRun.toolCall,
           resumeState,
+          [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
+            executedInput = cloneForCustomDataContext(input);
+          },
         };
         setAgentToolParentRunConfigOnDetails(
           toolDetails,
@@ -544,6 +562,19 @@ async function runApprovedFunctionTool<TContext>(
       }
       const stringResult = toSmartString(toolOutput);
 
+      const rawItem = getToolCallOutputItem(toolRun.toolCall, toolOutput);
+      const customData = await maybeExtractToolOutputCustomData(
+        toolRun.tool.customDataExtractor,
+        {
+          runContext: state._context,
+          tool: toolRun.tool,
+          toolCall: cloneForCustomDataContext(toolRun.toolCall),
+          input: cloneForCustomDataContext(executedInput),
+          output: cloneForCustomDataContext(toolOutput),
+          rawItem: cloneForCustomDataContext(rawItem),
+        } satisfies FunctionToolCustomDataContext<TContext>,
+      );
+
       emitToolEnd(
         runner,
         state._context,
@@ -562,9 +593,10 @@ async function runApprovedFunctionTool<TContext>(
         tool: toolRun.tool,
         output: toolOutput,
         runItem: new RunToolCallOutputItem(
-          getToolCallOutputItem(toolRun.toolCall, toolOutput),
+          rawItem,
           agent,
           toolOutput,
+          customData,
         ),
       };
 
@@ -1122,6 +1154,28 @@ export async function executeApplyPatchOperations(
           _logger.error('Failed to execute apply_patch operation:', err);
         }
 
+        const rawItem: protocol.ApplyPatchCallResultItem = {
+          type: 'apply_patch_call_output',
+          callId: toolCallKey,
+          status,
+        };
+
+        if (output) {
+          rawItem.output = output;
+        }
+
+        const customData = await maybeExtractToolOutputCustomData(
+          applyPatchTool.customDataExtractor,
+          {
+            runContext,
+            tool: applyPatchTool,
+            operation: cloneForCustomDataContext(toolCall.operation),
+            output,
+            status,
+            rawItem: cloneForCustomDataContext(rawItem),
+          } satisfies ApplyPatchToolCustomDataContext,
+        );
+
         emitToolEnd(
           runner,
           runContext,
@@ -1135,17 +1189,7 @@ export async function executeApplyPatchOperations(
           span.spanData.output = output;
         }
 
-        const rawItem: protocol.ApplyPatchCallResultItem = {
-          type: 'apply_patch_call_output',
-          callId: toolCallKey,
-          status,
-        };
-
-        if (output) {
-          rawItem.output = output;
-        }
-
-        return new RunToolCallOutputItem(rawItem, agent, output);
+        return new RunToolCallOutputItem(rawItem, agent, output, customData);
       },
     );
 
@@ -1309,14 +1353,8 @@ export async function executeComputerActions(
           });
         }
 
-        // Hooks: on_tool_end (global + agent)
-        emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
-
         // Return the screenshot as a data URL when available; fall back to an empty string on failures.
         const imageUrl = output ? `data:image/png;base64,${output}` : '';
-        if (span && runner.config.traceIncludeSensitiveData) {
-          span.spanData.output = imageUrl;
-        }
         const rawItem: protocol.ComputerCallResultItem = {
           type: 'computer_call_result',
           callId: toolCall.callId,
@@ -1327,7 +1365,25 @@ export async function executeComputerActions(
             acknowledgedSafetyChecks,
           };
         }
-        return new RunToolCallOutputItem(rawItem, agent, imageUrl);
+        const customData = await maybeExtractToolOutputCustomData(
+          computerTool.customDataExtractor,
+          {
+            runContext,
+            tool: computerTool,
+            toolCall: cloneForCustomDataContext(toolCall),
+            output: imageUrl,
+            rawItem: cloneForCustomDataContext(rawItem),
+          } satisfies ComputerToolCustomDataContext,
+        );
+
+        // Hooks: on_tool_end (global + agent)
+        emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
+
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = imageUrl;
+        }
+
+        return new RunToolCallOutputItem(rawItem, agent, imageUrl, customData);
       },
     );
 
