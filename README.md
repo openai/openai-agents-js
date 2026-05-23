@@ -118,3 +118,110 @@ We'd like to acknowledge the excellent work of the open-source community, especi
 We're committed to building the Agents SDK as an open source framework so others in the community can expand on our approach.
 
 For more details, see the [documentation](https://openai.github.io/openai-agents-js) or explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory.
+
+
+## FAQ
+
+### What is OpenAI Agents SDK?
+
+OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. Provider-agnostic, supports OpenAI APIs and more.
+
+### Core Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Agents** | LLMs configured with instructions, tools, guardrails, handoffs |
+| **Sandbox Agents** | Agents with filesystem workspace + sandbox environment |
+| **Agents as Tools** | Delegating to other agents for specific tasks |
+| **Handoffs** | Multi-agent delegation mechanism |
+| **Tools** | Functions, MCP, hosted tools for agent actions |
+| **Guardrails** | Input/output validation, safety checks |
+| **Human-in-the-Loop** | Built-in human involvement mechanisms |
+| **Sessions** | Automatic conversation history management |
+| **Tracing** | Track runs, debug, optimize workflows |
+| **Realtime Agents** | Voice agents with full features |
+
+### Supported Environments
+
+- Node.js 22+
+- Deno
+- Bun
+- Cloudflare Workers (experimental with `nodejs_compat`)
+
+### LLM Providers
+
+| Provider | Models |
+|----------|--------|
+| **OpenAI** | GPT-4o, GPT-4o-mini, o1, o3-mini |
+| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus |
+| **Google** | Gemini 2.0 Flash, Gemini 1.5 Pro |
+| **Azure OpenAI** | All OpenAI models via Azure |
+| **Custom** | OpenAI-compatible APIs |
+
+### How to install?
+
+```bash
+npm install @openai/agents zod
+```
+
+### Sandbox Agent Example
+
+```js
+import { run } from '@openai/agents';
+import { SandboxAgent, gitRepo } from '@openai/agents/sandbox';
+import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
+
+const agent = new SandboxAgent({
+  name: 'Workspace Assistant',
+  instructions: 'Inspect sandbox workspace before answering.',
+  defaultManifest: {
+    entries: { repo: gitRepo({ repo: 'openai/openai-agents-js', ref: 'main' }) }
+  }
+});
+
+const result = await run(agent, 'Summarize README.md', {
+  sandbox: { client: new UnixLocalSandboxClient() }
+});
+```
+
+### Regular Agent Example
+
+```js
+import { Agent, run } from '@openai/agents';
+
+const agent = new Agent({
+  name: 'Assistant',
+  instructions: 'You are a helpful assistant'
+});
+
+const result = await run(agent, 'Write a haiku about recursion');
+```
+
+### Why Choose OpenAI Agents SDK?
+
+1. **Official SDK** - Built by OpenAI, first-class support
+2. **Provider-agnostic** - Works with OpenAI, Anthropic, Google
+3. **Multi-agent native** - Handoffs, agents as tools
+4. **Production-ready** - Guardrails, tracing, sessions
+5. **Sandbox support** - Filesystem workspace for complex tasks
+6. **TypeScript-first** - Full type safety, modern DX
+7. **Realtime voice** - Build voice agents easily
+
+### Use Cases
+
+- Multi-step research agents
+- Code review automation
+- Content generation pipelines
+- Voice assistants
+- Document processing workflows
+- API orchestration agents
+
+### License
+
+MIT License
+
+### Help Resources
+
+- [Documentation](https://openai.github.io/openai-agents-js)
+- [Examples](https://github.com/openai/openai-agents-js/tree/main/examples)
+- [Python version](https://github.com/openai/openai-agents-python)
