@@ -277,3 +277,44 @@ Run:
 ```bash
 pnpm -F sandbox start:runloop -- --stream
 ```
+
+## Tensorlake
+
+Required environment variables:
+
+```bash
+export OPENAI_API_KEY=...
+export TENSORLAKE_API_KEY=...
+```
+
+How to get `TENSORLAKE_API_KEY`:
+
+1. Sign in to the Tensorlake console at `https://cloud.tensorlake.ai`.
+2. Create an API key in `Profile > API keys` (or run `tl login` and use `tl tokens create` from the CLI).
+3. Export it in your shell before running the example.
+
+Tensorlake creates ephemeral sandboxes by default. To exercise the suspend/resume path, pass `--name <unique-name>` together with `--suspend-on-exit`, which keeps the named sandbox alive between runs:
+
+```bash
+pnpm -F sandbox start:tensorlake -- --stream --name demo --suspend-on-exit
+```
+
+To use a native Tensorlake checkpoint for workspace persistence, add `--workspace-persistence snapshot`:
+
+```bash
+pnpm -F sandbox start:tensorlake -- --workspace-persistence snapshot
+```
+
+Run:
+
+```bash
+pnpm -F sandbox start:tensorlake -- --stream
+```
+
+Useful flags:
+
+- `--image <name>` to pin a specific Tensorlake registered image.
+- `--cpus <n>` to set the sandbox CPU allocation.
+- `--memory-mb <n>` to set the sandbox memory allocation, in megabytes. Must be between 1024 and 8192 MB **per CPU core**, so scale this up alongside `--cpus` (for example, `--cpus 2` requires at least `--memory-mb 2048`).
+- `--disk-mb <n>` to set the sandbox ephemeral root filesystem size, in MiB. Must be between **10240 (10 GiB)** and **102400 (100 GiB)** inclusive. Defaults to 10240 MiB when omitted.
+- `--timeout-secs <n>` to bound the sandbox lifetime in seconds.

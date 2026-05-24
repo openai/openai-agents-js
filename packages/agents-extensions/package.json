@@ -64,6 +64,11 @@
       "require": "./dist/sandbox/runloop/index.js",
       "import": "./dist/sandbox/runloop/index.mjs"
     },
+    "./sandbox/tensorlake": {
+      "types": "./dist/sandbox/tensorlake/index.d.ts",
+      "require": "./dist/sandbox/tensorlake/index.js",
+      "import": "./dist/sandbox/tensorlake/index.mjs"
+    },
     "./sandbox/vercel": {
       "types": "./dist/sandbox/vercel/index.d.ts",
       "require": "./dist/sandbox/vercel/index.js",
@@ -87,6 +92,7 @@
     "ai": "^6.0.0",
     "e2b": "^2.14.1",
     "modal": "^0.7.4",
+    "tensorlake": "^0.5.14",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
   },
@@ -118,6 +124,9 @@
     "@runloop/api-client": {
       "optional": true
     },
+    "tensorlake": {
+      "optional": true
+    },
     "@vercel/sandbox": {
       "optional": true
     }
@@ -142,6 +151,7 @@
     "ai": "^6.0.42",
     "e2b": "^2.14.1",
     "modal": "0.7.4",
+    "tensorlake": "0.5.14",
     "undici-types": "6.21.0",
     "ws": "^8.18.1",
     "zod": "^4.0.0"
@@ -168,6 +178,9 @@
       ],
       "sandbox/runloop": [
         "dist/sandbox/runloop/index.d.ts"
+      ],
+      "sandbox/tensorlake": [
+        "dist/sandbox/tensorlake/index.d.ts"
       ],
       "sandbox/vercel": [
         "dist/sandbox/vercel/index.d.ts"

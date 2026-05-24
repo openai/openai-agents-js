@@ -19,5 +19,7 @@ overrides:
 
 publishBranch: main
 minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - tensorlake
 blockExoticSubdeps: true
 strictDepBuilds: true

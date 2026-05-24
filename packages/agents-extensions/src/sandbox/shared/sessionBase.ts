@@ -356,6 +356,37 @@ export abstract class RemoteSandboxSessionBase<
 
   protected async beforeApplyManifest(_manifest: Manifest): Promise<void> {}
 
+  /**
+   * When true, `applyManifest()` skips the `groupadd`/`useradd`/`usermod`
+   * round-trips because the backend filesystem already carries the manifest's
+   * accounts. Used by providers that restore a sandbox from a native
+   * filesystem snapshot whose image captures `/etc/passwd` and `/etc/group`,
+   * so re-running provisioning is wasted work and can fail if accounts are
+   * partially present.
+   *
+   * Default is `false`, which preserves the existing behavior for every other
+   * provider — only opt-in overrides change anything. Introduced for the
+   * Tensorlake provider, whose default image both pre-bakes accounts in its
+   * snapshot path and has no usable root for `useradd`-style commands.
+   */
+  protected manifestAccountsAlreadyProvisioned(): boolean {
+    return false;
+  }
+
+  /**
+   * When false, `applyManifestEntryMetadata` skips the `chown`/`chgrp`
+   * commands (still applies `chmod`). For providers whose runtime image has
+   * no usable root account, where ownership commands would fail.
+   *
+   * Default is `true`, which preserves the existing behavior for every other
+   * provider — only opt-in overrides change anything. Introduced for the
+   * Tensorlake provider, whose default image only ships a non-root `tl-user`
+   * account, so ownership commands cannot be executed but file modes can.
+   */
+  protected shouldApplyManifestEntryOwnership(): boolean {
+    return true;
+  }
+
   protected resolveManifestForApply(
     manifest: Manifest,
   ): Manifest | Promise<Manifest> {
@@ -640,6 +671,9 @@ export abstract class RemoteSandboxSessionBase<
     if (!support?.users && !support?.groups) {
       return;
     }
+    if (this.manifestAccountsAlreadyProvisioned()) {
+      return;
+    }
 
     const users = new Set(manifest.users.map((user) => user.name));
     for (const group of manifest.groups) {
@@ -697,13 +731,14 @@ export abstract class RemoteSandboxSessionBase<
     runAs?: string,
   ): Promise<void> {
     const support = this.manifestMetadataSupport();
+    const applyOwnership = this.shouldApplyManifestEntryOwnership();
     const commands: string[] = [];
-    if (runAs) {
+    if (applyOwnership && runAs) {
       commands.push(
         `chown ${shellQuote(runAs)}:${shellQuote(runAs)} -- ${shellQuote(absolutePath)}`,
       );
     }
-    if (support?.entryGroups && entry.group) {
+    if (applyOwnership && support?.entryGroups && entry.group) {
       commands.push(
         `chgrp ${shellQuote(entry.group.name)} -- ${shellQuote(absolutePath)}`,
       );

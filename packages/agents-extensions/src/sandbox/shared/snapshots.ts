@@ -6,6 +6,7 @@ export type NativeSnapshotProvider =
   | 'modal_snapshot_directory'
   | 'modal_snapshot_filesystem'
   | 'runloop'
+  | 'tensorlake'
   | 'vercel';
 
 export type NativeSnapshotRef = {
@@ -19,6 +20,7 @@ const NATIVE_SNAPSHOT_PREFIXES: Record<NativeSnapshotProvider, string> = {
   modal_snapshot_directory: 'MODAL_SANDBOX_DIR_SNAPSHOT_V1\n',
   modal_snapshot_filesystem: 'MODAL_SANDBOX_FS_SNAPSHOT_V1\n',
   runloop: 'RUNLOOP_SANDBOX_SNAPSHOT_V1\n',
+  tensorlake: 'TENSORLAKE_SANDBOX_SNAPSHOT_V1\n',
   vercel: 'UC_VERCEL_SNAPSHOT_V1\n',
 };
 
