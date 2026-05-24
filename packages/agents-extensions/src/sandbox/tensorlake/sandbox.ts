@@ -151,7 +151,10 @@ type TensorlakeSandboxInfo = {
 type TensorlakeSandboxInstance = {
   sandboxId: string;
   name?: string | null;
-  run(command: string, options?: TensorlakeRunOptions): Promise<TensorlakeRunResult>;
+  run(
+    command: string,
+    options?: TensorlakeRunOptions,
+  ): Promise<TensorlakeRunResult>;
   writeFile(path: string, content: string | Uint8Array): Promise<void>;
   readFile(path: string): Promise<Uint8Array>;
   deleteFile?(path: string): Promise<void>;
@@ -163,7 +166,9 @@ type TensorlakeSandboxInstance = {
   terminate(): Promise<unknown>;
   info?(): Promise<TensorlakeSandboxInfo | undefined>;
   status?(): Promise<unknown>;
-  checkpoint?(options?: TensorlakeCheckpointOptions): Promise<{ snapshotId?: string }>;
+  checkpoint?(
+    options?: TensorlakeCheckpointOptions,
+  ): Promise<{ snapshotId?: string }>;
 };
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1']);
@@ -218,7 +223,9 @@ const TIMEOUT_KEYS = Object.keys(
 function resolveTimeouts(
   input: TensorlakeSandboxTimeouts | undefined,
 ): ResolvedTensorlakeTimeouts {
-  const resolved = { ...DEFAULT_TENSORLAKE_TIMEOUTS } as ResolvedTensorlakeTimeouts;
+  const resolved = {
+    ...DEFAULT_TENSORLAKE_TIMEOUTS,
+  } as ResolvedTensorlakeTimeouts;
   for (const key of TIMEOUT_KEYS) {
     if (input?.[key] !== undefined) resolved[key] = input[key]!;
     if (!Number.isFinite(resolved[key]) || resolved[key] <= 0) {
@@ -234,7 +241,10 @@ function extractHttpStatus(error: unknown): number | undefined {
   // providerErrorDetails walks cause/response chains but skips
   // SandboxProviderError.details where wrapped re-throws stash upstream status.
   const wrapped = isRecord(error) ? error.details : undefined;
-  for (const bag of [providerErrorDetails(error), isRecord(wrapped) ? wrapped : undefined]) {
+  for (const bag of [
+    providerErrorDetails(error),
+    isRecord(wrapped) ? wrapped : undefined,
+  ]) {
     if (!bag) continue;
     for (const key of ['status', 'httpStatus', 'responseStatus']) {
       const value = bag[key];
@@ -252,7 +262,8 @@ async function retryTransientHttp<T>(operation: () => Promise<T>): Promise<T> {
       const status = extractHttpStatus(error);
       const transient =
         status !== undefined && TRANSIENT_HTTP_STATUS_CODES.has(status);
-      if (!transient || attempt === TRANSIENT_HTTP_RETRY_ATTEMPTS - 1) throw error;
+      if (!transient || attempt === TRANSIENT_HTTP_RETRY_ATTEMPTS - 1)
+        throw error;
       await new Promise((resolve) =>
         setTimeout(resolve, TRANSIENT_HTTP_RETRY_BACKOFF_MS * 2 ** attempt),
       );
@@ -262,7 +273,9 @@ async function retryTransientHttp<T>(operation: () => Promise<T>): Promise<T> {
 
 type TensorlakeSandboxClass = {
   create(options?: Record<string, unknown>): Promise<TensorlakeSandboxInstance>;
-  connect(options: { sandboxId: string } & Record<string, unknown>): Promise<TensorlakeSandboxInstance>;
+  connect(
+    options: { sandboxId: string } & Record<string, unknown>,
+  ): Promise<TensorlakeSandboxInstance>;
 };
 
 export type TensorlakeWorkspacePersistence = true | 'tar' | 'snapshot';
@@ -541,7 +554,9 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
 
   private usesCustomControlPlane(): boolean {
     const t = this.trustedRecreateOptions;
-    return Boolean(t.proxyUrl || t.apiUrl || this.state.proxyUrl || this.state.apiUrl);
+    return Boolean(
+      t.proxyUrl || t.apiUrl || this.state.proxyUrl || this.state.apiUrl,
+    );
   }
 
   private async fetchSandboxUrl(): Promise<string | undefined> {
@@ -665,12 +680,15 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
   ): Promise<void> {
     if (!this.collapseManifestIdentities()) return;
     const dropped: string[] = [];
-    if (manifest.users.length > 0) dropped.push(`${manifest.users.length} user(s)`);
-    if (manifest.groups.length > 0) dropped.push(`${manifest.groups.length} group(s)`);
+    if (manifest.users.length > 0)
+      dropped.push(`${manifest.users.length} user(s)`);
+    if (manifest.groups.length > 0)
+      dropped.push(`${manifest.groups.length} group(s)`);
     const entriesWithGroup = Object.values(manifest.entries).filter(
       (entry) => entry.group !== undefined,
     ).length;
-    if (entriesWithGroup > 0) dropped.push(`${entriesWithGroup} entry ownership setting(s)`);
+    if (entriesWithGroup > 0)
+      dropped.push(`${entriesWithGroup} entry ownership setting(s)`);
     if (dropped.length === 0) return;
     logger.warn(
       `${PROVIDER_NAME} is collapsing manifest identities to the default 'tl-user' account because the base image does not expose root; dropping: ${dropped.join(', ')}. File modes (chmod) are still applied. Set manifestIdentities: 'provision' on a custom image with root to enable full provisioning.`,
@@ -737,7 +755,8 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
   private async persistWorkspaceViaNativeSnapshot(): Promise<
     Uint8Array | undefined
   > {
-    if (this.state.manifest.ephemeralPersistencePaths().size > 0) return undefined;
+    if (this.state.manifest.ephemeralPersistencePaths().size > 0)
+      return undefined;
     if (!this.sandbox.checkpoint) return undefined;
 
     // waitUntil='local_ready' is sufficient for same-backend restore via
@@ -904,7 +923,9 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
   }
 
   private shouldSuspend(options?: SandboxSessionLifecycleOptions): boolean {
-    return options?.reason === 'cleanup' && options.preserveOwnedSessions === true;
+    return (
+      options?.reason === 'cleanup' && options.preserveOwnedSessions === true
+    );
   }
 
   private async suspendOrTerminateAfterFailure(): Promise<void> {
@@ -932,9 +953,14 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    // exec is opaque (could be a read or a write), so treat every command as
-    // potentially mutating and invalidate the cached snapshot pre-emptively.
-    this.invalidateCachedSnapshot();
+    // `running` (liveness probe — `true`) and `path` (`test -e`) are
+    // read-only. Other kinds (`exec`, `manifest`, `archive`) are opaque or
+    // mutating, so invalidate pre-emptively. Without this carve-out a health
+    // check against a snapshot-backed session would drop the cached snapshot
+    // and force a clean recreate on later resume.
+    if (options.kind !== 'running' && options.kind !== 'path') {
+      this.invalidateCachedSnapshot();
+    }
     let result: TensorlakeRunResult;
     try {
       // Pass `user` natively so we can skip the `sudo -u <name> --` wrap; the
@@ -951,13 +977,16 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
       // Preserve upstream HTTP status so the tar-persist retry can still
       // see transient failures after we wrap into SandboxProviderError.
       const status = extractHttpStatus(error);
-      throw new SandboxProviderError(`${PROVIDER_NAME} command execution failed.`, {
-        provider: PROVIDER_ID,
-        sandboxId: this.state.sandboxId,
-        command,
-        cause: providerErrorMessage(error),
-        ...(typeof status === 'number' ? { status } : {}),
-      });
+      throw new SandboxProviderError(
+        `${PROVIDER_NAME} command execution failed.`,
+        {
+          provider: PROVIDER_ID,
+          sandboxId: this.state.sandboxId,
+          command,
+          cause: providerErrorMessage(error),
+          ...(typeof status === 'number' ? { status } : {}),
+        },
+      );
     }
     return {
       status: result.exitCode ?? 1,
@@ -977,19 +1006,25 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
         timeout: this.resolvedTimeouts.fastOpSecs,
       });
     } catch (error) {
-      throw new SandboxProviderError(`${PROVIDER_NAME} failed to create directory.`, {
-        provider: PROVIDER_ID,
-        path,
-        cause: providerErrorMessage(error),
-      });
+      throw new SandboxProviderError(
+        `${PROVIDER_NAME} failed to create directory.`,
+        {
+          provider: PROVIDER_ID,
+          path,
+          cause: providerErrorMessage(error),
+        },
+      );
     }
     if ((result.exitCode ?? 1) !== 0) {
-      throw new SandboxProviderError(`${PROVIDER_NAME} failed to create directory.`, {
-        provider: PROVIDER_ID,
-        path,
-        stderr: result.stderr ?? '',
-        stdout: result.stdout ?? '',
-      });
+      throw new SandboxProviderError(
+        `${PROVIDER_NAME} failed to create directory.`,
+        {
+          provider: PROVIDER_ID,
+          path,
+          stderr: result.stderr ?? '',
+          stdout: result.stdout ?? '',
+        },
+      );
     }
   }
 
@@ -1034,17 +1069,23 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
         // Fall through to shell rm in case the path doesn't exist.
       }
     }
-    const result = await this.runRemoteCommand(`rm -rf -- ${shellQuote(path)}`, {
-      kind: 'manifest',
-      workdir: '/',
-    });
+    const result = await this.runRemoteCommand(
+      `rm -rf -- ${shellQuote(path)}`,
+      {
+        kind: 'manifest',
+        workdir: '/',
+      },
+    );
     if (result.status !== 0) {
-      throw new SandboxProviderError(`${PROVIDER_NAME} failed to delete path.`, {
-        provider: PROVIDER_ID,
-        path,
-        stderr: result.stderr ?? '',
-        stdout: result.stdout ?? '',
-      });
+      throw new SandboxProviderError(
+        `${PROVIDER_NAME} failed to delete path.`,
+        {
+          provider: PROVIDER_ID,
+          path,
+          stderr: result.stderr ?? '',
+          stdout: result.stdout ?? '',
+        },
+      );
     }
   }
 
@@ -1104,8 +1145,14 @@ function withTimeout<T>(
       timeoutMs,
     );
     promise.then(
-      (value) => { clearTimeout(handle); resolve(value); },
-      (error) => { clearTimeout(handle); reject(error); },
+      (value) => {
+        clearTimeout(handle);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(handle);
+        reject(error);
+      },
     );
   });
 }
@@ -1236,27 +1283,60 @@ export class TensorlakeSandboxClient implements SandboxClient<
       ...state,
       ...deserializeRemoteSandboxSessionStateValues(state, this.options.env),
       sandboxId: readString(state, 'sandboxId'),
-      configuredExposedPorts: readOptionalNumberArray(state.configuredExposedPorts),
+      // Resolved-endpoint cache is untrusted on deserialize; clear it.
+      // This prevents tampered state from redirecting resolveExposedPort().
+      exposedPorts: undefined,
+      configuredExposedPorts: readOptionalNumberArray(
+        state.configuredExposedPorts,
+      ),
       timeouts: readTimeouts(state.timeouts),
-      workspacePersistence: readWorkspacePersistence(state.workspacePersistence),
+      workspacePersistence: readWorkspacePersistence(
+        state.workspacePersistence,
+      ),
       manifestIdentities: readManifestIdentities(state.manifestIdentities),
       snapshotCheckpointType: readCheckpointType(state.snapshotCheckpointType),
       checkpointWaitUntil: readCheckpointWaitUntil(state.checkpointWaitUntil),
       suspendOnExit: Boolean(state.suspendOnExit),
     };
-    for (const f of ['name', 'image', 'poolId', 'proxyUrl', 'apiUrl', 'namespace',
-      'organizationId', 'projectId', 'routingHint', 'snapshotId'] as const) {
+    for (const f of [
+      'name',
+      'image',
+      'poolId',
+      'proxyUrl',
+      'apiUrl',
+      'namespace',
+      'organizationId',
+      'projectId',
+      'routingHint',
+      'snapshotId',
+    ] as const) {
       out[f] = readOptionalString(state, f);
     }
-    for (const f of ['cpus', 'memoryMb', 'diskMb', 'timeoutSecs', 'startupTimeout',
-      'commandTimeoutSecs', 'checkpointTimeoutSecs'] as const) {
+    for (const f of [
+      'cpus',
+      'memoryMb',
+      'diskMb',
+      'timeoutSecs',
+      'startupTimeout',
+      'commandTimeoutSecs',
+      'checkpointTimeoutSecs',
+    ] as const) {
       out[f] = readOptionalNumber(state, f);
     }
-    for (const f of ['allowInternetAccess', 'allowUnauthenticatedAccess',
-      'workspaceRootProvisioned', 'systemSetupPreserved'] as const) {
+    for (const f of [
+      'allowInternetAccess',
+      'allowUnauthenticatedAccess',
+      'workspaceRootProvisioned',
+      'systemSetupPreserved',
+    ] as const) {
       out[f] = readOptionalBoolean(state, f);
     }
-    for (const f of ['secretNames', 'entrypoint', 'allowOut', 'denyOut'] as const) {
+    for (const f of [
+      'secretNames',
+      'entrypoint',
+      'allowOut',
+      'denyOut',
+    ] as const) {
       out[f] = readOptionalStringArray(state[f]);
     }
     return out as TensorlakeSandboxSessionState;
@@ -1273,8 +1353,13 @@ export class TensorlakeSandboxClient implements SandboxClient<
       // Sandbox.connect() doesn't contact the server, so probe status() first
       // to convert a `terminated` sandbox into a synthetic 404 (the SDK's
       // resume() would otherwise throw a non-404 that skips the fallback).
-      const connectCfg = lifecycleConfigFromState(state, trustedRecreateOptions.apiKey);
-      const sandbox = await Sandbox.connect(buildConnectKwargs(connectCfg, state.sandboxId));
+      const connectCfg = lifecycleConfigFromState(
+        state,
+        trustedRecreateOptions.apiKey,
+      );
+      const sandbox = await Sandbox.connect(
+        buildConnectKwargs(connectCfg, state.sandboxId),
+      );
       await probeSandboxAlive(sandbox);
       if (state.name && typeof sandbox.resume === 'function') {
         await sandbox.resume();
@@ -1302,7 +1387,10 @@ export class TensorlakeSandboxClient implements SandboxClient<
       typeof state.snapshotId === 'string' &&
       state.snapshotId.length > 0
     ) {
-      const session = await this.recreateFromSnapshotId(state, state.snapshotId);
+      const session = await this.recreateFromSnapshotId(
+        state,
+        state.snapshotId,
+      );
       if (session) return session;
     }
 
@@ -1525,14 +1613,18 @@ function assertPositive(name: string, value: number | undefined): void {
 function readTimeouts(value: unknown): TensorlakeSandboxTimeouts | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) {
-    throw new UserError(`${PROVIDER_NAME} timeouts must be an object of positive numbers.`);
+    throw new UserError(
+      `${PROVIDER_NAME} timeouts must be an object of positive numbers.`,
+    );
   }
   const result: TensorlakeSandboxTimeouts = {};
   for (const key of TIMEOUT_KEYS) {
     const raw = value[key];
     if (raw === undefined || raw === null) continue;
     if (typeof raw !== 'number') {
-      throw new UserError(`${PROVIDER_NAME} timeouts.${key} must be a positive finite number.`);
+      throw new UserError(
+        `${PROVIDER_NAME} timeouts.${key} must be a positive finite number.`,
+      );
     }
     result[key] = raw;
   }
@@ -1596,16 +1688,32 @@ function withTrustedRecreateOverrides(
   if (trusted.exposedPorts !== undefined) {
     next.configuredExposedPorts = trusted.exposedPorts;
   }
+  delete next.exposedPorts;
   return next;
 }
 
 // Normalized lifecycle config shared by Sandbox.create and Sandbox.connect.
 type TensorlakeLifecycleConfig = Pick<
   TensorlakeSandboxClientOptions,
-  | 'image' | 'cpus' | 'memoryMb' | 'diskMb' | 'timeoutSecs' | 'name'
-  | 'startupTimeout' | 'proxyUrl' | 'apiUrl' | 'namespace' | 'organizationId'
-  | 'projectId' | 'routingHint' | 'secretNames' | 'allowOut' | 'denyOut'
-  | 'entrypoint' | 'apiKey' | 'poolId'
+  | 'image'
+  | 'cpus'
+  | 'memoryMb'
+  | 'diskMb'
+  | 'timeoutSecs'
+  | 'name'
+  | 'startupTimeout'
+  | 'proxyUrl'
+  | 'apiUrl'
+  | 'namespace'
+  | 'organizationId'
+  | 'projectId'
+  | 'routingHint'
+  | 'secretNames'
+  | 'allowOut'
+  | 'denyOut'
+  | 'entrypoint'
+  | 'apiKey'
+  | 'poolId'
 > & {
   allowInternetAccess: boolean;
   env: Record<string, string>;
@@ -1614,34 +1722,58 @@ type TensorlakeLifecycleConfig = Pick<
 // Building blocks. routingHint is connect-only; poolId/apiKey/env are inlined
 // in buildCreateKwargs because of mutex/empty semantics.
 const SANDBOX_CONFIG_SCALAR_FIELDS = [
-  'image', 'cpus', 'memoryMb', 'diskMb', 'timeoutSecs', 'name', 'startupTimeout',
+  'image',
+  'cpus',
+  'memoryMb',
+  'diskMb',
+  'timeoutSecs',
+  'name',
+  'startupTimeout',
 ] as const satisfies readonly (keyof TensorlakeLifecycleConfig)[];
 const CONTROL_PLANE_SCALAR_FIELDS = [
-  'proxyUrl', 'apiUrl', 'namespace', 'organizationId', 'projectId',
+  'proxyUrl',
+  'apiUrl',
+  'namespace',
+  'organizationId',
+  'projectId',
 ] as const satisfies readonly (keyof TensorlakeLifecycleConfig)[];
 const LIFECYCLE_LIST_FIELDS = [
-  'secretNames', 'allowOut', 'denyOut', 'entrypoint',
+  'secretNames',
+  'allowOut',
+  'denyOut',
+  'entrypoint',
 ] as const satisfies readonly (keyof TensorlakeLifecycleConfig)[];
-const CREATE_SCALAR_FIELDS = [...SANDBOX_CONFIG_SCALAR_FIELDS, ...CONTROL_PLANE_SCALAR_FIELDS] as const;
+const CREATE_SCALAR_FIELDS = [
+  ...SANDBOX_CONFIG_SCALAR_FIELDS,
+  ...CONTROL_PLANE_SCALAR_FIELDS,
+] as const;
 const CREATE_LIST_FIELDS = LIFECYCLE_LIST_FIELDS;
 const CONNECT_FIELDS = [
-  ...CONTROL_PLANE_SCALAR_FIELDS, 'routingHint',
+  ...CONTROL_PLANE_SCALAR_FIELDS,
+  'routingHint',
 ] as const satisfies readonly (keyof TensorlakeLifecycleConfig)[];
 
 // Memory snapshots restore image/resources/entrypoint/secrets from the
 // snapshot; passing them at restore is rejected by the backend.
 // See https://docs.tensorlake.ai/sandboxes/snapshots.
 const MEMORY_SNAPSHOT_RESTORE_EXCLUDED_SCALARS: ReadonlySet<string> = new Set([
-  'image', 'cpus', 'memoryMb', 'diskMb',
+  'image',
+  'cpus',
+  'memoryMb',
+  'diskMb',
 ]);
 const MEMORY_SNAPSHOT_RESTORE_EXCLUDED_LISTS: ReadonlySet<string> = new Set([
-  'entrypoint', 'secretNames',
+  'entrypoint',
+  'secretNames',
 ]);
 
 // Fields shared by options/state/lifecycle config.
 const LIFECYCLE_COMMON_FIELDS = [
-  ...SANDBOX_CONFIG_SCALAR_FIELDS, ...CONTROL_PLANE_SCALAR_FIELDS,
-  'routingHint', ...LIFECYCLE_LIST_FIELDS, 'poolId',
+  ...SANDBOX_CONFIG_SCALAR_FIELDS,
+  ...CONTROL_PLANE_SCALAR_FIELDS,
+  'routingHint',
+  ...LIFECYCLE_LIST_FIELDS,
+  'poolId',
 ] as const satisfies readonly (keyof TensorlakeLifecycleConfig)[];
 
 type LifecycleCommonField = (typeof LIFECYCLE_COMMON_FIELDS)[number];
@@ -1696,7 +1828,13 @@ function buildCreateKwargs(
   };
   for (const name of CREATE_SCALAR_FIELDS) {
     const value = cfg[name];
-    if (skipScalar(name) || value === undefined || value === null || value === '') continue;
+    if (
+      skipScalar(name) ||
+      value === undefined ||
+      value === null ||
+      value === ''
+    )
+      continue;
     kwargs[name] = value;
   }
   for (const name of CREATE_LIST_FIELDS) {
@@ -1927,7 +2065,8 @@ function stateToCreateOptions(
   if (state.name !== undefined) options.name = state.name;
   for (const field of OPTION_STATE_COMMON_FIELDS) {
     const value = state[field];
-    if (value !== undefined) (options as Record<string, unknown>)[field] = value;
+    if (value !== undefined)
+      (options as Record<string, unknown>)[field] = value;
   }
   return options;
 }
@@ -1939,7 +2078,9 @@ function parseEnum<T extends string | boolean>(
 ): T | undefined {
   if (value === undefined) return undefined;
   if ((allowed as readonly unknown[]).includes(value)) return value as T;
-  const tokens = allowed.map((v) => (typeof v === 'string' ? `"${v}"` : String(v)));
+  const tokens = allowed.map((v) =>
+    typeof v === 'string' ? `"${v}"` : String(v),
+  );
   const display =
     tokens.length <= 2
       ? tokens.join(' or ')

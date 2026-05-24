@@ -164,7 +164,7 @@ describe('TensorlakeSandboxClient', () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 
-  test("collapses manifest identities to tl-user by default and warns once", async () => {
+  test('collapses manifest identities to tl-user by default and warns once', async () => {
     // Default Tensorlake image only ships `tl-user` and no root; the provider
     // accepts user/group declarations at validation time but skips the
     // privileged commands at apply time. The caller should hear about it via
@@ -203,9 +203,10 @@ describe('TensorlakeSandboxClient', () => {
     expect(shellCommands.some((c) => c.includes('chown'))).toBe(false);
     expect(shellCommands.some((c) => c.includes('chgrp'))).toBe(false);
     expect(
-      shellCommands.some((c) =>
-        c.startsWith(`chmod `) &&
-        c.includes(`/home/tl-user/workspace/config.json`),
+      shellCommands.some(
+        (c) =>
+          c.startsWith(`chmod `) &&
+          c.includes(`/home/tl-user/workspace/config.json`),
       ),
     ).toBe(true);
 
@@ -269,9 +270,9 @@ describe('TensorlakeSandboxClient', () => {
         manifestIdentities,
       } satisfies TensorlakeSandboxClientOptions);
       const session = await client.create(new Manifest());
-      await expect(session.applyManifest(new Manifest(), 'alice')).rejects.toBeInstanceOf(
-        SandboxUnsupportedFeatureError,
-      );
+      await expect(
+        session.applyManifest(new Manifest(), 'alice'),
+      ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
     }
   });
 
@@ -1457,6 +1458,49 @@ describe('TensorlakeSandboxClient', () => {
     );
   });
 
+  test('deserialize drops tampered exposed-port endpoint cache before resume', async () => {
+    const createClient = new TensorlakeSandboxClient({
+      exposedPorts: [8080],
+    } satisfies TensorlakeSandboxClientOptions);
+    const session = await createClient.create(new Manifest());
+    session.state.name = 'demo';
+    const serialized = await createClient.serializeSessionState(session.state);
+
+    const tampered = {
+      ...serialized,
+      exposedPorts: {
+        '8080': {
+          host: 'attacker.example.com',
+          port: 8080,
+          tls: true,
+          url: 'https://attacker.example.com',
+        },
+      },
+    };
+
+    const resumeClient = new TensorlakeSandboxClient({
+      exposedPorts: [8080],
+    } satisfies TensorlakeSandboxClientOptions);
+    const state = await resumeClient.deserializeSessionState(tampered);
+
+    expect(state.exposedPorts).toBeUndefined();
+
+    const infoMock = vi.fn().mockResolvedValue({
+      sandbox_url: 'https://trusted-proxy.tensorlake.dev',
+    });
+    connectMock.mockClear();
+    connectMock.mockResolvedValueOnce(
+      makeSandboxInstance('sbx_test', { name: 'demo', info: infoMock }),
+    );
+
+    const resumed = await resumeClient.resume(state);
+    const endpoint = await resumed.resolveExposedPort(8080);
+
+    expect(endpoint.url).toContain('https://8080-trusted-proxy.tensorlake.dev');
+    expect(endpoint.url).not.toContain('attacker.example.com');
+    expect(resumed.state.exposedPorts?.['8080']).toBe(endpoint);
+  });
+
   test('resume recreate falls back to state sensitive fields when constructor leaves them unset', async () => {
     const createClient = new TensorlakeSandboxClient({
       secretNames: ['LEGIT_SECRET'],
@@ -1599,6 +1643,25 @@ describe('TensorlakeSandboxClient', () => {
     expect(session.state.snapshotId).toBeUndefined();
   });
 
+  test('running() liveness probe preserves cached snapshotId', async () => {
+    // running() / pathExists() are read-only probes (`true` / `test -e`),
+    // so they must not invalidate the cached snapshot — otherwise a routine
+    // health check on a snapshot-backed session would force a clean recreate
+    // on later resume and silently drop persisted workspace state.
+    const client = new TensorlakeSandboxClient({
+      workspacePersistence: 'snapshot',
+    } satisfies TensorlakeSandboxClientOptions);
+    const session = await client.create(new Manifest());
+    await session.persistWorkspace();
+    expect(session.state.snapshotId).toBe('snap_test');
+
+    await session.running();
+    expect(session.state.snapshotId).toBe('snap_test');
+
+    await session.pathExists('/home/tl-user/workspace');
+    expect(session.state.snapshotId).toBe('snap_test');
+  });
+
   test('resume recreates from cached snapshotId without applyManifest', async () => {
     // The fast-path: when reconnect fails on a snapshot-persisted session,
     // resume() should create directly with snapshotId rather than building a
@@ -1703,8 +1766,15 @@ describe('TensorlakeSandboxClient', () => {
     const state = await client.deserializeSessionState(
       await client.serializeSessionState(session.state),
     );
-    // The bug premise: the stale cache survives serialization.
-    expect(state.exposedPorts).toBeDefined();
+    expect(state.exposedPorts).toBeUndefined();
+    state.exposedPorts = {
+      '8080': {
+        host: 'sbx_test.sandbox.tensorlake.ai',
+        port: 8080,
+        tls: true,
+        url: originalEndpoint.url,
+      },
+    };
     expect(state.snapshotId).toBe('snap_test');
 
     connectMock.mockClear();
