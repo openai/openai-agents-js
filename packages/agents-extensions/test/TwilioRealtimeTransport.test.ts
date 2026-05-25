@@ -59,9 +59,70 @@ describe('TwilioRealtimeTransportLayer', () => {
       inputAudioFormat: 'g711_ulaw',
       outputAudioFormat: 'g711_ulaw',
     });
+    // A non-G.711 legacy format is replaced with g711_ulaw so Twilio keeps
+    // receiving compatible audio.
     expect(
-      transport._setInputAndOutputAudioFormat({ inputAudioFormat: 'foo' }),
-    ).toEqual({ inputAudioFormat: 'foo', outputAudioFormat: 'g711_ulaw' });
+      transport._setInputAndOutputAudioFormat({ inputAudioFormat: 'pcm16' }),
+    ).toEqual({
+      inputAudioFormat: 'g711_ulaw',
+      outputAudioFormat: 'g711_ulaw',
+    });
+    // An explicitly selected G.711 format is preserved.
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        inputAudioFormat: 'g711_alaw',
+      }),
+    ).toEqual({
+      inputAudioFormat: 'g711_alaw',
+      outputAudioFormat: 'g711_ulaw',
+    });
+  });
+
+  test('_setInputAndOutputAudioFormat overrides non-G.711 nested formats', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: new FakeTwilioWebSocket() as any,
+    });
+
+    // The session config built by RealtimeSession always carries an explicit
+    // PCM format (inherited from the SDK defaults). The transport must still
+    // force g711_ulaw so Twilio audio does not turn into static noise after a
+    // session update such as an agent handoff.
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        audio: {
+          input: { format: { type: 'audio/pcm', rate: 24000 } },
+          output: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            voice: 'alloy',
+          },
+        },
+      } as any),
+    ).toEqual({
+      audio: {
+        input: { format: 'g711_ulaw' },
+        output: { format: 'g711_ulaw', voice: 'alloy' },
+      },
+    });
+  });
+
+  test('_setInputAndOutputAudioFormat preserves explicit nested G.711 formats', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: new FakeTwilioWebSocket() as any,
+    });
+
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        audio: {
+          input: { format: { type: 'audio/pcma' } },
+          output: { format: 'g711_alaw' },
+        },
+      } as any),
+    ).toEqual({
+      audio: {
+        input: { format: { type: 'audio/pcma' } },
+        output: { format: 'g711_alaw' },
+      },
+    });
   });
 
   test('_setInputAndOutputAudioFormat preserves nested audio config', () => {

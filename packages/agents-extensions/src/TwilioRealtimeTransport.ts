@@ -4,6 +4,7 @@ import {
   utils,
   RealtimeTransportLayerConnectOptions,
   TransportLayerAudio,
+  RealtimeAudioFormat,
   RealtimeSessionConfig,
 } from '@openai/agents/realtime';
 import { getLogger } from '@openai/agents';
@@ -14,6 +15,34 @@ import type {
 } from 'ws';
 
 import type { ErrorEvent } from 'undici-types';
+
+/**
+ * Twilio Media Streams only support G.711 audio (`g711_ulaw` / `g711_alaw`).
+ * Returns `true` when the provided audio format is already one of those, taking
+ * both the legacy string shorthands and the GA object form into account.
+ */
+function isTwilioCompatibleAudioFormat(
+  format: RealtimeAudioFormat | undefined,
+): boolean {
+  if (!format) {
+    return false;
+  }
+  if (typeof format === 'string') {
+    return format === 'g711_ulaw' || format === 'g711_alaw';
+  }
+  return format.type === 'audio/pcmu' || format.type === 'audio/pcma';
+}
+
+/**
+ * Coerces an audio format to one Twilio understands. An explicitly chosen G.711
+ * format (ulaw or alaw) is preserved; anything else, including the SDK's default
+ * PCM format, is replaced with `g711_ulaw`.
+ */
+function toTwilioAudioFormat(
+  format: RealtimeAudioFormat | undefined,
+): RealtimeAudioFormat {
+  return isTwilioCompatibleAudioFormat(format) ? format! : 'g711_ulaw';
+}
 
 /**
  * The options for the Twilio Realtime Transport Layer.
@@ -86,11 +115,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
           ...audioConfig,
           input: {
             ...audioConfig.input,
-            format: audioConfig.input?.format ?? 'g711_ulaw',
+            format: toTwilioAudioFormat(audioConfig.input?.format),
           },
           output: {
             ...audioConfig.output,
-            format: audioConfig.output?.format ?? 'g711_ulaw',
+            format: toTwilioAudioFormat(audioConfig.output?.format),
           },
         },
       };
@@ -99,9 +128,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     return {
       ...partialConfig,
       // @ts-expect-error - this is a valid config
-      inputAudioFormat: partialConfig.inputAudioFormat ?? 'g711_ulaw',
+      inputAudioFormat: toTwilioAudioFormat(partialConfig.inputAudioFormat),
       // @ts-expect-error - this is a valid config
-      outputAudioFormat: partialConfig.outputAudioFormat ?? 'g711_ulaw',
+      outputAudioFormat: toTwilioAudioFormat(partialConfig.outputAudioFormat),
     };
   }
 
