@@ -18,6 +18,7 @@ import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
 import { getTurnInput } from './runner/items';
 import { RunState } from './runState';
+import type { Usage } from './usage';
 import { RunContext } from './runContext';
 import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
@@ -332,6 +333,11 @@ export class StreamedRunResult<
   #abortHandler: (() => void) | undefined;
   #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
   #combinedSignalCleanup: () => void = () => {};
+  // #995: the latest running token usage observed on intermediate stream
+  // events (e.g. `response.in_progress` from the Responses API), waiting to
+  // be folded into `state.usage` if the stream is aborted before the
+  // terminal `response_done` arrives.
+  #pendingStreamAbortUsage: Usage | undefined;
 
   constructor(
     result: {
@@ -526,6 +532,32 @@ export class StreamedRunResult<
     return this.#abortSignalSnapshot ?? this.#combinedSignal;
   }
 
+  /**
+   * @internal
+   * Stash the latest running token usage observed on an intermediate stream
+   * event. The run loop calls this every time it sees usage on a non-terminal
+   * Responses API event (e.g. `response.in_progress`), and clears it once a
+   * terminal `response_done` arrives with authoritative usage.
+   */
+  _setPendingStreamAbortUsage(usage: Usage | undefined): void {
+    this.#pendingStreamAbortUsage = usage;
+  }
+
+  /**
+   * @internal
+   * Fold any pending intermediate usage into `state.usage`. Idempotent so the
+   * run loop's abort/cancellation paths can call it without coordinating with
+   * the synchronous abort handler.
+   */
+  _drainPendingStreamAbortUsage(): void {
+    if (!this.#pendingStreamAbortUsage) {
+      return;
+    }
+    const pending = this.#pendingStreamAbortUsage;
+    this.#pendingStreamAbortUsage = undefined;
+    this.state._context.usage.add(pending);
+  }
+
   #handleAbort() {
     if (this.#cancelled) {
       this.#detachAbortHandler();
@@ -533,6 +565,11 @@ export class StreamedRunResult<
     }
 
     this.#cancelled = true;
+
+    // Drain pending intermediate usage BEFORE resolving `completed`, so any
+    // caller awaiting `result.completed` then reading `state.usage` sees the
+    // best-effort token totals from the partially streamed turn (#995).
+    this._drainPendingStreamAbortUsage();
 
     const controller = this.#readableController;
     this.#readableController = undefined;

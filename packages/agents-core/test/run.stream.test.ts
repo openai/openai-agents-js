@@ -1017,6 +1017,110 @@ describe('Runner.run (streaming)', () => {
     expect(result.error).toBe(null);
   });
 
+  it('surfaces running usage from intermediate stream events when aborted before response_done (#995)', async () => {
+    // The OpenAI Responses API ships running usage totals on
+    // `response.in_progress` events. When AbortSignal fires before the
+    // terminal `response.completed`, the SDK previously dropped that on the
+    // floor and reported `usage.totalTokens === 0`. The run loop now
+    // snapshots the last intermediate usage and adds it on abort.
+
+    class UsageBeforeAbortStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('not used');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.created',
+            sequence_number: 0,
+            response: {
+              id: 'resp_partial',
+              // First-event zeros should be ignored — they would otherwise
+              // clobber later running totals with zero.
+              usage: {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+              },
+            },
+          },
+        } as any;
+        yield {
+          type: 'model',
+          event: {
+            type: 'response.in_progress',
+            sequence_number: 1,
+            response: {
+              id: 'resp_partial',
+              usage: {
+                input_tokens: 17,
+                output_tokens: 5,
+                total_tokens: 22,
+              },
+            },
+          },
+        } as any;
+        yield { type: 'output_text_delta', delta: 'hello' } as any;
+        // Wait until the consumer aborts.
+        await new Promise<void>((_, reject) => {
+          const handler = () => {
+            const err = new Error('Aborted');
+            err.name = 'AbortError';
+            reject(err);
+          };
+          if (request.signal?.aborted) {
+            handler();
+            return;
+          }
+          request.signal?.addEventListener('abort', handler, { once: true });
+        });
+        // Unreachable — abort always wins above.
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp_partial',
+            usage: {
+              requests: 1,
+              inputTokens: 50,
+              outputTokens: 50,
+              totalTokens: 100,
+            },
+            output: [fakeModelMessage('never')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'PartialUsageAbort',
+      model: new UsageBeforeAbortStreamingModel(),
+    });
+    const controller = new AbortController();
+    const result = await run(agent, 'go', {
+      stream: true,
+      signal: controller.signal,
+    });
+
+    for await (const event of result.toStream()) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      ) {
+        controller.abort();
+        break;
+      }
+    }
+    await result.completed;
+
+    expect(result.state.usage.totalTokens).toBe(22);
+    expect(result.state.usage.inputTokens).toBe(17);
+    expect(result.state.usage.outputTokens).toBe(5);
+  });
+
   it('marks inputs as sent when aborted before first stream event in server-managed conversations', async () => {
     const waitWithAbort = (ms: number, signal?: AbortSignal) =>
       new Promise<void>((resolve, reject) => {

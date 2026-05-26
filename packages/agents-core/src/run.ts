@@ -98,6 +98,7 @@ import {
 import {
   buildAbortReconciliationInput,
   createStreamAbortReconciliationState,
+  extractRunningUsageFromStreamEvent,
   getAbortReconciliationPreviousResponseId,
   markAbortReconciliationComplete,
   recordStreamEventForAbortReconciliation,
@@ -1490,6 +1491,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 abortReconciliationState,
                 event,
               );
+              const runningUsage = extractRunningUsageFromStreamEvent(event);
+              if (runningUsage) {
+                // Stash on the result so #handleAbort can drain it
+                // synchronously when the consumer aborts. The stream loop's
+                // own catch/cancelled branches also drain it below
+                // (idempotent), in case the abort never fires through the
+                // result signal.
+                result._setPendingStreamAbortUsage(runningUsage);
+              }
               if (event.type === 'response_done') {
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
@@ -1499,10 +1509,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
+                // Authoritative usage from response_done subsumes the
+                // running totals we'd otherwise add on abort.
+                result._setPendingStreamAbortUsage(undefined);
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
+                result._drainPendingStreamAbortUsage();
                 await awaitGuardrailsAndPersistInput();
                 await reconcileStreamAbortIfNeeded();
                 return;
@@ -1514,6 +1528,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (sentInputToModel) {
                 markInputOnce();
               }
+              result._drainPendingStreamAbortUsage();
               await awaitGuardrailsAndPersistInput();
               await reconcileStreamAbortIfNeeded();
               return;
