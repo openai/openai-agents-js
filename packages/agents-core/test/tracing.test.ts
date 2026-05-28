@@ -38,6 +38,8 @@ import {
   getCurrentTrace,
   getCurrentSpan,
   dispatchSpan,
+  dispatchSpanEnd,
+  dispatchSpanStart,
   dispatchTrace,
   setTraceProcessors,
   setTracingDisabled,
@@ -1574,6 +1576,45 @@ describe('MultiTracingProcessor', () => {
     expect(span.endedAt).toBe(endedAt);
   });
 
+  it('dispatches span starts and ends independently without mutating timestamps', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const startedAt = '2026-05-22T00:00:00.000Z';
+    const endedAt = '2026-05-22T00:00:01.000Z';
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt,
+        endedAt,
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchSpanStart(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toHaveLength(0);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toHaveLength(0);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+
+    await multiProcessor.dispatchSpanEnd(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toEqual([span]);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toEqual([span]);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+  });
+
   it('does not dispatch no-op traces or spans', async () => {
     const processor = new TestProcessor();
     const multiProcessor = new MultiTracingProcessor();
@@ -1614,6 +1655,12 @@ describe('MultiTracingProcessor', () => {
     await multiProcessor.dispatchSpan(noopSpan);
     await multiProcessor.dispatchSpan(spanWithNoopTraceId);
     await multiProcessor.dispatchSpan(spanWithNoopSpanId);
+    await multiProcessor.dispatchSpanStart(noopSpan);
+    await multiProcessor.dispatchSpanStart(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpanStart(spanWithNoopSpanId);
+    await multiProcessor.dispatchSpanEnd(noopSpan);
+    await multiProcessor.dispatchSpanEnd(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpanEnd(spanWithNoopSpanId);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);
@@ -1659,6 +1706,34 @@ describe('completed trace dispatch helpers', () => {
     expect(processor.spansEnded).toEqual([span]);
   });
 
+  it('dispatches span starts and ends independently through TraceProvider', async () => {
+    const processor = new TestProcessor();
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+    provider.registerProcessor(processor);
+
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await provider.dispatchSpanStart(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toHaveLength(0);
+
+    await provider.dispatchSpanEnd(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
   it('does not dispatch completed traces and spans when TraceProvider tracing is disabled', async () => {
     const processor = new TestProcessor();
     const provider = new TraceProvider();
@@ -1679,6 +1754,8 @@ describe('completed trace dispatch helpers', () => {
 
     await provider.dispatchTrace(trace);
     await provider.dispatchSpan(span);
+    await provider.dispatchSpanStart(span);
+    await provider.dispatchSpanEnd(span);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);
@@ -1712,6 +1789,33 @@ describe('completed trace dispatch helpers', () => {
     expect(processor.spansEnded).toEqual([span]);
   });
 
+  it('dispatches span starts and ends independently through global helpers', async () => {
+    const processor = new TestProcessor();
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await dispatchSpanStart(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toHaveLength(0);
+
+    await dispatchSpanEnd(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
   it('does not dispatch completed traces and spans through global helpers when tracing is disabled', async () => {
     const processor = new TestProcessor();
     setTraceProcessors([processor]);
@@ -1731,6 +1835,8 @@ describe('completed trace dispatch helpers', () => {
 
     await dispatchTrace(trace);
     await dispatchSpan(span);
+    await dispatchSpanStart(span);
+    await dispatchSpanEnd(span);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);
