@@ -117,6 +117,32 @@ export async function dispatchSpan<TSpanData extends SpanData>(
 }
 
 /**
+ * Dispatch a span start event to all processors registered on the global
+ * tracing provider.
+ *
+ * This bypasses Span.start(), so callers can emit a start event without
+ * mutating the span state or existing timestamps.
+ */
+export async function dispatchSpanStart<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpanStart(span);
+}
+
+/**
+ * Dispatch a span end event to all processors registered on the global tracing
+ * provider.
+ *
+ * This bypasses Span.end(), so callers can emit an end event without mutating
+ * the span state or existing timestamps.
+ */
+export async function dispatchSpanEnd<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpanEnd(span);
+}
+
+/**
  * Start the trace export loop.
  */
 export function startTraceExportLoop(): void {
