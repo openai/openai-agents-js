@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.11.6
+
+### Patch Changes
+
+- 13f7662: feat: add tracing span lifecycle dispatch helpers
+
 ## 0.11.5
 
 ### Patch Changes
