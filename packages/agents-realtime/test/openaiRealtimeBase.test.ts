@@ -169,6 +169,49 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(session?.audio?.output?.voice).toBe('echo');
   });
 
+  it('transforms outgoing session.update payloads', () => {
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        const {
+          type: _type,
+          output_modalities: _modalities,
+          audio,
+          ...rest
+        } = payload;
+        return {
+          ...rest,
+          voice: audio?.output?.voice,
+        };
+      },
+    });
+
+    base.updateSessionConfig({ instructions: 'hi', voice: 'echo' });
+
+    const session = (base.events[0] as any)?.session;
+    expect(session).toMatchObject({
+      instructions: 'hi',
+      model: 'gpt-realtime-2',
+      voice: 'echo',
+    });
+    expect(session.type).toBeUndefined();
+    expect(session.output_modalities).toBeUndefined();
+    expect(session.audio).toBeUndefined();
+  });
+
+  it('keeps buildSessionPayload in the OpenAI Realtime shape', () => {
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        const { type: _type, ...rest } = payload;
+        return rest;
+      },
+    });
+
+    const payload = base.buildSessionPayload({ instructions: 'hi' });
+
+    expect(payload.type).toBe('realtime');
+    expect(payload.output_modalities).toEqual(['audio']);
+  });
+
   it('whitelists function tools in session payload', () => {
     const base = new TestBase();
     const payload = (base as any)._getMergedSessionConfig({
@@ -848,5 +891,18 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     const sentTypes = sendSpy.mock.calls.map((c) => c[0].type);
     expect(sentTypes).toContain('session.update');
+  });
+
+  it('transforms tracing session.update payloads', () => {
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        const { type: _type, ...rest } = payload;
+        return rest;
+      },
+    });
+
+    (base as any)._updateTracingConfig('auto');
+
+    expect((base.events[0] as any).session).toEqual({ tracing: 'auto' });
   });
 });

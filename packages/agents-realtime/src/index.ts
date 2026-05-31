@@ -52,6 +52,8 @@ export {
   DEFAULT_OPENAI_REALTIME_MODEL,
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
   RealtimeSessionPayload,
+  RealtimeSessionPayloadTransformer,
+  RealtimeSessionUpdatePayload,
 } from './openaiRealtimeBase';
 
 export { RealtimeOutputGuardrail } from './guardrail';
