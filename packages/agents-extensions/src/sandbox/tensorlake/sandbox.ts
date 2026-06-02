@@ -1286,6 +1286,12 @@ export class TensorlakeSandboxClient implements SandboxClient<
       // Resolved-endpoint cache is untrusted on deserialize; clear it.
       // This prevents tampered state from redirecting resolveExposedPort().
       exposedPorts: undefined,
+      // Control-plane routing URLs are untrusted on deserialize; clear them so
+      // a tampered resume can't redirect Sandbox.connect()/create() to an
+      // attacker host and exfiltrate the trusted apiKey. Like apiKey, they are
+      // restored only from constructor options via withTrustedRecreateOverrides.
+      proxyUrl: undefined,
+      apiUrl: undefined,
       configuredExposedPorts: readOptionalNumberArray(
         state.configuredExposedPorts,
       ),
@@ -1302,8 +1308,7 @@ export class TensorlakeSandboxClient implements SandboxClient<
       'name',
       'image',
       'poolId',
-      'proxyUrl',
-      'apiUrl',
+      // proxyUrl/apiUrl intentionally omitted — see clearing above.
       'namespace',
       'organizationId',
       'projectId',

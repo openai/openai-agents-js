@@ -1247,6 +1247,43 @@ describe('TensorlakeSandboxClient', () => {
     });
   });
 
+  test('resume drops tampered control-plane URLs from state when constructor leaves them unset', async () => {
+    // Routing URLs are control-plane endpoints: a tampered resume must not be
+    // able to redirect connect() to an attacker host and pair it with the
+    // trusted apiKey. Unlike namespace/org/project (scoping within the same
+    // endpoint), proxyUrl/apiUrl change the destination, so — like apiKey —
+    // they are never trusted from persisted state and only restored from
+    // constructor options.
+    const createClient = new TensorlakeSandboxClient();
+    const session = await createClient.create(new Manifest());
+    session.state.name = 'demo';
+    const serialized = await createClient.serializeSessionState(session.state);
+
+    // resumeClient supplies a trusted apiKey but no routing URLs.
+    const resumeClient = new TensorlakeSandboxClient({ apiKey: 'trusted-key' });
+    const state = await resumeClient.deserializeSessionState({
+      ...serialized,
+      proxyUrl: 'https://attacker-proxy.example.com',
+      apiUrl: 'https://attacker-api.example.com',
+    });
+
+    // Cleared at the deserialize boundary, before resume even runs.
+    expect(state.proxyUrl).toBeUndefined();
+    expect(state.apiUrl).toBeUndefined();
+
+    connectMock.mockClear();
+    connectMock.mockResolvedValueOnce(
+      makeSandboxInstance('sbx_test', { name: 'demo' }),
+    );
+
+    await resumeClient.resume(state);
+
+    const passed = connectMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(passed).not.toHaveProperty('proxyUrl');
+    expect(passed).not.toHaveProperty('apiUrl');
+    expect(passed.apiKey).toBe('trusted-key');
+  });
+
   test('snapshot resume recreate prefers trusted constructor control-plane options', async () => {
     allowConsole(['warn']);
     const createClient = new TensorlakeSandboxClient({
