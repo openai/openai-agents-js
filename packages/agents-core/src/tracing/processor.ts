@@ -12,6 +12,13 @@ import { NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 type Span = TSpan<any>;
 
+function isNoopSpan(span: Span): boolean {
+  return (
+    span.traceId === NOOP_TRACE_OR_SPAN_ID ||
+    span.spanId === NOOP_TRACE_OR_SPAN_ID
+  );
+}
+
 /**
  * Interface for processing traces
  */
@@ -386,14 +393,35 @@ export class MultiTracingProcessor implements TracingProcessor {
    * calling Span.start() or Span.end().
    */
   async dispatchSpan(span: Span): Promise<void> {
-    if (
-      span.traceId === NOOP_TRACE_OR_SPAN_ID ||
-      span.spanId === NOOP_TRACE_OR_SPAN_ID
-    ) {
+    if (isNoopSpan(span)) {
       return;
     }
 
     await this.onSpanStart(span);
+    await this.onSpanEnd(span);
+  }
+
+  /**
+   * Dispatches a span start event to every registered processor without calling
+   * Span.start().
+   */
+  async dispatchSpanStart(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+  }
+
+  /**
+   * Dispatches a span end event to every registered processor without calling
+   * Span.end().
+   */
+  async dispatchSpanEnd(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
     await this.onSpanEnd(span);
   }
 
