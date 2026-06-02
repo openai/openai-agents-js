@@ -479,6 +479,27 @@ describe('TensorlakeSandboxClient', () => {
     expect(endpoint.url).toContain('https://8080-demo.sandbox.tensorlake.ai');
   });
 
+  test('fallback derives the proxy host from a custom apiUrl (api.X -> sandbox.X)', async () => {
+    // No explicit proxyUrl: the SDK derives the proxy host from apiUrl, so the
+    // fallback must mirror that instead of emitting the public default.
+    allowConsole(['warn']);
+    const infoMock = vi.fn().mockResolvedValue({ sandboxId: 'sbx_api' });
+    createMock.mockResolvedValueOnce(
+      makeSandboxInstance('sbx_api', {
+        name: 'demo',
+        info: infoMock,
+      }),
+    );
+    const client = new TensorlakeSandboxClient({
+      exposedPorts: [8080],
+      apiUrl: 'https://api.mycorp.example',
+    } satisfies TensorlakeSandboxClientOptions);
+    const session = await client.create(new Manifest());
+
+    const endpoint = await session.resolveExposedPort(8080);
+    expect(endpoint.url).toContain('https://8080-demo.sandbox.mycorp.example');
+  });
+
   test('seeds sandbox id via info() when create returns it unpopulated', async () => {
     const infoMock = vi.fn().mockResolvedValue({ sandboxId: 'sbx_from_info' });
     // Empty sandboxId from create simulates the snapshot-restore lazy-id path.
@@ -1852,9 +1873,9 @@ describe('TensorlakeSandboxClient', () => {
     expect(resumed.state.systemSetupPreserved).toBe(true);
   });
 
-  test('falls back to public template (with warning) when custom proxyUrl deployment lacks sandbox_url', async () => {
-    // The fallback emits a warn so callers know the public template likely
-    // won't route to their custom deployment.
+  test('falls back to the configured proxy host (with warning) when custom proxyUrl deployment lacks sandbox_url', async () => {
+    // The fallback uses the configured proxyUrl host and emits a warn so callers
+    // know the subdomain template may not route to their custom deployment.
     allowConsole(['warn']);
     const infoMock = vi.fn().mockResolvedValue({ sandboxId: 'sbx_custom' });
     createMock.mockResolvedValueOnce(
@@ -1869,7 +1890,7 @@ describe('TensorlakeSandboxClient', () => {
     } satisfies TensorlakeSandboxClientOptions);
     const session = await client.create(new Manifest());
     const endpoint = await session.resolveExposedPort(8080);
-    expect(endpoint.url).toContain('https://8080-demo.sandbox.tensorlake.ai');
+    expect(endpoint.url).toContain('https://8080-demo.proxy.tensorlake.dev');
   });
 
   test('deserializeSessionState rejects an invalid workspacePersistence value', async () => {

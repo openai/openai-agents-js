@@ -69,19 +69,49 @@ const logger = getLogger('openai-agents:sandbox:tensorlake');
 export const DEFAULT_TENSORLAKE_WORKSPACE_ROOT = '/home/tl-user/workspace';
 
 const TENSORLAKE_DEFAULT_PROXY_URL = 'https://sandbox.tensorlake.ai';
+const TENSORLAKE_LOCALHOST_PROXY_URL = 'http://localhost:9443';
 
-function resolveProxyBase(): { protocol: string; host: string } {
-  const explicit = process.env.TENSORLAKE_SANDBOX_PROXY_URL;
+// Mirrors the Tensorlake SDK's resolveProxyUrl() so exposed-port fallback links
+// target the same proxy the SDK actually routes through when sandbox.info()
+// yields no usable sandbox_url. Precedence: an explicit (trusted) proxyUrl wins,
+// then TENSORLAKE_SANDBOX_PROXY_URL, then a host derived from a custom apiUrl
+// (localhost → :9443, api.X → sandbox.X), then the public default. Without this,
+// a self-hosted deployment created with a custom proxyUrl/apiUrl would emit a
+// public *.sandbox.tensorlake.ai link that does not route.
+function resolveProxyBase(overrides?: { proxyUrl?: string; apiUrl?: string }): {
+  protocol: string;
+  host: string;
+} {
+  const fromUrl = (raw: string) => {
+    const parsed = new URL(raw);
+    return { protocol: parsed.protocol, host: parsed.host };
+  };
+  const explicit =
+    overrides?.proxyUrl ?? process.env.TENSORLAKE_SANDBOX_PROXY_URL;
   if (explicit) {
     try {
-      const parsed = new URL(explicit);
-      return { protocol: parsed.protocol, host: parsed.host };
+      return fromUrl(explicit);
     } catch {
-      // Fall through to the trusted default.
+      // Fall through to apiUrl-derived / default base.
     }
   }
-  const parsed = new URL(TENSORLAKE_DEFAULT_PROXY_URL);
-  return { protocol: parsed.protocol, host: parsed.host };
+  if (overrides?.apiUrl) {
+    try {
+      const parsed = new URL(overrides.apiUrl);
+      if (LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
+        return fromUrl(TENSORLAKE_LOCALHOST_PROXY_URL);
+      }
+      if (parsed.hostname.startsWith('api.')) {
+        return {
+          protocol: parsed.protocol,
+          host: `sandbox.${parsed.hostname.slice(4)}`,
+        };
+      }
+    } catch {
+      // Fall through to the public default.
+    }
+  }
+  return fromUrl(TENSORLAKE_DEFAULT_PROXY_URL);
 }
 
 type TensorlakeRunOptions = {
@@ -524,7 +554,10 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
         { providerName: PROVIDER_NAME, source: 'host' },
       );
     }
-    const base = resolveProxyBase();
+    const base = resolveProxyBase({
+      proxyUrl: this.trustedRecreateOptions.proxyUrl ?? this.state.proxyUrl,
+      apiUrl: this.trustedRecreateOptions.apiUrl ?? this.state.apiUrl,
+    });
     const fallbackHost = `${requestedPort}-${this.state.name ?? this.state.sandboxId}.${base.host}`;
     return parseExposedPortEndpoint(`${base.protocol}//${fallbackHost}`, {
       providerName: PROVIDER_NAME,
@@ -545,8 +578,9 @@ export class TensorlakeSandboxSession extends RemoteSandboxSessionBase<Tensorlak
       this.hasWarnedAboutMissingSandboxUrl = true;
       logger.warn(
         'TensorlakeSandboxClient could not resolve a sandbox URL from sandbox.info(); ' +
-          "falling back to the public '<port>-<name>.sandbox.tensorlake.ai' template, " +
-          'which will not route correctly for this custom proxyUrl/apiUrl deployment.',
+          "falling back to the '<port>-<name>.<proxy-host>' template using the configured " +
+          'proxyUrl/apiUrl. Exposed-port links may not route if this custom deployment does ' +
+          'not use subdomain-based proxy routing.',
       );
     }
     return hostname;
