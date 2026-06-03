@@ -12,6 +12,8 @@ import {
   type SandboxConcurrencyLimits,
 } from '@openai/agents-core/sandbox';
 import { promises as fs } from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import { tmpdir } from 'node:os';
 import { join as joinPath, posix } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -388,6 +390,23 @@ const DEFAULT_VOLUME_STORAGE_CLASS = 'nf-multi-rw';
 const DEFAULT_VOLUME_ACCESS_MODE: 'ReadWriteOnce' | 'ReadWriteMany' =
   'ReadWriteMany';
 const WORKSPACE_TAR_REMOTE_PATH = '/tmp/nf-workspace-snapshot.tar.gz';
+const DEFAULT_NORTHFLANK_HOST = 'https://api.northflank.com';
+
+const AGENT_OPTIONS = {
+  keepAlive: true,
+  keepAliveMsecs: 10_000,
+  maxSockets: 1024,
+  maxFreeSockets: 512,
+  scheduling: 'lifo' as const,
+  timeout: 120_000,
+};
+
+const httpsAgent = new https.Agent(AGENT_OPTIONS);
+const httpAgent = new http.Agent(AGENT_OPTIONS);
+
+function agentForHost(host: string): http.Agent | https.Agent {
+  return new URL(host).protocol === 'http:' ? httpAgent : httpsAgent;
+}
 
 /**
  * `RemoteSandboxSessionBase`-backed session that proxies exec + file ops
@@ -1409,6 +1428,9 @@ async function buildDefaultApiClient(
   await ctx.addContext({ name: 'default', token: apiToken });
   return new ApiClient(ctx, {
     throwErrorOnHttpErrorCode: false,
+    // Pass a shared keepAlive Agent *instance* (not a function) — selected by
+    // protocol of the API host — so REST + ws exec calls reuse connections.
+    agent: agentForHost(DEFAULT_NORTHFLANK_HOST),
   }) as unknown as NorthflankApiClient;
 }
 
