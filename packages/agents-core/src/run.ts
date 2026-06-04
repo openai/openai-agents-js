@@ -1285,6 +1285,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     let outputHoldEnabled = false;
     // Accumulated assistant text for the current turn, used to feed partial guardrails.
     let accumulatedStreamText = '';
+    // Length of accumulated text already verified by a streaming guardrail run, so
+    // turn-boundary checks don't redundantly re-run guardrails on unchanged text.
+    let lastVerifiedStreamTextLength = 0;
 
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
@@ -1493,6 +1496,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // Reset per-turn streaming guardrail state and start holding output when
           // streaming output guardrails are configured for this agent.
           accumulatedStreamText = '';
+          lastVerifiedStreamTextLength = 0;
           const turnHoldActive =
             Boolean(streamingOutputGuardrailCheckpoint) &&
             hasOutputGuardrailsFor(currentAgent);
@@ -1579,6 +1583,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     this.outputGuardrailDefs,
                     accumulatedStreamText,
                   );
+                  lastVerifiedStreamTextLength = accumulatedStreamText.length;
                   // Checkpoint passed: the buffered output is safe to release.
                   result._releaseHeldOutput();
                 }
@@ -1673,6 +1678,32 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         const currentStep = result.state._currentStep;
+        // Non-final turns have no final-output guardrail, yet a response can contain
+        // assistant text alongside the tool calls that force the turn to be non-final.
+        // Verify any accumulated text that has not already passed a streaming
+        // checkpoint before its buffer is released, so unverified content never leaks.
+        // A trip discards the held output and propagates as usual. Uses the streaming
+        // agent's guardrails, so it must run before a handoff swaps the current agent.
+        const verifyNonFinalHeldOutput = async () => {
+          if (
+            !streamingOutputGuardrailCheckpoint ||
+            !hasOutputGuardrailsFor(currentAgent) ||
+            accumulatedStreamText.length <= lastVerifiedStreamTextLength
+          ) {
+            return;
+          }
+          try {
+            await runStreamingOutputGuardrails(
+              result.state,
+              this.outputGuardrailDefs,
+              accumulatedStreamText,
+            );
+          } catch (error) {
+            result._discardHeldOutput();
+            throw error;
+          }
+          lastVerifiedStreamTextLength = accumulatedStreamText.length;
+        };
         switch (currentStep.type) {
           case 'next_step_final_output':
             try {
@@ -1710,9 +1741,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
             return;
           case 'next_step_interruption':
-            // We are done for now. Don't run any output guardrails.
-            // Non-final turns have no final-output guardrail; release held items so
-            // the consumer sees everything streamed up to the interruption.
+            // We are done for now. Verify any unchecked streamed text before releasing
+            // the held items so the consumer sees everything streamed up to the
+            // interruption (but never unverified content).
+            await verifyNonFinalHeldOutput();
             result._releaseHeldOutput();
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
@@ -1720,6 +1752,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             return;
           case 'next_step_handoff':
+            // Verify the handing-off agent's unchecked streamed text before swapping
+            // agents, so its guardrails (not the target agent's) run on its output.
+            await verifyNonFinalHeldOutput();
             result.state.setCurrentAgent(currentStep.newAgent as TAgent);
             if (result.state._currentAgentSpan) {
               result.state._currentAgentSpan.end();
@@ -1742,7 +1777,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             break;
           case 'next_step_run_again':
             result.state._currentTurnInProgress = false;
-            // Non-final turn: release held items (e.g. tool call events) in order.
+            // Non-final turn: verify any unchecked streamed text (a response may carry
+            // assistant text alongside the tool calls), then release held items in order.
+            await verifyNonFinalHeldOutput();
             result._releaseHeldOutput();
             logger.debug('Running next loop');
             break;

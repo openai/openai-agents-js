@@ -3570,6 +3570,169 @@ describe('Runner.run (streaming output guardrails)', () => {
     expect(received).toEqual(['B1', 'B2']);
     expect(result.finalOutput).toBe('B1B2');
   });
+
+  // A response can carry assistant text alongside the tool calls that force a
+  // non-final (run-again) turn. If the checkpoint predicate hasn't fired yet, that
+  // text must still be verified before the held buffer is released.
+  it('verifies buffered text before releasing it on a non-final tool turn', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: { reason: 'unsafe' },
+      })),
+    };
+    const noopTool = tool({
+      name: 'noop',
+      description: 'noop',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: noopTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class TextPlusToolModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('UNSAFE')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'UN' } as any;
+        yield { type: 'output_text_delta', delta: 'SAFE' } as any;
+        // Text + tool call in the same response forces a non-final (run-again) turn.
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-tool',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('UNSAFE'), toolCall],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextPlusToolModel(),
+      tools: [noopTool],
+      outputGuardrails: [guardrail],
+    });
+    const runner = new Runner({
+      // Never checks mid-stream, so the text would otherwise reach the consumer
+      // unverified when the tool turn's buffer is released.
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // The unsafe text was caught at the tool-turn boundary and never released.
+    expect(received.join('')).toBe('');
+    expect(guardrail.execute).toHaveBeenCalled();
+  });
+
+  it('releases safe buffered text on a non-final tool turn and continues', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: {},
+      })),
+    };
+    const noopTool = tool({
+      name: 'noop',
+      description: 'noop',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: noopTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class SafeTextThenToolThenFinalModel implements Model {
+      #callCount = 0;
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('done')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        const turn = this.#callCount++;
+        if (turn === 0) {
+          yield { type: 'output_text_delta', delta: 'safe-pre' } as any;
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-tool',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('safe-pre'), toolCall],
+            },
+          } as any;
+          return;
+        }
+        yield { type: 'output_text_delta', delta: 'done' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-final',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('done')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new SafeTextThenToolThenFinalModel(),
+      tools: [noopTool],
+      outputGuardrails: [guardrail],
+    });
+    const runner = new Runner({
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['safe-pre', 'done']);
+    expect(result.finalOutput).toBe('done');
+  });
 });
 
 class ImmediateStreamingModel implements Model {
