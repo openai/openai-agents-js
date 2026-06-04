@@ -3046,6 +3046,311 @@ describe('Runner.run (streaming)', () => {
   });
 });
 
+describe('Runner.run (streaming output guardrails)', () => {
+  beforeAll(() => {
+    setTracingDisabled(true);
+    setDefaultModelProvider(new FakeModelProvider());
+  });
+
+  // Streams the provided text in chunks, then completes with the joined text
+  // (or an explicit final text) as the assistant message.
+  class TextDeltaStreamingModel implements Model {
+    constructor(
+      private readonly chunks: string[],
+      private readonly finalText?: string,
+    ) {}
+
+    async getResponse(): Promise<ModelResponse> {
+      return {
+        output: [fakeModelMessage(this.finalText ?? this.chunks.join(''))],
+        usage: new Usage(),
+      };
+    }
+
+    async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+      for (const chunk of this.chunks) {
+        yield { type: 'output_text_delta', delta: chunk } as any;
+      }
+      const text = this.finalText ?? this.chunks.join('');
+      yield {
+        type: 'response_done',
+        response: {
+          id: 'resp-stream-guardrail',
+          usage: {
+            requests: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          output: [fakeModelMessage(text)],
+        },
+      } as any;
+    }
+  }
+
+  async function collectDeltas(
+    result: StreamedRunResult<any, any>,
+  ): Promise<string[]> {
+    const received: string[] = [];
+    for await (const event of result) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      ) {
+        received.push(event.data.delta);
+      }
+    }
+    await result.completed;
+    return received;
+  }
+
+  it('releases buffered output only after each checkpoint passes', async () => {
+    const checkpointTexts: string[] = [];
+    const guardrail = {
+      name: 'never-trips',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['aaa', 'bbb', 'ccc']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: ({ accumulatedText }) => {
+        checkpointTexts.push(accumulatedText);
+        return true;
+      },
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['aaa', 'bbb', 'ccc']);
+    // Checkpoint sees accumulated text on every delta.
+    expect(checkpointTexts).toEqual(['aaa', 'aaabbb', 'aaabbbccc']);
+    // Guardrail runs once per checkpoint plus once on the final output.
+    expect(guardrail.execute).toHaveBeenCalledTimes(4);
+    expect(result.finalOutput).toBe('aaabbbccc');
+  });
+
+  it('stops the stream and never leaks unsafe content when a checkpoint trips', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: { reason: 'unsafe' },
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['safe1', 'safe2', 'UNSAFE', 'more']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // Only the deltas covered by passing checkpoints reached the consumer.
+    expect(received.join('')).toBe('safe1safe2');
+    expect(received).not.toContain('UNSAFE');
+    expect(received).not.toContain('more');
+  });
+
+  it('holds trailing output until the final guardrails pass', async () => {
+    const guardrail = {
+      name: 'final-only',
+      execute: vi.fn(async (_args: any) => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['part1', 'part2']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      // Never run mid-stream: the trailing buffer is released by the final guardrails.
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['part1', 'part2']);
+    // Only the final output check runs because no checkpoint fired.
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(guardrail.execute.mock.calls[0][0].details?.partial).toBeUndefined();
+    expect(result.finalOutput).toBe('part1part2');
+  });
+
+  it('discards trailing output when the final guardrails trip', async () => {
+    const guardrail = {
+      name: 'final-trips',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'final' },
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['hello', 'world']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // Nothing was released because the only checkpoint (the final output) tripped.
+    expect(received).toEqual([]);
+  });
+
+  it('does not change behavior when no streaming checkpoint is configured', async () => {
+    const guardrail = {
+      name: 'final-default',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['x', 'y', 'z']),
+    });
+    const runner = new Runner({ outputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['x', 'y', 'z']);
+    // Default behavior: the guardrail runs only once, on the final output.
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.finalOutput).toBe('xyz');
+  });
+
+  it('supports asynchronous checkpoint predicates', async () => {
+    const guardrail = {
+      name: 'async-checkpoint',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['one', 'two']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: async ({ accumulatedText }) =>
+        Promise.resolve(accumulatedText.length >= 6),
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['one', 'two']);
+    // Fires once mid-stream (after 'onetwo') plus the final output check.
+    expect(guardrail.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes raw partial text mid-stream and the parsed object on the final check', async () => {
+    const seen: Array<{ partial: boolean | undefined; output: unknown }> = [];
+    const guardrail = {
+      name: 'structured',
+      execute: vi.fn(async ({ agentOutput, details }: any) => {
+        seen.push({ partial: details?.partial, output: agentOutput });
+        return { tripwireTriggered: false, outputInfo: {} };
+      }),
+    };
+    const finalJson = '{"value":"hello"}';
+    const agent = new Agent({
+      name: 'StructuredStreamGuard',
+      outputType: z.object({ value: z.string() }),
+      model: new TextDeltaStreamingModel(['{"value":', '"hello"}'], finalJson),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: ({ accumulatedText }) =>
+        accumulatedText === '{"value":',
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await collectDeltas(result);
+
+    // First call is the mid-stream partial check (raw text), second is the final parsed object.
+    expect(seen[0]).toEqual({ partial: true, output: '{"value":' });
+    expect(seen[seen.length - 1].partial).toBeUndefined();
+    expect(seen[seen.length - 1].output).toEqual({ value: 'hello' });
+    expect(result.finalOutput).toEqual({ value: 'hello' });
+  });
+
+  it('consults multiple output guardrails at a checkpoint', async () => {
+    const passing = {
+      name: 'passes',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const tripping = {
+      name: 'trips',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('bad'),
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['good', 'bad']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [passing, tripping],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await expect(collectDeltas(result)).rejects.toBeInstanceOf(
+      OutputGuardrailTripwireTriggered,
+    );
+    expect(passing.execute).toHaveBeenCalled();
+    expect(tripping.execute).toHaveBeenCalled();
+  });
+});
+
 class ImmediateStreamingModel implements Model {
   constructor(private readonly response: ModelResponse) {}
 

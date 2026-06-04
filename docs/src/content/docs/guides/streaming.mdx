@@ -195,6 +195,10 @@ If you are also using session persistence, pass the same `session` again on the 
 
 Approval pauses follow the same rule: resolve `stream.interruptions`, then resume from `stream.state` rather than starting a new turn.
 
+## Validating streamed output with guardrails
+
+By default output guardrails run only on the final output, after every streamed delta has already reached the consumer. To validate output **while it streams** — and hold it back until it passes a check — configure `streamingOutputGuardrailCheckpoint`. See [Streaming output guardrails](/openai-agents-js/guides/guardrails#streaming-output-guardrails) for details. Note that, when configured, streamed text is released in blocks (one per passing checkpoint) rather than token by token.
+
 ## Tips
 
 - Remember to wait for `stream.completed` before exiting to ensure all output has been flushed.
