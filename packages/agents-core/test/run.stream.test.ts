@@ -3349,6 +3349,227 @@ describe('Runner.run (streaming output guardrails)', () => {
     expect(passing.execute).toHaveBeenCalled();
     expect(tripping.execute).toHaveBeenCalled();
   });
+
+  it('does not surface a previous turn response to mid-stream partial checks', async () => {
+    // Turn 1 is a tool call (which sets the last-turn response), turn 2 streams the
+    // final text. The partial check fires during turn 2, before that turn's response
+    // is finalized, so it must not receive the stale turn-1 response.
+    const seen: Array<{
+      partial: boolean | undefined;
+      modelResponse: any;
+    }> = [];
+    const guardrail = {
+      name: 'records-details',
+      execute: vi.fn(async ({ details }: any) => {
+        seen.push({
+          partial: details?.partial,
+          modelResponse: details?.modelResponse,
+        });
+        return { tripwireTriggered: false, outputInfo: {} };
+      }),
+    };
+
+    const echoTool = tool({
+      name: 'echo',
+      description: 'echo',
+      parameters: z.object({}),
+      execute: async () => 'tool-result',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: echoTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class ToolThenTextModel implements Model {
+      #callCount = 0;
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('final')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        const turn = this.#callCount++;
+        if (turn === 0) {
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-tool-turn',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [toolCall],
+            },
+          } as any;
+          return;
+        }
+        yield { type: 'output_text_delta', delta: 'fin' } as any;
+        yield { type: 'output_text_delta', delta: 'al' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-text-turn',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('final')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new ToolThenTextModel(),
+      tools: [echoTool],
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await collectDeltas(result);
+
+    const partialCalls = seen.filter((s) => s.partial);
+    const finalCalls = seen.filter((s) => !s.partial);
+    expect(partialCalls.length).toBeGreaterThan(0);
+    // No response at all (let alone the stale turn-1 response) is surfaced mid-stream.
+    expect(partialCalls.every((c) => c.modelResponse === undefined)).toBe(true);
+    expect(
+      partialCalls.some(
+        (c) => c.modelResponse?.responseId === 'resp-tool-turn',
+      ),
+    ).toBe(false);
+    // The final check still receives the completed turn-2 response.
+    expect(finalCalls[finalCalls.length - 1].modelResponse?.responseId).toBe(
+      'resp-text-turn',
+    );
+  });
+
+  it('streams an unguarded agent directly after a handoff from a guarded agent', async () => {
+    // Gate the unguarded agent's turn so it cannot complete until released. If its
+    // output were still held back, the first delta could only arrive as a burst at
+    // turn completion, which the gate prevents until after the assertion below.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let resolveSawFirstDelta!: () => void;
+    const sawFirstDelta = new Promise<void>((resolve) => {
+      resolveSawFirstDelta = resolve;
+    });
+
+    class GatedDeltaModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('B1B2')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'B1' } as any;
+        await gate;
+        yield { type: 'output_text_delta', delta: 'B2' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-b',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('B1B2')],
+          },
+        } as any;
+      }
+    }
+
+    class HandoffStreamingModel implements Model {
+      constructor(private readonly resp: ModelResponse) {}
+      async getResponse(): Promise<ModelResponse> {
+        return this.resp;
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-a',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: this.resp.output,
+          },
+        } as any;
+      }
+    }
+
+    const agentB = new Agent({ name: 'B', model: new GatedDeltaModel() });
+    const handoffToB = handoff(agentB);
+    const handoffCall: FunctionCallItem = {
+      id: 'h1',
+      type: 'function_call',
+      name: handoffToB.toolName,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agentA = new Agent({
+      name: 'A',
+      model: new HandoffStreamingModel({
+        output: [handoffCall],
+        usage: new Usage(),
+      }),
+      handoffs: [handoffToB],
+      // Agent-level guardrail makes A's turn buffered, activating the output hold.
+      outputGuardrails: [
+        {
+          name: 'a-guard',
+          execute: async () => ({ tripwireTriggered: false, outputInfo: {} }),
+        },
+      ],
+    });
+    const runner = new Runner({
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agentA, 'go', { stream: true });
+    const received: string[] = [];
+    const consume = (async () => {
+      for await (const event of result) {
+        if (
+          event.type === 'raw_model_stream_event' &&
+          event.data.type === 'output_text_delta'
+        ) {
+          received.push(event.data.delta);
+          if (event.data.delta === 'B1') {
+            resolveSawFirstDelta();
+          }
+        }
+      }
+    })();
+
+    // The unguarded agent streams through directly: its first delta reaches the
+    // consumer before its (gated) turn can complete.
+    await sawFirstDelta;
+    expect(received).toContain('B1');
+
+    releaseGate();
+    await consume;
+    await result.completed;
+
+    expect(received).toEqual(['B1', 'B2']);
+    expect(result.finalOutput).toBe('B1B2');
+  });
 });
 
 class ImmediateStreamingModel implements Model {

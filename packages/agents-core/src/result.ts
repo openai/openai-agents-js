@@ -423,6 +423,18 @@ export class StreamedRunResult<
 
   /**
    * @internal
+   * Disables the output hold and flushes any buffered events to the consumer, so
+   * subsequent events stream through directly. Used by the runner when a turn has no
+   * streaming output guardrails to enforce (e.g. after a handoff to an unguarded
+   * agent), so that turn is not needlessly buffered into a burst.
+   */
+  _disableOutputHold() {
+    this.#outputHoldActive = false;
+    this._releaseHeldOutput();
+  }
+
+  /**
+   * @internal
    * Releases any events held in the output buffer to the consumer, in order, and
    * keeps the hold active for subsequent events. Called after a guardrail
    * checkpoint passes.

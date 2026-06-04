@@ -1499,6 +1499,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (turnHoldActive && !outputHoldEnabled) {
             result._enableOutputHold();
             outputHoldEnabled = true;
+          } else if (!turnHoldActive && outputHoldEnabled) {
+            // This turn has no streaming output guardrails to enforce (e.g. a handoff
+            // to an unguarded agent). Disable the hold so its events stream through
+            // directly instead of being buffered into a burst at turn completion.
+            result._disableOutputHold();
+            outputHoldEnabled = false;
           }
 
           try {

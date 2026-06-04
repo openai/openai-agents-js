@@ -339,7 +339,10 @@ export async function runStreamingOutputGuardrails<
     agentOutput: partialText as ResolvedAgentOutput<TOutput>,
     context: state._context,
     details: {
-      modelResponse: state._lastTurnResponse,
+      // The current turn's response is not finalized while the model is still
+      // streaming (`state._lastTurnResponse` is only set once the stream completes),
+      // so passing it here would surface a stale, previous-turn response. Omit it for
+      // partial checks; it is provided on the final guardrail run.
       partial: true,
     },
   };
