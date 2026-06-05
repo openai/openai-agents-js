@@ -115,6 +115,7 @@ export {
   readOptionalRecord,
   readOptionalRecordArray,
   readOptionalString,
+  readOptionalStringArray,
   readOptionalStringRecord,
   readString,
 } from './typeGuards';

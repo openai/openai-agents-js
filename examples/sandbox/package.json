@@ -28,6 +28,7 @@
     "start:e2b": "tsx extensions/e2b-runner.ts",
     "start:modal": "tsx extensions/modal-runner.ts",
     "start:runloop": "tsx extensions/runloop-runner.ts",
+    "start:tensorlake": "tsx extensions/tensorlake-runner.ts",
     "start:vercel": "tsx extensions/vercel-runner.ts"
   }
 }

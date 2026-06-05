@@ -56,6 +56,16 @@ export function readOptionalNumberArray(value: unknown): number[] | undefined {
     : undefined;
 }
 
+export function readOptionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') return undefined;
+    result.push(entry);
+  }
+  return result;
+}
+
 export function readOptionalRecordArray(
   value: unknown,
 ): Array<Record<string, unknown>> | undefined {
