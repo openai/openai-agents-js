@@ -293,6 +293,10 @@ export type FunctionTool<
    * Guardrails that run after the tool executes.
    */
   outputGuardrails?: ToolOutputGuardrailDefinition<Context>[];
+  /**
+   * Guardrails that run before a human in the loop pause, prevents waiting for approval if failure can be pre calculated.
+   */
+  preApprovalGuardrails?: ToolInputGuardrailDefinition<Context>[];
 };
 
 /**
@@ -1330,6 +1334,15 @@ type ToolGuardrailOptions<Context = UnknownContext> = {
         name: string;
         run: ToolOutputGuardrailFunction<Context>;
       }[];
+  /**
+   * Guardrails that run before a human approval (if needed) to validate or block the tool call.
+   */
+  preApprovalGuardrails?:
+    | ToolInputGuardrailDefinition<Context>[]
+    | {
+        name: string;
+        run: ToolInputGuardrailFunction<Context>;
+      }[];
 };
 
 /**
@@ -1930,6 +1943,9 @@ export function tool<
     isEnabled,
     inputGuardrails: resolveToolInputGuardrails(options.inputGuardrails),
     outputGuardrails: resolveToolOutputGuardrails(options.outputGuardrails),
+    preApprovalGuardrails: resolveToolInputGuardrails(
+      options.preApprovalGuardrails,
+    ),
   };
 }
 
