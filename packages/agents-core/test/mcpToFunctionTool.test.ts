@@ -244,6 +244,44 @@ describe('mcpToFunctionTool', () => {
     await expect(tool.invoke(new RunContext({}), '{}')).resolves.toBe('{}');
   });
 
+  it('preserves MCP error content when structured output is enabled', async () => {
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'tool error details' }],
+      structuredContent: { answer: 42 },
+      isError: true,
+    }));
+    const server: MCPServer = {
+      name: 'structured-error-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [{ type: 'text', text: 'legacy output' }],
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'structured_error',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toEqual({
+      type: 'text',
+      text: 'tool error details',
+    });
+  });
+
   it('falls back to legacy content when a custom server has no full-result method', async () => {
     const callTool = vi.fn(async () => [
       { type: 'text', text: 'legacy output' },

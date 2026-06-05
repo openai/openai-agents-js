@@ -1195,6 +1195,7 @@ export function mcpToFunctionTool(
           };
     if (
       server.useStructuredContent === true &&
+      result.isError !== true &&
       result.structuredContent !== undefined
     ) {
       return JSON.stringify(result.structuredContent);
