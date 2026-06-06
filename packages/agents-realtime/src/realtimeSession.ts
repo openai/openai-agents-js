@@ -604,7 +604,12 @@ export class RealtimeSession<
           tool.name,
           toolCall.callId,
         );
-        this.#transport.sendFunctionCallOutput(toolCall, result, true);
+        this.#transport.sendFunctionCallOutput(
+          toolCall,
+          result,
+          true,
+          'incomplete',
+        );
         this.emit(
           'agent_tool_end',
           this.#context,

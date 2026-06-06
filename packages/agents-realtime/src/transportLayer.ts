@@ -134,6 +134,7 @@ export interface RealtimeTransportLayer extends EventEmitter<RealtimeTransportEv
     toolCall: TransportToolCallEvent,
     output: string,
     startResponse: boolean,
+    status?: 'completed' | 'incomplete' | 'in_progress',
   ): void;
 
   /**
