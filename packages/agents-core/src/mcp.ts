@@ -44,6 +44,34 @@ export type MCPToolErrorFunction = (args: {
   error: Error | unknown;
 }) => Promise<string> | string;
 
+export type MCPServerLoggingLevel =
+  | 'debug'
+  | 'info'
+  | 'notice'
+  | 'warning'
+  | 'error'
+  | 'critical'
+  | 'alert'
+  | 'emergency';
+
+export type MCPServerLoggingHandler = (message: {
+  level: MCPServerLoggingLevel;
+  logger?: string;
+  data: unknown;
+  meta?: Record<string, unknown>;
+}) => void | Promise<void>;
+
+export type MCPServerLoggingOptions = {
+  /**
+   * Optional minimum level requested from the MCP server.
+   */
+  level?: MCPServerLoggingLevel;
+  /**
+   * Handler invoked for MCP `notifications/message` logging events.
+   */
+  handler: MCPServerLoggingHandler;
+};
+
 const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
 
@@ -1212,6 +1240,7 @@ export interface BaseMCPServerStdioOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 }
 export interface DefaultMCPServerStdioOptions extends BaseMCPServerStdioOptions {
@@ -1242,6 +1271,7 @@ export interface MCPServerStreamableHttpOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -1276,6 +1306,7 @@ export interface MCPServerSSEOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------

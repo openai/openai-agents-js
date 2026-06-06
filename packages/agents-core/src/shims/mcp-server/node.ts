@@ -14,6 +14,7 @@ import {
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,
   MCPReadResourceResult,
+  MCPServerLoggingOptions,
   MCPServerStdioOptions,
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
@@ -53,6 +54,44 @@ function buildRequestOptions(
       : { timeout: clientSessionTimeoutSeconds * 1000 };
   const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
+}
+
+async function registerMCPServerLoggingHandler(
+  client: Client,
+  serverLogging: MCPServerLoggingOptions | undefined,
+): Promise<void> {
+  if (!serverLogging) {
+    return;
+  }
+
+  const { LoggingMessageNotificationSchema } =
+    await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+  client.setNotificationHandler(
+    LoggingMessageNotificationSchema,
+    async (notification) => {
+      const params = notification.params;
+      await serverLogging.handler({
+        level: params.level,
+        logger: params.logger,
+        data: params.data,
+        meta: params._meta,
+      });
+    },
+  );
+}
+
+async function setMCPServerLoggingLevel(
+  client: Client,
+  serverLogging: MCPServerLoggingOptions | undefined,
+  requestOptions?: RequestOptions,
+): Promise<void> {
+  if (!serverLogging) {
+    return;
+  }
+
+  if (serverLogging.level) {
+    await client.setLoggingLevel(serverLogging.level, requestOptions);
+  }
 }
 
 type MaybeSessionTransport = Transport & {
@@ -224,7 +263,16 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
+      await setMCPServerLoggingLevel(
+        this.session,
+        this.params.serverLogging,
+        requestOptions,
+      );
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -427,7 +475,16 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
+      await setMCPServerLoggingLevel(
+        this.session,
+        this.params.serverLogging,
+        requestOptions,
+      );
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -699,7 +756,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(client, this.params.serverLogging);
       await client.connect(transport, requestOptions);
+      await setMCPServerLoggingLevel(
+        client,
+        this.params.serverLogging,
+        requestOptions,
+      );
       return { client, transport };
     } catch (error) {
       await this.closeStreamableHttpClient(
@@ -949,12 +1012,21 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        args.client,
+        this.params.serverLogging,
+      );
       await args.client.connect(transport, requestOptions);
       if (args.sessionId !== undefined) {
         // Reconnecting with an existing session skips initialize(), so resend
         // initialized to reopen the shared SSE stream for async responses.
         await this.reopenSharedStreamableHttpSession(args.client);
       }
+      await setMCPServerLoggingLevel(
+        args.client,
+        this.params.serverLogging,
+        requestOptions,
+      );
       return { client: args.client, transport };
     } catch (error) {
       await this.closeStreamableHttpClient(
