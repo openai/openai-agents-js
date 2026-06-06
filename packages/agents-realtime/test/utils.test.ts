@@ -25,6 +25,23 @@ describe('realtime utils', () => {
     expect(new Uint8Array(result)).toEqual(new Uint8Array(buffer));
   });
 
+  it('encodes a large audio buffer without throwing and round-trips it', () => {
+    const size = 1024 * 1024;
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      bytes[i] = i % 256;
+    }
+
+    let base64 = '';
+    expect(() => {
+      base64 = arrayBufferToBase64(bytes.buffer);
+    }).not.toThrow();
+
+    const result = new Uint8Array(base64ToArrayBuffer(base64));
+    expect(result.length).toBe(size);
+    expect(result).toEqual(bytes);
+  });
+
   it('extracts transcript from audio output message', () => {
     const message: RealtimeMessageItem = {
       itemId: '1',
