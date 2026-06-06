@@ -59,6 +59,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #audioChunkCount: number = 0;
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
+  #clearSentForInterrupt = false;
   #logger = getLogger('openai-agents:extensions:twilio');
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
@@ -203,17 +204,49 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     super.updateSessionConfig(newConfig);
   }
 
-  _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
-    const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
-    this.#logger.debug(
-      `Interruption detected, clearing Twilio audio and truncating OpenAI audio after ${elapsedTime}ms`,
-    );
+  #sendTwilioClear(): boolean {
+    if (!this.#streamSid) {
+      this.#logger.debug(
+        'Skipping Twilio clear because no streamSid has been received.',
+      );
+      return false;
+    }
+
+    const readyState = (this.#twilioWebSocket as { readyState?: number })
+      .readyState;
+    if (typeof readyState === 'number' && readyState !== 1) {
+      this.#logger.debug(
+        'Skipping Twilio clear because the Twilio websocket is not open.',
+      );
+      return false;
+    }
+
     this.#twilioWebSocket.send(
       JSON.stringify({
         event: 'clear',
         streamSid: this.#streamSid,
       }),
     );
+    return true;
+  }
+
+  interrupt(cancelOngoingResponse: boolean = true) {
+    this.#clearSentForInterrupt = this.#sendTwilioClear();
+    try {
+      super.interrupt(cancelOngoingResponse);
+    } finally {
+      this.#clearSentForInterrupt = false;
+    }
+  }
+
+  _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
+    const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
+    this.#logger.debug(
+      `Interruption detected, clearing Twilio audio and truncating OpenAI audio after ${elapsedTime}ms`,
+    );
+    if (!this.#clearSentForInterrupt) {
+      this.#sendTwilioClear();
+    }
     super._interrupt(elapsedTime, cancelOngoingResponse);
   }
 
