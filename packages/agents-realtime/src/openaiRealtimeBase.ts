@@ -19,6 +19,7 @@ import {
   realtimeMcpCallItem,
   realtimeMessageItemSchema,
   realtimeToolCallItem,
+  RealtimeToolCallItem,
 } from './items';
 import logger from './logger';
 import {
@@ -149,6 +150,8 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  #functionCallsByCallId = new Map<string, RealtimeToolCallItem>();
+  #functionCallsByItemId = new Map<string, RealtimeToolCallItem>();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -373,6 +376,55 @@ export abstract class OpenAIRealtimeBase
         return;
       }
 
+      if (parsed.item.type === 'function_call') {
+        const item = realtimeToolCallItem.parse({
+          itemId: parsed.item.id,
+          previousItemId:
+            parsed.type === 'conversation.item.added' ||
+            parsed.type === 'conversation.item.done'
+              ? parsed.previous_item_id
+              : null,
+          type: parsed.item.type,
+          status:
+            parsed.item.status === 'completed' && parsed.item.output != null
+              ? 'completed'
+              : 'in_progress',
+          callId: parsed.item.call_id,
+          arguments: parsed.item.arguments ?? '',
+          name: parsed.item.name ?? '',
+          output: parsed.item.output ?? null,
+        });
+        if (item.callId) {
+          this.#functionCallsByCallId.set(item.callId, item);
+        }
+        this.#functionCallsByItemId.set(item.itemId, item);
+        this.emit('item_update', item);
+        return;
+      }
+
+      if (parsed.item.type === 'function_call_output') {
+        const existing =
+          (parsed.item.call_id
+            ? this.#functionCallsByCallId.get(parsed.item.call_id)
+            : undefined) ??
+          (parsed.previous_item_id
+            ? this.#functionCallsByItemId.get(parsed.previous_item_id)
+            : undefined);
+        if (existing) {
+          const item = realtimeToolCallItem.parse({
+            ...existing,
+            status: 'completed',
+            output: parsed.item.output ?? null,
+          });
+          if (item.callId) {
+            this.#functionCallsByCallId.set(item.callId, item);
+          }
+          this.#functionCallsByItemId.set(item.itemId, item);
+          this.emit('item_update', item);
+        }
+        return;
+      }
+
       if (
         parsed.item.type === 'mcp_approval_request' &&
         parsed.type === 'conversation.item.done'
@@ -450,6 +502,10 @@ export abstract class OpenAIRealtimeBase
           name: item.name,
           output: null,
         });
+        if (toolCall.callId) {
+          this.#functionCallsByCallId.set(toolCall.callId, toolCall);
+        }
+        this.#functionCallsByItemId.set(toolCall.itemId, toolCall);
         this.emit('item_update', toolCall);
         this.emit('function_call', {
           id: item.id,
@@ -895,6 +951,10 @@ export abstract class OpenAIRealtimeBase
         name: toolCall.name,
         output,
       });
+      if (item.callId) {
+        this.#functionCallsByCallId.set(item.callId, item);
+      }
+      this.#functionCallsByItemId.set(item.itemId, item);
       this.emit('item_update', item);
     } catch (error) {
       logger.error('Error parsing tool call item', error, toolCall);
