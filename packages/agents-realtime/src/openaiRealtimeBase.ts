@@ -445,6 +445,7 @@ export abstract class OpenAIRealtimeBase
           itemId: item.id,
           type: item.type,
           status: 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
+          callId: item.call_id,
           arguments: item.arguments,
           name: item.name,
           output: null,
@@ -889,6 +890,7 @@ export abstract class OpenAIRealtimeBase
         previousItemId: toolCall.previousItemId,
         type: 'function_call',
         status: 'completed',
+        callId: toolCall.callId,
         arguments: toolCall.arguments,
         name: toolCall.name,
         output,
@@ -973,8 +975,38 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
+        if (
+          addition.status === 'completed' &&
+          addition.output !== null &&
+          addition.callId
+        ) {
+          this.sendEvent({
+            type: 'conversation.item.create',
+            ...(addition.previousItemId !== undefined
+              ? { previous_item_id: addition.previousItemId }
+              : {}),
+            item: {
+              id: addition.itemId,
+              type: 'function_call',
+              status: addition.status,
+              call_id: addition.callId,
+              name: addition.name,
+              arguments: addition.arguments,
+            },
+          });
+          this.sendEvent({
+            type: 'conversation.item.create',
+            previous_item_id: addition.itemId,
+            item: {
+              type: 'function_call_output',
+              call_id: addition.callId,
+              output: addition.output,
+            },
+          });
+          continue;
+        }
         logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
+          'Only completed function calls with a callId and output can be restored through updateHistory. Ignoring.',
         );
       }
     }

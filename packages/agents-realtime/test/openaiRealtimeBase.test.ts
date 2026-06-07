@@ -300,6 +300,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
     expect(base.events[1]).toEqual({ type: 'response.create' });
     expect(updates.length).toBe(1);
+    expect(updates[0].callId).toBe('c1');
   });
 
   it('sendFunctionCallOutput logs errors when tool call parsing fails', () => {
@@ -366,7 +367,49 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
-  it('resetHistory warns on function call additions', () => {
+  it('resetHistory restores completed function calls with outputs', () => {
+    const base = new TestBase();
+    const newHist = [
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call',
+        status: 'completed',
+        callId: 'call_1',
+        arguments: '{"city":"Paris"}',
+        name: 'get_weather',
+        output: '{"temperature":21}',
+      },
+    ];
+
+    base.resetHistory([], newHist as any);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        previous_item_id: 'm1',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          status: 'completed',
+          call_id: 'call_1',
+          name: 'get_weather',
+          arguments: '{"city":"Paris"}',
+        },
+      },
+      {
+        type: 'conversation.item.create',
+        previous_item_id: 'f1',
+        item: {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: '{"temperature":21}',
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory warns on function call additions that cannot be restored', () => {
     const base = new TestBase();
     const newHist = [
       {
@@ -382,7 +425,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     base.resetHistory([], newHist as any);
 
     expect(logger.warn).toHaveBeenCalledWith(
-      'Function calls cannot be manually added or updated at the moment. Ignoring.',
+      'Only completed function calls with a callId and output can be restored through updateHistory. Ignoring.',
     );
     expect(base.events).toHaveLength(0);
   });
