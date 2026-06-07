@@ -377,22 +377,35 @@ export abstract class OpenAIRealtimeBase
       }
 
       if (parsed.item.type === 'function_call') {
+        const existing =
+          (parsed.item.call_id
+            ? this.#functionCallsByCallId.get(parsed.item.call_id)
+            : undefined) ??
+          (parsed.item.id
+            ? this.#functionCallsByItemId.get(parsed.item.id)
+            : undefined);
+        const output = parsed.item.output ?? null;
+        const shouldPreserveCompletedOutput =
+          output === null &&
+          existing?.status === 'completed' &&
+          existing.output !== null;
         const item = realtimeToolCallItem.parse({
           itemId: parsed.item.id,
           previousItemId:
             parsed.type === 'conversation.item.added' ||
             parsed.type === 'conversation.item.done'
-              ? parsed.previous_item_id
-              : null,
+              ? (parsed.previous_item_id ?? existing?.previousItemId)
+              : existing?.previousItemId,
           type: parsed.item.type,
           status:
-            parsed.item.status === 'completed' && parsed.item.output != null
+            shouldPreserveCompletedOutput ||
+            (parsed.item.status === 'completed' && output !== null)
               ? 'completed'
               : 'in_progress',
-          callId: parsed.item.call_id,
-          arguments: parsed.item.arguments ?? '',
-          name: parsed.item.name ?? '',
-          output: parsed.item.output ?? null,
+          callId: parsed.item.call_id ?? existing?.callId,
+          arguments: parsed.item.arguments ?? existing?.arguments ?? '',
+          name: parsed.item.name ?? existing?.name ?? '',
+          output: shouldPreserveCompletedOutput ? existing.output : output,
         });
         if (item.callId) {
           this.#functionCallsByCallId.set(item.callId, item);

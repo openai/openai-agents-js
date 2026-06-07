@@ -676,6 +676,22 @@ describe('OpenAIRealtimeBase helpers', () => {
       }),
     });
 
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'c_tool_done',
+        previous_item_id: 'm1',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          status: 'completed',
+          call_id: 'call_1',
+          name: 'get_weather',
+          arguments: '{"city":"Paris"}',
+        },
+      }),
+    });
+
     expect(funcs).toHaveLength(0);
     expect(updates).toEqual([
       {
@@ -687,6 +703,16 @@ describe('OpenAIRealtimeBase helpers', () => {
         arguments: '{"city":"Paris"}',
         name: 'get_weather',
         output: null,
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call',
+        status: 'completed',
+        callId: 'call_1',
+        arguments: '{"city":"Paris"}',
+        name: 'get_weather',
+        output: '{"temperature":21}',
       },
       {
         itemId: 'f1',
