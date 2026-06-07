@@ -61,6 +61,8 @@ In practice, this means custom function tools where you set `inputGuardrails` an
 - **Input tool guardrails** run before the tool executes and can reject the call with a message or throw a tripwire.
 - **Output tool guardrails** run after the tool executes and can replace the output with a rejection message or throw a tripwire.
 
+If a local function tool also requires human approval, input tool guardrails normally run after approval and immediately before execution. To run those input guardrails before the pending approval request as well, set `toolExecution: { preApprovalInputGuardrails: true }` on `run()` or `Runner`. The guardrails still run again after approval before the tool executes.
+
 Tool guardrails return a `behavior`:
 
 - `allow` — continue to the next guardrail or tool execution.
