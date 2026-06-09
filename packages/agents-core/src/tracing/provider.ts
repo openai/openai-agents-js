@@ -142,6 +142,40 @@ export class TraceProvider {
     await this.#multiProcessor.dispatchSpan(span);
   }
 
+  /**
+   * Dispatches a span start event to all registered processors.
+   *
+   * This is useful when an integration receives a span start outside this
+   * process and needs to fan out the start without mutating the span state.
+   */
+  async dispatchSpanStart<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching span start %o', span);
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpanStart(span);
+  }
+
+  /**
+   * Dispatches a span end event to all registered processors.
+   *
+   * This is useful when an integration receives a span end outside this process
+   * and needs to fan out the end without mutating the span state.
+   */
+  async dispatchSpanEnd<TSpanData extends SpanData>(
+    span: Span<TSpanData>,
+  ): Promise<void> {
+    if (this.#disabled) {
+      logger.debug('Tracing is disabled, Not dispatching span end %o', span);
+      return;
+    }
+
+    await this.#multiProcessor.dispatchSpanEnd(span);
+  }
+
   createTrace(traceOptions: TraceOptions): Trace {
     if (this.#disabled) {
       logger.debug('Tracing is disabled, Not creating trace %o', traceOptions);

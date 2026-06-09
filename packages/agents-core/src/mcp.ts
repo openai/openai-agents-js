@@ -65,6 +65,11 @@ export interface MCPServer {
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   toolMetaResolver?: MCPToolMetaResolver;
   /**
+   * Whether to use MCP `structuredContent` as the model-visible tool output when available.
+   * Defaults to false to preserve the existing content-based output behavior.
+   */
+  useStructuredContent?: boolean;
+  /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
    */
@@ -78,6 +83,14 @@ export interface MCPServer {
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  /**
+   * Invoke a tool and return the full serializable MCP result.
+   */
+  callToolResult?(
+    toolName: string,
+    args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult>;
   invalidateToolsCache(): Promise<void>;
 }
 
@@ -184,6 +197,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
@@ -193,6 +207,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
 
@@ -205,6 +220,11 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult>;
   abstract listResources(
     _params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult>;
@@ -231,6 +251,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
@@ -241,6 +262,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
 
@@ -253,6 +275,11 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult>;
   abstract listResources(
     _params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult>;
@@ -280,6 +307,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
+  public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
   protected logger: Logger;
@@ -289,6 +317,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
+    this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
 
@@ -301,6 +330,11 @@ export abstract class BaseMCPServerSSE implements MCPServer {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent>;
+  abstract callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult>;
   abstract listResources(
     _params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult>;
@@ -371,12 +405,19 @@ export class MCPServerStdio
     }
     return tools;
   }
-  callTool(
+  async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args, meta);
+    return (await this.callToolResult(toolName, args, meta)).content;
+  }
+  callToolResult(
+    toolName: string,
+    args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
+    return this.underlying.callToolResult(toolName, args, meta);
   }
   listResources(
     params?: MCPListResourcesParams,
@@ -451,9 +492,16 @@ export class MCPServerStreamableHttp
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
+    return (await this.callToolResult(toolName, args, meta)).content;
+  }
+  async callToolResult(
+    toolName: string,
+    args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
     const previousSessionId = this.sessionId;
     try {
-      return await this.underlying.callTool(toolName, args, meta);
+      return await this.underlying.callToolResult(toolName, args, meta);
     } finally {
       if (previousSessionId !== this.sessionId) {
         this.clearLocalToolsCache();
@@ -507,12 +555,19 @@ export class MCPServerSSE
     }
     return tools;
   }
-  callTool(
+  async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
-    return this.underlying.callTool(toolName, args, meta);
+    return (await this.callToolResult(toolName, args, meta)).content;
+  }
+  callToolResult(
+    toolName: string,
+    args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
+    return this.underlying.callToolResult(toolName, args, meta);
   }
   listResources(
     params?: MCPListResourcesParams,
@@ -1127,10 +1182,25 @@ export function mcpToFunctionTool(
     const meta = runContext
       ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)
       : undefined;
-    const content =
-      meta === undefined
-        ? await server.callTool(mcpTool.name, args)
-        : await server.callTool(mcpTool.name, args, meta);
+    const result =
+      server.useStructuredContent === true && server.callToolResult
+        ? meta === undefined
+          ? await server.callToolResult(mcpTool.name, args)
+          : await server.callToolResult(mcpTool.name, args, meta)
+        : {
+            content:
+              meta === undefined
+                ? await server.callTool(mcpTool.name, args)
+                : await server.callTool(mcpTool.name, args, meta),
+          };
+    if (
+      server.useStructuredContent === true &&
+      result.isError !== true &&
+      result.structuredContent !== undefined
+    ) {
+      return JSON.stringify(result.structuredContent);
+    }
+    const content = result.content;
     return content.length === 1 ? content[0] : content;
   }
 
@@ -1208,6 +1278,10 @@ export interface BaseMCPServerStdioOptions {
    */
   toolMetaResolver?: MCPToolMetaResolver;
   /**
+   * Whether to use MCP `structuredContent` as model-visible output when available.
+   */
+  useStructuredContent?: boolean;
+  /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
    */
@@ -1237,6 +1311,10 @@ export interface MCPServerStreamableHttpOptions {
    * Invoked before calling `callTool`.
    */
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Whether to use MCP `structuredContent` as model-visible output when available.
+   */
+  useStructuredContent?: boolean;
   /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
@@ -1271,6 +1349,10 @@ export interface MCPServerSSEOptions {
    * Invoked before calling `callTool`.
    */
   toolMetaResolver?: MCPToolMetaResolver;
+  /**
+   * Whether to use MCP `structuredContent` as model-visible output when available.
+   */
+  useStructuredContent?: boolean;
   /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
@@ -1323,7 +1405,10 @@ export interface JsonRpcResponse {
 
 export interface CallToolResponse extends JsonRpcResponse {
   result: {
-    content: { type: string; text: string }[];
+    content: Array<{ type: string; [key: string]: unknown }>;
+    _meta?: Record<string, unknown>;
+    structuredContent?: Record<string, unknown>;
+    isError?: boolean;
   };
 }
 export type CallToolResult = CallToolResponse['result'];

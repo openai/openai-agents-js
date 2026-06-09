@@ -235,6 +235,17 @@ export class OpenAIChatCompletionsModel implements Model {
     const span = request.tracing ? createGenerationSpan() : undefined;
     try {
       if (span) {
+        span.spanData.model = this.#model;
+        span.spanData.model_config = request.modelSettings
+          ? {
+              temperature: request.modelSettings.temperature,
+              top_p: request.modelSettings.topP,
+              frequency_penalty: request.modelSettings.frequencyPenalty,
+              presence_penalty: request.modelSettings.presencePenalty,
+              reasoning_effort: request.modelSettings.reasoning?.effort,
+              verbosity: request.modelSettings.text?.verbosity,
+            }
+          : { base_url: this.#client.baseURL };
         span.start();
         setCurrentSpan(span);
       }

@@ -2,6 +2,7 @@ import {
   BaseMCPServerSSE,
   BaseMCPServerStdio,
   BaseMCPServerStreamableHttp,
+  CallToolResult,
   CallToolResultContent,
   MCPListResourcesParams,
   MCPListResourcesResult,
@@ -34,6 +35,13 @@ export class MCPServerStdio extends BaseMCPServerStdio {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
+    throw new Error('Method not implemented.');
+  }
+  callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
     throw new Error('Method not implemented.');
   }
   listResources(
@@ -80,6 +88,13 @@ export class MCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   ): Promise<CallToolResultContent> {
     throw new Error('Method not implemented.');
   }
+  callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
+    throw new Error('Method not implemented.');
+  }
   listResources(
     _params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult> {
@@ -121,6 +136,13 @@ export class MCPServerSSE extends BaseMCPServerSSE {
     _args: Record<string, unknown> | null,
     _meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
+    throw new Error('Method not implemented.');
+  }
+  callToolResult(
+    _toolName: string,
+    _args: Record<string, unknown> | null,
+    _meta?: Record<string, unknown> | null,
+  ): Promise<CallToolResult> {
     throw new Error('Method not implemented.');
   }
   listResources(

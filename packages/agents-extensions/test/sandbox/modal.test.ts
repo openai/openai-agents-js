@@ -24,19 +24,16 @@ import { makeTarArchive } from './tarFixture';
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
 }));
-const modalSdkMocks = vi.hoisted(() => ({
-  cloudBucketMountAvailable: true,
-  classSecretApi: false,
-}));
 const appsFromNameMock = vi.fn();
 const imagesFromRegistryMock = vi.fn();
 const imagesFromIdMock = vi.fn();
 const imagesDeleteMock = vi.fn();
-const imageCmdMock = vi.fn();
 const sandboxesCreateMock = vi.fn();
 const sandboxesFromIdMock = vi.fn();
+const cloudBucketMountCreateMock = vi.fn();
 const sandboxExecMock = vi.fn();
-const sandboxOpenMock = vi.fn();
+const sandboxFilesystemReadBytesMock = vi.fn();
+const sandboxFilesystemWriteBytesMock = vi.fn();
 const sandboxTerminateMock = vi.fn();
 const sandboxPollMock = vi.fn();
 const sandboxTunnelsMock = vi.fn();
@@ -49,43 +46,7 @@ const imageBuilderVersionMock = vi.fn();
 const modalClientParams: Record<string, unknown>[] = [];
 
 vi.mock('modal', () => {
-  class CloudBucketMount {
-    constructor(
-      readonly bucketName: string,
-      readonly params: Record<string, unknown> = {},
-    ) {}
-
-    toProto(mountPath: string): Record<string, unknown> {
-      return {
-        mountPath,
-        bucketName: this.bucketName,
-        params: this.params,
-      };
-    }
-  }
-
-  class Secret {
-    static async fromName(
-      name: string,
-      params?: Record<string, unknown>,
-    ): Promise<unknown> {
-      return await secretFromNameMock(name, params);
-    }
-
-    static async fromObject(
-      entries: Record<string, string>,
-      params?: Record<string, unknown>,
-    ): Promise<unknown> {
-      return await secretFromObjectMock(entries, params);
-    }
-  }
-
   return {
-    get CloudBucketMount() {
-      return modalSdkMocks.cloudBucketMountAvailable
-        ? CloudBucketMount
-        : undefined;
-    },
     ModalClient: class ModalClient {
       readonly apps = {
         fromName: appsFromNameMock,
@@ -102,19 +63,20 @@ vi.mock('modal', () => {
         fromId: sandboxesFromIdMock,
       };
 
+      readonly cloudBucketMounts = {
+        create: cloudBucketMountCreateMock,
+      };
+
+      readonly secrets = {
+        fromName: secretFromNameMock,
+        fromObject: secretFromObjectMock,
+      };
+
       imageBuilderVersion = imageBuilderVersionMock;
 
       constructor(params?: Record<string, unknown>) {
         modalClientParams.push(params ?? {});
       }
-    },
-    get Secret() {
-      return modalSdkMocks.classSecretApi
-        ? Secret
-        : {
-            fromName: secretFromNameMock,
-            fromObject: secretFromObjectMock,
-          };
     },
   };
 });
@@ -176,11 +138,12 @@ describe('ModalSandboxClient', () => {
     imagesFromRegistryMock.mockReset();
     imagesFromIdMock.mockReset();
     imagesDeleteMock.mockReset();
-    imageCmdMock.mockReset();
     sandboxesCreateMock.mockReset();
     sandboxesFromIdMock.mockReset();
+    cloudBucketMountCreateMock.mockReset();
     sandboxExecMock.mockReset();
-    sandboxOpenMock.mockReset();
+    sandboxFilesystemReadBytesMock.mockReset();
+    sandboxFilesystemWriteBytesMock.mockReset();
     sandboxTerminateMock.mockReset();
     sandboxPollMock.mockReset();
     sandboxTunnelsMock.mockReset();
@@ -191,21 +154,25 @@ describe('ModalSandboxClient', () => {
     secretFromObjectMock.mockReset();
     imageBuilderVersionMock.mockReset();
     processMocks.runSandboxProcess.mockReset();
-    modalSdkMocks.cloudBucketMountAvailable = true;
-    modalSdkMocks.classSecretApi = false;
     modalClientParams.splice(0);
 
     appsFromNameMock.mockResolvedValue({ appId: 'ap_test' });
-    imageCmdMock.mockImplementation((command: string[]) => ({
-      imageId: 'im_test_cmd',
-      command,
-    }));
     imagesFromRegistryMock.mockReturnValue({
       imageId: 'im_test',
-      cmd: imageCmdMock,
     });
     imagesFromIdMock.mockImplementation((id: string) => ({ imageId: id }));
     imagesDeleteMock.mockResolvedValue(undefined);
+    cloudBucketMountCreateMock.mockImplementation(
+      (bucketName: string, params: Record<string, unknown> = {}) => ({
+        bucketName,
+        params,
+        toProto: (mountPath: string) => ({
+          mountPath,
+          bucketName,
+          params,
+        }),
+      }),
+    );
     sandboxPollMock.mockResolvedValue(null);
     sandboxTerminateMock.mockResolvedValue(undefined);
     sandboxSnapshotFilesystemMock.mockResolvedValue({
@@ -227,17 +194,16 @@ describe('ModalSandboxClient', () => {
       },
     });
 
-    sandboxOpenMock.mockImplementation(
-      async (path: string, mode: string = 'r') => ({
-        read: async () => files.get(path) ?? new Uint8Array(),
-        write: async (data: Uint8Array) => {
-          if (mode.startsWith('w') || mode.startsWith('a')) {
-            files.set(path, data);
-          }
-        },
-        flush: async () => {},
-        close: async () => {},
-      }),
+    sandboxFilesystemReadBytesMock.mockImplementation(
+      async (path: string) => files.get(path) ?? new Uint8Array(),
+    );
+    sandboxFilesystemWriteBytesMock.mockImplementation(
+      async (data: Uint8Array | ArrayBuffer | Buffer, path: string) => {
+        files.set(
+          path,
+          data instanceof Uint8Array ? data : new Uint8Array(data),
+        );
+      },
     );
 
     sandboxExecMock.mockImplementation(
@@ -302,8 +268,11 @@ describe('ModalSandboxClient', () => {
 
     const sandbox = {
       sandboxId: 'sbx_test',
+      filesystem: {
+        readBytes: sandboxFilesystemReadBytesMock,
+        writeBytes: sandboxFilesystemWriteBytesMock,
+      },
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: sandboxTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -352,14 +321,19 @@ describe('ModalSandboxClient', () => {
     expect(imagesFromRegistryMock).toHaveBeenCalledWith('debian:bookworm-slim');
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test_cmd', command: ['sleep', 'infinity'] },
+      { imageId: 'im_test' },
       expect.objectContaining({
         workdir: '/workspace',
+        command: ['sleep', 'infinity'],
         env: { SANDBOX_FLAG: 'enabled' },
       }),
     );
     expect(files.get('/workspace/README.md')).toEqual(
       new TextEncoder().encode('# Hello from Modal\n'),
+    );
+    expect(sandboxFilesystemWriteBytesMock).toHaveBeenCalledWith(
+      new TextEncoder().encode('# Hello from Modal\n'),
+      '/workspace/README.md',
     );
     expect(output).toContain('Process exited with code 0');
     expect(output).toContain('README.md');
@@ -438,13 +412,15 @@ describe('ModalSandboxClient', () => {
       useSleepCmd: false,
     } satisfies ModalSandboxClientOptions);
 
-    expect(imageCmdMock).not.toHaveBeenCalled();
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test', cmd: imageCmdMock },
+      { imageId: 'im_test' },
       expect.objectContaining({
         workdir: '/workspace',
       }),
+    );
+    expect(sandboxesCreateMock.mock.calls.at(-1)?.[2]).not.toHaveProperty(
+      'command',
     );
   });
 
@@ -457,8 +433,9 @@ describe('ModalSandboxClient', () => {
 
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test_cmd', command: ['sleep', 'infinity'] },
+      { imageId: 'im_test' },
       expect.objectContaining({
+        command: ['sleep', 'infinity'],
         idleTimeoutMs: 60_000,
       }),
     );
@@ -529,10 +506,17 @@ describe('ModalSandboxClient', () => {
     expect(secretFromNameMock).toHaveBeenCalledWith('modal-bucket-secret', {
       environment: 'prod',
     });
+    expect(cloudBucketMountCreateMock).toHaveBeenCalledWith('logs', {
+      bucketEndpointUrl: 'https://s3.us-east-1.amazonaws.com',
+      keyPrefix: '2026/',
+      readOnly: true,
+      secret: { secretId: 'secret-from-name' },
+    });
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test_cmd', command: ['sleep', 'infinity'] },
+      { imageId: 'im_test' },
       expect.objectContaining({
+        command: ['sleep', 'infinity'],
         cloudBucketMounts: {
           '/workspace/mounted/logs': expect.objectContaining({
             bucketName: 'logs',
@@ -548,12 +532,9 @@ describe('ModalSandboxClient', () => {
     );
   });
 
-  test('rejects Modal cloud bucket mounts when the SDK export is unavailable', async () => {
-    modalSdkMocks.classSecretApi = true;
-    modalSdkMocks.cloudBucketMountAvailable = false;
+  test('rejects tar persistence with mounts under the workspace root', async () => {
     const client = new ModalSandboxClient();
-
-    const createPromise = client.create(
+    const session = await client.create(
       new Manifest({
         entries: {
           data: {
@@ -570,17 +551,55 @@ describe('ModalSandboxClient', () => {
       },
     );
 
-    await expect(createPromise).rejects.toBeInstanceOf(SandboxProviderError);
-    await expect(createPromise).rejects.toThrow(
-      'Modal cloud bucket mounts require modal.CloudBucketMount support.',
-    );
-    await expect(createPromise).rejects.toMatchObject({
+    sandboxExecMock.mockClear();
+
+    await expect(session.persistWorkspace()).rejects.toMatchObject({
       details: {
         provider: 'modal',
+        feature: 'workspacePersistence.tar',
+        root: '/workspace',
+        mountPaths: ['/workspace/data'],
       },
     });
-    expect(secretFromNameMock).not.toHaveBeenCalled();
-    expect(sandboxesCreateMock).not.toHaveBeenCalled();
+    expect(sandboxExecMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects tar hydration with mounts under the workspace root', async () => {
+    const client = new ModalSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'logs',
+            mountStrategy: new ModalCloudBucketMountStrategy({
+              secretName: 'modal-bucket-secret',
+            }),
+          },
+        },
+      }),
+      {
+        appName: 'sandbox-tests',
+      },
+    );
+
+    sandboxExecMock.mockClear();
+    sandboxFilesystemWriteBytesMock.mockClear();
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'README.md', content: 'restored' }]),
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        provider: 'modal',
+        feature: 'workspacePersistence.tar',
+        root: '/workspace',
+        mountPaths: ['/workspace/data'],
+      },
+    });
+    expect(sandboxExecMock).not.toHaveBeenCalled();
+    expect(sandboxFilesystemWriteBytesMock).not.toHaveBeenCalled();
   });
 
   test('rejects partial S3 cloud bucket credentials', async () => {
@@ -717,7 +736,6 @@ describe('ModalSandboxClient', () => {
     const existingSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: sandboxTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -749,6 +767,25 @@ describe('ModalSandboxClient', () => {
     });
   });
 
+  test('keeps selector inputs structural for lightweight caller mocks', () => {
+    const imageSelector = ModalImageSelector.fromImage({
+      imageId: 'im_structural',
+      cmd: () => ({ imageId: 'im_cmd' }),
+    });
+    const sandboxSelector = ModalSandboxSelector.fromSandbox({
+      sandboxId: 'sbx_structural',
+    });
+
+    expect(imageSelector).toMatchObject({
+      kind: 'image',
+      value: { imageId: 'im_structural' },
+    });
+    expect(sandboxSelector).toMatchObject({
+      kind: 'sandbox',
+      value: { sandboxId: 'sbx_structural' },
+    });
+  });
+
   test('looks up reused sandbox apps without creating them for snapshot filesystem restore', async () => {
     const client = new ModalSandboxClient({
       sandbox: ModalSandboxSelector.fromId('sbx_existing'),
@@ -770,7 +807,6 @@ describe('ModalSandboxClient', () => {
     const existingSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: sandboxTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -797,7 +833,6 @@ describe('ModalSandboxClient', () => {
     const existingSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: sandboxTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -829,7 +864,9 @@ describe('ModalSandboxClient', () => {
     const client = new ModalSandboxClient({
       sandbox: ModalSandboxSelector.fromId('sbx_existing'),
     });
-    sandboxOpenMock.mockRejectedValueOnce(new Error('write failed'));
+    sandboxFilesystemWriteBytesMock.mockRejectedValueOnce(
+      new Error('write failed'),
+    );
 
     await expect(
       client.create(
@@ -1044,8 +1081,9 @@ describe('ModalSandboxClient', () => {
     );
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test_cmd', command: ['sleep', 'infinity'] },
+      { imageId: 'im_test' },
       expect.objectContaining({
+        command: ['sleep', 'infinity'],
         env: {
           CLIENT_ONLY: 'override',
           MANIFEST_FLAG: 'enabled',
@@ -1140,7 +1178,7 @@ describe('ModalSandboxClient', () => {
       },
     );
     sandboxExecMock.mockClear();
-    sandboxOpenMock.mockClear();
+    sandboxFilesystemWriteBytesMock.mockClear();
 
     await expect(
       session.applyManifest(
@@ -1178,7 +1216,7 @@ describe('ModalSandboxClient', () => {
     });
 
     expect(sandboxExecMock).not.toHaveBeenCalled();
-    expect(sandboxOpenMock).not.toHaveBeenCalled();
+    expect(sandboxFilesystemWriteBytesMock).not.toHaveBeenCalled();
     expect(session.state.manifest.mountTargets()).toHaveLength(1);
   });
 
@@ -1292,7 +1330,6 @@ describe('ModalSandboxClient', () => {
     const replacementSandbox = {
       sandboxId: 'sbx_restored',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: vi.fn().mockResolvedValue(undefined),
       poll: sandboxPollMock,
       tunnels: replacementTunnelsMock,
@@ -1321,7 +1358,6 @@ describe('ModalSandboxClient', () => {
     const previousSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: previousTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1383,7 +1419,6 @@ describe('ModalSandboxClient', () => {
     const previousSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: previousTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1460,7 +1495,6 @@ describe('ModalSandboxClient', () => {
     sandboxesFromIdMock.mockResolvedValueOnce({
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: terminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1519,7 +1553,6 @@ describe('ModalSandboxClient', () => {
     const lateSandbox = {
       sandboxId: 'sbx_late_restore',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: lateTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1570,7 +1603,6 @@ describe('ModalSandboxClient', () => {
     const previousSandbox = {
       sandboxId: 'sbx_previous',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: previousTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1716,7 +1748,6 @@ describe('ModalSandboxClient', () => {
     const previousSandbox = {
       sandboxId: 'sbx_existing',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: previousTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1804,7 +1835,6 @@ describe('ModalSandboxClient', () => {
     const lateSandbox = {
       sandboxId: 'sbx_late',
       exec: sandboxExecMock,
-      open: sandboxOpenMock,
       terminate: lateTerminateMock,
       poll: sandboxPollMock,
       tunnels: sandboxTunnelsMock,
@@ -1841,8 +1871,9 @@ describe('ModalSandboxClient', () => {
 
     expect(sandboxesCreateMock).toHaveBeenCalledWith(
       { appId: 'ap_test' },
-      { imageId: 'im_test_cmd', command: ['sleep', 'infinity'] },
+      { imageId: 'im_test' },
       expect.objectContaining({
+        command: ['sleep', 'infinity'],
         encryptedPorts: [3000],
       }),
     );

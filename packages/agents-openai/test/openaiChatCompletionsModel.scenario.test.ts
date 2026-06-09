@@ -265,4 +265,66 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
       setTracingDisabled(true);
     }
   });
+
+  it('populates model and model_config on generation span in streaming mode', async () => {
+    setTracingDisabled(false);
+    const createGenerationSpanSpy = vi.spyOn(
+      AgentsCore,
+      'createGenerationSpan',
+    );
+
+    try {
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield makeChunk({ content: 'hi' });
+        },
+      };
+
+      const create = vi.fn().mockResolvedValue(stream);
+      const client = {
+        chat: { completions: { create } },
+        baseURL: 'https://example.com',
+      };
+
+      const model = new OpenAIChatCompletionsModel(
+        client as any,
+        'my-model-id',
+      );
+      const request: any = {
+        input: 'hello',
+        modelSettings: {
+          temperature: 0.7,
+          topP: 0.9,
+        },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: 'enabled_without_data',
+        signal: undefined,
+      };
+
+      await withTrace('model-trace', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Drain.
+        }
+      });
+
+      const generationSpan = createGenerationSpanSpy.mock.results
+        .map((result) => result.value as { spanData?: Record<string, any> })
+        .find((span) => span?.spanData?.type === 'generation');
+      expect(generationSpan).toBeDefined();
+      if (!generationSpan?.spanData) {
+        throw new Error('Expected generation span data to exist');
+      }
+
+      expect(generationSpan.spanData.model).toBe('my-model-id');
+      expect(generationSpan.spanData.model_config).toMatchObject({
+        temperature: 0.7,
+        top_p: 0.9,
+      });
+    } finally {
+      createGenerationSpanSpy.mockRestore();
+      setTracingDisabled(true);
+    }
+  });
 });

@@ -107,6 +107,8 @@ export {
   invalidateServerToolsCache,
   mcpToFunctionTool,
   MCPBlobResourceContent,
+  CallToolResult,
+  CallToolResultContent,
   MCPListResourcesParams,
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,

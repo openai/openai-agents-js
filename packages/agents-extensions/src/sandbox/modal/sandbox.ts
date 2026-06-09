@@ -91,20 +91,6 @@ const COMPLETED_ACTIVE_PROCESS_RETENTION_MS = 60_000;
 
 type ModalModule = {
   ModalClient: new (params?: Record<string, unknown>) => ModalClientLike;
-  CloudBucketMount?: new (
-    bucketName: string,
-    params?: Record<string, unknown>,
-  ) => ModalCloudBucketMountLike;
-  Secret?: {
-    fromName(
-      name: string,
-      params?: { environment?: string },
-    ): ModalSecretLike | Promise<ModalSecretLike>;
-    fromObject(
-      entries: Record<string, string>,
-      params?: Record<string, unknown>,
-    ): ModalSecretLike | Promise<ModalSecretLike>;
-  };
 };
 
 type ModalCloudBucketMountLike = {
@@ -112,6 +98,14 @@ type ModalCloudBucketMountLike = {
 };
 
 type ModalSecretLike = unknown;
+
+type ModalSandboxFilesystemLike = {
+  readBytes(path: string): Promise<Uint8Array>;
+  writeBytes(
+    data: Uint8Array | ArrayBuffer | Buffer,
+    path: string,
+  ): Promise<void>;
+};
 
 type ModalClientLike = {
   apps: {
@@ -133,6 +127,22 @@ type ModalClientLike = {
     ): Promise<ModalSandboxLike>;
     fromId(id: string): Promise<ModalSandboxLike>;
   };
+  cloudBucketMounts: {
+    create(
+      bucketName: string,
+      params?: Record<string, unknown>,
+    ): ModalCloudBucketMountLike;
+  };
+  secrets: {
+    fromName(
+      name: string,
+      params?: { environment?: string },
+    ): ModalSecretLike | Promise<ModalSecretLike>;
+    fromObject(
+      entries: Record<string, string>,
+      params?: Record<string, unknown>,
+    ): ModalSecretLike | Promise<ModalSecretLike>;
+  };
   imageBuilderVersion?(version?: string): string;
 };
 
@@ -146,14 +156,20 @@ type ModalImageLike = {
   cmd?(command: string[]): ModalImageLike;
 };
 
+type ModalSandboxSelectorLike = {
+  sandboxId: string;
+  objectId?: string;
+  [key: string]: unknown;
+};
+
 type ModalSandboxLike = {
   sandboxId: string;
   objectId?: string;
+  filesystem: ModalSandboxFilesystemLike;
   exec(
     command: string[],
     params?: Record<string, unknown>,
   ): Promise<ModalContainerProcessLike>;
-  open(path: string, mode?: string): Promise<ModalSandboxFileLike>;
   terminate(params?: { wait?: boolean }): Promise<void | number>;
   poll(): Promise<number | null>;
   tunnels?(timeoutMs?: number): Promise<Record<number, ModalTunnelLike>>;
@@ -169,13 +185,6 @@ type ModalSandboxLike = {
 type ModalTunnelLike = {
   host?: string;
   port?: number;
-};
-
-type ModalSandboxFileLike = {
-  read(): Promise<Uint8Array>;
-  write(data: Uint8Array): Promise<void>;
-  flush?(): Promise<void>;
-  close(): Promise<void>;
 };
 
 type ModalContainerProcessLike = {
@@ -242,17 +251,17 @@ export type ModalSandboxSelectorKind = 'sandbox' | 'id';
 
 export class ModalSandboxSelector {
   readonly kind: ModalSandboxSelectorKind;
-  readonly value: ModalSandboxLike | string;
+  readonly value: ModalSandboxSelectorLike | string;
 
   private constructor(
     kind: ModalSandboxSelectorKind,
-    value: ModalSandboxLike | string,
+    value: ModalSandboxSelectorLike | string,
   ) {
     this.kind = kind;
     this.value = value;
   }
 
-  static fromSandbox(sandbox: ModalSandboxLike): ModalSandboxSelector {
+  static fromSandbox(sandbox: ModalSandboxSelectorLike): ModalSandboxSelector {
     return new ModalSandboxSelector('sandbox', sandbox);
   }
 
@@ -655,6 +664,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       );
     }
 
+    assertModalTarWorkspacePersistenceMountsSupported(this.state.manifest);
     return await persistRemoteWorkspaceTar({
       providerName: 'ModalSandboxClient',
       manifest: this.state.manifest,
@@ -690,6 +700,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
         this.state.workspacePersistence,
       );
     }
+    assertModalTarWorkspacePersistenceMountsSupported(this.state.manifest);
     await hydrateRemoteWorkspaceTar({
       providerName: 'ModalSandboxClient',
       manifest: this.state.manifest,
@@ -812,10 +823,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       async () =>
         await withOptionalTimeoutMs(
           (async () => {
-            const image = maybeSetModalSandboxCmd(
-              await this.modalImageFromId(snapshotId),
-              this.state.useSleepCmd,
-            );
+            const image = await this.modalImageFromId(snapshotId);
             return await this.modal.sandboxes.create(
               this.app,
               image,
@@ -930,6 +938,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     return {
       workdir: this.state.manifest.root,
       env: this.state.environment,
+      ...(this.state.useSleepCmd ? { command: ['sleep', 'infinity'] } : {}),
       ...(typeof this.state.timeoutMs === 'number'
         ? { timeoutMs: this.state.timeoutMs }
         : {}),
@@ -1125,29 +1134,14 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     path: string,
     content: string | Uint8Array,
   ): Promise<void> {
-    await this.ensureDirectory(pathPosix.dirname(path));
-    const handle = await this.sandbox.open(path, 'w');
-    try {
-      await handle.write(
-        typeof content === 'string'
-          ? new TextEncoder().encode(content)
-          : content,
-      );
-      if (handle.flush) {
-        await handle.flush();
-      }
-    } finally {
-      await handle.close();
-    }
+    await this.sandbox.filesystem.writeBytes(
+      typeof content === 'string' ? new TextEncoder().encode(content) : content,
+      path,
+    );
   }
 
   async readSandboxFile(path: string): Promise<Uint8Array> {
-    const handle = await this.sandbox.open(path, 'r');
-    try {
-      return Uint8Array.from(await handle.read());
-    } finally {
-      await handle.close();
-    }
+    return Uint8Array.from(await this.sandbox.filesystem.readBytes(path));
   }
 
   async removeSandboxPath(path: string): Promise<void> {
@@ -1329,15 +1323,15 @@ export class ModalSandboxClient implements SandboxClient<
           );
           imageState.imageId = imageId;
           imageState.imageTag = imageTag;
-          const sandboxImage = maybeSetModalSandboxCmd(image, useSleepCmd);
           cloudBucketMounts = await modalCloudBucketMountsForManifest({
-            modalModule,
+            modal,
             manifest,
             defaultSecretName: resolvedOptions.nativeCloudBucketSecretName,
           });
           const createParams = {
             workdir: manifest.root,
             env: environment,
+            ...(useSleepCmd ? { command: ['sleep', 'infinity'] } : {}),
             ...(typeof resolvedOptions.timeoutMs === 'number'
               ? { timeoutMs: resolvedOptions.timeoutMs }
               : {}),
@@ -1356,7 +1350,7 @@ export class ModalSandboxClient implements SandboxClient<
               'modal',
               'create sandbox',
               async () =>
-                await modal.sandboxes.create(app, sandboxImage, createParams),
+                await modal.sandboxes.create(app, image, createParams),
               { appName: resolvedOptions.appName },
             ),
             resolvedOptions.sandboxCreateTimeoutS,
@@ -1401,7 +1395,7 @@ export class ModalSandboxClient implements SandboxClient<
           archiveLimits: createArgs.archiveLimits,
           cloudBucketMountsProvider: async () =>
             await modalCloudBucketMountsForManifest({
-              modalModule,
+              modal,
               manifest: sessionState.manifest,
               defaultSecretName: resolvedOptions.nativeCloudBucketSecretName,
             }),
@@ -1546,7 +1540,7 @@ export class ModalSandboxClient implements SandboxClient<
       ownsSandbox,
       cloudBucketMountsProvider: async () =>
         await modalCloudBucketMountsForManifest({
-          modalModule,
+          modal,
           manifest: state.manifest,
           defaultSecretName:
             state.nativeCloudBucketSecretName ??
@@ -1596,88 +1590,9 @@ function shouldResolveModalApp(args: {
 }
 
 function adaptModalModule(modal: typeof import('modal')): ModalModule {
-  const secretApi: unknown = modal.Secret;
-  const usesClassSecretApi = typeof secretApi === 'function';
-  const cloudBucketMountClass =
-    typeof modal.CloudBucketMount === 'function'
-      ? (modal.CloudBucketMount as NonNullable<ModalModule['CloudBucketMount']>)
-      : undefined;
   return {
     ModalClient: modal.ModalClient,
-    CloudBucketMount:
-      usesClassSecretApi && cloudBucketMountClass
-        ? adaptClassModalCloudBucketMount(cloudBucketMountClass)
-        : (modal.CloudBucketMount as ModalModule['CloudBucketMount']),
-    Secret: {
-      fromName: async (name, params) => {
-        if (usesClassSecretApi) {
-          return await modal.Secret.fromName(name, {
-            ...(params?.environment ? { environment: params.environment } : {}),
-          });
-        }
-        if (isModalSecretModule(secretApi)) {
-          return await secretApi.fromName(name, params);
-        }
-        throw new Error('Missing Secret export from modal.');
-      },
-      fromObject: async (entries, params) => {
-        if (usesClassSecretApi) {
-          const environment = readOptionalString(params, 'environment');
-          return await modal.Secret.fromObject(entries, {
-            ...(environment ? { environment } : {}),
-          });
-        }
-        if (isModalSecretModule(secretApi)) {
-          return await secretApi.fromObject(entries, params);
-        }
-        throw new Error('Missing Secret export from modal.');
-      },
-    },
   };
-}
-
-function adaptClassModalCloudBucketMount(
-  CloudBucketMount: NonNullable<ModalModule['CloudBucketMount']>,
-): NonNullable<ModalModule['CloudBucketMount']> {
-  return class implements ModalCloudBucketMountLike {
-    private readonly mount: ModalCloudBucketMountLike;
-
-    constructor(bucketName: string, params?: Record<string, unknown>) {
-      const bucketEndpointUrl = readOptionalString(params, 'bucketEndpointUrl');
-      const keyPrefix = readOptionalString(params, 'keyPrefix');
-      this.mount = new CloudBucketMount(bucketName, {
-        ...(bucketEndpointUrl ? { bucketEndpointUrl } : {}),
-        ...(keyPrefix ? { keyPrefix } : {}),
-        ...(typeof params?.readOnly === 'boolean'
-          ? { readOnly: params.readOnly }
-          : {}),
-        ...(params?.secret ? { secret: params.secret } : {}),
-      });
-    }
-
-    toProto(mountPath: string): unknown {
-      if (!this.mount.toProto) {
-        throw new SandboxProviderError(
-          'Modal CloudBucketMount is missing toProto support.',
-          {
-            provider: 'modal',
-          },
-        );
-      }
-      return this.mount.toProto(mountPath);
-    }
-  };
-}
-
-function isModalSecretModule(
-  value: unknown,
-): value is NonNullable<ModalModule['Secret']> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'fromName' in value &&
-    'fromObject' in value
-  );
 }
 
 function createModalClientFromModule(
@@ -1801,18 +1716,8 @@ function modalImageId(image: ModalImageLike): string | undefined {
   return image.imageId ?? image.objectId;
 }
 
-function maybeSetModalSandboxCmd(
-  image: ModalImageLike,
-  useSleepCmd: boolean,
-): ModalImageLike {
-  if (!useSleepCmd || typeof image.cmd !== 'function') {
-    return image;
-  }
-  return image.cmd(['sleep', 'infinity']);
-}
-
 async function modalCloudBucketMountsForManifest(args: {
-  modalModule: ModalModule;
+  modal: ModalClientLike;
   manifest: Manifest;
   defaultSecretName?: string;
 }): Promise<Record<string, ModalCloudBucketMountLike> | undefined> {
@@ -1821,14 +1726,6 @@ async function modalCloudBucketMountsForManifest(args: {
     .filter(({ entry }) => isModalCloudBucketMountEntry(entry));
   if (mountEntries.length === 0) {
     return undefined;
-  }
-  if (!args.modalModule.CloudBucketMount) {
-    throw new SandboxProviderError(
-      'Modal cloud bucket mounts require modal.CloudBucketMount support.',
-      {
-        provider: 'modal',
-      },
-    );
   }
 
   const cloudBucketMounts: Record<string, ModalCloudBucketMountLike> = {};
@@ -1842,39 +1739,30 @@ async function modalCloudBucketMountsForManifest(args: {
         'secretEnvironmentName',
       ),
     });
-    cloudBucketMounts[mountPath] = new args.modalModule.CloudBucketMount(
+    const mountParams = {
+      ...(config.bucketEndpointUrl
+        ? { bucketEndpointUrl: config.bucketEndpointUrl }
+        : {}),
+      ...(config.keyPrefix ? { keyPrefix: config.keyPrefix } : {}),
+      ...(typeof config.readOnly === 'boolean'
+        ? { readOnly: config.readOnly }
+        : {}),
+      ...(await modalCloudBucketMountSecret(args.modal, config)),
+    };
+    cloudBucketMounts[mountPath] = args.modal.cloudBucketMounts.create(
       config.bucketName,
-      {
-        ...(config.bucketEndpointUrl
-          ? { bucketEndpointUrl: config.bucketEndpointUrl }
-          : {}),
-        ...(config.keyPrefix ? { keyPrefix: config.keyPrefix } : {}),
-        ...(typeof config.readOnly === 'boolean'
-          ? { readOnly: config.readOnly }
-          : {}),
-        ...(await modalCloudBucketMountSecret(args.modalModule, config)),
-      },
+      mountParams,
     );
   }
   return cloudBucketMounts;
 }
 
 async function modalCloudBucketMountSecret(
-  modalModule: ModalModule,
+  modal: ModalClientLike,
   config: ModalCloudBucketMountConfig,
 ): Promise<{ secret?: ModalSecretLike }> {
   if (!config.secretName && !config.credentials) {
     return {};
-  }
-  const Secret = modalModule.Secret;
-  if (!Secret) {
-    throw new SandboxProviderError(
-      'Modal cloud bucket mounts require modal.Secret support when credentials are configured.',
-      {
-        provider: 'modal',
-        bucketName: config.bucketName,
-      },
-    );
   }
   const secretName = config.secretName;
   if (secretName) {
@@ -1884,7 +1772,7 @@ async function modalCloudBucketMountSecret(
         'modal',
         'resolve cloud bucket secret',
         async () =>
-          await Secret.fromName(secretName, {
+          await modal.secrets.fromName(secretName, {
             ...(config.secretEnvironmentName
               ? { environment: config.secretEnvironmentName }
               : {}),
@@ -1901,7 +1789,7 @@ async function modalCloudBucketMountSecret(
       'ModalSandboxClient',
       'modal',
       'create cloud bucket secret',
-      async () => await Secret.fromObject(config.credentials ?? {}),
+      async () => await modal.secrets.fromObject(config.credentials ?? {}),
       { bucketName: config.bucketName },
     ),
   };
@@ -1942,6 +1830,39 @@ function assertModalMountEntrySupported(
       'secretEnvironmentName',
     ),
   });
+}
+
+function assertModalTarWorkspacePersistenceMountsSupported(
+  manifest: Manifest,
+): void {
+  const mountPaths = collectModalMountPathsWithinManifestRoot(manifest);
+  if (mountPaths.length === 0) {
+    return;
+  }
+
+  throw new SandboxUnsupportedFeatureError(
+    'ModalSandboxClient cannot use tar workspace persistence with mount entries under the workspace root.',
+    {
+      provider: 'modal',
+      feature: 'workspacePersistence.tar',
+      root: manifest.root,
+      mountPaths,
+    },
+  );
+}
+
+function collectModalMountPathsWithinManifestRoot(
+  manifest: Manifest,
+): string[] {
+  const root = normalizePosixPath(manifest.root);
+  return uniqueStrings(
+    manifest
+      .mountTargets()
+      .map(({ mountPath }) => normalizePosixPath(mountPath))
+      .filter(
+        (mountPath) => relativePosixPathWithinRoot(root, mountPath) !== null,
+      ),
+  ).sort((left, right) => left.localeCompare(right));
 }
 
 function assertModalLiveManifestMountsUnsupported(

@@ -1,5 +1,32 @@
 # @openai/agents-openai
 
+## 0.11.6
+
+### Patch Changes
+
+- f76fc19: fix: populate model and model_config on generation span in streaming mode
+
+  `getStreamedResponse()` in `OpenAIChatCompletionsModel` was not setting `span.spanData.model` or `span.spanData.model_config` on the generation span, causing downstream tracing exporters to report the model as "unknown". The non-streaming `getResponse()` path already set these fields correctly.
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+
 ## 0.11.4
 
 ### Patch Changes
