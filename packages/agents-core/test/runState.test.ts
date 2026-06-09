@@ -892,6 +892,34 @@ describe('RunState', () => {
     );
   });
 
+  it('rejects schema version 1.12 payloads with tool output customData', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'CustomDataVersionAgent' });
+    const state = new RunState(context, 'input1', agent, 2);
+    const rawItem: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      name: 'lookup',
+      callId: 'call_custom_data',
+      status: 'completed',
+      output: 'done',
+    };
+    state._generatedItems.push(
+      new RunToolCallOutputItem(rawItem, agent, 'done', {
+        auditId: 'audit_123',
+      }),
+    );
+
+    const jsonVersion = state.toJSON() as any;
+    expect(jsonVersion.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    jsonVersion.$schemaVersion = '1.12';
+
+    await expect(() =>
+      RunState.fromString(agent, JSON.stringify(jsonVersion)),
+    ).rejects.toThrow(
+      'Run state schema version 1.12 does not support tool output customData.',
+    );
+  });
+
   it('accepts schema version 1.6 payloads during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent16' });
