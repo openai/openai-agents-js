@@ -128,6 +128,196 @@ describe('mcpToFunctionTool', () => {
     ]);
   });
 
+  it('uses structured MCP output only when explicitly enabled', async () => {
+    const callTool = vi.fn(async () => [
+      { type: 'text', text: 'legacy output' },
+    ]);
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'legacy output' }],
+      structuredContent: { answer: 42 },
+    }));
+    const server: MCPServer = {
+      name: 'structured-output-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'structured',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toBe(
+      '{"answer":42}',
+    );
+    expect(callToolResult).toHaveBeenCalledWith('structured', {});
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('keeps using legacy content output by default', async () => {
+    const callTool = vi.fn(async () => [
+      { type: 'text', text: 'legacy output' },
+    ]);
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'legacy output' }],
+      structuredContent: { answer: 42 },
+    }));
+    const server: MCPServer = {
+      name: 'legacy-output-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'legacy',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toEqual({
+      type: 'text',
+      text: 'legacy output',
+    });
+    expect(callTool).toHaveBeenCalledWith('legacy', {});
+    expect(callToolResult).not.toHaveBeenCalled();
+  });
+
+  it('uses an empty structured MCP output when explicitly enabled', async () => {
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'legacy output' }],
+      structuredContent: {},
+    }));
+    const server: MCPServer = {
+      name: 'empty-structured-output-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [{ type: 'text', text: 'legacy output' }],
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'empty_structured',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toBe('{}');
+  });
+
+  it('preserves MCP error content when structured output is enabled', async () => {
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'tool error details' }],
+      structuredContent: { answer: 42 },
+      isError: true,
+    }));
+    const server: MCPServer = {
+      name: 'structured-error-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [{ type: 'text', text: 'legacy output' }],
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'structured_error',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toEqual({
+      type: 'text',
+      text: 'tool error details',
+    });
+  });
+
+  it('falls back to legacy content when a custom server has no full-result method', async () => {
+    const callTool = vi.fn(async () => [
+      { type: 'text', text: 'legacy output' },
+    ]);
+    const server: MCPServer = {
+      name: 'legacy-custom-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'legacy_custom',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    await expect(tool.invoke(new RunContext({}), '{}')).resolves.toEqual({
+      type: 'text',
+      text: 'legacy output',
+    });
+    expect(callTool).toHaveBeenCalledWith('legacy_custom', {});
+  });
+
   it('resolves and passes MCP tool metadata', async () => {
     const callTool = vi.fn(
       async (

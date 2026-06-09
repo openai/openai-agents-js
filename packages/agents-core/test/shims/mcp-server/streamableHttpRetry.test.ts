@@ -557,6 +557,38 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     }
   });
 
+  it('preserves serializable full results when retrying a disconnected client', async () => {
+    MockClient.callToolHandlers = [
+      async function (this: MockClient) {
+        throwProtocolNotConnected.call(this);
+      },
+      async () => ({
+        content: [{ type: 'text', text: 'fallback' }],
+        _meta: { renderer: 'chart' },
+        structuredContent: { answer: 42 },
+        isError: false,
+      }),
+    ];
+
+    const server = createServer('full-result-retry-server');
+    await server.connect();
+
+    try {
+      const result = await server.callToolResult('mock-tool', { foo: 'bar' });
+
+      expect(JSON.parse(JSON.stringify(result))).toEqual({
+        content: [{ type: 'text', text: 'fallback' }],
+        _meta: { renderer: 'chart' },
+        structuredContent: { answer: 42 },
+        isError: false,
+      });
+      expect(MockClient.instances).toHaveLength(1);
+      expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('does not reconnect when a healthy client hook throws Error("Not connected")', async () => {
     let firstFailure = true;
     MockClient.callToolHandlers = [
