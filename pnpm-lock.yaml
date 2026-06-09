@@ -696,8 +696,8 @@ importers:
         specifier: ^2.14.1
         version: 2.19.0
       modal:
-        specifier: 0.7.4
-        version: 0.7.4
+        specifier: 0.7.6
+        version: 0.7.6
       undici-types:
         specifier: 6.21.0
         version: 6.21.0
@@ -6150,8 +6150,8 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  modal@0.7.4:
-    resolution: {integrity: sha512-md/+L67tM1RazAt2xvLO+gUqRz6zllyYoNNiM8h+Eb1wLy7JzliH7vnx9f9Sq4zE3qQHENpX0Tjy/LSkIyrANA==}
+  modal@0.7.6:
+    resolution: {integrity: sha512-AOFRO/eGl4fcNKxHkNLx55+tL318IeAiTDJCMh/Q1ZXhoaZFnpmlirVV2J5BhO32XLA7AiH6KYGA7gRBGA09lQ==}
 
   module-details-from-path@1.0.4:
     resolution: {integrity: sha512-EGWKgxALGMgzvxYF1UyGTy0HXX/2vHLkw6+NvDKW2jypWbHpjQuj4UMcqQWXHERJhVGKikolT06G3bcKe4fi7w==}
@@ -14586,7 +14586,7 @@ snapshots:
 
   mkdirp@3.0.1: {}
 
-  modal@0.7.4:
+  modal@0.7.6:
     dependencies:
       cbor-x: 1.6.4
       long: 5.3.2
