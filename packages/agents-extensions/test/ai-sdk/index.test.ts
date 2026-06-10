@@ -1298,22 +1298,244 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('rejects input_file content', () => {
-    const items: protocol.ModelItem[] = [
+  describe('input_file conversion', () => {
+    const userFileItems = (
+      content: Record<string, any>,
+    ): protocol.ModelItem[] => [
       {
         role: 'user',
-        content: [
-          {
-            type: 'input_file',
-            file: 'file_123',
-          },
-        ],
+        content: [{ type: 'input_file', ...content }],
       } as any,
     ];
 
-    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
-      /File inputs are not supported/,
-    );
+    test('converts file data URLs to raw base64 alongside text content', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'summarize this' },
+            {
+              type: 'input_file',
+              file: 'data:application/pdf;base64,JVBERi0xLjQK',
+            },
+          ],
+        } as any,
+      ];
+      const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+      expect(msgs).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarize this', providerOptions: {} },
+            {
+              type: 'file',
+              data: 'JVBERi0xLjQK',
+              mediaType: 'application/pdf',
+              providerOptions: {},
+            },
+          ],
+          providerOptions: {},
+        },
+      ]);
+    });
+
+    test('passes filename through for file inputs', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({
+          file: 'data:application/pdf;base64,JVBERi0xLjQK',
+          filename: 'report.pdf',
+        }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: 'JVBERi0xLjQK',
+        mediaType: 'application/pdf',
+        filename: 'report.pdf',
+        providerOptions: {},
+      });
+    });
+
+    test('falls back to providerData.filename when filename is absent', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({
+          file: 'data:application/pdf;base64,JVBERi0xLjQK',
+          providerData: { filename: 'fallback.pdf' },
+        }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: 'JVBERi0xLjQK',
+        mediaType: 'application/pdf',
+        filename: 'fallback.pdf',
+        providerOptions: { filename: 'fallback.pdf' },
+      });
+    });
+
+    test('prefers the mediaType embedded in a data URL over providerData', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({
+          file: 'data:application/pdf;base64,JVBERi0xLjQK',
+          providerData: { mediaType: 'text/plain' },
+        }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: 'JVBERi0xLjQK',
+        mediaType: 'application/pdf',
+        providerOptions: { mediaType: 'text/plain' },
+      });
+    });
+
+    test('converts file URL strings and infers mediaType from the URL path', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({ file: 'https://example.com/docs/report.pdf' }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: new URL('https://example.com/docs/report.pdf'),
+        mediaType: 'application/pdf',
+        providerOptions: {},
+      });
+    });
+
+    test('accepts http URLs', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({ file: 'http://example.com/report.pdf' }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: new URL('http://example.com/report.pdf'),
+        mediaType: 'application/pdf',
+        providerOptions: {},
+      });
+    });
+
+    test('converts { url } file objects', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({ file: { url: 'https://example.com/report.pdf' } }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: new URL('https://example.com/report.pdf'),
+        mediaType: 'application/pdf',
+        providerOptions: {},
+      });
+    });
+
+    test('converts raw base64 file data with providerData.mediaType', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({
+          file: 'JVBERi0xLjQK',
+          providerData: { mediaType: 'application/pdf' },
+        }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: 'JVBERi0xLjQK',
+        mediaType: 'application/pdf',
+        providerOptions: { mediaType: 'application/pdf' },
+      });
+    });
+
+    test('prefers filename extension over URL path extension for mediaType', () => {
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}),
+        userFileItems({
+          file: 'https://example.com/notes.txt',
+          filename: 'actual.pdf',
+        }),
+      );
+      expect((msgs[0] as any).content[0]).toEqual({
+        type: 'file',
+        data: new URL('https://example.com/notes.txt'),
+        mediaType: 'application/pdf',
+        filename: 'actual.pdf',
+        providerOptions: {},
+      });
+    });
+
+    test('rejects file URLs whose mediaType cannot be determined', () => {
+      expect(() =>
+        itemsToLanguageV2Messages(
+          stubModel({}),
+          userFileItems({ file: 'https://example.com/document' }),
+        ),
+      ).toThrow(/Unable to determine the media type/);
+    });
+
+    test('rejects OpenAI file IDs', () => {
+      expect(() =>
+        itemsToLanguageV2Messages(
+          stubModel({}),
+          userFileItems({ file: { id: 'file_123' } }),
+        ),
+      ).toThrow(/File IDs are OpenAI-specific/);
+    });
+
+    test('rejects strings that are neither data URLs, base64, nor URLs', () => {
+      expect(() =>
+        itemsToLanguageV2Messages(
+          stubModel({}),
+          userFileItems({ file: 'file_123' }),
+        ),
+      ).toThrow(/File input must be a base64-encoded data URL/);
+    });
+
+    test('rejects missing or empty file values', () => {
+      expect(() =>
+        itemsToLanguageV2Messages(stubModel({}), userFileItems({})),
+      ).toThrow(/File input requires inline data/);
+      expect(() =>
+        itemsToLanguageV2Messages(stubModel({}), userFileItems({ file: '' })),
+      ).toThrow(/File input must be a base64-encoded data URL/);
+      expect(() =>
+        itemsToLanguageV2Messages(
+          stubModel({}),
+          userFileItems({ file: { url: '' } }),
+        ),
+      ).toThrow(/File input must be a base64-encoded data URL/);
+    });
+
+    test('keeps skipping file outputs in tool results', () => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'f1',
+          name: 'fetch_doc',
+          arguments: '{}',
+        } as any,
+        {
+          type: 'function_call_result',
+          callId: 'f1',
+          name: 'fetch_doc',
+          output: [
+            { type: 'input_text', text: 'done' },
+            { type: 'input_file', file: 'data:application/pdf;base64,AAAA' },
+          ],
+        } as any,
+      ];
+      const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+      expect(msgs[1]).toEqual({
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'f1',
+            toolName: 'fetch_doc',
+            output: { type: 'text', value: 'done[file output skipped]' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      });
+    });
   });
 
   test('passes through unknown items via providerData', () => {
