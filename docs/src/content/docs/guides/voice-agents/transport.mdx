@@ -41,6 +41,25 @@ To use your own media stream or audio element, provide an `OpenAIRealtimeWebRTC`
 
 For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
 
+### Azure OpenAI Realtime compatibility
+
+The built-in `OpenAIRealtimeWebRTC` and `OpenAIRealtimeWebSocket` transports target the OpenAI GA Realtime API shape. Azure OpenAI Realtime endpoints may not accept the same `session.update` payload shape as OpenAI GA Realtime, so verify the Realtime event schema accepted by your Azure deployment before relying on the default OpenAI transports for Azure.
+
+If your endpoint rejects OpenAI-specific fields, create the transport yourself and use `transformSessionPayload` to rewrite SDK-managed `session.update` payloads before they are sent:
+
+```ts
+const transport = new OpenAIRealtimeWebRTC({
+  baseUrl: 'https://<region>.realtimeapi-preview.ai.azure.com/v1/realtimertc',
+  transformSessionPayload: ({ type, output_modalities, audio, ...session }) => {
+    return {
+      ...session,
+      modalities: ['audio', 'text'],
+      voice: audio?.output?.voice,
+    };
+  },
+});
+```
+
 ### WebSocket is the default server choice
 
 Pass `transport: 'websocket'` or an instance of `OpenAIRealtimeWebSocket` when creating the session to use a WebSocket connection instead of WebRTC. This works well for server-side use cases, telephony bridges, and custom audio pipelines.
