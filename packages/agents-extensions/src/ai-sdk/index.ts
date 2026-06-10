@@ -148,24 +148,22 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
   }
 }
 
-type ParsedInlineImageData = {
+type ParsedInlineData = {
   data: string;
   mediaType: string;
 };
 
-function parseBase64ImageDataUrl(
-  imageSource: string,
-): ParsedInlineImageData | undefined {
-  if (!imageSource.startsWith('data:')) {
+function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
+  if (!source.startsWith('data:')) {
     return undefined;
   }
 
-  const commaIndex = imageSource.indexOf(',');
+  const commaIndex = source.indexOf(',');
   if (commaIndex === -1) {
     return undefined;
   }
 
-  const metadata = imageSource.slice('data:'.length, commaIndex);
+  const metadata = source.slice('data:'.length, commaIndex);
   if (!metadata.includes('base64')) {
     return undefined;
   }
@@ -177,9 +175,56 @@ function parseBase64ImageDataUrl(
   }
 
   return {
-    data: imageSource.slice(commaIndex + 1),
+    data: source.slice(commaIndex + 1),
     mediaType,
   };
+}
+
+// Strings that contain only base64 characters are treated as inline file data
+// rather than a URL, mirroring how the Responses API model resolves them.
+const BASE64_FILE_DATA_PATTERN = /^[A-Za-z0-9+/=]+$/;
+
+const FILE_EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+  html: 'text/html',
+};
+
+const FILE_MEDIA_TYPE_ERROR_MESSAGE =
+  'Unable to determine the media type for file input. Set providerData.mediaType (e.g. "application/pdf") or provide a filename with a known extension.';
+
+function getFileExtension(name: string | undefined): string | undefined {
+  if (!name) {
+    return undefined;
+  }
+  const basename = name.slice(name.lastIndexOf('/') + 1);
+  const dotIndex = basename.lastIndexOf('.');
+  if (dotIndex <= 0 || dotIndex === basename.length - 1) {
+    return undefined;
+  }
+  return basename.slice(dotIndex + 1).toLowerCase();
+}
+
+function resolveFileMediaType(options: {
+  explicit?: string;
+  filename?: string;
+  url?: URL;
+}): string | undefined {
+  if (options.explicit) {
+    return options.explicit;
+  }
+  const filenameExtension = getFileExtension(options.filename);
+  if (filenameExtension && FILE_EXTENSION_MEDIA_TYPES[filenameExtension]) {
+    return FILE_EXTENSION_MEDIA_TYPES[filenameExtension];
+  }
+  const urlExtension = getFileExtension(options.url?.pathname);
+  if (urlExtension && FILE_EXTENSION_MEDIA_TYPES[urlExtension]) {
+    return FILE_EXTENSION_MEDIA_TYPES[urlExtension];
+  }
+  return undefined;
 }
 
 /**
@@ -321,7 +366,7 @@ export function itemsToLanguageV2Messages(
                       );
                     }
 
-                    const inlineImage = parseBase64ImageDataUrl(imageSource);
+                    const inlineImage = parseBase64DataUrl(imageSource);
                     if (inlineImage) {
                       return {
                         type: 'file',
@@ -346,7 +391,97 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_file') {
-                    throw new UserError('File inputs are not supported.');
+                    const providerOptions = toProviderOptions(
+                      contentProviderData,
+                      model,
+                    );
+                    const filename =
+                      c.filename ??
+                      (typeof contentProviderData?.filename === 'string'
+                        ? contentProviderData.filename
+                        : undefined);
+                    const explicitMediaType =
+                      typeof contentProviderData?.mediaType === 'string'
+                        ? contentProviderData.mediaType
+                        : undefined;
+
+                    const toFileUrlPart = (urlValue: string) => {
+                      let url: URL;
+                      try {
+                        url = new URL(urlValue);
+                      } catch {
+                        throw new UserError(
+                          `File input must be a base64-encoded data URL, base64 data, or a valid URL: ${JSON.stringify(c)}`,
+                        );
+                      }
+                      const mediaType = resolveFileMediaType({
+                        explicit: explicitMediaType,
+                        filename,
+                        url,
+                      });
+                      if (!mediaType) {
+                        throw new UserError(FILE_MEDIA_TYPE_ERROR_MESSAGE);
+                      }
+                      return {
+                        type: 'file' as const,
+                        data: url,
+                        mediaType,
+                        ...(filename ? { filename } : {}),
+                        providerOptions,
+                      };
+                    };
+
+                    if (typeof c.file === 'string') {
+                      const value = c.file.trim();
+                      if (value.startsWith('data:')) {
+                        const inlineFile = parseBase64DataUrl(value);
+                        if (!inlineFile) {
+                          throw new UserError(
+                            'File data URLs must be base64-encoded, e.g. data:application/pdf;base64,<data>.',
+                          );
+                        }
+                        // The media type embedded in the data URL takes precedence.
+                        return {
+                          type: 'file' as const,
+                          data: inlineFile.data,
+                          mediaType: inlineFile.mediaType,
+                          ...(filename ? { filename } : {}),
+                          providerOptions,
+                        };
+                      }
+                      if (BASE64_FILE_DATA_PATTERN.test(value)) {
+                        const mediaType = resolveFileMediaType({
+                          explicit: explicitMediaType,
+                          filename,
+                        });
+                        if (!mediaType) {
+                          throw new UserError(FILE_MEDIA_TYPE_ERROR_MESSAGE);
+                        }
+                        return {
+                          type: 'file' as const,
+                          data: value,
+                          mediaType,
+                          ...(filename ? { filename } : {}),
+                          providerOptions,
+                        };
+                      }
+                      return toFileUrlPart(value);
+                    }
+                    if (
+                      isRecord(c.file) &&
+                      'url' in c.file &&
+                      typeof c.file.url === 'string'
+                    ) {
+                      return toFileUrlPart(c.file.url);
+                    }
+                    if (isRecord(c.file) && 'id' in c.file) {
+                      throw new UserError(
+                        'File IDs are OpenAI-specific and not supported by the AI SDK adapter. Pass a publicly accessible URL or inline data (a base64 string or data URL) instead.',
+                      );
+                    }
+                    throw new UserError(
+                      `File input requires inline data (a base64 string or data URL) or a file URL: ${JSON.stringify(c)}`,
+                    );
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
@@ -967,7 +1102,7 @@ function convertStructuredOutputsToAiSdkOutput(
         textParts.push('[image]');
         continue;
       }
-      const inlineImage = parseBase64ImageDataUrl(imageValue);
+      const inlineImage = parseBase64DataUrl(imageValue);
       if (inlineImage) {
         mediaParts.push({
           type: 'media',
