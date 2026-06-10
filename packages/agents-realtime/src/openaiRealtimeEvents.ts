@@ -140,16 +140,22 @@ export const conversationItemInputAudioTranscriptionCompletedEventSchema =
     transcript: z.string(),
     logprobs: z.array(z.any()).nullable().optional(),
     usage: z
-      .object({
-        type: z.literal('tokens'),
-        total_tokens: z.number(),
-        input_tokens: z.number(),
-        input_token_details: z.object({
-          text_tokens: z.number(),
-          audio_tokens: z.number(),
+      .discriminatedUnion('type', [
+        z.object({
+          type: z.literal('tokens'),
+          total_tokens: z.number(),
+          input_tokens: z.number(),
+          input_token_details: z.object({
+            text_tokens: z.number(),
+            audio_tokens: z.number(),
+          }),
+          output_tokens: z.number(),
         }),
-        output_tokens: z.number(),
-      })
+        z.object({
+          type: z.literal('duration'),
+          seconds: z.number(),
+        }),
+      ])
       .optional(),
   });
 
