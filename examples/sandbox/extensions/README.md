@@ -277,3 +277,32 @@ Run:
 ```bash
 pnpm -F sandbox start:runloop -- --stream
 ```
+
+## Upstash Box
+
+Required environment variables:
+
+```bash
+export OPENAI_API_KEY=...
+export UPSTASH_BOX_API_KEY=...
+```
+
+How to get `UPSTASH_BOX_API_KEY`:
+
+1. Sign in to the Upstash Console at `https://console.upstash.com`.
+2. Open the Box section and create a Box API key.
+3. Copy the key and export it in your shell before running the example.
+
+Optional Upstash Box environment variable:
+
+```bash
+export UPSTASH_BOX_BASE_URL=...
+```
+
+Use `UPSTASH_BOX_BASE_URL` when you target a non-default Box API endpoint. The `@upstash/box` SDK reads both `UPSTASH_BOX_API_KEY` and `UPSTASH_BOX_BASE_URL` from the environment, and this example checks `UPSTASH_BOX_API_KEY` explicitly at startup, so make sure it is present in your shell environment first.
+
+Run:
+
+```bash
+pnpm -F sandbox start:upstash-box -- --stream
+```

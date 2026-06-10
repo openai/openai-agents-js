@@ -64,6 +64,11 @@
       "require": "./dist/sandbox/runloop/index.js",
       "import": "./dist/sandbox/runloop/index.mjs"
     },
+    "./sandbox/upstash-box": {
+      "types": "./dist/sandbox/upstash-box/index.d.ts",
+      "require": "./dist/sandbox/upstash-box/index.js",
+      "import": "./dist/sandbox/upstash-box/index.mjs"
+    },
     "./sandbox/vercel": {
       "types": "./dist/sandbox/vercel/index.d.ts",
       "require": "./dist/sandbox/vercel/index.js",
@@ -83,6 +88,7 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
     "@runloop/api-client": "^1.16.2",
+    "@upstash/box": "^0.4.6",
     "@vercel/sandbox": "^1.9.3",
     "ai": "^6.0.0",
     "e2b": "^2.14.1",
@@ -118,6 +124,9 @@
     "@runloop/api-client": {
       "optional": true
     },
+    "@upstash/box": {
+      "optional": true
+    },
     "@vercel/sandbox": {
       "optional": true
     }
@@ -138,6 +147,7 @@
     "@openai/codex-sdk": "^0.86.0",
     "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.12",
+    "@upstash/box": "0.4.8",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.42",
     "e2b": "^2.14.1",
@@ -168,6 +178,9 @@
       ],
       "sandbox/runloop": [
         "dist/sandbox/runloop/index.d.ts"
+      ],
+      "sandbox/upstash-box": [
+        "dist/sandbox/upstash-box/index.d.ts"
       ],
       "sandbox/vercel": [
         "dist/sandbox/vercel/index.d.ts"

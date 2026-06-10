@@ -142,6 +142,7 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 | `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm peer: `e2b` or `@e2b/code-interpreter` |
 | `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm peer: `modal` |
 | `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm peer: `@runloop/api-client` |
+| `UpstashBoxSandboxClient` | `@openai/agents-extensions/sandbox/upstash-box` | npm peer: `@upstash/box` |
 | `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm peer: `@vercel/sandbox` |
 
 `CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
@@ -157,6 +158,7 @@ Hosted sandbox clients expose provider-specific mount strategies. Choose the bac
 | `DaytonaSandboxClient` | Supports rclone-backed mounts with `DaytonaCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
+| `UpstashBoxSandboxClient` | No hosted-specific mount strategy is currently exposed. Use manifest files, repos, snapshots, or other workspace inputs instead. |
 | `VercelSandboxClient` | No hosted-specific mount strategy is currently exposed. Use manifest files, repos, snapshots, or other workspace inputs instead. |
 
 The table below summarizes which remote storage entries each backend can mount directly:
@@ -170,6 +172,7 @@ The table below summarizes which remote storage entries each backend can mount d
 | `DaytonaSandboxClient` | yes | yes | yes | yes | yes | no |
 | `E2BSandboxClient` | yes | yes | yes | yes | yes | no |
 | `RunloopSandboxClient` | yes | yes | yes | yes | yes | no |
+| `UpstashBoxSandboxClient` | no | no | no | no | no | no |
 | `VercelSandboxClient` | no | no | no | no | no | no |
 
 ### Exposed ports
