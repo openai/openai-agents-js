@@ -1,6 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import type { MessageEvent as NodeMessageEvent } from 'ws';
@@ -36,6 +35,8 @@ class FakeTwilioWebSocket extends EventEmitter {
   close = vi.fn();
 }
 
+let TwilioRealtimeTransportLayer: any;
+
 // @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
 FakeTwilioWebSocket.prototype.addEventListener = function (
   type: string,
@@ -47,8 +48,10 @@ FakeTwilioWebSocket.prototype.addEventListener = function (
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 
 describe('TwilioRealtimeTransportLayer', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    ({ TwilioRealtimeTransportLayer } =
+      await import('../src/TwilioRealtimeTransport'));
   });
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {
@@ -100,6 +103,78 @@ describe('TwilioRealtimeTransportLayer', () => {
         },
       },
     });
+  });
+
+  test('listen resolves with Twilio start data before OpenAI connect', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+    expect(twilio.listenerCount('message')).toBe(1);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'start',
+          start: {
+            streamSid: 'stream-123',
+            callSid: 'call-123',
+            customParameters: { store: 'Beacon' },
+          },
+        }),
+    });
+
+    await expect(startPromise).resolves.toEqual({
+      streamSid: 'stream-123',
+      callSid: 'call-123',
+      customParameters: { store: 'Beacon' },
+    });
+
+    await expect(transport.listen()).resolves.toEqual({
+      streamSid: 'stream-123',
+      callSid: 'call-123',
+      customParameters: { store: 'Beacon' },
+    });
+  });
+
+  test('connect reuses listeners created by listen', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    void transport.listen();
+    await transport.connect({ apiKey: 'ek_test' } as any);
+
+    expect(twilio.listenerCount('message')).toBe(1);
+    expect(twilio.listenerCount('close')).toBe(1);
+    expect(twilio.listenerCount('error')).toBe(1);
+  });
+
+  test('listen rejects if Twilio closes before start', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+    twilio.emit('close');
+
+    await expect(startPromise).rejects.toThrow('Twilio websocket closed');
+  });
+
+  test('listen rejects Twilio errors before an error listener is attached', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    const startPromise = transport.listen();
+
+    expect(() => twilio.emit('error', new Error('boom'))).not.toThrow();
+    await expect(startPromise).rejects.toThrow('boom');
   });
 
   test('connect handles messages and events', async () => {
@@ -165,21 +240,18 @@ describe('TwilioRealtimeTransportLayer', () => {
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'a';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(8).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'a';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(16).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
     transport.currentItemId = 'b';
     transport['_onAudio']({
       responseId: 'FAKE_ID',
