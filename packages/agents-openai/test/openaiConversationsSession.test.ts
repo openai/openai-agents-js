@@ -80,6 +80,51 @@ describe('OpenAIConversationsSession', () => {
     expect(result).toEqual(convertedItems);
   });
 
+  it('round-trips system messages without routing them through output conversion', async () => {
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: 'sys-1',
+          type: 'message',
+          role: 'system',
+          content: [
+            {
+              type: 'input_text',
+              text: 'User info (session context): premium account',
+            },
+          ],
+        } as any;
+      },
+    }));
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems();
+
+    expect(convertToOutputItemMock).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        id: 'sys-1',
+        type: 'message',
+        role: 'system',
+        content: 'User info (session context): premium account',
+      },
+    ]);
+  });
+
   it('wraps string function_call_output payloads before converting', async () => {
     const convertedItems = [
       {
