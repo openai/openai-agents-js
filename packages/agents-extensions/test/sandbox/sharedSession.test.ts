@@ -13,6 +13,7 @@ import {
   isProviderSandboxNotFoundError,
   closeRemoteSessionOnManifestError,
   withProviderError,
+  providerErrorRetryability,
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
@@ -277,8 +278,35 @@ describe('shared sandbox session helpers', () => {
           message: 'slow down',
         },
       },
+      retryable: true,
       cause: expect.stringContaining('request failed'),
     });
+    expect((thrown as SandboxProviderError).retryable).toBe(true);
+  });
+
+  test('classifies provider retryability from statuses and typed errors', () => {
+    expect(providerErrorRetryability({ status: 400 })).toBe(false);
+    expect(providerErrorRetryability({ status: 404 })).toBe(false);
+    expect(providerErrorRetryability({ status: 408 })).toBe(true);
+    expect(providerErrorRetryability({ status: 429 })).toBe(true);
+    expect(providerErrorRetryability({ status: 503 })).toBe(true);
+    expect(providerErrorRetryability({ name: 'ProviderValidationError' })).toBe(
+      false,
+    );
+    expect(providerErrorRetryability({ name: 'ProviderTimeoutError' })).toBe(
+      true,
+    );
+    expect(
+      providerErrorRetryability({
+        response: {
+          data: {
+            error: {
+              retryable: false,
+            },
+          },
+        },
+      }),
+    ).toBe(false);
   });
 
   test('keeps provider details when manifest cleanup also fails', async () => {

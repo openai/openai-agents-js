@@ -1,4 +1,6 @@
 import { getCurrentTrace, withCustomSpan } from '../../tracing';
+import type { Span } from '../../tracing';
+import type { CustomSpanData } from '../../tracing/spans';
 import { emitSandboxEvent, serializeSandboxEventError } from '../events';
 
 export async function withSandboxSpan<T>(
@@ -15,7 +17,7 @@ export async function withSandboxSpan<T>(
     data: { ...data },
   });
 
-  const runWithEvents = async (): Promise<T> => {
+  const runWithEvents = async (span?: Span<CustomSpanData>): Promise<T> => {
     try {
       const result = await fn();
       await emitSandboxEvent({
@@ -28,6 +30,8 @@ export async function withSandboxSpan<T>(
       });
       return result;
     } catch (error) {
+      const serializedError = serializeSandboxEventError(error);
+      recordSandboxSpanError(span, serializedError);
       await emitSandboxEvent({
         type: 'sandbox_operation',
         name,
@@ -35,7 +39,7 @@ export async function withSandboxSpan<T>(
         timestamp: new Date().toISOString(),
         data: { ...data },
         durationMs: Date.now() - startedAt,
-        error: serializeSandboxEventError(error),
+        error: serializedError,
       });
       throw error;
     }
@@ -45,10 +49,24 @@ export async function withSandboxSpan<T>(
     return await runWithEvents();
   }
 
-  return await withCustomSpan(async () => await runWithEvents(), {
+  return await withCustomSpan(async (span) => await runWithEvents(span), {
     data: {
       name,
       data,
     },
   });
+}
+
+function recordSandboxSpanError(
+  span: Span<CustomSpanData> | undefined,
+  error: ReturnType<typeof serializeSandboxEventError>,
+): void {
+  if (!span) {
+    return;
+  }
+  span.spanData.data = {
+    ...span.spanData.data,
+    error,
+    error_retryable: error.retryable ?? null,
+  };
 }
