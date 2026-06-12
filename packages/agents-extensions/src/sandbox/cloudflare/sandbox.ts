@@ -1439,10 +1439,10 @@ async function cloudflareProviderHttpErrorWithBody(
 }
 
 function cloudflareRetryabilityForStatus(status: number): boolean | null {
-  if (status === 503) {
+  if (status === 500 || status === 503) {
     return true;
   }
-  if (status === 400 || status === 500) {
+  if (status === 400) {
     return false;
   }
   return null;
