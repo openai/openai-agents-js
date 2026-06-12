@@ -1,5 +1,16 @@
 # @openai/agents
 
+## 0.11.7
+
+### Patch Changes
+
+- dfbc3b0: feat(mcp): expose serializable full tool results
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+  - @openai/agents-openai@0.11.7
+  - @openai/agents-realtime@0.11.7
+
 ## 0.11.6
 
 ### Patch Changes

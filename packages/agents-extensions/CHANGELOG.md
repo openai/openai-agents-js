@@ -1,5 +1,15 @@
 # @openai/agents-extensions
 
+## 0.11.7
+
+### Patch Changes
+
+- e87c017: Update the Modal sandbox provider for the Modal SDK 0.7.6 sandbox command, filesystem, secrets, and cloud bucket mount APIs.
+- edd0a07: fix: expose sandbox error retryability metadata
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+
 ## 0.11.6
 
 ### Patch Changes
