@@ -149,6 +149,9 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  // Tracks the last turn detection state we sent so we can reset the server's
+  // idle/turn timers when voice activity detection is toggled back on.
+  #turnDetectionEnabled: boolean | undefined = undefined;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -860,6 +863,41 @@ export abstract class OpenAIRealtimeBase
       type: 'session.update',
       session: sessionData,
     });
+
+    this._resetTurnDetectionTimersIfReenabled(config);
+  }
+
+  /**
+   * Resets the server-side turn detection timers when voice activity detection
+   * is toggled back on.
+   *
+   * Disabling turn detection (`turnDetection: null`) leaves the previous idle
+   * timer running on the server. If detection stays off for longer than the
+   * configured idle timeout and is then re-enabled, the stale timer fires
+   * immediately and the model speaks before the user gets a chance to. Clearing
+   * the input audio buffer when detection is re-enabled resets that state so the
+   * idle timer only starts counting from fresh speech.
+   *
+   * @param config - The session config that was just applied.
+   */
+  private _resetTurnDetectionTimersIfReenabled(
+    config: Partial<RealtimeSessionConfig>,
+  ): void {
+    const turnDetection =
+      toNewSessionConfig(config).audio?.input?.turnDetection;
+    // `undefined` means this update did not touch turn detection, so leave the
+    // tracked state (and any in-flight audio) untouched.
+    if (typeof turnDetection === 'undefined') {
+      return;
+    }
+
+    const enabled = turnDetection !== null;
+    const wasDisabled = this.#turnDetectionEnabled === false;
+    this.#turnDetectionEnabled = enabled;
+
+    if (enabled && wasDisabled) {
+      this.sendEvent({ type: 'input_audio_buffer.clear' });
+    }
   }
 
   /**
