@@ -1,4 +1,4 @@
-import { RuntimeEventEmitter, Usage } from '@openai/agents-core';
+import { RuntimeEventEmitter, Usage, UserError } from '@openai/agents-core';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 
@@ -14,6 +14,7 @@ import {
 } from './clientMessages';
 import {
   RealtimeItem,
+  RealtimeMessageItem,
   realtimeMcpCallApprovalRequestItem,
   RealtimeMcpCallApprovalRequestItem,
   realtimeMcpCallItem,
@@ -55,6 +56,31 @@ export type OpenAIRealtimeModels =
   | 'gpt-realtime-mini-2025-10-06'
   | 'gpt-realtime-mini-2025-12-15'
   | (string & {}); // ensures autocomplete works
+
+function contentForConversationItemCreate(
+  item: RealtimeMessageItem,
+): Record<string, unknown>[] {
+  if (item.role !== 'assistant') {
+    return item.content;
+  }
+
+  return item.content.map((content) => {
+    if (content.type !== 'output_audio') {
+      return content;
+    }
+
+    if (typeof content.transcript !== 'string') {
+      throw new UserError(
+        `Cannot replay assistant output_audio item ${item.itemId} through updateHistory because it has no transcript. Realtime conversation.item.create cannot populate assistant audio messages.`,
+      );
+    }
+
+    return {
+      type: 'output_text',
+      text: content.transcript,
+    };
+  });
+}
 
 /**
  * The default model that is used during the connection if no model is provided.
@@ -940,6 +966,27 @@ export abstract class OpenAIRealtimeBase
       newHistory,
     );
 
+    const additionsAndUpdates = [...additions, ...updates];
+    const createEventsByItemId = new Map<string, RealtimeClientMessage>();
+
+    for (const addition of additionsAndUpdates) {
+      if (addition.type === 'message') {
+        const itemEntry: Record<string, any> = {
+          type: 'message',
+          role: addition.role,
+          content: contentForConversationItemCreate(addition),
+          id: addition.itemId,
+        };
+        if (addition.role !== 'system' && addition.status) {
+          itemEntry.status = addition.status;
+        }
+        createEventsByItemId.set(addition.itemId, {
+          type: 'conversation.item.create',
+          item: itemEntry,
+        });
+      }
+    }
+
     const removalIds = new Set(removals.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
     for (const update of updates) {
@@ -955,23 +1002,9 @@ export abstract class OpenAIRealtimeBase
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
-
     for (const addition of additionsAndUpdates) {
       if (addition.type === 'message') {
-        const itemEntry: Record<string, any> = {
-          type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
-        };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
-        }
-        this.sendEvent({
-          type: 'conversation.item.create',
-          item: itemEntry,
-        });
+        this.sendEvent(createEventsByItemId.get(addition.itemId)!);
       } else if (addition.type === 'function_call') {
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
