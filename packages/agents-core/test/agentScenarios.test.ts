@@ -1702,6 +1702,61 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(model.calls.length).toBe(1);
   });
 
+  it('reruns tool input guardrails when resuming approved state after pre-approval guardrails', async () => {
+    let executed = 0;
+    const inputGuardrailRun = vi.fn(async () => ({
+      behavior: { type: 'allow' as const },
+    }));
+    const approvalTool = tool({
+      name: 'guarded_approval',
+      description: 'requires approval',
+      parameters: z.object({ input: z.string() }),
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'time_sensitive_check',
+          run: inputGuardrailRun,
+        },
+      ],
+      execute: async ({ input }) => {
+        executed += 1;
+        return `approved:${input}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('guarded_approval', JSON.stringify({ input: 'hi' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'approval-guardrail-resume',
+      model,
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const first = await run(agent, 'hello', {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+    expect(first.interruptions).toHaveLength(1);
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(1);
+    expect(executed).toBe(0);
+
+    const restored = await RunState.fromString(agent, first.state.toString());
+    restored.approve(restored.getInterruptions()[0]);
+
+    const resumed = await run(agent, restored, {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+
+    expect(resumed.finalOutput).toBe('approved:hi');
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(2);
+    expect(resumed.toolInputGuardrailResults).toHaveLength(2);
+    expect(executed).toBe(1);
+    expect(model.calls.length).toBe(1);
+  });
+
   it('trips output guardrail on sensitive data', async () => {
     const model = new RecordingModel([
       finalOutputMessage(

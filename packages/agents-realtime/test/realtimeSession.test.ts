@@ -218,6 +218,19 @@ describe('RealtimeSession', () => {
     }
   });
 
+  it('rejects invalid realtime pre-approval input guardrail config', () => {
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    expect(
+      () =>
+        new RealtimeSession(agent, {
+          transport: new FakeTransport(),
+          toolExecution: { preApprovalInputGuardrails: 'yes' as any },
+        }),
+    ).toThrow(
+      'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
+    );
+  });
+
   it('exposes transport and session state via getters', () => {
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     const customTransport = new FakeTransport();
@@ -897,6 +910,162 @@ describe('RealtimeSession', () => {
     expect(payload.tool.name).toBe('needs_approval');
     expect(t.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not run realtime input guardrails before pending approval by default', async () => {
+    const guardrailRun = vi.fn(async () =>
+      ToolGuardrailFunctionOutputFactory.allow(),
+    );
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'approval_guardrail',
+          run: guardrailRun,
+        },
+      ],
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    t.emit('function_call', {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-default-guardrail',
+      arguments: '{}',
+      status: 'completed',
+    } as any);
+
+    await approvalRequest;
+    expect(guardrailRun).not.toHaveBeenCalled();
+    expect(t.sendFunctionCallOutputCalls.length).toBe(0);
+  });
+
+  it('returns realtime guardrail rejection instead of pending approval when opted in', async () => {
+    const guardrailRun = vi.fn(async () =>
+      ToolGuardrailFunctionOutputFactory.rejectContent(
+        'blocked before approval',
+      ),
+    );
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'approval_blocker',
+          run: guardrailRun,
+        },
+      ],
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalSpy = vi.fn();
+    s.on('tool_approval_requested', approvalSpy);
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-pre-approval-blocked',
+      arguments: '{}',
+      status: 'completed',
+    } as any);
+
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('blocked before approval');
+    expect(startResponse).toBe(true);
+    expect(approvalSpy).not.toHaveBeenCalled();
+    expect(guardrailRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('reruns realtime input guardrails after approval when pre-approval guardrails are enabled', async () => {
+    const guardrailRun = vi.fn(async () =>
+      ToolGuardrailFunctionOutputFactory.allow(),
+    );
+    const execute = vi.fn(async () => 'ok');
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'approval_double_check',
+          run: guardrailRun,
+        },
+      ],
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    t.emit('function_call', {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-pre-approval-allow',
+      arguments: '{}',
+      status: 'completed',
+    } as any);
+
+    const [, , payload] = await approvalRequest;
+    expect(guardrailRun).toHaveBeenCalledTimes(1);
+    expect(t.sendFunctionCallOutputCalls.length).toBe(0);
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    await s.approve(payload.approvalItem);
+    const [, output] = await outputPromise;
+
+    expect(output).toBe('ok');
+    expect(guardrailRun).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('returns a rejection response when approval is denied', async () => {
