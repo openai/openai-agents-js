@@ -7,7 +7,7 @@
   "author": "OpenAI <support@openai.com>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "browser": "./dist/bundle/openai-realtime-agents.umd.cjs",
+  "browser": "./dist/bundle/openai-realtime-agents.umd.js",
   "exports": {
     ".": {
       "browser": {
