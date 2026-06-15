@@ -1630,3 +1630,139 @@ describe('RealtimeSession', () => {
     expect(msg!.status).toBe('completed'); // ensure we didn't overwrite server status
   });
 });
+
+describe('issue #141 — transcript captured when a message triggers a tool call', () => {
+  it('creates the user message + fires history_added when the seeding event never arrives (AC-01, AC-03)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(
+      new RealtimeAgent({ name: 'Listener' }),
+      {
+        transport,
+      },
+    );
+    const added: any[] = [];
+    const updated: any[] = [];
+    session.on('history_added', (i) => added.push(i));
+    session.on('history_updated', (h) => updated.push([...h]));
+    await session.connect({ apiKey: 'test-key' });
+
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'user-1',
+      transcript: 'please transfer to refund',
+    } as any);
+
+    const msg = session.history.find(
+      (i: any) => i.type === 'message' && i.role === 'user',
+    ) as any;
+    expect(msg, 'user message should be in history').toBeTruthy();
+    expect(msg.itemId).toBe('user-1');
+    expect(msg.content[0]?.transcript).toBe('please transfer to refund');
+    expect(added.filter((i) => i.itemId === 'user-1')).toHaveLength(1);
+    expect(updated.length).toBeGreaterThan(0);
+  });
+
+  it('does not duplicate or clobber the transcript on a late null-transcript item_update (AC-04, AC-06)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'L' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test-key' });
+
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'user-2',
+      transcript: 'hello world',
+    } as any);
+    // A late seeding event (conversation.item.added/.retrieved) carrying a null
+    // transcript — exactly what the existing stub emits — must not clobber it.
+    transport.emit('item_update', {
+      itemId: 'user-2',
+      type: 'message',
+      role: 'user',
+      status: 'in_progress',
+      content: [{ type: 'input_audio', audio: 'AA==', transcript: null }],
+    } as any);
+
+    const matches = session.history.filter((i: any) => i.itemId === 'user-2');
+    expect(matches).toHaveLength(1);
+    const ia = (matches[0] as any).content.find(
+      (e: any) => e.type === 'input_audio',
+    );
+    expect(ia?.transcript).toBe('hello world');
+  });
+
+  it('captures the transcript on an existing user item with no input_audio entry (AC-07)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'L' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test-key' });
+
+    transport.emit('item_update', {
+      itemId: 'user-3',
+      type: 'message',
+      role: 'user',
+      status: 'in_progress',
+      content: [{ type: 'input_text', text: 'typed' }],
+    } as any);
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'user-3',
+      transcript: 'spoken transcript',
+    } as any);
+
+    const item = session.history.find((i: any) => i.itemId === 'user-3') as any;
+    const ia = item.content.find((e: any) => e.type === 'input_audio');
+    expect(ia?.transcript).toBe('spoken transcript');
+  });
+
+  it('leaves the assistant audio-transcript merge path unchanged (AC-09)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'L' }), {
+      transport,
+      historyStoreAudio: true,
+    } as any);
+    await session.connect({ apiKey: 'test-key' });
+
+    transport.emit('item_update', {
+      itemId: 'asst-1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'output_audio', audio: 'AA==', transcript: 'final answer' },
+      ],
+    } as any);
+    // A late resend with a missing transcript must preserve the prior one.
+    transport.emit('item_update', {
+      itemId: 'asst-1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_audio', audio: 'AA==', transcript: '' }],
+    } as any);
+
+    const item = session.history.find((i: any) => i.itemId === 'asst-1') as any;
+    expect(item.content[0]?.transcript).toBe('final answer');
+  });
+
+  it('keeps the created transcript-only item under default historyStoreAudio=false (AC-05)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'L' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test-key' });
+
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'user-5',
+      transcript: 'kept transcript',
+    } as any);
+
+    const item = session.history.find((i: any) => i.itemId === 'user-5') as any;
+    expect(item, 'created item present').toBeTruthy();
+    const ia = item.content.find((e: any) => e.type === 'input_audio');
+    expect(ia?.transcript).toBe('kept transcript');
+  });
+});

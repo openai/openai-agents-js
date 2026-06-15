@@ -779,12 +779,27 @@ export class RealtimeSession<
       ) {
         try {
           const completedEvent = event as InputAudioTranscriptionCompletedEvent;
+          // Mirror the item_update handler's history_added parity: when the
+          // transcript event creates a brand-new item (the seeding event never
+          // arrived — issue #141), emit history_added before history_updated so
+          // consumers listening only to history_added still see the user message.
+          const isNew = !this.#history.some(
+            (item) => item.itemId === completedEvent.item_id,
+          );
           this.#history = updateRealtimeHistory(
             this.#history,
             completedEvent,
             this.#shouldIncludeAudioData,
           );
           this.#context.context.history = this.#history;
+          if (isNew) {
+            const addedItem = this.#history.find(
+              (item) => item.itemId === completedEvent.item_id,
+            );
+            if (addedItem) {
+              this.emit('history_added', addedItem);
+            }
+          }
           this.emit('history_updated', this.#history);
         } catch (err) {
           this.emit('error', {

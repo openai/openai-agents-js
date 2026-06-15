@@ -225,6 +225,51 @@ function preserveAssistantAudioTranscripts(
   };
 }
 
+// User input_audio messages can be resent (e.g. a late conversation.item.added /
+// .retrieved after a transcript was already captured) with a null transcript.
+// Mirror preserveAssistantAudioTranscripts for the user role so a late null
+// transcript does not clobber a transcript already in history (issue #141).
+function preserveUserAudioTranscripts(
+  existing: RealtimeMessageItem,
+  incoming: RealtimeMessageItem,
+): RealtimeMessageItem {
+  if (existing.role !== 'user' || incoming.role !== 'user') {
+    return incoming;
+  }
+
+  const mergedContent = incoming.content.map((entry, index) => {
+    if (entry.type !== 'input_audio') {
+      return entry;
+    }
+
+    const transcriptMissing =
+      typeof entry.transcript !== 'string' || entry.transcript.length === 0;
+    if (!transcriptMissing) {
+      return entry;
+    }
+
+    const previousEntry = existing.content[index];
+    if (
+      previousEntry &&
+      previousEntry.type === 'input_audio' &&
+      typeof previousEntry.transcript === 'string' &&
+      previousEntry.transcript.length > 0
+    ) {
+      return {
+        ...entry,
+        transcript: previousEntry.transcript,
+      };
+    }
+
+    return entry;
+  });
+
+  return {
+    ...incoming,
+    content: mergedContent,
+  };
+}
+
 /**
  * Updates the realtime history array based on the incoming event and options.
  * @param history - The current history array.
@@ -239,6 +284,24 @@ export function updateRealtimeHistory(
 ): RealtimeItem[] {
   // Merge transcript into placeholder input_audio message
   if (event.type === 'conversation.item.input_audio_transcription.completed') {
+    // Key create/skip on item-id presence, NOT on the user-message predicate:
+    // when the message triggers a tool call the conversation.item.added /
+    // .retrieved event that normally seeds the user item never arrives, so the
+    // map below would no-op and the transcript would be silently dropped
+    // (issue #141). If no item with this id exists, create the user message so
+    // the transcript is captured; keying on id-presence also avoids appending a
+    // duplicate when an item with this id already exists.
+    const exists = history.some((item) => item.itemId === event.item_id);
+    if (!exists) {
+      const created = {
+        itemId: event.item_id,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_audio', transcript: event.transcript }],
+      } as unknown as RealtimeItem;
+      return [...history, created];
+    }
     return history.map((item) => {
       if (
         item.itemId === event.item_id &&
@@ -246,15 +309,23 @@ export function updateRealtimeHistory(
         'role' in item &&
         item.role === 'user'
       ) {
-        const updatedContent = item.content.map((entry: any) => {
-          if (entry.type === 'input_audio') {
-            return {
-              ...entry,
-              transcript: event.transcript,
-            };
-          }
-          return entry;
-        });
+        const hasInputAudio = item.content.some(
+          (entry: any) => entry.type === 'input_audio',
+        );
+        const updatedContent = hasInputAudio
+          ? item.content.map((entry: any) => {
+              if (entry.type === 'input_audio') {
+                return {
+                  ...entry,
+                  transcript: event.transcript,
+                };
+              }
+              return entry;
+            })
+          : [
+              ...item.content,
+              { type: 'input_audio', transcript: event.transcript },
+            ];
 
         return {
           ...item,
@@ -278,7 +349,10 @@ export function updateRealtimeHistory(
     const existingItem = history[existingIndex];
     const mergedEvent =
       newEvent.type === 'message' && existingItem.type === 'message'
-        ? preserveAssistantAudioTranscripts(existingItem, newEvent)
+        ? preserveUserAudioTranscripts(
+            existingItem,
+            preserveAssistantAudioTranscripts(existingItem, newEvent),
+          )
         : newEvent;
     // Update existing item
     return history.map((item, idx) => {
