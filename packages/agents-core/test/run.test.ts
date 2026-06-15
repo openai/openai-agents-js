@@ -2777,11 +2777,8 @@ describe('Runner.run', () => {
 
       expect(result.finalOutput).toBe('done');
       expect(model.requests).toHaveLength(2);
-      expect(
-        getRequestInputItems(model.requests[1]).find(
-          (item) => item.type === 'compaction',
-        ),
-      ).toEqual(compaction);
+      expect(getRequestInputItems(model.requests[1])[0]).toEqual(compaction);
+      expect(result.history[0]).toEqual(compaction);
     });
 
     it('allows per-run reasoningItemIdPolicy to override runner defaults', async () => {

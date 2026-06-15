@@ -184,10 +184,7 @@ describe('RunState', () => {
 
     expect(restored._generatedItems[0]).toBeInstanceOf(RunCompactionItem);
     expect(restored._generatedItems[0].rawItem).toEqual(rawItem);
-    expect(restored.history).toEqual([
-      { type: 'message', role: 'user', content: 'input' },
-      rawItem,
-    ]);
+    expect(restored.history).toEqual([rawItem]);
   });
 
   it('preserves reasoningItemIdPolicy after serialization', async () => {
