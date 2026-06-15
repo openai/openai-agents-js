@@ -1765,4 +1765,44 @@ describe('issue #141 — transcript captured when a message triggers a tool call
     const ia = item.content.find((e: any) => e.type === 'input_audio');
     expect(ia?.transcript).toBe('kept transcript');
   });
+
+
+  it('honors content_index so a late seed at that index does not clobber the transcript (Codex P2)', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'L' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test-key' });
+
+    // The audio part is at content_index 1 (not the first content part) and no
+    // seeding event arrives first (tool-call path).
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'user-ci',
+      content_index: 1,
+      transcript: 'second-part transcript',
+    } as any);
+
+    let item = session.history.find((i: any) => i.itemId === 'user-ci') as any;
+    expect(item, 'created item present').toBeTruthy();
+    expect(item.content[1]?.transcript).toBe('second-part transcript');
+
+    // A late seed arrives with the real content array (text at 0, audio with a
+    // null transcript at 1). The captured transcript at index 1 must survive.
+    transport.emit('item_update', {
+      itemId: 'user-ci',
+      type: 'message',
+      role: 'user',
+      status: 'in_progress',
+      content: [
+        { type: 'input_text', text: 'hi' },
+        { type: 'input_audio', audio: 'AA==', transcript: null },
+      ],
+    } as any);
+
+    item = session.history.find((i: any) => i.itemId === 'user-ci') as any;
+    const matches = session.history.filter((i: any) => i.itemId === 'user-ci');
+    expect(matches).toHaveLength(1);
+    expect(item.content[1]?.transcript).toBe('second-part transcript');
+  });
 });

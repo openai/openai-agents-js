@@ -291,14 +291,27 @@ export function updateRealtimeHistory(
     // (issue #141). If no item with this id exists, create the user message so
     // the transcript is captured; keying on id-presence also avoids appending a
     // duplicate when an item with this id already exists.
+    // The event carries the audio part's content_index; honor it so a later
+    // seed (which arrives with the real content array) reconciles the transcript
+    // by the same index instead of clobbering it. Defaults to 0 when absent.
+    const contentIndex =
+      typeof event.content_index === 'number' ? event.content_index : 0;
     const exists = history.some((item) => item.itemId === event.item_id);
     if (!exists) {
+      // Place the transcript's input_audio at contentIndex; earlier slots are
+      // unknown here, so they are minimal input_audio placeholders that a later
+      // seed (carrying the real content array) replaces.
+      const content = Array.from({ length: contentIndex + 1 }, (_, i) =>
+        i === contentIndex
+          ? { type: 'input_audio', transcript: event.transcript }
+          : { type: 'input_audio', transcript: null },
+      );
       const created = {
         itemId: event.item_id,
         type: 'message',
         role: 'user',
         status: 'completed',
-        content: [{ type: 'input_audio', transcript: event.transcript }],
+        content,
       } as unknown as RealtimeItem;
       return [...history, created];
     }
@@ -309,23 +322,32 @@ export function updateRealtimeHistory(
         'role' in item &&
         item.role === 'user'
       ) {
+        const targetIsInputAudio =
+          (item.content[contentIndex] as any)?.type === 'input_audio';
         const hasInputAudio = item.content.some(
           (entry: any) => entry.type === 'input_audio',
         );
-        const updatedContent = hasInputAudio
-          ? item.content.map((entry: any) => {
-              if (entry.type === 'input_audio') {
-                return {
-                  ...entry,
-                  transcript: event.transcript,
-                };
-              }
-              return entry;
-            })
-          : [
-              ...item.content,
-              { type: 'input_audio', transcript: event.transcript },
-            ];
+        let updatedContent;
+        if (targetIsInputAudio) {
+          // Set the transcript on the audio part at the event's content_index.
+          updatedContent = item.content.map((entry: any, i: number) =>
+            i === contentIndex
+              ? { ...entry, transcript: event.transcript }
+              : entry,
+          );
+        } else if (hasInputAudio) {
+          updatedContent = item.content.map((entry: any) => {
+            if (entry.type === 'input_audio') {
+              return { ...entry, transcript: event.transcript };
+            }
+            return entry;
+          });
+        } else {
+          updatedContent = [
+            ...item.content,
+            { type: 'input_audio', transcript: event.transcript },
+          ];
+        }
 
         return {
           ...item,

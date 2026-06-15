@@ -43,6 +43,10 @@ export type TransportLayerAudio = {
 export type InputAudioTranscriptionCompletedEvent = {
   type: 'conversation.item.input_audio_transcription.completed';
   item_id: string;
+  // The index of the audio part within the item's content array. The Realtime
+  // event always carries it (see openaiRealtimeEvents schema); it is optional
+  // here for back-compat with synthetic events and defaults to 0 when absent.
+  content_index?: number;
   transcript: string;
   usage?: {
     type: 'tokens';
