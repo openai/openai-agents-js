@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import { Agent } from '../../src/agent';
 import {
+  RunCompactionItem,
   RunMessageOutputItem,
   RunReasoningItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchOutputItem,
 } from '../../src/items';
 import {
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
+  getCompactionToolSearchOutputs,
+  getTurnInput,
   prepareModelInputItems,
 } from '../../src/runner/items';
 import type { AgentInputItem } from '../../src/types';
@@ -30,6 +34,60 @@ describe('prepareModelInputItems', () => {
     expect(prepareModelInputItems([retainedMessage, compaction], [])).toEqual([
       retainedMessage,
       compaction,
+    ]);
+  });
+
+  it('carries loaded deferred tool state in generated compaction metadata', () => {
+    const agent = new Agent({ name: 'ToolSearchAgent' });
+    const toolSearchOutput = new RunToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'ts_output',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+          },
+        ],
+      },
+      agent,
+    );
+    const compaction = new RunCompactionItem(
+      {
+        type: 'compaction',
+        encrypted_content: 'opaque-history',
+      },
+      agent,
+    );
+
+    const generatedItems = [toolSearchOutput, compaction];
+    const prepared = prepareModelInputItems('hello', generatedItems);
+    const history = getTurnInput('hello', generatedItems);
+
+    expect(prepared).toEqual(history);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.type).toBe('compaction');
+    expect(getCompactionToolSearchOutputs(prepared[0]!, agent.name)).toEqual([
+      toolSearchOutput.rawItem,
+    ]);
+    expect(getCompactionToolSearchOutputs(prepared[0]!, 'OtherAgent')).toEqual(
+      [],
+    );
+
+    const nextCompaction = new RunCompactionItem(
+      {
+        type: 'compaction',
+        encrypted_content: 'next-opaque-history',
+      },
+      agent,
+    );
+    const repeated = getTurnInput(
+      [toolSearchOutput.rawItem, ...history],
+      [nextCompaction],
+    );
+    expect(getCompactionToolSearchOutputs(repeated[0]!, agent.name)).toEqual([
+      toolSearchOutput.rawItem,
     ]);
   });
 

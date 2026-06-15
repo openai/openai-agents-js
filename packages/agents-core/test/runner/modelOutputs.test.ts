@@ -19,6 +19,7 @@ import {
   processModelResponse,
   processModelResponseAsync,
 } from '../../src/runner/modelOutputs';
+import { getTurnInput } from '../../src/runner/items';
 import { RunContext } from '../../src/runContext';
 import { RunState } from '../../src/runState';
 import {
@@ -1113,6 +1114,68 @@ describe('processModelResponse', () => {
       tool: shippingEta,
     });
     expect(result.toolsUsed).toEqual(['get_shipping_eta']);
+  });
+
+  it('restores deferred tool state from compacted history', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const toolSearchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_shipping_eta',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+            namespace: 'get_shipping_eta',
+          },
+        ],
+      },
+      TEST_AGENT,
+    );
+    const compaction = new CompactionItem(
+      {
+        type: 'compaction',
+        encrypted_content: 'opaque-tool-search-history',
+      },
+      TEST_AGENT,
+    );
+    const priorItems = getTurnInput('', [toolSearchOutput, compaction]);
+
+    const result = processModelResponse(
+      {
+        output: [functionCall],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [shippingEta],
+      [],
+      priorItems,
+    );
+
+    expect(result.functions).toEqual([
+      {
+        toolCall: functionCall,
+        tool: shippingEta,
+      },
+    ]);
   });
 
   it('does not treat tool_search outputs from other agents as loaded for the current agent', () => {

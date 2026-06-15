@@ -1,6 +1,8 @@
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
+import * as protocol from '../types/protocol';
 import { serializeBinary } from '../utils/binary';
+import { getToolSearchOutputReplacementKey } from '../utils';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
 
@@ -10,6 +12,13 @@ const TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE = {
   shell_call: 'shell_call_output',
   apply_patch_call: 'apply_patch_call_output',
 } as const;
+
+const COMPACTION_TOOL_SEARCH_STATE_KEY = '__openai_agents_tool_search_state';
+
+type CompactionToolSearchStateEntry = {
+  agentName?: string;
+  output: protocol.ToolSearchOutputItem;
+};
 
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
@@ -288,7 +297,11 @@ export function prepareModelInputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return combineWithGeneratedCompaction(callerItems, preparedGeneratedItems);
+  return combineWithGeneratedCompaction(
+    callerItems,
+    preparedGeneratedItems,
+    generatedItems,
+  );
 }
 
 function getContinuationOutputItems(
@@ -321,17 +334,161 @@ export function getTurnInput(
   return combineWithGeneratedCompaction(
     toAgentInputList(originalInput),
     outputItems,
+    generatedItems,
   );
 }
 
-function combineWithGeneratedCompaction(
+export function combineWithGeneratedCompaction(
   callerItems: AgentInputItem[],
   generatedItems: AgentInputItem[],
+  generatedRunItems: RunItem[],
 ): AgentInputItem[] {
   for (let index = generatedItems.length - 1; index >= 0; index -= 1) {
     if (generatedItems[index]?.type === 'compaction') {
-      return generatedItems.slice(index);
+      const compactedItems = generatedItems.slice(index);
+      const toolSearchState = compactToolSearchStateEntries([
+        ...collectToolSearchStateFromInputItems(callerItems),
+        ...collectToolSearchStateFromRunItems(generatedRunItems),
+      ]);
+      if (toolSearchState.length === 0) {
+        return compactedItems;
+      }
+
+      const compaction = compactedItems[0] as protocol.CompactionItem;
+      return [
+        {
+          ...compaction,
+          providerData: {
+            ...compaction.providerData,
+            [COMPACTION_TOOL_SEARCH_STATE_KEY]: toolSearchState,
+          },
+        },
+        ...compactedItems.slice(1),
+      ];
     }
   }
   return [...callerItems, ...generatedItems];
+}
+
+export function getCompactionToolSearchOutputs(
+  item: AgentInputItem,
+  agentName: string,
+): protocol.ToolSearchOutputItem[] {
+  if (item.type !== 'compaction') {
+    return [];
+  }
+
+  return getCompactionToolSearchStateEntries(item)
+    .filter(
+      (entry) => entry.agentName === undefined || entry.agentName === agentName,
+    )
+    .map((entry) => entry.output);
+}
+
+function collectToolSearchStateFromInputItems(
+  items: AgentInputItem[],
+): CompactionToolSearchStateEntry[] {
+  const entries: CompactionToolSearchStateEntry[] = [];
+  for (const item of items) {
+    if (item.type === 'tool_search_output') {
+      entries.push({ output: item });
+    } else if (item.type === 'compaction') {
+      replaceWithCompactionToolSearchState(entries, item);
+    }
+  }
+  return entries;
+}
+
+function collectToolSearchStateFromRunItems(
+  items: RunItem[],
+): CompactionToolSearchStateEntry[] {
+  const entries: CompactionToolSearchStateEntry[] = [];
+  let latestCompactionIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type === 'compaction_item') {
+      latestCompactionIndex = index;
+      break;
+    }
+  }
+
+  for (const item of items.slice(0, latestCompactionIndex + 1)) {
+    if (item.type === 'tool_search_output_item') {
+      entries.push({
+        agentName: item.agent.name,
+        output: item.rawItem,
+      });
+    } else if (item.type === 'compaction_item') {
+      replaceWithCompactionToolSearchState(entries, item.rawItem);
+    }
+  }
+  return entries;
+}
+
+function replaceWithCompactionToolSearchState(
+  entries: CompactionToolSearchStateEntry[],
+  item: protocol.CompactionItem,
+): void {
+  const compactedEntries = getCompactionToolSearchStateEntries(item);
+  if (compactedEntries.length === 0) {
+    return;
+  }
+  entries.splice(0, entries.length, ...compactedEntries);
+}
+
+function getCompactionToolSearchStateEntries(
+  item: protocol.CompactionItem,
+): CompactionToolSearchStateEntry[] {
+  const storedState = item.providerData?.[COMPACTION_TOOL_SEARCH_STATE_KEY];
+  if (!Array.isArray(storedState)) {
+    return [];
+  }
+
+  const entries: CompactionToolSearchStateEntry[] = [];
+  for (const value of storedState) {
+    if (!value || typeof value !== 'object' || !('output' in value)) {
+      continue;
+    }
+    const agentName = (value as { agentName?: unknown }).agentName;
+    if (agentName !== undefined && typeof agentName !== 'string') {
+      continue;
+    }
+    const parsedOutput = protocol.ToolSearchOutputItem.safeParse(
+      (value as { output: unknown }).output,
+    );
+    if (!parsedOutput.success) {
+      continue;
+    }
+    entries.push({
+      ...(agentName === undefined ? {} : { agentName }),
+      output: parsedOutput.data,
+    });
+  }
+  return entries;
+}
+
+function compactToolSearchStateEntries(
+  entries: CompactionToolSearchStateEntry[],
+): CompactionToolSearchStateEntry[] {
+  const compacted: Array<CompactionToolSearchStateEntry | undefined> = [];
+  const replacementIndexes = new Map<string, number>();
+
+  for (const entry of entries) {
+    const replacementKey = getToolSearchOutputReplacementKey(entry.output);
+    if (replacementKey) {
+      const scopedKey = JSON.stringify([
+        entry.agentName ?? null,
+        replacementKey,
+      ]);
+      const previousIndex = replacementIndexes.get(scopedKey);
+      if (previousIndex !== undefined) {
+        compacted[previousIndex] = undefined;
+      }
+      replacementIndexes.set(scopedKey, compacted.length);
+    }
+    compacted.push(entry);
+  }
+
+  return compacted.filter(
+    (entry): entry is CompactionToolSearchStateEntry => entry !== undefined,
+  );
 }

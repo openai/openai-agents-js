@@ -59,6 +59,7 @@ import {
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
 } from './toolSearch';
+import { getCompactionToolSearchOutputs } from './items';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -301,6 +302,15 @@ function collectLoadedDeferredToolStateFromHistory(
     }
 
     const rawItem = getRawAgentInputItem(item);
+    if (rawItem?.type === 'compaction') {
+      for (const toolSearchOutput of getCompactionToolSearchOutputs(
+        rawItem,
+        agent.name,
+      )) {
+        recordLoadedToolSearchOutput(state, toolSearchOutput);
+      }
+      continue;
+    }
     if (rawItem?.type !== 'tool_search_output') {
       continue;
     }

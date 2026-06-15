@@ -37,7 +37,10 @@ import type {
   OpenAIResponsesCompactionResult,
   Session,
 } from '../../src/memory/session';
-import { toAgentInputList } from '../../src/runner/items';
+import {
+  getCompactionToolSearchOutputs,
+  toAgentInputList,
+} from '../../src/runner/items';
 import { tool } from '../../src/tool';
 import type { FunctionTool } from '../../src/tool';
 import { Usage, RequestUsage } from '../../src/usage';
@@ -1390,6 +1393,60 @@ describe('saveToSession', () => {
         { type: 'message', role: 'user', content: 'next input' },
       ],
     });
+  });
+
+  it('preserves deferred tool state when compaction replaces session history', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'ToolSearchCompactionSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'ts_output_shipping_eta',
+      status: 'completed',
+      tools: [
+        {
+          type: 'tool_reference',
+          functionName: 'get_shipping_eta',
+        },
+      ],
+    };
+    const session = new MemorySession();
+    session.items = [toolSearchOutput];
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'current input',
+      agent,
+      10,
+    );
+    state._generatedItems = [
+      new CompactionItem(
+        {
+          type: 'compaction',
+          encrypted_content: 'opaque-tool-search-history',
+        },
+        textAgent,
+      ),
+    ];
+
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      new RunResult(state),
+    );
+
+    expect(session.items).toHaveLength(1);
+    expect(
+      getCompactionToolSearchOutputs(session.items[0]!, textAgent.name),
+    ).toEqual([toolSearchOutput]);
   });
 
   it('restores persisted history when compaction replacement fails', async () => {

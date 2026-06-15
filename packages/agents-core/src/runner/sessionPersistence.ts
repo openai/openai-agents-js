@@ -13,6 +13,7 @@ import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   buildAgentInputPool,
+  combineWithGeneratedCompaction,
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
   toAgentInputList,
@@ -654,8 +655,15 @@ async function persistRunItemsToSession(options: {
     }
   }
   const replacesSessionHistory = latestCompactionIndex !== -1;
+  const previousItems = replacesSessionHistory
+    ? await session.getItems()
+    : undefined;
   const itemsToSave = replacesSessionHistory
-    ? generatedItemsToSave.slice(latestCompactionIndex)
+    ? combineWithGeneratedCompaction(
+        [...(previousItems ?? []), ...extraInputItems],
+        generatedItemsToSave,
+        newRunItems,
+      )
     : [...extraInputItems, ...generatedItemsToSave];
 
   if (itemsToSave.length === 0) {
@@ -667,7 +675,7 @@ async function persistRunItemsToSession(options: {
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   if (replacesSessionHistory) {
-    await replaceSessionHistory(session, sanitizedItems);
+    await replaceSessionHistory(session, sanitizedItems, previousItems);
   } else {
     await session.addItems(sanitizedItems);
   }
@@ -679,8 +687,9 @@ async function persistRunItemsToSession(options: {
 async function replaceSessionHistory(
   session: Session,
   replacementItems: AgentInputItem[],
+  previousItems?: AgentInputItem[],
 ): Promise<void> {
-  const previousItems = await session.getItems();
+  const previousItemsSnapshot = previousItems ?? (await session.getItems());
   try {
     await session.clearSession();
     await session.addItems(replacementItems);
@@ -688,11 +697,11 @@ async function replaceSessionHistory(
     try {
       const currentItems = await session.getItems();
       const unchanged =
-        currentItems.length === previousItems.length &&
+        currentItems.length === previousItemsSnapshot.length &&
         currentItems.every(
           (item, index) =>
             getAgentInputItemKey(item) ===
-            getAgentInputItemKey(previousItems[index]),
+            getAgentInputItemKey(previousItemsSnapshot[index]),
         );
       if (!unchanged) {
         for (let index = 0; index < currentItems.length; index += 1) {
@@ -700,7 +709,7 @@ async function replaceSessionHistory(
             break;
           }
         }
-        await session.addItems(previousItems);
+        await session.addItems(previousItemsSnapshot);
         logger.warn(
           'Restored previous session history after compaction replacement failed.',
           error,
