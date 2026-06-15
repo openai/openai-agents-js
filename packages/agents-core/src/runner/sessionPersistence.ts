@@ -13,6 +13,7 @@ import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   buildAgentInputPool,
+  combineWithGeneratedCompaction,
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
   toAgentInputList,
@@ -640,15 +641,30 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
-  const itemsToSave = [
-    ...extraInputItems,
-    ...extractOutputItemsFromRunItems(
-      newRunItems,
-      session.preserveReasoningItemIdsForPersistence?.() === true
-        ? undefined
-        : state._reasoningItemIdPolicy,
-    ),
-  ];
+  const generatedItemsToSave = extractOutputItemsFromRunItems(
+    newRunItems,
+    session.preserveReasoningItemIdsForPersistence?.() === true
+      ? undefined
+      : state._reasoningItemIdPolicy,
+  );
+  let latestCompactionIndex = -1;
+  for (let index = generatedItemsToSave.length - 1; index >= 0; index -= 1) {
+    if (generatedItemsToSave[index]?.type === 'compaction') {
+      latestCompactionIndex = index;
+      break;
+    }
+  }
+  const replacesSessionHistory = latestCompactionIndex !== -1;
+  const previousItems = replacesSessionHistory
+    ? await session.getItems()
+    : undefined;
+  const itemsToSave = replacesSessionHistory
+    ? combineWithGeneratedCompaction(
+        [...(previousItems ?? []), ...extraInputItems],
+        generatedItemsToSave,
+        newRunItems,
+      )
+    : [...extraInputItems, ...generatedItemsToSave];
 
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
@@ -658,10 +674,55 @@ async function persistRunItemsToSession(options: {
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
-  await session.addItems(sanitizedItems);
+  if (replacesSessionHistory) {
+    await replaceSessionHistory(session, sanitizedItems, previousItems);
+  } else {
+    await session.addItems(sanitizedItems);
+  }
   await runCompactionOnSession(session, lastResponseId, state);
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
+}
+
+async function replaceSessionHistory(
+  session: Session,
+  replacementItems: AgentInputItem[],
+  previousItems?: AgentInputItem[],
+): Promise<void> {
+  const previousItemsSnapshot = previousItems ?? (await session.getItems());
+  try {
+    await session.clearSession();
+    await session.addItems(replacementItems);
+  } catch (error) {
+    try {
+      const currentItems = await session.getItems();
+      const unchanged =
+        currentItems.length === previousItemsSnapshot.length &&
+        currentItems.every(
+          (item, index) =>
+            getAgentInputItemKey(item) ===
+            getAgentInputItemKey(previousItemsSnapshot[index]),
+        );
+      if (!unchanged) {
+        for (let index = 0; index < currentItems.length; index += 1) {
+          if (!(await session.popItem())) {
+            break;
+          }
+        }
+        await session.addItems(previousItemsSnapshot);
+        logger.warn(
+          'Restored previous session history after compaction replacement failed.',
+          error,
+        );
+      }
+    } catch (restoreError) {
+      logger.warn(
+        'Failed to restore session history after compaction replacement failed.',
+        restoreError,
+      );
+    }
+    throw error;
+  }
 }
 
 async function runCompactionOnSession(

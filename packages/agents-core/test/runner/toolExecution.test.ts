@@ -11,6 +11,7 @@ import { Agent, AgentOutputType } from '../../src/agent';
 import { saveAgentToolRunResult } from '../../src/agentToolRunResults';
 import { getAgentToolParentRunConfigFromDetails } from '../../src/agentToolRunConfig';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
@@ -548,6 +549,14 @@ describe('addStepToRunResult', () => {
       } as any,
       agent,
     );
+    const compactionItem = new CompactionItem(
+      {
+        type: 'compaction',
+        id: 'cmp_event',
+        encrypted_content: 'opaque-event-payload',
+      },
+      agent,
+    );
 
     const step: any = {
       newStepItems: [
@@ -559,6 +568,7 @@ describe('addStepToRunResult', () => {
         toolCallItem,
         toolOutputItem,
         reasoningItem,
+        compactionItem,
       ],
     };
 
@@ -580,6 +590,7 @@ describe('addStepToRunResult', () => {
       'tool_called',
       'tool_output',
       'reasoning_item_created',
+      'compaction_item_created',
     ]);
   });
 

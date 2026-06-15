@@ -5,6 +5,7 @@ import { Agent } from '../../src/agent';
 import { ModelBehaviorError, UserError } from '../../src/errors';
 import { handoff } from '../../src/handoff';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffCallItem as HandoffCallItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
@@ -18,6 +19,7 @@ import {
   processModelResponse,
   processModelResponseAsync,
 } from '../../src/runner/modelOutputs';
+import { getTurnInput } from '../../src/runner/items';
 import { RunContext } from '../../src/runContext';
 import { RunState } from '../../src/runState';
 import {
@@ -72,6 +74,29 @@ function createLegacyNamespacedTool<T extends Record<string, any>>(
 }
 
 describe('processModelResponse', () => {
+  it('preserves compaction outputs as run items', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'opaque-payload',
+      created_by: 'server',
+    };
+
+    const result = processModelResponse(
+      {
+        output: [compaction],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toBe(compaction);
+  });
+
   it('processes message outputs and tool calls', () => {
     const modelResponse: ModelResponse = TEST_MODEL_RESPONSE_WITH_FUNCTION;
 
@@ -709,8 +734,13 @@ describe('processModelResponse', () => {
       status: 'completed',
       arguments: '{"accountId":"acct_42"}',
     };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_async',
+      encrypted_content: 'opaque-async-payload',
+    };
     const modelResponse: ModelResponse = {
-      output: [toolSearchCall, functionCall],
+      output: [compaction, toolSearchCall, functionCall],
       usage: new Usage(),
     };
     const agent = new Agent({
@@ -728,17 +758,20 @@ describe('processModelResponse', () => {
     );
 
     expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
       'tool_search_call_item',
       'tool_search_output_item',
       'tool_call_item',
     ]);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toBe(compaction);
     expect(result.functions).toEqual([
       {
         toolCall: functionCall,
         tool: lookupAccount,
       },
     ]);
-    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+    expect((result.newItems[2] as ToolSearchOutputItem).rawItem).toMatchObject({
       type: 'tool_search_output',
       providerData: {
         call_id: 'call_tool_search_lookup',
@@ -1081,6 +1114,68 @@ describe('processModelResponse', () => {
       tool: shippingEta,
     });
     expect(result.toolsUsed).toEqual(['get_shipping_eta']);
+  });
+
+  it('restores deferred tool state from compacted history', () => {
+    const shippingEta = tool({
+      name: 'get_shipping_eta',
+      description: 'Look up a shipping ETA.',
+      parameters: z.object({
+        trackingNumber: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'tomorrow',
+    });
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shipping_eta',
+      callId: 'call_shipping_eta',
+      name: 'get_shipping_eta',
+      namespace: 'get_shipping_eta',
+      status: 'completed',
+      arguments: '{"trackingNumber":"ZX-123"}',
+    };
+    const toolSearchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_shipping_eta',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            functionName: 'get_shipping_eta',
+            namespace: 'get_shipping_eta',
+          },
+        ],
+      },
+      TEST_AGENT,
+    );
+    const compaction = new CompactionItem(
+      {
+        type: 'compaction',
+        encrypted_content: 'opaque-tool-search-history',
+      },
+      TEST_AGENT,
+    );
+    const priorItems = getTurnInput('', [toolSearchOutput, compaction]);
+
+    const result = processModelResponse(
+      {
+        output: [functionCall],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [shippingEta],
+      [],
+      priorItems,
+    );
+
+    expect(result.functions).toEqual([
+      {
+        toolCall: functionCall,
+        tool: shippingEta,
+      },
+    ]);
   });
 
   it('does not treat tool_search outputs from other agents as loaded for the current agent', () => {

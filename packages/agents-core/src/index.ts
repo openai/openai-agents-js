@@ -88,6 +88,7 @@ export {
 export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
