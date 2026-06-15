@@ -22,7 +22,7 @@ Most applications only need a few properties:
 | If you need... | Use |
 | --- | --- |
 | The final answer to show the user | `finalOutput` |
-| A replay-ready next-turn input with the full local transcript | `history` |
+| A replay-ready next-turn input with the local transcript | `history` |
 | Only the newly generated model-shaped items from this run | `output` |
 | Rich run items with agent/tool/handoff metadata | `newItems` |
 | The agent that should usually handle the next user turn | `lastAgent` or `activeAgent` |
@@ -64,7 +64,7 @@ These properties answer different questions:
 | `input` | The base input for this run. If a handoff input filter rewrote the history, this reflects the filtered input the run continued with. | Auditing what this run actually used as input |
 | `output` | Only the model-shaped items generated in this run, without agent metadata. | Storing or replaying just the new model delta |
 | `newItems` | Rich [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) wrappers with agent/tool/handoff metadata. | Logs, UIs, audits, and debugging |
-| `history` | A replay-ready next-turn input built from `input + newItems`. | Manual chat loops and client-managed conversation state |
+| `history` | A replay-ready next-turn input built from `input + newItems`. Items before the latest Responses compaction item are omitted. | Manual chat loops and client-managed conversation state |
 
 In practice:
 
@@ -83,6 +83,7 @@ In practice:
 
 - [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
 - [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
+- [`RunCompactionItem`](/openai-agents-js/openai/agents/classes/runcompactionitem) for encrypted Responses compaction items.
 - [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
 - [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
 - [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) for tool calls that paused for approval.

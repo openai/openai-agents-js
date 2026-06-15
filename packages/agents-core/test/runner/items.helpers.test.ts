@@ -16,6 +16,23 @@ import type { AgentInputItem } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 
 describe('prepareModelInputItems', () => {
+  it('preserves caller-provided compacted windows', () => {
+    const retainedMessage = {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'retained' }],
+    } as AgentInputItem;
+    const compaction = {
+      type: 'compaction',
+      encrypted_content: 'opaque-history',
+    } as AgentInputItem;
+
+    expect(prepareModelInputItems([retainedMessage, compaction], [])).toEqual([
+      retainedMessage,
+      compaction,
+    ]);
+  });
+
   it('drops orphan generated hosted shell calls', () => {
     const agent = new Agent({ name: 'HelperAgent' });
     const shellCall = new RunToolCallItem(

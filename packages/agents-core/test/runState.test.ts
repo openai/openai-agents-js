@@ -12,6 +12,7 @@ import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 import { Usage } from '../src/usage';
 import {
+  RunCompactionItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
   RunReasoningItem,
@@ -166,6 +167,24 @@ describe('RunState', () => {
 
     const restored = await RunState.fromString(agent, state.toString());
     expect(restored.history).toEqual(state.history);
+  });
+
+  it('preserves compaction items after serialization', async () => {
+    const agent = new Agent({ name: 'CompactionState' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const rawItem: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_state',
+      encrypted_content: 'opaque-state-payload',
+      created_by: 'server',
+    };
+    state._generatedItems.push(new RunCompactionItem(rawItem, agent));
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._generatedItems[0]).toBeInstanceOf(RunCompactionItem);
+    expect(restored._generatedItems[0].rawItem).toEqual(rawItem);
+    expect(restored.history).toEqual([rawItem]);
   });
 
   it('preserves reasoningItemIdPolicy after serialization', async () => {
@@ -631,6 +650,12 @@ describe('RunState', () => {
       JSON.stringify({ ...json, $schemaVersion: '1.11' as const }),
     );
     expect(restoredFromSchema111._currentAgent).toBe(childB);
+
+    const restoredFromSchema112 = await RunState.fromString(
+      root,
+      JSON.stringify({ ...json, $schemaVersion: '1.12' as const }),
+    );
+    expect(restoredFromSchema112._currentAgent).toBe(childB);
   });
 
   it('keeps literal identity suffixes from colliding with generated identities', () => {
@@ -918,6 +943,50 @@ describe('RunState', () => {
     expect(restored._lastTurnResponse?.requestId).toBe('req_16');
   });
 
+  it('accepts schema version 1.12 payloads during deserialization', async () => {
+    const agent = new Agent({ name: 'Agent112' });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const jsonVersion = state.toJSON() as any;
+    jsonVersion.$schemaVersion = '1.12';
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(jsonVersion),
+    );
+
+    expect(restored._currentAgent).toBe(agent);
+  });
+
+  it.each(['modelResponses', 'lastModelResponse'] as const)(
+    'rejects schema version 1.12 compaction in %s',
+    async (responseField) => {
+      const agent = new Agent({ name: 'LegacyCompactionAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const response = {
+        usage: new Usage(),
+        output: [
+          {
+            type: 'compaction',
+            encrypted_content: 'opaque-history',
+          } satisfies protocol.CompactionItem,
+        ],
+      };
+      if (responseField === 'modelResponses') {
+        state._modelResponses = [response];
+      } else {
+        state._lastTurnResponse = response;
+      }
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.12';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.12 cannot safely resume Responses compaction outputs',
+      );
+    },
+  );
+
   it('rejects schema version 1.7 payloads with tool_search items during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent18' });
@@ -994,7 +1063,7 @@ describe('RunState', () => {
       ),
     );
 
-    for (const $schemaVersion of ['1.8', '1.10', '1.11'] as const) {
+    for (const $schemaVersion of ['1.8', '1.10', '1.11', '1.12'] as const) {
       const jsonVersion = state.toJSON() as any;
       jsonVersion.$schemaVersion = $schemaVersion;
       const restored = await RunState.fromString(

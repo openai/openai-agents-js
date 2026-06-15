@@ -1,5 +1,6 @@
 import { HandoffInputData } from '../handoff';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -25,13 +26,14 @@ const TOOL_TYPES = new Set([
   'apply_patch_call_output',
   'hosted_tool_call',
   'reasoning',
+  'compaction',
 ]);
 
 /**
  * Filters out tool-related history and run items before a handoff.
  *
  * @param handoffInputData The collected handoff input to sanitize.
- * @returns Handoff input without tool calls, tool outputs, or tool search items.
+ * @returns Handoff input without tool, reasoning, or compaction items.
  */
 export function removeAllTools(
   handoffInputData: HandoffInputData,
@@ -57,6 +59,7 @@ export function removeAllTools(
 function removeToolsFromItems(items: RunItem[]): RunItem[] {
   return items.filter(
     (item) =>
+      !(item instanceof RunCompactionItem) &&
       !(item instanceof RunHandoffCallItem) &&
       !(item instanceof RunHandoffOutputItem) &&
       !(item instanceof RunToolSearchCallItem) &&
