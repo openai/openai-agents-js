@@ -1077,7 +1077,11 @@ function assertSchemaVersionSupportsCompactionOutputs(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (
+    schemaVersion === CURRENT_SCHEMA_VERSION ||
+    stateJson.conversationId ||
+    stateJson.previousResponseId
+  ) {
     return;
   }
 

@@ -987,6 +987,39 @@ describe('RunState', () => {
     },
   );
 
+  it.each(['conversationId', 'previousResponseId'] as const)(
+    'accepts schema version 1.12 compaction with %s',
+    async (serverContextField) => {
+      const agent = new Agent({ name: 'ManagedLegacyCompactionAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [
+        {
+          usage: new Usage(),
+          output: [
+            {
+              type: 'compaction',
+              encrypted_content: 'opaque-history',
+            } satisfies protocol.CompactionItem,
+          ],
+        },
+      ];
+      state.setConversationContext(
+        serverContextField === 'conversationId' ? 'conv-legacy' : undefined,
+        serverContextField === 'previousResponseId' ? 'resp-legacy' : undefined,
+      );
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.12';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._conversationId).toBe(state._conversationId);
+      expect(restored._previousResponseId).toBe(state._previousResponseId);
+    },
+  );
+
   it('rejects schema version 1.7 payloads with tool_search items during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent18' });
