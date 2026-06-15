@@ -1066,7 +1066,33 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsCompactionOutputs(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
+}
+
+function assertSchemaVersionSupportsCompactionOutputs(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  const responses = stateJson.lastModelResponse
+    ? [...stateJson.modelResponses, stateJson.lastModelResponse]
+    : stateJson.modelResponses;
+  if (
+    responses.some((response) =>
+      response.output.some((item) => item.type === 'compaction'),
+    )
+  ) {
+    throw new UserError(
+      `Run state schema version ${schemaVersion} cannot safely resume Responses compaction outputs because compaction run items were added in schema ${CURRENT_SCHEMA_VERSION}. Restart the run from its original input.`,
+    );
+  }
 }
 
 function assertSchemaVersionSupportsToolSearch(

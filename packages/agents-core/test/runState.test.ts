@@ -957,6 +957,36 @@ describe('RunState', () => {
     expect(restored._currentAgent).toBe(agent);
   });
 
+  it.each(['modelResponses', 'lastModelResponse'] as const)(
+    'rejects schema version 1.12 compaction in %s',
+    async (responseField) => {
+      const agent = new Agent({ name: 'LegacyCompactionAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const response = {
+        usage: new Usage(),
+        output: [
+          {
+            type: 'compaction',
+            encrypted_content: 'opaque-history',
+          } satisfies protocol.CompactionItem,
+        ],
+      };
+      if (responseField === 'modelResponses') {
+        state._modelResponses = [response];
+      } else {
+        state._lastTurnResponse = response;
+      }
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.12';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.12 cannot safely resume Responses compaction outputs',
+      );
+    },
+  );
+
   it('rejects schema version 1.7 payloads with tool_search items during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent18' });
