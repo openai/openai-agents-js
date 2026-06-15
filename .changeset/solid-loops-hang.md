@@ -1,5 +1,6 @@
 ---
 "@openai/agents-core": patch
+"@openai/agents-extensions": patch
 "@openai/agents-openai": patch
 "@openai/agents-realtime": patch
 "@openai/agents": patch

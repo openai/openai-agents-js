@@ -2,6 +2,9 @@
   "name": "@openai/agents-extensions",
   "repository": "https://github.com/openai/openai-agents-js",
   "homepage": "https://openai.github.io/openai-agents-js/",
+  "bugs": {
+    "url": "https://github.com/openai/openai-agents-js/issues"
+  },
   "version": "0.11.6",
   "description": "Extensions for the OpenAI Agents SDK",
   "author": "OpenAI <support@openai.com>",
