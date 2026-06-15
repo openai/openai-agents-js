@@ -288,10 +288,7 @@ export function prepareModelInputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return pruneBeforeLatestCompaction([
-    ...callerItems,
-    ...preparedGeneratedItems,
-  ]);
+  return combineWithGeneratedCompaction(callerItems, preparedGeneratedItems);
 }
 
 function getContinuationOutputItems(
@@ -321,19 +318,20 @@ export function getTurnInput(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return pruneBeforeLatestCompaction([
-    ...toAgentInputList(originalInput),
-    ...outputItems,
-  ]);
+  return combineWithGeneratedCompaction(
+    toAgentInputList(originalInput),
+    outputItems,
+  );
 }
 
-function pruneBeforeLatestCompaction(
-  items: AgentInputItem[],
+function combineWithGeneratedCompaction(
+  callerItems: AgentInputItem[],
+  generatedItems: AgentInputItem[],
 ): AgentInputItem[] {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.type === 'compaction') {
-      return items.slice(index);
+  for (let index = generatedItems.length - 1; index >= 0; index -= 1) {
+    if (generatedItems[index]?.type === 'compaction') {
+      return generatedItems.slice(index);
     }
   }
-  return items;
+  return [...callerItems, ...generatedItems];
 }
