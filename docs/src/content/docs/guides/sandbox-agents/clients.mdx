@@ -146,6 +146,8 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 
 `CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
 
+`VercelSandboxClient` forwards explicit credentials only when `projectId`, `teamId`, and `token` are all provided after constructor and per-create options are merged. Otherwise it omits all three fields and lets `@vercel/sandbox` resolve authentication, including platform OIDC or local provider credentials. The adapter does not read or combine `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, or `VERCEL_TEAM_ID`; to use those PAT-style environment variables, pass all three explicitly in the client or create options. Complete explicit credentials are preserved when sessions are serialized and resumed, so the token remains present in serialized session state and should be stored securely.
+
 Hosted sandbox clients expose provider-specific mount strategies. Choose the backend and mount strategy that best fit your storage provider:
 
 | Backend | Mount notes |

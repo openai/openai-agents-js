@@ -5,9 +5,6 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   decodeNativeSnapshotRef,
@@ -26,12 +23,7 @@ const writeFilesMock = vi.fn();
 const stopMock = vi.fn();
 const snapshotMock = vi.fn();
 const domainMock = vi.fn();
-const getAuthMock = vi.fn();
-const refreshTokenMock = vi.fn();
-const updateAuthConfigMock = vi.fn();
 const remoteFilePaths = new Set<string>();
-const originalCwd = process.cwd();
-let isolatedProjectRoot: string | undefined;
 
 function makeSandbox(
   sandboxId: string,
@@ -65,25 +57,11 @@ function testExistsPath(command: string): string | undefined {
   return command.match(/^test -e '([^']+)'$/u)?.[1];
 }
 
-function useVercelCliProjectRoot(projectRoot: string): void {
-  process.chdir(projectRoot);
-  vi.stubEnv('INIT_CWD', projectRoot);
-  vi.stubEnv('PWD', projectRoot);
-}
-
 vi.mock('@vercel/sandbox', () => ({
   Sandbox: {
     create: createMock,
     get: getMock,
   },
-}));
-
-vi.mock('@vercel/sandbox/dist/auth/index.js', () => ({
-  getAuth: getAuthMock,
-  OAuth: async () => ({
-    refreshToken: refreshTokenMock,
-  }),
-  updateAuthConfig: updateAuthConfigMock,
 }));
 
 describe('VercelSandboxClient', () => {
@@ -97,9 +75,6 @@ describe('VercelSandboxClient', () => {
     stopMock.mockReset();
     snapshotMock.mockReset();
     domainMock.mockReset();
-    getAuthMock.mockReset();
-    refreshTokenMock.mockReset();
-    updateAuthConfigMock.mockReset();
     remoteFilePaths.clear();
 
     createMock.mockResolvedValue(makeSandbox('vercel_test'));
@@ -141,23 +116,10 @@ describe('VercelSandboxClient', () => {
     stopMock.mockResolvedValue(undefined);
     snapshotMock.mockResolvedValue({ snapshotId: 'snap_test' });
     domainMock.mockReturnValue('https://3000-vercel.example.test');
-
-    isolatedProjectRoot = mkdtempSync(join(tmpdir(), 'vercel-cli-isolated-'));
-    useVercelCliProjectRoot(isolatedProjectRoot);
-    vi.stubEnv('VERCEL_PROJECT_ID', '');
-    vi.stubEnv('VERCEL_TEAM_ID', '');
-    vi.stubEnv('VERCEL_TOKEN', '');
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', '');
   });
 
   afterEach(() => {
-    process.chdir(originalCwd);
     vi.unstubAllEnvs();
-
-    if (isolatedProjectRoot) {
-      rmSync(isolatedProjectRoot, { recursive: true, force: true });
-      isolatedProjectRoot = undefined;
-    }
   });
 
   test('rejects unsupported core create options instead of ignoring them', async () => {
@@ -217,195 +179,69 @@ describe('VercelSandboxClient', () => {
     expect(output).toContain('lost exit');
   });
 
-  test('does not pass partial project credentials when using OIDC auth', async () => {
+  test('merges constructor and create options before forwarding a complete credential triple', async () => {
     const client = new VercelSandboxClient({
-      projectId: 'prj_linked',
-      teamId: 'team_linked',
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
     });
 
-    await client.create(new Manifest());
+    const session = await client.create(new Manifest(), {
+      token: 'explicit_token',
+    });
 
     expect(createMock).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        projectId: expect.any(String),
-        teamId: expect.any(String),
+      expect.objectContaining({
+        projectId: 'prj_explicit',
+        teamId: 'team_explicit',
+        token: 'explicit_token',
       }),
     );
+    expect(session.state).toMatchObject({
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
+    });
   });
 
-  test('merges explicit project credentials with env access token', async () => {
+  test.each([
+    {},
+    { projectId: 'prj_partial' },
+    { teamId: 'team_partial' },
+    { token: 'token_partial' },
+    { projectId: 'prj_partial', teamId: 'team_partial' },
+    { projectId: 'prj_partial', token: 'token_partial' },
+    { teamId: 'team_partial', token: 'token_partial' },
+  ])(
+    'omits absent or partial explicit credentials and ignores PAT environment variables: %j',
+    async (options) => {
+      vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+      vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+      vi.stubEnv('VERCEL_TOKEN', 'env_token');
+      const client = new VercelSandboxClient(options);
+
+      const session = await client.create(new Manifest());
+
+      const createParams = createMock.mock.calls[0]?.[0];
+      expect(createParams).not.toHaveProperty('projectId');
+      expect(createParams).not.toHaveProperty('teamId');
+      expect(createParams).not.toHaveProperty('token');
+      expect(session.state).not.toHaveProperty('projectId');
+      expect(session.state).not.toHaveProperty('teamId');
+      expect(session.state).not.toHaveProperty('token');
+    },
+  );
+
+  test('serializes complete explicit credentials used during create', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
     vi.stubEnv('VERCEL_TOKEN', 'env_token');
-    try {
-      const client = new VercelSandboxClient({
-        projectId: 'prj_explicit',
-        teamId: 'team_explicit',
-      });
-
-      await client.create(new Manifest());
-
-      expect(createMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'prj_explicit',
-          teamId: 'team_explicit',
-          token: 'env_token',
-        }),
-      );
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  test('merges explicit project credentials with Vercel CLI access token', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
-    const authDir = join(root, 'auth');
-    const projectRoot = join(root, 'project');
-    mkdirSync(authDir, { recursive: true });
-    mkdirSync(projectRoot, { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      refreshToken: 'cli_refresh_token',
-      expiresAt: new Date(Date.now() + 3_600_000),
+    const client = new VercelSandboxClient({
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
+      workspacePersistence: 'snapshot',
     });
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    useVercelCliProjectRoot(projectRoot);
-
-    try {
-      const client = new VercelSandboxClient({
-        projectId: 'prj_explicit',
-        teamId: 'team_explicit',
-      });
-
-      await client.create(new Manifest());
-
-      expect(createMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'prj_explicit',
-          teamId: 'team_explicit',
-          token: 'cli_access_token',
-        }),
-      );
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test('uses Vercel CLI auth and linked project when no explicit credentials are provided', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
-    const authDir = join(root, 'auth');
-    const projectRoot = join(root, 'project');
-    mkdirSync(authDir, { recursive: true });
-    mkdirSync(join(projectRoot, '.vercel'), { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      refreshToken: 'cli_refresh_token',
-      expiresAt: new Date(Date.now() + 3_600_000),
-    });
-    writeFileSync(
-      join(projectRoot, '.vercel', 'project.json'),
-      JSON.stringify({
-        projectId: 'prj_cli',
-        orgId: 'team_cli',
-        projectName: 'sandbox-tests',
-      }),
-    );
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    useVercelCliProjectRoot(projectRoot);
-
-    try {
-      const client = new VercelSandboxClient();
-
-      await client.create(new Manifest());
-
-      expect(createMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'prj_cli',
-          teamId: 'team_cli',
-          token: 'cli_access_token',
-        }),
-      );
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test('uses Vercel CLI auth token without a linked project', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
-    const authDir = join(root, 'auth');
-    const projectRoot = join(root, 'project');
-    mkdirSync(authDir, { recursive: true });
-    mkdirSync(projectRoot, { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      refreshToken: 'cli_refresh_token',
-      expiresAt: new Date(Date.now() + 3_600_000),
-    });
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    useVercelCliProjectRoot(projectRoot);
-
-    try {
-      const client = new VercelSandboxClient();
-
-      await client.create(new Manifest());
-
-      expect(createMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          token: 'cli_access_token',
-        }),
-      );
-      expect(createMock).toHaveBeenCalledWith(
-        expect.not.objectContaining({
-          projectId: expect.any(String),
-          teamId: expect.any(String),
-        }),
-      );
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test('serializes Vercel CLI credentials resolved during create', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-auth-'));
-    const authDir = join(root, 'auth');
-    const projectRoot = join(root, 'project');
-    mkdirSync(authDir, { recursive: true });
-    mkdirSync(join(projectRoot, '.vercel'), { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      refreshToken: 'cli_refresh_token',
-      expiresAt: new Date(Date.now() + 3_600_000),
-    });
-    writeFileSync(
-      join(projectRoot, '.vercel', 'project.json'),
-      JSON.stringify({
-        projectId: 'prj_cli',
-        orgId: 'team_cli',
-        projectName: 'sandbox-tests',
-      }),
-    );
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-    useVercelCliProjectRoot(projectRoot);
-
-    let session: Awaited<ReturnType<VercelSandboxClient['create']>> | undefined;
-    try {
-      const client = new VercelSandboxClient();
-      session = await client.create(new Manifest(), {
-        workspacePersistence: 'snapshot',
-      });
-      expect(session.state.token).toBe('cli_access_token');
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
-    if (!session) {
-      throw new Error('Expected Vercel sandbox session.');
-    }
-
-    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest());
     getMock.mockClear();
 
     const serialized = await client.serializeSessionState(session.state, {
@@ -414,18 +250,34 @@ describe('VercelSandboxClient', () => {
 
     expect(getMock).toHaveBeenCalledWith({
       sandboxId: 'vercel_test',
-      projectId: 'prj_cli',
-      teamId: 'team_cli',
-      token: 'cli_access_token',
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
     });
     expect(serialized).toMatchObject({
-      projectId: 'prj_cli',
-      teamId: 'team_cli',
-      token: 'cli_access_token',
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
       sandboxId: 'vercel_test',
       workspacePersistence: 'snapshot',
       snapshotId: 'snap_test',
     });
+  });
+
+  test('strips incomplete credentials before serializing session state', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest());
+    session.state.projectId = 'prj_legacy';
+    session.state.token = 'legacy_token';
+
+    const serialized = await client.serializeSessionState(session.state);
+
+    expect(serialized).not.toHaveProperty('projectId');
+    expect(serialized).not.toHaveProperty('teamId');
+    expect(serialized).not.toHaveProperty('token');
+    expect(session.state).not.toHaveProperty('projectId');
+    expect(session.state).not.toHaveProperty('teamId');
+    expect(session.state).not.toHaveProperty('token');
   });
 
   test('passes complete access token credentials to Vercel', async () => {
@@ -833,97 +685,59 @@ describe('VercelSandboxClient', () => {
     );
   });
 
-  test('refreshes expired serialized CLI credentials when resuming live sandboxes', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-refresh-'));
-    const authDir = join(root, 'auth');
-    mkdirSync(authDir, { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      refreshToken: 'cli_refresh_token',
-      expiresAt: new Date(Date.now() - 1_000),
+  test('strips incomplete legacy credentials and uses provider SDK fallback on resume', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      projectId: 'prj_serialized',
+      token: 'serialized_token',
     });
-    refreshTokenMock.mockResolvedValue({
-      access_token: 'cli_refreshed_token',
-      expires_in: 3_600,
-      refresh_token: 'cli_next_refresh_token',
+
+    expect(state).not.toHaveProperty('projectId');
+    expect(state).not.toHaveProperty('teamId');
+    expect(state).not.toHaveProperty('token');
+
+    await client.resume(state);
+
+    expect(getMock).toHaveBeenCalledWith({
+      sandboxId: 'vercel_existing',
     });
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
-
-    try {
-      const client = new VercelSandboxClient();
-      const state = await client.deserializeSessionState({
-        manifest: new Manifest(),
-        sandboxId: 'vercel_existing',
-        workspacePersistence: 'tar',
-        environment: {},
-        projectId: 'prj_serialized',
-        teamId: 'team_serialized',
-        token: 'cli_access_token',
-      });
-
-      await client.resume(state);
-
-      expect(refreshTokenMock).toHaveBeenCalledWith('cli_refresh_token');
-      expect(updateAuthConfigMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          token: 'cli_refreshed_token',
-          refreshToken: 'cli_next_refresh_token',
-          expiresAt: expect.any(Date),
-        }),
-      );
-      expect(getMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sandboxId: 'vercel_existing',
-          projectId: 'prj_serialized',
-          teamId: 'team_serialized',
-          token: 'cli_refreshed_token',
-        }),
-      );
-      expect(state.token).toBe('cli_refreshed_token');
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
-  test('drops expired serialized CLI tokens when refresh cannot run', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'vercel-cli-expired-'));
-    const authDir = join(root, 'auth');
-    mkdirSync(authDir, { recursive: true });
-    getAuthMock.mockReturnValue({
-      token: 'cli_access_token',
-      expiresAt: new Date(Date.now() - 1_000),
+  test('uses a complete current client triple when serialized credentials are incomplete', async () => {
+    const client = new VercelSandboxClient({
+      projectId: 'prj_current',
+      teamId: 'team_current',
+      token: 'current_token',
     });
-    vi.stubEnv('VERCEL_AUTH_CONFIG_DIR', authDir);
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      projectId: 'prj_legacy',
+      teamId: 'team_legacy',
+    });
 
-    try {
-      const client = new VercelSandboxClient();
-      const state = await client.deserializeSessionState({
-        manifest: new Manifest(),
-        sandboxId: 'vercel_existing',
-        workspacePersistence: 'tar',
-        environment: {},
-        projectId: 'prj_serialized',
-        teamId: 'team_serialized',
-        token: 'cli_access_token',
-      });
+    await client.resume(state);
 
-      await client.resume(state);
-
-      expect(refreshTokenMock).not.toHaveBeenCalled();
-      expect(getMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sandboxId: 'vercel_existing',
-          projectId: 'prj_serialized',
-          teamId: 'team_serialized',
-        }),
-      );
-      expect(getMock.mock.calls[0]?.[0]).not.toHaveProperty('token');
-      expect(state.token).toBeUndefined();
-    } finally {
-      vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
-    }
+    expect(getMock).toHaveBeenCalledWith({
+      sandboxId: 'vercel_existing',
+      projectId: 'prj_current',
+      teamId: 'team_current',
+      token: 'current_token',
+    });
+    expect(state).toMatchObject({
+      projectId: 'prj_current',
+      teamId: 'team_current',
+      token: 'current_token',
+    });
   });
 
   test('retains serialized access token credentials when resuming snapshot sandboxes', async () => {
@@ -1345,18 +1159,15 @@ describe('VercelSandboxClient', () => {
     expect(stopMock).toHaveBeenCalledOnce();
   });
 
-  test('captures live sandbox snapshots without resolving credentials', async () => {
+  test('captures live sandbox snapshots without looking up credentials', async () => {
     const client = new VercelSandboxClient();
     const session = await client.create(new Manifest(), {
       workspacePersistence: 'snapshot',
     });
-    getAuthMock.mockImplementation(() => {
-      throw new Error('credential lookup should not run');
-    });
 
     await session.close();
 
-    expect(getAuthMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
     expect(snapshotMock).toHaveBeenCalledOnce();
     expect(stopMock).toHaveBeenCalledOnce();
   });
@@ -1677,7 +1488,7 @@ describe('VercelSandboxClient', () => {
     expect(session.state.snapshotSandboxId).toBe('vercel_source');
   });
 
-  test('uses refreshed state token when restoring persisted snapshots', async () => {
+  test('uses an updated complete state triple when restoring persisted snapshots', async () => {
     createMock
       .mockResolvedValueOnce(makeSandbox('vercel_source'))
       .mockResolvedValueOnce(makeSandbox('vercel_replacement'));
@@ -1689,7 +1500,7 @@ describe('VercelSandboxClient', () => {
     const session = await client.create(new Manifest(), {
       workspacePersistence: 'snapshot',
     });
-    session.state.token = 'cli_refreshed_token';
+    session.state.token = 'updated_token';
     createMock.mockClear();
 
     await session.persistWorkspace();
@@ -1698,14 +1509,14 @@ describe('VercelSandboxClient', () => {
       expect.objectContaining({
         projectId: 'prj_cli',
         teamId: 'team_cli',
-        token: 'cli_refreshed_token',
+        token: 'updated_token',
         source: {
           type: 'snapshot',
           snapshotId: 'snap_test',
         },
       }),
     );
-    expect(session.state.token).toBe('cli_refreshed_token');
+    expect(session.state.token).toBe('updated_token');
   });
 
   test('stops each previous sandbox during repeated snapshot persistence', async () => {
