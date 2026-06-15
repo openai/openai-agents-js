@@ -43,4 +43,8 @@
   "files": [
     "dist"
   ]
+,
+  "bugs": {
+    "url": "https://github.com/openai/openai-agents-js/issues"
+  }
 }
