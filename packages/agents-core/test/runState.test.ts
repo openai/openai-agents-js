@@ -653,6 +653,12 @@ describe('RunState', () => {
       JSON.stringify({ ...json, $schemaVersion: '1.11' as const }),
     );
     expect(restoredFromSchema111._currentAgent).toBe(childB);
+
+    const restoredFromSchema112 = await RunState.fromString(
+      root,
+      JSON.stringify({ ...json, $schemaVersion: '1.12' as const }),
+    );
+    expect(restoredFromSchema112._currentAgent).toBe(childB);
   });
 
   it('keeps literal identity suffixes from colliding with generated identities', () => {
@@ -1030,7 +1036,7 @@ describe('RunState', () => {
       ),
     );
 
-    for (const $schemaVersion of ['1.8', '1.10', '1.11'] as const) {
+    for (const $schemaVersion of ['1.8', '1.10', '1.11', '1.12'] as const) {
       const jsonVersion = state.toJSON() as any;
       jsonVersion.$schemaVersion = $schemaVersion;
       const restored = await RunState.fromString(

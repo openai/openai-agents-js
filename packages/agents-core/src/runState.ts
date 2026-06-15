@@ -1078,6 +1078,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.9' ||
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
+    schemaVersion === '1.12' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1098,6 +1099,7 @@ function schemaVersionSupportsAgentIdentity(
   return (
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
+    schemaVersion === '1.12' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
