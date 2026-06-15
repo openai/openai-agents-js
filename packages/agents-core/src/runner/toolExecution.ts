@@ -375,7 +375,7 @@ async function handleFunctionApproval<TContext>(
   toolRun: ToolRunFunction<TContext>,
   parsedArgs: any,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
-  const { state } = deps;
+  const { agent, state } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const needsApproval = await toolRun.tool.needsApproval(
     state._context,
@@ -398,6 +398,52 @@ async function handleFunctionApproval<TContext>(
   }
 
   if (approval !== true) {
+    if ((toolRun.tool.preApprovalGuardrails ?? []).length > 0) {
+      const preApprovalInputGuardrailResult = await runToolInputGuardrails({
+        guardrails: toolRun.tool.preApprovalGuardrails,
+        context: state._context,
+        agent,
+        toolCall: toolRun.toolCall,
+        onResult: (result) => {
+          state._toolInputGuardrailResults.push(result);
+        },
+      });
+
+      if (preApprovalInputGuardrailResult.type === 'reject') {
+        const toolOutput = preApprovalInputGuardrailResult.message;
+        const functionResult: FunctionToolResult<TContext> = {
+          type: 'function_output' as const,
+          tool: toolRun.tool,
+          output: toolOutput,
+          runItem: new RunToolCallOutputItem(
+            getToolCallOutputItem(toolRun.toolCall, toolOutput),
+            agent,
+            toolOutput,
+          ),
+        };
+
+        const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
+          | RunResult<TContext, Agent<TContext, any>>
+          | undefined;
+        if (nestedRunResult) {
+          functionResult.agentRunResult = nestedRunResult;
+          const nestedInterruptions = nestedRunResult.interruptions;
+          if (nestedInterruptions.length > 0) {
+            functionResult.interruptions = nestedInterruptions;
+            const nestedRunStateJson = nestedRunResult.state.toJSON();
+            state.setPendingAgentToolRun(
+              toolName,
+              toolRun.toolCall.callId,
+              JSON.stringify(nestedRunStateJson),
+            );
+          } else {
+            state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
+          }
+        }
+
+        return functionResult;
+      }
+    }
     return buildApprovalRequestResult(deps, toolRun);
   }
 
