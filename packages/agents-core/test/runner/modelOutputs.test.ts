@@ -5,6 +5,7 @@ import { Agent } from '../../src/agent';
 import { ModelBehaviorError, UserError } from '../../src/errors';
 import { handoff } from '../../src/handoff';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffCallItem as HandoffCallItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
@@ -72,6 +73,29 @@ function createLegacyNamespacedTool<T extends Record<string, any>>(
 }
 
 describe('processModelResponse', () => {
+  it('preserves compaction outputs as run items', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'opaque-payload',
+      created_by: 'server',
+    };
+
+    const result = processModelResponse(
+      {
+        output: [compaction],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toBe(compaction);
+  });
+
   it('processes message outputs and tool calls', () => {
     const modelResponse: ModelResponse = TEST_MODEL_RESPONSE_WITH_FUNCTION;
 
@@ -709,8 +733,13 @@ describe('processModelResponse', () => {
       status: 'completed',
       arguments: '{"accountId":"acct_42"}',
     };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_async',
+      encrypted_content: 'opaque-async-payload',
+    };
     const modelResponse: ModelResponse = {
-      output: [toolSearchCall, functionCall],
+      output: [compaction, toolSearchCall, functionCall],
       usage: new Usage(),
     };
     const agent = new Agent({
@@ -728,17 +757,20 @@ describe('processModelResponse', () => {
     );
 
     expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
       'tool_search_call_item',
       'tool_search_output_item',
       'tool_call_item',
     ]);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toBe(compaction);
     expect(result.functions).toEqual([
       {
         toolCall: functionCall,
         tool: lookupAccount,
       },
     ]);
-    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+    expect((result.newItems[2] as ToolSearchOutputItem).rawItem).toMatchObject({
       type: 'tool_search_output',
       providerData: {
         call_id: 'call_tool_search_lookup',

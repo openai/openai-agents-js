@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { Agent } from './agent';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
 import {
+  RunCompactionItem,
   RunMessageOutputItem,
   RunItem,
   RunToolApprovalItem,
@@ -90,8 +91,9 @@ import {
  *   serialize and resume without ambiguous name resolution.
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  * - 1.12: Adds optional missing function tool calls to processed responses.
+ * - 1.13: Adds compaction items to serialized run state payloads.
  */
-export const CURRENT_SCHEMA_VERSION = '1.12' as const;
+export const CURRENT_SCHEMA_VERSION = '1.13' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -105,6 +107,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.9',
   '1.10',
   '1.11',
+  '1.12',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -208,6 +211,11 @@ const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('reasoning_item'),
     rawItem: protocol.ReasoningItem,
+    agent: serializedAgentSchema,
+  }),
+  z.object({
+    type: z.literal('compaction_item'),
+    rawItem: protocol.CompactionItem,
     agent: serializedAgentSchema,
   }),
   z.object({
@@ -2093,6 +2101,11 @@ export function deserializeItem(
       );
     case 'reasoning_item':
       return new RunReasoningItem(
+        serializedItem.rawItem,
+        resolveSerializedAgent(serializedItem.agent, agentMap),
+      );
+    case 'compaction_item':
+      return new RunCompactionItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
       );

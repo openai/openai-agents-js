@@ -2739,6 +2739,51 @@ describe('Runner.run', () => {
       expect(historyReasoning).not.toHaveProperty('id');
     });
 
+    it('sends compaction outputs unchanged on the next turn', async () => {
+      const compaction: protocol.CompactionItem = {
+        type: 'compaction',
+        id: 'cmp_follow_up',
+        encrypted_content: 'opaque-follow-up-payload',
+        created_by: 'server',
+      };
+      class RequestRecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RequestRecordingModel([
+        {
+          output: [compaction, TEST_MODEL_FUNCTION_CALL],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'CompactionContinuationAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+
+      const result = await run(agent, 'hello');
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      expect(
+        getRequestInputItems(model.requests[1]).find(
+          (item) => item.type === 'compaction',
+        ),
+      ).toEqual(compaction);
+    });
+
     it('allows per-run reasoningItemIdPolicy to override runner defaults', async () => {
       class RequestRecordingModel implements Model {
         readonly requests: ModelRequest[] = [];

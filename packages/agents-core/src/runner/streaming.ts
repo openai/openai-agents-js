@@ -1,6 +1,7 @@
 import logger from '../logger';
 import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -61,6 +62,9 @@ function getRunItemStreamEventName(
   }
   if (item instanceof RunReasoningItem) {
     return 'reasoning_item_created';
+  }
+  if (item instanceof RunCompactionItem) {
+    return 'compaction_item_created';
   }
   if (item instanceof RunToolApprovalItem) {
     return 'tool_approval_requested';

@@ -135,6 +135,7 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 | `tool_called` | A tool call item was emitted. |
 | `tool_output` | A tool result item was emitted. |
 | `reasoning_item_created` | A reasoning item was emitted. |
+| `compaction_item_created` | An encrypted Responses compaction item was emitted. |
 | `tool_approval_requested` | A tool call paused for human approval. |
 
 The `tool_search_*` events only appear on Responses runs that use `toolSearchTool()` to load deferred tools during the run.
