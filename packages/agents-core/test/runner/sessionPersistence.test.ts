@@ -7,6 +7,7 @@ import {
 } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
@@ -45,6 +46,7 @@ import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 import { FakeModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
 import logger from '../../src/logger';
+import { allowConsole } from '../../../../helpers/tests/console-guard';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -1337,6 +1339,115 @@ describe('saveToSession', () => {
       this.items = [];
     }
   }
+
+  it('replaces persisted history after generated compaction', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'CompactionSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new MemorySession();
+    session.items = [
+      { type: 'message', role: 'user', content: 'old input' },
+      fakeModelMessage('old output'),
+    ];
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'current input',
+      agent,
+      10,
+    );
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      encrypted_content: 'opaque-history',
+    };
+    const afterCompaction = fakeModelMessage('after compaction');
+    state._generatedItems = [
+      new CompactionItem(compaction, textAgent),
+      new MessageOutputItem(afterCompaction, textAgent),
+    ];
+
+    await saveToSession(
+      session,
+      toAgentInputList(state._originalInput),
+      new RunResult(state),
+    );
+
+    expect(session.items).toEqual([compaction, afterCompaction]);
+    await expect(
+      prepareInputItemsWithSession('next input', session),
+    ).resolves.toMatchObject({
+      preparedInput: [
+        compaction,
+        afterCompaction,
+        { type: 'message', role: 'user', content: 'next input' },
+      ],
+    });
+  });
+
+  it('restores persisted history when compaction replacement fails', async () => {
+    allowConsole(['warn']);
+
+    class FailingReplacementSession extends MemorySession {
+      failNextAdd = true;
+
+      override async addItems(items: AgentInputItem[]): Promise<void> {
+        if (this.failNextAdd) {
+          this.failNextAdd = false;
+          this.items.push(items[0]);
+          throw new Error('replacement failed');
+        }
+        await super.addItems(items);
+      }
+    }
+
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'FailingCompactionSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new FailingReplacementSession();
+    const previousItems = [
+      { type: 'message', role: 'user', content: 'old input' },
+      fakeModelMessage('old output'),
+    ] satisfies AgentInputItem[];
+    session.items = structuredClone(previousItems);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'current input',
+      agent,
+      10,
+    );
+    state._generatedItems = [
+      new CompactionItem(
+        { type: 'compaction', encrypted_content: 'opaque-history' },
+        textAgent,
+      ),
+    ];
+
+    await expect(
+      saveToSession(
+        session,
+        toAgentInputList(state._originalInput),
+        new RunResult(state),
+      ),
+    ).rejects.toThrow('replacement failed');
+    expect(session.items).toEqual(previousItems);
+  });
 
   it('does not require a process global for debug session logging', async () => {
     const processDescriptor = Object.getOwnPropertyDescriptor(
