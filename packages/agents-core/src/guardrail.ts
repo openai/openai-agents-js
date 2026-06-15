@@ -173,6 +173,13 @@ export interface OutputGuardrailFunctionArgs<
     modelResponse?: ModelResponse;
     /** Model output items generated during the run (excluding approvals). */
     output?: AgentOutputItem[];
+    /**
+     * True when the guardrail is invoked mid-stream against the partial output
+     * accumulated so far, rather than against the final output. When this is set,
+     * `agentOutput` is the raw accumulated text and has not been parsed against the
+     * agent's `outputType`.
+     */
+    partial?: boolean;
   };
 }
 /**
@@ -213,6 +220,37 @@ export type OutputGuardrailFunction<
 > = (
   args: OutputGuardrailFunctionArgs<TContext, TOutput>,
 ) => Promise<GuardrailFunctionOutput>;
+
+/**
+ * Arguments passed to a streaming output guardrail checkpoint. The checkpoint is
+ * invoked for each streamed text delta to decide whether the output guardrails
+ * should run against the partial output accumulated so far.
+ */
+export interface StreamingOutputGuardrailCheckpointArgs<
+  TContext = UnknownContext,
+> {
+  /** The agent currently producing the output. */
+  agent: Agent<any, any>;
+  /** The latest text delta streamed by the model. */
+  delta: string;
+  /**
+   * All of the output text accumulated for the current turn so far, including
+   * `delta`.
+   */
+  accumulatedText: string;
+  /** The context of the agent run. */
+  context: RunContext<TContext>;
+}
+
+/**
+ * Decides whether the configured output guardrails should run at a given point
+ * while the model is still streaming. Returning `true` runs the output guardrails
+ * against the accumulated partial output before any of the buffered output reaches
+ * the consumer; returning `false` keeps buffering and streaming.
+ */
+export type StreamingOutputGuardrailCheckpoint<TContext = UnknownContext> = (
+  args: StreamingOutputGuardrailCheckpointArgs<TContext>,
+) => boolean | Promise<boolean>;
 
 /**
  * A guardrail that checks the output of the agent.

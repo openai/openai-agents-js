@@ -57,6 +57,8 @@ export {
   OutputGuardrailFunctionArgs,
   OutputGuardrailMetadata,
   OutputGuardrailResult,
+  StreamingOutputGuardrailCheckpoint,
+  StreamingOutputGuardrailCheckpointArgs,
 } from './guardrail';
 export {
   ToolGuardrailBehavior,

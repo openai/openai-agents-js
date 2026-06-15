@@ -17,6 +17,7 @@ import { RunState } from '../runState';
 import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
+import type { ResolvedAgentOutput } from '../types';
 
 export type GuardrailTracker = {
   readonly pending: boolean;
@@ -268,6 +269,81 @@ export async function runOutputGuardrails<
     details: {
       modelResponse: state._lastTurnResponse,
       output: runOutput,
+    },
+  };
+  await runGuardrailsWithTripwire({
+    state,
+    guardrails,
+    guardrailArgs,
+    resultsTarget: state._outputGuardrailResults,
+    onTripwire: (result) => {
+      throw new OutputGuardrailTripwireTriggered(
+        `Output guardrail triggered: ${JSON.stringify(result.output.outputInfo)}`,
+        result,
+        state,
+      );
+    },
+    isTripwireError: (error) =>
+      error instanceof OutputGuardrailTripwireTriggered,
+    onError: (error) => {
+      throw new GuardrailExecutionError(
+        `Output guardrail failed to complete: ${error}`,
+        error as Error,
+        state,
+      );
+    },
+  });
+}
+
+/**
+ * Runs output guardrails against the partial output accumulated while the model is
+ * still streaming. This is invoked by the runner only after the configured
+ * streaming checkpoint predicate has decided that a check should happen, so this
+ * function is solely responsible for executing the guardrails and surfacing any
+ * tripwire.
+ *
+ * Unlike {@link runOutputGuardrails}, the partial text is passed through verbatim
+ * and is NOT parsed via `Agent.processFinalOutput`, because partial output (for
+ * example incomplete JSON) is not guaranteed to be parseable yet. Guardrails are
+ * informed of this via `details.partial`.
+ */
+export async function runStreamingOutputGuardrails<
+  TContext,
+  TOutput extends AgentOutputType,
+  TAgent extends Agent<TContext, TOutput>,
+>(
+  state: RunState<TContext, TAgent>,
+  runnerOutputGuardrails: OutputGuardrailDefinition<
+    OutputGuardrailMetadata,
+    AgentOutputType<unknown>
+  >[],
+  partialText: string,
+) {
+  // Runner-level output guardrails are context-agnostic, so align them with the active run context type.
+  const runnerGuardrails = runnerOutputGuardrails as OutputGuardrailDefinition<
+    OutputGuardrailMetadata,
+    AgentOutputType<unknown>,
+    TContext
+  >[];
+  // Run the same guardrails as the final check (runner-level + agent-level). The
+  // configured checkpoint predicate decides the cadence; this function decides the trip.
+  const guardrails = runnerGuardrails.concat(
+    state._currentAgent.outputGuardrails.map(defineOutputGuardrail),
+  );
+  if (guardrails.length === 0) {
+    return;
+  }
+  const guardrailArgs: OutputGuardrailFunctionArgs<TContext, TOutput> = {
+    agent: state._currentAgent,
+    // Pass the raw partial text; do not call processFinalOutput on incomplete output.
+    agentOutput: partialText as ResolvedAgentOutput<TOutput>,
+    context: state._context,
+    details: {
+      // The current turn's response is not finalized while the model is still
+      // streaming (`state._lastTurnResponse` is only set once the stream completes),
+      // so passing it here would surface a stale, previous-turn response. Omit it for
+      // partial checks; it is provided on the final guardrail run.
+      partial: true,
     },
   };
   await runGuardrailsWithTripwire({

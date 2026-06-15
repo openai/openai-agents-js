@@ -12,6 +12,7 @@ import type {
   InputGuardrailResult,
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
+  StreamingOutputGuardrailCheckpoint,
 } from './guardrail';
 import { Handoff, HandoffInputFilter } from './handoff';
 import { RunHooks } from './lifecycle';
@@ -47,6 +48,7 @@ import {
 import {
   createGuardrailTracker,
   runOutputGuardrails,
+  runStreamingOutputGuardrails,
 } from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
@@ -246,6 +248,22 @@ export type RunConfig = {
   outputGuardrails?: OutputGuardrail<AgentOutputType<unknown>>[];
 
   /**
+   * Controls when output guardrails run while the model is still streaming.
+   *
+   * When set, the runner holds streamed output back from the consumer and invokes
+   * this predicate for each streamed text delta. Returning `true` runs the
+   * configured output guardrails (both runner-level and agent-level) against the
+   * accumulated partial output before that output is released to the consumer. If a
+   * guardrail trips, streaming stops and an `OutputGuardrailTripwireTriggered` error
+   * is raised; otherwise the buffered output is released and streaming continues.
+   *
+   * This only affects streaming runs and only when at least one output guardrail is
+   * configured. When omitted, output guardrails run solely on the final output
+   * (the default behavior).
+   */
+  streamingOutputGuardrailCheckpoint?: StreamingOutputGuardrailCheckpoint;
+
+  /**
    * Whether tracing is disabled for the agent run. If disabled, we will not trace the agent run.
    */
   tracingDisabled: boolean;
@@ -342,6 +360,7 @@ type SharedRunOptions<
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
   toolErrorFormatter?: ToolErrorFormatter;
+  streamingOutputGuardrailCheckpoint?: StreamingOutputGuardrailCheckpoint;
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
@@ -479,6 +498,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
+      streamingOutputGuardrailCheckpoint:
+        config.streamingOutputGuardrailCheckpoint,
       reasoningItemIdPolicy: config.reasoningItemIdPolicy,
     };
     this.traceOverrides = {
@@ -1253,6 +1274,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const agentToolParentRunConfig = this.#getAgentToolParentRunConfig(options);
 
+    // When configured, output guardrails run against partial output while streaming.
+    // Streamed events are held back from the consumer until a checkpoint passes, so
+    // unsafe content never reaches the user.
+    const streamingOutputGuardrailCheckpoint =
+      options.streamingOutputGuardrailCheckpoint ??
+      this.config.streamingOutputGuardrailCheckpoint;
+    const hasOutputGuardrailsFor = (agent: Agent<TContext, AgentOutputType>) =>
+      this.outputGuardrailDefs.length > 0 || agent.outputGuardrails.length > 0;
+    let outputHoldEnabled = false;
+    // Accumulated assistant text for the current turn, used to feed partial guardrails.
+    let accumulatedStreamText = '';
+    // Length of accumulated text already verified by a streaming guardrail run, so
+    // turn-boundary checks don't redundantly re-run guardrails on unchanged text.
+    let lastVerifiedStreamTextLength = 0;
+
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
@@ -1457,6 +1493,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             await persistStreamInputIfNeeded();
           }
 
+          // Reset per-turn streaming guardrail state and start holding output when
+          // streaming output guardrails are configured for this agent.
+          accumulatedStreamText = '';
+          lastVerifiedStreamTextLength = 0;
+          const turnHoldActive =
+            Boolean(streamingOutputGuardrailCheckpoint) &&
+            hasOutputGuardrailsFor(currentAgent);
+          if (turnHoldActive && !outputHoldEnabled) {
+            result._enableOutputHold();
+            outputHoldEnabled = true;
+          } else if (!turnHoldActive && outputHoldEnabled) {
+            // This turn has no streaming output guardrails to enforce (e.g. a handoff
+            // to an unguarded agent). Disable the hold so its events stream through
+            // directly instead of being buffered into a burst at turn completion.
+            result._disableOutputHold();
+            outputHoldEnabled = false;
+          }
+
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
@@ -1508,6 +1562,32 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 return;
               }
               result._addItem(new RunRawModelStreamEvent(event));
+
+              if (
+                turnHoldActive &&
+                streamingOutputGuardrailCheckpoint &&
+                event.type === 'output_text_delta'
+              ) {
+                accumulatedStreamText += event.delta;
+                const shouldCheck = await streamingOutputGuardrailCheckpoint({
+                  agent: currentAgent,
+                  delta: event.delta,
+                  accumulatedText: accumulatedStreamText,
+                  context: result.state._context,
+                });
+                if (shouldCheck) {
+                  // Throws OutputGuardrailTripwireTriggered if a guardrail trips,
+                  // which is handled below by discarding the held (unsafe) output.
+                  await runStreamingOutputGuardrails(
+                    result.state,
+                    this.outputGuardrailDefs,
+                    accumulatedStreamText,
+                  );
+                  lastVerifiedStreamTextLength = accumulatedStreamText.length;
+                  // Checkpoint passed: the buffered output is safe to release.
+                  result._releaseHeldOutput();
+                }
+              }
             }
           } catch (error) {
             if (isAbortError(error)) {
@@ -1518,6 +1598,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               await reconcileStreamAbortIfNeeded();
               return;
             }
+            // A streaming guardrail tripped (or another error occurred): never leak
+            // output that has not passed a checkpoint.
+            result._discardHeldOutput();
             throw error;
           }
 
@@ -1595,6 +1678,32 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         const currentStep = result.state._currentStep;
+        // Non-final turns have no final-output guardrail, yet a response can contain
+        // assistant text alongside the tool calls that force the turn to be non-final.
+        // Verify any accumulated text that has not already passed a streaming
+        // checkpoint before its buffer is released, so unverified content never leaks.
+        // A trip discards the held output and propagates as usual. Uses the streaming
+        // agent's guardrails, so it must run before a handoff swaps the current agent.
+        const verifyNonFinalHeldOutput = async () => {
+          if (
+            !streamingOutputGuardrailCheckpoint ||
+            !hasOutputGuardrailsFor(currentAgent) ||
+            accumulatedStreamText.length <= lastVerifiedStreamTextLength
+          ) {
+            return;
+          }
+          try {
+            await runStreamingOutputGuardrails(
+              result.state,
+              this.outputGuardrailDefs,
+              accumulatedStreamText,
+            );
+          } catch (error) {
+            result._discardHeldOutput();
+            throw error;
+          }
+          lastVerifiedStreamTextLength = accumulatedStreamText.length;
+        };
         switch (currentStep.type) {
           case 'next_step_final_output':
             try {
@@ -1607,8 +1716,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               // Do not leave blocked output visible through StreamedRunResult.finalOutput.
               result.state._currentStep = undefined;
               result.state._finalOutputSource = undefined;
+              // Drop any output still held back so the blocked content never reaches the consumer.
+              result._discardHeldOutput();
               throw error;
             }
+            // Final guardrails passed: release any output held since the last checkpoint.
+            result._releaseHeldOutput();
             result.state._currentTurnInProgress = false;
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
@@ -1628,13 +1741,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
             return;
           case 'next_step_interruption':
-            // We are done for now. Don't run any output guardrails.
+            // We are done for now. Verify any unchecked streamed text before releasing
+            // the held items so the consumer sees everything streamed up to the
+            // interruption (but never unverified content).
+            await verifyNonFinalHeldOutput();
+            result._releaseHeldOutput();
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
               await saveStreamResultToSession(options.session, result);
             }
             return;
           case 'next_step_handoff':
+            // Verify the handing-off agent's unchecked streamed text before swapping
+            // agents, so its guardrails (not the target agent's) run on its output.
+            await verifyNonFinalHeldOutput();
             result.state.setCurrentAgent(currentStep.newAgent as TAgent);
             if (result.state._currentAgentSpan) {
               result.state._currentAgentSpan.end();
@@ -1647,6 +1767,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._noActiveAgentRun = true;
             result.state._currentTurnInProgress = false;
 
+            // Non-final turn: release held items so handoff events are not delayed.
+            result._releaseHeldOutput();
+
             // We've processed the handoff, so we need to run the loop again.
             result.state._currentStep = {
               type: 'next_step_run_again',
@@ -1654,6 +1777,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             break;
           case 'next_step_run_again':
             result.state._currentTurnInProgress = false;
+            // Non-final turn: verify any unchecked streamed text (a response may carry
+            // assistant text alongside the tool calls), then release held items in order.
+            await verifyNonFinalHeldOutput();
+            result._releaseHeldOutput();
             logger.debug('Running next loop');
             break;
           default:
@@ -1662,6 +1789,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
     } catch (error) {
       result.state._currentTurnInProgress = false;
+      // Drop any partial output held back from the failed turn: it never passed a
+      // guardrail checkpoint, so it must not reach the consumer. Recovered output
+      // emitted by an error handler below is buffered after this point and released
+      // once it passes its own guardrails.
+      result._discardHeldOutput();
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
@@ -1684,6 +1816,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         streamResult: result,
       });
       if (handledResult) {
+        // The recovered output passed its guardrails; release it to the consumer.
+        result._releaseHeldOutput();
         await persistStreamInputIfNeeded();
         if (!serverManagesConversation) {
           await saveStreamResultToSession(options.session, result);

@@ -3046,6 +3046,695 @@ describe('Runner.run (streaming)', () => {
   });
 });
 
+describe('Runner.run (streaming output guardrails)', () => {
+  beforeAll(() => {
+    setTracingDisabled(true);
+    setDefaultModelProvider(new FakeModelProvider());
+  });
+
+  // Streams the provided text in chunks, then completes with the joined text
+  // (or an explicit final text) as the assistant message.
+  class TextDeltaStreamingModel implements Model {
+    constructor(
+      private readonly chunks: string[],
+      private readonly finalText?: string,
+    ) {}
+
+    async getResponse(): Promise<ModelResponse> {
+      return {
+        output: [fakeModelMessage(this.finalText ?? this.chunks.join(''))],
+        usage: new Usage(),
+      };
+    }
+
+    async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+      for (const chunk of this.chunks) {
+        yield { type: 'output_text_delta', delta: chunk } as any;
+      }
+      const text = this.finalText ?? this.chunks.join('');
+      yield {
+        type: 'response_done',
+        response: {
+          id: 'resp-stream-guardrail',
+          usage: {
+            requests: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          output: [fakeModelMessage(text)],
+        },
+      } as any;
+    }
+  }
+
+  async function collectDeltas(
+    result: StreamedRunResult<any, any>,
+  ): Promise<string[]> {
+    const received: string[] = [];
+    for await (const event of result) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'output_text_delta'
+      ) {
+        received.push(event.data.delta);
+      }
+    }
+    await result.completed;
+    return received;
+  }
+
+  it('releases buffered output only after each checkpoint passes', async () => {
+    const checkpointTexts: string[] = [];
+    const guardrail = {
+      name: 'never-trips',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['aaa', 'bbb', 'ccc']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: ({ accumulatedText }) => {
+        checkpointTexts.push(accumulatedText);
+        return true;
+      },
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['aaa', 'bbb', 'ccc']);
+    // Checkpoint sees accumulated text on every delta.
+    expect(checkpointTexts).toEqual(['aaa', 'aaabbb', 'aaabbbccc']);
+    // Guardrail runs once per checkpoint plus once on the final output.
+    expect(guardrail.execute).toHaveBeenCalledTimes(4);
+    expect(result.finalOutput).toBe('aaabbbccc');
+  });
+
+  it('stops the stream and never leaks unsafe content when a checkpoint trips', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: { reason: 'unsafe' },
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['safe1', 'safe2', 'UNSAFE', 'more']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // Only the deltas covered by passing checkpoints reached the consumer.
+    expect(received.join('')).toBe('safe1safe2');
+    expect(received).not.toContain('UNSAFE');
+    expect(received).not.toContain('more');
+  });
+
+  it('holds trailing output until the final guardrails pass', async () => {
+    const guardrail = {
+      name: 'final-only',
+      execute: vi.fn(async (_args: any) => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['part1', 'part2']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      // Never run mid-stream: the trailing buffer is released by the final guardrails.
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['part1', 'part2']);
+    // Only the final output check runs because no checkpoint fired.
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(guardrail.execute.mock.calls[0][0].details?.partial).toBeUndefined();
+    expect(result.finalOutput).toBe('part1part2');
+  });
+
+  it('discards trailing output when the final guardrails trip', async () => {
+    const guardrail = {
+      name: 'final-trips',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'final' },
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['hello', 'world']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // Nothing was released because the only checkpoint (the final output) tripped.
+    expect(received).toEqual([]);
+  });
+
+  it('does not change behavior when no streaming checkpoint is configured', async () => {
+    const guardrail = {
+      name: 'final-default',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['x', 'y', 'z']),
+    });
+    const runner = new Runner({ outputGuardrails: [guardrail] });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['x', 'y', 'z']);
+    // Default behavior: the guardrail runs only once, on the final output.
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.finalOutput).toBe('xyz');
+  });
+
+  it('supports asynchronous checkpoint predicates', async () => {
+    const guardrail = {
+      name: 'async-checkpoint',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['one', 'two']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: async ({ accumulatedText }) =>
+        Promise.resolve(accumulatedText.length >= 6),
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['one', 'two']);
+    // Fires once mid-stream (after 'onetwo') plus the final output check.
+    expect(guardrail.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes raw partial text mid-stream and the parsed object on the final check', async () => {
+    const seen: Array<{ partial: boolean | undefined; output: unknown }> = [];
+    const guardrail = {
+      name: 'structured',
+      execute: vi.fn(async ({ agentOutput, details }: any) => {
+        seen.push({ partial: details?.partial, output: agentOutput });
+        return { tripwireTriggered: false, outputInfo: {} };
+      }),
+    };
+    const finalJson = '{"value":"hello"}';
+    const agent = new Agent({
+      name: 'StructuredStreamGuard',
+      outputType: z.object({ value: z.string() }),
+      model: new TextDeltaStreamingModel(['{"value":', '"hello"}'], finalJson),
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: ({ accumulatedText }) =>
+        accumulatedText === '{"value":',
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await collectDeltas(result);
+
+    // First call is the mid-stream partial check (raw text), second is the final parsed object.
+    expect(seen[0]).toEqual({ partial: true, output: '{"value":' });
+    expect(seen[seen.length - 1].partial).toBeUndefined();
+    expect(seen[seen.length - 1].output).toEqual({ value: 'hello' });
+    expect(result.finalOutput).toEqual({ value: 'hello' });
+  });
+
+  it('consults multiple output guardrails at a checkpoint', async () => {
+    const passing = {
+      name: 'passes',
+      execute: vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      })),
+    };
+    const tripping = {
+      name: 'trips',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('bad'),
+        outputInfo: {},
+      })),
+    };
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextDeltaStreamingModel(['good', 'bad']),
+    });
+    const runner = new Runner({
+      outputGuardrails: [passing, tripping],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await expect(collectDeltas(result)).rejects.toBeInstanceOf(
+      OutputGuardrailTripwireTriggered,
+    );
+    expect(passing.execute).toHaveBeenCalled();
+    expect(tripping.execute).toHaveBeenCalled();
+  });
+
+  it('does not surface a previous turn response to mid-stream partial checks', async () => {
+    // Turn 1 is a tool call (which sets the last-turn response), turn 2 streams the
+    // final text. The partial check fires during turn 2, before that turn's response
+    // is finalized, so it must not receive the stale turn-1 response.
+    const seen: Array<{
+      partial: boolean | undefined;
+      modelResponse: any;
+    }> = [];
+    const guardrail = {
+      name: 'records-details',
+      execute: vi.fn(async ({ details }: any) => {
+        seen.push({
+          partial: details?.partial,
+          modelResponse: details?.modelResponse,
+        });
+        return { tripwireTriggered: false, outputInfo: {} };
+      }),
+    };
+
+    const echoTool = tool({
+      name: 'echo',
+      description: 'echo',
+      parameters: z.object({}),
+      execute: async () => 'tool-result',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: echoTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class ToolThenTextModel implements Model {
+      #callCount = 0;
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('final')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        const turn = this.#callCount++;
+        if (turn === 0) {
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-tool-turn',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [toolCall],
+            },
+          } as any;
+          return;
+        }
+        yield { type: 'output_text_delta', delta: 'fin' } as any;
+        yield { type: 'output_text_delta', delta: 'al' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-text-turn',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('final')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new ToolThenTextModel(),
+      tools: [echoTool],
+    });
+    const runner = new Runner({
+      outputGuardrails: [guardrail],
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    await collectDeltas(result);
+
+    const partialCalls = seen.filter((s) => s.partial);
+    const finalCalls = seen.filter((s) => !s.partial);
+    expect(partialCalls.length).toBeGreaterThan(0);
+    // No response at all (let alone the stale turn-1 response) is surfaced mid-stream.
+    expect(partialCalls.every((c) => c.modelResponse === undefined)).toBe(true);
+    expect(
+      partialCalls.some(
+        (c) => c.modelResponse?.responseId === 'resp-tool-turn',
+      ),
+    ).toBe(false);
+    // The final check still receives the completed turn-2 response.
+    expect(finalCalls[finalCalls.length - 1].modelResponse?.responseId).toBe(
+      'resp-text-turn',
+    );
+  });
+
+  it('streams an unguarded agent directly after a handoff from a guarded agent', async () => {
+    // Gate the unguarded agent's turn so it cannot complete until released. If its
+    // output were still held back, the first delta could only arrive as a burst at
+    // turn completion, which the gate prevents until after the assertion below.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let resolveSawFirstDelta!: () => void;
+    const sawFirstDelta = new Promise<void>((resolve) => {
+      resolveSawFirstDelta = resolve;
+    });
+
+    class GatedDeltaModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('B1B2')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'B1' } as any;
+        await gate;
+        yield { type: 'output_text_delta', delta: 'B2' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-b',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('B1B2')],
+          },
+        } as any;
+      }
+    }
+
+    class HandoffStreamingModel implements Model {
+      constructor(private readonly resp: ModelResponse) {}
+      async getResponse(): Promise<ModelResponse> {
+        return this.resp;
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-a',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: this.resp.output,
+          },
+        } as any;
+      }
+    }
+
+    const agentB = new Agent({ name: 'B', model: new GatedDeltaModel() });
+    const handoffToB = handoff(agentB);
+    const handoffCall: FunctionCallItem = {
+      id: 'h1',
+      type: 'function_call',
+      name: handoffToB.toolName,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agentA = new Agent({
+      name: 'A',
+      model: new HandoffStreamingModel({
+        output: [handoffCall],
+        usage: new Usage(),
+      }),
+      handoffs: [handoffToB],
+      // Agent-level guardrail makes A's turn buffered, activating the output hold.
+      outputGuardrails: [
+        {
+          name: 'a-guard',
+          execute: async () => ({ tripwireTriggered: false, outputInfo: {} }),
+        },
+      ],
+    });
+    const runner = new Runner({
+      streamingOutputGuardrailCheckpoint: () => true,
+    });
+
+    const result = await runner.run(agentA, 'go', { stream: true });
+    const received: string[] = [];
+    const consume = (async () => {
+      for await (const event of result) {
+        if (
+          event.type === 'raw_model_stream_event' &&
+          event.data.type === 'output_text_delta'
+        ) {
+          received.push(event.data.delta);
+          if (event.data.delta === 'B1') {
+            resolveSawFirstDelta();
+          }
+        }
+      }
+    })();
+
+    // The unguarded agent streams through directly: its first delta reaches the
+    // consumer before its (gated) turn can complete.
+    await sawFirstDelta;
+    expect(received).toContain('B1');
+
+    releaseGate();
+    await consume;
+    await result.completed;
+
+    expect(received).toEqual(['B1', 'B2']);
+    expect(result.finalOutput).toBe('B1B2');
+  });
+
+  // A response can carry assistant text alongside the tool calls that force a
+  // non-final (run-again) turn. If the checkpoint predicate hasn't fired yet, that
+  // text must still be verified before the held buffer is released.
+  it('verifies buffered text before releasing it on a non-final tool turn', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: { reason: 'unsafe' },
+      })),
+    };
+    const noopTool = tool({
+      name: 'noop',
+      description: 'noop',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: noopTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class TextPlusToolModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('UNSAFE')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'UN' } as any;
+        yield { type: 'output_text_delta', delta: 'SAFE' } as any;
+        // Text + tool call in the same response forces a non-final (run-again) turn.
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-tool',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('UNSAFE'), toolCall],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new TextPlusToolModel(),
+      tools: [noopTool],
+      outputGuardrails: [guardrail],
+    });
+    const runner = new Runner({
+      // Never checks mid-stream, so the text would otherwise reach the consumer
+      // unverified when the tool turn's buffer is released.
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of result) {
+          if (
+            event.type === 'raw_model_stream_event' &&
+            event.data.type === 'output_text_delta'
+          ) {
+            received.push(event.data.delta);
+          }
+        }
+      })(),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+
+    // The unsafe text was caught at the tool-turn boundary and never released.
+    expect(received.join('')).toBe('');
+    expect(guardrail.execute).toHaveBeenCalled();
+  });
+
+  it('releases safe buffered text on a non-final tool turn and continues', async () => {
+    const guardrail = {
+      name: 'blocks-unsafe',
+      execute: vi.fn(async ({ agentOutput }: any) => ({
+        tripwireTriggered: String(agentOutput).includes('UNSAFE'),
+        outputInfo: {},
+      })),
+    };
+    const noopTool = tool({
+      name: 'noop',
+      description: 'noop',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const toolCall: FunctionCallItem = {
+      id: 'call-1',
+      type: 'function_call',
+      name: noopTool.name,
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    };
+
+    class SafeTextThenToolThenFinalModel implements Model {
+      #callCount = 0;
+      async getResponse(): Promise<ModelResponse> {
+        return { output: [fakeModelMessage('done')], usage: new Usage() };
+      }
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        const turn = this.#callCount++;
+        if (turn === 0) {
+          yield { type: 'output_text_delta', delta: 'safe-pre' } as any;
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'resp-tool',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('safe-pre'), toolCall],
+            },
+          } as any;
+          return;
+        }
+        yield { type: 'output_text_delta', delta: 'done' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-final',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('done')],
+          },
+        } as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamGuard',
+      model: new SafeTextThenToolThenFinalModel(),
+      tools: [noopTool],
+      outputGuardrails: [guardrail],
+    });
+    const runner = new Runner({
+      streamingOutputGuardrailCheckpoint: () => false,
+    });
+
+    const result = await runner.run(agent, 'go', { stream: true });
+    const received = await collectDeltas(result);
+
+    expect(received).toEqual(['safe-pre', 'done']);
+    expect(result.finalOutput).toBe('done');
+  });
+});
+
 class ImmediateStreamingModel implements Model {
   constructor(private readonly response: ModelResponse) {}
 

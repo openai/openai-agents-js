@@ -7,6 +7,7 @@ import {
   buildInputGuardrailDefinitions,
   runInputGuardrails,
   runOutputGuardrails,
+  runStreamingOutputGuardrails,
   splitInputGuardrails,
 } from '../../src/runner/guardrails';
 import {
@@ -283,6 +284,67 @@ describe('runOutputGuardrails', () => {
         runOutputGuardrails(state, [runnerGuardrail as any], 'ok'),
       ),
     ).rejects.toBeInstanceOf(GuardrailExecutionError);
+    expect(state._outputGuardrailResults).toHaveLength(0);
+  });
+});
+
+describe('runStreamingOutputGuardrails', () => {
+  it('passes the raw partial text and a partial flag to guardrails', async () => {
+    const agent = makeAgent({ name: 'PartialOutput' });
+    const state = makeState(agent);
+    state._lastTurnResponse = { output: [], usage: new Usage() };
+    let received: { agentOutput: unknown; partial: boolean | undefined } = {
+      agentOutput: undefined,
+      partial: undefined,
+    };
+    const runnerGuardrail = defineOutputGuardrail({
+      name: 'partial',
+      execute: async ({ agentOutput, details }) => {
+        received = { agentOutput, partial: details?.partial };
+        return { tripwireTriggered: false, outputInfo: {} };
+      },
+    });
+
+    await withTrace('streaming-guardrails-partial', () =>
+      runStreamingOutputGuardrails(
+        state,
+        [runnerGuardrail as any],
+        'partial te',
+      ),
+    );
+
+    expect(received.agentOutput).toBe('partial te');
+    expect(received.partial).toBe(true);
+    expect(state._outputGuardrailResults).toHaveLength(1);
+  });
+
+  it('throws when a streaming guardrail trips', async () => {
+    const agent = makeAgent({ name: 'PartialTrip' });
+    const state = makeState(agent);
+    const runnerGuardrail = defineOutputGuardrail({
+      name: 'trip',
+      execute: async () => ({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'bad' },
+      }),
+    });
+
+    await expect(
+      withTrace('streaming-guardrails-trip', () =>
+        runStreamingOutputGuardrails(state, [runnerGuardrail as any], 'oops'),
+      ),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+    expect(state._outputGuardrailResults).toHaveLength(1);
+  });
+
+  it('is a no-op when there are no output guardrails', async () => {
+    const agent = makeAgent({ name: 'NoGuards' });
+    const state = makeState(agent);
+
+    await withTrace('streaming-guardrails-noop', () =>
+      runStreamingOutputGuardrails(state, [], 'anything'),
+    );
+
     expect(state._outputGuardrailResults).toHaveLength(0);
   });
 });

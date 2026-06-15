@@ -6,6 +6,7 @@ description: Validate or transform agent input and output
 import { Code } from '@astrojs/starlight/components';
 import inputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
 import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
+import streamingGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-streaming.ts?raw';
 import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
 
 Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
@@ -51,6 +52,26 @@ Output guardrails run in 3 steps:
 > **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime voice interactions see [the voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
 
 Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
+
+### Streaming output guardrails
+
+By default, output guardrails only run once the full output has been generated. In streaming runs this means the model's text has already reached the consumer before the guardrail had a chance to inspect it.
+
+Set `streamingOutputGuardrailCheckpoint` on the runner (or per run) to run your output guardrails **while the model is still streaming**:
+
+- The runner holds streamed output back from the consumer and invokes your checkpoint predicate for each streamed text delta. It receives the latest `delta`, the `accumulatedText` so far, the `agent`, and the run `context`, and returns a `boolean`.
+- When the predicate returns `true`, the configured output guardrails run against the accumulated partial output. If a guardrail trips, streaming stops and an `OutputGuardrailTripwireTriggered` error is raised; otherwise the buffered output is released to the consumer and streaming continues.
+- Because output is held until a checkpoint passes, unsafe content never reaches the consumer. With a checkpoint configured, streamed text therefore arrives in blocks (one per passing checkpoint) instead of token by token.
+
+The same guardrail `execute` runs both mid-stream and on the final output. During streaming, `agentOutput` is the raw accumulated text and `details.partial` is `true`; on the final check, `agentOutput` is the parsed output and `details.partial` is unset. For agents with a structured `outputType`, mid-stream guardrails therefore receive partial **text** (which may not be valid JSON yet) rather than a parsed object.
+
+This is useful for cadence-based checks, for example running the guardrail every 200 characters, or in a quiz builder each time a question in a list is fully generated.
+
+<Code
+  lang="typescript"
+  code={streamingGuardrailExample}
+  title="Streaming output guardrail example"
+/>
 
 ## Tool guardrails
 

@@ -328,6 +328,8 @@ export class StreamedRunResult<
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
+  #outputHoldActive: boolean = false;
+  #outputHoldBuffer: RunStreamEvent[] = [];
   #streamLoopPromise: Promise<void> | undefined;
   #abortHandler: (() => void) | undefined;
   #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
@@ -392,12 +394,73 @@ export class StreamedRunResult<
 
   /**
    * @internal
-   * Adds an item to the stream of output items
+   * Adds an item to the stream of output items.
+   *
+   * When an output hold is active (i.e. streaming output guardrails are
+   * configured), items are buffered instead of being emitted so that nothing
+   * reaches the consumer before passing a guardrail checkpoint.
    */
   _addItem(item: RunStreamEvent) {
-    if (!this.cancelled) {
+    if (this.cancelled) {
+      return;
+    }
+    if (this.#outputHoldActive) {
+      this.#outputHoldBuffer.push(item);
+      return;
+    }
+    this.#readableController?.enqueue(item);
+  }
+
+  /**
+   * @internal
+   * Enables holding streamed events in an internal buffer until they are explicitly
+   * released. Used by the runner when streaming output guardrails are configured so
+   * that output never reaches the consumer before passing a guardrail checkpoint.
+   */
+  _enableOutputHold() {
+    this.#outputHoldActive = true;
+  }
+
+  /**
+   * @internal
+   * Disables the output hold and flushes any buffered events to the consumer, so
+   * subsequent events stream through directly. Used by the runner when a turn has no
+   * streaming output guardrails to enforce (e.g. after a handoff to an unguarded
+   * agent), so that turn is not needlessly buffered into a burst.
+   */
+  _disableOutputHold() {
+    this.#outputHoldActive = false;
+    this._releaseHeldOutput();
+  }
+
+  /**
+   * @internal
+   * Releases any events held in the output buffer to the consumer, in order, and
+   * keeps the hold active for subsequent events. Called after a guardrail
+   * checkpoint passes.
+   */
+  _releaseHeldOutput() {
+    if (this.#outputHoldBuffer.length === 0) {
+      return;
+    }
+    const buffered = this.#outputHoldBuffer;
+    this.#outputHoldBuffer = [];
+    if (this.cancelled) {
+      return;
+    }
+    for (const item of buffered) {
       this.#readableController?.enqueue(item);
     }
+  }
+
+  /**
+   * @internal
+   * Discards any events held in the output buffer without emitting them. Called when
+   * a guardrail tripwire triggers (so unsafe output never reaches the consumer) or
+   * when the stream is aborted.
+   */
+  _discardHeldOutput() {
+    this.#outputHoldBuffer = [];
   }
 
   /**
@@ -533,6 +596,8 @@ export class StreamedRunResult<
     }
 
     this.#cancelled = true;
+    // Drop any output held back for guardrail checkpoints so it cannot leak after abort.
+    this.#outputHoldBuffer = [];
 
     const controller = this.#readableController;
     this.#readableController = undefined;
