@@ -182,5 +182,8 @@
         "dist/experimental/codex/index.d.ts"
       ]
     }
+  },
+  "bugs": {
+    "url": "https://github.com/openai/openai-agents-js/issues"
   }
 }
