@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { removeAllTools } from '../../src/extensions';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunMessageOutputItem,
@@ -105,6 +106,11 @@ const reasoningItem: protocol.ReasoningItem = {
   content: [{ type: 'input_text', text: 'thinking' }],
 };
 
+const compactionItem: protocol.CompactionItem = {
+  type: 'compaction',
+  encrypted_content: 'opaque-history',
+};
+
 const hostedMcpApprovalRequest: protocol.HostedToolCallItem = {
   type: 'hosted_tool_call',
   id: 'approval-1',
@@ -146,6 +152,7 @@ describe('removeAllTools', () => {
     const result = removeAllTools({
       inputHistory: 'keep me',
       preHandoffItems: [
+        new RunCompactionItem(compactionItem, TEST_AGENT),
         new RunHandoffCallItem(TEST_MODEL_FUNCTION_CALL, TEST_AGENT),
         message,
         new RunToolSearchCallItem(toolSearchCall, TEST_AGENT),
@@ -186,6 +193,7 @@ describe('removeAllTools', () => {
       applyPatchCall,
       applyPatchCallResult,
       reasoningItem,
+      compactionItem,
     ];
 
     const result = removeAllTools({
@@ -195,7 +203,7 @@ describe('removeAllTools', () => {
     });
 
     expect(result.inputHistory).toStrictEqual([userMessage]);
-    expect(history).toHaveLength(13);
+    expect(history).toHaveLength(14);
     expect((result.inputHistory as AgentInputItem[])[0]).toBe(userMessage);
   });
 });
