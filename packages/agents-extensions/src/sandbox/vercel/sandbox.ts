@@ -1,4 +1,5 @@
 import { UserError } from '@openai/agents-core';
+import { loadEnv } from '@openai/agents-core/_shims';
 import {
   Manifest,
   SandboxLifecycleError,
@@ -140,19 +141,23 @@ export type VercelWorkspacePersistence = 'tar' | 'snapshot';
 
 export interface VercelSandboxClientOptions extends SandboxClientOptions {
   /**
-   * Vercel project ID. Forwarded only when `projectId`, `teamId`, and `token`
-   * are all provided.
+   * Vercel project ID. Per-create options override constructor options, which
+   * override `VERCEL_PROJECT_ID`. Credentials are forwarded only when the
+   * resolved `projectId`, `teamId`, and `token` are all non-empty.
    */
   projectId?: string;
   /**
-   * Vercel team ID. Forwarded only when `projectId`, `teamId`, and `token`
-   * are all provided.
+   * Vercel team ID. Per-create options override constructor options, which
+   * override `VERCEL_TEAM_ID`. Credentials are forwarded only when the
+   * resolved `projectId`, `teamId`, and `token` are all non-empty.
    */
   teamId?: string;
   /**
-   * Vercel access token. Forwarded only when `projectId`, `teamId`, and
-   * `token` are all provided. Explicit tokens are included in serialized
-   * session state.
+   * Vercel access token. Per-create options override constructor options,
+   * which override `VERCEL_TOKEN`. Credentials are forwarded only when the
+   * resolved `projectId`, `teamId`, and `token` are all non-empty; otherwise
+   * authentication is delegated to `@vercel/sandbox`. Resolved tokens are
+   * included in serialized session state.
    */
   token?: string;
   runtime?: string;
@@ -757,7 +762,10 @@ export class VercelSandboxClient implements SandboxClient<
           resolvedManifest,
           resolvedOptions.env,
         );
-        const credentials = normalizeVercelCredentials(resolvedOptions);
+        const credentials = resolveVercelCredentials(
+          createArgs.options ?? {},
+          this.options,
+        );
         const sandbox = await withProviderError(
           'VercelSandboxClient',
           'vercel',
@@ -1091,14 +1099,46 @@ function normalizeVercelCredentials(
   return {};
 }
 
+function resolveVercelCredentials(
+  ...optionLayers: VercelCredentials[]
+): NormalizedVercelCredentials {
+  const env = loadEnv();
+  const layers = [
+    ...optionLayers,
+    {
+      projectId: env.VERCEL_PROJECT_ID,
+      teamId: env.VERCEL_TEAM_ID,
+      token: env.VERCEL_TOKEN,
+    },
+  ];
+  return normalizeVercelCredentials({
+    projectId: resolveVercelCredentialField('projectId', layers),
+    teamId: resolveVercelCredentialField('teamId', layers),
+    token: resolveVercelCredentialField('token', layers),
+  });
+}
+
+function resolveVercelCredentialField(
+  field: keyof VercelCredentials,
+  optionLayers: VercelCredentials[],
+): string | undefined {
+  for (const options of optionLayers) {
+    const value = options[field];
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function selectVercelCredentials(
   preferred: VercelCredentials,
-  fallback: VercelCredentials,
+  ...fallbackLayers: VercelCredentials[]
 ): NormalizedVercelCredentials {
   const preferredCredentials = normalizeVercelCredentials(preferred);
   return preferredCredentials.token
     ? preferredCredentials
-    : normalizeVercelCredentials(fallback);
+    : resolveVercelCredentials(...fallbackLayers);
 }
 
 function applyVercelCredentials(

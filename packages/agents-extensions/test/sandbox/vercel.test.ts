@@ -179,27 +179,52 @@ describe('VercelSandboxClient', () => {
     expect(output).toContain('lost exit');
   });
 
-  test('merges constructor and create options before forwarding a complete credential triple', async () => {
+  test('forwards and stores a complete PAT environment credential triple', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
+    const client = new VercelSandboxClient();
+
+    const session = await client.create(new Manifest());
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'prj_env',
+        teamId: 'team_env',
+        token: 'env_token',
+      }),
+    );
+    expect(session.state).toMatchObject({
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
+    });
+  });
+
+  test('mixes create, constructor, and PAT environment credentials using field precedence', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
     const client = new VercelSandboxClient({
-      projectId: 'prj_explicit',
-      teamId: 'team_explicit',
+      projectId: 'prj_constructor',
+      token: 'constructor_token',
     });
 
     const session = await client.create(new Manifest(), {
-      token: 'explicit_token',
+      projectId: 'prj_create',
     });
 
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: 'prj_explicit',
-        teamId: 'team_explicit',
-        token: 'explicit_token',
+        projectId: 'prj_create',
+        teamId: 'team_env',
+        token: 'constructor_token',
       }),
     );
     expect(session.state).toMatchObject({
-      projectId: 'prj_explicit',
-      teamId: 'team_explicit',
-      token: 'explicit_token',
+      projectId: 'prj_create',
+      teamId: 'team_env',
+      token: 'constructor_token',
     });
   });
 
@@ -212,11 +237,11 @@ describe('VercelSandboxClient', () => {
     { projectId: 'prj_partial', token: 'token_partial' },
     { teamId: 'team_partial', token: 'token_partial' },
   ])(
-    'omits absent or partial explicit credentials and ignores PAT environment variables: %j',
+    'omits absent or partial credentials when the resolved triple remains incomplete: %j',
     async (options) => {
-      vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
-      vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
-      vi.stubEnv('VERCEL_TOKEN', 'env_token');
+      vi.stubEnv('VERCEL_PROJECT_ID', '');
+      vi.stubEnv('VERCEL_TEAM_ID', '');
+      vi.stubEnv('VERCEL_TOKEN', '');
       const client = new VercelSandboxClient(options);
 
       const session = await client.create(new Manifest());
@@ -231,14 +256,30 @@ describe('VercelSandboxClient', () => {
     },
   );
 
-  test('serializes complete explicit credentials used during create', async () => {
+  test('explicit empty values suppress environment fallback and delegate authentication', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
     vi.stubEnv('VERCEL_TOKEN', 'env_token');
     const client = new VercelSandboxClient({
-      projectId: 'prj_explicit',
-      teamId: 'team_explicit',
-      token: 'explicit_token',
+      token: '',
+    });
+
+    const session = await client.create(new Manifest());
+
+    const createParams = createMock.mock.calls[0]?.[0];
+    expect(createParams).not.toHaveProperty('projectId');
+    expect(createParams).not.toHaveProperty('teamId');
+    expect(createParams).not.toHaveProperty('token');
+    expect(session.state).not.toHaveProperty('projectId');
+    expect(session.state).not.toHaveProperty('teamId');
+    expect(session.state).not.toHaveProperty('token');
+  });
+
+  test('serializes PAT environment credentials used during create and snapshot capture', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
+    const client = new VercelSandboxClient({
       workspacePersistence: 'snapshot',
     });
     const session = await client.create(new Manifest());
@@ -250,14 +291,14 @@ describe('VercelSandboxClient', () => {
 
     expect(getMock).toHaveBeenCalledWith({
       sandboxId: 'vercel_test',
-      projectId: 'prj_explicit',
-      teamId: 'team_explicit',
-      token: 'explicit_token',
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
     });
     expect(serialized).toMatchObject({
-      projectId: 'prj_explicit',
-      teamId: 'team_explicit',
-      token: 'explicit_token',
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
       sandboxId: 'vercel_test',
       workspacePersistence: 'snapshot',
       snapshotId: 'snap_test',
@@ -662,6 +703,9 @@ describe('VercelSandboxClient', () => {
   });
 
   test('retains serialized access token credentials when resuming live sandboxes', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
     const client = new VercelSandboxClient();
     const state = await client.deserializeSessionState({
       manifest: new Manifest(),
@@ -685,7 +729,7 @@ describe('VercelSandboxClient', () => {
     );
   });
 
-  test('strips incomplete legacy credentials and uses provider SDK fallback on resume', async () => {
+  test('discards incomplete serialized credentials before resolving PAT environment fallback', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
     vi.stubEnv('VERCEL_TOKEN', 'env_token');
@@ -707,6 +751,14 @@ describe('VercelSandboxClient', () => {
 
     expect(getMock).toHaveBeenCalledWith({
       sandboxId: 'vercel_existing',
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
+    });
+    expect(state).toMatchObject({
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
     });
   });
 
@@ -741,6 +793,9 @@ describe('VercelSandboxClient', () => {
   });
 
   test('retains serialized access token credentials when resuming snapshot sandboxes', async () => {
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
+    vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
+    vi.stubEnv('VERCEL_TOKEN', 'env_token');
     createMock.mockResolvedValueOnce(makeSandbox('vercel_restored'));
     const client = new VercelSandboxClient();
     const state = await client.deserializeSessionState({
