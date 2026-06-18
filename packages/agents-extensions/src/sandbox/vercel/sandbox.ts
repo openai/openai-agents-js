@@ -26,6 +26,7 @@ import {
   encodeNativeSnapshotRef,
   materializeEnvironment,
   posixDirname,
+  providerErrorDetails,
   providerErrorMessage,
   shellQuote,
   serializeRemoteSandboxSessionState,
@@ -174,6 +175,11 @@ export interface VercelSandboxClientOptions extends SandboxClientOptions {
 
 export interface VercelSandboxSessionState extends SandboxSessionState {
   sandboxId: string;
+  /**
+   * Whether authentication is explicitly configured or delegated to the SDK.
+   * Missing values identify session state created before this field existed.
+   */
+  authenticationMode?: 'explicit' | 'sdk';
   projectId?: string;
   teamId?: string;
   token?: string;
@@ -509,23 +515,25 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     }
   }
 
-  private async resolveSnapshotCredentials(): Promise<VercelCredentials> {
-    const credentials = selectVercelCredentials(this.state, this.credentials);
-    applyVercelCredentials(this.state, credentials);
-    return credentials;
+  private async resolveSnapshotCredentials(): Promise<NormalizedVercelCredentials> {
+    return selectVercelSessionCredentials(this.state, this.credentials);
   }
 
   private async createAndPrepareSandboxFromSnapshot(
     snapshotId: string,
-    credentials: VercelCredentials,
+    credentials: NormalizedVercelCredentials,
   ): Promise<VercelSandboxInstance> {
     const sandbox = await this.createSandboxFromSnapshot(
       snapshotId,
       credentials,
     );
+    const resolvedCredentials = selectVercelSessionCredentials(
+      this.state,
+      this.credentials,
+    );
 
     const replacementSession = new VercelSandboxSession({
-      credentials: { ...this.credentials, ...credentials },
+      credentials: resolvedCredentials,
       sandbox,
       archiveLimits: this.getArchiveLimits(),
       state: {
@@ -556,38 +564,47 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
 
   private async createSandboxFromSnapshot(
     snapshotId: string,
-    credentials: VercelCredentials,
+    credentials: NormalizedVercelCredentials,
   ): Promise<VercelSandboxInstance> {
     const Sandbox = await loadVercelSandboxClass();
-    return await withProviderError(
+    const authentication = await withProviderError(
       'VercelSandboxClient',
       'vercel',
       'restore snapshot',
       async () =>
-        await Sandbox.create({
-          ...credentials,
-          source: {
-            type: 'snapshot',
-            snapshotId,
-          },
-          ...(this.state.runtime ? { runtime: this.state.runtime } : {}),
-          ...(this.state.resources ? { resources: this.state.resources } : {}),
-          ...(this.state.configuredExposedPorts
-            ? { ports: this.state.configuredExposedPorts }
-            : {}),
-          ...(typeof this.state.interactive === 'boolean'
-            ? { interactive: this.state.interactive }
-            : {}),
-          ...(this.state.networkPolicy
-            ? { networkPolicy: this.state.networkPolicy }
-            : {}),
-          ...(typeof this.state.timeoutMs === 'number'
-            ? { timeout: this.state.timeoutMs }
-            : {}),
-          env: this.state.environment,
-        }),
+        await runWithLegacyVercelAuthenticationFallback(
+          this.state,
+          credentials,
+          async (resolvedCredentials) =>
+            await Sandbox.create({
+              ...resolvedCredentials,
+              source: {
+                type: 'snapshot',
+                snapshotId,
+              },
+              ...(this.state.runtime ? { runtime: this.state.runtime } : {}),
+              ...(this.state.resources
+                ? { resources: this.state.resources }
+                : {}),
+              ...(this.state.configuredExposedPorts
+                ? { ports: this.state.configuredExposedPorts }
+                : {}),
+              ...(typeof this.state.interactive === 'boolean'
+                ? { interactive: this.state.interactive }
+                : {}),
+              ...(this.state.networkPolicy
+                ? { networkPolicy: this.state.networkPolicy }
+                : {}),
+              ...(typeof this.state.timeoutMs === 'number'
+                ? { timeout: this.state.timeoutMs }
+                : {}),
+              env: this.state.environment,
+            }),
+        ),
       { snapshotId },
     );
+    applyVercelAuthentication(this.state, authentication);
+    return authentication.value;
   }
 
   private bindRestoredSandbox(
@@ -804,6 +821,7 @@ export class VercelSandboxClient implements SandboxClient<
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.sandboxId,
+            authenticationMode: credentials.token ? 'explicit' : 'sdk',
             ...credentials,
             runtime: resolvedOptions.runtime,
             resources: resolvedOptions.resources,
@@ -841,7 +859,7 @@ export class VercelSandboxClient implements SandboxClient<
     state: VercelSandboxSessionState,
     options?: SandboxSessionSerializationOptions,
   ): Promise<Record<string, unknown>> {
-    const credentials = selectVercelCredentials(state, this.options);
+    const credentials = selectVercelSessionCredentials(state, this.options);
     applyVercelCredentials(state, credentials);
     if (
       state.workspacePersistence === 'snapshot' &&
@@ -886,6 +904,7 @@ export class VercelSandboxClient implements SandboxClient<
       ...baseState,
       manifest,
       sandboxId: readString(state, 'sandboxId'),
+      authenticationMode: readVercelAuthenticationMode(state),
       workspacePersistence:
         (state.workspacePersistence as
           | VercelWorkspacePersistence
@@ -917,37 +936,41 @@ export class VercelSandboxClient implements SandboxClient<
     state: VercelSandboxSessionState,
   ): Promise<VercelSandboxSession> {
     const Sandbox = await loadVercelSandboxClass();
-    const credentials = selectVercelCredentials(state, this.options);
-    applyVercelCredentials(state, credentials);
+    const credentials = selectVercelSessionCredentials(state, this.options);
     const resumeFromSnapshot = hasFreshVercelSnapshot(state);
-    const sandbox = resumeFromSnapshot
+    const authentication = resumeFromSnapshot
       ? await withProviderError(
           'VercelSandboxClient',
           'vercel',
           'resume sandbox from snapshot',
           async () =>
-            await Sandbox.create({
-              ...credentials,
-              source: {
-                type: 'snapshot',
-                snapshotId: state.snapshotId!,
-              },
-              ...(state.runtime ? { runtime: state.runtime } : {}),
-              ...(state.resources ? { resources: state.resources } : {}),
-              ...(state.configuredExposedPorts
-                ? { ports: state.configuredExposedPorts }
-                : {}),
-              ...(state.interactive !== undefined
-                ? { interactive: state.interactive }
-                : {}),
-              ...(state.networkPolicy
-                ? { networkPolicy: state.networkPolicy }
-                : {}),
-              ...(state.timeoutMs !== undefined
-                ? { timeout: state.timeoutMs }
-                : {}),
-              env: state.environment,
-            }),
+            await runWithLegacyVercelAuthenticationFallback(
+              state,
+              credentials,
+              async (resolvedCredentials) =>
+                await Sandbox.create({
+                  ...resolvedCredentials,
+                  source: {
+                    type: 'snapshot',
+                    snapshotId: state.snapshotId!,
+                  },
+                  ...(state.runtime ? { runtime: state.runtime } : {}),
+                  ...(state.resources ? { resources: state.resources } : {}),
+                  ...(state.configuredExposedPorts
+                    ? { ports: state.configuredExposedPorts }
+                    : {}),
+                  ...(state.interactive !== undefined
+                    ? { interactive: state.interactive }
+                    : {}),
+                  ...(state.networkPolicy
+                    ? { networkPolicy: state.networkPolicy }
+                    : {}),
+                  ...(state.timeoutMs !== undefined
+                    ? { timeout: state.timeoutMs }
+                    : {}),
+                  env: state.environment,
+                }),
+            ),
           { snapshotId: state.snapshotId, sandboxId: state.sandboxId },
         )
       : await withProviderError(
@@ -955,15 +978,23 @@ export class VercelSandboxClient implements SandboxClient<
           'vercel',
           'resume sandbox',
           async () =>
-            await Sandbox.get({
-              sandboxId: state.sandboxId,
-              ...credentials,
-            }),
+            await runWithLegacyVercelAuthenticationFallback(
+              state,
+              credentials,
+              async (resolvedCredentials) =>
+                await Sandbox.get({
+                  sandboxId: state.sandboxId,
+                  ...resolvedCredentials,
+                }),
+            ),
           { sandboxId: state.sandboxId },
         );
+    applyVercelAuthentication(state, authentication);
+    const sandbox = authentication.value;
+    const resolvedCredentials = authentication.credentials;
 
     const session = new VercelSandboxSession({
-      credentials,
+      credentials: resolvedCredentials,
       archiveLimits: this.options.archiveLimits,
       state: resumeFromSnapshot
         ? {
@@ -1141,6 +1172,78 @@ function selectVercelCredentials(
     : resolveVercelCredentials(...fallbackLayers);
 }
 
+function selectVercelSessionCredentials(
+  state: VercelSandboxSessionState,
+  ...fallbackLayers: VercelCredentials[]
+): NormalizedVercelCredentials {
+  if (state.authenticationMode === 'sdk') {
+    return {};
+  }
+  return selectVercelCredentials(state, ...fallbackLayers);
+}
+
+type VercelAuthenticationResult<T> = {
+  value: T;
+  credentials: NormalizedVercelCredentials;
+  authenticationMode?: VercelSandboxSessionState['authenticationMode'];
+};
+
+async function runWithLegacyVercelAuthenticationFallback<T>(
+  state: VercelSandboxSessionState,
+  credentials: NormalizedVercelCredentials,
+  operation: (credentials: NormalizedVercelCredentials) => Promise<T>,
+): Promise<VercelAuthenticationResult<T>> {
+  const serializedCredentials = normalizeVercelCredentials(state);
+  const hasLegacySerializedCredentials =
+    state.authenticationMode === undefined &&
+    serializedCredentials.token !== undefined;
+  const authenticationMode =
+    state.authenticationMode ??
+    (hasLegacySerializedCredentials
+      ? undefined
+      : credentials.token
+        ? 'explicit'
+        : 'sdk');
+
+  try {
+    return {
+      value: await operation(credentials),
+      credentials,
+      authenticationMode,
+    };
+  } catch (error) {
+    if (!hasLegacySerializedCredentials || !isVercelUnauthorizedError(error)) {
+      throw error;
+    }
+  }
+
+  const delegatedCredentials = {} satisfies NormalizedVercelCredentials;
+  return {
+    value: await operation(delegatedCredentials),
+    credentials: delegatedCredentials,
+    authenticationMode: 'sdk',
+  };
+}
+
+function isVercelUnauthorizedError(error: unknown): boolean {
+  const details = providerErrorDetails(error);
+  return [details.status, details.httpStatus, details.responseStatus].some(
+    (status) => status === 401 || status === '401',
+  );
+}
+
+function applyVercelAuthentication<T>(
+  state: VercelSandboxSessionState,
+  authentication: VercelAuthenticationResult<T>,
+): void {
+  applyVercelCredentials(state, authentication.credentials);
+  if (authentication.authenticationMode === undefined) {
+    delete state.authenticationMode;
+  } else {
+    state.authenticationMode = authentication.authenticationMode;
+  }
+}
+
 function applyVercelCredentials(
   state: Pick<VercelSandboxSessionState, 'projectId' | 'teamId' | 'token'>,
   credentials: VercelCredentials,
@@ -1154,6 +1257,18 @@ function applyVercelCredentials(
     state.teamId = normalized.teamId;
     state.token = normalized.token;
   }
+}
+
+function readVercelAuthenticationMode(
+  state: Record<string, unknown>,
+): VercelSandboxSessionState['authenticationMode'] {
+  const mode = readOptionalString(state, 'authenticationMode');
+  if (mode === undefined || mode === 'explicit' || mode === 'sdk') {
+    return mode;
+  }
+  throw new UserError(
+    'Vercel sandbox session authenticationMode must be "explicit" or "sdk".',
+  );
 }
 
 async function captureVercelSnapshot(
@@ -1172,21 +1287,30 @@ async function captureVercelSnapshot(
 
   let sandbox = args.sandbox;
   if (!sandbox) {
-    const credentials = selectVercelCredentials(state, args.options ?? {});
-    applyVercelCredentials(state, credentials);
-    sandbox = await withProviderError(
+    const credentials = selectVercelSessionCredentials(
+      state,
+      args.options ?? {},
+    );
+    const authentication = await withProviderError(
       'VercelSandboxClient',
       'vercel',
       'look up sandbox for snapshot',
       async () =>
-        await (
-          await loadVercelSandboxClass()
-        ).get({
-          sandboxId: state.sandboxId,
-          ...credentials,
-        }),
+        await runWithLegacyVercelAuthenticationFallback(
+          state,
+          credentials,
+          async (resolvedCredentials) =>
+            await (
+              await loadVercelSandboxClass()
+            ).get({
+              sandboxId: state.sandboxId,
+              ...resolvedCredentials,
+            }),
+        ),
       { sandboxId: state.sandboxId },
     );
+    applyVercelAuthentication(state, authentication);
+    sandbox = authentication.value;
   }
   state.snapshotSupported = supportsVercelSnapshot(sandbox);
   if (!state.snapshotSupported) {
