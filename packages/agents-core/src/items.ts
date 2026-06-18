@@ -5,6 +5,7 @@ import {
   getFunctionToolQualifiedName,
   resolveFunctionToolCallName,
 } from './toolIdentity';
+import type { ToolOutputCustomData } from './utils/customData';
 
 export class RunItemBase {
   public readonly type: string = 'base_item' as const;
@@ -122,6 +123,7 @@ export class RunToolCallOutputItem extends RunItemBase {
       | protocol.ApplyPatchCallResultItem,
     public agent: Agent<any, any>,
     public output: string | unknown,
+    public customData?: ToolOutputCustomData,
   ) {
     super();
   }
@@ -131,6 +133,7 @@ export class RunToolCallOutputItem extends RunItemBase {
       ...super.toJSON(),
       agent: this.agent.toJSON(),
       output: toSmartString(this.output),
+      customData: this.customData,
     };
   }
 
