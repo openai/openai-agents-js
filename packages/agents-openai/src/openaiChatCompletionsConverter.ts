@@ -152,6 +152,12 @@ export function extractAllUserContent(
         type: 'image_url',
         image_url: {
           url: imageSource,
+          // Honor the top-level `detail` field, matching the Responses path
+          // (openaiResponsesModel) and the Python SDK. `providerData.image_url.detail`
+          // still takes precedence (spread last) to preserve existing behavior.
+          ...(c.detail !== undefined
+            ? { detail: c.detail as 'auto' | 'low' | 'high' }
+            : {}),
           ...imageUrl,
         },
         ...rest,
