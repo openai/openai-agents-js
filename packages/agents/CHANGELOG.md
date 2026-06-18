@@ -1,5 +1,16 @@
 # @openai/agents
 
+## 0.11.8
+
+### Patch Changes
+
+- b740fb3: feat: add SDK-only custom data for tool outputs
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+  - @openai/agents-realtime@0.11.8
+  - @openai/agents-openai@0.11.8
+
 ## 0.11.7
 
 ### Patch Changes

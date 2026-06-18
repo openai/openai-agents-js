@@ -1,5 +1,14 @@
 # @openai/agents-realtime
 
+## 0.11.8
+
+### Patch Changes
+
+- dd64ba6: feat: add opt-in pre-approval tool input guardrails
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+
 ## 0.11.7
 
 ### Patch Changes
