@@ -53,6 +53,15 @@ function vercelAlreadyExistsError(path: string): unknown {
   };
 }
 
+function vercelHttpError(status: number): Error {
+  return Object.assign(new Error(`Vercel request failed with ${status}.`), {
+    response: {
+      status,
+      statusText: status === 401 ? 'Unauthorized' : 'Request failed',
+    },
+  });
+}
+
 function testExistsPath(command: string): string | undefined {
   return command.match(/^test -e '([^']+)'$/u)?.[1];
 }
@@ -66,6 +75,9 @@ vi.mock('@vercel/sandbox', () => ({
 
 describe('VercelSandboxClient', () => {
   beforeEach(() => {
+    vi.stubEnv('VERCEL_PROJECT_ID', '');
+    vi.stubEnv('VERCEL_TEAM_ID', '');
+    vi.stubEnv('VERCEL_TOKEN', '');
     createMock.mockReset();
     getMock.mockReset();
     runCommandMock.mockReset();
@@ -195,6 +207,7 @@ describe('VercelSandboxClient', () => {
       }),
     );
     expect(session.state).toMatchObject({
+      authenticationMode: 'explicit',
       projectId: 'prj_env',
       teamId: 'team_env',
       token: 'env_token',
@@ -253,6 +266,7 @@ describe('VercelSandboxClient', () => {
       expect(session.state).not.toHaveProperty('projectId');
       expect(session.state).not.toHaveProperty('teamId');
       expect(session.state).not.toHaveProperty('token');
+      expect(session.state.authenticationMode).toBe('sdk');
     },
   );
 
@@ -273,6 +287,7 @@ describe('VercelSandboxClient', () => {
     expect(session.state).not.toHaveProperty('projectId');
     expect(session.state).not.toHaveProperty('teamId');
     expect(session.state).not.toHaveProperty('token');
+    expect(session.state.authenticationMode).toBe('sdk');
   });
 
   test('serializes PAT environment credentials used during create and snapshot capture', async () => {
@@ -296,6 +311,7 @@ describe('VercelSandboxClient', () => {
       token: 'env_token',
     });
     expect(serialized).toMatchObject({
+      authenticationMode: 'explicit',
       projectId: 'prj_env',
       teamId: 'team_env',
       token: 'env_token',
@@ -303,6 +319,51 @@ describe('VercelSandboxClient', () => {
       workspacePersistence: 'snapshot',
       snapshotId: 'snap_test',
     });
+    await expect(
+      client.deserializeSessionState(serialized),
+    ).resolves.toMatchObject({
+      authenticationMode: 'explicit',
+      projectId: 'prj_env',
+      teamId: 'team_env',
+      token: 'env_token',
+    });
+  });
+
+  test('delegates legacy snapshot lookup authentication after a 401 response', async () => {
+    getMock
+      .mockRejectedValueOnce(vercelHttpError(401))
+      .mockResolvedValueOnce(makeSandbox('vercel_existing'));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'snapshot',
+      environment: {},
+      snapshotSupported: true,
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+
+    const serialized = await client.serializeSessionState(state, {
+      willCloseAfterSerialize: true,
+    });
+
+    expect(getMock).toHaveBeenNthCalledWith(1, {
+      sandboxId: 'vercel_existing',
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+    expect(getMock).toHaveBeenNthCalledWith(2, {
+      sandboxId: 'vercel_existing',
+    });
+    expect(snapshotMock).toHaveBeenCalledOnce();
+    expect(serialized).toMatchObject({
+      authenticationMode: 'sdk',
+      snapshotId: 'snap_test',
+    });
+    expect(serialized).not.toHaveProperty('token');
   });
 
   test('strips incomplete credentials before serializing session state', async () => {
@@ -729,6 +790,120 @@ describe('VercelSandboxClient', () => {
     );
   });
 
+  test('delegates legacy live sandbox authentication after a 401 response', async () => {
+    getMock
+      .mockRejectedValueOnce(vercelHttpError(401))
+      .mockResolvedValueOnce(makeSandbox('vercel_existing'));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+
+    await client.resume(state);
+
+    expect(getMock).toHaveBeenNthCalledWith(1, {
+      sandboxId: 'vercel_existing',
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+    expect(getMock).toHaveBeenNthCalledWith(2, {
+      sandboxId: 'vercel_existing',
+    });
+    expect(state.authenticationMode).toBe('sdk');
+    expect(state).not.toHaveProperty('projectId');
+    expect(state).not.toHaveProperty('teamId');
+    expect(state).not.toHaveProperty('token');
+  });
+
+  test('preserves legacy credentials when delegated authentication also fails', async () => {
+    getMock
+      .mockRejectedValueOnce(vercelHttpError(401))
+      .mockRejectedValueOnce(new Error('delegated authentication failed'));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+
+    await expect(client.resume(state)).rejects.toMatchObject({
+      details: {
+        cause: 'delegated authentication failed',
+      },
+    });
+
+    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(state.authenticationMode).toBeUndefined();
+    expect(state).toMatchObject({
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+  });
+
+  test('does not delegate current explicit authentication after a 401 response', async () => {
+    getMock.mockRejectedValueOnce(vercelHttpError(401));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      authenticationMode: 'explicit',
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
+    });
+
+    await expect(client.resume(state)).rejects.toMatchObject({
+      details: {
+        responseStatus: 401,
+      },
+    });
+
+    expect(getMock).toHaveBeenCalledOnce();
+    expect(state).toMatchObject({
+      authenticationMode: 'explicit',
+      projectId: 'prj_explicit',
+      teamId: 'team_explicit',
+      token: 'explicit_token',
+    });
+  });
+
+  test('does not delegate legacy authentication after a non-401 response', async () => {
+    getMock.mockRejectedValueOnce(vercelHttpError(403));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_existing',
+      workspacePersistence: 'tar',
+      environment: {},
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+
+    await expect(client.resume(state)).rejects.toMatchObject({
+      details: {
+        responseStatus: 403,
+      },
+    });
+
+    expect(getMock).toHaveBeenCalledOnce();
+    expect(state.authenticationMode).toBeUndefined();
+  });
+
   test('discards incomplete serialized credentials before resolving PAT environment fallback', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
@@ -823,6 +998,89 @@ describe('VercelSandboxClient', () => {
         },
       }),
     );
+  });
+
+  test('delegates legacy snapshot resume authentication after a 401 response', async () => {
+    createMock
+      .mockRejectedValueOnce(vercelHttpError(401))
+      .mockResolvedValueOnce(makeSandbox('vercel_restored'));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_original',
+      workspacePersistence: 'snapshot',
+      environment: {},
+      snapshotId: 'snap_original',
+      snapshotSandboxId: 'vercel_original',
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+
+    await client.resume(state);
+
+    expect(createMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        projectId: 'prj_serialized',
+        teamId: 'team_serialized',
+        token: 'serialized_token',
+      }),
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.not.objectContaining({
+        projectId: expect.anything(),
+        teamId: expect.anything(),
+        token: expect.anything(),
+      }),
+    );
+    expect(state.authenticationMode).toBe('sdk');
+    expect(state).not.toHaveProperty('token');
+  });
+
+  test('delegates legacy snapshot restore authentication after a 401 response', async () => {
+    getMock.mockResolvedValueOnce(makeSandbox('vercel_live'));
+    const client = new VercelSandboxClient();
+    const state = await client.deserializeSessionState({
+      manifest: new Manifest(),
+      sandboxId: 'vercel_live',
+      workspacePersistence: 'snapshot',
+      environment: {},
+      projectId: 'prj_serialized',
+      teamId: 'team_serialized',
+      token: 'serialized_token',
+    });
+    const session = await client.resume(state);
+    createMock
+      .mockRejectedValueOnce(vercelHttpError(401))
+      .mockResolvedValueOnce(makeSandbox('vercel_restored'));
+
+    await session.hydrateWorkspace(
+      encodeNativeSnapshotRef({
+        provider: 'vercel',
+        snapshotId: 'snap_restore',
+      }),
+    );
+
+    expect(createMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        projectId: 'prj_serialized',
+        teamId: 'team_serialized',
+        token: 'serialized_token',
+      }),
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.not.objectContaining({
+        projectId: expect.anything(),
+        teamId: expect.anything(),
+        token: expect.anything(),
+      }),
+    );
+    expect(session.state.authenticationMode).toBe('sdk');
+    expect(session.state).not.toHaveProperty('token');
   });
 
   test('reattaches live sandboxes when snapshot freshness was invalidated', async () => {
