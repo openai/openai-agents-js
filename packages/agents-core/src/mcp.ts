@@ -1201,7 +1201,9 @@ export function mcpToFunctionTool(
       ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)
       : undefined;
     const result: CallToolResult =
-      server.useStructuredContent === true && server.callToolResult
+      (server.useStructuredContent === true ||
+        server.customDataExtractor !== undefined) &&
+      server.callToolResult
         ? meta === undefined
           ? await server.callToolResult(mcpTool.name, args)
           : await server.callToolResult(mcpTool.name, args, meta)
@@ -1224,11 +1226,7 @@ export function mcpToFunctionTool(
         : content.length === 1
           ? content[0]
           : content;
-    if (
-      runContext &&
-      details?.toolCall?.callId &&
-      server.customDataExtractor
-    ) {
+    if (runContext && details?.toolCall?.callId && server.customDataExtractor) {
       let byCall = customDataByCall.get(runContext);
       if (!byCall) {
         byCall = new Map();

@@ -5,7 +5,7 @@ import { Agent } from '../src/agent';
 import { RunToolCallOutputItem } from '../src/items';
 import type { ModelRequest, ModelResponse } from '../src/model';
 import type { MCPServer, MCPTool } from '../src/mcp';
-import { attachCallToolResultMetadata, mcpToFunctionTool } from '../src/mcp';
+import { mcpToFunctionTool } from '../src/mcp';
 import { run, Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
@@ -166,12 +166,17 @@ describe('tool output customData', () => {
       connect: async () => {},
       close: async () => {},
       listTools: async () => [],
-      callTool: async () =>
-        attachCallToolResultMetadata([{ type: 'text', text: 'mcp result' }], {
-          _meta: { renderer: { type: 'chart' } },
-          structuredContent: { rows: [{ x: 1, y: 2 }] },
-          isError: false,
-        }),
+      callTool: async () => {
+        throw new Error(
+          'callTool should not be used when extracting metadata.',
+        );
+      },
+      callToolResult: async () => ({
+        content: [{ type: 'text', text: 'mcp result' }],
+        _meta: { renderer: { type: 'chart' } },
+        structuredContent: { rows: [{ x: 1, y: 2 }] },
+        isError: false,
+      }),
       invalidateToolsCache: async () => {},
     };
     const mcpTool = mcpToFunctionTool(
@@ -204,7 +209,10 @@ describe('tool output customData', () => {
       isError: false,
       output: { type: 'text', text: 'mcp result' },
     });
-    expect(JSON.stringify(model.requests[1].input)).not.toContain('customData');
+    const modelInput = JSON.stringify(model.requests[1].input);
+    expect(modelInput).toContain('mcp result');
+    expect(modelInput).not.toContain('rows');
+    expect(modelInput).not.toContain('customData');
   });
 
   it('attaches computer tool customData', async () => {
