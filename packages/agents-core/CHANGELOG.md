@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.11.7
+
+### Patch Changes
+
+- edd0a07: fix: expose sandbox error retryability metadata
+- dfbc3b0: feat(mcp): expose serializable full tool results
+
 ## 0.11.6
 
 ### Patch Changes
