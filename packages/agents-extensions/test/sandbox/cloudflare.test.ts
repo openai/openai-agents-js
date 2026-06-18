@@ -484,10 +484,12 @@ describe('CloudflareSandboxClient', () => {
       ),
     ).rejects.toMatchObject({
       code: 'provider_error',
+      retryable: true,
       details: {
         provider: 'cloudflare',
         operation: 'write file',
         status: 500,
+        retryable: true,
         path: '/workspace/README.md',
       },
     });

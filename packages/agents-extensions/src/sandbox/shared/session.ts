@@ -87,6 +87,7 @@ export async function withProviderError<T>(
       throw error;
     }
     const cause = providerErrorMessage(error);
+    const retryable = providerErrorRetryability(error);
     throw new SandboxProviderError(
       `${providerName} failed to ${operation}${cause ? `: ${cause}` : ''}`,
       {
@@ -94,6 +95,7 @@ export async function withProviderError<T>(
         operation,
         ...context,
         ...providerErrorDetails(error),
+        retryable,
         cause,
       },
     );
@@ -134,6 +136,7 @@ export function assertResumeRecreateAllowed(
       operation: 'resume',
       ...context.details,
       ...providerErrorDetails(error),
+      retryable: providerErrorRetryability(error),
       cause: providerErrorMessage(error),
     },
   );
@@ -151,6 +154,10 @@ export function providerErrorMessage(error: unknown): string {
 
 export function providerErrorDetails(error: unknown): Record<string, unknown> {
   return collectProviderErrorDetails(error, new Set<object>(), 0);
+}
+
+export function providerErrorRetryability(error: unknown): boolean | null {
+  return readProviderErrorRetryability(error, new Set<object>(), 0);
 }
 
 function errorMessage(error: unknown): string {
@@ -242,6 +249,130 @@ function collectProviderErrorDetails(
   }
 
   return details;
+}
+
+function readProviderErrorRetryability(
+  value: unknown,
+  seen: Set<object>,
+  depth: number,
+): boolean | null {
+  if (!isRecord(value) || seen.has(value) || depth > 3) {
+    return null;
+  }
+  seen.add(value);
+
+  const explicit = readExplicitRetryability(value);
+  if (explicit !== null) {
+    return explicit;
+  }
+
+  const typed = retryabilityForErrorType(value);
+  if (typed !== null) {
+    return typed;
+  }
+
+  const status = readProviderStatus(value);
+  if (status !== undefined) {
+    const retryable = retryabilityForHttpStatus(status);
+    if (retryable !== null) {
+      return retryable;
+    }
+  }
+
+  const response = value.response;
+  if (isRecord(response)) {
+    const responseExplicit = readExplicitRetryability(response);
+    if (responseExplicit !== null) {
+      return responseExplicit;
+    }
+    const responseStatus = readProviderStatus(response);
+    if (responseStatus !== undefined) {
+      const retryable = retryabilityForHttpStatus(responseStatus);
+      if (retryable !== null) {
+        return retryable;
+      }
+    }
+    const responsePayloadRetryable = readPayloadRetryability(
+      firstDefined(response.json, response.data, response.body, response.error),
+    );
+    if (responsePayloadRetryable !== null) {
+      return responsePayloadRetryable;
+    }
+  }
+
+  const payload = firstDefined(value.json, value.data, value.body, value.error);
+  const payloadRetryable = readPayloadRetryability(payload);
+  if (payloadRetryable !== null) {
+    return payloadRetryable;
+  }
+
+  return readProviderErrorRetryability(value.cause, seen, depth + 1);
+}
+
+function readExplicitRetryability(
+  value: Record<string, unknown>,
+): boolean | null {
+  return typeof value.retryable === 'boolean' ? value.retryable : null;
+}
+
+function readPayloadRetryability(value: unknown): boolean | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const explicit = readExplicitRetryability(value);
+  if (explicit !== null) {
+    return explicit;
+  }
+  const nested = value.error;
+  return isRecord(nested) ? readExplicitRetryability(nested) : null;
+}
+
+function retryabilityForErrorType(
+  value: Record<string, unknown>,
+): boolean | null {
+  const text = [value.name, value.code, value.errorCode]
+    .filter((item): item is string => typeof item === 'string')
+    .join(' ')
+    .toLowerCase();
+  if (!text) {
+    return null;
+  }
+  if (/(rate.?limit|timeout|connection|unavailable)/u.test(text)) {
+    return true;
+  }
+  if (
+    /(authentication|authorization|permission|forbidden|not.?found|validation|bad.?request|conflict|unprocessable)/u.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return null;
+}
+
+function readProviderStatus(
+  value: Record<string, unknown>,
+): number | undefined {
+  for (const key of ['status', 'statusCode', 'httpStatus', 'httpStatusCode']) {
+    const status = value[key];
+    if (typeof status === 'number' && Number.isInteger(status)) {
+      return status;
+    }
+    if (typeof status === 'string' && /^\d+$/u.test(status)) {
+      return Number(status);
+    }
+  }
+  return undefined;
+}
+
+function retryabilityForHttpStatus(status: number): boolean | null {
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+  if ([400, 401, 403, 404, 409, 422].includes(status)) {
+    return false;
+  }
+  return null;
 }
 
 function formatProviderErrorDetailSummary(

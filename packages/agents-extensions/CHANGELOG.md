@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.11.7
+
+### Patch Changes
+
+- 9c6db7c: fix: preserve complete Vercel PAT credentials while delegating incomplete authentication
+- e87c017: Update the Modal sandbox provider for the Modal SDK 0.7.6 sandbox command, filesystem, secrets, and cloud bucket mount APIs.
+- edd0a07: fix: expose sandbox error retryability metadata
+- 6d9152d: fix: recover expired credentials in legacy Vercel sandbox sessions through SDK authentication
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+
 ## 0.11.6
 
 ### Patch Changes
