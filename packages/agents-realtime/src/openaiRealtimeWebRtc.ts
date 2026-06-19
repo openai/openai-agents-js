@@ -13,7 +13,6 @@ import {
   OpenAIRealtimeBase,
   OpenAIRealtimeBaseOptions,
 } from './openaiRealtimeBase';
-import { parseRealtimeEvent } from './openaiRealtimeEvents';
 import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { HEADERS } from './utils';
 
@@ -288,8 +287,7 @@ export class OpenAIRealtimeWebRTC
           // finish() resolves connect() before _onMessage emits the
           // session.updated event to external listeners.
           dataChannel.addEventListener('message', (event) => {
-            this._onMessage(event);
-            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
+            const { data: parsed, isGeneric } = this._onMessage(event);
             if (!parsed || isGeneric) {
               return;
             }

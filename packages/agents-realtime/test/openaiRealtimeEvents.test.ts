@@ -5,6 +5,10 @@ function createEvent(payload: any): MessageEvent {
   return new MessageEvent('message', { data: JSON.stringify(payload) });
 }
 
+function createRawEvent(data: any): MessageEvent {
+  return new MessageEvent('message', { data });
+}
+
 describe('parseRealtimeEvent', () => {
   it('parses known conversation.item.created event', () => {
     const payload = {
@@ -60,6 +64,20 @@ describe('parseRealtimeEvent', () => {
 
   it('returns null data for invalid payload', () => {
     const result = parseRealtimeEvent(createEvent({ notype: true }));
+    expect(result.isGeneric).toBe(true);
+    expect(result.data).toBeNull();
+  });
+
+  it('returns null data for malformed JSON', () => {
+    const result = parseRealtimeEvent(createRawEvent('{'));
+    expect(result.isGeneric).toBe(true);
+    expect(result.data).toBeNull();
+  });
+
+  it('returns null data for binary non-JSON frames', () => {
+    const result = parseRealtimeEvent(
+      createRawEvent(new Uint8Array([0, 1, 2])),
+    );
     expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
   });

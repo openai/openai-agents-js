@@ -3,6 +3,7 @@ import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
 import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 import { RealtimeAgent } from '../src/realtimeAgent';
+import * as realtimeEvents from '../src/openaiRealtimeEvents';
 
 let lastFakeSocket: any;
 
@@ -73,6 +74,39 @@ describe('OpenAIRealtimeWebSocket', () => {
     await vi.runAllTimersAsync();
     await p;
     expect(lastFakeSocket!.url).toBe('ws://test');
+  });
+
+  it('ignores malformed JSON and binary non-JSON messages', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const events: any[] = [];
+    ws.on('*', (event) => events.push(event));
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    expect(() => lastFakeSocket!.emit('message', { data: '{' })).not.toThrow();
+    expect(() =>
+      lastFakeSocket!.emit('message', { data: new Uint8Array([0, 1, 2]) }),
+    ).not.toThrow();
+    expect(events).toEqual([]);
+  });
+
+  it('emits unknown valid events as generic messages', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const events: any[] = [];
+    ws.on('*', (event) => events.push(event));
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    const payload = {
+      type: 'unknown.event',
+      event_id: 'evt_x',
+      foo: 'bar',
+    };
+    lastFakeSocket!.emit('message', { data: JSON.stringify(payload) });
+
+    expect(events).toEqual([payload]);
   });
 
   it('handles audio delta, speech started and created/done events', async () => {
@@ -561,6 +595,47 @@ describe('OpenAIRealtimeWebSocket', () => {
     });
     await vi.runAllTimersAsync();
 
+    expect(sentPayloads()).toEqual([
+      {
+        type: 'response.create',
+        event_id: expect.any(String),
+        response: { instructions: 'Say hello.' },
+      },
+    ]);
+  });
+
+  it('parses known messages once while releasing queued response.create', async () => {
+    const parseSpy = vi.spyOn(realtimeEvents, 'parseRealtimeEvent');
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.created',
+        event_id: 'r1',
+        response: {},
+      }),
+    });
+
+    lastFakeSocket!.sent.length = 0;
+    ws.sendEvent({
+      type: 'response.create',
+      response: { instructions: 'Say hello.' },
+    } as any);
+    await vi.runAllTimersAsync();
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.done',
+        event_id: 'r1_done',
+        response: {},
+      }),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(parseSpy).toHaveBeenCalledTimes(2);
     expect(sentPayloads()).toEqual([
       {
         type: 'response.create',
