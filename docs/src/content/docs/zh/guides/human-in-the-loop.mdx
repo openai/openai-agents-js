@@ -7,17 +7,17 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-本指南介绍 SDK 的基于审批的人工干预流程。当工具调用需要审批时，SDK 会暂停运行，返回 `interruptions`，并允许您稍后从同一个 `RunState` 恢复。
+本指南介绍 SDK 基于审批的人工干预流程。当工具调用需要审批时，SDK 会暂停运行，返回 `interruptions`，并允许您稍后从同一个 `RunState` 恢复。
 
-该审批入口的作用范围是整个运行，而不限于当前顶层智能体。当工具属于当前智能体、属于通过交接到达的智能体，或属于嵌套的 `agent.asTool()` 执行时，都适用同一模式。在嵌套的 `agent.asTool()` 场景中，中断仍会出现在外层运行中，因此您需要在外层 `result.state` 上批准或拒绝它，并恢复原始根运行。
+审批的作用范围覆盖整个运行过程，并不局限于当前顶层智能体。当工具属于当前智能体、通过交接到达的智能体，或嵌套的 `agent.asTool()` 执行时，都适用相同模式。在嵌套的 `agent.asTool()` 场景中，中断仍会在外层运行中暴露，因此您需要在外层的 `result.state` 上批准或拒绝它，然后恢复原始的根运行。
 
-使用 `agent.asTool()` 时，审批可能发生在两个不同层级：智能体工具本身可以通过 `asTool({ needsApproval })` 要求审批，而嵌套智能体中的工具也可能在嵌套运行启动后再提出自己的审批请求。两者都通过同一个外层运行中断流程处理。
+使用 `agent.asTool()` 时，审批可能发生在两个不同层级：智能体工具本身可以通过 `asTool({ needsApproval })` 要求审批，而嵌套智能体内部的工具也可以在嵌套运行开始后提出自己的审批请求。两者都通过相同的外层运行中断流程处理。
 
-本页重点介绍通过 `interruptions` 进行的手动审批流程。如果您的应用可以在代码中做出决定，某些工具类型也支持程序化审批回调，让运行无需暂停即可继续。如果您是在设置 `agent.asTool()` 本身，请参阅[工具](/openai-agents-js/zh/guides/tools#4-agents-as-tools)；本页介绍的是该运行层级中的任何工具需要审批后会发生什么。
+本页重点介绍通过 `interruptions` 进行的手动审批流程。如果您的应用可以在代码中做出决定，某些工具类型也支持程序化审批回调，这样运行就可以无需暂停而继续。如果您正在配置 `agent.asTool()` 本身，请参阅[工具](/openai-agents-js/zh/guides/tools#4-agents-as-tools)指南；本页介绍的是该运行层级中的任何工具需要审批后会发生什么。
 
 ## 审批流程
 
-您可以通过将 `needsApproval` 选项设置为 `true`，或设置为返回布尔值的异步函数，来定义需要审批的工具。
+您可以通过将 `needsApproval` 选项设置为 `true`，或设置为返回布尔值的异步函数，来定义一个需要审批的工具。
 
 <Code
   lang="typescript"
@@ -28,41 +28,43 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 
 ### 流程
 
-1. 当工具调用即将执行时，SDK 会评估它的审批规则（`needsApproval` 或对应的托管 MCP 规则）。
-2. 如果需要审批且尚未存储决策，则该工具调用不会执行。相反，运行会记录一个 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)。
-3. 在该轮结束时，运行会暂停，并在[执行结果](/openai-agents-js/zh/guides/results)的 `interruptions` 数组中返回所有待审批项。这包括嵌套 `agent.asTool()` 运行中提出的审批请求。
-4. 使用 `result.state.approve(interruption)` 或 `result.state.reject(interruption)` 处理每个待处理项。如果同一个工具在本次运行剩余期间都应保持批准或拒绝，请传入 `{ alwaysApprove: true }` 或 `{ alwaysReject: true }`。拒绝时，您还可以传入 `{ message: '...' }`，用于控制发送回模型的、针对该特定工具调用的拒绝文本。
-5. 将更新后的 `result.state` 传回 `runner.run(agent, state)` 来恢复运行，其中 `agent` 是本次运行的原始顶层智能体。SDK 会从中断点继续，包括嵌套的智能体工具执行。
+1. 当工具调用即将执行时，SDK 会评估其审批规则（`needsApproval` 或托管 MCP 中的等价机制）。
+2. 如果需要审批且尚未存储任何决策，则该工具调用不会执行。相反，运行会记录一个 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)。
+3. 在该轮结束时，运行会暂停，并在[执行结果](/openai-agents-js/zh/guides/results)的 `interruptions` 数组中返回所有待审批项。这包括嵌套 `agent.asTool()` 运行内部提出的审批请求。
+4. 使用 `result.state.approve(interruption)` 或 `result.state.reject(interruption)` 处理每个待处理项。如果同一个工具应在该运行的剩余过程中保持批准或拒绝状态，请传入 `{ alwaysApprove: true }` 或 `{ alwaysReject: true }`。拒绝时，您也可以传入 `{ message: '...' }`，用于控制针对该特定工具调用返回给模型的拒绝文本。
+5. 将更新后的 `result.state` 传回 `runner.run(agent, state)` 来恢复运行，其中 `agent` 是该运行的原始顶层智能体。SDK 会从中断点继续，包括嵌套的智能体工具执行。
 
-使用 `{ alwaysApprove: true }` 或 `{ alwaysReject: true }` 创建的粘性决策会存储在运行状态中，因此当您稍后恢复同一个已暂停运行时，它们会在 `toString()` / `fromString()` 后继续保留。
+默认情况下，函数工具输入护栏只会在审批通过后、工具执行前立即运行。如果您希望这些相同的输入护栏在显示待审批项之前验证本地函数工具调用，请将 `toolExecution: { preApprovalInputGuardrails: true }` 传给 `run()` 或 `Runner`。当预审批护栏拒绝时，SDK 会将护栏消息作为工具输出返回给模型，而不是创建审批中断。当它允许调用时，运行仍会暂停等待审批，并且输入护栏会在审批通过后再次运行，以防工具调用在等待期间变得不安全。
 
-在 GA 模型上，计算机工具中断可以表示一个 `computer_call` 中的一批操作。SDK 会在执行前按操作评估 `needsApproval`，因此一个待审批项可以覆盖诸如移动 + 点击这样的操作序列。如果您检查 `interruption.rawItem` 来渲染 UI，请同时处理 GA 的 `actions` 数组和旧版的单个 `action` 字段。
+使用 `{ alwaysApprove: true }` 或 `{ alwaysReject: true }` 创建的持久决策会存储在运行状态中，因此当您稍后恢复同一个已暂停运行时，它们会在 `toString()` / `fromString()` 之间保留下来。
 
-序列化的 `RunState` 还会同时保留当前 `computer` 工具名称和旧版 `computer_use_preview` 名称下的计算机工具审批，因此在从 preview 迁移到 GA 的过程中，已暂停的运行也可以干净地恢复。
+在 GA 模型上，计算机工具中断可以用一个 `computer_call` 表示一批操作。SDK 会在执行前按操作评估 `needsApproval`，因此一个待审批项可以覆盖移动 + 点击这样的操作序列。如果您检查 `interruption.rawItem` 来渲染 UI，请同时处理 GA 的 `actions` 数组和旧版的单个 `action` 字段。
 
-如果您没有提供 `message`，SDK 会回退到已配置的 `toolErrorFormatter`（如有），然后回退到默认拒绝文本。
+序列化的 `RunState` 也会同时保留当前 `computer` 工具名称和旧版 `computer_use_preview` 名称下的计算机审批，因此在从预览版迁移到 GA 期间，已暂停运行也可以顺利恢复。
 
-您不需要在同一次处理中解决所有待审批项。如果您只批准或拒绝其中一部分后重新运行，已处理的调用可以继续，而未处理的调用会保留在 `interruptions` 中，并再次暂停运行。
+如果您没有提供 `message`，SDK 会回退到已配置的 `toolErrorFormatter`（如果有），然后再回退到默认拒绝文本。
+
+您不需要在同一次处理中解决所有待审批项。如果您只批准或拒绝其中一部分后重新运行，已解决的调用可以继续执行，而未解决的调用会继续保留在 `interruptions` 中，并再次暂停运行。
 
 ### 自动审批决策
 
-手动 `interruptions` 是最通用的模式，但并不是唯一模式：
+手动 `interruptions` 是最通用的模式，但不是唯一模式：
 
-- 本地 `shellTool()` 和 `applyPatchTool()` 可以使用 `onApproval` 在代码中立即批准或拒绝。
-- 托管 MCP 工具可以将 `requireApproval` 与 `onApproval` 结合使用，实现同类程序化决策。
+- 本地 `shellTool()` 和 `applyPatchTool()` 可以使用 `onApproval` 直接在代码中批准或拒绝。
+- 托管 MCP 工具可以将 `requireApproval` 与 `onApproval` 搭配使用，以实现同类程序化决策。
 - 普通函数工具使用本页介绍的手动中断流程。
 
-当这些回调返回决策时，运行会继续，而不会暂停等待人工响应。对于 Realtime / 语音会话 API，请参阅[构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build#approval-requests)中的审批流程。
+当这些回调返回决策时，运行会继续，而不会暂停等待人工响应。对于 Realtime / 语音会话 API，请参阅[构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build#approval-requests)指南中的审批流程。
 
-### 流式传输与会话
+### 流式传输和会话
 
-同一中断流程也适用于流式传输运行。流式运行暂停后，等待 `stream.completed`，读取 `stream.interruptions`，处理这些中断项；如果您希望恢复后的输出继续流式传输，请再次调用带有 `{ stream: true }` 的 `run()`。有关该模式的流式传输版本，请参阅[流式传输期间的人工干预](/openai-agents-js/zh/guides/streaming#human-in-the-loop-while-streaming)。
+相同的中断流程也适用于流式运行。流式运行暂停后，等待 `stream.completed`，读取 `stream.interruptions`，解决它们，然后如果您希望恢复后的输出继续流式传输，请再次调用带有 `{ stream: true }` 的 `run()`。有关此模式的流式版本，请参阅[流式传输中的人工干预](/openai-agents-js/zh/guides/streaming#human-in-the-loop-while-streaming)。
 
-如果您还在使用 `session`，从 `RunState` 恢复时请继续传入同一个 `session`。这样，恢复后的轮次会追加到会话记忆中，而无需重新准备输入。有关会话生命周期的详细信息，请参阅[会话](/openai-agents-js/zh/guides/sessions)。
+如果您同时使用 `session`，从 `RunState` 恢复时请继续传入同一个 `session`。恢复后的轮次会追加到会话记忆中，而无需重新准备输入。有关会话生命周期的详细信息，请参阅[会话](/openai-agents-js/zh/guides/sessions)指南。
 
 ## 示例
 
-下面是一个更完整的人工干预流程示例，它会在终端中提示进行审批，并将状态临时存储在文件中。
+下面是一个更完整的人工干预流程示例：它会在终端中提示审批，并将状态临时存储到文件中。
 
 <Code lang="typescript" code={humanInTheLoopExample} title="人工干预" />
 
@@ -70,33 +72,33 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 
 ## 较长审批时间的处理
 
-人工干预流程设计为可以长时间中断，而不需要让您的服务器一直运行。如果您需要结束请求并稍后继续，可以序列化状态，并在之后恢复。
+人工干预流程设计为可在较长时间内中断，而无需让您的服务器一直运行。如果您需要结束请求并稍后继续，可以序列化状态并在之后恢复。
 
 您可以使用 `result.state.toString()`（或 `JSON.stringify(result.state)`）序列化状态，并在稍后通过将序列化状态传入 `RunState.fromString(agent, serializedState)` 来恢复，其中 `agent` 是触发整体运行的智能体实例。
 
-序列化 `RunState` 时，SDK 会为交接和 `Agent.asTool()` 图记录稳定的智能体标识。这样，即使不同智能体共享相同的 `name`，只要恢复运行的进程重建了同一个智能体图，已暂停的运行也可以恢复。
+当 `RunState` 被序列化时，SDK 会为交接和 `Agent.asTool()` 图记录稳定的智能体身份。这样，即使不同智能体共享相同的 `name`，只要恢复运行的进程重建了相同的智能体图，已暂停运行也可以恢复。
 
-传给 `RunState.fromString(agent, serializedState)` 的 `agent` 是该重建图的根。反序列化期间，SDK 会遍历该智能体的交接和 `Agent.asTool()` 引用，然后将状态中的每个序列化智能体引用都解析到重建图中。这包括当前智能体，以及生成项、已处理的模型响应和排队的后续步骤中保存的嵌套引用。
+传给 `RunState.fromString(agent, serializedState)` 的 `agent` 是该重建图的根。反序列化期间，SDK 会遍历该智能体的交接和 `Agent.asTool()` 引用，然后将状态中每个已序列化的智能体引用解析到重建后的图中。这包括当前智能体，以及由生成项、已处理模型响应和排队的后续步骤持有的嵌套引用。
 
-如果您需要使用替换后的图来恢复，例如智能体的模型或工具被另一个运行时包装过，请先使用原始图反序列化状态，再次序列化，然后使用替换后的根智能体反序列化该字符串。调用 `state.setCurrentAgent(agent)` 只会更改当前活跃智能体，不会重写在反序列化期间已解析的嵌套引用。
+如果您需要使用替换后的图来恢复，例如模型或工具被另一个运行时包装的智能体，请先使用原始图反序列化状态，再次序列化它，然后使用替换后的根智能体反序列化该字符串。调用 `state.setCurrentAgent(agent)` 只会更改活动智能体，不会重写在反序列化期间已经解析的嵌套引用。
 
-如果恢复运行的进程需要注入新的上下文对象，请改用 `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })`。
+如果恢复的进程需要注入新的上下文对象，请改用 `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })`。
 
 - `contextStrategy: 'merge'`（默认）会保留提供的 `RunContext`，合并序列化的审批状态，并在新上下文尚未定义 `toolInput` 时恢复序列化的 `toolInput`。
-- `contextStrategy: 'replace'` 会按原样使用提供的 `RunContext` 重建运行。
+- `contextStrategy: 'replace'` 会按原样使用提供的 `RunContext` 来重建运行。
 
-序列化的运行状态包含您的应用上下文，以及由 SDK 管理的运行时元数据，例如审批、用量、嵌套的 `toolInput` 和待恢复的嵌套智能体工具。如果您计划存储或传输序列化状态，请将 `runContext.context` 视为持久化数据，并避免在其中放置密钥，除非您确实希望它们随状态一同传递。
+序列化的运行状态包括您的应用上下文，以及由 SDK 管理的运行时元数据，例如审批、用量、嵌套 `toolInput` 和待恢复的嵌套智能体工具执行。如果您计划存储或传输序列化状态，请将 `runContext.context` 视为持久化数据，并避免在其中放置密钥，除非您明确希望这些密钥随状态一起传递。
 
-默认情况下，追踪 API 密钥会从序列化状态中省略，以免您意外持久化密钥。只有在您确实需要让追踪凭证随状态一起移动时，才传入 `result.state.toString({ includeTracingApiKey: true })`。
+默认情况下，追踪 API 密钥会从序列化状态中省略，以免您意外持久化密钥。仅当您确实需要将追踪凭据随状态一起迁移时，才传入 `result.state.toString({ includeTracingApiKey: true })`。
 
-这样，您就可以将序列化状态存储在数据库中，或与请求一起保存。
+这样一来，您就可以将序列化状态存储在数据库中，或随请求一起保存。
 
 ### 待处理任务的版本管理
 
 <Aside>
-  这主要适用于您在修改智能体的同时，尝试将序列化状态保存 较长时间的情况。
+  这主要适用于您在修改智能体时，尝试将序列化状态存储 较长时间的情况。
 </Aside>
 
-如果您的审批请求耗时较长，并且您打算以有意义的方式对智能体定义进行版本管理，或升级 Agents SDK 版本，我们目前建议您使用包别名并行安装两个版本的 Agents SDK，以实现自己的分支逻辑。
+如果您的审批请求耗时较长，并且您打算以有意义的方式对智能体定义进行版本管理，或升级 Agents SDK 版本，我们目前建议您使用包别名并行安装两个版本的 Agents SDK，来实现自己的分支逻辑。
 
-实践中，这意味着为您的代码分配版本号，将其与序列化状态一起存储，并引导反序列化使用正确版本的代码。
+在实践中，这意味着为您自己的代码分配一个版本号，将其与序列化状态一起存储，并引导反序列化使用正确版本的代码。
