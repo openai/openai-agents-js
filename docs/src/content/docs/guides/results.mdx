@@ -90,6 +90,8 @@ In practice:
 
 Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
+If a local tool or MCP server defines `customDataExtractor`, the corresponding `RunToolCallOutputItem.customData` contains the returned SDK-only metadata. This data is useful for application UI state such as renderer hints or internal IDs. It survives `RunState` serialization, but it is excluded from `history` and is not sent back to the model.
+
 ## Continue or resume the conversation
 
 ### Active agent
