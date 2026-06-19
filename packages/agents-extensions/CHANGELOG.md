@@ -1,5 +1,49 @@
 # @openai/agents-extensions
 
+## 0.11.8
+
+### Patch Changes
+
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+
+## 0.11.7
+
+### Patch Changes
+
+- 9c6db7c: fix: preserve complete Vercel PAT credentials while delegating incomplete authentication
+- e87c017: Update the Modal sandbox provider for the Modal SDK 0.7.6 sandbox command, filesystem, secrets, and cloud bucket mount APIs.
+- edd0a07: fix: expose sandbox error retryability metadata
+- 6d9152d: fix: recover expired credentials in legacy Vercel sandbox sessions through SDK authentication
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- 6d61675: fix: #1340 preserve AI SDK output token details in usage tracing
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+
 ## 0.11.4
 
 ### Patch Changes

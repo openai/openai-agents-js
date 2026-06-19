@@ -1,19 +1,20 @@
 ---
 name: pr-draft-summary
-description: Create the required PR-ready summary block, branch suggestion, title, and draft description for openai-agents-js. Use in the final handoff after moderate-or-larger changes to runtime code, tests, examples, build/test configuration, or docs with behavior impact; skip only for trivial or conversation-only tasks, repo-meta/doc-only tasks without behavior impact, or when the user explicitly says not to include the PR draft block.
+description: Create the required PR-ready summary block, branch suggestion, title, and draft description for openai-agents-js. Must be used before the final response whenever the actual task diff includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, regardless of perceived change size. Skip only when no eligible files changed, every change is repo-meta or docs-only without behavior impact, the task is conversation-only, or the user explicitly opts out.
 ---
 
 # PR Draft Summary
 
 ## Purpose
 
-Produce the PR-ready summary required in this repository after substantive code work is complete: a concise change summary plus a PR-ready title and draft description for openai-agents-js.
+Produce the PR-ready summary required in this repository after eligible work is complete: a concise change summary plus a PR-ready title and draft description for openai-agents-js.
 
-## When to Trigger
+## Close-out Gate
 
-- The task for this repo is finished (or ready for review) and it touched runtime code, tests, examples, docs with behavior impact, or build/test configuration.
-- Treat this as the default final handoff step for substantive code work. Run it after any required verification or changeset work and before sending the "work complete" response.
-- Skip only for trivial or conversation-only tasks, repo-meta/doc-only tasks without behavior impact, or when the user explicitly says not to include the PR draft block.
+1. Inspect the actual task diff before sending the final response.
+2. Run this skill when the diff includes runtime code, tests, examples, build/test configuration, or docs with behavior impact. Do not use perceived change size to skip an eligible change.
+3. Run it after any required verification and changeset work and before sending the "work complete" response.
+4. Skip only when no eligible files changed, every change is repo-meta or docs-only without behavior impact, the task is conversation-only, or the user explicitly opts out.
 
 ## Inputs to Collect Automatically (do not ask the user)
 
@@ -21,18 +22,19 @@ Produce the PR-ready summary required in this repository after substantive code 
 - Working tree: `git status -sb`.
 - Untracked files: `git ls-files --others --exclude-standard` (use with `git status -sb`; `--stat` omits them).
 - Changed files: `git diff --name-only` (unstaged) and `git diff --name-only --cached` (staged); sizes via `git diff --stat` and `git diff --stat --cached`.
-- Base reference (use the branch's upstream, fallback to `origin/main`):
-  - `BASE_REF=$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null || echo origin/main)`.
-  - `BASE_COMMIT=$(git merge-base --fork-point "$BASE_REF" HEAD || git merge-base "$BASE_REF" HEAD || echo "$BASE_REF")`.
+- Pull request base reference (use `origin/main`; never use a feature branch's upstream as the PR base):
+  - `BASE_REF=origin/main`; if it does not exist locally, use `main`.
+  - `BASE_COMMIT=$(git merge-base "$BASE_REF" HEAD)`.
+- Committed branch diff: `git diff --name-only "${BASE_COMMIT}..HEAD"` and `git diff --stat "${BASE_COMMIT}..HEAD"`.
 - Commits ahead of the base fork point: `git log --oneline --no-merges ${BASE_COMMIT}..HEAD`.
 - Category signals for this repo: runtime (`packages/`, `examples/`, `helpers/`, `scripts/`), tests (`packages/**/test`, `integration-tests/`), docs (`docs/`, `README.md`, `AGENTS.md`, `.github/`), build/test config (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `tsc-multi.json`, `eslint.config.*`, `vitest*.ts`).
 
 ## Workflow
 
-1. Run the commands above without asking the user; compute `BASE_REF`/`BASE_COMMIT` first so later commands reuse them.
-2. If there are no staged/unstaged/untracked changes and no commits ahead of `${BASE_COMMIT}`, reply briefly that no code changes were detected and skip emitting the PR block.
+1. Run the commands above without asking the user; compute `BASE_REF`/`BASE_COMMIT` first so later commands reuse them. Compare against `origin/main` or `main`, not the current branch's upstream.
+2. Combine the committed branch diff with staged, unstaged, and untracked changes. If the combined diff is empty, reply briefly that no code changes were detected and skip emitting the PR block.
 3. Infer change type from the touched paths listed under "Category signals"; classify as feature, fix, refactor, or docs-with-impact, and flag backward-compatibility risk only when the diff changes released public APIs, external config, persisted data, or wire protocols. Judge that risk against the latest release tag, not unreleased branch-only churn.
-4. Summarize changes in 1–3 short sentences using the key paths (top 5) and `git diff --stat` output; explicitly call out untracked files from `git status -sb`/`git ls-files --others --exclude-standard` because `--stat` does not include them. If the working tree is clean but there are commits ahead of `${BASE_COMMIT}`, summarize using those commit messages.
+4. Summarize changes in 1–3 short sentences using the top five paths and stats from the committed, staged, and unstaged diffs. Explicitly call out untracked files because `--stat` does not include them. Use commit messages as supporting context, not as a substitute for inspecting the committed diff.
 5. Choose the lead verb for the description: feature → `adds`, bug fix → `fixes`, refactor/perf → `improves` or `updates`, docs-only → `updates`.
 6. Suggest a branch name. If already off `main`, keep it; otherwise propose `feat/<slug>`, `fix/<slug>`, or `docs/<slug>` based on the primary area (for example `docs/pr-draft-summary-guidance`).
 7. If the current branch matches `issue-<number>` (digits only), keep that branch suggestion. When an issue number is present, reference `https://github.com/openai/openai-agents-js/issues/<number>` and include an auto-closing line such as `This pull request resolves #<number>.` Do not block if the issue cannot be fetched.

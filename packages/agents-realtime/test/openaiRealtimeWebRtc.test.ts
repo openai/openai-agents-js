@@ -520,6 +520,8 @@ describe('OpenAIRealtimeWebRTC.connectionState', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     (global as any).RTCPeerConnection = originals.RTCPeerConnection;
     Object.defineProperty(globalThis, 'navigator', {
       value: originals.navigator,
@@ -551,6 +553,57 @@ describe('OpenAIRealtimeWebRTC.connectionState', () => {
     expect(pc).toBeInstanceOf(FakeRTCPeerConnection);
     pc._simulateStateChange('failed');
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rtc.status).toBe('disconnected');
+    expect(events).toEqual(['connecting', 'connected', 'disconnected']);
+  });
+
+  it('keeps the connection open when peer connection disconnection recovers', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    const closeSpy = vi.spyOn(rtc, 'close');
+    const events: string[] = [];
+    rtc.on('connection_change', (status) => events.push(status));
+    await rtc.connect({ apiKey: 'ek_test' });
+    expect(rtc.status).toBe('connected');
+
+    const pc = rtc.connectionState
+      .peerConnection as unknown as FakeRTCPeerConnection;
+
+    vi.useFakeTimers();
+    pc._simulateStateChange('disconnected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(rtc.status).toBe('connected');
+
+    pc._simulateStateChange('connected');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(rtc.status).toBe('connected');
+    expect(events).toEqual(['connecting', 'connected']);
+  });
+
+  it('closes when peer connection disconnection exceeds the grace period', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    const closeSpy = vi.spyOn(rtc, 'close');
+    const events: string[] = [];
+    rtc.on('connection_change', (status) => events.push(status));
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    const pc = rtc.connectionState
+      .peerConnection as unknown as FakeRTCPeerConnection;
+
+    vi.useFakeTimers();
+    pc._simulateStateChange('disconnected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(rtc.status).toBe('connected');
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(rtc.status).toBe('disconnected');
     expect(events).toEqual(['connecting', 'connected', 'disconnected']);
   });

@@ -127,6 +127,28 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should return a serializable full tool result', async () => {
+    const server = new NodeMCPServerStdio({
+      name: 'full-result-test',
+      fullCommand: 'test',
+    });
+
+    await server.connect();
+    const result = await server.callToolResult('mock-tool', {});
+
+    expect(JSON.parse(JSON.stringify(result))).toEqual({
+      content: [{ type: 'text', text: 'ok' }],
+      _meta: { renderer: 'chart' },
+      structuredContent: { answer: 42 },
+      isError: true,
+    });
+    expect(await server.callTool('mock-tool', {})).toEqual([
+      { type: 'text', text: 'ok' },
+    ]);
+
+    await server.close();
+  });
+
   test('should forward resource requests to session methods', async () => {
     const server = new NodeMCPServerStdio({
       name: 'resource-test',
@@ -228,6 +250,9 @@ class MockClient {
     lastCallToolOptions = options;
     return Promise.resolve({
       content: [{ type: 'text', text: 'ok' }],
+      _meta: { renderer: 'chart' },
+      structuredContent: { answer: 42 },
+      isError: true,
     });
   }
   listResources(params?: any, options?: any): Promise<any> {
@@ -388,6 +413,26 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
+  test('should return a serializable full tool result', async () => {
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-full-result',
+    });
+
+    await server.connect();
+
+    expect(
+      JSON.parse(JSON.stringify(await server.callToolResult('mock-tool', {}))),
+    ).toEqual({
+      content: [{ type: 'text', text: 'ok' }],
+      _meta: { renderer: 'chart' },
+      structuredContent: { answer: 42 },
+      isError: true,
+    });
+
+    await server.close();
+  });
+
   test('should forward resource requests to session methods', async () => {
     const server = new NodeMCPServerSSE({
       url: 'https://example.com/sse',
@@ -524,6 +569,26 @@ describe('NodeMCPServerStreamableHttp', () => {
     expect(lastConnectOptions?.timeout).toBe(9000);
     expect(lastListToolsOptions?.timeout).toBe(9000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+
+    await server.close();
+  });
+
+  test('should return a serializable full tool result', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-full-result',
+    });
+
+    await server.connect();
+
+    expect(
+      JSON.parse(JSON.stringify(await server.callToolResult('mock-tool', {}))),
+    ).toEqual({
+      content: [{ type: 'text', text: 'ok' }],
+      _meta: { renderer: 'chart' },
+      structuredContent: { answer: 42 },
+      isError: true,
+    });
 
     await server.close();
   });

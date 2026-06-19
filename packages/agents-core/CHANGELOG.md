@@ -1,5 +1,40 @@
 # @openai/agents-core
 
+## 0.11.8
+
+### Patch Changes
+
+- dd64ba6: feat: add opt-in pre-approval tool input guardrails
+- b740fb3: feat: add SDK-only custom data for tool outputs
+
+## 0.11.7
+
+### Patch Changes
+
+- edd0a07: fix: expose sandbox error retryability metadata
+- dfbc3b0: feat(mcp): expose serializable full tool results
+
+## 0.11.6
+
+### Patch Changes
+
+- 13f7662: feat: add tracing span lifecycle dispatch helpers
+
+## 0.11.5
+
+### Patch Changes
+
+- 8dc0069: feat: add configurable tracing ID generation
+- d2a4687: feat: add Handoff clone overrides
+- 1ce5404: feat: add opt-in recovery for missing function tools
+- 60bba25: fix: make Runner modelProvider optional
+- 4f28a02: feat: add RunState trace clearing for resumed runs
+- 647810d: feat: add scoped trace context helpers
+- 26624a5: fix: guard session persistence debug env access
+- b84c1c4: feat: add completed tracing lifecycle dispatch helpers
+- cb0b532: fix: restore browser tracing context and add context storage injection
+- 1151713: fix: add public Usage JSON restoration helpers
+
 ## 0.11.4
 
 ### Patch Changes

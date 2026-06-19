@@ -39,9 +39,9 @@ Before changing runtime code, exported APIs, external configuration, persisted s
 
 #### `$pr-draft-summary`
 
-When a task in this repo finishes with moderate-or-larger code changes, invoke `$pr-draft-summary` in the final handoff to generate the required PR summary block, branch suggestion, title, and draft description. Treat this as the default close-out step after runtime code, tests, examples, build/test configuration, or docs with behavior impact are changed.
+Before sending the final response for a task, inspect the actual task diff. If it includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, invoke `$pr-draft-summary` to generate the required PR summary block, branch suggestion, title, and draft description. This is a mandatory close-out gate regardless of the perceived size of the change; do not classify an eligible runtime, test, example, or build/test configuration change as trivial. Run it after any required `$code-change-verification` and `$changeset-validation` work.
 
-Skip `$pr-draft-summary` only for trivial or conversation-only tasks, repo-meta/doc-only tasks without behavior impact, or when the user explicitly says not to include the PR draft block.
+Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
 
 ### ExecPlans
 
@@ -120,7 +120,7 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack with the skill-defined phase barriers before considering the work complete.
 6.  Commit using Conventional Commits.
 7.  Push and open a pull request.
-8.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` as the final handoff step unless the task falls under the documented skip cases.
+8.  Before reporting eligible changes as complete, inspect the actual task diff and invoke `$pr-draft-summary` as the mandatory final handoff step unless the task falls under the documented skip cases.
 
 ### Testing & Automated Checks
 
