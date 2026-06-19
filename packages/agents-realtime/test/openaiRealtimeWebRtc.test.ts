@@ -875,7 +875,7 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     const rtc = new OpenAIRealtimeWebRTC();
     const connectPromise = rtc.connect({ apiKey: 'ek_test' });
 
-    // Flush microtasks so the data channel 'open' fires and session.update is sent
+    // Flush microtasks so the data channel 'open' fires and session.update is sent.
     await vi.advanceTimersByTimeAsync(0);
 
     // Verify session.update was sent but no ack arrived
@@ -886,6 +886,36 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     await vi.advanceTimersByTimeAsync(5000);
 
     // connect() should have resolved via the timeout path
+    await connectPromise;
+    expect(rtc.status).toBe('connected');
+  });
+
+  it('ignores malformed messages while waiting for session.updated', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    const connectPromise = rtc.connect({ apiKey: 'ek_test' });
+
+    // Flush microtasks so the data channel 'open' fires and session.update is sent
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(() =>
+      noAckChannel!.dispatchEvent(new MessageEvent('message', { data: '{' })),
+    ).not.toThrow();
+    expect(() =>
+      noAckChannel!.dispatchEvent(
+        new MessageEvent('message', { data: new Uint8Array([0, 1, 2]) }),
+      ),
+    ).not.toThrow();
+
+    noAckChannel!.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'session.updated',
+          event_id: 'session_ack',
+          session: {},
+        }),
+      }),
+    );
+
     await connectPromise;
     expect(rtc.status).toBe('connected');
   });

@@ -13,6 +13,7 @@ import {
   OpenAIRealtimeBase,
   OpenAIRealtimeBaseOptions,
 } from './openaiRealtimeBase';
+import { parseRealtimeEvent } from './openaiRealtimeEvents';
 import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { HEADERS } from './utils';
 
@@ -230,7 +231,6 @@ export class OpenAIRealtimeWebRTC
             if (resolved) return;
             resolved = true;
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            dataChannel.removeEventListener('message', onConfigAck);
             dataChannel.removeEventListener('close', onClose);
             // Reject if the transport was closed/errored while waiting,
             // the dataChannel is no longer open, or a different connection
@@ -263,12 +263,6 @@ export class OpenAIRealtimeWebRTC
             this._onOpen();
             resolve();
           };
-          const onConfigAck = (ackEvent: MessageEvent) => {
-            const parsed = JSON.parse(ackEvent.data);
-            if (parsed.type === 'session.updated') {
-              finish();
-            }
-          };
           const onClose = () => {
             finish();
           };
@@ -280,14 +274,17 @@ export class OpenAIRealtimeWebRTC
               finish();
             }
           }, 5000);
-          dataChannel.addEventListener('message', onConfigAck);
           dataChannel.addEventListener('close', onClose);
 
-          // Register the general message handler AFTER onConfigAck so that
-          // finish() resolves connect() before _onMessage emits the
-          // session.updated event to external listeners.
           dataChannel.addEventListener('message', (event) => {
-            const { data: parsed, isGeneric } = this._onMessage(event);
+            const result = parseRealtimeEvent(event);
+            const { data: parsed, isGeneric } = result;
+
+            if (parsed?.type === 'session.updated') {
+              finish();
+            }
+
+            this._onParsedMessage(result);
             if (!parsed || isGeneric) {
               return;
             }
