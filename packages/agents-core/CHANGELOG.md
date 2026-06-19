@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.11.8
+
+### Patch Changes
+
+- dd64ba6: feat: add opt-in pre-approval tool input guardrails
+- b740fb3: feat: add SDK-only custom data for tool outputs
+
 ## 0.11.7
 
 ### Patch Changes
