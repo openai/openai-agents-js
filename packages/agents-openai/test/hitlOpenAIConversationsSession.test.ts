@@ -58,6 +58,7 @@ type ScenarioStep = {
   toolName: string;
   approval: 'approve' | 'reject';
   expectedOutput: string;
+  expectedOutputStatus: 'completed' | 'incomplete';
 };
 
 class ScenarioModel implements Model {
@@ -147,6 +148,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
         toolName: TOOL_ECHO,
         approval: 'approve',
         expectedOutput: `approved:${USER_MESSAGES[0]}`,
+        expectedOutputStatus: 'completed',
       },
       {
         label: 'turn 2 (rehydrated)',
@@ -154,6 +156,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
         toolName: TOOL_NOTE,
         approval: 'approve',
         expectedOutput: `approved_note:${USER_MESSAGES[1]}`,
+        expectedOutputStatus: 'completed',
       },
       {
         label: 'turn 3 (rejected)',
@@ -161,6 +164,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
         toolName: TOOL_ECHO,
         approval: 'reject',
         expectedOutput: REJECTION_OUTPUT,
+        expectedOutputStatus: 'incomplete',
       },
     ];
 
@@ -235,6 +239,7 @@ function expectStepItems(
   expect(functionCalls[0]?.name).toBe(step.toolName);
   expect(functionCalls[0]?.call_id).toBe(approvalItem.callId);
   expect(functionOutputs[0]?.call_id).toBe(approvalItem.callId);
+  expect(functionOutputs[0]?.status).toBe(step.expectedOutputStatus);
   expect(extractOutputText(functionOutputs[0])).toBe(step.expectedOutput);
 }
 
