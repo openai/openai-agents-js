@@ -11,6 +11,7 @@
     "translate": "tsx src/scripts/translate.ts"
   },
   "dependencies": {
+    "@astrojs/mdx": "^5.0.6",
     "@astrojs/starlight": "^0.38.5",
     "@astrojs/starlight-tailwind": "^5.0.0",
     "@openai/agents": "workspace:*",

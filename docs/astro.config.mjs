@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import tailwindcss from '@tailwindcss/vite';
@@ -499,6 +500,10 @@ export default defineConfig({
         themes: ['houston', 'one-light'],
       },
       customCss: ['./src/styles/global.css'],
+    }),
+    mdx({
+      gfm: true,
+      optimize: true,
     }),
   ],
 
