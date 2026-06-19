@@ -10,10 +10,33 @@ import {
   type SandboxHttpEventFetch,
   withSandboxSpan,
 } from '../src/sandbox';
+import {
+  setTraceProcessors,
+  setTracingDisabled,
+  withTrace,
+  type Span,
+  type Trace,
+  type TracingProcessor,
+} from '../src/tracing';
+
+class RecordingProcessor implements TracingProcessor {
+  spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {}
+  async onTraceEnd(_trace: Trace): Promise<void> {}
+  async onSpanStart(_span: Span<any>): Promise<void> {}
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
+}
 
 describe('sandbox events', () => {
   afterEach(() => {
     clearSandboxEventSinks();
+    setTracingDisabled(true);
+    setTraceProcessors([]);
   });
 
   it('emits operation start and end events without exposing operation output', async () => {
@@ -209,6 +232,55 @@ describe('sandbox events', () => {
         name: 'SandboxProviderError',
         message: 'provider unavailable',
         code: 'provider_error',
+        retryable: null,
+      },
+    });
+  });
+
+  it('emits sandbox retryability in error events and traces', async () => {
+    const events: SandboxEvent[] = [];
+    const processor = new RecordingProcessor();
+    addSandboxEventSink((event) => {
+      events.push(event);
+    });
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+
+    await expect(
+      withTrace('sandbox retryability', async () => {
+        await withSandboxSpan(
+          'sandbox.read',
+          { path: 'missing.txt' },
+          async () => {
+            throw new SandboxProviderError('missing path', {
+              status: 404,
+            });
+          },
+        );
+      }),
+    ).rejects.toThrow('missing path');
+
+    expect(events[1]).toMatchObject({
+      type: 'sandbox_operation',
+      name: 'sandbox.read',
+      phase: 'error',
+      error: {
+        code: 'provider_error',
+        retryable: false,
+      },
+    });
+
+    const sandboxSpan = processor.spansEnded.find(
+      (span) =>
+        span.spanData.type === 'custom' &&
+        span.spanData.name === 'sandbox.read',
+    );
+    expect(sandboxSpan?.spanData.data).toMatchObject({
+      path: 'missing.txt',
+      error_retryable: false,
+      error: {
+        code: 'provider_error',
+        retryable: false,
       },
     });
   });

@@ -1,5 +1,58 @@
 # @openai/agents
 
+## 0.11.8
+
+### Patch Changes
+
+- b740fb3: feat: add SDK-only custom data for tool outputs
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+  - @openai/agents-realtime@0.11.8
+  - @openai/agents-openai@0.11.8
+
+## 0.11.7
+
+### Patch Changes
+
+- dfbc3b0: feat(mcp): expose serializable full tool results
+- Updated dependencies [9b54b79]
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-openai@0.11.7
+  - @openai/agents-core@0.11.7
+  - @openai/agents-realtime@0.11.7
+
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [f76fc19]
+- Updated dependencies [13f7662]
+  - @openai/agents-openai@0.11.6
+  - @openai/agents-core@0.11.6
+  - @openai/agents-realtime@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [5610234]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [989a458]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+  - @openai/agents-realtime@0.11.5
+  - @openai/agents-openai@0.11.5
+
 ## 0.11.4
 
 ### Patch Changes

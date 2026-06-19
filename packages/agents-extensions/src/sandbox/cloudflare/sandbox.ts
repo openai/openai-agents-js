@@ -1431,10 +1431,21 @@ async function cloudflareProviderHttpErrorWithBody(
       provider: 'cloudflare',
       operation,
       status: response.status,
+      retryable: cloudflareRetryabilityForStatus(response.status),
       ...context,
       ...(cause ? { cause } : {}),
     },
   );
+}
+
+function cloudflareRetryabilityForStatus(status: number): boolean | null {
+  if (status === 500 || status === 503) {
+    return true;
+  }
+  if (status === 400) {
+    return false;
+  }
+  return null;
 }
 
 async function readCloudflareErrorBody(

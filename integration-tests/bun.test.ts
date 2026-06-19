@@ -15,7 +15,8 @@ describe('Bun', () => {
     console.log('[bun] Removing node_modules');
     await execa`rm -rf node_modules`;
     console.log('[bun] Installing dependencies');
-    await execa`bun install`;
+    // This fixture only installs locally published OpenAI packages plus TypeScript, Zod, and Bun types.
+    await execa`bun install --minimum-release-age=0`;
   }, 60000);
 
   test('should be able to run', { timeout: 15_000 }, async () => {

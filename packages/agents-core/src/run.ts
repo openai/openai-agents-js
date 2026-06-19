@@ -187,6 +187,12 @@ export type ToolExecutionConfig = {
    * This does not change provider-side `parallelToolCalls` behavior.
    */
   maxFunctionToolConcurrency?: number | null;
+
+  /**
+   * Runs function tool input guardrails before emitting a pending human approval interruption.
+   * The same guardrails still run again immediately before tool execution after approval.
+   */
+  preApprovalInputGuardrails?: boolean;
 };
 
 export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
@@ -195,6 +201,15 @@ function validateToolExecutionConfig(
   config: ToolExecutionConfig | undefined,
 ): ToolExecutionConfig | undefined {
   const maxConcurrency = config?.maxFunctionToolConcurrency;
+  const preApprovalInputGuardrails = config?.preApprovalInputGuardrails;
+  if (
+    typeof preApprovalInputGuardrails !== 'undefined' &&
+    typeof preApprovalInputGuardrails !== 'boolean'
+  ) {
+    throw new UserError(
+      'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
+    );
+  }
   if (maxConcurrency == null) {
     return config;
   }

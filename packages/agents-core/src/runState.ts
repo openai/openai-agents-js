@@ -90,8 +90,9 @@ import {
  *   serialize and resume without ambiguous name resolution.
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  * - 1.12: Adds optional missing function tool calls to processed responses.
+ * - 1.13: Adds optional SDK-only customData on tool output run items.
  */
-export const CURRENT_SCHEMA_VERSION = '1.12' as const;
+export const CURRENT_SCHEMA_VERSION = '1.13' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -105,6 +106,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.9',
   '1.10',
   '1.11',
+  '1.12',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -204,6 +206,7 @@ const itemSchema = z.discriminatedUnion('type', [
       .or(protocol.ApplyPatchCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
+    customData: z.record(z.string(), z.any()).optional(),
   }),
   z.object({
     type: z.literal('reasoning_item'),
@@ -1058,6 +1061,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsCustomData(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
@@ -1070,6 +1077,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.9' ||
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
+    schemaVersion === '1.12' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1084,12 +1092,30 @@ function assertSchemaVersionSupportsToolSearch(
   );
 }
 
+function assertSchemaVersionSupportsCustomData(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  if (!containsSerializedToolOutputCustomData(stateJson)) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support tool output customData. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
 function schemaVersionSupportsAgentIdentity(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
   return (
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
+    schemaVersion === '1.12' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1147,6 +1173,29 @@ function containsToolSearchInProcessedResponse(
     | undefined,
 ): boolean {
   return containsToolSearchRunItems(processedResponse?.newItems);
+}
+
+function containsSerializedToolOutputCustomData(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    containsToolOutputCustomDataRunItems(stateJson.generatedItems) ||
+    containsToolOutputCustomDataRunItems(
+      stateJson.lastProcessedResponse?.newItems,
+    )
+  );
+}
+
+function containsToolOutputCustomDataRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(
+    items?.some(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        Object.prototype.hasOwnProperty.call(item, 'customData'),
+    ),
+  );
 }
 
 function isToolSearchProtocolType(type: unknown): boolean {
@@ -2090,6 +2139,7 @@ export function deserializeItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.output,
+        serializedItem.customData,
       );
     case 'reasoning_item':
       return new RunReasoningItem(

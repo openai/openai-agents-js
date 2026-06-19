@@ -82,6 +82,7 @@ export {
   isProviderSandboxNotFoundError,
   providerErrorDetails,
   providerErrorMessage,
+  providerErrorRetryability,
   withProviderError,
   withSandboxSpan,
 } from './session';

@@ -105,6 +105,20 @@ describe('content extraction helpers', () => {
     ]);
   });
 
+  test('extractAllUserContent honors top-level input_image detail', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_image',
+        image: 'http://img',
+        detail: 'low',
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      { type: 'image_url', image_url: { url: 'http://img', detail: 'low' } },
+    ]);
+  });
+
   test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
     const userContent: protocol.UserMessageItem['content'] = [
       {

@@ -17,6 +17,8 @@ import { parseRealtimeEvent } from './openaiRealtimeEvents';
 import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { HEADERS } from './utils';
 
+const PEER_CONNECTION_DISCONNECTED_GRACE_MS = 5000;
+
 /**
  * The connection state of the WebRTC connection.
  */
@@ -99,6 +101,7 @@ export class OpenAIRealtimeWebRTC
   #muted = false;
   #connectPromise: Promise<void> | undefined;
   #connectAttemptId = 0;
+  #peerConnectionDisconnectedTimeout: ReturnType<typeof setTimeout> | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
     (event) => this.#sendEventNow(event),
     (error) => this._onError(error),
@@ -197,15 +200,7 @@ export class OpenAIRealtimeWebRTC
           connection: RTCPeerConnection,
         ) => {
           connection.onconnectionstatechange = () => {
-            switch (connection.connectionState) {
-              case 'disconnected':
-              case 'failed':
-              case 'closed':
-                this.close();
-                break;
-              // 'connected' state is handled by dataChannel.onopen. So we don't need to handle it here.
-              // 'new' and 'connecting' are intermediate states and do not require action here.
-            }
+            this.#handlePeerConnectionStateChange(connection);
           };
         };
         attachConnectionStateHandler(peerConnection);
@@ -449,6 +444,50 @@ export class OpenAIRealtimeWebRTC
     this.#state.dataChannel!.send(JSON.stringify(event));
   }
 
+  #handlePeerConnectionStateChange(connection: RTCPeerConnection): void {
+    if (this.#state.peerConnection !== connection) {
+      return;
+    }
+
+    switch (connection.connectionState) {
+      case 'connected':
+        this.#clearPeerConnectionDisconnectedTimeout();
+        break;
+      case 'disconnected':
+        this.#schedulePeerConnectionDisconnectedClose(connection);
+        break;
+      case 'failed':
+      case 'closed':
+        this.#clearPeerConnectionDisconnectedTimeout();
+        this.close();
+        break;
+      // 'new' and 'connecting' are intermediate states and do not require action here.
+    }
+  }
+
+  #schedulePeerConnectionDisconnectedClose(
+    connection: RTCPeerConnection,
+  ): void {
+    this.#clearPeerConnectionDisconnectedTimeout();
+    this.#peerConnectionDisconnectedTimeout = setTimeout(() => {
+      if (
+        this.#state.peerConnection === connection &&
+        connection.connectionState === 'disconnected'
+      ) {
+        this.close();
+      }
+    }, PEER_CONNECTION_DISCONNECTED_GRACE_MS);
+  }
+
+  #clearPeerConnectionDisconnectedTimeout(): void {
+    if (this.#peerConnectionDisconnectedTimeout === undefined) {
+      return;
+    }
+
+    clearTimeout(this.#peerConnectionDisconnectedTimeout);
+    this.#peerConnectionDisconnectedTimeout = undefined;
+  }
+
   /**
    * Mute or unmute the session.
    * @param muted - Whether to mute the session.
@@ -473,6 +512,7 @@ export class OpenAIRealtimeWebRTC
    * Close the connection to the Realtime API and disconnects the underlying WebRTC connection.
    */
   close() {
+    this.#clearPeerConnectionDisconnectedTimeout();
     this.#responseCreateSequencer.releaseWaiters();
     this.#cancelOngoingResponse = false;
     if (this.#state.dataChannel) {
