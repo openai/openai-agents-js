@@ -10,6 +10,8 @@ import {
   ModelBehaviorError,
   RunToolApprovalItem,
   ToolTimeoutError,
+  UserError,
+  handoff,
   tool,
   defineToolInputGuardrail,
   defineToolOutputGuardrail,
@@ -79,6 +81,196 @@ describe('RealtimeSession', () => {
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     session = new RealtimeSession(agent, { transport });
     await session.connect({ apiKey: 'test' });
+  });
+
+  it('rejects duplicate function tool and handoff names before connecting', async () => {
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const duplicateTool = tool({
+      name: 'transfer_to_Billing',
+      description: 'Conflicts with the billing handoff.',
+      parameters: z.object({}),
+      execute: async () => 'function tool',
+    });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [duplicateTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+
+    await expect(localSession.connect({ apiKey: 'test' })).rejects.toThrow(
+      new UserError(
+        "Duplicate Realtime tool name found: 'transfer_to_Billing' (function tool and handoff). Realtime function tool and handoff names must be unique. Rename one of them before starting the session.",
+      ),
+    );
+    expect(localTransport.connectCalls).toHaveLength(0);
+  });
+
+  it('reports duplicate same-kind Realtime tool names deterministically', async () => {
+    const duplicateOne = tool({
+      name: 'lookup',
+      description: 'First lookup tool.',
+      parameters: z.object({}),
+      execute: async () => 'first',
+    });
+    const duplicateTwo = tool({
+      name: 'lookup',
+      description: 'Second lookup tool.',
+      parameters: z.object({}),
+      execute: async () => 'second',
+    });
+    const firstTarget = new RealtimeAgent({ name: 'First' });
+    const secondTarget = new RealtimeAgent({ name: 'Second' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [duplicateOne, duplicateTwo],
+      handoffs: [
+        handoff(firstTarget, { toolNameOverride: 'delegate' }),
+        handoff(secondTarget, { toolNameOverride: 'delegate' }),
+      ],
+    });
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: new FakeTransport(),
+    });
+
+    await expect(localSession.connect({ apiKey: 'test' })).rejects.toThrow(
+      "Duplicate Realtime tool names found: 'delegate' (2 handoffs), 'lookup' (2 function tools)",
+    );
+  });
+
+  it('ignores disabled tools when validating Realtime tool names', async () => {
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const disabledTool = tool({
+      name: 'transfer_to_Billing',
+      description: 'Disabled conflicting tool.',
+      parameters: z.object({}),
+      isEnabled: false,
+      execute: async () => 'disabled',
+    });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [disabledTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+
+    await localSession.connect({ apiKey: 'test' });
+
+    expect(localTransport.connectCalls).toHaveLength(1);
+    expect(
+      localTransport.connectCalls[0]?.initialSessionConfig?.tools,
+    ).toHaveLength(1);
+  });
+
+  it('dispatches sibling calls against the agent snapshot from event arrival', async () => {
+    const execute = vi.fn(async () => 'original tool output');
+    const originalTool = tool({
+      name: 'finish_original_work',
+      description: 'Finish work owned by the original agent.',
+      parameters: z.object({}),
+      execute,
+    });
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [originalTool],
+      handoffs: [targetAgent],
+    });
+    const sourceToolStart = vi.fn();
+    const targetToolStart = vi.fn();
+    sourceAgent.on('agent_tool_start', sourceToolStart);
+    targetAgent.on('agent_tool_start', targetToolStart);
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'transfer_to_Billing',
+      callId: 'handoff-call',
+      arguments: '{}',
+    } as any);
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'finish_original_work',
+      callId: 'tool-call',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() => {
+      expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(2);
+    });
+
+    expect(localSession.currentAgent).toBe(targetAgent);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(sourceToolStart).toHaveBeenCalledTimes(1);
+    expect(targetToolStart).not.toHaveBeenCalled();
+    expect(
+      localTransport.sendFunctionCallOutputCalls.map(
+        ([toolCall]) => toolCall.callId,
+      ),
+    ).toEqual(expect.arrayContaining(['handoff-call', 'tool-call']));
+  });
+
+  it('resumes an approved tool call with its original agent snapshot', async () => {
+    const execute = vi.fn(async () => 'approved original output');
+    const approvalTool = tool({
+      name: 'approve_original_work',
+      description: 'Run work after approval.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [approvalTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(
+      localSession,
+      'tool_approval_requested',
+    );
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'approve_original_work',
+      callId: 'approval-call',
+      arguments: '{}',
+    } as any);
+    const [, approvalAgent, approvalPayload] = await approvalRequest;
+
+    const handoffOutput = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'transfer_to_Billing',
+      callId: 'approval-handoff-call',
+      arguments: '{}',
+    } as any);
+    await handoffOutput;
+    expect(localSession.currentAgent).toBe(targetAgent);
+
+    const toolOutput = localTransport.waitForNextFunctionCallOutput();
+    await localSession.approve(approvalPayload.approvalItem);
+    const [toolCall, output] = await toolOutput;
+
+    expect(approvalAgent).toBe(sourceAgent);
+    expect(toolCall.callId).toBe('approval-call');
+    expect(output).toBe('approved original output');
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('calls transport.resetHistory with correct arguments', () => {

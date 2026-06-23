@@ -57,6 +57,7 @@ import {
   isBackgroundResult,
   isValidRealtimeTool,
   toRealtimeToolDefinition,
+  validateRealtimeToolNames,
 } from './tool';
 import {
   runToolInputGuardrails,
@@ -205,6 +206,36 @@ function validateRealtimeToolExecutionConfig(
 
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
 
+type SessionRealtimeAgent<TBaseContext> =
+  | RealtimeAgent<TBaseContext>
+  | RealtimeAgent<RealtimeContextData<TBaseContext>>;
+
+type RealtimeFunctionTool<TBaseContext> = FunctionTool<
+  RealtimeContextData<TBaseContext>,
+  any,
+  unknown
+>;
+
+type RealtimeDispatchSnapshot<TBaseContext> = {
+  agent: SessionRealtimeAgent<TBaseContext>;
+  functionTools: RealtimeFunctionTool<TBaseContext>[];
+  handoffs: Handoff[];
+};
+
+type PreparedRealtimeAgentState<TBaseContext> = {
+  agent: SessionRealtimeAgent<TBaseContext>;
+  toolDefinitions?: RealtimeToolDefinition[];
+  dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>;
+};
+
+type PendingRealtimeFunctionCall<TBaseContext> = {
+  toolCall: TransportToolCallEvent;
+  tool: RealtimeFunctionTool<TBaseContext>;
+  agent: SessionRealtimeAgent<TBaseContext>;
+  dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>;
+  approvalItem: RunToolApprovalItem;
+};
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -246,10 +277,13 @@ export class RealtimeSession<
   TBaseContext = unknown,
 > extends RuntimeEventEmitter<RealtimeSessionEventTypes<TBaseContext>> {
   #transport: RealtimeTransportLayer;
-  #currentAgent:
-    | RealtimeAgent<TBaseContext>
-    | RealtimeAgent<RealtimeContextData<TBaseContext>>;
+  #currentAgent: SessionRealtimeAgent<TBaseContext>;
   #currentTools?: RealtimeToolDefinition[];
+  #currentDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
+  #pendingFunctionCalls = new Map<
+    string,
+    PendingRealtimeFunctionCall<TBaseContext>
+  >();
   #context: RunContext<RealtimeContextData<TBaseContext>>;
   #outputGuardrails: RealtimeOutputGuardrailDefinition[] = [];
   #outputGuardrailSettings: RealtimeOutputGuardrailSettings;
@@ -364,36 +398,56 @@ export class RealtimeSession<
     return this.#availableMcpTools;
   }
 
-  async #setCurrentAgent(
-    agent:
-      | RealtimeAgent<TBaseContext>
-      | RealtimeAgent<RealtimeContextData<TBaseContext>>,
-  ) {
-    this.#currentAgent = agent;
-    const handoffs = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getEnabledHandoffs(this.#context);
+  async #prepareAgent(
+    agent: SessionRealtimeAgent<TBaseContext>,
+  ): Promise<PreparedRealtimeAgentState<TBaseContext>> {
+    const [handoffs, agentTools] = await Promise.all([
+      (agent as RealtimeAgent<TBaseContext>).getEnabledHandoffs(this.#context),
+      (agent as RealtimeAgent<TBaseContext>).getAllTools(this.#context),
+    ]);
     const handoffTools = handoffs.map((handoff) =>
       handoff.getHandoffAsFunctionTool(),
     );
-    const allTools = (
-      await (this.#currentAgent as RealtimeAgent<TBaseContext>).getAllTools(
-        this.#context,
-      )
-    )
-      .filter(isValidRealtimeTool)
-      .map(toRealtimeToolDefinition);
+    const realtimeTools = agentTools.filter(isValidRealtimeTool);
+    const functionTools = realtimeTools.filter(
+      (tool): tool is RealtimeFunctionTool<TBaseContext> =>
+        tool.type === 'function',
+    );
+
+    validateRealtimeToolNames(functionTools, handoffs);
+
     const hasToolsDefined =
-      typeof this.#currentAgent.tools !== 'undefined' ||
-      typeof this.#currentAgent.mcpServers !== 'undefined';
+      typeof agent.tools !== 'undefined' ||
+      typeof agent.mcpServers !== 'undefined';
     const hasHandoffsDefined = handoffs.length > 0;
-    this.#currentTools =
-      hasToolsDefined || hasHandoffsDefined
-        ? [...allTools, ...handoffTools]
-        : undefined;
+    return {
+      agent,
+      toolDefinitions:
+        hasToolsDefined || hasHandoffsDefined
+          ? [...realtimeTools.map(toRealtimeToolDefinition), ...handoffTools]
+          : undefined,
+      dispatchSnapshot: {
+        agent,
+        functionTools,
+        handoffs,
+      },
+    };
+  }
+
+  #applyPreparedAgent(
+    prepared: PreparedRealtimeAgentState<TBaseContext>,
+  ): void {
+    this.#currentAgent = prepared.agent;
+    this.#currentTools = prepared.toolDefinitions;
+    this.#currentDispatchSnapshot = prepared.dispatchSnapshot;
 
     // Recompute currently available MCP tools based on the new agent's active server labels.
     this.#updateAvailableMcpTools();
+  }
+
+  async #setCurrentAgent(agent: SessionRealtimeAgent<TBaseContext>) {
+    const prepared = await this.#prepareAgent(agent);
+    this.#applyPreparedAgent(prepared);
   }
 
   async #getSessionConfig(
@@ -531,26 +585,32 @@ export class RealtimeSession<
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
+    const prepared = await this.#prepareAgent(newAgent);
     this.#currentAgent.emit('agent_handoff', this.#context, newAgent);
     this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
 
-    await this.#setCurrentAgent(newAgent);
+    this.#applyPreparedAgent(prepared);
     await this.#transport.updateSessionConfig(await this.#getSessionConfig());
 
     return newAgent;
   }
 
-  async #handleHandoff(toolCall: TransportToolCallEvent, handoff: Handoff) {
+  async #handleHandoff(
+    toolCall: TransportToolCallEvent,
+    handoff: Handoff,
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+  ) {
     const newAgent = (await handoff.onInvokeHandoff(
       this.#context,
       toolCall.arguments,
     )) as RealtimeAgent<TBaseContext>;
+    const prepared = await this.#prepareAgent(newAgent);
 
-    this.#currentAgent.emit('agent_handoff', this.#context, newAgent);
-    this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
+    sourceAgent.emit('agent_handoff', this.#context, newAgent);
+    this.emit('agent_handoff', this.#context, sourceAgent, newAgent);
 
     // update session with new agent
-    await this.#setCurrentAgent(newAgent);
+    this.#applyPreparedAgent(prepared);
     await this.#transport.updateSessionConfig(await this.#getSessionConfig());
     const output = getTransferMessage(newAgent);
     this.#transport.sendFunctionCallOutput(toolCall, output, true);
@@ -603,7 +663,9 @@ export class RealtimeSession<
 
   async #handleFunctionToolCall(
     toolCall: TransportToolCallEvent,
-    tool: FunctionTool<RealtimeContextData<TBaseContext>, any, unknown>,
+    tool: RealtimeFunctionTool<TBaseContext>,
+    agent: SessionRealtimeAgent<TBaseContext>,
+    dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
   ) {
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     let parsedArgs: any = toolCall.arguments;
@@ -625,10 +687,11 @@ export class RealtimeSession<
         callId: toolCall.callId,
       });
       if (approval === false) {
-        this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+        this.#pendingFunctionCalls.delete(toolCall.callId);
+        this.emit('agent_tool_start', this.#context, agent, tool, {
           toolCall,
         });
-        this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+        agent.emit('agent_tool_start', this.#context, tool, {
           toolCall,
         });
 
@@ -637,15 +700,10 @@ export class RealtimeSession<
           toolCall.callId,
         );
         this.#transport.sendFunctionCallOutput(toolCall, result, true);
-        this.emit(
-          'agent_tool_end',
-          this.#context,
-          this.#currentAgent,
-          tool,
-          result,
-          { toolCall },
-        );
-        this.#currentAgent.emit('agent_tool_end', this.#context, tool, result, {
+        this.emit('agent_tool_end', this.#context, agent, tool, result, {
+          toolCall,
+        });
+        agent.emit('agent_tool_end', this.#context, tool, result, {
           toolCall,
         });
         return;
@@ -654,7 +712,7 @@ export class RealtimeSession<
           const inputGuardrailResult = await runToolInputGuardrails({
             guardrails: tool.inputGuardrails,
             context: this.#context,
-            agent: this.#currentAgent,
+            agent,
             toolCall: toolCall as any,
           });
 
@@ -667,31 +725,36 @@ export class RealtimeSession<
             return;
           }
         }
-        this.emit(
-          'tool_approval_requested',
-          this.#context,
-          this.#currentAgent,
-          {
-            type: 'function_approval' as const,
-            tool,
-            approvalItem: new RunToolApprovalItem(toolCall, this.#currentAgent),
-          },
-        );
+        const approvalItem = new RunToolApprovalItem(toolCall, agent);
+        this.#pendingFunctionCalls.set(toolCall.callId, {
+          toolCall,
+          tool,
+          agent,
+          dispatchSnapshot,
+          approvalItem,
+        });
+        this.emit('tool_approval_requested', this.#context, agent, {
+          type: 'function_approval' as const,
+          tool,
+          approvalItem,
+        });
         return;
       }
     }
 
+    this.#pendingFunctionCalls.delete(toolCall.callId);
+
     const inputGuardrailResult = await runToolInputGuardrails({
       guardrails: tool.inputGuardrails,
       context: this.#context,
-      agent: this.#currentAgent,
+      agent,
       toolCall: toolCall as any,
     });
 
-    this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+    this.emit('agent_tool_start', this.#context, agent, tool, {
       toolCall,
     });
-    this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+    agent.emit('agent_tool_start', this.#context, tool, {
       toolCall,
     });
 
@@ -713,7 +776,7 @@ export class RealtimeSession<
         : await runToolOutputGuardrails({
             guardrails: tool.outputGuardrails,
             context: this.#context,
-            agent: this.#currentAgent,
+            agent,
             toolCall: toolCall as any,
             toolOutput: result,
           });
@@ -726,52 +789,81 @@ export class RealtimeSession<
       stringResult = toSmartString(guardedResult);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
     }
-    this.emit(
-      'agent_tool_end',
-      this.#context,
-      this.#currentAgent,
-      tool,
-      stringResult,
-      { toolCall },
-    );
-    this.#currentAgent.emit(
-      'agent_tool_end',
-      this.#context,
-      tool,
-      stringResult,
-      { toolCall },
-    );
+    this.emit('agent_tool_end', this.#context, agent, tool, stringResult, {
+      toolCall,
+    });
+    agent.emit('agent_tool_end', this.#context, tool, stringResult, {
+      toolCall,
+    });
   }
 
-  async #handleFunctionCall(toolCall: TransportToolCallEvent) {
-    const enabledHandoffs = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getEnabledHandoffs(this.#context);
-    const handoffMap = new Map(
-      enabledHandoffs.map((handoff) => [handoff.toolName, handoff]),
+  async #handleFunctionCall(
+    toolCall: TransportToolCallEvent,
+    dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
+  ) {
+    const [toolEnabled, handoffEnabled] = await Promise.all([
+      Promise.all(
+        dispatchSnapshot.functionTools.map((tool) =>
+          tool.isEnabled(this.#context, dispatchSnapshot.agent),
+        ),
+      ),
+      Promise.all(
+        dispatchSnapshot.handoffs.map((handoff) =>
+          handoff.isEnabled({
+            runContext: this.#context,
+            agent: dispatchSnapshot.agent,
+          }),
+        ),
+      ),
+    ]);
+    const filteredSnapshot: RealtimeDispatchSnapshot<TBaseContext> = {
+      agent: dispatchSnapshot.agent,
+      functionTools: dispatchSnapshot.functionTools.filter(
+        (_tool, index) => toolEnabled[index],
+      ),
+      handoffs: dispatchSnapshot.handoffs.filter(
+        (_handoff, index) => handoffEnabled[index],
+      ),
+    };
+    validateRealtimeToolNames(
+      filteredSnapshot.functionTools,
+      filteredSnapshot.handoffs,
     );
 
-    const allTools = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getAllTools(this.#context);
-    const functionToolMap = new Map(allTools.map((tool) => [tool.name, tool]));
+    const functionToolMap = new Map(
+      filteredSnapshot.functionTools.map((tool) => [tool.name, tool]),
+    );
+    const handoffMap = new Map(
+      filteredSnapshot.handoffs.map((handoff) => [handoff.toolName, handoff]),
+    );
+
+    const functionTool = functionToolMap.get(toolCall.name);
+    if (functionTool) {
+      await this.#handleFunctionToolCall(
+        toolCall,
+        functionTool,
+        filteredSnapshot.agent,
+        filteredSnapshot,
+      );
+      return;
+    }
 
     const possibleHandoff = handoffMap.get(toolCall.name);
     if (possibleHandoff) {
-      await this.#handleHandoff(toolCall, possibleHandoff);
-    } else {
-      const functionTool = functionToolMap.get(toolCall.name);
-      if (functionTool && functionTool.type === 'function') {
-        await this.#handleFunctionToolCall(toolCall, functionTool);
-      } else {
-        const message = `Tool ${toolCall.name} not found`;
-        this.#transport.sendFunctionCallOutput(toolCall, message, false);
-        this.emit('error', {
-          type: 'error',
-          error: new ModelBehaviorError(message),
-        });
-      }
+      await this.#handleHandoff(
+        toolCall,
+        possibleHandoff,
+        filteredSnapshot.agent,
+      );
+      return;
     }
+
+    const message = `Tool ${toolCall.name} not found`;
+    this.#transport.sendFunctionCallOutput(toolCall, message, false);
+    this.emit('error', {
+      type: 'error',
+      error: new ModelBehaviorError(message),
+    });
   }
 
   async #runOutputGuardrails(
@@ -979,8 +1071,14 @@ export class RealtimeSession<
     });
 
     this.#transport.on('function_call', async (event) => {
+      const dispatchSnapshot = this.#currentDispatchSnapshot;
       try {
-        await this.#handleFunctionCall(event);
+        if (!dispatchSnapshot) {
+          throw new ModelBehaviorError(
+            'Realtime tool dispatch is unavailable before the session tool configuration is resolved.',
+          );
+        }
+        await this.#handleFunctionCall(event, dispatchSnapshot);
       } catch (error) {
         logger.error('Error handling function call', error);
         this.emit('error', {
@@ -1162,6 +1260,7 @@ export class RealtimeSession<
    */
   close() {
     this.#interruptedByGuardrail = {};
+    this.#pendingFunctionCalls.clear();
     this.#transport.close();
   }
 
@@ -1183,6 +1282,44 @@ export class RealtimeSession<
     this.#transport.interrupt();
   }
 
+  #resolvePendingFunctionCall(
+    approvalItem: RunToolApprovalItem,
+  ): PendingRealtimeFunctionCall<TBaseContext> | undefined {
+    if (approvalItem.rawItem.type !== 'function_call') {
+      return undefined;
+    }
+
+    const pending = this.#pendingFunctionCalls.get(approvalItem.rawItem.callId);
+    if (pending) {
+      return pending;
+    }
+
+    const agent =
+      approvalItem.agent instanceof RealtimeAgent
+        ? (approvalItem.agent as SessionRealtimeAgent<TBaseContext>)
+        : this.#currentAgent;
+    const toolName = approvalItem.toolName ?? approvalItem.rawItem.name;
+    const tool = agent.tools.find(
+      (candidate): candidate is RealtimeFunctionTool<TBaseContext> =>
+        candidate.type === 'function' && candidate.name === toolName,
+    );
+    if (!tool) {
+      return undefined;
+    }
+
+    const dispatchSnapshot =
+      this.#currentDispatchSnapshot?.agent === agent
+        ? this.#currentDispatchSnapshot
+        : { agent, functionTools: [tool], handoffs: [] };
+    return {
+      toolCall: approvalItem.rawItem,
+      tool,
+      agent,
+      dispatchSnapshot,
+      approvalItem,
+    };
+  }
+
   /**
    * Approve a tool call. This will also trigger the tool call to the agent.
    * @param approvalItem - The approval item to approve.
@@ -1193,18 +1330,18 @@ export class RealtimeSession<
     approvalItem: RunToolApprovalItem,
     options: { alwaysApprove?: boolean } = { alwaysApprove: false },
   ) {
-    this.#context.approveTool(approvalItem, options);
+    const pending = this.#resolvePendingFunctionCall(approvalItem);
+    this.#context.approveTool(pending?.approvalItem ?? approvalItem, options);
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === toolName,
-    );
-    if (
-      tool &&
-      tool.type === 'function' &&
-      approvalItem.rawItem.type === 'function_call'
-    ) {
-      await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    if (pending) {
+      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      await this.#handleFunctionToolCall(
+        pending.toolCall,
+        pending.tool,
+        pending.agent,
+        pending.dispatchSnapshot,
+      );
     } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysApprove) {
         logger.warn(
@@ -1233,20 +1370,20 @@ export class RealtimeSession<
       alwaysReject: false,
     },
   ) {
-    this.#context.rejectTool(approvalItem, options);
+    const pending = this.#resolvePendingFunctionCall(approvalItem);
+    this.#context.rejectTool(pending?.approvalItem ?? approvalItem, options);
 
     // we still need to simulate a tool call to the agent to let the agent know
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === toolName,
-    );
-    if (
-      tool &&
-      tool.type === 'function' &&
-      approvalItem.rawItem.type === 'function_call'
-    ) {
-      await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    if (pending) {
+      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      await this.#handleFunctionToolCall(
+        pending.toolCall,
+        pending.tool,
+        pending.agent,
+        pending.dispatchSnapshot,
+      );
     } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysReject) {
         logger.warn(
