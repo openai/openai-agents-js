@@ -1130,6 +1130,69 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps pending approvals distinct when call IDs are missing', async () => {
+    const execute = vi.fn(async ({ request }: { request: string }) => request);
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: z.object({ request: z.string() }),
+      needsApproval: true,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalRequests: any[] = [];
+    s.on('tool_approval_requested', (_context, _agent, request) => {
+      approvalRequests.push(request);
+    });
+    t.emit('function_call', {
+      id: 'item-1',
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: '',
+      arguments: '{"request":"first"}',
+    });
+    t.emit('function_call', {
+      id: 'item-2',
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: '',
+      arguments: '{"request":"second"}',
+    });
+
+    await vi.waitFor(() => {
+      expect(approvalRequests).toHaveLength(2);
+    });
+    await s.approve(approvalRequests[0].approvalItem);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toEqual({ request: 'first' });
+    expect(t.sendFunctionCallOutputCalls).toHaveLength(1);
+    expect(t.sendFunctionCallOutputCalls[0][0]).toMatchObject({
+      id: 'item-1',
+      callId: 'item-1',
+    });
+
+    await s.reject(approvalRequests[1].approvalItem, {
+      message: 'Second request denied',
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(t.sendFunctionCallOutputCalls).toHaveLength(2);
+    expect(t.sendFunctionCallOutputCalls[1][0]).toMatchObject({
+      id: 'item-2',
+      callId: 'item-2',
+    });
+    expect(t.sendFunctionCallOutputCalls[1][1]).toBe('Second request denied');
+  });
+
   it('does not run realtime input guardrails before pending approval by default', async () => {
     const guardrailRun = vi.fn(async () =>
       ToolGuardrailFunctionOutputFactory.allow(),

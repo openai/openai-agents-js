@@ -239,6 +239,13 @@ type PendingRealtimeFunctionCall<TBaseContext> = {
   approvalItem: RunToolApprovalItem;
 };
 
+function normalizeRealtimeFunctionCallId(
+  toolCall: TransportToolCallEvent,
+): TransportToolCallEvent {
+  const callId = toolCall.callId || toolCall.id || '';
+  return callId === toolCall.callId ? toolCall : { ...toolCall, callId };
+}
+
 function getStartedResponseId(
   event: TransportLayerResponseStarted,
 ): string | undefined {
@@ -682,11 +689,12 @@ export class RealtimeSession<
   }
 
   async #handleFunctionToolCall(
-    toolCall: TransportToolCallEvent,
+    incomingToolCall: TransportToolCallEvent,
     tool: RealtimeFunctionTool<TBaseContext>,
     agent: SessionRealtimeAgent<TBaseContext>,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
   ) {
+    const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     let parsedArgs: any = toolCall.arguments;
     if (tool.parameters) {
@@ -1337,7 +1345,8 @@ export class RealtimeSession<
       return undefined;
     }
 
-    const pending = this.#pendingFunctionCalls.get(approvalItem.rawItem.callId);
+    const toolCall = normalizeRealtimeFunctionCallId(approvalItem.rawItem);
+    const pending = this.#pendingFunctionCalls.get(toolCall.callId);
     if (pending) {
       return pending;
     }
@@ -1360,11 +1369,18 @@ export class RealtimeSession<
         ? this.#currentDispatchSnapshot
         : { agent, functionTools: [tool], handoffs: [] };
     return {
-      toolCall: approvalItem.rawItem,
+      toolCall,
       tool,
       agent,
       dispatchSnapshot,
-      approvalItem,
+      approvalItem:
+        toolCall === approvalItem.rawItem
+          ? approvalItem
+          : new RunToolApprovalItem(
+              toolCall,
+              approvalItem.agent,
+              approvalItem.toolName,
+            ),
     };
   }
 
