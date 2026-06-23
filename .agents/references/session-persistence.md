@@ -6,7 +6,7 @@ Use this reference for `Session`, session-input callbacks, stored input, history
 
 - `getItems(limit)` returns the latest limited window in chronological order. `addItems()` appends, `popItem()` removes the newest item, and `clearSession()` clears the boundary. Backends must preserve these semantics even when their storage API orders or paginates differently.
 - Return clones or otherwise prevent caller mutation from silently rewriting stored history. Normalize external records and skip or surface corrupt records according to the backend's documented recovery policy.
-- `rewriteHistory()` is an optional stronger contract for atomic mutations such as replacing approved function-call arguments. Do not emulate atomic rewrite with a partial clear-and-rebuild unless failure restoration is defined.
+- `SessionHistoryRewriteAwareSession.applyHistoryMutations(...)` lets a session backend apply history mutations such as replacing approved function-call arguments. Do not emulate this contract with a partial clear-and-rebuild unless failure restoration is defined.
 
 ## Preparing and Persisting Input
 
