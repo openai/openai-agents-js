@@ -406,16 +406,6 @@ async function handleFunctionApproval<TContext>(
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { agent, state } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
-  const needsApproval = await toolRun.tool.needsApproval(
-    state._context,
-    parsedArgs,
-    toolRun.toolCall.callId,
-  );
-
-  if (!needsApproval) {
-    return 'approved';
-  }
-
   const approval = state._context.isToolApproved({
     toolName,
     callId: toolRun.toolCall.callId,
@@ -426,30 +416,40 @@ async function handleFunctionApproval<TContext>(
     return await buildApprovalRejectionResult(deps, toolRun);
   }
 
-  if (approval !== true) {
-    if (shouldRunPreApprovalInputGuardrails(deps)) {
-      const inputGuardrailResult = await runFunctionToolInputGuardrails({
-        guardrails: toolRun.tool.inputGuardrails,
-        context: state._context,
-        agent,
-        toolCall: toolRun.toolCall,
-        onResult: (result) => {
-          state._toolInputGuardrailResults.push(result);
-        },
-      });
-
-      if (inputGuardrailResult.type === 'reject') {
-        return buildInputGuardrailRejectionResult(
-          deps,
-          toolRun,
-          inputGuardrailResult.message,
-        );
-      }
-    }
-    return buildApprovalRequestResult(deps, toolRun);
+  if (approval === true) {
+    return 'approved';
   }
 
-  return 'approved';
+  const needsApproval = await toolRun.tool.needsApproval(
+    state._context,
+    parsedArgs,
+    toolRun.toolCall.callId,
+  );
+
+  if (!needsApproval) {
+    return 'approved';
+  }
+
+  if (shouldRunPreApprovalInputGuardrails(deps)) {
+    const inputGuardrailResult = await runFunctionToolInputGuardrails({
+      guardrails: toolRun.tool.inputGuardrails,
+      context: state._context,
+      agent,
+      toolCall: toolRun.toolCall,
+      onResult: (result) => {
+        state._toolInputGuardrailResults.push(result);
+      },
+    });
+
+    if (inputGuardrailResult.type === 'reject') {
+      return buildInputGuardrailRejectionResult(
+        deps,
+        toolRun,
+        inputGuardrailResult.message,
+      );
+    }
+  }
+  return buildApprovalRequestResult(deps, toolRun);
 }
 
 function buildInputGuardrailRejectionResult<TContext>(
@@ -753,7 +753,7 @@ async function resolveToolApproval(options: {
   toolName: string;
   callId: string;
   approvalItem: RunToolApprovalItem;
-  needsApproval: boolean;
+  needsApproval: () => Promise<boolean>;
   onApproval?:
     | ((
         runContext: RunContext,
@@ -770,7 +770,19 @@ async function resolveToolApproval(options: {
     onApproval,
   } = options;
 
-  if (!needsApproval) {
+  const existingApproval = runContext.isToolApproved({
+    toolName,
+    callId,
+  });
+
+  if (existingApproval === true) {
+    return 'approved';
+  }
+  if (existingApproval === false) {
+    return 'rejected';
+  }
+
+  if (!(await needsApproval())) {
     return 'approved';
   }
 
@@ -813,7 +825,7 @@ async function handleToolApprovalDecision(options: {
   toolName: string;
   callId: string;
   approvalItem: RunToolApprovalItem;
-  needsApproval: boolean;
+  needsApproval: () => Promise<boolean>;
   onApproval?:
     | ((
         runContext: RunContext,
@@ -918,11 +930,8 @@ export async function executeShellActions(
       toolName: shellTool.name,
       callId: toolCallKey,
       approvalItem,
-      needsApproval: await shellTool.needsApproval(
-        runContext,
-        toolCall.action,
-        toolCallKey,
-      ),
+      needsApproval: () =>
+        shellTool.needsApproval(runContext, toolCall.action, toolCallKey),
       onApproval: shellTool.onApproval,
       buildRejectionItem: async () => {
         const response = await resolveApprovalRejectionMessage({
@@ -1060,11 +1069,12 @@ export async function executeApplyPatchOperations(
       toolName: applyPatchTool.name,
       callId: toolCallKey,
       approvalItem,
-      needsApproval: await applyPatchTool.needsApproval(
-        runContext,
-        toolCall.operation,
-        toolCallKey,
-      ),
+      needsApproval: () =>
+        applyPatchTool.needsApproval(
+          runContext,
+          toolCall.operation,
+          toolCallKey,
+        ),
       onApproval: applyPatchTool.onApproval,
       buildRejectionItem: async () => {
         const response = await resolveApprovalRejectionMessage({
@@ -1240,30 +1250,29 @@ export async function executeComputerActions(
     );
     const needsApprovalCandidate = (computerTool as { needsApproval?: unknown })
       .needsApproval;
-    const needsApproval =
-      typeof needsApprovalCandidate === 'function'
-        ? (
-            await Promise.all(
-              computerActions.map((computerAction) =>
-                (
-                  needsApprovalCandidate as (
-                    runContext: RunContext,
-                    action: protocol.ComputerAction,
-                    callId?: string,
-                  ) => Promise<boolean>
-                )(runContext, computerAction, toolCall.callId),
-              ),
-            )
-          ).some(Boolean)
-        : typeof needsApprovalCandidate === 'boolean'
-          ? needsApprovalCandidate
-          : false;
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: computerTool.name,
       callId: toolCall.callId,
       approvalItem,
-      needsApproval,
+      needsApproval: async () =>
+        typeof needsApprovalCandidate === 'function'
+          ? (
+              await Promise.all(
+                computerActions.map((computerAction) =>
+                  (
+                    needsApprovalCandidate as (
+                      runContext: RunContext,
+                      action: protocol.ComputerAction,
+                      callId?: string,
+                    ) => Promise<boolean>
+                  )(runContext, computerAction, toolCall.callId),
+                ),
+              )
+            ).some(Boolean)
+          : typeof needsApprovalCandidate === 'boolean'
+            ? needsApprovalCandidate
+            : false,
       buildRejectionItem: async () => {
         const rejectionMessage = await getRejectionMessage();
         const rejectionOutput: protocol.ComputerToolOutput = {

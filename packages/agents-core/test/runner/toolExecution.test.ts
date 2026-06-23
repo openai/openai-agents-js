@@ -1248,7 +1248,8 @@ describe('executeComputerActions', () => {
       type: vi.fn(),
       wait: vi.fn(),
     } as any;
-    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const needsApproval = vi.fn(async () => true);
+    const tool = computerTool({ computer: fakeComputer, needsApproval });
     const call: protocol.ComputerUseCallItem = {
       type: 'computer_call',
       callId: 'c3b',
@@ -1279,6 +1280,7 @@ describe('executeComputerActions', () => {
     expect((items[1] as MessageOutputItem).content).toBe(
       'Tool execution was not approved.',
     );
+    expect(needsApproval).not.toHaveBeenCalled();
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
@@ -1345,7 +1347,8 @@ describe('executeComputerActions', () => {
       type: vi.fn(),
       wait: vi.fn(),
     } as any;
-    const tool = computerTool({ computer: fakeComputer, needsApproval: true });
+    const needsApproval = vi.fn(async () => true);
+    const tool = computerTool({ computer: fakeComputer, needsApproval });
     const call: protocol.ComputerUseCallItem = {
       type: 'computer_call',
       callId: 'c4',
@@ -1364,6 +1367,7 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
+    expect(needsApproval).not.toHaveBeenCalled();
     expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
   });
 });
@@ -2136,6 +2140,45 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(0);
     });
 
+    it('does not recheck apply_patch approval after approval', async () => {
+      const editor = new FakeEditor();
+      const needsApproval = vi.fn(async () => true);
+      const applyPatch = applyPatchTool({ editor, needsApproval });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const runner = new Runner({ tracingDisabled: true });
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_approved',
+        status: 'completed',
+        operation: {
+          type: 'update_file',
+          path: 'README.md',
+          diff: 'diff --git',
+        },
+      };
+
+      const pendingResults = await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+      );
+      expect(needsApproval).toHaveBeenCalledTimes(1);
+      runContext.approveTool(pendingResults[0] as ToolApprovalItem);
+
+      const approvedResults = await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+      );
+
+      expect(approvedResults[0].type).toBe('tool_call_output_item');
+      expect(needsApproval).toHaveBeenCalledTimes(1);
+      expect(editor.operations).toHaveLength(1);
+    });
+
     it('respects onApproval callback for apply_patch', async () => {
       const editor = new FakeEditor();
       const onApproval = vi.fn(async () => ({ approve: false }));
@@ -2213,9 +2256,10 @@ describe('executeShellActions', () => {
 
     it('uses toolErrorFormatter message for rejected apply_patch operations', async () => {
       const editor = new FakeEditor();
+      const needsApproval = vi.fn(async () => true);
       const applyPatch = applyPatchTool({
         editor,
-        needsApproval: async () => true,
+        needsApproval,
       });
       const agent = new Agent({ name: 'EditorAgent' });
       const runContext = new RunContext();
@@ -2249,6 +2293,7 @@ describe('executeShellActions', () => {
       const rawItem = results[0].rawItem as protocol.ApplyPatchCallResultItem;
       expect(rawItem.status).toBe('failed');
       expect(rawItem.output).toBe(CUSTOM_REJECTION_MESSAGE);
+      expect(needsApproval).not.toHaveBeenCalled();
       expect(editor.operations).toHaveLength(0);
     });
   });
@@ -2421,11 +2466,12 @@ describe('executeShellActions', () => {
       const guardrailRun = vi.fn(async () =>
         ToolGuardrailFunctionOutputFactory.allow(),
       );
+      const needsApproval = vi.fn(async () => true);
       const t = tool({
         name: 'hi',
         description: 't',
         parameters: z.object({}),
-        needsApproval: true,
+        needsApproval,
         inputGuardrails: [
           {
             name: 'double_check',
@@ -2450,6 +2496,7 @@ describe('executeShellActions', () => {
       );
 
       expect(first[0].type).toBe('function_approval');
+      expect(needsApproval).toHaveBeenCalledTimes(1);
       state._context.approveTool(first[0].runItem as ToolApprovalItem);
 
       const second = await withTrace('test', () =>
@@ -2462,13 +2509,15 @@ describe('executeShellActions', () => {
       );
 
       expect(second[0].type).toBe('function_output');
+      expect(needsApproval).toHaveBeenCalledTimes(1);
       expect(guardrailRun).toHaveBeenCalledTimes(2);
       expect(invokeSpy).toHaveBeenCalledTimes(1);
       expect(state._toolInputGuardrailResults).toHaveLength(2);
     });
 
     it('returns rejection output when approval is false', async () => {
-      const t = makeTool(true);
+      const needsApproval = vi.fn(async () => true);
+      const t = makeTool(needsApproval);
       vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
       const invokeSpy = vi.spyOn(t, 'invoke');
 
@@ -2483,6 +2532,7 @@ describe('executeShellActions', () => {
 
       expect(res[0].type).toBe('function_output');
       expect(res[0].runItem).toBeInstanceOf(ToolCallOutputItem);
+      expect(needsApproval).not.toHaveBeenCalled();
       expect(invokeSpy).not.toHaveBeenCalled();
     });
 
@@ -3718,6 +3768,41 @@ describe('executeShellActions', () => {
     expect(shell.calls).toHaveLength(0);
   });
 
+  it('does not recheck shell approval after approval', async () => {
+    const shell = new FakeShell();
+    const needsApproval = vi.fn(async () => true);
+    const shellToolDef = shellTool({ shell, needsApproval });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell_approved',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const pendingResults = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+    expect(needsApproval).toHaveBeenCalledTimes(1);
+    runContext.approveTool(pendingResults[0] as ToolApprovalItem);
+
+    const approvedResults = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+    );
+
+    expect(approvedResults[0].type).toBe('tool_call_output_item');
+    expect(needsApproval).toHaveBeenCalledTimes(1);
+    expect(shell.calls).toHaveLength(1);
+  });
+
   it('honors onApproval for shell tools', async () => {
     const shell = new FakeShell();
     const onApproval = vi.fn(async () => ({ approve: true }));
@@ -3863,7 +3948,8 @@ describe('executeShellActions', () => {
 
   it('returns failed output when approval explicitly rejected', async () => {
     const shell = new FakeShell();
-    const shellToolDef = shellTool({ shell, needsApproval: async () => true });
+    const needsApproval = vi.fn(async () => true);
+    const shellToolDef = shellTool({ shell, needsApproval });
     const agent = new Agent({ name: 'ShellAgent' });
     const runContext = new RunContext();
     const runner = new Runner({ tracingDisabled: true });
@@ -3893,6 +3979,7 @@ describe('executeShellActions', () => {
         outcome: { type: 'exit', exitCode: null },
       },
     ]);
+    expect(needsApproval).not.toHaveBeenCalled();
   });
 
   it('uses toolErrorFormatter message when shell approval is rejected', async () => {
